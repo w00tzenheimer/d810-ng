@@ -39,6 +39,7 @@ class Bnot_HackersDelightRule_1(VerifiableRule):
     This is a common pattern for bitwise NOT using arithmetic.
     Reference: Hacker's Delight, Section 2-4
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = -x - ONE
@@ -54,6 +55,7 @@ class Bnot_HackersDelightRule_2(VerifiableRule):
     Absorption law: ~(x | y) | ~y = ~y because ~y implies ~(x | y) when x|y contains y.
     Reference: Hacker's Delight
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = ~(x | y) | ~y
@@ -69,6 +71,7 @@ class Bnot_MbaRule_1(VerifiableRule):
     This is an MBA (Mixed Boolean-Arithmetic) obfuscation pattern.
     Algebraically: (x - 1) - 2x = x - 1 - 2x = -x - 1 = ~x
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x - ONE) - (TWO * x)
@@ -83,6 +86,7 @@ class Bnot_FactorRule_1(VerifiableRule):
 
     XOR properties: ~(x ^ y) ^ y = (~x ^ ~y) ^ y = ~x ^ (~y ^ y) = ~x ^ 0 = ~x
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = ~(x ^ y) ^ y
@@ -97,6 +101,7 @@ class Bnot_FactorRule_4(VerifiableRule):
 
     Double negation cancels: ~x ^ ~y = x ^ y
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = ~x ^ ~y
@@ -111,6 +116,7 @@ class BnotXor_FactorRule_1(VerifiableRule):
 
     Distribute negation: x ^ ~y = ~(x ^ y)
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = x ^ ~y
@@ -127,6 +133,7 @@ class BnotAnd_FactorRule_1(VerifiableRule):
     Proof: (x ^ y) | ~(x | y) = (x ^ y) | (~x & ~y) [De Morgan]
          = ~(x & y) [algebraic simplification]
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x ^ y) | ~(x | y)
@@ -141,6 +148,7 @@ class BnotAnd_FactorRule_3(VerifiableRule):
 
     De Morgan's law: ~x | ~y = ~(x & y)
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = ~x | ~y
@@ -155,6 +163,7 @@ class BnotOr_FactorRule_1(VerifiableRule):
 
     De Morgan's law: ~x & ~y = ~(x | y)
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = ~x & ~y
@@ -171,6 +180,7 @@ class Bnot_XorRule_1(VerifiableRule):
     Proof: (x & y) | ~(x | y) = (x & y) | (~x & ~y) [De Morgan]
          = XNOR = ~(x ^ y)
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) | ~(x | y)
@@ -199,6 +209,7 @@ class Bnot_FactorRule_2(VerifiableRule):
 
     Now fully verifiable: Uses concrete constant -1, no size-dependent constraints.
     """
+
     maturities = _ALL_MATURITIES
 
     # Pattern: -1 - x (using concrete NEGATIVE_ONE constant)
@@ -216,6 +227,7 @@ class Bnot_FactorRule_3(VerifiableRule):
 
     This requires that the second operand is actually the bitwise NOT of y.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) ^ (x | bnot_y)
@@ -232,6 +244,7 @@ class BnotXor_Rule_1(VerifiableRule):
 
     This is XNOR. Requires verification that operands are bitwise NOTs.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) | (bnot_x & bnot_y)
@@ -251,6 +264,7 @@ class BnotXor_Rule_2(VerifiableRule):
 
     Alternative XNOR pattern. Requires verification of NOT relationships.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x | y) ^ (bnot_x | bnot_y)
@@ -270,6 +284,7 @@ class BnotXor_Rule_3(VerifiableRule):
 
     Yet another XNOR pattern. Requires verification of NOT relationships.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x | bnot_y) & (bnot_x | y)
@@ -289,6 +304,7 @@ class BnotAnd_FactorRule_2(VerifiableRule):
 
     De Morgan combined with XOR. Requires verification of NOT relationships.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (bnot_x | bnot_y) | (x ^ y)
@@ -308,6 +324,7 @@ class BnotAnd_FactorRule_4(VerifiableRule):
 
     Requires verification that the operand is bitwise NOT of x.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = bnot_x | (x ^ y)
@@ -325,6 +342,7 @@ class BnotAdd_MbaRule_1(VerifiableRule):
     This is an MBA obfuscation of NOT(x + y).
     Requires verification that operand is bitwise NOT of y.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x ^ bnot_y) - (TWO * (x & y))
@@ -342,6 +360,7 @@ class Bnot_Rule_1(VerifiableRule):
     This simplifies to just ~y.
     Requires verification that operand is bitwise NOT of y.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & bnot_y) | ~(x | y)
@@ -362,6 +381,7 @@ class Bnot_FactorRule_5(VerifiableRule):
     Therefore:
         ~(~x ^ y) = ~~x ^ y = x ^ y
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = ~(~x ^ y)

@@ -4,6 +4,7 @@ Covers the selection seam: ``default_engines`` is StaticShape-only;
 ``recover_machine_via_engines`` ranks by ``(soundness_rank, confidence)`` and is a
 no-op single-result pass in P1; registration is idempotent-by-name and isolatable.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -68,7 +69,11 @@ def _switch_flow_graph() -> FlowGraph:
         kind=InsnKind.COND_JUMP,
     )
     table_tail = InsnSnapshot(
-        opcode=1, ea=0, operands=(), l=state_operand, r=switch_cases,
+        opcode=1,
+        ea=0,
+        operands=(),
+        l=state_operand,
+        r=switch_cases,
         kind=InsnKind.TABLE_JUMP,
     )
     return FlowGraph(
@@ -133,8 +138,12 @@ def test_recover_via_engines_matches_single_engine():
 
 
 def test_register_extra_engine_idempotent_by_name():
-    register_extra_engine(_FakeEngine("dup", soundness=Soundness.PATTERN, confidence=1.0))
-    register_extra_engine(_FakeEngine("dup", soundness=Soundness.PATTERN, confidence=9.0))
+    register_extra_engine(
+        _FakeEngine("dup", soundness=Soundness.PATTERN, confidence=1.0)
+    )
+    register_extra_engine(
+        _FakeEngine("dup", soundness=Soundness.PATTERN, confidence=9.0)
+    )
     assert len(extra_engines()) == 1
 
 

@@ -12,6 +12,7 @@ Slice 6 (naming cleanup): the canonical class is now
 established by slice 5's ``UseDefSafetyCapability``.  The legacy name
 ``ConstantFixpointBackend`` is preserved as a back-compat alias.
 """
+
 from __future__ import annotations
 
 # Canonical home for the capability Protocol; both names re-exported
@@ -22,7 +23,9 @@ from d810.capabilities.constant_fixpoint import (
     ConstantFixpointCapability,
 )
 from d810.ir.results import ConstantFixpointResult
-from d810.analyses.control_flow.state_machine_analysis import run_snapshot_constant_fixpoint
+from d810.analyses.control_flow.state_machine_analysis import (
+    run_snapshot_constant_fixpoint,
+)
 
 
 class HodurConstantFixpointBackend:

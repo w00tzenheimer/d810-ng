@@ -1,4 +1,5 @@
 """Runtime tests for the local residual indirect-transfer snippet recognizer."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -82,54 +83,90 @@ def _two_arm_snippet(*, fallthrough_global=0x3000, direct_taken_merge=False):
         d=SimpleNamespace(b=3 if direct_taken_merge else 1),
     )
     return _mba(
-        ({
-            0: _Block(
-                [_insn(ida_hexrays.m_mov, 0x100, l=_global(0x2000), d=_reg(PTR)), branch],
-                [2, 3] if direct_taken_merge else [2, 1],
-                0x100,
-                0x111,
-            ),
-            2: _Block(
-                [_insn(ida_hexrays.m_mov, 0x130, l=_global(fallthrough_global), d=_reg(PTR))],
-                [3],
-                0x130,
-                0x131,
-            ),
-            3: _Block(
-                [
-                    _insn(ida_hexrays.m_ldx, 0x140, r=_reg(PTR), d=_reg(LOADED)),
-                    _insn(ida_hexrays.m_add, 0x141, l=_reg(LOADED), r=_reg(ESI), d=_reg(LOADED)),
-                    _insn(ida_hexrays.m_ijmp, 0x142, l=_reg(LOADED)),
-                ],
-                [],
-                0x140,
-                0x145,
-            ),
-        } if direct_taken_merge else {
-            0: _Block(
-                [_insn(ida_hexrays.m_mov, 0x100, l=_global(0x2000), d=_reg(PTR)), branch],
-                [2, 1],
-                0x100,
-                0x111,
-            ),
-            1: _Block([], [3], 0x120, 0x121),
-            2: _Block(
-                [_insn(ida_hexrays.m_mov, 0x130, l=_global(fallthrough_global), d=_reg(PTR))],
-                [3],
-                0x130,
-                0x131,
-            ),
-            3: _Block(
-                [
-                    _insn(ida_hexrays.m_ldx, 0x140, r=_reg(PTR), d=_reg(LOADED)),
-                    _insn(ida_hexrays.m_add, 0x141, l=_reg(LOADED), r=_reg(ESI), d=_reg(LOADED)),
-                    _insn(ida_hexrays.m_ijmp, 0x142, l=_reg(LOADED)),
-                ],
-                [],
-                0x140,
-                0x145,
-            ),
-        })
+        (
+            {
+                0: _Block(
+                    [
+                        _insn(ida_hexrays.m_mov, 0x100, l=_global(0x2000), d=_reg(PTR)),
+                        branch,
+                    ],
+                    [2, 3] if direct_taken_merge else [2, 1],
+                    0x100,
+                    0x111,
+                ),
+                2: _Block(
+                    [
+                        _insn(
+                            ida_hexrays.m_mov,
+                            0x130,
+                            l=_global(fallthrough_global),
+                            d=_reg(PTR),
+                        )
+                    ],
+                    [3],
+                    0x130,
+                    0x131,
+                ),
+                3: _Block(
+                    [
+                        _insn(ida_hexrays.m_ldx, 0x140, r=_reg(PTR), d=_reg(LOADED)),
+                        _insn(
+                            ida_hexrays.m_add,
+                            0x141,
+                            l=_reg(LOADED),
+                            r=_reg(ESI),
+                            d=_reg(LOADED),
+                        ),
+                        _insn(ida_hexrays.m_ijmp, 0x142, l=_reg(LOADED)),
+                    ],
+                    [],
+                    0x140,
+                    0x145,
+                ),
+            }
+            if direct_taken_merge
+            else {
+                0: _Block(
+                    [
+                        _insn(ida_hexrays.m_mov, 0x100, l=_global(0x2000), d=_reg(PTR)),
+                        branch,
+                    ],
+                    [2, 1],
+                    0x100,
+                    0x111,
+                ),
+                1: _Block([], [3], 0x120, 0x121),
+                2: _Block(
+                    [
+                        _insn(
+                            ida_hexrays.m_mov,
+                            0x130,
+                            l=_global(fallthrough_global),
+                            d=_reg(PTR),
+                        )
+                    ],
+                    [3],
+                    0x130,
+                    0x131,
+                ),
+                3: _Block(
+                    [
+                        _insn(ida_hexrays.m_ldx, 0x140, r=_reg(PTR), d=_reg(LOADED)),
+                        _insn(
+                            ida_hexrays.m_add,
+                            0x141,
+                            l=_reg(LOADED),
+                            r=_reg(ESI),
+                            d=_reg(LOADED),
+                        ),
+                        _insn(ida_hexrays.m_ijmp, 0x142, l=_reg(LOADED)),
+                    ],
+                    [],
+                    0x140,
+                    0x145,
+                ),
+            }
+        )
     )
 
 

@@ -51,9 +51,7 @@ def make_edge_metadata(
         ),
         "horizon_block": int(horizon_block) if horizon_block is not None else None,
         "state_value": (
-            int(site.state_value & 0xFFFFFFFF)
-            if site is not None
-            else None
+            int(site.state_value & 0xFFFFFFFF) if site is not None else None
         ),
         "state_write_ea": int(site.insn_ea) if site is not None else None,
         "target_entry": int(target_entry) if target_entry is not None else None,

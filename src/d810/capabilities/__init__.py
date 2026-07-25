@@ -14,6 +14,7 @@ abstract, portable dataclasses (e.g. ``ValRange``); a Protocol return
 annotation may be widened to ``Any`` only while the result type has
 no stable portable home, and tightens once that home exists.
 """
+
 from __future__ import annotations
 
 from .branch_witness import BranchWitnessCapability

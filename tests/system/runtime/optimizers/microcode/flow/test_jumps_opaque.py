@@ -64,9 +64,7 @@ class _FakeBlock:
         self.preds = tuple(int(pred) for pred in preds)
         self.succs = tuple(int(succ) for succ in succs)
         self.nextb = (
-            None
-            if next_serial is None
-            else SimpleNamespace(serial=int(next_serial))
+            None if next_serial is None else SimpleNamespace(serial=int(next_serial))
         )
         self.mba = None
 

@@ -1,4 +1,5 @@
 """Runtime tests for guarded local state-machine cleanup."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -369,9 +370,12 @@ def test_guarded_state_machine_strategy_drops_invalid_metadata() -> None:
     )
 
     assert extract_guarded_state_machine_fixes(cfg) == ()
-    assert GuardedStateMachineStrategy().plan(
-        AnalysisSnapshot(mba=object(), flow_graph=cfg),
-    ) is None
+    assert (
+        GuardedStateMachineStrategy().plan(
+            AnalysisSnapshot(mba=object(), flow_graph=cfg),
+        )
+        is None
+    )
 
 
 def test_guarded_state_machine_strategy_drops_stale_but_well_formed_metadata() -> None:
@@ -395,18 +399,20 @@ def test_guarded_state_machine_strategy_drops_stale_but_well_formed_metadata() -
     )
 
     assert extract_guarded_state_machine_fixes(cfg) == ()
-    assert GuardedStateMachineStrategy().plan(
-        AnalysisSnapshot(mba=object(), flow_graph=cfg),
-    ) is None
+    assert (
+        GuardedStateMachineStrategy().plan(
+            AnalysisSnapshot(mba=object(), flow_graph=cfg),
+        )
+        is None
+    )
 
 
 def test_collect_guarded_state_machine_rejects_extra_predecessors() -> None:
-    assert collect_guarded_state_machine_fixes(
-        _guarded_cfg(extra_inner_guard_pred=True)
-    ) == ()
-    assert collect_guarded_state_machine_fixes(
-        _guarded_cfg(extra_init_pred=True)
-    ) == ()
+    assert (
+        collect_guarded_state_machine_fixes(_guarded_cfg(extra_inner_guard_pred=True))
+        == ()
+    )
+    assert collect_guarded_state_machine_fixes(_guarded_cfg(extra_init_pred=True)) == ()
 
 
 def test_build_guarded_state_machine_modifications_emits_deferred_shape() -> None:

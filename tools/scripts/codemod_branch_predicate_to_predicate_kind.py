@@ -22,6 +22,7 @@ resolving with no import-source surgery.
 
 Read-only by default; pass ``--apply`` to write.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -91,22 +92,30 @@ def main() -> int:
         n = text.count("BranchPredicate")
         print(f"{rel}: {n} BranchPredicate refs rewritten")
         if not args.apply:
-            print("".join(difflib.unified_diff(
-                text.splitlines(keepends=True)[:0],
-                out.splitlines(keepends=True)[:0])))
+            print(
+                "".join(
+                    difflib.unified_diff(
+                        text.splitlines(keepends=True)[:0],
+                        out.splitlines(keepends=True)[:0],
+                    )
+                )
+            )
         if args.apply:
             path.write_text(out, encoding="utf-8")
 
     # Safety: no surviving BranchPredicate outside the skip set.
     if args.apply:
         survivors = [
-            rel for rel, path, _ in targets
+            rel
+            for rel, path, _ in targets
             if "BranchPredicate" in path.read_text(encoding="utf-8")
         ]
         if survivors:
             print(f"WARN survivors: {survivors}")
-    print(f"\n{changed} files {'rewritten' if args.apply else 'would change'} "
-          f"(skipped hand-edited: {sorted(SKIP)})")
+    print(
+        f"\n{changed} files {'rewritten' if args.apply else 'would change'} "
+        f"(skipped hand-edited: {sorted(SKIP)})"
+    )
     return 0
 
 

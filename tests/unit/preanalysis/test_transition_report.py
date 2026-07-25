@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
-from d810.analyses.control_flow.transition_analysis import build_transition_analysis_from_graph
+from d810.analyses.control_flow.transition_analysis import (
+    build_transition_analysis_from_graph,
+)
 from d810.analyses.control_flow.transition_builder import (
     StateHandler,
     StateTransition,
@@ -113,7 +115,9 @@ def test_build_dispatcher_transition_report_from_graph_classifies_rows():
     assert by_handler[7].transition_label == "unknown"
 
 
-def test_condition_chain_backed_and_graph_backed_reports_render_the_same_rows(monkeypatch):
+def test_condition_chain_backed_and_graph_backed_reports_render_the_same_rows(
+    monkeypatch,
+):
     flow_graph = _make_flow_graph()
     transition_result = _make_transition_result()
     expected = build_dispatcher_transition_report_from_graph(

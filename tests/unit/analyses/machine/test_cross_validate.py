@@ -1,4 +1,5 @@
 """Cross-validation policy tests (P4, llr-1d8u; design §6.4)."""
+
 from __future__ import annotations
 
 import pytest
@@ -52,8 +53,8 @@ def test_disagreement_keeps_AI_next_states_and_flags():
 def test_mixed_agreement_and_conflict_confidence():
     spine = _machine(
         (
-            MachineTransition(1, (), (2, 3)),   # agrees
-            MachineTransition(4, (), (5,)),      # conflicts
+            MachineTransition(1, (), (2, 3)),  # agrees
+            MachineTransition(4, (), (5,)),  # conflicts
         )
     )
     conc = _machine(

@@ -1,4 +1,5 @@
 """Unit tests for structural indirect jump-table discovery (pure logic)."""
+
 from d810.hexrays.preanalysis.indirect_jump_discovery import (
     _ea_owned_by_function,
     bound_table_count,
@@ -18,7 +19,11 @@ def test_ea_ownership_predicate_bounds():
 def test_bound_table_count_stops_at_first_out_of_function_qword():
     # 37 in-function targets followed by string data (mirrors the live table).
     targets = [
-        0x180013D46, 0x180014106, 0x180013E91, 0x180013CB2, 0x1800141E8,
+        0x180013D46,
+        0x180014106,
+        0x180013E91,
+        0x180013CB2,
+        0x1800141E8,
     ] + [0x180013C2A] * 32  # 5 + 32 = 37 in-function entries
     raw = targets + [0x7473656C6C616D53, 0x746E656D656C6520]
     count = bound_table_count(

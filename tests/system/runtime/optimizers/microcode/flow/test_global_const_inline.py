@@ -52,16 +52,20 @@ from d810.optimizers.microcode.flow.constant_prop import global_const_inline as 
 # Platform helpers
 # ---------------------------------------------------------------------------
 
+
 def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Search helper
 # ---------------------------------------------------------------------------
+
 
 def _find_in_rdata(target_value: int, size: int = 8) -> int:
     """Return the first EA in a read-only segment that holds *target_value*.
@@ -91,6 +95,7 @@ def _find_in_rdata(target_value: int, size: int = 8) -> int:
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestGlobalConstantInliner:
     """Pointer-filtering contract tests using real IDA Pro APIs.

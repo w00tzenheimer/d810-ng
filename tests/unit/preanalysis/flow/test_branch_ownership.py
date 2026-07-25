@@ -39,9 +39,7 @@ def _edge(
 
 def test_collect_branch_ownership_defaults_unresolved() -> None:
     proofs = collect_branch_ownership_proofs(
-        dag=SimpleNamespace(edges=(
-            _edge(source=0x10, target=0x20, block=4, arm=1),
-        )),
+        dag=SimpleNamespace(edges=(_edge(source=0x10, target=0x20, block=4, arm=1),)),
     )
 
     assert len(proofs) == 1
@@ -53,13 +51,15 @@ def test_collect_branch_ownership_defaults_unresolved() -> None:
 
 def test_collect_branch_ownership_records_trusted_opaque_provenance() -> None:
     proofs = collect_branch_ownership_proofs(
-        dag=SimpleNamespace(edges=(
-            _edge(
-                source=0x10,
-                target=0x20,
-                provenance_kind="ollvm_bcf_opaque_predicate",
-            ),
-        )),
+        dag=SimpleNamespace(
+            edges=(
+                _edge(
+                    source=0x10,
+                    target=0x20,
+                    provenance_kind="ollvm_bcf_opaque_predicate",
+                ),
+            )
+        ),
     )
 
     assert proofs[0].proof_kind == BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM
@@ -71,14 +71,16 @@ def test_collect_branch_ownership_records_trusted_opaque_provenance() -> None:
 
 def test_collect_branch_ownership_records_terminal_return_frontier() -> None:
     proofs = collect_branch_ownership_proofs(
-        dag=SimpleNamespace(edges=(
-            _edge(
-                source=0x10,
-                target=None,
-                kind="CONDITIONAL_RETURN",
-                target_entry=99,
-            ),
-        )),
+        dag=SimpleNamespace(
+            edges=(
+                _edge(
+                    source=0x10,
+                    target=None,
+                    kind="CONDITIONAL_RETURN",
+                    target_entry=99,
+                ),
+            )
+        ),
     )
 
     assert proofs[0].proof_kind == BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
@@ -88,16 +90,18 @@ def test_collect_branch_ownership_records_terminal_return_frontier() -> None:
 
 def test_collect_branch_ownership_marks_edges_to_terminal_states_as_frontiers() -> None:
     proofs = collect_branch_ownership_proofs(
-        dag=SimpleNamespace(edges=(
-            _edge(source=0x10, target=0x20, block=4, arm=1),
-            _edge(
-                source=0x20,
-                target=None,
-                kind="CONDITIONAL_RETURN",
-                block=7,
-                target_entry=99,
-            ),
-        )),
+        dag=SimpleNamespace(
+            edges=(
+                _edge(source=0x10, target=0x20, block=4, arm=1),
+                _edge(
+                    source=0x20,
+                    target=None,
+                    kind="CONDITIONAL_RETURN",
+                    block=7,
+                    target_entry=99,
+                ),
+            )
+        ),
     )
 
     assert proofs[0].proof_kind == BranchOwnershipProofKind.TERMINAL_RETURN_FRONTIER
@@ -108,14 +112,16 @@ def test_collect_branch_ownership_marks_edges_to_terminal_states_as_frontiers() 
 
 
 def test_branch_ownership_proof_coerces_dict_for_consumers() -> None:
-    proof = branch_ownership_proof_from_any({
-        "proof_id": "p",
-        "proof_kind": "OBFUSCATION_RESIDUE_ARM",
-        "trusted": True,
-        "reason": "fixture",
-        "source_state": "0x10",
-        "target_state": "0x20",
-    })
+    proof = branch_ownership_proof_from_any(
+        {
+            "proof_id": "p",
+            "proof_kind": "OBFUSCATION_RESIDUE_ARM",
+            "trusted": True,
+            "reason": "fixture",
+            "source_state": "0x10",
+            "target_state": "0x20",
+        }
+    )
 
     assert isinstance(proof, BranchOwnershipProof)
     assert proof.source_state == 0x10

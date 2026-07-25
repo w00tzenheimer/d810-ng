@@ -5,6 +5,7 @@ accepts the small textual subset currently emitted and optimized by the local
 M1/M2 path, converts it into the M3 lower-back contract DTOs, and delegates the
 actual support decision to ``plan_lower_back``.
 """
+
 from __future__ import annotations
 
 import re
@@ -93,12 +94,18 @@ _COND_BR_RE = re.compile(
 _RET_RE = re.compile(
     r"^ret\s+(?P<type>i(?:1|8|16|32|64))\s+(?P<value>%?[A-Za-z0-9$._-]+|-?\d+|true|false)$"
 )
-_PHI_RE = re.compile(r"^(?P<result>%[A-Za-z0-9$._-]+)\s*=\s*phi\s+(?P<type>\S+)\s+(?P<body>.+)$")
+_PHI_RE = re.compile(
+    r"^(?P<result>%[A-Za-z0-9$._-]+)\s*=\s*phi\s+(?P<type>\S+)\s+(?P<body>.+)$"
+)
 _PHI_INCOMING_RE = re.compile(
     r"\[\s*(?P<value>%?[A-Za-z0-9$._-]+|-?\d+|true|false)\s*,\s*%(?P<pred>[A-Za-z0-9$._-]+)\s*\]"
 )
-_ASSIGN_RE = re.compile(r"^(?P<result>%[A-Za-z0-9$._-]+)\s*=\s*(?P<opcode>[A-Za-z][A-Za-z0-9.]*)\b(?P<rest>.*)$")
-_TYPE_RE = re.compile(r"(?P<type><[^>]+>|i(?:1|8|16|32|64)\b|ptr\b|void\b|float\b|double\b)")
+_ASSIGN_RE = re.compile(
+    r"^(?P<result>%[A-Za-z0-9$._-]+)\s*=\s*(?P<opcode>[A-Za-z][A-Za-z0-9.]*)\b(?P<rest>.*)$"
+)
+_TYPE_RE = re.compile(
+    r"(?P<type><[^>]+>|i(?:1|8|16|32|64)\b|ptr\b|void\b|float\b|double\b)"
+)
 _VALUE_RE = re.compile(r"(?P<value>%[A-Za-z0-9$._-]+|-?\d+|true|false)")
 _BINARY_SCALAR_OPCODES = {"add", "and", "mul", "or", "sub", "xor"}
 _SUPPORTED_SCALAR_OPCODES = _BINARY_SCALAR_OPCODES | {"icmp", "zext"}
@@ -109,7 +116,9 @@ def parse_lower_back_function(ir_text: str) -> LlvmLowerBackParseResult:
     diagnostics: list[LlvmLowerBackParseDiagnostic] = []
     lines = _semantic_lines(ir_text)
     define_indexes = [
-        index for index, (_line_no, line) in enumerate(lines) if line.startswith("define ")
+        index
+        for index, (_line_no, line) in enumerate(lines)
+        if line.startswith("define ")
     ]
     if len(define_indexes) != 1:
         return _parse_failure(
@@ -369,7 +378,9 @@ def _parse_terminator(
         )
     if line.startswith("switch "):
         targets = tuple(dict.fromkeys(re.findall(r"label\s+%([A-Za-z0-9$._-]+)", line)))
-        return LlvmLowerBackTerminator(LlvmLowerBackTerminatorKind.SWITCH, targets=targets)
+        return LlvmLowerBackTerminator(
+            LlvmLowerBackTerminatorKind.SWITCH, targets=targets
+        )
     if line.startswith("indirectbr "):
         return LlvmLowerBackTerminator(LlvmLowerBackTerminatorKind.INDIRECTBR)
     if line.startswith("invoke "):
@@ -430,7 +441,9 @@ def _parse_phi_incoming_list(
         incoming.append(
             LlvmPhiIncoming(
                 predecessor=item.group("pred"),
-                value=LlvmValueRef(name=_value_name(item.group("value")), type=type_name),
+                value=LlvmValueRef(
+                    name=_value_name(item.group("value")), type=type_name
+                ),
             )
         )
         pos = item.end()
@@ -558,7 +571,11 @@ def _has_supported_instruction_shape(instruction: LlvmLowerBackInstruction) -> b
             return False
         input_width = _scalar_width(operands[0].type)
         result_width = _scalar_width(result.type)
-        return input_width is not None and result_width is not None and result_width > input_width
+        return (
+            input_width is not None
+            and result_width is not None
+            and result_width > input_width
+        )
     return False
 
 

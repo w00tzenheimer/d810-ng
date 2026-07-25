@@ -1,4 +1,5 @@
 "Semantic-region entry resolution.\n\nThis module classifies the CFG splice point for a semantic-DAG-like region\nwithout depending on a live Hex-Rays ``mba_t`` or importing ``d810.passes``.\nStrategy code supplies a small block view and the transition-kind sentinel for\nthe DAG representation it is using.  The resolver stays backend-neutral and\nonly reasons about DAG edge shape plus projected block successor shape.\n\nThe intentionally loose ``dag`` / ``region_head_node`` parameters are a\nlayering compromise: concrete DAG node and edge dataclasses currently live in\n``preanalysis``, while this decision logic belongs in ``cfg``.  Keeping the API\nstructural lets Hodur pass ``LinearizedStateDag`` data without making ``cfg``\ndepend upward on ``preanalysis``.\n"
+
 from __future__ import annotations
 
 import enum

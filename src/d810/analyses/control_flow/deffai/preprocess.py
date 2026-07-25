@@ -33,6 +33,7 @@ slot-aligned surface, via the shared transfer readers:
   :func:`~d810.analyses.control_flow.deffai.transfer.written_cell` (the ``d``
   dest slot -- was ``operand_cell(insn.d)``).
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -244,7 +245,8 @@ def insert_prune_blocks(
     targets = sorted(
         h
         for h in handlers
-        if h in direct_succs and (blk := graph.blocks.get(h)) is not None
+        if h in direct_succs
+        and (blk := graph.blocks.get(h)) is not None
         and blk.npred > 1
     )
     if not targets:
@@ -263,9 +265,7 @@ def insert_prune_blocks(
         next_serial += 1
         prune_origin[prune_serial] = handler
         # Dispatcher now points at the prune block instead of the handler.
-        disp_succs = [
-            prune_serial if s == handler else s for s in disp_succs
-        ]
+        disp_succs = [prune_serial if s == handler else s for s in disp_succs]
         # The prune block: empty ONE_WAY -> handler.
         new_blocks[prune_serial] = BlockSnapshot(
             serial=prune_serial,

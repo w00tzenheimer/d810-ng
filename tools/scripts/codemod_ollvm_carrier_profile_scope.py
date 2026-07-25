@@ -4,6 +4,7 @@
 This script intentionally performs only symbol/import cleanup. It does not move
 projection semantics or decide architecture boundaries.
 """
+
 from __future__ import annotations
 
 import argparse

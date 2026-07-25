@@ -3,6 +3,7 @@
 These tests import d810.hexrays and d810.optimizers, which are forbidden
 in tests/unit by the import-linter contract.  They live here in tests/system.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -63,8 +64,10 @@ class TestCtreeOptimizationRuleRegistration:
 class TestCtreeOptimizerManagerRuleExecution:
     def test_rules_fire_and_stats_recorded(self):
         """Rules should fire and statistics should be recorded."""
+
         class FakeRule(CtreeOptimizationRule):
             NAME = "fake_rule"
+
             def optimize_ctree(self, cfunc):
                 return 3  # 3 patches
 
@@ -81,8 +84,10 @@ class TestCtreeOptimizerManagerRuleExecution:
 
     def test_exception_handling_in_rules(self):
         """Exceptions in rules should be caught and not propagate."""
+
         class FailingRule(CtreeOptimizationRule):
             NAME = "failing_rule"
+
             def optimize_ctree(self, cfunc):
                 raise RuntimeError("boom")
 
@@ -96,13 +101,16 @@ class TestCtreeOptimizerManagerRuleExecution:
 
     def test_multiple_rules_accumulate(self):
         """Multiple rules should accumulate their patch counts."""
+
         class Rule1(CtreeOptimizationRule):
             NAME = "rule_one"
+
             def optimize_ctree(self, cfunc):
                 return 2
 
         class Rule2(CtreeOptimizationRule):
             NAME = "rule_two"
+
             def optimize_ctree(self, cfunc):
                 return 5
 

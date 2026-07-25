@@ -13,6 +13,7 @@ predecessor-partitioned baseline lacks.
 Portable-core: no IDA imports.  :class:`KContext` is frozen + hashable so it keys
 the per-context fixpoint state and the CCM / CTG maps.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -20,6 +20,7 @@ state write and the state var is dead there -- the dataflow proof of the leak.
 This module is IDA-dependent (unit tests cannot exercise it); validate via the
 docker unflatten dump behind the ``D810_USE_STRUCTURER`` flag.
 """
+
 from __future__ import annotations
 
 import os
@@ -33,7 +34,9 @@ from d810.backends.hexrays.evidence.condition_chain_analysis import (
     _detect_state_var_stkoff,
     analyze_condition_chain_dispatcher,
 )
-from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
+from d810.analyses.control_flow.condition_chain_model import (
+    resolve_target_via_condition_chain,
+)
 from d810.backends.hexrays.evidence.microcode_dump import (
     _build_block_payload_by_serial,
     _build_live_linearized_state_dag,
@@ -156,7 +159,9 @@ def structure_recovered_program_live(
                 state_var_stkoff=int(state_var_stkoff),
             )
         except Exception as exc:  # noqa: BLE001 — diagnostics; fall back to stash
-            logger.info("structurer: enriched DAG rebuild failed (%s); using stash", exc)
+            logger.info(
+                "structurer: enriched DAG rebuild failed (%s); using stash", exc
+            )
     if state_dag is None:
         state_dag = get_recovered_state_dag()
 
@@ -280,7 +285,9 @@ def structure_recovered_program_live(
                             for pt in {int(iv.low), int(iv.high)}:
                                 samples += 1
                                 dag_tgt = int(probe_dag.route(pt))
-                                legacy = resolve_target_via_condition_chain(range_evidence, pt)
+                                legacy = resolve_target_via_condition_chain(
+                                    range_evidence, pt
+                                )
                                 legacy_i = int(legacy) if legacy is not None else None
                                 if legacy_i != dag_tgt:
                                     diverged.append((pt, dag_tgt, legacy_i))
@@ -366,9 +373,7 @@ def structure_recovered_program_live(
         }
         _entry = int(flow_graph.entry_serial)
         _dom = compute_dom_tree(_succ, _entry)
-        _back = [
-            (u, v) for u, vs in _succ.items() for v in vs if _dom.dominates(v, u)
-        ]
+        _back = [(u, v) for u, vs in _succ.items() for v in vs if _dom.dominates(v, u)]
         _self = [(u, v) for (u, v) in _back if u == v]
         logger.info(
             "structurer: %d back-edge(s) (%d self-loops); sample=%s",

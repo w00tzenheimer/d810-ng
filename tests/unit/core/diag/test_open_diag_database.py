@@ -5,6 +5,7 @@ must NOT mutate them. ``open_diag_database`` binds the peewee Models to a fresh
 connection WITHOUT running DDL/migration, so ``Model.select()`` works while the
 inspected DB stays byte-unchanged. Non-current schemas are rejected.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -73,15 +74,15 @@ def test_orm_reads_work_on_adopted_connection(tmp_path) -> None:
 def test_open_is_non_mutating(tmp_path) -> None:
     p = str(tmp_path / "y.diag.sqlite3")
     _seed(p)
-    before = sqlite3.connect(p).execute(
-        "SELECT COUNT(*) FROM sqlite_master"
-    ).fetchone()[0]
+    before = (
+        sqlite3.connect(p).execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+    )
     db = open_diag_database(p)
     try:
         Snapshot.select().count()  # a read must not alter schema
     finally:
         db.close()
-    after = sqlite3.connect(p).execute(
-        "SELECT COUNT(*) FROM sqlite_master"
-    ).fetchone()[0]
+    after = (
+        sqlite3.connect(p).execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]
+    )
     assert before == after  # no DDL/migration ran

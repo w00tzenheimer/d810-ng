@@ -52,9 +52,7 @@ class SemanticFragmentRootInventoryGroup:
     items: tuple[SemanticFragmentRootInventoryItem, ...]
 
     def __post_init__(self) -> None:
-        expected_group_id = semantic_fragment_root_group_id(
-            self.predecessor_block_id
-        )
+        expected_group_id = semantic_fragment_root_group_id(self.predecessor_block_id)
         if self.group_id != expected_group_id:
             raise ValueError("root inventory group identity drifted")
         if not self.items or any(

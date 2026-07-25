@@ -17,7 +17,9 @@ def test_static_gate_runs_all_four_checks(monkeypatch):
 
     def fake_run(cmd, **kw):
         calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="13 kept, 0 broken", stderr="")
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="13 kept, 0 broken", stderr=""
+        )
 
     monkeypatch.setattr(tg.subprocess, "run", fake_run)
     result = tg.run_gate("static", worktree="wt")
@@ -41,7 +43,9 @@ def test_static_gate_fails_when_lint_breaks(monkeypatch):
 def test_static_gate_fails_on_nonzero_exit(monkeypatch):
     def fake_run(cmd, **kw):
         is_sg = "sg" in cmd
-        return subprocess.CompletedProcess(cmd, 1 if is_sg else 0, stdout="x", stderr="")
+        return subprocess.CompletedProcess(
+            cmd, 1 if is_sg else 0, stdout="x", stderr=""
+        )
 
     monkeypatch.setattr(tg.subprocess, "run", fake_run)
     result = tg.run_gate("static", worktree="wt")
@@ -54,7 +58,9 @@ def test_golden_gate_passes_on_e2e_success(monkeypatch):
         return subprocess.CompletedProcess(cmd, 0, stdout="1 passed", stderr="")
 
     monkeypatch.setattr(tg.subprocess, "run", fake_run)
-    result = tg.run_gate("golden", worktree="wt", e2e_selection=["tests/system/e2e/x.py"])
+    result = tg.run_gate(
+        "golden", worktree="wt", e2e_selection=["tests/system/e2e/x.py"]
+    )
     assert result.passed is True
 
 

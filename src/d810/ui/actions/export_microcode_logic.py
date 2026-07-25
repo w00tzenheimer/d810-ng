@@ -5,6 +5,7 @@ maturity levels, separated from IDA dependencies to enable unit testing.
 
 All functions in this module can be imported and tested without IDA Pro.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ class MicrocodeExportSettings:
         pre_deobfuscation: If True, export pre-deobfuscation snapshot (hooks suppressed)
         output_path: Path to output JSON file
     """
+
     maturity: str = "MMAT_LVARS"
     pre_deobfuscation: bool = True
     output_path: str = ""
@@ -67,7 +69,10 @@ def validate_export_settings(settings: MicrocodeExportSettings) -> tuple[bool, s
     # Check maturity is valid
     valid_maturities = [name for name, _ in MATURITY_CHOICES]
     if settings.maturity not in valid_maturities:
-        return False, f"Unknown maturity level: {settings.maturity}. Valid options: {valid_maturities}"
+        return (
+            False,
+            f"Unknown maturity level: {settings.maturity}. Valid options: {valid_maturities}",
+        )
 
     # Check output path is set
     if not settings.output_path:
@@ -139,6 +144,7 @@ def suggest_microcode_filename(func_name: str, maturity: str, pre: bool) -> str:
     """
     # Sanitize function name (remove invalid filename characters)
     import re
+
     sanitized = re.sub(r'[<>:"/\\|?*]', "_", func_name)
     sanitized = sanitized.replace(" ", "_")
 

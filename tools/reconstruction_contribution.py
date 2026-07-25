@@ -224,9 +224,7 @@ def run_scenario(
     if proc.returncode != 0:
         print(proc.stdout[-2000:])
         print(proc.stderr[-2000:], file=sys.stderr)
-        raise RuntimeError(
-            f"scenario {name!r} failed with exit code {proc.returncode}"
-        )
+        raise RuntimeError(f"scenario {name!r} failed with exit code {proc.returncode}")
 
     dump_path = DUMP_DIR / dump_label
     if not dump_path.exists():
@@ -235,25 +233,35 @@ def run_scenario(
         if m:
             dump_path = pathlib.Path(m.group(1))
     if not dump_path.exists():
-        raise RuntimeError(
-            f"scenario {name!r}: dump file not found at {dump_path}"
-        )
+        raise RuntimeError(f"scenario {name!r}: dump file not found at {dump_path}")
 
     text = dump_path.read_text()
     # Locate the STATS block for the requested function
     func_marker = f"=== STATS: {function} ==="
     pos = text.find(func_marker)
     if pos < 0:
-        raise RuntimeError(
-            f"scenario {name!r}: missing '{func_marker}' in dump"
-        )
+        raise RuntimeError(f"scenario {name!r}: missing '{func_marker}' in dump")
     m = STATS_RE.search(text, pos)
     if m is None:
         raise RuntimeError(
             f"scenario {name!r}: could not parse STATS block for {function}"
         )
-    before = (int(m["bl"]), int(m["br"]), int(m["bw"]), int(m["bg"]), int(m["bc"]), int(m["bi"]))
-    after = (int(m["al"]), int(m["ar"]), int(m["aw"]), int(m["ag"]), int(m["ac"]), int(m["ai"]))
+    before = (
+        int(m["bl"]),
+        int(m["br"]),
+        int(m["bw"]),
+        int(m["bg"]),
+        int(m["bc"]),
+        int(m["bi"]),
+    )
+    after = (
+        int(m["al"]),
+        int(m["ar"]),
+        int(m["aw"]),
+        int(m["ag"]),
+        int(m["ac"]),
+        int(m["ai"]),
+    )
 
     probe_matches = len(re.findall(r"ROUND CTX DAG EQUIV: match=yes", text))
     probe_mismatches = len(re.findall(r"ROUND CTX DAG EQUIV: match=no", text))
@@ -321,8 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--scenario",
         default="baseline,no_frontier,no_force_edge,no_narrow_branch_local",
         help=(
-            "Comma-separated scenario names. Available: "
-            f"{', '.join(SCENARIOS.keys())}"
+            f"Comma-separated scenario names. Available: {', '.join(SCENARIOS.keys())}"
         ),
     )
     parser.add_argument(

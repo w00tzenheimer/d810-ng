@@ -1,4 +1,5 @@
 """Return-frontier site derivation from reconstruction evidence."""
+
 from __future__ import annotations
 
 import hashlib
@@ -51,7 +52,7 @@ def transition_report_return_sites(
     *,
     site_id_prefix: str = "return",
 ) -> tuple[ReturnSite, ...]:
-    "Build one ReturnSite per EXIT handler in a transition report.\n\n    The derivation is intentionally strict: a row must be classified EXIT and\n    its path must confirm exit-block reachability.  Sites are keyed by handler\n    origin and state identity, not by the shared physical return block.\n\n    ``site_id_prefix`` names the consuming strategy family.  The generic preanalysis\n    helper defaults to a neutral prefix; family adapters can pass a stable\n    family-specific prefix when compatibility matters.\n    "
+    "Build one ReturnSite per EXIT handler in a transition report.\n\n    The derivation is intentionally strict: a row must be classified EXIT and\n    its path must confirm exit-block reachability.  Sites are keyed by handler\n    origin and state identity, not by the shared physical return block.\n\n    ``site_id_prefix`` names the consuming strategy family.  The generic preanalysis\n    helper defaults to a neutral prefix; family adapters can pass a stable\n    family-specific prefix when compatibility matters.\n"
     prefix = _normalise_site_id_prefix(site_id_prefix)
     sites: list[ReturnSite] = []
     seen_ids: set[str] = set()
@@ -125,7 +126,9 @@ def legacy_handler_path_return_sites(
                 ReturnSite(
                     site_id=f"{prefix}_ret_{entry_serial}_{exit_block}",
                     origin_block=exit_block,
-                    guard_hash=compute_legacy_return_site_guard_hash(entry_serial, path),
+                    guard_hash=compute_legacy_return_site_guard_hash(
+                        entry_serial, path
+                    ),
                     expected_terminal_kind="return",
                     provenance=f"handler_{entry_serial}_path_{index}",
                 )

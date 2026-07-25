@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Detect circular imports in d810 using the existing DependencyGraph infrastructure."""
+
 import sys
 import pathlib
 
@@ -33,4 +34,6 @@ if cycles:
         print(f"  CYCLE: {', '.join(sorted(c))}")
     sys.exit(1)
 
-print(f"OK: no import cycles detected ({len(dg.get_all_tracked_modules())} modules scanned).")
+print(
+    f"OK: no import cycles detected ({len(dg.get_all_tracked_modules())} modules scanned)."
+)

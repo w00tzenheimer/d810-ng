@@ -31,6 +31,7 @@ STANDING RULE: every serialized block/serial carries its EA.
 the serials, populated from the :class:`Block` route results (which already carry
 their EA) and from the per-site ``from_ea`` the caller threads in.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -186,9 +187,7 @@ def explore(
             rr = model.route(const)
             _lift(ws, guard, rr, resolved, unresolved, debug)
 
-    return StateTransitionView(
-        resolved=tuple(resolved), unresolved=tuple(unresolved)
-    )
+    return StateTransitionView(resolved=tuple(resolved), unresolved=tuple(unresolved))
 
 
 def _lift(

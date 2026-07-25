@@ -159,9 +159,7 @@ def _temporary_hexrays_config(
             )
 
 
-def _get_qt_parent_for_dialog(
-    ctx: typing.Any, idaapi_shim: typing.Any
-) -> typing.Any:
+def _get_qt_parent_for_dialog(ctx: typing.Any, idaapi_shim: typing.Any) -> typing.Any:
     """Get a Qt parent widget from the action context so dialogs display properly in IDA."""
     import sys
 
@@ -818,6 +816,7 @@ class ExportFunctionToC(D810ActionHandler):
         # Import sample-compatible formatter from logic layer
         try:
             from d810.ui.actions.export_to_c_logic import format_sample_compatible_c
+
             imported_names = set(get_imported_function_names(pseudocode_lines))
 
             # Collect global declarations if requested

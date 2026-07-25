@@ -403,9 +403,7 @@ class CacheImpl(Cache[K, V]):
             return value
 
     @staticmethod
-    def _weak_die(
-        dead_ref: weakref.ref, link: Link, key_ref: weakref.ref
-    ) -> None:  # noqa
+    def _weak_die(dead_ref: weakref.ref, link: Link, key_ref: weakref.ref) -> None:  # noqa
         dead = dead_ref()
         if dead is not None:
             dead.append(link)
@@ -477,7 +475,9 @@ class CacheImpl(Cache[K, V]):
             def make_ref(o, b):
                 if not b:
                     return o
-                return weakref.ref(o, functools.partial(CacheImpl._weak_die, self._weak_dead_ref, link))  # type: ignore  # noqa
+                return weakref.ref(
+                    o, functools.partial(CacheImpl._weak_die, self._weak_dead_ref, link)
+                )  # type: ignore  # noqa
 
             link.key = make_ref(key, self._weak_keys)
             link.value = make_ref(value, self._weak_values)

@@ -6,6 +6,7 @@ module answers the next question without mutating CFGs: given existing
 ``TerminalByteEmitterFact`` payloads and a target microcode snapshot,
 can the current D810 graph be rewired into that cascade shape?
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -215,7 +216,9 @@ def _site_is_memory_store(site: TerminalByteEmitSite) -> bool:
 
 
 def _site_is_terminal_source_candidate(site: TerminalByteEmitSite) -> bool:
-    return site.is_terminal_tail and not site.is_guard_only and _site_is_memory_store(site)
+    return (
+        site.is_terminal_tail and not site.is_guard_only and _site_is_memory_store(site)
+    )
 
 
 def _site_is_next_target_candidate(site: TerminalByteEmitSite) -> bool:
@@ -344,7 +347,11 @@ def _entry_predecessor_score(
     if not candidate.has_explicit_store:
         score += 5
     # Prefer the closest predecessor when scores tie.
-    return (score, -abs(int(candidate.serial) - int(first_byte_block)), -int(candidate.serial))
+    return (
+        score,
+        -abs(int(candidate.serial) - int(first_byte_block)),
+        -int(candidate.serial),
+    )
 
 
 def select_effective_terminal_tail_entry_block(
@@ -402,7 +409,12 @@ def select_effective_terminal_tail_entry_block(
         reverse=True,
     )
     best = candidates[0]
-    if _entry_predecessor_score(candidate=best, first_byte_block=int(first_block.serial))[0] <= 0:
+    if (
+        _entry_predecessor_score(
+            candidate=best, first_byte_block=int(first_block.serial)
+        )[0]
+        <= 0
+    ):
         return int(first_block.serial)
     return int(best.serial)
 
@@ -413,7 +425,8 @@ def _largest_cyclic_scc_size(block_succs: Mapping[int, tuple[int, ...]]) -> int:
 
 
 def _scc_size_for_block(
-    block_succs: Mapping[int, tuple[int, ...]], block_serial: int | None,
+    block_succs: Mapping[int, tuple[int, ...]],
+    block_serial: int | None,
 ) -> int | None:
     if block_serial is None:
         return None
@@ -736,7 +749,9 @@ class TerminalTailCascadeEgressPlanner:
                 and source_scc_after is not None
                 and source_scc_after < source_scc_before
             )
-        confidence = min(1.0, max(0.0, site.confidence + (0.12 if removes_from_scc else 0.0)))
+        confidence = min(
+            1.0, max(0.0, site.confidence + (0.12 if removes_from_scc else 0.0))
+        )
         return (
             TerminalTailCascadeEgressRow(
                 byte_index=byte_index,
@@ -800,7 +815,9 @@ def format_cascade_egress_plan(plan: TerminalTailCascadeEgressPlan) -> str:
             if row.state_variable is not None and row.state_required_value is not None
             else "none"
         )
-        state_write = row.state_write_block if row.state_write_block is not None else "?"
+        state_write = (
+            row.state_write_block if row.state_write_block is not None else "?"
+        )
         lines.append(
             f"| {row.byte_index} | {source} | {current} | {intended} | "
             f"{early} | {state_req} | {state_write} | "

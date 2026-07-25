@@ -94,22 +94,28 @@ def test_resolve_conditional_chain_target_follows_jump_and_fallthrough():
         assert (check_opcode, check_const, check_size) == (0x99, 1, 4)
         return state_value == 1
 
-    assert resolve_conditional_chain_target(
-        5,
-        1,
-        fg,
-        conditional_opcodes=(0x99,),
-        normalize_reversed_jump_opcode=lambda opcode: opcode,
-        is_jump_taken_for_state=is_jump_taken,
-    ) == 20
-    assert resolve_conditional_chain_target(
-        5,
-        2,
-        fg,
-        conditional_opcodes=(0x99,),
-        normalize_reversed_jump_opcode=lambda opcode: opcode,
-        is_jump_taken_for_state=is_jump_taken,
-    ) == 21
+    assert (
+        resolve_conditional_chain_target(
+            5,
+            1,
+            fg,
+            conditional_opcodes=(0x99,),
+            normalize_reversed_jump_opcode=lambda opcode: opcode,
+            is_jump_taken_for_state=is_jump_taken,
+        )
+        == 20
+    )
+    assert (
+        resolve_conditional_chain_target(
+            5,
+            2,
+            fg,
+            conditional_opcodes=(0x99,),
+            normalize_reversed_jump_opcode=lambda opcode: opcode,
+            is_jump_taken_for_state=is_jump_taken,
+        )
+        == 21
+    )
 
 
 def test_get_successor_into_dispatcher_prefers_dispatcher_successor():

@@ -7,6 +7,7 @@ canonical-Instruction readers shared with ``selector_shell`` and live in
 ``operand_slots`` walk, no ``getattr`` on a snapshot, and no raw ``insn.l`` /
 ``insn.r`` / ``insn.d`` slot read remains in this module.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence

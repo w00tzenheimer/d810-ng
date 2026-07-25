@@ -48,8 +48,7 @@ class BackendContractOracle(Protocol):
         phase: str,
         focus_serials: Iterable[int] | None,
         include_insn_checks: bool = False,
-    ) -> Iterable[InvariantViolation]:
-        ...
+    ) -> Iterable[InvariantViolation]: ...
 
 
 def _summarize_violations(
@@ -160,10 +159,14 @@ class CfgContract:
         serials: set[int] = set()
         for step in getattr(plan, "steps", ()):
             self._collect_serials_from_object(serials, step)
-            self._collect_serials_from_object(serials, getattr(step, "modification", None))
+            self._collect_serials_from_object(
+                serials, getattr(step, "modification", None)
+            )
         for block_spec in getattr(plan, "new_blocks", ()):
             self._collect_serials_from_object(serials, block_spec)
-        self._collect_serials_from_object(serials, getattr(plan, "relocation_map", None))
+        self._collect_serials_from_object(
+            serials, getattr(plan, "relocation_map", None)
+        )
         for op in getattr(plan, "ops", ()):
             self._collect_serials_from_object(serials, op)
         return sorted(serials)
@@ -230,7 +233,9 @@ class CfgContract:
         include_insn_checks: bool = False,
     ) -> list[InvariantViolation]:
         if isinstance(graph, FlowGraph):
-            return self._check_projected(graph, phase=phase, focus_serials=focus_serials)
+            return self._check_projected(
+                graph, phase=phase, focus_serials=focus_serials
+            )
         if self._oracle is None:
             return []
         return list(
@@ -251,7 +256,9 @@ class CfgContract:
     ) -> list[InvariantViolation]:
         violations: list[InvariantViolation] = []
         violations.extend(
-            block_list_consistency(projected_cfg, phase=phase, focus_serials=focus_serials)
+            block_list_consistency(
+                projected_cfg, phase=phase, focus_serials=focus_serials
+            )
         )
         violations.extend(
             pred_succ_symmetry(projected_cfg, phase=phase, focus_serials=focus_serials)

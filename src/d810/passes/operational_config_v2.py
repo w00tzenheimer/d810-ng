@@ -1,4 +1,5 @@
 """Named operational registry composition for config-v2 pass execution."""
+
 from __future__ import annotations
 
 from d810.passes.cleanup_family_adapter import register_cleanup_family_adapter_passes
@@ -26,9 +27,7 @@ def operational_config_v2_pass_registry() -> PassRegistry:
 
 def default_pass_registries() -> dict[str, PassRegistry]:
     """Return default named pass registries for ModulePassManager."""
-    return {
-        CONFIG_V2_OPERATIONAL_REGISTRY_NAME: operational_config_v2_pass_registry()
-    }
+    return {CONFIG_V2_OPERATIONAL_REGISTRY_NAME: operational_config_v2_pass_registry()}
 
 
 __all__ = [

@@ -5,6 +5,7 @@ state-constant evidence they consume is common to condition chains, switches, an
 flatteners: a snapshot contributes known state constants, and dispatcher models
 may contribute exact handler states or interval bounds.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Iterable
@@ -31,10 +32,7 @@ def collect_state_constants(
         bounds because existing cleanup heuristics use those as conservative
         known-state sentinels.
     """
-    constants: set[int] = {
-        int(value)
-        for value in (state_constants or ())
-    }
+    constants: set[int] = {int(value) for value in (state_constants or ())}
 
     if range_evidence is not None:
         handler_state_map = getattr(range_evidence, "handler_state_map", {}) or {}

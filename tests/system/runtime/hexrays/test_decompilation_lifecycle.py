@@ -242,10 +242,7 @@ def test_live_mba_gateway_is_bound_once_per_flow_context() -> None:
     create_branch = context.split("        else:\n", maxsplit=1)[0]
     assert "self._bind_resolver_session_state(self._flow_context, mba)" in create_branch
     assert "self._bind_mutation_gateway_port(self._flow_context, mba)" in create_branch
-    assert (
-        "self._bind_semantic_native_body_materializer_port("
-        in create_branch
-    )
+    assert "self._bind_semantic_native_body_materializer_port(" in create_branch
 
 
 def test_pre_context_whole_mba_extension_gets_gateway_from_coordinator() -> None:

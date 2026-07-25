@@ -26,16 +26,11 @@ from d810.evaluator.hexrays_microcode.forward_dataflow import (
 from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
     recognize_derived_xor_dispatcher_models,
 )
-from d810.hexrays.ir.mop_utils import (
-    _VALID_MOP_SIZES)
-from d810.hexrays.ir.mop_utils import (
-    extract_base_and_offset)
-from d810.hexrays.ir.mop_utils import (
-    get_stack_var_name)
-from d810.hexrays.ir.mop_utils import (
-    safe_make_number)
-from d810.hexrays.mutation.cfg_verify import (
-    safe_verify)
+from d810.hexrays.ir.mop_utils import _VALID_MOP_SIZES
+from d810.hexrays.ir.mop_utils import extract_base_and_offset
+from d810.hexrays.ir.mop_utils import get_stack_var_name
+from d810.hexrays.ir.mop_utils import safe_make_number
+from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.hexrays.utils.hexrays_helpers import AND_TABLE
 from d810.optimizers.microcode.flow.handler import (
@@ -247,9 +242,8 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             return 0
 
         func_ea = self._mba_function_ea(mba)
-        if (
-            self._derived_xor_owned_mbas.get(mba)
-            or (func_ea is not None and func_ea in self._derived_xor_owned_functions)
+        if self._derived_xor_owned_mbas.get(mba) or (
+            func_ea is not None and func_ea in self._derived_xor_owned_functions
         ):
             logger.info(
                 "Skipping %s for previously recognized derived-XOR dispatcher-owned function",

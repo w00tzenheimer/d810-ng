@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Compatibility deprecation stub for indirect dispatcher transfer maps."""
+
 from __future__ import annotations
 
 import os

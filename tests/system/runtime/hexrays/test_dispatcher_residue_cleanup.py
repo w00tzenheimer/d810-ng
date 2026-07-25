@@ -221,7 +221,9 @@ def test_dispatcher_residue_cleanup_queues_deferred_edge_and_branch_edits() -> N
     }
 
 
-def test_unreachable_region_cleanup_queues_deferred_nops_conversions_and_redirects() -> None:
+def test_unreachable_region_cleanup_queues_deferred_nops_conversions_and_redirects() -> (
+    None
+):
     mba = _Mba(
         (
             _Block(5, succs=(8, 9), preds=(), insn_eas=(0x1000, 0x1004, 0x1008)),
@@ -272,7 +274,9 @@ def test_unreachable_region_cleanup_queues_deferred_nops_conversions_and_redirec
     assert mba.blocks[6].succs == [99]
 
 
-def test_unreachable_region_cleanup_rejects_unsupported_multi_successor_blocks() -> None:
+def test_unreachable_region_cleanup_rejects_unsupported_multi_successor_blocks() -> (
+    None
+):
     mba = _Mba(
         (
             _Block(5, succs=(8, 9, 10), preds=(), insn_eas=(0x1000, 0x1004)),
@@ -284,9 +288,7 @@ def test_unreachable_region_cleanup_rejects_unsupported_multi_successor_blocks()
     plan = UnreachableRegionCleanupPlan(
         stop_serial=99,
         cleanup_candidates=frozenset((5,)),
-        blocks=(
-            UnreachableRegionBlockPlan(block_serial=5, successors=(8, 9, 10)),
-        ),
+        blocks=(UnreachableRegionBlockPlan(block_serial=5, successors=(8, 9, 10)),),
         forward_redirects=(),
     )
 
@@ -305,7 +307,9 @@ def test_unreachable_region_cleanup_rejects_unsupported_multi_successor_blocks()
     assert mba.blocks[5].succs == [8, 9, 10]
 
 
-def test_unreachable_region_cleanup_rejects_redirect_source_outside_cleanup_set() -> None:
+def test_unreachable_region_cleanup_rejects_redirect_source_outside_cleanup_set() -> (
+    None
+):
     mba = _Mba(
         (
             _Block(5, succs=(8, 9), preds=(6,), insn_eas=(0x1000, 0x1004)),
@@ -318,9 +322,7 @@ def test_unreachable_region_cleanup_rejects_redirect_source_outside_cleanup_set(
     plan = UnreachableRegionCleanupPlan(
         stop_serial=99,
         cleanup_candidates=frozenset((5,)),
-        blocks=(
-            UnreachableRegionBlockPlan(block_serial=5, successors=(8, 9)),
-        ),
+        blocks=(UnreachableRegionBlockPlan(block_serial=5, successors=(8, 9)),),
         forward_redirects=(
             UnreachableRegionForwardRedirect(
                 block_serial=6,

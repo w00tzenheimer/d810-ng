@@ -25,6 +25,7 @@ path).
 Portable: no IDA imports.  Opt-in only: the ``RecoverDispatcher`` pass selects this
 when ``project_config["recovery_engine"] == "reduced_product"``.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -189,9 +190,7 @@ def _cap_concolic_resolver(
 
 def _top_cells(machine: RecoveredMachine) -> tuple[MachineTransition, ...]:
     """The ⊤/unresolved forking transitions (empty ``next_states``)."""
-    return tuple(
-        t for t in getattr(machine, "transitions", ()) if not t.next_states
-    )
+    return tuple(t for t in getattr(machine, "transitions", ()) if not t.next_states)
 
 
 def _replace_transition(
@@ -288,7 +287,9 @@ def compose_reduced_product(
         # The sound spine abstained entirely. The reduced product cannot form, but a
         # FULL concolic machine (EXACT_BOUNDED, the proven old-engine recovery behind
         # the contract) still beats no recovery, so let it compete (design §6 step 6).
-        return rank_machines([concolic_machine]) if concolic_machine is not None else None
+        return (
+            rank_machines([concolic_machine]) if concolic_machine is not None else None
+        )
 
     gate = CompletenessGate(mode=gate_mode)
     refined = spine.machine

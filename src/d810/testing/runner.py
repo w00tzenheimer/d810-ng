@@ -21,6 +21,7 @@ import idc
 
 try:
     import pytest
+
     _HAS_PYTEST = True
 except ImportError:
     _HAS_PYTEST = False
@@ -175,9 +176,7 @@ def run_deobfuscation_test(
             # Load the project by name using deterministic test resolution.
             # Bundled configs route to their config-v2 runtime inside
             # ``state.load_project`` (see ``select_config_v2_default_project``).
-            project_index = _resolve_test_project_index(
-                state, effective_case.project
-            )
+            project_index = _resolve_test_project_index(state, effective_case.project)
             state.load_project(project_index)
 
         # ==========================================
@@ -305,7 +304,11 @@ def run_deobfuscation_test(
             for metric, expected_val in effective_case.expected_ast_stats.items():
                 actual_val = actual_ast.get(metric, 0)
                 if actual_val != expected_val:
-                    diffs[metric] = (expected_val, actual_val, actual_val - expected_val)
+                    diffs[metric] = (
+                        expected_val,
+                        actual_val,
+                        actual_val - expected_val,
+                    )
             if diffs:
                 diff_lines = [
                     f"  {m}: expected={e} actual={a} delta={d:+d}"

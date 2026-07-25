@@ -1,4 +1,5 @@
 """Native pass-contract vocabulary registry tests."""
+
 from __future__ import annotations
 
 from d810.passes.contract_vocabulary import (

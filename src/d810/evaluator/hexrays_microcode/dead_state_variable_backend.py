@@ -1,4 +1,5 @@
 """Hex-Rays dead state-variable cleanup evidence collection."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -117,7 +118,9 @@ class HexRaysDeadStateVariableEvidenceBackend:
         condition_chain_blocks: set[int] | frozenset[int] = frozenset(),
     ) -> DeadStateVariableCleanupEvidence:
         state_constants = frozenset(int(value) for value in known_state_constants)
-        condition_chain_blocks = frozenset(int(block) for block in condition_chain_blocks)
+        condition_chain_blocks = frozenset(
+            int(block) for block in condition_chain_blocks
+        )
         vr_fixpoint = _run_valrange_fixpoint(mba)
 
         use_sites: list[UseSite] = find_all_uses_of_stkvar(
@@ -286,10 +289,7 @@ def _is_gutted_block(mba: object, serial: int) -> bool:
     if insn is None:
         return True
     while insn is not None:
-        if (
-            insn.opcode != ida_hexrays.m_nop
-            and insn.opcode != ida_hexrays.m_goto
-        ):
+        if insn.opcode != ida_hexrays.m_nop and insn.opcode != ida_hexrays.m_goto:
             return False
         insn = insn.next
     return True
@@ -395,11 +395,13 @@ def _is_dynamic_state_var_write(
     return False
 
 
-_COPY_OPCODES: frozenset[int] = frozenset({
-    ida_hexrays.m_mov,
-    ida_hexrays.m_xdu,
-    ida_hexrays.m_xds,
-})
+_COPY_OPCODES: frozenset[int] = frozenset(
+    {
+        ida_hexrays.m_mov,
+        ida_hexrays.m_xdu,
+        ida_hexrays.m_xds,
+    }
+)
 
 _OPCODE_NAMES: dict[int, str] = {
     ida_hexrays.m_mov: "m_mov",
@@ -451,10 +453,7 @@ def _chase_indirect_stkvar_def(
                     and d.s.off == source_stkoff
                 ):
                     l = prev.l
-                    if (
-                        l is not None
-                        and l.t == ida_hexrays.mop_n
-                    ):
+                    if l is not None and l.t == ida_hexrays.mop_n:
                         try:
                             val = l.nnn.value
                         except (AttributeError, TypeError):
@@ -497,7 +496,8 @@ def _dest_is_non_state_stkvar(
                 and d.s.off != state_var_stkoff
             ):
                 opname = _OPCODE_NAMES.get(
-                    cur_ins.opcode, "opcode_%d" % cur_ins.opcode,
+                    cur_ins.opcode,
+                    "opcode_%d" % cur_ins.opcode,
                 )
                 skip_tuple = (opname, d.s.off)
 
@@ -529,7 +529,8 @@ def _dest_is_non_state_stkvar(
 
                 logger.info(
                     "DSVE reaching-def check for blk[%d]: %d defs found",
-                    use.block_serial, len(defs),
+                    use.block_serial,
+                    len(defs),
                 )
 
                 non_const_count = 0
@@ -585,8 +586,7 @@ def _dest_is_non_state_stkvar(
                                         )
                                         if (
                                             vr_val is not None
-                                            and (vr_val & 0xFFFFFFFF)
-                                            in state_constants
+                                            and (vr_val & 0xFFFFFFFF) in state_constants
                                         ):
                                             is_state_const = True
                                             reclassify_method = "valrange_fixpoint"
@@ -632,15 +632,12 @@ def _dest_is_non_state_stkvar(
                         pass
 
                     logger.info(
-                        "  def in blk[%d] ea=0x%x: opcode=%d"
-                        " (is_state_const=%s%s)",
+                        "  def in blk[%d] ea=0x%x: opcode=%d (is_state_const=%s%s)",
                         def_site.block_serial,
                         def_site.ins_ea,
                         def_site.ins_opcode,
                         is_state_const,
-                        " via %s" % reclassify_method
-                        if reclassify_method
-                        else "",
+                        " via %s" % reclassify_method if reclassify_method else "",
                     )
                     if not is_state_const:
                         non_const_count += 1
@@ -649,7 +646,9 @@ def _dest_is_non_state_stkvar(
                     logger.info(
                         "DSVE: filtered %d/%d reaching defs from"
                         " gutted blocks for blk[%d]",
-                        gutted_count, len(defs), use.block_serial,
+                        gutted_count,
+                        len(defs),
+                        use.block_serial,
                     )
 
                 live_def_count = len(defs) - gutted_count
@@ -658,7 +657,9 @@ def _dest_is_non_state_stkvar(
                         "DSVE cleanup allowed for blk[%d]: all %d/%d live"
                         " reaching defs are state constants (%d gutted);"
                         " dest is non-state stkvar at off=0x%x",
-                        use.block_serial, live_def_count, len(defs),
+                        use.block_serial,
+                        live_def_count,
+                        len(defs),
                         gutted_count,
                         skip_tuple[1],
                     )
@@ -668,14 +669,17 @@ def _dest_is_non_state_stkvar(
                     logger.info(
                         "DSVE guard PRESERVED for blk[%d]: no live reaching"
                         " defs after filtering %d gutted defs",
-                        use.block_serial, gutted_count,
+                        use.block_serial,
+                        gutted_count,
                     )
                     return skip_tuple
 
                 logger.info(
                     "DSVE guard PRESERVED for blk[%d]: %d/%d defs"
                     " are non-constant (%d gutted)",
-                    use.block_serial, non_const_count, len(defs),
+                    use.block_serial,
+                    non_const_count,
+                    len(defs),
                     gutted_count,
                 )
                 return skip_tuple

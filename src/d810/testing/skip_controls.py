@@ -19,9 +19,7 @@ _DANGEROUS_SKIP_KEYWORDS = (
     "native bug",
 )
 _DANGEROUS_SKIP_PATTERNS = tuple(
-    re.compile(
-        r"\b" + r"\s+".join(re.escape(part) for part in keyword.split()) + r"\b"
-    )
+    re.compile(r"\b" + r"\s+".join(re.escape(part) for part in keyword.split()) + r"\b")
     for keyword in _DANGEROUS_SKIP_KEYWORDS
 )
 

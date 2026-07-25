@@ -1,4 +1,5 @@
 "Semantic DAG region detection helpers.\n\nThese helpers operate on the reconstructed semantic DAG, not on live Hex-Rays\nmicroblocks. They belong in ``preanalysis.flow`` because they identify analysis\nregions; strategy code can then decide whether and how to lower them.\n"
+
 from __future__ import annotations
 
 from collections import defaultdict

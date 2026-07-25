@@ -1,4 +1,5 @@
 """Tests for CfgTransactionEngine phase orchestration."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, call
@@ -74,25 +75,37 @@ class TestTransactionResultFactory:
 
 class TestCfgTransactionEngine:
     def test_apply_returns_ok_on_success(
-        self, translator: MagicMock, plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         translator.lower.return_value = 5
         engine = CfgTransactionEngine(translator)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway=MUTATION_GATEWAY
+        )
 
         assert result.success is True
         assert result.applied_count == 5
         translator.lower.assert_called_once()
 
     def test_apply_projected_contract_failure_rejects_before_mutation(
-        self, translator: MagicMock, contract: MagicMock,
-        plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        contract: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         contract.verify_projected.side_effect = _make_contract_error("projected")
         engine = CfgTransactionEngine(translator, contract=contract)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway=MUTATION_GATEWAY
+        )
 
         assert result.success is False
         assert result.failure_phase == "projected_contract"
@@ -101,14 +114,20 @@ class TestCfgTransactionEngine:
         translator.lower.assert_not_called()
 
     def test_apply_pre_check_failure_rejects_before_mutation(
-        self, translator: MagicMock, contract: MagicMock,
-        plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        contract: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         contract.verify_projected.return_value = ()
         contract.verify.side_effect = _make_contract_error("pre")
         engine = CfgTransactionEngine(translator, contract=contract)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway=MUTATION_GATEWAY
+        )
 
         assert result.success is False
         assert result.failure_phase == "live_pre_check"
@@ -117,15 +136,21 @@ class TestCfgTransactionEngine:
         translator.lower.assert_not_called()
 
     def test_apply_post_apply_contract_failure(
-        self, translator: MagicMock, contract: MagicMock,
-        plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        contract: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         contract.verify_projected.return_value = ()
         contract.verify.return_value = ()
         translator.lower.side_effect = _make_contract_error("post")
         engine = CfgTransactionEngine(translator, contract=contract)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway=MUTATION_GATEWAY
+        )
 
         assert result.success is False
         assert result.failure_phase == "post_apply_contract"
@@ -133,7 +158,11 @@ class TestCfgTransactionEngine:
         assert result.classification.rollback_needed is True
 
     def test_apply_lower_returns_zero_no_phase_attribute(
-        self, translator: MagicMock, plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         """When translator has no last_lowering_phase, default to backend_apply."""
         translator.lower.return_value = 0
@@ -141,7 +170,9 @@ class TestCfgTransactionEngine:
         del translator.last_lowering_phase
         engine = CfgTransactionEngine(translator)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway=MUTATION_GATEWAY
+        )
 
         assert result.success is False
         assert result.failure_phase == "backend_apply"
@@ -149,14 +180,20 @@ class TestCfgTransactionEngine:
         assert result.classification.rollback_needed is True
 
     def test_apply_lower_returns_zero_premutation_rejection(
-        self, translator: MagicMock, plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         """Pre-mutation lowering rejection: phase='lowering', no rollback needed."""
         translator.lower.return_value = 0
         translator.last_lowering_phase = "lowering"
         engine = CfgTransactionEngine(translator)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway=MUTATION_GATEWAY
+        )
 
         assert result.success is False
         assert result.failure_phase == "lowering"
@@ -164,14 +201,20 @@ class TestCfgTransactionEngine:
         assert result.classification.rollback_needed is False
 
     def test_apply_lower_returns_zero_native_verify_failure(
-        self, translator: MagicMock, plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         """Post-mutation verify failure: phase='native_verify', rollback needed."""
         translator.lower.return_value = 0
         translator.last_lowering_phase = "native_verify"
         engine = CfgTransactionEngine(translator)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway=MUTATION_GATEWAY
+        )
 
         assert result.success is False
         assert result.failure_phase == "native_verify"
@@ -179,14 +222,20 @@ class TestCfgTransactionEngine:
         assert result.classification.rollback_needed is True
 
     def test_apply_lower_raises_exception_uses_translator_phase_detail(
-        self, translator: MagicMock, plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         translator.lower.side_effect = RuntimeError("boom")
         translator.last_lowering_phase = "backend_apply"
         translator.last_lowering_subphase = "optimize_local"
         engine = CfgTransactionEngine(translator)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway=MUTATION_GATEWAY
+        )
 
         assert result.success is False
         assert result.failure_phase == "backend_apply"
@@ -195,24 +244,40 @@ class TestCfgTransactionEngine:
         assert result.classification.rollback_needed is True
 
     def test_apply_no_contract_skips_checks(
-        self, translator: MagicMock, plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         translator.lower.return_value = 3
         engine = CfgTransactionEngine(translator, contract=None)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway=MUTATION_GATEWAY
+        )
 
         assert result == TransactionResult.ok(3)
         translator.lower.assert_called_once()
 
     def test_apply_passes_post_apply_hook_to_lower(
-        self, translator: MagicMock, plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         hook = MagicMock()
         translator.lower.return_value = 2
         engine = CfgTransactionEngine(translator)
 
-        engine.apply(plan, pre_cfg=pre_cfg, mba=mba, post_apply_hook=hook, mutation_gateway = MUTATION_GATEWAY)
+        engine.apply(
+            plan,
+            pre_cfg=pre_cfg,
+            mba=mba,
+            post_apply_hook=hook,
+            mutation_gateway=MUTATION_GATEWAY,
+        )
 
         translator.lower.assert_called_once_with(
             plan,
@@ -222,8 +287,12 @@ class TestCfgTransactionEngine:
         )
 
     def test_apply_cumulative_pre_cfg_used_for_projected_check(
-        self, translator: MagicMock, contract: MagicMock,
-        plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        contract: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         """When cumulative_pre_cfg is provided, verify_projected receives it
         instead of pre_cfg."""
@@ -234,16 +303,24 @@ class TestCfgTransactionEngine:
         engine = CfgTransactionEngine(translator, contract=contract)
 
         result = engine.apply(
-            plan, pre_cfg=pre_cfg, mba=mba, cumulative_pre_cfg=cumulative,
-        mutation_gateway = MUTATION_GATEWAY)
+            plan,
+            pre_cfg=pre_cfg,
+            mba=mba,
+            cumulative_pre_cfg=cumulative,
+            mutation_gateway=MUTATION_GATEWAY,
+        )
 
         assert result.success is True
         # verify_projected should be called with cumulative CFG, not pre_cfg
         contract.verify_projected.assert_called_once_with(cumulative, plan)
 
     def test_apply_without_cumulative_uses_pre_cfg(
-        self, translator: MagicMock, contract: MagicMock,
-        plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        contract: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         """Without cumulative_pre_cfg, verify_projected uses pre_cfg (backward compat)."""
         contract.verify_projected.return_value = ()
@@ -251,14 +328,20 @@ class TestCfgTransactionEngine:
         translator.lower.return_value = 3
         engine = CfgTransactionEngine(translator, contract=contract)
 
-        result = engine.apply(plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway = MUTATION_GATEWAY)
+        result = engine.apply(
+            plan, pre_cfg=pre_cfg, mba=mba, mutation_gateway=MUTATION_GATEWAY
+        )
 
         assert result.success is True
         contract.verify_projected.assert_called_once_with(pre_cfg, plan)
 
     def test_apply_cumulative_projected_failure_rejects(
-        self, translator: MagicMock, contract: MagicMock,
-        plan: MagicMock, pre_cfg: MagicMock, mba: MagicMock,
+        self,
+        translator: MagicMock,
+        contract: MagicMock,
+        plan: MagicMock,
+        pre_cfg: MagicMock,
+        mba: MagicMock,
     ) -> None:
         """Projected contract failure with cumulative CFG still rejects."""
         cumulative = MagicMock(name="cumulative_cfg")
@@ -266,8 +349,12 @@ class TestCfgTransactionEngine:
         engine = CfgTransactionEngine(translator, contract=contract)
 
         result = engine.apply(
-            plan, pre_cfg=pre_cfg, mba=mba, cumulative_pre_cfg=cumulative,
-        mutation_gateway = MUTATION_GATEWAY)
+            plan,
+            pre_cfg=pre_cfg,
+            mba=mba,
+            cumulative_pre_cfg=cumulative,
+            mutation_gateway=MUTATION_GATEWAY,
+        )
 
         assert result.success is False
         assert result.failure_phase == "projected_contract"

@@ -37,6 +37,7 @@ that extension will populate.
 IDA-dependent (live ``mba`` + interpreter) -> Hex-Rays backend; the contract it
 emits (``RecoveredMachine``) is portable.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -419,7 +420,9 @@ class ConcolicEmulationEngine:
             # pass-through: skip its decoy arm and KEEP EXPANDING into the arm blocks that
             # write the live next states. The forward-fold transition recovery
             # (minimal_state_recovery) is dead-store-correct for the same reason.
-            if host._writes_stkoff(blk, int(disc.stkoff)) and not self._state_write_is_dead(
+            if host._writes_stkoff(
+                blk, int(disc.stkoff)
+            ) and not self._state_write_is_dead(
                 serial, int(disc.stkoff), int(disc.entry)
             ):
                 arms.extend(
@@ -482,7 +485,9 @@ class ConcolicEmulationEngine:
         for i in range(blk.nsucc()):
             succ = int(blk.succ(i))
             if succ == int(entry):
-                return False  # serial -> entry directly: the write is read at the compare
+                return (
+                    False  # serial -> entry directly: the write is read at the compare
+                )
             if self._write_reaches_use_unrewritten(succ, stkoff, int(entry), host):
                 return False
         return True
@@ -710,9 +715,7 @@ class ConcolicEmulationEngine:
         state_mop, var_size = self._representative_state_mop(int(stkoff))
         if state_mop is None:
             return None
-        initial = (
-            int(anchors.initial_states[0]) if anchors.initial_states else None
-        )
+        initial = int(anchors.initial_states[0]) if anchors.initial_states else None
         if initial is None:
             host = EmulationDispatcherResolver(mba=self.mba)
             initial = host._recover_initial_state(graph, entry, int(stkoff))

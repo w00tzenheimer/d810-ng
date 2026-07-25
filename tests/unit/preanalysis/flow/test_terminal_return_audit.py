@@ -1,11 +1,14 @@
 """Unit tests for terminal_return_audit -- pure analysis, no IDA dependency."""
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.analyses.control_flow.terminal_return_audit import (
     build_terminal_return_audit,
     from_dict,
-    to_dict, TerminalReturnSourceKind, TerminalReturnSiteAudit,
+    to_dict,
+    TerminalReturnSourceKind,
+    TerminalReturnSiteAudit,
     TerminalReturnAuditReport,
 )
 
@@ -192,28 +195,37 @@ class TestSummaryFormat:
             terminal_handlers=4,
             sites=(
                 TerminalReturnSiteAudit(
-                    handler_serial=1, exit_serial=2,
+                    handler_serial=1,
+                    exit_serial=2,
                     source_kind=TerminalReturnSourceKind.DIRECT_RETURN,
                     return_block_serial=2,
                 ),
                 TerminalReturnSiteAudit(
-                    handler_serial=3, exit_serial=4,
+                    handler_serial=3,
+                    exit_serial=4,
                     source_kind=TerminalReturnSourceKind.EPILOGUE_CORRIDOR,
-                    return_block_serial=5, exit_path_length=2,
+                    return_block_serial=5,
+                    exit_path_length=2,
                 ),
                 TerminalReturnSiteAudit(
-                    handler_serial=6, exit_serial=7,
+                    handler_serial=6,
+                    exit_serial=7,
                     source_kind=TerminalReturnSourceKind.SHARED_EPILOGUE,
-                    return_block_serial=8, exit_path_length=1,
+                    return_block_serial=8,
+                    exit_path_length=1,
                 ),
                 TerminalReturnSiteAudit(
-                    handler_serial=9, exit_serial=None,
+                    handler_serial=9,
+                    exit_serial=None,
                     source_kind=TerminalReturnSourceKind.UNREACHABLE,
                 ),
             ),
         )
         summary = report.summary()
-        assert summary == "4/10 terminal handlers: 1 direct, 1 corridor, 1 shared, 1 unreachable"
+        assert (
+            summary
+            == "4/10 terminal handlers: 1 direct, 1 corridor, 1 shared, 1 unreachable"
+        )
 
     def test_summary_zero_handlers(self) -> None:
         report = TerminalReturnAuditReport(
@@ -235,22 +247,31 @@ class TestRoundtripSerialization:
             terminal_handlers=3,
             sites=(
                 TerminalReturnSiteAudit(
-                    handler_serial=1, exit_serial=2,
+                    handler_serial=1,
+                    exit_serial=2,
                     source_kind=TerminalReturnSourceKind.DIRECT_RETURN,
-                    return_block_serial=2, exit_path_length=0,
-                    has_rax_write=True, notes="clean return",
+                    return_block_serial=2,
+                    exit_path_length=0,
+                    has_rax_write=True,
+                    notes="clean return",
                 ),
                 TerminalReturnSiteAudit(
-                    handler_serial=3, exit_serial=4,
+                    handler_serial=3,
+                    exit_serial=4,
                     source_kind=TerminalReturnSourceKind.EPILOGUE_CORRIDOR,
-                    return_block_serial=5, exit_path_length=3,
-                    has_rax_write=False, notes="",
+                    return_block_serial=5,
+                    exit_path_length=3,
+                    has_rax_write=False,
+                    notes="",
                 ),
                 TerminalReturnSiteAudit(
-                    handler_serial=6, exit_serial=None,
+                    handler_serial=6,
+                    exit_serial=None,
                     source_kind=TerminalReturnSourceKind.UNREACHABLE,
-                    return_block_serial=None, exit_path_length=0,
-                    has_rax_write=None, notes="no path to BLT_STOP from exit",
+                    return_block_serial=None,
+                    exit_path_length=0,
+                    has_rax_write=None,
+                    notes="no path to BLT_STOP from exit",
                 ),
             ),
         )
@@ -274,7 +295,10 @@ class TestRoundtripSerialization:
 
     def test_roundtrip_empty_sites(self) -> None:
         original = TerminalReturnAuditReport(
-            function_ea=0x100, total_handlers=0, terminal_handlers=0, sites=(),
+            function_ea=0x100,
+            total_handlers=0,
+            terminal_handlers=0,
+            sites=(),
         )
         assert from_dict(to_dict(original)) == original
 
@@ -485,9 +509,13 @@ class TestMultiExitTerminalHandler:
         assert 30 in sites_by_exit
         assert sites_by_exit[20].handler_serial == 10
         assert sites_by_exit[30].handler_serial == 10
-        assert sites_by_exit[20].source_kind == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
+        assert (
+            sites_by_exit[20].source_kind == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
+        )
         assert sites_by_exit[20].return_block_serial == 21
-        assert sites_by_exit[30].source_kind == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
+        assert (
+            sites_by_exit[30].source_kind == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
+        )
         assert sites_by_exit[30].return_block_serial == 31
 
     def test_multi_exit_mixed_reachability(self) -> None:
@@ -563,6 +591,9 @@ class TestMultipleTerminalHandlers:
 
         site_by_handler = {s.handler_serial: s for s in report.sites}
         assert site_by_handler[10].source_kind == TerminalReturnSourceKind.DIRECT_RETURN
-        assert site_by_handler[30].source_kind == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
+        assert (
+            site_by_handler[30].source_kind
+            == TerminalReturnSourceKind.EPILOGUE_CORRIDOR
+        )
         assert site_by_handler[30].exit_path_length == 2  # 40 -> 50 -> 60
         assert site_by_handler[70].source_kind == TerminalReturnSourceKind.UNREACHABLE

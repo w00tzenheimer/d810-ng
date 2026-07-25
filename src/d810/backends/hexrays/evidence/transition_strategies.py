@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING, Optional
 
-from d810.backends.hexrays.evidence.condition_chain_analysis import analyze_condition_chain_dispatcher
+from d810.backends.hexrays.evidence.condition_chain_analysis import (
+    analyze_condition_chain_dispatcher,
+)
 from d810.analyses.control_flow.transition_builder import (
     TransitionBuilderStrategy,
     TransitionResult,
@@ -69,7 +71,9 @@ class BFSWithMopTrackerStrategy:
         if sm is None or not sm.transitions:
             return None
 
-        resolved = sum(1 for transition in sm.transitions if transition.to_state is not None)
+        resolved = sum(
+            1 for transition in sm.transitions if transition.to_state is not None
+        )
         return TransitionResult(
             transitions=list(sm.transitions),
             handlers=dict(sm.handlers),

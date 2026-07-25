@@ -26,7 +26,9 @@ class _FakePath:
     state_writes: list = field(default_factory=list)
 
 
-def _make_path(handler_serial: int, chain: tuple[int, ...], reaches_exit: bool = True) -> TransitionPath:
+def _make_path(
+    handler_serial: int, chain: tuple[int, ...], reaches_exit: bool = True
+) -> TransitionPath:
     return TransitionPath(
         handler_serial=handler_serial,
         chain=chain,
@@ -57,7 +59,9 @@ def _make_row(
         kind=kind,
         next_state=None,
         conditional_states=(),
-        state_label=f"State 0x{state_const:08x}" if state_const is not None else "State <unknown>",
+        state_label=f"State 0x{state_const:08x}"
+        if state_const is not None
+        else "State <unknown>",
         transition_label="RETURN (exit)" if kind == TransitionKind.EXIT else "unknown",
         chain_preview=chain[:4],
         path=_make_path(handler_serial, chain, reaches_exit),
@@ -87,10 +91,12 @@ def _make_report(rows: list[TransitionRow]) -> DispatcherTransitionReport:
 
 
 def test_transition_report_exit_rows_become_handler_origin_return_sites() -> None:
-    report = _make_report([
-        _make_row(20, TransitionKind.EXIT, state_const=0x2000, chain=(20, 219)),
-        _make_row(10, TransitionKind.EXIT, state_const=0x1000, chain=(10, 219)),
-    ])
+    report = _make_report(
+        [
+            _make_row(20, TransitionKind.EXIT, state_const=0x2000, chain=(20, 219)),
+            _make_row(10, TransitionKind.EXIT, state_const=0x1000, chain=(10, 219)),
+        ]
+    )
 
     sites = transition_report_return_sites(report)
 
@@ -101,24 +107,28 @@ def test_transition_report_exit_rows_become_handler_origin_return_sites() -> Non
 
 
 def test_transition_report_excludes_non_exit_and_unreached_exit_rows() -> None:
-    report = _make_report([
-        _make_row(10, TransitionKind.TRANSITION, state_const=0x1000),
-        _make_row(20, TransitionKind.EXIT, state_const=0x2000, reaches_exit=False),
-    ])
+    report = _make_report(
+        [
+            _make_row(10, TransitionKind.TRANSITION, state_const=0x1000),
+            _make_row(20, TransitionKind.EXIT, state_const=0x2000, reaches_exit=False),
+        ]
+    )
 
     assert transition_report_return_sites(report) == ()
 
 
 def test_transition_report_site_id_supports_range_and_unknown_state_tags() -> None:
-    report = _make_report([
-        _make_row(
-            10,
-            TransitionKind.EXIT,
-            state_range_lo=0x100,
-            state_range_hi=0x1FF,
-        ),
-        _make_row(20, TransitionKind.EXIT),
-    ])
+    report = _make_report(
+        [
+            _make_row(
+                10,
+                TransitionKind.EXIT,
+                state_range_lo=0x100,
+                state_range_hi=0x1FF,
+            ),
+            _make_row(20, TransitionKind.EXIT),
+        ]
+    )
 
     sites = transition_report_return_sites(report)
 
@@ -127,9 +137,11 @@ def test_transition_report_site_id_supports_range_and_unknown_state_tags() -> No
 
 
 def test_transition_report_site_id_accepts_family_prefix() -> None:
-    report = _make_report([
-        _make_row(10, TransitionKind.EXIT, state_const=0x1000),
-    ])
+    report = _make_report(
+        [
+            _make_row(10, TransitionKind.EXIT, state_const=0x1000),
+        ]
+    )
 
     sites = transition_report_return_sites(report, site_id_prefix="example")
 
@@ -157,11 +169,13 @@ def test_transition_report_exit_with_missing_path_preserves_legacy_error() -> No
 
 
 def test_legacy_handler_path_return_sites_dedup_by_exit_block() -> None:
-    sites = legacy_handler_path_return_sites({
-        10: [_FakePath(exit_block=55, final_state=None, state_writes=[(1, 2)])],
-        20: [_FakePath(exit_block=55, final_state=None)],
-        30: [_FakePath(exit_block=99, final_state=0x1234)],
-    })
+    sites = legacy_handler_path_return_sites(
+        {
+            10: [_FakePath(exit_block=55, final_state=None, state_writes=[(1, 2)])],
+            20: [_FakePath(exit_block=55, final_state=None)],
+            30: [_FakePath(exit_block=99, final_state=0x1234)],
+        }
+    )
 
     assert len(sites) == 1
     assert sites[0].site_id == "return_ret_10_55"

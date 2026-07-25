@@ -3,6 +3,7 @@
 Verifies that MopSnapshot provides property aliases and proxy objects
 so it can be used transparently wherever mop_t is expected.
 """
+
 import pytest
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 

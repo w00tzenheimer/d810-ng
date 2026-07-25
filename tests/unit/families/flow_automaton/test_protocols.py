@@ -1,4 +1,5 @@
 """LS13 C1: structural tests for the flow-automaton family Protocols."""
+
 from __future__ import annotations
 
 from d810.families.flow_automaton import (

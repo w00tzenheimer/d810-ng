@@ -144,8 +144,10 @@ def compile_reference_function(
         "-shared",
         "-fPIC",
         "-O0",  # No optimizations - preserve source semantics
-        "-I", str(include_dir),  # Include directory for ida_types.h
-        "-o", str(lib_path),
+        "-I",
+        str(include_dir),  # Include directory for ida_types.h
+        "-o",
+        str(lib_path),
         str(src_path),
     ]
 

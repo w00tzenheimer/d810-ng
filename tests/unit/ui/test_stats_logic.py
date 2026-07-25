@@ -1,4 +1,5 @@
 """Tests for stats_logic module (pure Python, no IDA dependencies)."""
+
 from __future__ import annotations
 
 from d810.ui.stats_logic import (
@@ -71,9 +72,7 @@ class TestGetFiredRuleNames:
         stats = {
             "optimizer_matches": {"RuleA": 5, "RuleB": 0},
             "rule_matches": {"RuleC": 0},
-            "cfg_patches": {
-                "RuleD": {"uses": 0, "total_patches": 100}
-            },
+            "cfg_patches": {"RuleD": {"uses": 0, "total_patches": 100}},
         }
         result = get_fired_rule_names(stats)
         # Only RuleA should be included (count > 0)

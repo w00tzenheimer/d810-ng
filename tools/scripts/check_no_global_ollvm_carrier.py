@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Guard OLLVM carrier evidence against global/generic registration leaks."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -48,13 +49,19 @@ def _iter_text_files(root: Path, *suffixes: str) -> tuple[Path, ...]:
 def main() -> int:
     failures: list[str] = []
 
-    old_backend_path = ROOT / "src/d810/backends/hexrays/evidence/ollvm_carrier_backend.py"
+    old_backend_path = (
+        ROOT / "src/d810/backends/hexrays/evidence/ollvm_carrier_backend.py"
+    )
     if old_backend_path.exists():
-        failures.append(f"{old_backend_path.relative_to(ROOT)}: old backend adapter still exists")
+        failures.append(
+            f"{old_backend_path.relative_to(ROOT)}: old backend adapter still exists"
+        )
 
     value_flow_dir = ROOT / "src/d810/analyses/value_flow"
     for path in sorted(value_flow_dir.glob("ollvm*.py")):
-        failures.append(f"{path.relative_to(ROOT)}: OLLVM module must not live in analyses/value_flow")
+        failures.append(
+            f"{path.relative_to(ROOT)}: OLLVM module must not live in analyses/value_flow"
+        )
 
     for path in _iter_text_files(ROOT / "src/d810/conf", ".json"):
         text = path.read_text(encoding="utf-8")
@@ -69,7 +76,9 @@ def main() -> int:
         text = path.read_text(encoding="utf-8")
         for term in banned_terms:
             if term in text:
-                failures.append(f"{rel_path}: forbidden global OLLVM carrier term: {term}")
+                failures.append(
+                    f"{rel_path}: forbidden global OLLVM carrier term: {term}"
+                )
 
     if failures:
         for failure in failures:

@@ -18,7 +18,9 @@ class _DummyBlock:
 class _DummyFlowGraph:
     def __init__(self, mapping: dict[int, tuple[tuple[int, ...], tuple[int, ...]]]):
         self._mapping = {
-            int(k): _DummyBlock(tuple(int(v) for v in preds), tuple(int(v) for v in succs))
+            int(k): _DummyBlock(
+                tuple(int(v) for v in preds), tuple(int(v) for v in succs)
+            )
             for k, (preds, succs) in mapping.items()
         }
 
@@ -32,15 +34,25 @@ class _DummyBuilder:
         return ("goto", int(source_block), int(target_block), int(old_target))
 
     @staticmethod
-    def edge_redirect(*, source_block: int, target_block: int, old_target: int, via_pred: int):
-        return ("edge", int(source_block), int(target_block), int(old_target), int(via_pred))
+    def edge_redirect(
+        *, source_block: int, target_block: int, old_target: int, via_pred: int
+    ):
+        return (
+            "edge",
+            int(source_block),
+            int(target_block),
+            int(old_target),
+            int(via_pred),
+        )
 
 
 class TestBuildEntryIslandRescueOptions:
     def test_builds_block_and_pred_options_for_reachable_preds(self):
-        flow_graph = _DummyFlowGraph({
-            40: ((12, 14, 16), (6,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                40: ((12, 14, 16), (6,)),
+            }
+        )
 
         options = build_entry_island_rescue_options(
             40,
@@ -62,35 +74,46 @@ class TestBuildEntryIslandRescueOptions:
         )
 
     def test_rejects_missing_or_noop_sources(self):
-        flow_graph = _DummyFlowGraph({
-            40: ((12,), (90,)),
-            41: ((12,), (6, 90)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                40: ((12,), (90,)),
+                41: ((12,), (6, 90)),
+            }
+        )
 
-        assert build_entry_island_rescue_options(
-            99,
-            lifted_entry=90,
-            projected_flow_graph=flow_graph,
-            reachable_blocks={12},
-            dispatcher_region={6},
-            claimed_sources=set(),
-        ) == ()
-        assert build_entry_island_rescue_options(
-            40,
-            lifted_entry=90,
-            projected_flow_graph=flow_graph,
-            reachable_blocks={12},
-            dispatcher_region={6},
-            claimed_sources=set(),
-        ) == ()
-        assert build_entry_island_rescue_options(
-            41,
-            lifted_entry=90,
-            projected_flow_graph=flow_graph,
-            reachable_blocks={12},
-            dispatcher_region={6},
-            claimed_sources=set(),
-        ) == ()
+        assert (
+            build_entry_island_rescue_options(
+                99,
+                lifted_entry=90,
+                projected_flow_graph=flow_graph,
+                reachable_blocks={12},
+                dispatcher_region={6},
+                claimed_sources=set(),
+            )
+            == ()
+        )
+        assert (
+            build_entry_island_rescue_options(
+                40,
+                lifted_entry=90,
+                projected_flow_graph=flow_graph,
+                reachable_blocks={12},
+                dispatcher_region={6},
+                claimed_sources=set(),
+            )
+            == ()
+        )
+        assert (
+            build_entry_island_rescue_options(
+                41,
+                lifted_entry=90,
+                projected_flow_graph=flow_graph,
+                reachable_blocks={12},
+                dispatcher_region={6},
+                claimed_sources=set(),
+            )
+            == ()
+        )
 
 
 class TestBuildEntryIslandRescueModification:

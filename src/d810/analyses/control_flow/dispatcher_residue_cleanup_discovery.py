@@ -6,6 +6,7 @@ The HIGH layer lifts the live ``mba_t`` to a FlowGraph once
 (``hexrays.mutation.ir_translator.lift``) and hands this code the snapshot;
 CFG planning and Hex-Rays materialization live in their own layers.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -237,7 +238,9 @@ def discover_unreachable_region_cleanup_facts(
 
     reachable = _reachable_from_entry(flow_graph, qty)
     unreachable = {
-        serial for serial in range(qty) if serial not in reachable and serial != stop_serial
+        serial
+        for serial in range(qty)
+        if serial not in reachable and serial != stop_serial
     }
 
     protected: set[int] = set()

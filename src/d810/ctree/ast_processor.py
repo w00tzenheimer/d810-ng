@@ -6,6 +6,7 @@ from the root.
 
 Ported from herast (herast/tree/ast_processor.py).
 """
+
 from __future__ import annotations
 
 from d810.core import typing

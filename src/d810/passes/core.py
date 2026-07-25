@@ -51,6 +51,7 @@ class OptimizationContext:
         logger: Logger instance for the optimization pass.
         log_dir: Directory path for debug logs and artifacts.
     """
+
     mba: object
     provider_level: int
     config: Dict[str, Any]

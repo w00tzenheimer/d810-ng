@@ -12,6 +12,7 @@ Family: ``FAMILY_CLEANUP`` -- runs after all other strategies.
 Prerequisites: ``["linearized_flow_graph"]`` -- the active DAG-driven
 linearizer must already have resolved handler transitions.
 """
+
 from __future__ import annotations
 
 from d810.core import logging
@@ -102,7 +103,9 @@ class StateConstantReturnFixupStrategy:
 
         state_var_stkoff = resolve_state_var_stkoff(
             detector=getattr(snapshot, "detector", None),
-            state_var=getattr(getattr(snapshot, "state_machine", None), "state_var", None),
+            state_var=getattr(
+                getattr(snapshot, "state_machine", None), "state_var", None
+            ),
         )
         evidence = _RETURN_CLEANUP_BACKEND.collect_return_cleanup_evidence(
             mba,
@@ -110,9 +113,7 @@ class StateConstantReturnFixupStrategy:
             state_var_stkoff=state_var_stkoff,
         )
         if evidence.stop_serial is None:
-            logger.info(
-                "StateConstReturnFixup: no BLT_STOP block found"
-            )
+            logger.info("StateConstReturnFixup: no BLT_STOP block found")
             return None
 
         builder = ModificationBuilder.from_snapshot(snapshot)
@@ -139,20 +140,22 @@ class StateConstantReturnFixupStrategy:
                     " at blk[%d]:0x%x feeding mux blk[%d]",
                     cleanup_site.block_serial,
                     cleanup_site.insn_ea,
-                    cleanup_site.mux_block_serial if cleanup_site.mux_block_serial is not None else -1,
+                    cleanup_site.mux_block_serial
+                    if cleanup_site.mux_block_serial is not None
+                    else -1,
                 )
             elif cleanup_site.reason == "state_const_mov":
                 logger.info(
-                    "StateConstReturnFixup: NOP m_mov #0x%x at"
-                    " blk[%d]:0x%x",
-                    cleanup_site.observed_state if cleanup_site.observed_state is not None else 0,
+                    "StateConstReturnFixup: NOP m_mov #0x%x at blk[%d]:0x%x",
+                    cleanup_site.observed_state
+                    if cleanup_site.observed_state is not None
+                    else 0,
                     cleanup_site.block_serial,
                     cleanup_site.insn_ea,
                 )
             else:
                 logger.info(
-                    "StateConstReturnFixup: NOP cleanup site reason=%s"
-                    " at blk[%d]:0x%x",
+                    "StateConstReturnFixup: NOP cleanup site reason=%s at blk[%d]:0x%x",
                     cleanup_site.reason,
                     cleanup_site.block_serial,
                     cleanup_site.insn_ea,
@@ -218,4 +221,6 @@ class StateConstantReturnFixupStrategy:
         Returns:
             Set of integer state constant values.
         """
-        return set(collect_state_constants(snapshot.state_constants, snapshot.range_evidence))
+        return set(
+            collect_state_constants(snapshot.state_constants, snapshot.range_evidence)
+        )

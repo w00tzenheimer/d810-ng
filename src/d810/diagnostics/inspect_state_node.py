@@ -11,6 +11,7 @@ This supports the node-by-node lowering workflow: pick one exact
 semantic node, compare its trusted linearized form against the current
 CFG/pseudocode, then design the smallest possible lowering step.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,7 +24,6 @@ from d810.core.diag import read_diag_db
 from d810.core.diag.models import RenderedProgramLine
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.diagnostics.dump_after import extract_after_pseudocode
-
 
 
 def normalize_state(text: str) -> tuple[str, str]:
@@ -191,12 +191,19 @@ def run(args: argparse.Namespace) -> int:
         conn = db.connection()
         snapshot_id = latest_semantic_snapshot_id(conn)
         if snapshot_id is None:
-            write_output(get_output(args), "error: no semantic_reference_like snapshot found")
+            write_output(
+                get_output(args), "error: no semantic_reference_like snapshot found"
+            )
             return 2
 
-        write_output(get_output(args), f"=== semantic_reference_like snapshot {snapshot_id} ===")
+        write_output(
+            get_output(args), f"=== semantic_reference_like snapshot {snapshot_id} ==="
+        )
         semantic_rows = find_semantic_context(
-            conn, snapshot_id, state_hex, args.context,
+            conn,
+            snapshot_id,
+            state_hex,
+            args.context,
         )
         if not semantic_rows:
             write_output(get_output(args), f"(no semantic lines for STATE_{state_hex})")

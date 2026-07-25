@@ -4,6 +4,7 @@ The recognizer is intentionally evidence-only.  It identifies the compact
 ``default; jcc; one-arm overwrite; merged stack store`` form emitted from an
 x86 conditional move, but does not resolve targets or mutate the database.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -82,11 +83,7 @@ def _stack_identity(mop: object) -> tuple[int, int] | None:
 
 
 def _block_native_entry_ea(block: object) -> int | None:
-    native_eas = {
-        int(insn.ea)
-        for insn in _instructions(block)
-        if int(insn.ea) > 0
-    }
+    native_eas = {int(insn.ea) for insn in _instructions(block) if int(insn.ea) > 0}
     return min(native_eas) if native_eas else None
 
 
@@ -229,9 +226,7 @@ def recognize_residual_entry_bridge(mba: object) -> ResidualEntryBridgeEvidence 
             fallthrough_state_constant=fallthrough_value,
             source_store_ea=taken_store_ea,
             conditional_tail_ea=int(branch.ea),
-            canonical_predicate_stack_identity=(
-                canonical_predicate_stack_identity
-            ),
+            canonical_predicate_stack_identity=(canonical_predicate_stack_identity),
         )
     return None
 
@@ -369,9 +364,7 @@ def recognize_preoptimized_residual_entry_bridge(
         if taken_store is None or fallthrough_store is None:
             continue
         taken_cell, taken_value, taken_store_ea = taken_store
-        fallthrough_cell, fallthrough_value, fallthrough_store_ea = (
-            fallthrough_store
-        )
+        fallthrough_cell, fallthrough_value, fallthrough_store_ea = fallthrough_store
         if (
             taken_cell != fallthrough_cell
             or taken_store_ea != fallthrough_store_ea
@@ -380,9 +373,7 @@ def recognize_preoptimized_residual_entry_bridge(
             continue
         source_entry_ea = _block_native_entry_ea(block)
         taken_entry_ea = _block_native_entry_ea(blocks[taken_serial])
-        fallthrough_entry_ea = _block_native_entry_ea(
-            blocks[fallthrough_serial]
-        )
+        fallthrough_entry_ea = _block_native_entry_ea(blocks[fallthrough_serial])
         try:
             canonical_stack_cell_identity = (
                 int(mba.stkoff_vd2ida(int(taken_cell[0]))),
@@ -410,9 +401,7 @@ def recognize_preoptimized_residual_entry_bridge(
             taken_arm_entry_ea=taken_entry_ea,
             fallthrough_arm_entry_ea=fallthrough_entry_ea,
             conditional_tail_ea=int(branch.ea),
-            canonical_predicate_stack_identity=(
-                canonical_predicate_stack_identity
-            ),
+            canonical_predicate_stack_identity=(canonical_predicate_stack_identity),
         )
     return None
 
@@ -485,7 +474,11 @@ def recover_state_routing_nodes(
                 if source <= int(insn.ea) <= window_end:
                     code = _state_condition_code(int(insn.opcode))
                     compared = _immediate(insn.r)
-                    if code is not None and _register(insn.l) == int(state_register) and compared is not None:
+                    if (
+                        code is not None
+                        and _register(insn.l) == int(state_register)
+                        and compared is not None
+                    ):
                         if code != int(transfer.condition_code):
                             return ()
                         matched = (code, compared)
@@ -644,14 +637,9 @@ def recognize_conditional_handler_bridges(
             int(branch.l.t) == _opcode("mop_z")
             or (
                 not opaque_preserved_predicate
-                and
-                proven_arm_states is None
-                and
-                compared is None
-                and (
-                    compare_register is None
-                    or int(branch.r.size) != predicate_size
-                )
+                and proven_arm_states is None
+                and compared is None
+                and (compare_register is None or int(branch.r.size) != predicate_size)
             )
             or predicate_size <= 0
             or len(successors) != 2
@@ -710,9 +698,7 @@ def recognize_conditional_handler_bridges(
             taken_state = arm_states[taken]
             fallthrough_state = arm_states[int(fallthrough)]
         taken_target = state_targets.get(int(taken_state) & 0xFFFFFFFF)
-        fallthrough_target = state_targets.get(
-            int(fallthrough_state) & 0xFFFFFFFF
-        )
+        fallthrough_target = state_targets.get(int(fallthrough_state) & 0xFFFFFFFF)
         if (
             taken_target is None
             or fallthrough_target is None
@@ -748,15 +734,11 @@ def recognize_conditional_handler_bridges(
                 predicate_ea=int(branch.ea),
                 condition_code=condition_code,
                 predicate_register=(
-                    int(predicate_register)
-                    if predicate_register is not None
-                    else None
+                    int(predicate_register) if predicate_register is not None else None
                 ),
                 predicate_size=predicate_size,
                 predicate_compare_register=(
-                    int(compare_register)
-                    if compare_register is not None
-                    else None
+                    int(compare_register) if compare_register is not None else None
                 ),
                 predicate_compare_constant=(
                     int(compared)

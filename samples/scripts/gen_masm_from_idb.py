@@ -13,6 +13,7 @@ Example:
     PYTHONPATH=src python3 samples/scripts/gen_masm_from_idb.py \
         samples/bins/libobfuscated.dll.2026-06-03.i64 sub_180001900 /tmp/f.asm --assemble
 """
+
 from __future__ import annotations
 
 import shutil

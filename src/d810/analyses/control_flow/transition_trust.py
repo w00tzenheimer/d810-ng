@@ -21,12 +21,10 @@ from d810.analyses.control_flow.dispatch_key import (
 
 
 class TransitionTrustKind(str, Enum):
-    "Typed source of authority for promoting transition evidence.\n\n    ``DYNAMIC_STATE_WRITE``\n        A preanalysis producer observed a conditional state write through the\n        dispatcher state variable or a global/state alias with enough evidence\n        to treat the written state as the branch target.  This can authorize an\n        explicit conditional DAG bridge because it identifies real transition\n        data, not merely graph shape.\n\n    ``BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT``\n        Branch ownership proved the arm is real source-program control flow.\n        This is the only branch-ownership proof kind that becomes semantic DAG\n        bridge authority.  Nonsemantic ownership kinds remain rewrite evidence.\n\n    ``EXPLICIT_PRODUCER_TRUST``\n        A future oracle, for example MopTracker or Z3, attached a typed trust\n        result directly.  Use this only when the producer already performed the\n        semantic-vs-obfuscation distinction and can explain it in ``reason`` /\n        ``evidence``.\n\n    ``UNSUPPORTED``\n        The transition is diagnostic-only for this consumer.  No explicit\n        conditional bridge should be built from it.\n    "
+    "Typed source of authority for promoting transition evidence.\n\n    ``DYNAMIC_STATE_WRITE``\n        A preanalysis producer observed a conditional state write through the\n        dispatcher state variable or a global/state alias with enough evidence\n        to treat the written state as the branch target.  This can authorize an\n        explicit conditional DAG bridge because it identifies real transition\n        data, not merely graph shape.\n\n    ``BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT``\n        Branch ownership proved the arm is real source-program control flow.\n        This is the only branch-ownership proof kind that becomes semantic DAG\n        bridge authority.  Nonsemantic ownership kinds remain rewrite evidence.\n\n    ``EXPLICIT_PRODUCER_TRUST``\n        A future oracle, for example MopTracker or Z3, attached a typed trust\n        result directly.  Use this only when the producer already performed the\n        semantic-vs-obfuscation distinction and can explain it in ``reason`` /\n        ``evidence``.\n\n    ``UNSUPPORTED``\n        The transition is diagnostic-only for this consumer.  No explicit\n        conditional bridge should be built from it.\n"
 
     DYNAMIC_STATE_WRITE = "DYNAMIC_STATE_WRITE"
-    BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT = (
-        "BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT"
-    )
+    BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT = "BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT"
     EXPLICIT_PRODUCER_TRUST = "EXPLICIT_PRODUCER_TRUST"
     UNSUPPORTED = "UNSUPPORTED"
 
@@ -102,9 +100,7 @@ def classify_transition_trust_for_explicit_conditional_bridge(
         transition,
         provenance_kind=provenance_kind,
     )
-    provenance_trust_kind = _PROVENANCE_TAG_TRUST_KIND_BY_NAME.get(
-        provenance_kind
-    )
+    provenance_trust_kind = _PROVENANCE_TAG_TRUST_KIND_BY_NAME.get(provenance_kind)
     if provenance_trust_kind is not None:
         return TransitionTrustResult(
             True,
@@ -136,11 +132,9 @@ def transition_is_trusted_for_explicit_conditional_bridge(
 ) -> bool:
     """Return whether transition evidence can authorize explicit bridging."""
 
-    return (
-        classify_transition_trust_for_explicit_conditional_bridge(
-            transition
-        ).authorizes_explicit_conditional_bridge
-    )
+    return classify_transition_trust_for_explicit_conditional_bridge(
+        transition
+    ).authorizes_explicit_conditional_bridge
 
 
 def _typed_transition_trust_result(
@@ -174,9 +168,7 @@ def transition_trust_result_from_any(
         reason = value.get("reason")
         trust_kind = value.get("trust_kind")
         provenance_kind = value.get("provenance_kind")
-        dispatch_key_transform_kind = value.get(
-            "dispatch_key_transform_kind"
-        )
+        dispatch_key_transform_kind = value.get("dispatch_key_transform_kind")
         evidence = value.get("evidence") or {}
     else:
         trusted = getattr(value, "trusted", None)
@@ -205,9 +197,7 @@ def transition_trust_result_from_any(
         bool(trusted),
         str(reason),
         trust_kind=normalized_kind,
-        provenance_kind=(
-            None if provenance_kind is None else str(provenance_kind)
-        ),
+        provenance_kind=(None if provenance_kind is None else str(provenance_kind)),
         dispatch_key_transform_kind=dispatch_key_transform_kind_from_any(
             dispatch_key_transform_kind
         ),
@@ -227,10 +217,7 @@ def _branch_ownership_transition_trust_result(
             return TransitionTrustResult(
                 True,
                 "branch_ownership_real_data_dependent",
-                trust_kind=(
-                    TransitionTrustKind
-                    .BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT
-                ),
+                trust_kind=(TransitionTrustKind.BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT),
                 evidence={
                     "proof_id": proof.proof_id,
                     "oracle_kind": proof.oracle_kind,
@@ -282,9 +269,7 @@ def _transition_dispatch_key_transform_kind(
         "key_transform_kind",
         "dispatch_key_transform",
     ):
-        result = dispatch_key_transform_kind_from_any(
-            getattr(transition, attr, None)
-        )
+        result = dispatch_key_transform_kind_from_any(getattr(transition, attr, None))
         if result is not None:
             return result
     metadata = getattr(transition, "metadata", None)

@@ -1,4 +1,5 @@
 """Config-v2 adapters for simple legacy flow-rule pass ids."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -99,9 +100,7 @@ def build_legacy_flow_rule_pass(config: PipelineConfig) -> LegacyFlowRuleAdapter
             f"{config.pass_id} must declare options.legacy_rule={expected_rule!r}"
         )
     rule_options = {
-        key: value
-        for key, value in config.options.items()
-        if key != "legacy_rule"
+        key: value for key, value in config.options.items() if key != "legacy_rule"
     }
     return LegacyFlowRuleAdapterPass(
         name=config.pass_id,

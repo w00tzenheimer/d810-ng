@@ -1,4 +1,5 @@
 """Tests for the spurious back-edge redirect planner."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.spurious_backedge_redirect import (
@@ -29,11 +30,12 @@ class TestPlanner:
     def test_spurious_blt_2way_redirected(self) -> None:
         # blk[15] BLT_2WAY succs=[16, 13]; SPURIOUS edge 15->13.
         # safe_alternative = 16. Expect a single redirect plan.
-        block_succs = {
-            13: (15,), 14: (13,), 15: (16, 13), 16: ()
-        }
+        block_succs = {13: (15,), 14: (13,), 15: (16, 13), 16: ()}
         block_types = {
-            13: "BLT_1WAY", 14: "BLT_1WAY", 15: "BLT_2WAY", 16: "BLT_STOP",
+            13: "BLT_1WAY",
+            14: "BLT_1WAY",
+            15: "BLT_2WAY",
+            16: "BLT_STOP",
         }
         # blk[15]'s tail predicate reads %var_330 (not written by 13/14).
         # blk[15] writes %var_5B8 (an MBA opaque — not read by tgt).
@@ -44,7 +46,7 @@ class TestPlanner:
             15: frozenset({"%var_5B8"}),
         }
         block_predicate_reads = {
-            13: frozenset({"%var_F0"}),    # tgt's predicate reads var_F0
+            13: frozenset({"%var_F0"}),  # tgt's predicate reads var_F0
             14: frozenset(),
             15: frozenset({"%var_330"}),
         }
@@ -85,7 +87,7 @@ class TestPlanner:
         block_types = {4: "BLT_1WAY", 10: "BLT_2WAY", 20: "BLT_STOP"}
         block_writes = {10: frozenset({"%var_178"})}
         block_predicate_reads = {
-            4: frozenset({"%var_178"}),    # carrier overlap → REAL_LOOP
+            4: frozenset({"%var_178"}),  # carrier overlap → REAL_LOOP
             10: frozenset(),
         }
         plans = plan_spurious_backedge_redirects(
@@ -126,9 +128,13 @@ class TestPlanner:
             26: (),
         }
         block_types = {
-            0: "BLT_2WAY", 1: "BLT_1WAY", 2: "BLT_1WAY",
-            15: "BLT_2WAY", 16: "BLT_STOP",
-            25: "BLT_2WAY", 26: "BLT_STOP",
+            0: "BLT_2WAY",
+            1: "BLT_1WAY",
+            2: "BLT_1WAY",
+            15: "BLT_2WAY",
+            16: "BLT_STOP",
+            25: "BLT_2WAY",
+            26: "BLT_STOP",
         }
         block_writes = {
             15: frozenset({"%var_5B8"}),
@@ -163,7 +169,9 @@ class TestPlanner:
             25: (13,),
         }
         block_types = {
-            13: "BLT_2WAY", 15: "BLT_1WAY", 25: "BLT_1WAY",
+            13: "BLT_2WAY",
+            15: "BLT_1WAY",
+            25: "BLT_1WAY",
         }
         block_writes = {13: frozenset()}  # 13 writes nothing
         block_predicate_reads = {
@@ -206,10 +214,16 @@ class TestPlanner:
     def test_blt_2way_with_three_succs_skipped_defensively(self) -> None:
         block_succs = {15: (16, 17, 13), 13: (15,), 16: (), 17: ()}
         block_types = {
-            15: "BLT_2WAY", 13: "BLT_1WAY", 16: "BLT_STOP", 17: "BLT_STOP",
+            15: "BLT_2WAY",
+            13: "BLT_1WAY",
+            16: "BLT_STOP",
+            17: "BLT_STOP",
         }
         block_writes = {15: frozenset({"%var_5B8"})}
-        block_predicate_reads = {13: frozenset({"%var_F0"}), 15: frozenset({"%var_330"})}
+        block_predicate_reads = {
+            13: frozenset({"%var_F0"}),
+            15: frozenset({"%var_330"}),
+        }
         plans = plan_spurious_backedge_redirects(
             block_succs=block_succs,
             block_types=block_types,
@@ -225,37 +239,51 @@ class TestPlanner:
         # BLT_2WAY source. Expect exactly 1 plan.
         block_succs = {
             # SCC nodes (subset, just enough to exercise the algorithm).
-            2: (3, 19),       # chunk-size check (real-loop tgt for 18->2)
+            2: (3, 19),  # chunk-size check (real-loop tgt for 18->2)
             3: (4, 5),
-            4: (5, 10),       # head-byte stride test (real-loop tgt for 10->4)
+            4: (5, 10),  # head-byte stride test (real-loop tgt for 10->4)
             5: (6, 12),
-            6: (8, 14),       # tgt for 14->6 (SPURIOUS)
-            10: (4, 20),      # head-byte body BLT_2WAY (real-loop)
-            12: (5, 21),      # 12->5 UNKNOWN (no tgt reads)
-            13: (15, 22),     # tgt for 15->13 (SPURIOUS)
-            14: (6,),         # BLT_1WAY -> 6
-            15: (16, 13),     # SPURIOUS source (BLT_2WAY) — actionable!
-            16: (), 19: (), 20: (), 21: (), 22: (),
+            6: (8, 14),  # tgt for 14->6 (SPURIOUS)
+            10: (4, 20),  # head-byte body BLT_2WAY (real-loop)
+            12: (5, 21),  # 12->5 UNKNOWN (no tgt reads)
+            13: (15, 22),  # tgt for 15->13 (SPURIOUS)
+            14: (6,),  # BLT_1WAY -> 6
+            15: (16, 13),  # SPURIOUS source (BLT_2WAY) — actionable!
+            16: (),
+            19: (),
+            20: (),
+            21: (),
+            22: (),
         }
         block_types = {
-            2: "BLT_2WAY", 3: "BLT_2WAY", 4: "BLT_2WAY", 5: "BLT_2WAY",
-            6: "BLT_2WAY", 10: "BLT_2WAY", 12: "BLT_2WAY", 13: "BLT_2WAY",
-            14: "BLT_1WAY", 15: "BLT_2WAY",
-            16: "BLT_STOP", 19: "BLT_STOP", 20: "BLT_STOP",
-            21: "BLT_STOP", 22: "BLT_STOP",
+            2: "BLT_2WAY",
+            3: "BLT_2WAY",
+            4: "BLT_2WAY",
+            5: "BLT_2WAY",
+            6: "BLT_2WAY",
+            10: "BLT_2WAY",
+            12: "BLT_2WAY",
+            13: "BLT_2WAY",
+            14: "BLT_1WAY",
+            15: "BLT_2WAY",
+            16: "BLT_STOP",
+            19: "BLT_STOP",
+            20: "BLT_STOP",
+            21: "BLT_STOP",
+            22: "BLT_STOP",
         }
         block_writes = {
-            10: frozenset({"%var_178"}),    # carrier — REAL_LOOP for 10->4
-            12: frozenset({"%var_330"}),    # writes; tgt has no reads → UNKNOWN
+            10: frozenset({"%var_178"}),  # carrier — REAL_LOOP for 10->4
+            12: frozenset({"%var_330"}),  # writes; tgt has no reads → UNKNOWN
             14: frozenset(),
-            15: frozenset({"%var_5B8"}),    # MBA opaque
+            15: frozenset({"%var_5B8"}),  # MBA opaque
         }
         block_predicate_reads = {
             2: frozenset({"%var_1C8"}),
-            4: frozenset({"%var_178"}),      # carrier — REAL_LOOP
-            5: frozenset(),                  # empty → 12->5 UNKNOWN
-            6: frozenset({"%var_F0"}),       # 14->6 SPURIOUS
-            13: frozenset({"%var_F0"}),      # 15->13 SPURIOUS
+            4: frozenset({"%var_178"}),  # carrier — REAL_LOOP
+            5: frozenset(),  # empty → 12->5 UNKNOWN
+            6: frozenset({"%var_F0"}),  # 14->6 SPURIOUS
+            13: frozenset({"%var_F0"}),  # 15->13 SPURIOUS
         }
         plans = plan_spurious_backedge_redirects(
             block_succs=block_succs,

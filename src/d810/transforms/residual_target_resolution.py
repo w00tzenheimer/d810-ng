@@ -1,4 +1,5 @@
 "Backend-neutral residual dispatcher frontier target resolution.\n\nThe routines here classify residual dispatcher feeders and choose semantic\nfrontier targets from DAG/CFG evidence.  They intentionally accept callback\nresolvers from the caller instead of importing preanalysis or backend modules; Hodur\nkeeps strategy ordering, live state-write extraction, and modification emission.\n"
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -198,7 +199,11 @@ def resolve_dispatcher_trampoline_skip_candidate(
 
 
 def _node_kind_name(node: object) -> str:
-    return str(getattr(getattr(node, "kind", None), "name", "") or getattr(node, "kind", "") or "")
+    return str(
+        getattr(getattr(node, "kind", None), "name", "")
+        or getattr(node, "kind", "")
+        or ""
+    )
 
 
 def walk_condition_chain_dispatcher(
@@ -206,7 +211,9 @@ def walk_condition_chain_dispatcher(
     root: int,
     condition_chain_blocks: set[int],
     state_value: int,
-    tail_for_block_fn: Callable[[int], ConditionChainGotoTail | ConditionChainConditionalTail | None],
+    tail_for_block_fn: Callable[
+        [int], ConditionChainGotoTail | ConditionChainConditionalTail | None
+    ],
     is_conditional_taken_fn: Callable[[int, int, int, int], bool | None],
     max_steps: int = 64,
 ) -> int | None:
@@ -331,9 +338,7 @@ def resolve_path_lead_entry_from_node(
     if not outgoing_paths:
         return None
     blocks_on_outgoing_paths = {
-        int(block_serial)
-        for path in outgoing_paths
-        for block_serial in path
+        int(block_serial) for path in outgoing_paths for block_serial in path
     }
     entry_anchor = int(getattr(node, "entry_anchor", -1))
     if entry_anchor in blocks_on_outgoing_paths:
@@ -377,7 +382,9 @@ def resolve_redirect_safe_entry_from_node(
     entry_anchor = getattr(node, "entry_anchor", None)
     if entry_anchor is None:
         return None
-    return int(entry_anchor) if int(entry_anchor) not in condition_chain_blocks else None
+    return (
+        int(entry_anchor) if int(entry_anchor) not in condition_chain_blocks else None
+    )
 
 
 def resolve_redirect_safe_target_entry(
@@ -401,7 +408,8 @@ def resolve_redirect_safe_target_entry(
     target_label = str(getattr(edge, "target_label", "") or "")
     if target_label:
         labeled_matches = [
-            node for node in getattr(dag, "nodes", ()) or ()
+            node
+            for node in getattr(dag, "nodes", ()) or ()
             if str(getattr(node, "state_label", "") or "") == target_label
         ]
         if len(labeled_matches) == 1:
@@ -418,7 +426,9 @@ def resolve_redirect_safe_target_entry(
             dag=dag,
             condition_chain_blocks=condition_chain_blocks,
         )
-        ordered_path = tuple(int(block) for block in (getattr(edge, "ordered_path", ()) or ()))
+        ordered_path = tuple(
+            int(block) for block in (getattr(edge, "ordered_path", ()) or ())
+        )
         if (
             explicit_target_entry is not None
             and safe_target_entry is not None
@@ -509,8 +519,14 @@ def resolve_normalized_alias_entry_for_state(
         score = (
             2 if raw_exact_node else 0,
             1 if node_label.endswith("_fallback") else 0,
-            1 if entry in {int(block) for block in (getattr(node, "exclusive_blocks", ()) or ())} else 0,
-            1 if entry in {int(block) for block in (getattr(node, "owned_blocks", ()) or ())} else 0,
+            1
+            if entry
+            in {int(block) for block in (getattr(node, "exclusive_blocks", ()) or ())}
+            else 0,
+            1
+            if entry
+            in {int(block) for block in (getattr(node, "owned_blocks", ()) or ())}
+            else 0,
             -entry,
         )
         if best_match is None or score > best_match:
@@ -530,7 +546,9 @@ def resolve_normalized_alias_entry_for_state(
             continue
         target_node = node_by_key.get(getattr(edge, "target_key", None))
         edge_label = str(getattr(edge, "target_label", "") or "")
-        target_key = getattr(target_node, "key", None) if target_node is not None else None
+        target_key = (
+            getattr(target_node, "key", None) if target_node is not None else None
+        )
         raw_exact_target = (
             target_node is not None
             and _node_kind_name(target_node) == "EXACT"
@@ -540,7 +558,9 @@ def resolve_normalized_alias_entry_for_state(
         )
         if is_raw_state_label(edge_label, raw_value) and not raw_exact_target:
             continue
-        ordered_path = tuple(int(block) for block in (getattr(edge, "ordered_path", ()) or ()))
+        ordered_path = tuple(
+            int(block) for block in (getattr(edge, "ordered_path", ()) or ())
+        )
         source_anchor = getattr(edge, "source_anchor", None)
         source_anchor_block = getattr(source_anchor, "block_serial", None)
         on_path = source_block is not None and source_block in ordered_path
@@ -574,10 +594,13 @@ def resolve_owner_semantic_entry_for_blocks(
     def _owns_candidate(node: object, block_serial: int) -> bool:
         if block_serial == int(getattr(node, "entry_anchor", -1)):
             return True
-        if block_serial in {int(block) for block in (getattr(node, "owned_blocks", ()) or ())}:
+        if block_serial in {
+            int(block) for block in (getattr(node, "owned_blocks", ()) or ())
+        }:
             return True
         return any(
-            block_serial in {int(block) for block in (getattr(segment, "blocks", ()) or ())}
+            block_serial
+            in {int(block) for block in (getattr(segment, "blocks", ()) or ())}
             for segment in (getattr(node, "local_segments", ()) or ())
         )
 
@@ -586,7 +609,9 @@ def resolve_owner_semantic_entry_for_blocks(
         for node in getattr(dag, "nodes", ()) or ()
         if _node_kind_name(node) == "EXACT"
         and getattr(getattr(node, "key", None), "state_const", None) is not None
-        and any(_owns_candidate(node, block_serial) for block_serial in anchor_candidates)
+        and any(
+            _owns_candidate(node, block_serial) for block_serial in anchor_candidates
+        )
     ]
     if not owners:
         return None
@@ -594,8 +619,22 @@ def resolve_owner_semantic_entry_for_blocks(
     min_anchor = min(anchor_candidates)
     owners.sort(
         key=lambda node: (
-            0 if any(block in {int(value) for value in (getattr(node, "exclusive_blocks", ()) or ())} for block in anchor_candidates) else 1,
-            0 if any(block == int(getattr(node, "entry_anchor", -1)) for block in anchor_candidates) else 1,
+            0
+            if any(
+                block
+                in {
+                    int(value)
+                    for value in (getattr(node, "exclusive_blocks", ()) or ())
+                }
+                for block in anchor_candidates
+            )
+            else 1,
+            0
+            if any(
+                block == int(getattr(node, "entry_anchor", -1))
+                for block in anchor_candidates
+            )
+            else 1,
             abs(int(getattr(node, "entry_anchor", min_anchor)) - min_anchor),
         )
     )
@@ -656,7 +695,9 @@ def resolve_cover_fallback_entry_for_state(
 
     semantic_cover_target = resolve_owner_semantic_entry_for_blocks(
         dag,
-        anchor_candidates=(cover_interval_target,) if cover_interval_target is not None else (),
+        anchor_candidates=(cover_interval_target,)
+        if cover_interval_target is not None
+        else (),
         source_block=source_block,
         condition_chain_blocks=condition_chain_blocks,
     )
@@ -694,7 +735,9 @@ def resolve_nonexact_dispatch_target(
     if normalized_alias_target is not None:
         return normalized_alias_target
 
-    lookup_callable = getattr(dispatcher, "lookup", None) if dispatcher is not None else None
+    lookup_callable = (
+        getattr(dispatcher, "lookup", None) if dispatcher is not None else None
+    )
     if lookup_callable is None and callable(dispatcher_lookup):
         lookup_callable = dispatcher_lookup
     if callable(lookup_callable):
@@ -750,8 +793,10 @@ def resolve_semantic_reference_alias_entry(
         edge
         for edge in getattr(dag, "edges", ()) or ()
         if getattr(edge, "target_state", None) is not None
-        and (int(getattr(edge, "target_state")) & 0xFFFFFFFF) == (int(state_value) & 0xFFFFFFFF)
-        and int(pred_serial) in tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
+        and (int(getattr(edge, "target_state")) & 0xFFFFFFFF)
+        == (int(state_value) & 0xFFFFFFFF)
+        and int(pred_serial)
+        in tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
     ]
     if not relevant_edges:
         return None
@@ -777,8 +822,13 @@ def resolve_semantic_reference_alias_entry(
         source_edges = [
             edge
             for edge in getattr(dag, "edges", ()) or ()
-            if getattr(getattr(edge, "source_key", None), "state_const", None) is not None
-            and (int(getattr(getattr(edge, "source_key", None), "state_const")) & 0xFFFFFFFF) == source_state
+            if getattr(getattr(edge, "source_key", None), "state_const", None)
+            is not None
+            and (
+                int(getattr(getattr(edge, "source_key", None), "state_const"))
+                & 0xFFFFFFFF
+            )
+            == source_state
             and (
                 source_block is None
                 or int(
@@ -805,7 +855,9 @@ def resolve_semantic_reference_alias_entry(
         if len(unmatched_alias_edges) != 1 or len(unmatched_labels) != 1:
             continue
         alias_edge = unmatched_alias_edges[0]
-        ordered_path = tuple(int(node) for node in getattr(alias_edge, "ordered_path", ()) or ())
+        ordered_path = tuple(
+            int(node) for node in getattr(alias_edge, "ordered_path", ()) or ()
+        )
         if int(pred_serial) not in ordered_path:
             continue
         target_entry = semantic_entry_by_label.get(unmatched_labels[0])
@@ -829,7 +881,9 @@ def resolve_frontier_target_entry(
     resolve_dag_entry_for_state_fn: Callable[..., int | None],
     resolve_normalized_alias_entry_for_state_fn: Callable[..., int | None],
     residual_effective_target: int | None = None,
-    resolve_semantic_reference_alias_entry_fn: Callable[..., int | None] = resolve_semantic_reference_alias_entry,
+    resolve_semantic_reference_alias_entry_fn: Callable[
+        ..., int | None
+    ] = resolve_semantic_reference_alias_entry,
 ) -> tuple[int | None, int | None]:
     """Resolve the best semantic entry for a residual feeder state write."""
     raw_state = int(state_value) & 0xFFFFFFFF
@@ -868,9 +922,8 @@ def resolve_frontier_target_entry(
         pred_serial=int(pred_serial),
         state_value=raw_state,
     )
-    if (
-        residual_effective_target is not None
-        and int(residual_effective_target) != int(pred_serial)
+    if residual_effective_target is not None and int(residual_effective_target) != int(
+        pred_serial
     ):
         target_entry = int(residual_effective_target)
     if (
@@ -881,15 +934,13 @@ def resolve_frontier_target_entry(
         target_entry = int(exact_dag_entry)
     if (
         residual_effective_target is None
-        and
-        direct_semantic_entry is not None
+        and direct_semantic_entry is not None
         and int(direct_semantic_entry) != int(pred_serial)
     ):
         target_entry = int(direct_semantic_entry)
     if (
         residual_effective_target is None
-        and
-        semantic_alias_entry is not None
+        and semantic_alias_entry is not None
         and semantic_alias_entry != int(pred_serial)
         and semantic_alias_entry != target_entry
     ):
@@ -1002,7 +1053,10 @@ def is_supplemental_feeder_bypass(
         return False
     if pred_serial == target_entry:
         return False
-    if pred_serial in terminal_source_owned_blocks or pred_serial in terminal_protected_blocks:
+    if (
+        pred_serial in terminal_source_owned_blocks
+        or pred_serial in terminal_protected_blocks
+    ):
         return False
     if pred_serial in owned_exact_sources:
         return False

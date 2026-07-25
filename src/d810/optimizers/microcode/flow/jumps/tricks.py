@@ -13,7 +13,10 @@ class CompareConstantRule1(JumpOptimizationRule):
         AstNode(
             ida_hexrays.m_or,
             AstNode(ida_hexrays.m_xor, AstLeaf("x_0"), AstConstant("c_1")),
-            AstNode(ida_hexrays.m_bnot, AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("c_1"))),
+            AstNode(
+                ida_hexrays.m_bnot,
+                AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("c_1")),
+            ),
         ),
     )
     RIGHT_PATTERN = AstConstant("0", 0)
@@ -38,7 +41,12 @@ class CompareConstantRule2(JumpOptimizationRule):
     LEFT_PATTERN = AstNode(
         ida_hexrays.m_or,
         AstNode(
-            ida_hexrays.m_xdu, AstNode(ida_hexrays.m_and, AstNode(ida_hexrays.m_bnot, AstLeaf("x_0")), AstConstant("c_1"))
+            ida_hexrays.m_xdu,
+            AstNode(
+                ida_hexrays.m_and,
+                AstNode(ida_hexrays.m_bnot, AstLeaf("x_0")),
+                AstConstant("c_1"),
+            ),
         ),
         AstNode(
             ida_hexrays.m_and,
@@ -46,7 +54,10 @@ class CompareConstantRule2(JumpOptimizationRule):
             AstNode(
                 ida_hexrays.m_bnot,
                 AstNode(
-                    ida_hexrays.m_xdu, AstNode(ida_hexrays.m_xor, AstLeaf("xdu1_x_0"), AstConstant("xdu_c_1"))
+                    ida_hexrays.m_xdu,
+                    AstNode(
+                        ida_hexrays.m_xor, AstLeaf("xdu1_x_0"), AstConstant("xdu_c_1")
+                    ),
                 ),
             ),
         ),
@@ -94,7 +105,10 @@ class CompareConstantRule4(JumpOptimizationRule):
         ida_hexrays.m_and,
         AstNode(
             ida_hexrays.m_or,
-            AstNode(ida_hexrays.m_bnot, AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("c_1"))),
+            AstNode(
+                ida_hexrays.m_bnot,
+                AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("c_1")),
+            ),
             AstNode(ida_hexrays.m_xor, AstLeaf("x_0"), AstConstant("c_1")),
         ),
         AstNode(ida_hexrays.m_or, AstLeaf("xdu_x_0"), AstConstant("bnot_c_1")),

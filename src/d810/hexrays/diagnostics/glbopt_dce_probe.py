@@ -16,6 +16,7 @@ keeps it alive.
 
 Pure observation; nothing in this module mutates the mba.
 """
+
 from __future__ import annotations
 
 import ida_hexrays
@@ -186,9 +187,7 @@ def probe_byte_emit_dce(
     out: List[str] = []
     qty = int(getattr(mba, "qty", 0) or 0)
     maturity = int(getattr(mba, "maturity", 0) or 0)
-    out.append(
-        f"=== GLBOPT_DCE_PROBE maturity={maturity} blocks={qty} ==="
-    )
+    out.append(f"=== GLBOPT_DCE_PROBE maturity={maturity} blocks={qty} ===")
 
     aliased = getattr(mba, "aliased_memory", None)
     restricted = getattr(mba, "restricted_memory", None)
@@ -227,10 +226,9 @@ def probe_byte_emit_dce(
     pattern_pairs: List[Tuple[Optional[int], object, object]] = [
         (None, b, i) for (b, i, _) in pattern_hits
     ]
-    for source_label, (target_ea, blk, insn) in (
-        [("ea", row) for row in candidate_pairs]
-        + [("pattern", row) for row in pattern_pairs]
-    ):
+    for source_label, (target_ea, blk, insn) in [
+        ("ea", row) for row in candidate_pairs
+    ] + [("pattern", row) for row in pattern_pairs]:
         out.append("")
         if source_label == "ea":
             out.append(f"--- byte_emit ea=0x{target_ea:x} ---")

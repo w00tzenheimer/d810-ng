@@ -27,6 +27,7 @@ Portable: no IDA, no z3.  The gate reuses the proven ``fold_exact`` primitive
 (:func:`d810.analyses.data_flow.concolic.fold_exact`) with a NON-⊤ floor, so it now does
 real per-value soundness validation.
 """
+
 from __future__ import annotations
 
 import enum
@@ -115,7 +116,9 @@ class TopCell:
     exit_path_effect_summary: ExitPathEffectSummary | None = None
 
 
-def gamma_members(floor: AbstractEvidence, *, cap: int = GAMMA_ENUM_CAP) -> frozenset[int] | None:
+def gamma_members(
+    floor: AbstractEvidence, *, cap: int = GAMMA_ENUM_CAP
+) -> frozenset[int] | None:
     """A SOUND, EXACT ``{v : floor.contains(v)}`` (γ membership), or ``None``.
 
     Returns the exact member set when the floor's value space is finitely
@@ -216,7 +219,8 @@ class CompletenessGate:
             if logger.info_on:
                 logger.info(
                     "gate(b): incomplete γ(floor)=%s ⊄ V=%s -> stay ⊤",
-                    sorted(members), sorted(v),
+                    sorted(members),
+                    sorted(v),
                 )
             return cell  # γ(floor) ⊄ V -> V is INCOMPLETE -> reject (drops Z3 CEX)
         # 2. SOUNDNESS-of-V: each claimed value validated by fold_exact against the
@@ -290,7 +294,8 @@ class CompletenessGate:
                 if logger.info_on:
                     logger.info(
                         "gate(b): fold=%#x != claimed=%#x -> drop",
-                        int(folded.concrete), int(expected),
+                        int(folded.concrete),
+                        int(expected),
                     )
                 return False
         return True
@@ -301,7 +306,8 @@ class CompletenessGate:
             if logger.info_on:
                 logger.info(
                     "gate(a): inputs_complete=%s deterministic=%s -> stay ⊤",
-                    cv.enumerated_inputs_complete, cv.deterministic,
+                    cv.enumerated_inputs_complete,
+                    cv.deterministic,
                 )
             return cell  # cannot prove image(f)=C -> stay ⊤
         if not cv.next_states:
@@ -312,7 +318,9 @@ class CompletenessGate:
             if corridor is None:
                 return cell
         # f deterministic + inputs fully enumerated => V = image(f) = C (§7 (a)).
-        return self._accept(cell, cv.next_states, floor=None, exit_path_effect_summary=corridor)
+        return self._accept(
+            cell, cv.next_states, floor=None, exit_path_effect_summary=corridor
+        )
 
     def accept_exit_path_effect_summary(
         self, corridor: ExitPathEffectSummary
@@ -358,7 +366,8 @@ class CompletenessGate:
         if logger.info_on:
             logger.info(
                 "gate: REFINE ⊤ -> V=%s (src_state=%s)",
-                sorted(v), cell.transition.src_state,
+                sorted(v),
+                cell.transition.src_state,
             )
         return TopCell(
             transition=new_tr,

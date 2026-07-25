@@ -8,6 +8,7 @@ GLBOPT1 post_d810 capture (snap 18), classify why IDA's
 Strictly read-only. Pure-algorithm consumer of pre-extracted snapshot
 evidence; the CLI assembles inputs from the diag DB.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

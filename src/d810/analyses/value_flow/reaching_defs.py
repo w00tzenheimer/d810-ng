@@ -16,6 +16,7 @@ analog, expressed against the portable :mod:`d810.analyses.data_flow` engine.
 Run it forward to answer "which definition of the return-slot carrier reaches a
 terminal, and does a dominating real carrier (e.g. ``a5+0xD0``) survive there?".
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

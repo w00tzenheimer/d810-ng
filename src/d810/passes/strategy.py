@@ -16,6 +16,7 @@ New code should import the plan-fragment types from
 :mod:`d810.transforms.plan_fragment` and ``UnflatteningStrategy`` from
 ``d810.capabilities.unflattening_strategy``.
 """
+
 from __future__ import annotations
 
 # Canonical home for ``UnflatteningStrategy`` is

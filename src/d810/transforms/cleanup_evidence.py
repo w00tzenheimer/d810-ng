@@ -1,4 +1,5 @@
 """Neutral evidence for simple flattening cleanup rewrites."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -15,17 +16,13 @@ from d810.transforms.graph_modification import (
 from d810.transforms.materialization_payload import CapturedBlockBody
 
 BAD_WHILE_LOOP_SOURCE_RULE = "bad_while_loop"
-CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY = (
-    "cleanup_conditional_redirect_proofs"
-)
+CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY = "cleanup_conditional_redirect_proofs"
 CLEANUP_DUPLICATE_REPLAY_METADATA_KEY = "cleanup_duplicate_replay_candidates"
 CLEANUP_FOLLOW_UP_RECLASSIFICATION_METADATA_KEY = (
     "cleanup_bad_while_loop_follow_up_reclassifications"
 )
 CLEANUP_SIDE_EFFECT_REPLAY_METADATA_KEY = "cleanup_side_effect_replay_candidates"
-CLEANUP_TRAMPOLINE_ISOLATION_METADATA_KEY = (
-    "cleanup_trampoline_isolation_candidates"
-)
+CLEANUP_TRAMPOLINE_ISOLATION_METADATA_KEY = "cleanup_trampoline_isolation_candidates"
 
 
 class CleanupProofVerdict(str, Enum):
@@ -65,15 +62,9 @@ class CleanupFollowUpResolutionBucket(str, Enum):
     """Read-only classification for deferred BadWhileLoop follow-up rows."""
 
     NOW_RESOLVABLE_REDIRECT = "now_resolvable_redirect"
-    NOW_RESOLVABLE_DUPLICATE_AND_REDIRECT = (
-        "now_resolvable_duplicate_and_redirect"
-    )
-    NOW_RESOLVABLE_CONDITIONAL_REDIRECT = (
-        "now_resolvable_conditional_redirect"
-    )
-    NOW_RESOLVABLE_CONDITIONAL_DUPLICATE = (
-        "now_resolvable_conditional_duplicate"
-    )
+    NOW_RESOLVABLE_DUPLICATE_AND_REDIRECT = "now_resolvable_duplicate_and_redirect"
+    NOW_RESOLVABLE_CONDITIONAL_REDIRECT = "now_resolvable_conditional_redirect"
+    NOW_RESOLVABLE_CONDITIONAL_DUPLICATE = "now_resolvable_conditional_duplicate"
     NEEDS_INSERTBLOCK_REPLAY = "needs_insertblock_replay"
     NEEDS_TRAMPOLINE_ISOLATION = "needs_trampoline_isolation"
     NEEDS_DEPENDENCY_RESCUE = "needs_dependency_rescue"
@@ -170,7 +161,7 @@ class CleanupFollowUpReclassification:
 
 @dataclass(frozen=True)
 class CleanupFollowUpTargetProof:
-    "Exact-target proof for one deferred BadWhileLoop follow-up.\n\n    Follow-up rows are diagnostic metadata. This object lets callers feed\n    modern preanalysis evidence into the read-only classifier without making the\n    cleanup engine depend on transition-report, DAG, range, or state-fixpoint\n    concrete types.\n    "
+    "Exact-target proof for one deferred BadWhileLoop follow-up.\n\n    Follow-up rows are diagnostic metadata. This object lets callers feed\n    modern preanalysis evidence into the read-only classifier without making the\n    cleanup engine depend on transition-report, DAG, range, or state-fixpoint\n    concrete types.\n"
 
     dispatcher_entry: int
     from_serial: int
@@ -338,9 +329,7 @@ def _coerce_observed_block_shape(raw: object) -> CleanupObservedBlockShape | Non
         ):
             return ()
         return tuple(
-            item
-            for raw_item in value
-            if (item := _coerce_int(raw_item)) is not None
+            item for raw_item in value if (item := _coerce_int(raw_item)) is not None
         )
 
     return CleanupObservedBlockShape(
@@ -642,9 +631,7 @@ def explain_bad_while_loop_conditional_redirect(
         targets_exist=targets_exist,
         targets_outside_cleanup=targets_outside_cleanup,
         copied_side_effects_absent=copied_side_effects_absent,
-        dispatcher_execution_dependency_absent=(
-            dispatcher_execution_dependency_absent
-        ),
+        dispatcher_execution_dependency_absent=(dispatcher_execution_dependency_absent),
         projected_dispatcher_cycle_free=projected_cycle_free,
         verdict=verdict,
         reasons=tuple(reasons),
@@ -1125,8 +1112,7 @@ def build_dispatcher_cleanup_modification(
     """Lower a neutral cleanup candidate to a graph modification."""
     if (
         isinstance(candidate, DispatcherCleanupCandidate)
-        and
-        candidate.exit_shape == CleanupExitShape.SHARED_ONE_WAY_BY_PRED
+        and candidate.exit_shape == CleanupExitShape.SHARED_ONE_WAY_BY_PRED
         and candidate.rewrite_intent == CleanupRewriteIntent.DUPLICATE_AND_REDIRECT
     ):
         raise ValueError(
@@ -1175,10 +1161,10 @@ def build_dispatcher_cleanup_modification(
             instructions=(),
         )
     exit_shape = getattr(candidate.exit_shape, "value", candidate.exit_shape)
-    rewrite_intent = getattr(candidate.rewrite_intent, "value", candidate.rewrite_intent)
-    raise ValueError(
-        f"unsupported cleanup candidate: {exit_shape}/{rewrite_intent}"
+    rewrite_intent = getattr(
+        candidate.rewrite_intent, "value", candidate.rewrite_intent
     )
+    raise ValueError(f"unsupported cleanup candidate: {exit_shape}/{rewrite_intent}")
 
 
 def extract_side_effect_replay_candidates(
@@ -1266,9 +1252,7 @@ def serialize_conditional_redirect_proofs(
             "dispatcher_execution_dependency_absent": (
                 proof.dispatcher_execution_dependency_absent
             ),
-            "projected_dispatcher_cycle_free": (
-                proof.projected_dispatcher_cycle_free
-            ),
+            "projected_dispatcher_cycle_free": (proof.projected_dispatcher_cycle_free),
             "verdict": proof.verdict.value,
             "reasons": list(proof.reasons),
         }
@@ -1383,9 +1367,7 @@ def reclassify_bad_while_loop_follow_ups(
     edits: Sequence[object] = (),
     replay_candidates: Sequence[CleanupSideEffectReplayCandidate] = (),
     duplicate_replay_candidates: Sequence[CleanupDuplicateGroupReplayCandidate] = (),
-    trampoline_isolation_candidates: Sequence[
-        CleanupTrampolineIsolationCandidate
-    ] = (),
+    trampoline_isolation_candidates: Sequence[CleanupTrampolineIsolationCandidate] = (),
     conditional_redirect_proofs: Sequence[CleanupConditionalRedirectProof] = (),
     dependency_diagnostics: Sequence[Mapping[str, object]] = (),
     transition_report: object | None = None,
@@ -1431,9 +1413,7 @@ def reclassify_bad_while_loop_follow_up(
     edits: Sequence[object] = (),
     replay_candidates: Sequence[CleanupSideEffectReplayCandidate] = (),
     duplicate_replay_candidates: Sequence[CleanupDuplicateGroupReplayCandidate] = (),
-    trampoline_isolation_candidates: Sequence[
-        CleanupTrampolineIsolationCandidate
-    ] = (),
+    trampoline_isolation_candidates: Sequence[CleanupTrampolineIsolationCandidate] = (),
     conditional_redirect_proofs: Sequence[CleanupConditionalRedirectProof] = (),
     dependency_diagnostics: Sequence[Mapping[str, object]] = (),
     transition_report: object | None = None,
@@ -1444,9 +1424,14 @@ def reclassify_bad_while_loop_follow_up(
     fields = _follow_up_fields(follow_up)
     if fields is None:
         return None
-    dispatcher_entry, from_serial, category, reason, target_serial, fallthrough_target = (
-        fields
-    )
+    (
+        dispatcher_entry,
+        from_serial,
+        category,
+        reason,
+        target_serial,
+        fallthrough_target,
+    ) = fields
 
     def make(
         bucket: CleanupFollowUpResolutionBucket,
@@ -1787,22 +1772,19 @@ def _reclassify_from_structured_edit(
         edit_type = type(edit).__name__
         if (
             edit_type == "BadWhileLoopGotoRedirect"
-            and _coerce_int(getattr(edit, "dispatcher_entry", None))
-            == dispatcher_entry
+            and _coerce_int(getattr(edit, "dispatcher_entry", None)) == dispatcher_entry
             and _coerce_int(getattr(edit, "from_serial", None)) == from_serial
         ):
             return CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_REDIRECT
         if (
             edit_type == "BadWhileLoopGotoConversion"
-            and _coerce_int(getattr(edit, "dispatcher_entry", None))
-            == dispatcher_entry
+            and _coerce_int(getattr(edit, "dispatcher_entry", None)) == dispatcher_entry
             and _coerce_int(getattr(edit, "block_serial", None)) == from_serial
         ):
             return CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_REDIRECT
         if (
             edit_type == "BadWhileLoopDuplicateRedirect"
-            and _coerce_int(getattr(edit, "dispatcher_entry", None))
-            == dispatcher_entry
+            and _coerce_int(getattr(edit, "dispatcher_entry", None)) == dispatcher_entry
             and _coerce_int(getattr(edit, "source_serial", None)) == from_serial
         ):
             candidate = bad_while_loop_duplicate_candidate(edit)
@@ -1812,8 +1794,7 @@ def _reclassify_from_structured_edit(
                 return CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_DUPLICATE_AND_REDIRECT
         if (
             edit_type == "BadWhileLoopConditionalDuplicate"
-            and _coerce_int(getattr(edit, "dispatcher_entry", None))
-            == dispatcher_entry
+            and _coerce_int(getattr(edit, "dispatcher_entry", None)) == dispatcher_entry
             and _coerce_int(getattr(edit, "source_serial", None)) == from_serial
             and (
                 target_serial is None
@@ -1827,11 +1808,12 @@ def _reclassify_from_structured_edit(
             )
         ):
             if cfg is None or validate_conditional_duplicate_cleanup_edit(cfg, edit):
-                return CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_CONDITIONAL_DUPLICATE
+                return (
+                    CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_CONDITIONAL_DUPLICATE
+                )
         if (
             edit_type == "BadWhileLoopConditionalRedirect"
-            and _coerce_int(getattr(edit, "dispatcher_entry", None))
-            == dispatcher_entry
+            and _coerce_int(getattr(edit, "dispatcher_entry", None)) == dispatcher_entry
             and _coerce_int(getattr(edit, "source_serial", None)) == from_serial
             and (
                 target_serial is None
@@ -1845,7 +1827,9 @@ def _reclassify_from_structured_edit(
             )
         ):
             if cfg is None or validate_conditional_redirect_cleanup_edit(cfg, edit):
-                return CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_CONDITIONAL_REDIRECT
+                return (
+                    CleanupFollowUpResolutionBucket.NOW_RESOLVABLE_CONDITIONAL_REDIRECT
+                )
     return None
 
 
@@ -1862,14 +1846,8 @@ def _reclassify_from_replay_candidate(
         if (
             candidate.dispatcher_entry == dispatcher_entry
             and candidate.source_serial == from_serial
-            and (
-                target_serial is None
-                or candidate.target_serial == target_serial
-            )
-            and (
-                cfg is None
-                or validate_side_effect_replay_candidate(cfg, candidate)
-            )
+            and (target_serial is None or candidate.target_serial == target_serial)
+            and (cfg is None or validate_side_effect_replay_candidate(cfg, candidate))
         ):
             return CleanupFollowUpResolutionBucket.NEEDS_INSERTBLOCK_REPLAY
     for candidate in duplicate_replay_candidates:
@@ -1877,8 +1855,7 @@ def _reclassify_from_replay_candidate(
             candidate.dispatcher_entry == dispatcher_entry
             and candidate.source_serial == from_serial
             and (
-                cfg is None
-                or validate_duplicate_group_replay_candidate(cfg, candidate)
+                cfg is None or validate_duplicate_group_replay_candidate(cfg, candidate)
             )
         ):
             return CleanupFollowUpResolutionBucket.NEEDS_INSERTBLOCK_REPLAY
@@ -1891,22 +1868,14 @@ def _reclassify_from_trampoline_candidate(
     from_serial: int,
     target_serial: int | None,
     cfg: FlowGraph | None,
-    trampoline_isolation_candidates: Sequence[
-        CleanupTrampolineIsolationCandidate
-    ],
+    trampoline_isolation_candidates: Sequence[CleanupTrampolineIsolationCandidate],
 ) -> CleanupFollowUpResolutionBucket | None:
     for candidate in trampoline_isolation_candidates:
         if (
             candidate.dispatcher_entry == dispatcher_entry
             and candidate.source_serial == from_serial
-            and (
-                target_serial is None
-                or candidate.target_serial == target_serial
-            )
-            and (
-                cfg is None
-                or validate_trampoline_isolation_candidate(cfg, candidate)
-            )
+            and (target_serial is None or candidate.target_serial == target_serial)
+            and (cfg is None or validate_trampoline_isolation_candidate(cfg, candidate))
         ):
             return CleanupFollowUpResolutionBucket.NEEDS_TRAMPOLINE_ISOLATION
     return None
@@ -1924,10 +1893,7 @@ def _matching_conditional_redirect_proof(
         if (
             proof.dispatcher_entry == dispatcher_entry
             and proof.source_serial == from_serial
-            and (
-                target_serial is None
-                or proof.conditional_target == target_serial
-            )
+            and (target_serial is None or proof.conditional_target == target_serial)
             and (
                 fallthrough_target is None
                 or proof.fallthrough_target == fallthrough_target
@@ -2001,10 +1967,10 @@ def _target_is_plannable(
     from_serial: int,
     target_serial: int,
 ) -> bool:
-    return (
-        target_serial in cfg.blocks
-        and target_serial not in {dispatcher_entry, from_serial}
-    )
+    return target_serial in cfg.blocks and target_serial not in {
+        dispatcher_entry,
+        from_serial,
+    }
 
 
 def _per_pred_targets_are_plannable(
@@ -2086,7 +2052,7 @@ def build_bad_while_loop_follow_up_proofs(
     tuple[CleanupFollowUpTargetProof, ...],
     tuple[CleanupFollowUpPerPredTargetProof, ...],
 ]:
-    "Build read-only BadWhileLoop follow-up proofs from modern evidence.\n\n    This is intentionally an adapter over structural inputs. The cleanup engine\n    should not import preanalysis/DAG/range concrete types, but callers can still feed\n    those results into the follow-up classifier through neutral proof rows.\n    "
+    "Build read-only BadWhileLoop follow-up proofs from modern evidence.\n\n    This is intentionally an adapter over structural inputs. The cleanup engine\n    should not import preanalysis/DAG/range concrete types, but callers can still feed\n    those results into the follow-up classifier through neutral proof rows.\n"
 
     target_proofs: list[CleanupFollowUpTargetProof] = []
     per_pred_proofs: list[CleanupFollowUpPerPredTargetProof] = []
@@ -2155,9 +2121,7 @@ def build_bad_while_loop_follow_up_proofs(
         fields = _follow_up_fields(follow_up)
         if fields is None:
             continue
-        dispatcher_entry, from_serial, _category, reason, _target, _fallthrough = (
-            fields
-        )
+        dispatcher_entry, from_serial, _category, reason, _target, _fallthrough = fields
         key = (dispatcher_entry, from_serial, reason)
         if dispatcher_entry not in cfg.blocks or from_serial not in cfg.blocks:
             continue
@@ -2239,7 +2203,9 @@ def _target_from_transition_report(
     return None
 
 
-def _target_from_dag_authority(authority: object | None, from_serial: int) -> int | None:
+def _target_from_dag_authority(
+    authority: object | None, from_serial: int
+) -> int | None:
     if authority is None:
         return None
     conflicts = getattr(authority, "conflicts_for_source", None)

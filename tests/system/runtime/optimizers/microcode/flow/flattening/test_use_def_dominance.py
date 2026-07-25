@@ -55,35 +55,41 @@ class TestPostModAdjacency:
     """Verify post-mod adjacency reflects RedirectGoto correctly."""
 
     def test_redirect_replaces_target(self) -> None:
-        cfg = _make_cfg([
-            (0, (10,), ()),
-            (10, (20,), (0,)),
-            (20, (), (10,)),
-            (30, (), ()),
-        ])
+        cfg = _make_cfg(
+            [
+                (0, (10,), ()),
+                (10, (20,), (0,)),
+                (20, (), (10,)),
+                (30, (), ()),
+            ]
+        )
         mod = RedirectGoto(from_serial=10, old_target=20, new_target=30)
         adj = _build_post_mod_adjacency_for_test(cfg, mod)
         assert adj[10] == [30]
 
     def test_redirect_with_missing_old_target_appends_new(self) -> None:
-        cfg = _make_cfg([
-            (0, (10,), ()),
-            (10, (), (0,)),
-            (30, (), ()),
-        ])
+        cfg = _make_cfg(
+            [
+                (0, (10,), ()),
+                (10, (), (0,)),
+                (30, (), ()),
+            ]
+        )
         # old_target=20 not in succs; detector still appends new_target.
         mod = RedirectGoto(from_serial=10, old_target=20, new_target=30)
         adj = _build_post_mod_adjacency_for_test(cfg, mod)
         assert adj[10] == [30]
 
     def test_branch_redirect_replaces_only_selected_target(self) -> None:
-        cfg = _make_cfg([
-            (0, (10,), ()),
-            (10, (20, 30), (0,)),
-            (20, (), (10,)),
-            (30, (), (10,)),
-            (40, (), ()),
-        ])
+        cfg = _make_cfg(
+            [
+                (0, (10,), ()),
+                (10, (20, 30), (0,)),
+                (20, (), (10,)),
+                (30, (), (10,)),
+                (40, (), ()),
+            ]
+        )
         mod = RedirectBranch(from_serial=10, old_target=30, new_target=40)
         adj = _build_post_mod_adjacency_for_test(cfg, mod)
         assert adj[10] == [20, 40]
@@ -103,12 +109,14 @@ class TestDominanceAfterRedirect:
         Redirect: 10 (def %var_8.4) old=20 new=20  (no-op shape).
         Block 20 still dominated by 10 in post-mod CFG.
         """
-        cfg = _make_cfg([
-            (0, (10,), ()),
-            (10, (20,), (0,)),
-            (20, (30,), (10,)),
-            (30, (), (20,)),
-        ])
+        cfg = _make_cfg(
+            [
+                (0, (10,), ()),
+                (10, (20,), (0,)),
+                (20, (30,), (10,)),
+                (30, (), (20,)),
+            ]
+        )
         mod = RedirectGoto(from_serial=10, old_target=20, new_target=20)
         adj = _build_post_mod_adjacency_for_test(cfg, mod)
         dom = compute_dom_tree(adj, entry=0)
@@ -128,14 +136,16 @@ class TestDominanceAfterRedirect:
         longer reachable on the post-mod CFG, so any DU-chain use in
         block 30 is *not* dominated by 10 (the def-block).
         """
-        cfg = _make_cfg([
-            (0, (10, 50), ()),
-            (10, (20,), (0,)),
-            (20, (30,), (10,)),
-            (50, (30,), (0,)),
-            (30, (40,), (20, 50)),
-            (40, (), (30,)),
-        ])
+        cfg = _make_cfg(
+            [
+                (0, (10, 50), ()),
+                (10, (20,), (0,)),
+                (20, (30,), (10,)),
+                (50, (30,), (0,)),
+                (30, (40,), (20, 50)),
+                (40, (), (30,)),
+            ]
+        )
         # Pre-mod: 10 dominates 20 (only path).  Does it dominate 30?
         # 30 has preds (20, 50); 50 reachable via 0 not via 10, so 10
         # already does NOT dominate 30 pre-mod.

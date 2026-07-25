@@ -16,6 +16,7 @@ and answers the carrier-delivery question for one terminal:
 * whether the dispatcher state variable is dead there (its entry-default write
   is removable).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

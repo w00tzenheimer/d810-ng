@@ -5,6 +5,7 @@ dictionary, plus lists of binary/unary expression opcodes.
 
 Ported from herast (herast/tree/consts.py).
 """
+
 from __future__ import annotations
 
 import idaapi

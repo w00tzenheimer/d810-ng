@@ -680,9 +680,9 @@ class TestGetHintStateSummary:
 
         # No hints applied -- summary should show empty suppressions
         summary = svc.get_hint_state_summary(0x1000)
-        assert (
-            summary["suppressed_rules"] == []
-        ), f"Delegate suppressions leaked into hint summary: {summary['suppressed_rules']}"
+        assert summary["suppressed_rules"] == [], (
+            f"Delegate suppressions leaked into hint summary: {summary['suppressed_rules']}"
+        )
 
     def test_summary_includes_hint_owned_suppressions(self) -> None:
         """Hint-driven suppressions must appear in the summary."""

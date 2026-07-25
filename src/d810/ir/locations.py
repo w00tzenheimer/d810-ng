@@ -10,6 +10,7 @@ Minimum viable scope: the concrete location families the recurrence / induction
 them.  Extend (or add families) on demand -- do NOT preload the universe of
 addressing modes.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

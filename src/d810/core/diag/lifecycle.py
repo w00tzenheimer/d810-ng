@@ -90,8 +90,7 @@ def persist_lifecycle_event(
     snapshot_id: int | None,
 ) -> int:
     row = conn.execute(
-        "SELECT COALESCE(MAX(event_seq),0)+1 FROM lifecycle_events "
-        "WHERE session_id=?",
+        "SELECT COALESCE(MAX(event_seq),0)+1 FROM lifecycle_events WHERE session_id=?",
         (str(event.session_id),),
     ).fetchone()
     event_seq = int(row[0])
@@ -261,9 +260,7 @@ def persist_mutation_plan(
             mba_generation_before=event.mba_generation,
             mba_generation_after=event.mba_generation,
             correlation_id=event.mutation_batch_id,
-            summary=(
-                f"{event.mutation_kind}: {event.planned_operation_count} planned"
-            ),
+            summary=(f"{event.mutation_kind}: {event.planned_operation_count} planned"),
             payload={
                 "description": event.description,
                 "mutation_kind": event.mutation_kind,
@@ -545,13 +542,15 @@ def persist_mutation_receipt(
             )
             for failure in event.fragment_failures
         ]
-        transaction_events.extend([
-            (
-                "fragment_staged",
-                "completed" if event.fragment_staged else "failed",
-                {},
-            ),
-        ])
+        transaction_events.extend(
+            [
+                (
+                    "fragment_staged",
+                    "completed" if event.fragment_staged else "failed",
+                    {},
+                ),
+            ]
+        )
         for phase in ("prepublication", "postpublication"):
             outcomes = tuple(
                 outcome
@@ -574,11 +573,7 @@ def persist_mutation_receipt(
                 transaction_events.extend(
                     (
                         "root_group_publication",
-                        (
-                            "published"
-                            if group.publication_succeeded
-                            else "failed"
-                        ),
+                        ("published" if group.publication_succeeded else "failed"),
                         {"group_id": group.group_id},
                     )
                     for group in event.root_publication_groups
@@ -587,11 +582,7 @@ def persist_mutation_receipt(
                 transaction_events.append(
                     (
                         "root_publication",
-                        (
-                            "published"
-                            if event.root_publication_succeeded
-                            else "failed"
-                        ),
+                        ("published" if event.root_publication_succeeded else "failed"),
                         {},
                     )
                 )
@@ -599,11 +590,7 @@ def persist_mutation_receipt(
             transaction_events.extend(
                 (
                     "root_group_rollback",
-                    (
-                        "succeeded"
-                        if group.rollback_succeeded
-                        else "failed"
-                    ),
+                    ("succeeded" if group.rollback_succeeded else "failed"),
                     {"group_id": group.group_id},
                 )
                 for group in event.root_publication_groups
@@ -616,9 +603,7 @@ def persist_mutation_receipt(
                     {},
                 )
             )
-        transaction_events.append(
-            ("receipt", event.outcome, {"reason": event.reason})
-        )
+        transaction_events.append(("receipt", event.outcome, {"reason": event.reason}))
         for event_index, (
             event_kind,
             outcome,

@@ -175,7 +175,7 @@ def canonicalize_ast(node: AstBase | None) -> AstBase | None:
         # ordering.  get_pattern() returns a pattern string identifying
         # the shape of the subexpression; it is safe to use for sorting.
         operands.sort(
-            key=lambda n: (n.get_pattern() if hasattr(n, "get_pattern") else str(n))
+            key=lambda n: n.get_pattern() if hasattr(n, "get_pattern") else str(n)
         )
         return _build_balanced_tree(opcode, operands)
     # Rewrite subtraction into addition of a negated operand

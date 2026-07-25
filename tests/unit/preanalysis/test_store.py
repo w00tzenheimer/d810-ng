@@ -1,4 +1,5 @@
 "Unit tests for PreanalysisStore provenance persistence tables."
+
 from __future__ import annotations
 
 import sqlite3
@@ -217,15 +218,27 @@ def test_count_functions_with_hints() -> None:
     store = _make_store()
     try:
         assert store.count_functions_with_hints() == 0
-        store.save_hints(DeobfuscationHints(
-            func_ea=0x1000, obfuscation_type="flattening", confidence=0.9,
-            recommended_inferences=("unflattening",), candidates=(), suppress_rules=(),
-        ))
+        store.save_hints(
+            DeobfuscationHints(
+                func_ea=0x1000,
+                obfuscation_type="flattening",
+                confidence=0.9,
+                recommended_inferences=("unflattening",),
+                candidates=(),
+                suppress_rules=(),
+            )
+        )
         assert store.count_functions_with_hints() == 1
-        store.save_hints(DeobfuscationHints(
-            func_ea=0x2000, obfuscation_type="", confidence=0.1,
-            recommended_inferences=(), candidates=(), suppress_rules=(),
-        ))
+        store.save_hints(
+            DeobfuscationHints(
+                func_ea=0x2000,
+                obfuscation_type="",
+                confidence=0.1,
+                recommended_inferences=(),
+                candidates=(),
+                suppress_rules=(),
+            )
+        )
         assert store.count_functions_with_hints() == 2
     finally:
         store.close()
@@ -236,9 +249,12 @@ def test_count_functions_with_session_summaries() -> None:
     try:
         assert store.count_functions_with_session_summaries() == 0
         store.save_session_summary(
-            func_ea=0x1000, collectors_fired=3,
-            classification="flattening", confidence=0.8,
-            inferences=["unflattening"], suppress_rules=[],
+            func_ea=0x1000,
+            collectors_fired=3,
+            classification="flattening",
+            confidence=0.8,
+            inferences=["unflattening"],
+            suppress_rules=[],
         )
         assert store.count_functions_with_session_summaries() == 1
     finally:
@@ -250,8 +266,10 @@ def test_count_functions_with_consumer_outcomes() -> None:
     try:
         assert store.count_functions_with_consumer_outcomes() == 0
         store.save_consumer_outcome(
-            func_ea=0x1000, consumer_name="rule_scope",
-            artifacts_available=True, summary_available=True,
+            func_ea=0x1000,
+            consumer_name="rule_scope",
+            artifacts_available=True,
+            summary_available=True,
             verdict_applied=True,
         )
         assert store.count_functions_with_consumer_outcomes() == 1
@@ -262,14 +280,26 @@ def test_count_functions_with_consumer_outcomes() -> None:
 def test_list_functions_with_hints() -> None:
     store = _make_store()
     try:
-        store.save_hints(DeobfuscationHints(
-            func_ea=0x2000, obfuscation_type="", confidence=0.1,
-            recommended_inferences=(), candidates=(), suppress_rules=(),
-        ))
-        store.save_hints(DeobfuscationHints(
-            func_ea=0x1000, obfuscation_type="flattening", confidence=0.9,
-            recommended_inferences=("unflattening",), candidates=(), suppress_rules=(),
-        ))
+        store.save_hints(
+            DeobfuscationHints(
+                func_ea=0x2000,
+                obfuscation_type="",
+                confidence=0.1,
+                recommended_inferences=(),
+                candidates=(),
+                suppress_rules=(),
+            )
+        )
+        store.save_hints(
+            DeobfuscationHints(
+                func_ea=0x1000,
+                obfuscation_type="flattening",
+                confidence=0.9,
+                recommended_inferences=("unflattening",),
+                candidates=(),
+                suppress_rules=(),
+            )
+        )
         assert store.list_functions_with_hints() == [0x1000, 0x2000]
     finally:
         store.close()
@@ -278,18 +308,27 @@ def test_list_functions_with_hints() -> None:
 def test_list_functions_missing_session_summary() -> None:
     store = _make_store()
     try:
-        store.save_hints(DeobfuscationHints(
-            func_ea=0x1000, obfuscation_type="flattening", confidence=0.9,
-            recommended_inferences=("unflattening",), candidates=(), suppress_rules=(),
-        ))
+        store.save_hints(
+            DeobfuscationHints(
+                func_ea=0x1000,
+                obfuscation_type="flattening",
+                confidence=0.9,
+                recommended_inferences=("unflattening",),
+                candidates=(),
+                suppress_rules=(),
+            )
+        )
         # No session summary yet — should appear in the gap list
         assert store.list_functions_missing_session_summary() == [0x1000]
 
         # Add session summary — gap should close
         store.save_session_summary(
-            func_ea=0x1000, collectors_fired=3,
-            classification="flattening", confidence=0.9,
-            inferences=["unflattening"], suppress_rules=[],
+            func_ea=0x1000,
+            collectors_fired=3,
+            classification="flattening",
+            confidence=0.9,
+            inferences=["unflattening"],
+            suppress_rules=[],
         )
         assert store.list_functions_missing_session_summary() == []
     finally:
@@ -300,14 +339,20 @@ def test_load_all_session_summaries() -> None:
     store = _make_store()
     try:
         store.save_session_summary(
-            func_ea=0x1000, collectors_fired=3,
-            classification="flattening", confidence=0.8,
-            inferences=["unflattening"], suppress_rules=[],
+            func_ea=0x1000,
+            collectors_fired=3,
+            classification="flattening",
+            confidence=0.8,
+            inferences=["unflattening"],
+            suppress_rules=[],
         )
         store.save_session_summary(
-            func_ea=0x2000, collectors_fired=2,
-            classification="", confidence=0.1,
-            inferences=[], suppress_rules=[],
+            func_ea=0x2000,
+            collectors_fired=2,
+            classification="",
+            confidence=0.1,
+            inferences=[],
+            suppress_rules=[],
         )
         summaries = store.load_all_session_summaries()
         assert len(summaries) == 2
@@ -365,22 +410,21 @@ def test_migration_adds_recommended_inferences_column() -> None:
     try:
         # Verify column now exists
         cols = {
-            r[1]
-            for r in store._conn.execute(
-                "PRAGMA table_info(deobfuscation_hints)"
-            )
+            r[1] for r in store._conn.execute("PRAGMA table_info(deobfuscation_hints)")
         }
         assert "recommended_inferences_json" in cols
 
         # save_hints and load_hints should work on the migrated DB
-        store.save_hints(DeobfuscationHints(
-            func_ea=0x1000,
-            obfuscation_type="flattening",
-            confidence=0.9,
-            recommended_inferences=("unflattening",),
-            candidates=(),
-            suppress_rules=(),
-        ))
+        store.save_hints(
+            DeobfuscationHints(
+                func_ea=0x1000,
+                obfuscation_type="flattening",
+                confidence=0.9,
+                recommended_inferences=("unflattening",),
+                candidates=(),
+                suppress_rules=(),
+            )
+        )
         loaded = store.load_hints(func_ea=0x1000)
         assert loaded is not None
         assert loaded.recommended_inferences == ("unflattening",)
@@ -393,22 +437,21 @@ def test_migration_idempotent_on_fresh_db() -> None:
     store = _make_store()
     try:
         cols = {
-            r[1]
-            for r in store._conn.execute(
-                "PRAGMA table_info(deobfuscation_hints)"
-            )
+            r[1] for r in store._conn.execute("PRAGMA table_info(deobfuscation_hints)")
         }
         assert "recommended_inferences_json" in cols
 
         # Full round-trip works
-        store.save_hints(DeobfuscationHints(
-            func_ea=0x2000,
-            obfuscation_type="",
-            confidence=0.5,
-            recommended_inferences=(),
-            candidates=(),
-            suppress_rules=(),
-        ))
+        store.save_hints(
+            DeobfuscationHints(
+                func_ea=0x2000,
+                obfuscation_type="",
+                confidence=0.5,
+                recommended_inferences=(),
+                candidates=(),
+                suppress_rules=(),
+            )
+        )
         loaded = store.load_hints(func_ea=0x2000)
         assert loaded is not None
         assert loaded.recommended_inferences == ()

@@ -40,7 +40,9 @@ class TestIsNeverWrittenVarRealIDA:
             if seg.perm & idaapi.SEGPERM_WRITE:
                 # Search for an address with write xrefs in this segment
                 # Only check a small portion to avoid slow tests
-                for ea in range(seg.start_ea, min(seg.start_ea + 0x1000, seg.end_ea), 4):
+                for ea in range(
+                    seg.start_ea, min(seg.start_ea + 0x1000, seg.end_ea), 4
+                ):
                     if not idaapi.is_loaded(ea):
                         continue
 
@@ -96,7 +98,9 @@ class TestIsNeverWrittenVarRealIDA:
             pytest.skip("No string literals found in binary")
 
         # Verify loaded
-        assert idaapi.is_loaded(string_ea), f"Expected string at {string_ea:#x} to be loaded"
+        assert idaapi.is_loaded(string_ea), (
+            f"Expected string at {string_ea:#x} to be loaded"
+        )
 
         # String literals should never be written to
         result = is_never_written_var(string_ea)
@@ -118,7 +122,9 @@ class TestIsNeverWrittenVarRealIDA:
             if seg.perm & idaapi.SEGPERM_WRITE:
                 # Search for an address with no xrefs in this segment
                 # Only check a small portion to avoid slow tests
-                for ea in range(seg.start_ea, min(seg.start_ea + 0x1000, seg.end_ea), 4):
+                for ea in range(
+                    seg.start_ea, min(seg.start_ea + 0x1000, seg.end_ea), 4
+                ):
                     # Check if this has any data xrefs
                     has_xref = False
                     ref_finder = idaapi.xrefblk_t()
@@ -159,7 +165,9 @@ class TestIsNeverWrittenVarRealIDA:
             func_ea = func_ea.start_ea
 
         # Verify loaded
-        assert idaapi.is_loaded(func_ea), f"Expected function at {func_ea:#x} to be loaded"
+        assert idaapi.is_loaded(func_ea), (
+            f"Expected function at {func_ea:#x} to be loaded"
+        )
 
         # Code is never written to (should only have code xrefs, not data writes)
         result = is_never_written_var(func_ea)
@@ -196,10 +204,14 @@ class TestIsNeverWrittenVarRealIDA:
         seg = idaapi.get_first_seg()
         while seg is not None:
             # Check if read-only (has read but not write permission)
-            if (seg.perm & idaapi.SEGPERM_READ) and not (seg.perm & idaapi.SEGPERM_WRITE):
+            if (seg.perm & idaapi.SEGPERM_READ) and not (
+                seg.perm & idaapi.SEGPERM_WRITE
+            ):
                 # Find first data item in this segment
                 # Only check a small portion to avoid slow tests
-                for ea in range(seg.start_ea, min(seg.start_ea + 0x1000, seg.end_ea), 4):
+                for ea in range(
+                    seg.start_ea, min(seg.start_ea + 0x1000, seg.end_ea), 4
+                ):
                     if idaapi.is_loaded(ea):
                         # Check if it has any xrefs (to make test more interesting)
                         ref_finder = idaapi.xrefblk_t()

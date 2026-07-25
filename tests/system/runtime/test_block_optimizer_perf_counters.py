@@ -104,7 +104,9 @@ class _MutationGatewayLifecycle:
         self.gateway_calls: list[tuple[int, int]] = []
         self.materializer_calls: list[tuple[int, object]] = []
 
-    def build_current_mba_identity_index(self, *, function_ea: int, mba: object) -> object:
+    def build_current_mba_identity_index(
+        self, *, function_ea: int, mba: object
+    ) -> object:
         self.build_calls.append((function_ea, mba))
         return object()
 
@@ -178,10 +180,7 @@ def test_block_optimizer_injects_the_session_mutation_gateway_port() -> None:
     assert lifecycle.build_calls == [(0x401000, block.mba)]
     assert rule.flow_context.new_mba_mutation_gateway() is gateway
     assert lifecycle.gateway_calls == [(0x401000, ida_hexrays.MMAT_GLBOPT1)]
-    assert (
-        rule.flow_context.semantic_native_body_materializer()
-        is materializer
-    )
+    assert rule.flow_context.semantic_native_body_materializer() is materializer
     assert lifecycle.materializer_calls == [(0x401000, block.mba)]
 
 

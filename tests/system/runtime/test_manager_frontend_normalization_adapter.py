@@ -127,8 +127,7 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
     assert pipeline_args["lifecycle_state"] is session.native_preanalysis
     assert pipeline_args["native_key"] == NATIVE_KEY
     assert (
-        pipeline_args["plan_authority"]
-        is session.frontend_normalization_plan_authority
+        pipeline_args["plan_authority"] is session.frontend_normalization_plan_authority
     )
     assert decision["microcode_modified"] is True
     assert decision["details"] == {
@@ -219,7 +218,9 @@ def test_live_adapter_binds_committed_import_identity_to_current_mba(
     backend = SimpleNamespace(
         committed_current_mba_identity_binding=lambda: imported_binding,
     )
-    monkeypatch.setattr(live_normalization, "_new_live_backend", lambda **_kwargs: backend)
+    monkeypatch.setattr(
+        live_normalization, "_new_live_backend", lambda **_kwargs: backend
+    )
     monkeypatch.setattr(
         live_normalization,
         "run_frontend_normalization_pipeline",
@@ -263,9 +264,7 @@ def test_live_adapter_binds_committed_import_identity_to_current_mba(
                     0xFFFFFFFFFFFFFF02,
                 ],
                 "exact_instruction_eas": [0x40A70E, 0x40A710],
-                "native_ranges": [
-                    {"start_ea": 0x40A700, "end_ea": 0x40A720}
-                ],
+                "native_ranges": [{"start_ea": 0x40A700, "end_ea": 0x40A720}],
             }
         ],
     }

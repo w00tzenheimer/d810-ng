@@ -1,4 +1,5 @@
 """Live Tigress indirect jump-table dispatcher analysis."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -23,7 +24,6 @@ from d810.hexrays.preanalysis.indirect_jump_discovery import (
 )
 
 
-
 def _parse_int(value: object, *, default: int | None = None) -> int | None:
     if value is None:
         return default
@@ -43,9 +43,8 @@ def _maturity_label(mba: object) -> str:
         import ida_hexrays  # type: ignore[import-untyped]
 
         for name in dir(ida_hexrays):
-            if (
-                name.startswith("MMAT_")
-                and int(getattr(ida_hexrays, name)) == int(value)
+            if name.startswith("MMAT_") and int(getattr(ida_hexrays, name)) == int(
+                value
             ):
                 return name
     except Exception:
@@ -115,7 +114,6 @@ def _observe_state_dispatcher_map(
             "indirect jump-table state dispatcher observation failed",
             exc_info=True,
         )
-
 
 
 def _config_table_targets_in_function(
@@ -198,8 +196,8 @@ def analyze_tigress_indirect_dispatcher_from_config(
     # the FlowGraph snapshot (llr-zeyu upstream-lift).
     flow_graph = lift(mba)
 
-    table_address, table_count, dispatch_jump_ea, discovered = (
-        _resolve_indirect_layout(mba, cfg)
+    table_address, table_count, dispatch_jump_ea, discovered = _resolve_indirect_layout(
+        mba, cfg
     )
     if table_address is None or not table_count:
         logger.debug("Tigress indirect: no configured or discovered table layout")
@@ -207,8 +205,8 @@ def analyze_tigress_indirect_dispatcher_from_config(
 
     dispatcher_serial = (
         _find_ijmp_dispatcher_serial(mba)
-        if dispatch_jump_ea is None else
-        _find_dispatcher_serial_by_ea(flow_graph, dispatch_jump_ea)
+        if dispatch_jump_ea is None
+        else _find_dispatcher_serial_by_ea(flow_graph, dispatch_jump_ea)
     )
     if dispatcher_serial is None:
         dispatcher_serial = _find_ijmp_dispatcher_serial(mba)
@@ -238,9 +236,7 @@ def analyze_tigress_indirect_dispatcher_from_config(
         _parse_int(cfg.get("state_var_stkoff")) if cfg is not None else None
     )
     state_base = (
-        (_parse_int(cfg.get("state_base"), default=1) or 1)
-        if cfg is not None
-        else 1
+        (_parse_int(cfg.get("state_base"), default=1) or 1) if cfg is not None else 1
     )
     # Backfill state-machine parameters from structural discovery when config
     # omits them (no matching config entry, or partial override).
@@ -269,9 +265,7 @@ def analyze_tigress_indirect_dispatcher_from_config(
     unique_targets = sorted({target for target in raw_targets if target})
     next_target_by_ea = {
         int(target): (
-            int(unique_targets[index + 1])
-            if index + 1 < len(unique_targets) else
-            None
+            int(unique_targets[index + 1]) if index + 1 < len(unique_targets) else None
         )
         for index, target in enumerate(unique_targets)
     }

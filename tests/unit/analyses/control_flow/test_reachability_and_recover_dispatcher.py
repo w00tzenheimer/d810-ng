@@ -3,6 +3,7 @@
 Locks the byte-identical semantics of the live ``compute_reachability_info`` walk now that it is a
 shared primitive, and proves ``recover_dispatcher`` computes reachability over a real FlowGraph.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.reachability import reachable_from
@@ -23,8 +24,13 @@ from d810.ir.flowgraph import (
 
 def _blk(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
     return BlockSnapshot(
-        serial=serial, block_type=1, succs=succs, preds=preds,
-        flags=0, start_ea=0x1000 + serial, insn_snapshots=(),
+        serial=serial,
+        block_type=1,
+        succs=succs,
+        preds=preds,
+        flags=0,
+        start_ea=0x1000 + serial,
+        insn_snapshots=(),
     )
 
 
@@ -47,7 +53,9 @@ def test_reachable_handles_cycles_without_hanging():
 def test_reachable_is_order_independent():
     # diamond: order of successor expansion must not change the reachable set
     adj = {0: (1, 2), 1: (3,), 2: (3,), 3: ()}
-    assert reachable_from(adj, 4) == reachable_from({0: (2, 1), 1: (3,), 2: (3,), 3: ()}, 4)
+    assert reachable_from(adj, 4) == reachable_from(
+        {0: (2, 1), 1: (3,), 2: (3,), 3: ()}, 4
+    )
     assert reachable_from(adj, 4) == frozenset({0, 1, 2, 3})
 
 
@@ -96,8 +104,13 @@ def _table_jump_block(
         kind=InsnKind.TABLE_JUMP,
     )
     return BlockSnapshot(
-        serial=serial, block_type=0, succs=succs, preds=preds,
-        flags=0, start_ea=0x1000 + serial, insn_snapshots=(tail,),
+        serial=serial,
+        block_type=0,
+        succs=succs,
+        preds=preds,
+        flags=0,
+        start_ea=0x1000 + serial,
+        insn_snapshots=(tail,),
     )
 
 

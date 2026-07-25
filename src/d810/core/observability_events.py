@@ -1,4 +1,5 @@
 "Diagnostic observation event dataclasses.\n\nEvent types live here under :mod:`d810.core` so the SQLite sink in\n:mod:`d810.core.diag.event_handlers` can subscribe without importing\nfrom upper layers (:mod:`d810.preanalysis`, :mod:`d810.cfg`,\n:mod:`d810.hexrays`) -- which the layered-architecture import-linter\ncontract forbids.\n\nDomain observability modules (:mod:`d810.core.observability_recon`,\n:mod:`d810.core.observability_cfg`, :mod:`d810.hexrays.observability`)\nre-export the events relevant to their domain and own the\n``observe_*`` emit helpers. Subscribers consume the dataclasses\ndirectly from this module.\n\nZero imports from :mod:`d810.core.diag` -- the sink subscribes to\nthese types but does not own them.\n"
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -148,9 +149,7 @@ class FragmentValidationOutcomeObserved:
         if self.phase not in {"prepublication", "postpublication"}:
             raise ValueError("fragment validation phase is invalid")
         if not self.postcondition or not self.subject_id:
-            raise ValueError(
-                "fragment validation requires a postcondition and subject"
-            )
+            raise ValueError("fragment validation requires a postcondition and subject")
         object.__setattr__(self, "passed", bool(self.passed))
         object.__setattr__(
             self,
@@ -181,9 +180,7 @@ class LogicalBlockVersionTransitionObserved:
         version = int(self.version)
         generation = int(self.generation)
         predecessor_version = (
-            None
-            if self.predecessor_version is None
-            else int(self.predecessor_version)
+            None if self.predecessor_version is None else int(self.predecessor_version)
         )
         anchor_ea = None if self.anchor_ea is None else int(self.anchor_ea)
         if not proxy_token or not physical_handle_token:
@@ -197,9 +194,7 @@ class LogicalBlockVersionTransitionObserved:
         if predecessor_version is not None and (
             predecessor_version < 0 or predecessor_version >= version
         ):
-            raise ValueError(
-                "logical-version predecessor must be an earlier version"
-            )
+            raise ValueError("logical-version predecessor must be an earlier version")
         if self.from_state not in states or self.to_state not in states:
             raise ValueError("logical-version transition state is invalid")
         if (self.from_state, self.to_state) not in {
@@ -227,13 +222,9 @@ class LogicalBlockVersionTransitionObserved:
                     "logical-version stable identity JSON is invalid"
                 ) from exc
             if not isinstance(identity_payload, dict):
-                raise ValueError(
-                    "logical-version stable identity must be an object"
-                )
+                raise ValueError("logical-version stable identity must be an object")
             if anchor_ea < 0:
-                raise ValueError(
-                    "logical-version EA anchor must be non-negative"
-                )
+                raise ValueError("logical-version EA anchor must be non-negative")
         object.__setattr__(self, "proxy_token", proxy_token)
         object.__setattr__(self, "version", version)
         object.__setattr__(
@@ -309,9 +300,7 @@ class FragmentRootPublicationGroupObserved:
         publication_succeeded = bool(self.publication_succeeded)
         rollback_attempted = bool(self.rollback_attempted)
         rollback_succeeded = (
-            None
-            if self.rollback_succeeded is None
-            else bool(self.rollback_succeeded)
+            None if self.rollback_succeeded is None else bool(self.rollback_succeeded)
         )
         if publication_succeeded and not publication_attempted:
             raise ValueError("root publication cannot succeed before its attempt")
@@ -379,16 +368,12 @@ class MutationPlanObserved:
                 "fragment publication must carry its complete portable plan"
             )
         if all(fragment_fields) != bool(self.root_publication_groups):
-            raise ValueError(
-                "fragment publication plan requires root-group inventory"
-            )
-        if (
-            any(
-                not isinstance(group, FragmentRootPublicationGroupObserved)
-                for group in self.root_publication_groups
-            )
-            or len({group.group_id for group in self.root_publication_groups})
-            != len(self.root_publication_groups)
+            raise ValueError("fragment publication plan requires root-group inventory")
+        if any(
+            not isinstance(group, FragmentRootPublicationGroupObserved)
+            for group in self.root_publication_groups
+        ) or len({group.group_id for group in self.root_publication_groups}) != len(
+            self.root_publication_groups
         ):
             raise TypeError("fragment mutation plan contains invalid root groups")
         if any(
@@ -407,8 +392,7 @@ class MutationPlanObserved:
                 raise ValueError("fragment publication plan JSON is invalid") from exc
             if not isinstance(payload, dict) or (
                 payload.get("plan_id") != self.fragment_plan_id
-                or payload.get("atomic_group_id")
-                != self.fragment_atomic_group_id
+                or payload.get("atomic_group_id") != self.fragment_atomic_group_id
             ):
                 raise ValueError(
                     "fragment publication plan JSON identity does not match"
@@ -441,9 +425,7 @@ class SemanticFragmentFailureObserved:
         if self.interr_code is not None and int(self.interr_code) <= 0:
             raise ValueError("semantic-fragment INTERR code must be positive")
         if self.verification_context and self.failure_kind != "verifier":
-            raise ValueError(
-                "only verifier failures may carry verification context"
-            )
+            raise ValueError("only verifier failures may carry verification context")
 
 
 @dataclass(frozen=True)
@@ -477,9 +459,10 @@ class MutationReceiptObserved:
     timestamp: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.outcome == "committed" and int(self.post_generation) != int(
-            self.pre_generation
-        ) + 1:
+        if (
+            self.outcome == "committed"
+            and int(self.post_generation) != int(self.pre_generation) + 1
+        ):
             raise ValueError("a committed receipt must advance one MBA generation")
         if self.outcome == "aborted" and int(self.post_generation) != int(
             self.pre_generation
@@ -506,26 +489,20 @@ class MutationReceiptObserved:
         if has_fragment != bool(self.fragment_atomic_group_id):
             raise ValueError("fragment receipt requires plan and atomic-group ids")
         if (self.mutation_kind == "fragment_publication") != has_fragment:
-            raise ValueError(
-                "fragment publication receipt requires fragment identity"
-            )
+            raise ValueError("fragment publication receipt requires fragment identity")
         if has_fragment != bool(self.root_publication_groups):
             raise ValueError(
                 "fragment publication receipt requires root-group outcomes"
             )
-        if (
-            any(
-                not isinstance(group, FragmentRootPublicationGroupObserved)
-                for group in self.root_publication_groups
-            )
-            or len({group.group_id for group in self.root_publication_groups})
-            != len(self.root_publication_groups)
+        if any(
+            not isinstance(group, FragmentRootPublicationGroupObserved)
+            for group in self.root_publication_groups
+        ) or len({group.group_id for group in self.root_publication_groups}) != len(
+            self.root_publication_groups
         ):
             raise TypeError("fragment receipt contains invalid root groups")
         if self.root_publication_succeeded and not self.root_publication_attempted:
-            raise ValueError(
-                "root publication cannot succeed before it is attempted"
-            )
+            raise ValueError("root publication cannot succeed before it is attempted")
         if self.rollback_attempted != (self.rollback_succeeded is not None):
             raise ValueError(
                 "rollback success is present exactly when rollback was attempted"
@@ -592,7 +569,7 @@ class DagFrontierClosureDiagnosticsObserved:
 
 @dataclass(frozen=True)
 class ConditionChainIntervalDispatcherObserved:
-    "Preanalysis observed recovered condition-chain interval-dispatcher rows.\n\n    The producer may not have a fresh SnapshotRef at the emission site, so the\n    diag sink attaches these rows to the latest snapshot for ``func_ea``.\n    "
+    "Preanalysis observed recovered condition-chain interval-dispatcher rows.\n\n    The producer may not have a fresh SnapshotRef at the emission site, so the\n    diag sink attaches these rows to the latest snapshot for ``func_ea``.\n"
 
     func_ea: int
     maturity: str
@@ -653,7 +630,7 @@ class ExitPathShortcutDecisionsObserved:
 
 @dataclass(frozen=True)
 class DagLocalFactsObserved:
-    "Preanalysis observed node-local DAG facts for a LinearizedStateDag.\n\n    ``dag`` is duck-typed: it must expose the attributes consumed by\n    :func:`d810.core.diag.snapshot.snapshot_dag_local_facts`.\n    "
+    "Preanalysis observed node-local DAG facts for a LinearizedStateDag.\n\n    ``dag`` is duck-typed: it must expose the attributes consumed by\n    :func:`d810.core.diag.snapshot.snapshot_dag_local_facts`.\n"
 
     snapshot: SnapshotRef
     dag: Any
@@ -688,7 +665,7 @@ class FactConsumersObserved:
 
 @dataclass(frozen=True)
 class FactConsumersForLatestSnapshot:
-    "Preanalysis observed fact-consumer records to attach to the latest snapshot.\n\n    Late-binding variant for post-hoc fact-consumer logging where the\n    rows do not correspond to a specific just-emitted capture but to\n    after-the-fact audit of strategy decisions. The subscriber finds\n    the latest ``snapshots`` row for ``func_ea`` and writes the rows\n    there, deduplicating against existing ``fact_consumers`` rows.\n    "
+    "Preanalysis observed fact-consumer records to attach to the latest snapshot.\n\n    Late-binding variant for post-hoc fact-consumer logging where the\n    rows do not correspond to a specific just-emitted capture but to\n    after-the-fact audit of strategy decisions. The subscriber finds\n    the latest ``snapshots`` row for ``func_ea`` and writes the rows\n    there, deduplicating against existing ``fact_consumers`` rows.\n"
 
     func_ea: int
     consumers: tuple[Any, ...]
@@ -713,7 +690,7 @@ class ModificationsObserved:
 
 @dataclass(frozen=True)
 class RenderedProgramObserved:
-    "Preanalysis observed a rendered linearized program.\n\n    ``program`` is duck-typed: subscribers introspect the attributes\n    consumed by :func:`d810.core.diag.snapshot.snapshot_rendered_program`.\n    "
+    "Preanalysis observed a rendered linearized program.\n\n    ``program`` is duck-typed: subscribers introspect the attributes\n    consumed by :func:`d810.core.diag.snapshot.snapshot_rendered_program`.\n"
 
     snapshot: SnapshotRef
     program: Any
@@ -762,7 +739,7 @@ class CfgProvenanceObserved:
 
 @dataclass(frozen=True)
 class CfgProvenanceForLatestSnapshot:
-    "CFG provenance that should attach to the latest function snapshot.\n\n    Most CFG mutation provenance is naturally tied to the next MBA\n    capture, so :class:`CfgProvenanceObserved` buffers until that\n    capture occurs. Preanalysis and planning diagnostics can be late-bound:\n    they may explain why a rewrite was *not* selected, so there may be\n    no subsequent snapshot to flush against. This event lets those\n    diagnostics use the same ``cfg_provenance`` table while explicitly\n    requesting \"latest snapshot for this function\" attribution.\n    "
+    'CFG provenance that should attach to the latest function snapshot.\n\n    Most CFG mutation provenance is naturally tied to the next MBA\n    capture, so :class:`CfgProvenanceObserved` buffers until that\n    capture occurs. Preanalysis and planning diagnostics can be late-bound:\n    they may explain why a rewrite was *not* selected, so there may be\n    no subsequent snapshot to flush against. This event lets those\n    diagnostics use the same ``cfg_provenance`` table while explicitly\n    requesting "latest snapshot for this function" attribution.\n'
 
     func_ea: int
     events: tuple[CfgProvenanceObserved, ...]

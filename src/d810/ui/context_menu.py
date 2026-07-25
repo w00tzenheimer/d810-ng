@@ -12,6 +12,7 @@ Lifecycle
 * ``populating_popup()``  -- called from hooks each time a context menu is about
   to be shown.
 """
+
 from __future__ import annotations
 
 from d810.core import typing
@@ -258,7 +259,9 @@ class D810ContextMenu:
 
         # Filter and sort by MENU_ORDER
         pseudocode_actions = [
-            action for action in self._action_instances if "pseudocode" in action.SUPPORTED_VIEWS
+            action
+            for action in self._action_instances
+            if "pseudocode" in action.SUPPORTED_VIEWS
         ]
         pseudocode_actions.sort(key=lambda action: action.MENU_ORDER)
 
@@ -297,7 +300,9 @@ class D810ContextMenu:
 
         # Filter and sort by MENU_ORDER
         disasm_actions = [
-            action for action in self._action_instances if "disasm" in action.SUPPORTED_VIEWS
+            action
+            for action in self._action_instances
+            if "disasm" in action.SUPPORTED_VIEWS
         ]
         disasm_actions.sort(key=lambda action: action.MENU_ORDER)
 

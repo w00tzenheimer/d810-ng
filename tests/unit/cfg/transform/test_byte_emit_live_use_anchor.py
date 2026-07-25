@@ -4,6 +4,7 @@ No IDA. Fake adapter records every call. The point of these tests is
 the *control flow* of the orchestrator, not the IR shape of the anchor
 (that is verified end-to-end by the snap18 source-byte count experiment).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -39,7 +40,9 @@ class FakeAnchorAdapter:
     insert_results: list[int] = field(default_factory=lambda: [301, 302])
     raise_on_extract: Exception | None = None
     raise_on_pre_return: Exception | None = None
-    raise_on_insert: list[Exception | None] = field(default_factory=lambda: [None, None])
+    raise_on_insert: list[Exception | None] = field(
+        default_factory=lambda: [None, None]
+    )
 
     calls_find_byte_emit: list[int] = field(default_factory=list)
     calls_extract: list[tuple[int, int]] = field(default_factory=list)
@@ -79,12 +82,14 @@ class FakeAnchorAdapter:
         accumulator_stkoff: int,
     ) -> int:
         idx = len(self.calls_insert)
-        self.calls_insert.append({
-            "predecessor_serial": predecessor_serial,
-            "successor_serial": successor_serial,
-            "source_addr_operand": source_addr_operand,
-            "accumulator_stkoff": accumulator_stkoff,
-        })
+        self.calls_insert.append(
+            {
+                "predecessor_serial": predecessor_serial,
+                "successor_serial": successor_serial,
+                "source_addr_operand": source_addr_operand,
+                "accumulator_stkoff": accumulator_stkoff,
+            }
+        )
         if idx < len(self.raise_on_insert) and self.raise_on_insert[idx] is not None:
             raise self.raise_on_insert[idx]
         return self.insert_results[idx]

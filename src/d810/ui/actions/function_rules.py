@@ -2,6 +2,7 @@
 
 Show and edit function-scoped rule overrides for the current pseudocode function.
 """
+
 from __future__ import annotations
 
 from d810.core import typing
@@ -69,7 +70,9 @@ def _resolve_initial_enabled_rule_names(
     enabled = set(override.enabled_rules)
     disabled = set(override.disabled_rules)
     if enabled:
-        return {name for name in all_rule_names if name in enabled and name not in disabled}
+        return {
+            name for name in all_rule_names if name in enabled and name not in disabled
+        }
     return set(all_rule_names) - disabled
 
 
@@ -118,7 +121,9 @@ class FunctionRulesDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[
         super().__init__(parent)
         self._available_rules = available_rules
         self._all_rule_names = {
-            str(getattr(rule, "name", "")) for rule in available_rules if getattr(rule, "name", "")
+            str(getattr(rule, "name", ""))
+            for rule in available_rules
+            if getattr(rule, "name", "")
         }
         self.setWindowTitle(f"Function Rules: {func_name}")
 
@@ -127,13 +132,13 @@ class FunctionRulesDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[
         self._summary_label = QLabel()
         layout.addWidget(self._summary_label)
 
-        self._details_label = QLabel(
-            f"Function: {func_name} @ 0x{func_ea:X}"
-        )
+        self._details_label = QLabel(f"Function: {func_name} @ 0x{func_ea:X}")
         layout.addWidget(self._details_label)
 
         self._rule_tree = RuleTreeWidget(self)
-        self._rule_tree.set_rules(available_rules, enabled_names=initial_enabled_rule_names)
+        self._rule_tree.set_rules(
+            available_rules, enabled_names=initial_enabled_rule_names
+        )
         self._rule_tree.set_read_only(False)
         self._rule_tree.rule_toggled.connect(self._on_rule_toggled)
         layout.addWidget(self._rule_tree)
@@ -186,7 +191,9 @@ class FunctionRulesDialog(QDialog if QT_AVAILABLE else object):  # type: ignore[
     def _refresh_summary(self) -> None:
         selected = self.selected_rule_names()
         total = len(self._all_rule_names)
-        self._summary_label.setText(f"Enabled for this function: {len(selected)}/{total}")
+        self._summary_label.setText(
+            f"Enabled for this function: {len(selected)}/{total}"
+        )
 
 
 class FunctionRules(D810ActionHandler):
@@ -246,7 +253,9 @@ class FunctionRules(D810ActionHandler):
             initial_tags = set(manager.get_function_tags(func_ea))
 
         all_rule_names = {
-            str(getattr(rule, "name", "")) for rule in available_rules if getattr(rule, "name", "")
+            str(getattr(rule, "name", ""))
+            for rule in available_rules
+            if getattr(rule, "name", "")
         }
         initial_enabled = _resolve_initial_enabled_rule_names(all_rule_names, override)
         initial_notes = override.notes if override is not None else ""
@@ -263,7 +272,9 @@ class FunctionRules(D810ActionHandler):
             return 0
 
         enabled_names = dialog.selected_rule_names()
-        enabled_rules, disabled_rules = _build_override_sets(all_rule_names, enabled_names)
+        enabled_rules, disabled_rules = _build_override_sets(
+            all_rule_names, enabled_names
+        )
         tags = dialog.tags_set()
         notes = dialog.notes_text()
 

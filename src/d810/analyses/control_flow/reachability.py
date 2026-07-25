@@ -10,6 +10,7 @@ Pure forward reachability over an adjacency map. Defined ONCE and reused by ever
 The result is the reachable SET, so it is independent of traversal order — byte-identical to the
 live DFS it was extracted from.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Iterable, Mapping

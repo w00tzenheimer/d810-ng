@@ -1,4 +1,5 @@
 """Trace imported-snippet provenance around one native CFG frontier."""
+
 from __future__ import annotations
 
 import argparse
@@ -81,9 +82,7 @@ def main() -> None:
                 owners_by_imported_ea: dict[int, tuple[int, ...]] = {}
                 for target_ea, root in roots.items():
                     for imported_ea in root.owned_instruction_eas:
-                        owners_by_imported_ea.setdefault(
-                            int(imported_ea), ()
-                        )
+                        owners_by_imported_ea.setdefault(int(imported_ea), ())
                         owners_by_imported_ea[int(imported_ea)] = (
                             *owners_by_imported_ea[int(imported_ea)],
                             int(target_ea),
@@ -144,8 +143,7 @@ def main() -> None:
                         flush=True,
                     )
                     queue.extend(
-                        (int(successor), depth + 1)
-                        for successor in block.succset
+                        (int(successor), depth + 1) for successor in block.succset
                     )
                 return 0
 

@@ -1,4 +1,5 @@
 "ConditionalForkFallbackStrategy \u2014 conditional redirect wrapper over preanalysis."
+
 from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING
@@ -21,6 +22,7 @@ from d810.transforms.plan_fragment import (
 from d810.backends.hexrays.evidence.conditional_chain_resolution import (
     collect_conditional_fork_resolution_candidates,
 )
+
 if TYPE_CHECKING:
     from d810.transforms.snapshot import (
         AnalysisSnapshot,
@@ -126,8 +128,7 @@ class ConditionalForkFallbackStrategy:
             )
             owned_blocks.add(int(candidate.from_block))
             owned_transitions.update(
-                (int(from_s), int(to_s))
-                for from_s, to_s in candidate.owned_transitions
+                (int(from_s), int(to_s)) for from_s, to_s in candidate.owned_transitions
             )
 
             if logger.debug_on:

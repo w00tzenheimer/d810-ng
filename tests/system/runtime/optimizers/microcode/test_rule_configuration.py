@@ -1,4 +1,5 @@
 """Regression tests for optimizer rule configuration reuse across projects."""
+
 from __future__ import annotations
 
 import ida_hexrays

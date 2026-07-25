@@ -1,4 +1,5 @@
 """Tests for ProjectContext rule filtering API."""
+
 import pytest
 from unittest.mock import MagicMock, patch
 

@@ -8,13 +8,15 @@ from d810.transforms.graph_modification import (
     RedirectGoto,
 )
 from d810.transforms.loop_bound_writer_guard import LoopBoundWriterDiagnostic
-from d810.transforms.lowering_selector import can_duplicate_path_tail, is_valid_pred_split_pair
+from d810.transforms.lowering_selector import (
+    can_duplicate_path_tail,
+    is_valid_pred_split_pair,
+)
 
 
 # ``LoopBoundWriterDiagnostic`` is imported from
 # :mod:`d810.transforms.loop_bound_writer_guard` to type the loop-bound
 # decision field below.
-
 
 
 class PathTailEmissionKind:
@@ -99,7 +101,11 @@ def plan_path_tail_emission(
     source_branch_arm: int | None,
     other_preds: tuple[int, ...],
 ) -> PathTailEmissionPlan:
-    if npreds > 1 and shared_handoff_target is not None and shared_handoff_target != int(target_entry):
+    if (
+        npreds > 1
+        and shared_handoff_target is not None
+        and shared_handoff_target != int(target_entry)
+    ):
         return PathTailEmissionPlan(
             accepted=False,
             rejection_reason="shared_handoff_conflict",
@@ -261,7 +267,9 @@ def plan_path_tail_redirect(
             accepted=False,
             rejection_reason="non_oneway_source",
         )
-    if context.old_target is None or int(context.old_target) == int(context.target_entry):
+    if context.old_target is None or int(context.old_target) == int(
+        context.target_entry
+    ):
         return PathTailRedirectDecision(
             accepted=False,
             rejection_reason="noop_or_missing_old_target",
@@ -339,7 +347,9 @@ def apply_path_tail_emission_plan(
     if emission_plan.modification is None:
         raise ValueError("path-tail emission plan has no modification")
     if emission_plan.block_source is None or emission_plan.target_entry is None:
-        raise ValueError("path-tail emission plan is missing block source or target entry")
+        raise ValueError(
+            "path-tail emission plan is missing block source or target entry"
+        )
 
     source_block = int(emission_plan.block_source)
     target_entry = int(emission_plan.target_entry)

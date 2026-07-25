@@ -41,53 +41,53 @@ _UNSIGNED_TYPE_BY_SIZE = {
 
 # Binary operators: opcode -> (operator_string, signed_hint)
 _BINARY_OPS = {
-    ida_hexrays.m_add:  "+",
-    ida_hexrays.m_sub:  "-",
-    ida_hexrays.m_mul:  "*",
+    ida_hexrays.m_add: "+",
+    ida_hexrays.m_sub: "-",
+    ida_hexrays.m_mul: "*",
     ida_hexrays.m_udiv: "/u",
     ida_hexrays.m_sdiv: "/s",
     ida_hexrays.m_umod: "%u",
     ida_hexrays.m_smod: "%s",
-    ida_hexrays.m_or:   "|",
-    ida_hexrays.m_and:  "&",
-    ida_hexrays.m_xor:  "^",
-    ida_hexrays.m_shl:  "<<",
-    ida_hexrays.m_shr:  ">>u",
-    ida_hexrays.m_sar:  ">>s",
+    ida_hexrays.m_or: "|",
+    ida_hexrays.m_and: "&",
+    ida_hexrays.m_xor: "^",
+    ida_hexrays.m_shl: "<<",
+    ida_hexrays.m_shr: ">>u",
+    ida_hexrays.m_sar: ">>s",
 }
 
 # Unary operators: opcode -> prefix
 _UNARY_OPS = {
-    ida_hexrays.m_neg:  "-",
+    ida_hexrays.m_neg: "-",
     ida_hexrays.m_lnot: "!",
     ida_hexrays.m_bnot: "~",
 }
 
 # Set-condition opcodes: opcode -> C comparison string
 _SET_OPS = {
-    ida_hexrays.m_setz:  "==",
+    ida_hexrays.m_setz: "==",
     ida_hexrays.m_setnz: "!=",
     ida_hexrays.m_setae: ">=u",
-    ida_hexrays.m_setb:  "<u",
-    ida_hexrays.m_seta:  ">u",
+    ida_hexrays.m_setb: "<u",
+    ida_hexrays.m_seta: ">u",
     ida_hexrays.m_setbe: "<=u",
-    ida_hexrays.m_setg:  ">s",
+    ida_hexrays.m_setg: ">s",
     ida_hexrays.m_setge: ">=s",
-    ida_hexrays.m_setl:  "<s",
+    ida_hexrays.m_setl: "<s",
     ida_hexrays.m_setle: "<=s",
 }
 
 # Conditional jump opcodes: opcode -> C comparison string
 _JCC_OPS = {
     ida_hexrays.m_jnz: "!=",
-    ida_hexrays.m_jz:  "==",
+    ida_hexrays.m_jz: "==",
     ida_hexrays.m_jae: ">=u",
-    ida_hexrays.m_jb:  "<u",
-    ida_hexrays.m_ja:  ">u",
+    ida_hexrays.m_jb: "<u",
+    ida_hexrays.m_ja: ">u",
     ida_hexrays.m_jbe: "<=u",
-    ida_hexrays.m_jg:  ">s",
+    ida_hexrays.m_jg: ">s",
     ida_hexrays.m_jge: ">=s",
-    ida_hexrays.m_jl:  "<s",
+    ida_hexrays.m_jl: "<s",
     ida_hexrays.m_jle: "<=s",
 }
 
@@ -95,6 +95,7 @@ _JCC_OPS = {
 # ---------------------------------------------------------------------------
 # Number formatting
 # ---------------------------------------------------------------------------
+
 
 def _format_number(value: int) -> str:
     """Format a numeric value: decimal for 0-9, hex otherwise."""
@@ -300,6 +301,7 @@ def render_mop(mop, as_expression: bool = False) -> str:
 # Instruction rendering (expression form, no assignment)
 # ---------------------------------------------------------------------------
 
+
 def render_insn_as_expr(ins) -> str:
     """Render a microcode instruction as an inline expression (no dest assignment).
 
@@ -426,6 +428,7 @@ def render_insn_as_expr(ins) -> str:
 # Instruction rendering (full statement form)
 # ---------------------------------------------------------------------------
 
+
 def render_insn(ins) -> str:
     """Render a single microcode instruction as a C-like statement.
 
@@ -515,8 +518,12 @@ def render_insn(ins) -> str:
         return f"{prefix}{op_prefix}{l_str}"
 
     # Cast/extend operators: xds, xdu, low, high
-    if opcode in (ida_hexrays.m_xds, ida_hexrays.m_xdu,
-                  ida_hexrays.m_low, ida_hexrays.m_high):
+    if opcode in (
+        ida_hexrays.m_xds,
+        ida_hexrays.m_xdu,
+        ida_hexrays.m_low,
+        ida_hexrays.m_high,
+    ):
         expr = render_insn_as_expr(ins)
         d_str = render_mop(ins.d)
         if d_str:
@@ -564,6 +571,7 @@ def render_insn(ins) -> str:
 # ---------------------------------------------------------------------------
 # Block rendering
 # ---------------------------------------------------------------------------
+
 
 def render_block(blk) -> List[str]:
     """Render all instructions in a microcode block as pseudocode lines.

@@ -40,7 +40,9 @@ class Z3ConstantOptimization(Z3Rule):
             self.min_nb_constant = kwargs["min_nb_constant"]
 
     @typing.override
-    def check_and_replace(self, blk: ida_hexrays.mblock_t, instruction: ida_hexrays.minsn_t) -> ida_hexrays.minsn_t | None:
+    def check_and_replace(
+        self, blk: ida_hexrays.mblock_t, instruction: ida_hexrays.minsn_t
+    ) -> ida_hexrays.minsn_t | None:
         tmp = minsn_to_ast(instruction)
         if tmp is None:
             return None

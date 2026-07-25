@@ -1,4 +1,5 @@
 """Integration test for ProjectContext rule filtering API."""
+
 import os
 import platform
 
@@ -12,7 +13,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 def get_func_ea(name: str) -> int:

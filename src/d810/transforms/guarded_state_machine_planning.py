@@ -1,7 +1,12 @@
 """CFG planning for guarded_state_machine facts."""
+
 from __future__ import annotations
 
-from d810.transforms.graph_modification import GraphModification, RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    GraphModification,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.core.typing import Protocol, Sequence
 
 

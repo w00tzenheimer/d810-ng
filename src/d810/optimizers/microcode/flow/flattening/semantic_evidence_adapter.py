@@ -48,9 +48,7 @@ class SessionCanonicalSemanticEvidenceProvider:
     ) -> CanonicalSemanticEvidence | None:
         if int(function_ea) != self.function_ea:
             return None
-        return self.state.canonical_semantic_candidate_evidence_for(
-            self.native_key
-        )
+        return self.state.canonical_semantic_candidate_evidence_for(self.native_key)
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,6 +5,7 @@ switch-table) runs the SAME passes, which re-derive their own evidence from ``ct
 This module owns the canonical 5-tuple — the DRY source consumed by the family
 ``pipeline_for`` implementations and config-v2 shadow migration.
 """
+
 from __future__ import annotations
 
 from d810.passes.pass_pipeline import (
@@ -154,9 +155,7 @@ TRANSITION_CONTRACT = _state_machine_contract(
 )
 REGION_CONTRACT = _state_machine_contract(
     requires_analyses=REGION_ANALYSES.required,
-    requires_facts=frozenset(
-        {ROLE_DISPATCHER_FACT, RECOVERED_STATE_TRANSITION_FACT}
-    ),
+    requires_facts=frozenset({ROLE_DISPATCHER_FACT, RECOVERED_STATE_TRANSITION_FACT}),
     outputs_facts=frozenset({RECOVERED_REGION_FACT}),
 )
 MUTATING_STATE_MACHINE_PRESERVED_ANALYSES = frozenset({"function_boundaries"})

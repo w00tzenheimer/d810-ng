@@ -71,9 +71,7 @@ def _fixpoint_claimed_sources(
     condition_chain_set = {int(dispatcher_serial)}
     condition_chain_set.update(int(block) for block in condition_chain_blocks)
 
-    pinned_sources = {
-        int(source) for source in (pinned_claimed_sources or set())
-    }
+    pinned_sources = {int(source) for source in (pinned_claimed_sources or set())}
     for source in tuple(sorted(fixpoint_claimed)):
         if source in pinned_sources:
             continue
@@ -85,7 +83,10 @@ def _fixpoint_claimed_sources(
         if projected_block is None or getattr(projected_block, "nsucc", 0) != 1:
             continue
         projected_target = int(projected_block.succs[0])
-        if projected_target != int(dispatcher_serial) and projected_target not in condition_chain_set:
+        if (
+            projected_target != int(dispatcher_serial)
+            and projected_target not in condition_chain_set
+        ):
             continue
 
         out_map = constant_result.out_stk_maps.get(source, {})
@@ -97,7 +98,11 @@ def _fixpoint_claimed_sources(
             exact_dispatcher_map=exact_dispatcher_map,
             dispatcher=dispatcher,
         )
-        if resolved is None or int(resolved) in condition_chain_set or int(resolved) == source:
+        if (
+            resolved is None
+            or int(resolved) in condition_chain_set
+            or int(resolved) == source
+        ):
             continue
 
         fixpoint_claimed.discard(source)
@@ -113,7 +118,10 @@ def _fixpoint_claimed_sources(
         if block is None or block.nsucc != 1:
             continue
         old_target = int(block.succs[0])
-        if old_target != int(dispatcher_serial) and old_target not in condition_chain_set:
+        if (
+            old_target != int(dispatcher_serial)
+            and old_target not in condition_chain_set
+        ):
             continue
 
         out_map = constant_result.out_stk_maps.get(source, {})
@@ -201,9 +209,9 @@ def plan_reconstruction_postprocess_modifications(
         list(early_return_plan.modifications)
     )
     pinned_return_claimed_sources = set(early_return_plan.claimed_sources)
-    claimed_sources = (
-        base_claimed_sources - set(return_claimed_sources)
-    ) | set(early_return_plan.claimed_sources)
+    claimed_sources = (base_claimed_sources - set(return_claimed_sources)) | set(
+        early_return_plan.claimed_sources
+    )
     claimed_targets = set(base_claimed_targets)
 
     bridge_plan = plan_reconstruction_bridge_modifications(

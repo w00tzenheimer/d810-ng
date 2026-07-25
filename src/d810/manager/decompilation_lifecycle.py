@@ -54,9 +54,9 @@ class DecompilationSessionContext:
     preopt_ready_emitted_for_current_mba: bool = False
     preopt_refresh_consumers_for_current_mba: set[str] = field(default_factory=set)
     resolver_attachment: ResolverEvidenceAttachment | None = None
-    frontend_normalization_plan_authority: (
-        SessionFrontendNormalizationPlanAuthority
-    ) = field(init=False)
+    frontend_normalization_plan_authority: SessionFrontendNormalizationPlanAuthority = (
+        field(init=False)
+    )
 
     def __post_init__(self) -> None:
         self.frontend_normalization_plan_authority = (
@@ -632,8 +632,7 @@ class DecompilationLifecycleCoordinator:
             return factory(session=session, mba=mba)
         except Exception:
             logger.debug(
-                "semantic native-body materializer creation failed for "
-                "func=0x%x",
+                "semantic native-body materializer creation failed for func=0x%x",
                 int(function_ea),
                 exc_info=True,
             )

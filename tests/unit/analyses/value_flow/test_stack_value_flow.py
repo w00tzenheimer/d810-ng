@@ -6,6 +6,7 @@ structural interface (the provider reads ``blocks``, ``successors`` /
 ``predecessors``, ``entry_serial``, ``insn_snapshots``, ``insn.d/l/r``,
 and portable stack ``MopSnapshot`` identity).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -58,11 +59,16 @@ class _Graph:
 
 def _carrier_graph():
     # 0 entry: ret <- entry-default(state); v49 <- carrier(a5+0xD0); state <- x  -> {1, 2}
-    b0 = _Block(0, (1, 2), (), (
-        _Insn(0x100, d=_stack(RET)),
-        _Insn(0x104, d=_stack(CARRIER)),
-        _Insn(0x108, d=_stack(STATE)),
-    ))
+    b0 = _Block(
+        0,
+        (1, 2),
+        (),
+        (
+            _Insn(0x100, d=_stack(RET)),
+            _Insn(0x104, d=_stack(CARRIER)),
+            _Insn(0x108, d=_stack(STATE)),
+        ),
+    )
     # 1 aligned terminal: returns ret (uses ret), defines nothing
     b1 = _Block(1, (), (0,), (_Insn(0x200, l=_stack(RET)),))
     # 2 byte path: uses state, redefines ret
@@ -89,10 +95,18 @@ def test_carrier_verdict_at_aligned_terminal():
 def test_carrier_terminal_returns_fixes_only_leaking_dominated_dead():
     leak = (("entry", 0x100),)  # the entry-default state def-site
     verdicts = {
-        1: CarrierVerdict(frozenset(leak), carrier_dominates=True, state_dead=True),   # leak -> fix
-        2: CarrierVerdict(frozenset({("blk2", 0x300)}), True, True),  # real computed value -> keep
-        3: CarrierVerdict(frozenset(leak), carrier_dominates=False, state_dead=True),  # carrier unavailable -> keep
-        4: CarrierVerdict(frozenset(leak), carrier_dominates=True, state_dead=False),  # state live -> keep
+        1: CarrierVerdict(
+            frozenset(leak), carrier_dominates=True, state_dead=True
+        ),  # leak -> fix
+        2: CarrierVerdict(
+            frozenset({("blk2", 0x300)}), True, True
+        ),  # real computed value -> keep
+        3: CarrierVerdict(
+            frozenset(leak), carrier_dominates=False, state_dead=True
+        ),  # carrier unavailable -> keep
+        4: CarrierVerdict(
+            frozenset(leak), carrier_dominates=True, state_dead=False
+        ),  # state live -> keep
     }
     fixes = carrier_terminal_returns(
         verdicts, carrier_expr="a5 + 0xD0", leak_def_sites=leak
@@ -106,6 +120,6 @@ def test_build_facts_shapes():
     assert reaching[0].gen[RET] == frozenset({(0, 0x100)})
     assert reaching[0].gen[CARRIER] == frozenset({(0, 0x104)})
     liveness = build_liveness_facts(graph, {RET, CARRIER, STATE})
-    assert STATE in liveness[2].used        # byte path reads the state var
-    assert RET in liveness[2].defined        # ...and redefines the return slot
-    assert STATE not in liveness[1].used     # aligned terminal does not read the state var
+    assert STATE in liveness[2].used  # byte path reads the state var
+    assert RET in liveness[2].defined  # ...and redefines the return slot
+    assert STATE not in liveness[1].used  # aligned terminal does not read the state var

@@ -410,7 +410,6 @@ class TestDumpFunctionPseudocode:
                 # Dump dispatcher tree if available
                 manual_diag_handlers_installed = False
                 try:
-
                     _condition_chain_maturity_name = request.config.getoption(
                         "--dump-condition-chain-maturity", default=None
                     )
@@ -440,7 +439,8 @@ class TestDumpFunctionPseudocode:
                             pass
                     if _condition_chain_maturity_name:
                         target_mat = _condition_chain_maturity_map.get(
-                            _condition_chain_maturity_name.upper(), ida_hexrays.MMAT_GLBOPT1
+                            _condition_chain_maturity_name.upper(),
+                            ida_hexrays.MMAT_GLBOPT1,
                         )
                         func = idaapi.get_func(func_ea)
                         mbr = idaapi.mba_ranges_t()
@@ -449,7 +449,9 @@ class TestDumpFunctionPseudocode:
                         mba = idaapi.gen_microcode(
                             mbr, hf, None, idaapi.DECOMP_NO_WAIT, target_mat
                         )
-                        mba_source = f"gen_microcode({_condition_chain_maturity_name.upper()})"
+                        mba_source = (
+                            f"gen_microcode({_condition_chain_maturity_name.upper()})"
+                        )
                     else:
                         cfunc_raw = idaapi.decompile(
                             func_ea, flags=idaapi.DECOMP_NO_CACHE
@@ -519,8 +521,12 @@ class TestDumpFunctionPseudocode:
                                         dispatcher_serial,
                                         state_var_stkoff=hodur_stkoff,
                                     )
-                                    rendered_programs_to_snapshot.append(linearized_program)
-                                    print(f"\n--- LINEARIZED PROGRAM ({mba_source}) ---")
+                                    rendered_programs_to_snapshot.append(
+                                        linearized_program
+                                    )
+                                    print(
+                                        f"\n--- LINEARIZED PROGRAM ({mba_source}) ---"
+                                    )
                                     print(dump_linearized_program(linearized_program))
                                     print("=" * 88)
                                 except Exception as e:
@@ -532,7 +538,9 @@ class TestDumpFunctionPseudocode:
                                         state_var_stkoff=hodur_stkoff,
                                         order_strategy=RenderOrderStrategy.SEMANTIC,
                                     )
-                                    rendered_programs_to_snapshot.append(semantic_program)
+                                    rendered_programs_to_snapshot.append(
+                                        semantic_program
+                                    )
                                     print(
                                         f"\n--- LINEARIZED PROGRAM SEMANTIC ({mba_source}) ---"
                                     )
@@ -557,7 +565,11 @@ class TestDumpFunctionPseudocode:
                                     print(
                                         f"\n--- LINEARIZED PROGRAM SEMANTIC LOCAL BOUNDARIES ({mba_source}) ---"
                                     )
-                                    print(dump_linearized_program(semantic_boundary_program))
+                                    print(
+                                        dump_linearized_program(
+                                            semantic_boundary_program
+                                        )
+                                    )
                                     print("=" * 88)
                                 except Exception as e:
                                     print(
@@ -574,7 +586,9 @@ class TestDumpFunctionPseudocode:
                                     boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
                                     comment_mode=ProgramCommentMode.MINIMAL,
                                 )
-                                rendered_programs_to_snapshot.append(reference_like_program)
+                                rendered_programs_to_snapshot.append(
+                                    reference_like_program
+                                )
                                 print(
                                     f"\n--- LINEARIZED PROGRAM SEMANTIC REFERENCE-LIKE ({mba_source}) ---"
                                 )
@@ -635,7 +649,9 @@ class TestDumpFunctionPseudocode:
                                         label_render_mode=LabelRenderMode.IDA_BLOCK_SERIAL,
                                         boundary_inline_mode=BoundaryInlineMode.INLINE_SINGLE_LEVEL,
                                     )
-                                    rendered_programs_to_snapshot.append(ida_label_program)
+                                    rendered_programs_to_snapshot.append(
+                                        ida_label_program
+                                    )
                                     print(
                                         f"\n--- LINEARIZED PROGRAM SEMANTIC LOCAL BOUNDARIES IDA LABELS ({mba_source}) ---"
                                     )
@@ -728,7 +744,11 @@ class TestDumpFunctionPseudocode:
                             snapshot_rendered_program as _snap_rendered_program,
                         )
 
-                        _condition_chain_mat = _condition_chain_maturity_name.upper() if _condition_chain_maturity_name else "LVARS"
+                        _condition_chain_mat = (
+                            _condition_chain_maturity_name.upper()
+                            if _condition_chain_maturity_name
+                            else "LVARS"
+                        )
                         _diag_conn = get_diag_conn(func_ea)
                         if _diag_conn is not None:
                             _snap_blocks = mba_to_block_snapshots(mba)
@@ -923,6 +943,7 @@ class TestDumpFunctionPseudocode:
                         os.unlink(capture_path)
 
                     from d810.core.settings import configure_settings, reset_settings
+
                     configure_settings(
                         capture_post_maturity=target_mat_int,
                         capture_post_file=capture_path,
@@ -1093,8 +1114,12 @@ class TestDumpFunctionPseudocode:
 
                         _diag_conn = get_diag_conn(func_ea)
                         if _diag_conn is not None:
-                            from d810.hexrays.mba_serializer import mba_to_block_snapshots
-                            from d810.core.diag.snapshot import snapshot_mba as _snap_mba
+                            from d810.hexrays.mba_serializer import (
+                                mba_to_block_snapshots,
+                            )
+                            from d810.core.diag.snapshot import (
+                                snapshot_mba as _snap_mba,
+                            )
 
                             # Re-use the live MBA from human-readable if available,
                             # otherwise generate one now.

@@ -3,6 +3,7 @@
 Pure: builds a synthetic in-memory diag DB (no IDA, no real run) with a tiny
 dispatcher condition chain and asserts the reconstructed route + provenance.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -55,12 +56,30 @@ def _make_db() -> sqlite3.Connection:
         "INSERT INTO instructions VALUES(?,?,?,?,?,?,?,?)",
         [
             # root comparison: jg #0x100, @10  (taken when state > 0x100)
-            (SNAP, 3, "jg     eax.4, #0x100.4, @10", "0x1000", None, None, None, "op_jg"),
+            (
+                SNAP,
+                3,
+                "jg     eax.4, #0x100.4, @10",
+                "0x1000",
+                None,
+                None,
+                None,
+                "op_jg",
+            ),
             # leaf entry EAs (first insn per block)
             (SNAP, 10, "stx    rax, ds, var", "0x1100", None, None, None, "op_stx"),
             (SNAP, 4, "mov    #1, eax", "0x1200", None, None, None, "op_mov"),
             # literal writer of state 0x200
-            (SNAP, 20, "mov    #0x200.4, %var_694.4", "0x2000", 52, 0x200, "0x0000000000000200", "op_mov"),
+            (
+                SNAP,
+                20,
+                "mov    #0x200.4, %var_694.4",
+                "0x2000",
+                52,
+                0x200,
+                "0x0000000000000200",
+                "op_mov",
+            ),
         ],
     )
     # recovery deliberately mis-records 0x200 -> blk99 (route says blk10)

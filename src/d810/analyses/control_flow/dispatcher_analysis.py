@@ -130,15 +130,10 @@ def _metadata_int(flow_graph: FlowGraph, key: str, *, default: int) -> int:
 
 
 def _iter_blocks(flow_graph: FlowGraph) -> list[tuple[int, BlockSnapshot]]:
-    return [
-        (serial, flow_graph.blocks[serial])
-        for serial in sorted(flow_graph.blocks)
-    ]
+    return [(serial, flow_graph.blocks[serial]) for serial in sorted(flow_graph.blocks)]
 
 
-def _get_or_create_block(
-    analysis: DispatcherAnalysis, serial: int
-) -> BlockAnalysis:
+def _get_or_create_block(analysis: DispatcherAnalysis, serial: int) -> BlockAnalysis:
     if serial not in analysis.blocks:
         analysis.blocks[serial] = BlockAnalysis(serial=serial)
     return analysis.blocks[serial]
@@ -156,8 +151,7 @@ def _block_has_control_transfer(
     transfer: ControlTransferKind,
 ) -> bool:
     return any(
-        instruction.control is not None
-        and instruction.control.transfer is transfer
+        instruction.control is not None and instruction.control.transfer is transfer
         for instruction in InstructionProjection.from_block(block)
     )
 
@@ -269,10 +263,7 @@ def _analyze_state_comparisons(
             best_identity = identity
             best_comparisons = comparisons
 
-    if (
-        len(best_comparisons) < MIN_UNIQUE_CONSTANTS
-        or best_identity is None
-    ):
+    if len(best_comparisons) < MIN_UNIQUE_CONSTANTS or best_identity is None:
         return
 
     unique_constants = {constant for _, constant in best_comparisons}
@@ -366,7 +357,10 @@ def _analyze_block_sizes(flow_graph: FlowGraph, analysis: DispatcherAnalysis) ->
 
 def _analyze_switch_jumps(flow_graph: FlowGraph, analysis: DispatcherAnalysis) -> None:
     for serial, block in _iter_blocks(flow_graph):
-        if any(_is_switch_jump_instruction(instruction) for instruction in InstructionProjection.from_block(block)):
+        if any(
+            _is_switch_jump_instruction(instruction)
+            for instruction in InstructionProjection.from_block(block)
+        ):
             block_info = _get_or_create_block(analysis, serial)
             block_info.strategies |= DispatcherStrategy.SWITCH_JUMP
 

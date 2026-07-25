@@ -21,6 +21,7 @@ analysis' ``router_kind`` and -- only when not ``None`` --
 The live ``lift`` import means this module needs ``ida_hexrays`` at
 import; it sits in the optimizer layer alongside the legacy adapter.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -97,17 +98,13 @@ class DispatcherHistoryStore:
     def history_for(self, func_ea: int) -> DispatcherHistory:
         return self._history.get(int(func_ea), _EMPTY_HISTORY)
 
-    def cached_analysis(
-        self, func_ea: int, maturity: int
-    ) -> DispatcherAnalysis | None:
+    def cached_analysis(self, func_ea: int, maturity: int) -> DispatcherAnalysis | None:
         entry = self._memo.get(int(func_ea))
         if entry is not None and entry[0] == int(maturity):
             return entry[1]
         return None
 
-    def record(
-        self, func_ea: int, maturity: int, analysis: DispatcherAnalysis
-    ) -> None:
+    def record(self, func_ea: int, maturity: int, analysis: DispatcherAnalysis) -> None:
         """Memoize ``analysis`` at ``maturity`` and advance the carried
         history so the NEXT maturity sees this analysis' facts."""
         key = int(func_ea)

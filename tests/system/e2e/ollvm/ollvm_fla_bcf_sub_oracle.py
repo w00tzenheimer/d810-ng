@@ -5,6 +5,7 @@ remaining differences are mostly presentation: local-carrier names, retained
 BCF predicates, and IDA's inferred function type.  This module records the
 semantic checks for this one fixture without requiring exact pseudocode.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -126,8 +127,7 @@ def _rhs_has_password_indexed_multiply(rhs: str, index_aliases: set[str]) -> boo
         return False
     compact = _canonical_expr(rhs)
     if not any(
-        f"+{alias}" in compact or f"[{alias}]" in compact
-        for alias in index_aliases
+        f"+{alias}" in compact or f"[{alias}]" in compact for alias in index_aliases
     ):
         return False
     if "*" not in rhs:
@@ -222,10 +222,11 @@ def _looks_like_output_sink(code: str) -> bool:
     if "**a2" in code or "*output" in code or "output[" in code:
         return True
     output_aliases = {
-        match.group(1)
-        for match in re.finditer(r"\b([A-Za-z_]\w*)\s*=\s*a2\s*;", code)
+        match.group(1) for match in re.finditer(r"\b([A-Za-z_]\w*)\s*=\s*a2\s*;", code)
     }
-    return any(re.search(rf"\*{re.escape(alias)}\s*=", code) for alias in output_aliases)
+    return any(
+        re.search(rf"\*{re.escape(alias)}\s*=", code) for alias in output_aliases
+    )
 
 
 def _has_prompt_and_secret_compare(code: str) -> bool:
@@ -295,8 +296,7 @@ def _query_ollvm_carrier_facts(
     return OllvmCarrierFactSummary(
         role_counts=dict(sorted(role_counts.items())),
         role_tokens={
-            role: tuple(sorted(tokens))
-            for role, tokens in sorted(role_tokens.items())
+            role: tuple(sorted(tokens)) for role, tokens in sorted(role_tokens.items())
         },
         accumulator_evidence=tuple(accumulator_evidence),
         output_evidence=tuple(output_evidence),
@@ -371,12 +371,14 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
             "ACCUMULATOR_CARRIER",
         )
         for role in required_roles:
-            checks.append(OllvmFlaBcfSubCheck(
-                f"fact_role_{role.lower()}",
-                fact_summary.has_role(role),
-                f"diag fact role {role} is present",
-                blocker=False,
-            ))
+            checks.append(
+                OllvmFlaBcfSubCheck(
+                    f"fact_role_{role.lower()}",
+                    fact_summary.has_role(role),
+                    f"diag fact role {role} is present",
+                    blocker=False,
+                )
+            )
         output_fact_present = any(
             fact_summary.has_role(role)
             for role in (
@@ -385,58 +387,71 @@ def evaluate_ollvm_fla_bcf_sub_oracle(
                 "INDIRECT_STORE_CANDIDATE",
             )
         )
-        checks.append(OllvmFlaBcfSubCheck(
-            "fact_output_or_terminal_store_candidate",
-            output_fact_present,
-            "diag facts identify a terminal/output store candidate",
-            blocker=False,
-        ))
-        checks.append(OllvmFlaBcfSubCheck(
-            "fact_accumulator_has_transform_evidence",
-            any("#5.4*" in text for text in fact_summary.accumulator_evidence)
-            and any("#0x42" in text for text in fact_summary.accumulator_evidence)
-            and any("#0xFFFFFFBD" in text for text in fact_summary.accumulator_evidence),
-            "diag accumulator facts include multiply/add and mask transform evidence",
-            blocker=False,
-        ))
-        checks.append(OllvmFlaBcfSubCheck(
-            "fact_alias_multiply_add_same_carrier",
+        checks.append(
+            OllvmFlaBcfSubCheck(
+                "fact_output_or_terminal_store_candidate",
+                output_fact_present,
+                "diag facts identify a terminal/output store candidate",
+                blocker=False,
+            )
+        )
+        checks.append(
+            OllvmFlaBcfSubCheck(
+                "fact_accumulator_has_transform_evidence",
+                any("#5.4*" in text for text in fact_summary.accumulator_evidence)
+                and any("#0x42" in text for text in fact_summary.accumulator_evidence)
+                and any(
+                    "#0xFFFFFFBD" in text for text in fact_summary.accumulator_evidence
+                ),
+                "diag accumulator facts include multiply/add and mask transform evidence",
+                blocker=False,
+            )
+        )
+        checks.append(
+            OllvmFlaBcfSubCheck(
+                "fact_alias_multiply_add_same_carrier",
+                (
+                    prove_alias_multiply_add_equivalence()
+                    and fact_summary.alias_multiply_add_proof_count > 0
+                ),
+                "diag facts prove the 5*x+x add operand aliases the same accumulator carrier",
+                blocker=False,
+            )
+        )
+    rendered_loop_clean = _has_rendered_payload_loop(
+        code
+    ) and not _has_self_feeding_increment_loop(code)
+    checks.append(
+        OllvmFlaBcfSubCheck(
+            "clean_counted_loop",
+            rendered_loop_clean,
             (
-                prove_alias_multiply_add_equivalence()
-                and fact_summary.alias_multiply_add_proof_count > 0
+                "rendered loop is a normal 0..0x64 traversal with a password-indexed "
+                "multiply-add into a distinct accumulator carrier"
             ),
-            "diag facts prove the 5*x+x add operand aliases the same accumulator carrier",
-            blocker=False,
-        ))
-    rendered_loop_clean = (
-        _has_rendered_payload_loop(code)
-        and not _has_self_feeding_increment_loop(code)
+        )
     )
-    checks.append(OllvmFlaBcfSubCheck(
-        "clean_counted_loop",
-        rendered_loop_clean,
-        (
-            "rendered loop is a normal 0..0x64 traversal with a password-indexed "
-            "multiply-add into a distinct accumulator carrier"
-        ),
-    ))
 
     rendered_output_sink = _looks_like_output_sink(code)
     return_artifact = _looks_like_uninitialized_return_artifact(code)
-    checks.append(OllvmFlaBcfSubCheck(
-        "sink_present",
-        rendered_output_sink,
-        "rendered output has an observable output sink carrier",
-    ))
-    checks.append(OllvmFlaBcfSubCheck(
-        "return_result_is_presentation_artifact",
-        not return_artifact,
-        (
-            "IDA rendered an uninitialized return carrier; accepted as a "
-            "type-recovery presentation warning only with a rendered output sink"
-        ),
-        blocker=return_artifact and not rendered_output_sink,
-    ))
+    checks.append(
+        OllvmFlaBcfSubCheck(
+            "sink_present",
+            rendered_output_sink,
+            "rendered output has an observable output sink carrier",
+        )
+    )
+    checks.append(
+        OllvmFlaBcfSubCheck(
+            "return_result_is_presentation_artifact",
+            not return_artifact,
+            (
+                "IDA rendered an uninitialized return carrier; accepted as a "
+                "type-recovery presentation warning only with a rendered output sink"
+            ),
+            blocker=return_artifact and not rendered_output_sink,
+        )
+    )
 
     return OllvmFlaBcfSubOracleResult(
         checks=tuple(checks),
@@ -465,23 +480,27 @@ def render_ollvm_fla_bcf_sub_oracle_report(
         lines.append(f"| `{check.name}` | `{status}` | {check.detail} |")
 
     if result.fact_summary is not None:
-        lines.extend([
-            "",
-            "## Carrier Fact Roles",
-            "",
-            "| Role | Count | Tokens |",
-            "|-|-|-|",
-        ])
+        lines.extend(
+            [
+                "",
+                "## Carrier Fact Roles",
+                "",
+                "| Role | Count | Tokens |",
+                "|-|-|-|",
+            ]
+        )
         for role, count in result.fact_summary.role_counts.items():
             tokens = ", ".join(result.fact_summary.role_tokens.get(role, ()))
             lines.append(f"| `{role}` | {count} | `{tokens}` |")
 
     if result.blockers:
-        lines.extend([
-            "",
-            "## Blockers",
-            "",
-        ])
+        lines.extend(
+            [
+                "",
+                "## Blockers",
+                "",
+            ]
+        )
         for blocker in result.blockers:
             lines.append(f"- `{blocker.name}`: {blocker.detail}")
 

@@ -6,6 +6,7 @@ indirect, or scalar), over the IR location substrate.  Net-new and unwired
 
 Minimum viable scope: an affine ``base + index*stride`` pattern with a kind tag.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

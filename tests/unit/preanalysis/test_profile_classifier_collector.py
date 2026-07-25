@@ -2,6 +2,7 @@
 
 Uses SimpleNamespace mock FlowGraph objects -- no IDA dependency.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from d810.analyses.control_flow.models import PreanalysisResult
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_block(serial: int, succs: tuple[int, ...], block_type: int = 0):
     return SimpleNamespace(serial=serial, succs=succs, block_type=block_type)
@@ -39,8 +41,8 @@ def _make_flow_graph(
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestFlowProfileClassifierCollector:
 
+class TestFlowProfileClassifierCollector:
     def test_name_and_level(self):
         c = FlowProfileClassifierCollector()
         assert c.name == "flow_profile_classifier"
@@ -48,7 +50,7 @@ class TestFlowProfileClassifierCollector:
 
     def test_maturities(self):
         c = FlowProfileClassifierCollector()
-        assert 3 in c.maturities   # MMAT_CALLS
+        assert 3 in c.maturities  # MMAT_CALLS
         assert 14 in c.maturities  # MMAT_GLBOPT1
 
     def test_collect_simple_compare_chain(self):

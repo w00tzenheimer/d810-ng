@@ -29,32 +29,37 @@ def lifecycle_timeline(
         clauses.append("func_ea_i64=?")
         params.append(int(func_ea))
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-    return _rows(conn.execute(
-        "SELECT * FROM lifecycle_timeline" + where
-        + " ORDER BY timestamp,event_id",
-        tuple(params),
-    ))
+    return _rows(
+        conn.execute(
+            "SELECT * FROM lifecycle_timeline" + where + " ORDER BY timestamp,event_id",
+            tuple(params),
+        )
+    )
 
 
 def mutation_batch(conn: sqlite3.Connection, batch_id: str) -> dict[str, Any]:
-    plan_rows = _rows(conn.execute(
-        "SELECT le.event_id,le.session_id,le.event_seq,le.timestamp,"
-        "le.func_ea_hex,le.maturity,le.evidence_generation,"
-        "le.mba_generation_before AS mba_generation,le.summary,"
-        "COUNT(p.item_index) AS persisted_item_count,"
-        "CAST(json_extract(le.payload_json,'$.planned_operation_count') AS INTEGER) "
-        "AS planned_operation_count "
-        "FROM lifecycle_events le LEFT JOIN mutation_plan_items p "
-        "ON p.event_id=le.event_id WHERE le.event_kind='mutation_plan' "
-        "AND le.correlation_id=? GROUP BY le.event_id",
-        (batch_id,),
-    ))
-    items = _rows(conn.execute(
-        "SELECT p.* FROM mutation_plan_items p JOIN lifecycle_events le "
-        "ON le.event_id=p.event_id WHERE p.mutation_batch_id=? "
-        "ORDER BY p.item_index",
-        (batch_id,),
-    ))
+    plan_rows = _rows(
+        conn.execute(
+            "SELECT le.event_id,le.session_id,le.event_seq,le.timestamp,"
+            "le.func_ea_hex,le.maturity,le.evidence_generation,"
+            "le.mba_generation_before AS mba_generation,le.summary,"
+            "COUNT(p.item_index) AS persisted_item_count,"
+            "CAST(json_extract(le.payload_json,'$.planned_operation_count') AS INTEGER) "
+            "AS planned_operation_count "
+            "FROM lifecycle_events le LEFT JOIN mutation_plan_items p "
+            "ON p.event_id=le.event_id WHERE le.event_kind='mutation_plan' "
+            "AND le.correlation_id=? GROUP BY le.event_id",
+            (batch_id,),
+        )
+    )
+    items = _rows(
+        conn.execute(
+            "SELECT p.* FROM mutation_plan_items p JOIN lifecycle_events le "
+            "ON le.event_id=p.event_id WHERE p.mutation_batch_id=? "
+            "ORDER BY p.item_index",
+            (batch_id,),
+        )
+    )
     for item in items:
         item["source_block"] = _block_label(
             item["source_serial"], item["source_anchor_ea_hex"]
@@ -62,44 +67,57 @@ def mutation_batch(conn: sqlite3.Connection, batch_id: str) -> dict[str, Any]:
         item["target_block"] = _block_label(
             item["target_serial"], item["target_anchor_ea_hex"]
         )
-    receipt_rows = _rows(conn.execute(
-        "SELECT r.*,le.session_id,le.event_seq,le.timestamp,le.func_ea_hex,"
-        "le.maturity,le.evidence_generation FROM mutation_receipts r "
-        "JOIN lifecycle_events le ON le.event_id=r.event_id "
-        "WHERE r.mutation_batch_id=?",
-        (batch_id,),
-    ))
-    identities = _rows(conn.execute(
-        "SELECT ri.* FROM mutation_receipt_identities ri "
-        "JOIN mutation_receipts r ON r.event_id=ri.event_id "
-        "WHERE r.mutation_batch_id=? ORDER BY ri.identity_index",
-        (batch_id,),
-    ))
-    fragment_rows = _rows(conn.execute(
-        "SELECT * FROM semantic_fragment_transactions "
-        "WHERE mutation_batch_id=?",
-        (batch_id,),
-    ))
-    fragment_validations = _rows(conn.execute(
-        "SELECT * FROM semantic_fragment_validation_outcomes "
-        "WHERE mutation_batch_id=? ORDER BY outcome_index",
-        (batch_id,),
-    ))
-    root_publication_groups = _rows(conn.execute(
-        "SELECT * FROM semantic_fragment_root_publication_groups "
-        "WHERE mutation_batch_id=? ORDER BY group_id",
-        (batch_id,),
-    ))
-    version_transitions = _rows(conn.execute(
-        "SELECT * FROM logical_block_version_transitions "
-        "WHERE mutation_batch_id=? ORDER BY transition_index",
-        (batch_id,),
-    ))
-    fragment_events = _rows(conn.execute(
-        "SELECT * FROM semantic_fragment_transaction_events "
-        "WHERE mutation_batch_id=? ORDER BY event_index",
-        (batch_id,),
-    ))
+    receipt_rows = _rows(
+        conn.execute(
+            "SELECT r.*,le.session_id,le.event_seq,le.timestamp,le.func_ea_hex,"
+            "le.maturity,le.evidence_generation FROM mutation_receipts r "
+            "JOIN lifecycle_events le ON le.event_id=r.event_id "
+            "WHERE r.mutation_batch_id=?",
+            (batch_id,),
+        )
+    )
+    identities = _rows(
+        conn.execute(
+            "SELECT ri.* FROM mutation_receipt_identities ri "
+            "JOIN mutation_receipts r ON r.event_id=ri.event_id "
+            "WHERE r.mutation_batch_id=? ORDER BY ri.identity_index",
+            (batch_id,),
+        )
+    )
+    fragment_rows = _rows(
+        conn.execute(
+            "SELECT * FROM semantic_fragment_transactions WHERE mutation_batch_id=?",
+            (batch_id,),
+        )
+    )
+    fragment_validations = _rows(
+        conn.execute(
+            "SELECT * FROM semantic_fragment_validation_outcomes "
+            "WHERE mutation_batch_id=? ORDER BY outcome_index",
+            (batch_id,),
+        )
+    )
+    root_publication_groups = _rows(
+        conn.execute(
+            "SELECT * FROM semantic_fragment_root_publication_groups "
+            "WHERE mutation_batch_id=? ORDER BY group_id",
+            (batch_id,),
+        )
+    )
+    version_transitions = _rows(
+        conn.execute(
+            "SELECT * FROM logical_block_version_transitions "
+            "WHERE mutation_batch_id=? ORDER BY transition_index",
+            (batch_id,),
+        )
+    )
+    fragment_events = _rows(
+        conn.execute(
+            "SELECT * FROM semantic_fragment_transaction_events "
+            "WHERE mutation_batch_id=? ORDER BY event_index",
+            (batch_id,),
+        )
+    )
     return {
         "batch_id": batch_id,
         "plan": plan_rows[0] if plan_rows else None,
@@ -128,21 +146,23 @@ def evidence_lineage(
     if func_ea is not None:
         clauses.append("le.func_ea_i64=?")
         params.append(int(func_ea))
-    rows = _rows(conn.execute(
-        "SELECT le.event_id,le.session_id,le.event_seq,le.timestamp,"
-        "le.event_kind,le.func_ea_hex,le.maturity,le.phase,"
-        "le.evidence_generation,le.mba_generation_before,le.summary,"
-        "e.operation,e.previous_generation,e.resulting_generation,"
-        "e.evidence_family,e.outcome AS evidence_outcome,e.owner,e.reason AS evidence_reason,"
-        "i.decision_kind,i.consumer,i.identity_role,i.primary_anchor_ea_hex,"
-        "i.current_serial,i.outcome AS identity_outcome,i.reason AS identity_reason "
-        "FROM lifecycle_events le "
-        "LEFT JOIN evidence_generation_events e ON e.event_id=le.event_id "
-        "LEFT JOIN identity_decisions i ON i.event_id=le.event_id WHERE "
-        + " AND ".join(clauses)
-        + " ORDER BY le.timestamp,le.event_id",
-        tuple(params),
-    ))
+    rows = _rows(
+        conn.execute(
+            "SELECT le.event_id,le.session_id,le.event_seq,le.timestamp,"
+            "le.event_kind,le.func_ea_hex,le.maturity,le.phase,"
+            "le.evidence_generation,le.mba_generation_before,le.summary,"
+            "e.operation,e.previous_generation,e.resulting_generation,"
+            "e.evidence_family,e.outcome AS evidence_outcome,e.owner,e.reason AS evidence_reason,"
+            "i.decision_kind,i.consumer,i.identity_role,i.primary_anchor_ea_hex,"
+            "i.current_serial,i.outcome AS identity_outcome,i.reason AS identity_reason "
+            "FROM lifecycle_events le "
+            "LEFT JOIN evidence_generation_events e ON e.event_id=le.event_id "
+            "LEFT JOIN identity_decisions i ON i.event_id=le.event_id WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY le.timestamp,le.event_id",
+            tuple(params),
+        )
+    )
     for row in rows:
         row["identity"] = _block_label(
             row["current_serial"], row["primary_anchor_ea_hex"]
@@ -159,15 +179,31 @@ def _block_label(serial: int | None, anchor_hex: str | None) -> str:
 
 
 def render_timeline(rows: list[dict[str, Any]]) -> str:
-    lines = ["session\tseq\ttime\tkind\tmaturity\tevidence\tmba\toutcome\tidentity\tsummary"]
+    lines = [
+        "session\tseq\ttime\tkind\tmaturity\tevidence\tmba\toutcome\tidentity\tsummary"
+    ]
     for row in rows:
-        mba = _generation_range(row["mba_generation_before"], row["mba_generation_after"])
+        mba = _generation_range(
+            row["mba_generation_before"], row["mba_generation_after"]
+        )
         identity = _block_label(row["block_serial"], row["ea_anchor_hex"])
-        lines.append("\t".join(str(value) for value in (
-            row["session_id"], row["event_seq"], row["timestamp"], row["event_kind"],
-            row["maturity"] or "-", _value(row["evidence_generation"]), mba,
-            row["outcome"] or "-", identity, row["summary"],
-        )))
+        lines.append(
+            "\t".join(
+                str(value)
+                for value in (
+                    row["session_id"],
+                    row["event_seq"],
+                    row["timestamp"],
+                    row["event_kind"],
+                    row["maturity"] or "-",
+                    _value(row["evidence_generation"]),
+                    mba,
+                    row["outcome"] or "-",
+                    identity,
+                    row["summary"],
+                )
+            )
+        )
     return "\n".join(lines)
 
 
@@ -225,10 +261,7 @@ def render_mutation_batch(result: dict[str, Any]) -> str:
                 if failure["interr_code"] is not None:
                     detail += f" interr={failure['interr_code']}"
                 if failure["verification_context"]:
-                    detail += (
-                        " verify-context="
-                        f"{failure['verification_context']}"
-                    )
+                    detail += f" verify-context={failure['verification_context']}"
             lines.append(
                 f"fragment-event[{event['event_index']}] "
                 f"{event['event_kind']} outcome={event['outcome']}{detail}"
@@ -257,15 +290,27 @@ def render_mutation_batch(result: dict[str, Any]) -> str:
 
 
 def render_evidence_lineage(rows: list[dict[str, Any]]) -> str:
-    lines = ["session\tseq\tkind\tmaturity\tevidence\tmba\tfamily/consumer\toutcome\tidentity\treason"]
+    lines = [
+        "session\tseq\tkind\tmaturity\tevidence\tmba\tfamily/consumer\toutcome\tidentity\treason"
+    ]
     for row in rows:
-        lines.append("\t".join(str(value) for value in (
-            row["session_id"], row["event_seq"], row["event_kind"], row["maturity"] or "-",
-            _value(row["evidence_generation"]), _value(row["mba_generation_before"]),
-            row["evidence_family"] or row["consumer"] or "-",
-            row["evidence_outcome"] or row["identity_outcome"] or "-",
-            row["identity"], row["evidence_reason"] or row["identity_reason"] or "-",
-        )))
+        lines.append(
+            "\t".join(
+                str(value)
+                for value in (
+                    row["session_id"],
+                    row["event_seq"],
+                    row["event_kind"],
+                    row["maturity"] or "-",
+                    _value(row["evidence_generation"]),
+                    _value(row["mba_generation_before"]),
+                    row["evidence_family"] or row["consumer"] or "-",
+                    row["evidence_outcome"] or row["identity_outcome"] or "-",
+                    row["identity"],
+                    row["evidence_reason"] or row["identity_reason"] or "-",
+                )
+            )
+        )
     return "\n".join(lines)
 
 
@@ -288,6 +333,10 @@ def _bool_value(value: Any) -> str:
 
 
 __all__ = [
-    "evidence_lineage", "lifecycle_timeline", "mutation_batch",
-    "render_evidence_lineage", "render_mutation_batch", "render_timeline",
+    "evidence_lineage",
+    "lifecycle_timeline",
+    "mutation_batch",
+    "render_evidence_lineage",
+    "render_mutation_batch",
+    "render_timeline",
 ]

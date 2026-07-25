@@ -19,6 +19,7 @@ callables; the live Hex-Rays implementation of those oracles (seed +
 ``MicroCodeInterpreter``) lives in the backend engine and feeds the per-fork
 provenance in through :class:`ForkOutcome`. The walk itself never imports IDA.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable

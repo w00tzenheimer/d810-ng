@@ -1,4 +1,5 @@
 """Tests for the deferred maturity fact collectors."""
+
 from __future__ import annotations
 
 import json
@@ -191,9 +192,7 @@ def _cfg_insn(
         ea=0x180010000 + index if ea is None else ea,
         operands=tuple(op for op in (l, r, d) if op is not None),
         operand_slots=tuple(
-            (slot, op)
-            for slot, op in (("l", l), ("r", r), ("d", d))
-            if op is not None
+            (slot, op) for slot, op in (("l", l), ("r", r), ("d", d)) if op is not None
         ),
         display_text=display_text,
         l=l,
@@ -244,8 +243,7 @@ def test_call_anchor_records_call_context() -> None:
                     d=_cfg_reg(0),
                     call_kind=CallKind.DIRECT,
                     display_text=(
-                        "call $0x180000000<fast:_QWORD #0x11.8,"
-                        "_QWORD #0x4A.8>"
+                        "call $0x180000000<fast:_QWORD #0x11.8,_QWORD #0x4A.8>"
                     ),
                     ea=0x180014848,
                 ),
@@ -506,8 +504,7 @@ def test_zero_blob_collector_separates_zero_store_and_blob_copy() -> None:
                     ),
                     call_kind=CallKind.DIRECT,
                     display_text=(
-                        "call sub_1800164E0<fast:%var_dst.8,"
-                        "unk_180018E95,#0x10.8>"
+                        "call sub_1800164E0<fast:%var_dst.8,unk_180018E95,#0x10.8>"
                     ),
                 ),
                 succs=(41,),
@@ -778,6 +775,8 @@ def test_return_frontier_accepts_canonical_return_control() -> None:
     assert fact.payload["return_block"] == 57
     assert fact.payload["successor_blocks"] == [57]
     assert fact.payload["carrier_fact_ids"] == []
+
+
 def _meta_reg(reg: int, size: int = 8) -> dict:
     return {"type": "mop_r", "type_num": 1, "size": size, "dstr": "r", "reg": reg}
 

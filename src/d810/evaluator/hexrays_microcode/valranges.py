@@ -346,7 +346,6 @@ def resolve_state_via_valranges(blk, stkoff_mop, ins) -> int | None:
         ida_hexrays.VR_AT_START,
         ida_hexrays.VR_AT_END,
     ):
-
         ok = blk.get_valranges(vr, vivl, ins, vr_flag)
         if ok and not vr.empty() and not vr.all_values():
             ok_single, val = vr.cvt_to_single_value()

@@ -11,6 +11,7 @@ A missing variable is implicitly ⊤ (unconstrained). The box is ⊥ if any
 variable's interval is ⊥. Lattice ops are pointwise over the union of keys.
 Portable: no IDA.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

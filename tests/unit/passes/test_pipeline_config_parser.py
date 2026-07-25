@@ -1,4 +1,5 @@
 """Shadow parsing for optional PipelineConfig v2 project payloads."""
+
 from __future__ import annotations
 
 import warnings
@@ -207,9 +208,7 @@ def test_pipeline_v2_shadow_match_required_defaults_false_when_missing():
 
 def test_pipeline_v2_shadow_match_required_reads_plain_mapping_and_project_object():
     assert (
-        pipeline_v2_shadow_match_required(
-            {"require_pipeline_v2_shadow_match": True}
-        )
+        pipeline_v2_shadow_match_required({"require_pipeline_v2_shadow_match": True})
         is True
     )
     project = SimpleNamespace(
@@ -224,9 +223,7 @@ def test_pipeline_v2_shadow_match_required_rejects_non_boolean_values(value):
         PipelineConfigError,
         match="require_pipeline_v2_shadow_match must be a boolean",
     ):
-        pipeline_v2_shadow_match_required(
-            {"require_pipeline_v2_shadow_match": value}
-        )
+        pipeline_v2_shadow_match_required({"require_pipeline_v2_shadow_match": value})
 
 
 def test_pipeline_v2_shadow_match_required_rejects_malformed_project_config():
@@ -253,16 +250,12 @@ def test_pipeline_v2_mode_defaults_legacy_without_project_opt_in():
     ],
 )
 def test_pipeline_v2_mode_reads_explicit_project_mode(value, expected):
-    assert (
-        pipeline_v2_mode_from_project_config({"pipeline_v2_mode": value}) is expected
-    )
+    assert pipeline_v2_mode_from_project_config({"pipeline_v2_mode": value}) is expected
 
 
 def test_pipeline_v2_mode_preserves_legacy_shadow_match_boolean():
     assert (
-        pipeline_v2_mode_from_project_config(
-            {"require_pipeline_v2_shadow_match": True}
-        )
+        pipeline_v2_mode_from_project_config({"require_pipeline_v2_shadow_match": True})
         is PipelineV2Mode.SHADOW_CHECK
     )
 
@@ -334,9 +327,7 @@ def test_pipeline_v2_warns_for_legacy_native_deobfuscation_contract_aliases():
     assert config.contract.maturity.min is IRMaturity.CALL_MODELED
     assert config.contract.maturity.max is IRMaturity.GLOBAL_ANALYZED
     assert config.contract.maturity.preferred is IRMaturity.CALL_MODELED
-    assert config.contract.requires.capabilities == frozenset(
-        {"live_mba", "z3_solver"}
-    )
+    assert config.contract.requires.capabilities == frozenset({"live_mba", "z3_solver"})
     assert config.contract.requires.analyses == frozenset(
         {"def_use", "dominators", "value_ranges"}
     )
@@ -510,7 +501,9 @@ def test_default_instruction_only_legacy_config_remains_runtime_source():
         "GlobalConstantInliner",
         "JumpFixer",
     ]
-    fold = next(rule for rule in project.ins_rules if rule.name == "FoldReadonlyDataRule")
+    fold = next(
+        rule for rule in project.ins_rules if rule.name == "FoldReadonlyDataRule"
+    )
     assert fold.config == {"fold_writable_constants": True}
     assert pipeline_configs_from_project_config(project) == ()
 
@@ -683,9 +676,7 @@ def test_pipeline_spec_comparison_reports_ordered_differences():
     assert comparison.configs_match is False
     assert comparison.left_pass_ids == ("recover_dispatcher",)
     assert comparison.right_pass_ids == tuple(spec.pass_id for spec in live_specs)
-    assert comparison.missing_pass_ids == tuple(
-        spec.pass_id for spec in live_specs[1:]
-    )
+    assert comparison.missing_pass_ids == tuple(spec.pass_id for spec in live_specs[1:])
     assert comparison.extra_pass_ids == ()
 
 

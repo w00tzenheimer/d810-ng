@@ -23,7 +23,12 @@ from __future__ import annotations
 import functools
 
 from d810.core import logging, typing
-from d810.hexrays.expr.ast import AstConstantProtocol, AstLeafProtocol, AstNode, AstNodeProtocol
+from d810.hexrays.expr.ast import (
+    AstConstantProtocol,
+    AstLeafProtocol,
+    AstNode,
+    AstNodeProtocol,
+)
 
 egglog_logger = logging.getLogger("egglog", default_level=logging.WARNING)
 logger = logging.getLogger(__name__)
@@ -43,6 +48,7 @@ except ImportError:
 import idaapi
 
 from d810.mba.backend_registry import EgglogProvider
+
 
 def check_egglog_available() -> bool:
     """Check if egglog is installed and available."""

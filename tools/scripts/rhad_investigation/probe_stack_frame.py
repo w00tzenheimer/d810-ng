@@ -3,6 +3,7 @@
 Run against a disposable binary copy.  The probe may create or extend the
 requested function, but always closes the database without saving an IDB.
 """
+
 from __future__ import annotations
 
 import os

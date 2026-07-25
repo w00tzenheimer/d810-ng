@@ -12,6 +12,7 @@ Portable (no IDA, no backend imports): it only stores opaque instances keyed by
 their Protocol type, so a concrete backend instance that structurally satisfies
 a capability Protocol is registered under that Protocol type.
 """
+
 from __future__ import annotations
 
 __all__ = ["CapabilitySet", "CapabilityNotProvided"]

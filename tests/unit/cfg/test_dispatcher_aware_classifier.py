@@ -1,4 +1,5 @@
 """Tests for the dispatcher-aware back-edge classifier."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.dispatcher_aware_classifier import (
@@ -150,8 +151,12 @@ class TestLocoptShape:
         # 5 handlers each tail-jump to dispatcher root blk[2].
         # Plus a real iteration loop blk[10]→blk[4] (head-byte stride).
         edges = [
-            (42, 2), (43, 2), (44, 2), (45, 2), (46, 2),  # round-trips
-            (10, 4),                                       # real loop
+            (42, 2),
+            (43, 2),
+            (44, 2),
+            (45, 2),
+            (46, 2),  # round-trips
+            (10, 4),  # real loop
         ]
         ctx = DispatcherContext(
             dispatcher_blocks=frozenset({2, 3, 4, 5, 6, 7}),
@@ -255,9 +260,13 @@ class TestSummary:
 class TestDataclassShortcuts:
     def _mk(self, cls: DispatcherAwareEdgeClass) -> DispatcherAwareClassification:
         return DispatcherAwareClassification(
-            src_serial=0, tgt_serial=0, classification=cls,
-            src_writes=frozenset(), tgt_predicate_reads=frozenset(),
-            overlap=frozenset(), state_var_overlap=frozenset(),
+            src_serial=0,
+            tgt_serial=0,
+            classification=cls,
+            src_writes=frozenset(),
+            tgt_predicate_reads=frozenset(),
+            overlap=frozenset(),
+            state_var_overlap=frozenset(),
             reason="x",
         )
 

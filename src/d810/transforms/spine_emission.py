@@ -23,6 +23,7 @@ legacy strategy layers *additional* live-MBA handoff resolution (``resolve_effec
 and path-tail redirects on top of this base; that surface stays in the hexrays backend. Here we
 emit only the portable base case that both paths share verbatim.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Mapping
@@ -135,7 +136,9 @@ def emit_spine_modifications(
             nsucc=nsucc,
             old_target=(int(old_target) if old_target is not None else None),
             source_succs=source_succs,
-            edge_is_transition=(getattr(edge.kind, "name", "") == _TRANSITION_KIND_NAME),
+            edge_is_transition=(
+                getattr(edge.kind, "name", "") == _TRANSITION_KIND_NAME
+            ),
             live_oneway_noop=is_live_oneway_noop(
                 source_succs=source_succs,
                 target_entry=new_target,

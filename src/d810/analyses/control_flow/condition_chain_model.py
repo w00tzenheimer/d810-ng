@@ -18,13 +18,17 @@ class ConditionChainNodeEntry:
     """Provenance for a single block visited during condition-chain analysis."""
 
     serial: int
-    value_range: Tuple[Optional[int], Optional[int]]  # (lo, hi) state range reaching this block
+    value_range: Tuple[
+        Optional[int], Optional[int]
+    ]  # (lo, hi) state range reaching this block
     parent_serial: Optional[int]  # condition-chain comparison node that routes here
     comparison_const: Optional[int]  # constant compared at parent node
     branch: str  # "taken" or "fallthrough"
     depth: int  # depth in condition-chain tree (0 = root)
     opcode: Optional[int]  # tail opcode of this block (m_jnz, m_jbe, etc.)
-    is_equality_branch: bool  # True when this is the equality path (m_jnz fall-through or m_jz taken)
+    is_equality_branch: (
+        bool  # True when this is the equality path (m_jnz fall-through or m_jz taken)
+    )
     is_handler_entry: bool = False  # True for handler entry blocks (provenance-only, excluded from set-like interface)
 
 
@@ -86,15 +90,19 @@ class ConditionChainNodeMap:
         return f"ConditionChainNodeMap({self._condition_chain_keys()})"
 
     # --- registration ---
-    def add(self, serial: int, *,
-            value_range: Tuple[Optional[int], Optional[int]] = (None, None),
-            parent_serial: Optional[int] = None,
-            comparison_const: Optional[int] = None,
-            branch: str = "",
-            depth: int = 0,
-            opcode: Optional[int] = None,
-            is_equality_branch: bool = False,
-            is_handler_entry: bool = False) -> None:
+    def add(
+        self,
+        serial: int,
+        *,
+        value_range: Tuple[Optional[int], Optional[int]] = (None, None),
+        parent_serial: Optional[int] = None,
+        comparison_const: Optional[int] = None,
+        branch: str = "",
+        depth: int = 0,
+        opcode: Optional[int] = None,
+        is_equality_branch: bool = False,
+        is_handler_entry: bool = False,
+    ) -> None:
         """Register a condition-chain node with its routing provenance.
 
         When *is_handler_entry* is True the entry is stored for provenance
@@ -125,8 +133,9 @@ class ConditionChainNodeMap:
         entry = self._entries.get(serial)
         return entry.value_range if entry else None
 
-    def resolve_state(self, serial: int,
-                      handler_state_map: Dict[int, int]) -> Optional[int]:
+    def resolve_state(
+        self, serial: int, handler_state_map: Dict[int, int]
+    ) -> Optional[int]:
         """Given a condition-chain block, resolve the handler state that routes to it.
 
         Strategy:
@@ -162,9 +171,12 @@ class ConditionChainNodeMap:
 
         return None
 
-    def resolve_state_for_block(self, block_serial: int,
-                                handler_state_map: Dict[int, int],
-                                pred_serials: Optional[list[int]] = None) -> Optional[int]:
+    def resolve_state_for_block(
+        self,
+        block_serial: int,
+        handler_state_map: Dict[int, int],
+        pred_serials: Optional[list[int]] = None,
+    ) -> Optional[int]:
         """Resolve handler state for a block, trying the block itself then its predecessors."""
         # Try direct lookup
         result = self.resolve_state(block_serial, handler_state_map)
@@ -194,7 +206,9 @@ class ConditionChainAnalysisResult:
     exits: Set[int] = field(default_factory=set)
     pre_header_serial: Optional[int] = None
     initial_state: Optional[int] = None
-    condition_chain_blocks: ConditionChainNodeMap = field(default_factory=ConditionChainNodeMap)
+    condition_chain_blocks: ConditionChainNodeMap = field(
+        default_factory=ConditionChainNodeMap
+    )
     default_block_serial: Optional[int] = None
     dispatcher: IntervalDispatcher | None = None
     # Path B: the decision-DAG route oracle for this dispatcher (built by
@@ -230,11 +244,7 @@ def resolve_target_via_condition_chain(
     for handler_serial, (low, high) in condition_chain_result.handler_range_map.items():
         if handler_serial in exact_handler_serials:
             continue
-        if (
-            low is not None
-            and high is not None
-            and (high - low) >= 0xFFFF0000
-        ):
+        if low is not None and high is not None and (high - low) >= 0xFFFF0000:
             continue
         if low is not None and state_value < low:
             continue
@@ -242,7 +252,7 @@ def resolve_target_via_condition_chain(
             continue
         return handler_serial
 
-    default_serial = getattr(condition_chain_result, 'default_block_serial', None)
+    default_serial = getattr(condition_chain_result, "default_block_serial", None)
     if default_serial is not None:
         return default_serial
 
@@ -312,7 +322,9 @@ def resolve_redirectable_handler_target(
             if condition_chain_result.condition_chain_blocks
             else set()
         )
-        if is_terminal_handler(flow_graph, target, dispatcher_serial, condition_chain_blocks):
+        if is_terminal_handler(
+            flow_graph, target, dispatcher_serial, condition_chain_blocks
+        ):
             # Augment exits with this discovery for future lookups
             if augmented_exits is not None:
                 augmented_exits.add(state_value)

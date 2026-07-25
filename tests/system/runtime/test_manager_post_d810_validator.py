@@ -136,8 +136,16 @@ def _seed_pre_bundle(conn: sqlite3.Connection, *, snapshot_id: int) -> None:
 
 def test_detect_post_d810_handoff_violations_flags_live_only_use_bundle():
     conn = create_diag_database(":memory:").connection()
-    _seed_snapshot(conn, snapshot_id=19, label="post_pipeline", phase="post_pipeline", block_count=223)
-    _seed_snapshot(conn, snapshot_id=20, label="post_d810", phase="post_d810", block_count=44)
+    _seed_snapshot(
+        conn,
+        snapshot_id=19,
+        label="post_pipeline",
+        phase="post_pipeline",
+        block_count=223,
+    )
+    _seed_snapshot(
+        conn, snapshot_id=20, label="post_d810", phase="post_d810", block_count=44
+    )
     _seed_pre_bundle(conn, snapshot_id=19)
     _seed_block(conn, snapshot_id=20, serial=17)
     _seed_block(conn, snapshot_id=20, serial=29)
@@ -178,8 +186,16 @@ def test_detect_post_d810_handoff_violations_flags_live_only_use_bundle():
 
 def test_detect_post_d810_handoff_violations_allows_surviving_defs():
     conn = create_diag_database(":memory:").connection()
-    _seed_snapshot(conn, snapshot_id=19, label="post_pipeline", phase="post_pipeline", block_count=223)
-    _seed_snapshot(conn, snapshot_id=20, label="post_d810", phase="post_d810", block_count=44)
+    _seed_snapshot(
+        conn,
+        snapshot_id=19,
+        label="post_pipeline",
+        phase="post_pipeline",
+        block_count=223,
+    )
+    _seed_snapshot(
+        conn, snapshot_id=20, label="post_d810", phase="post_d810", block_count=44
+    )
     _seed_pre_bundle(conn, snapshot_id=19)
     _seed_block(conn, snapshot_id=20, serial=17)
     _seed_block(conn, snapshot_id=20, serial=29)

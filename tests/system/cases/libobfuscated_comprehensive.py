@@ -552,8 +552,8 @@ DISPATCHER_PATTERN_CASES = [
     DeobfuscationCase(
         function="mixed_dispatcher_pattern",
         description="Mixed CFF pattern: while(1) dispatcher with large state constants, "
-                    "conditional branch, and loop-back. Deobfuscates to do-while loop "
-                    "with if/else and arithmetic chain.",
+        "conditional branch, and loop-back. Deobfuscates to do-while loop "
+        "with if/else and arithmetic chain.",
         # Use flatfold profile for the broader rewrite whitelist.
         project="flatfold.json",
         obfuscated_contains=["0xABCD1234", "while"],
@@ -644,7 +644,13 @@ HODUR_CASES = [
         # Hodur uses while loops for flattening
         obfuscated_contains=["while"],
         expected_code=_decode_expected(_HODUR_FUNC_EXPECTED),
-        expected_ast_stats={"statements": 39, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 8},
+        expected_ast_stats={
+            "statements": 39,
+            "returns": 3,
+            "whiles": 0,
+            "gotos": 1,
+            "ifs": 8,
+        },
         # The deobfuscated code should be linear (no nested while loops)
         # Note: Import names may show as sub_* if IDA doesn't resolve them
         # (resolve_api checked via acceptable_patterns instead)
@@ -652,7 +658,9 @@ HODUR_CASES = [
         # Must preserve API calls - accept either resolved names or sub_* patterns
         # IDA may not resolve Windows imports depending on platform/version
         acceptable_patterns=[
-            "printf", "resolve_api", "WinHttp",  # Resolved names
+            "printf",
+            "resolve_api",
+            "WinHttp",  # Resolved names
             "sub_180008C",  # Unresolved addresses (common prefix)
             "Hodur/1.0",  # String literal that should be preserved
         ],
@@ -760,13 +768,13 @@ DAC_MASM_CASES = [
     DeobfuscationCase(
         function="sub_1815C8C30",
         description="dac.dll rand()%3 helper (issue #48, MASM-extracted). Full "
-                    "golden: `return rand() % 3u;`. Guards two facts: (1) the "
-                    "pointer-aliased single-iteration dispatcher loop (reg=&state; "
-                    "*reg=magic) MUST collapse -- regression guard for d81-u3cg "
-                    "(terminal stack-alias guard owns its source edge); and (2) the "
-                    "obfuscated indirect call `[off]+const` MUST devirtualize to "
-                    "rand() (the data slot relocates onto the dependency-free "
-                    "src/masm/rand.asm stub, so the fold lands on a named rand).",
+        "golden: `return rand() % 3u;`. Guards two facts: (1) the "
+        "pointer-aliased single-iteration dispatcher loop (reg=&state; "
+        "*reg=magic) MUST collapse -- regression guard for d81-u3cg "
+        "(terminal stack-alias guard owns its source edge); and (2) the "
+        "obfuscated indirect call `[off]+const` MUST devirtualize to "
+        "rand() (the data slot relocates onto the dependency-free "
+        "src/masm/rand.asm stub, so the fold lands on a named rand).",
         project="default_unflattening_ollvm.json",
         obfuscated_contains=["0x8348BA7AD21C9415"],
         deobfuscated_contains=["rand()", "% 3"],
@@ -778,10 +786,10 @@ DAC_MASM_CASES = [
     DeobfuscationCase(
         function="Java_dimension_DimensionAPI_getHuzpsbPY",
         description="dac.dll DimensionAPI (issue #48, MASM-extracted): the function "
-                    "whose flattening crashed old d810-ng with INTERR 50860/51920. "
-                    "Standalone MASM loses the binary's extern/data context so it only "
-                    "PARTIALLY unflattens here; this gate guards the no-INTERR + "
-                    "must-change property (decompile succeeds, cleanup fires).",
+        "whose flattening crashed old d810-ng with INTERR 50860/51920. "
+        "Standalone MASM loses the binary's extern/data context so it only "
+        "PARTIALLY unflattens here; this gate guards the no-INTERR + "
+        "must-change property (decompile succeeds, cleanup fires).",
         project="default_unflattening_ollvm.json",
         must_change=True,
         expected_rules=["SimpleFlatteningCleanupUnflattener"],

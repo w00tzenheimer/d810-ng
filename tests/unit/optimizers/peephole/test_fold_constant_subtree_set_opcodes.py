@@ -16,6 +16,7 @@ at the top level.  Since IDA is not available in CI unit tests, we verify the
 fix via structural source checks — the same approach used by
 ``test_fold_readonlydata_mop_v.py``.
 """
+
 from __future__ import annotations
 
 import pathlib
@@ -49,30 +50,22 @@ class TestSetOpcodesGuardPresent:
     def test_setnz_in_set_opcodes(self) -> None:
         """m_setnz must be listed in _SET_OPCODES."""
         src = _read_src()
-        assert "ida_hexrays.m_setnz," in src, (
-            "m_setnz must be in _SET_OPCODES"
-        )
+        assert "ida_hexrays.m_setnz," in src, "m_setnz must be in _SET_OPCODES"
 
     def test_setb_in_set_opcodes(self) -> None:
         """m_setb must be listed in _SET_OPCODES."""
         src = _read_src()
-        assert "ida_hexrays.m_setb," in src, (
-            "m_setb must be in _SET_OPCODES"
-        )
+        assert "ida_hexrays.m_setb," in src, "m_setb must be in _SET_OPCODES"
 
     def test_setl_in_set_opcodes(self) -> None:
         """m_setl must be listed in _SET_OPCODES."""
         src = _read_src()
-        assert "ida_hexrays.m_setl," in src, (
-            "m_setl must be in _SET_OPCODES"
-        )
+        assert "ida_hexrays.m_setl," in src, "m_setl must be in _SET_OPCODES"
 
     def test_setp_in_set_opcodes(self) -> None:
         """m_setp must be listed in _SET_OPCODES."""
         src = _read_src()
-        assert "ida_hexrays.m_setp," in src, (
-            "m_setp must be in _SET_OPCODES"
-        )
+        assert "ida_hexrays.m_setp," in src, "m_setp must be in _SET_OPCODES"
 
     def test_all_eleven_set_opcodes_present(self) -> None:
         """All eleven m_set* opcodes must appear in the source."""

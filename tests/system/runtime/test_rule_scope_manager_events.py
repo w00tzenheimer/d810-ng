@@ -39,7 +39,6 @@ class _FakeStorage:
         self.inference_clear_count += 1
 
 
-
 def _build_manager() -> D810Manager:
     manager = D810Manager(Path("."))
     manager.configure(project_name="proj", idb_key="idb")
@@ -72,8 +71,12 @@ def test_inference_apply_and_clear_emit_events_and_persist():
 
     applied: list[RuleScopeInvalidation] = []
     cleared: list[RuleScopeInvalidation] = []
-    manager.event_emitter.on(RuleScopeEvent.INFERENCE_APPLIED, lambda payload: applied.append(payload))
-    manager.event_emitter.on(RuleScopeEvent.INFERENCE_CLEARED, lambda payload: cleared.append(payload))
+    manager.event_emitter.on(
+        RuleScopeEvent.INFERENCE_APPLIED, lambda payload: applied.append(payload)
+    )
+    manager.event_emitter.on(
+        RuleScopeEvent.INFERENCE_CLEARED, lambda payload: cleared.append(payload)
+    )
 
     manager.set_active_rule_inference(
         inference_name="focused_inference",

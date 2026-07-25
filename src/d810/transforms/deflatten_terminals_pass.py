@@ -21,6 +21,7 @@ Pure ``facts -> plan`` (no IDA). Deriving :class:`DeflattenTerminalsFacts` from 
 analysis results — in particular the staging-site ``insn_ea`` (which the portable
 ``StateWriteAnchor`` fact does not yet carry) — is the next rung.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

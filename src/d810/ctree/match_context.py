@@ -6,6 +6,7 @@ that key for later retrieval.
 
 Ported from herast (herast/tree/match_context.py).
 """
+
 from __future__ import annotations
 
 import idaapi

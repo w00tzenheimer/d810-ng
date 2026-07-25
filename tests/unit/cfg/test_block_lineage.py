@@ -1,4 +1,5 @@
 """Tests for pending created-block lineage rows."""
+
 from __future__ import annotations
 
 import json

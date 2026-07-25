@@ -1,4 +1,5 @@
 """Tests for the OLLVM carrier profile boundary."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -168,7 +169,6 @@ def test_profile_registration_requires_explicit_project_opt_in(monkeypatch) -> N
         },
     )
 
-    assert [
-        getattr(collector, "name", None)
-        for collector in runtime.collectors
-    ] == ["OllvmCarrierProfileFactCollector"]
+    assert [getattr(collector, "name", None) for collector in runtime.collectors] == [
+        "OllvmCarrierProfileFactCollector"
+    ]

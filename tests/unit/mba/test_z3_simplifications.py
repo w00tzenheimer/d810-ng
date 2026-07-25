@@ -1405,7 +1405,7 @@ class TestBitwiseSimplifications(unittest.TestCase):
                 label = (
                     f"{meta.name} ({'incorrect' if meta.known_incorrect else 'valid'})"
                 )
-                print(f"  [{i+1}/{len(testable_rules)}] {label.ljust(40)}", end="\r")
+                print(f"  [{i + 1}/{len(testable_rules)}] {label.ljust(40)}", end="\r")
                 try:
                     self._parse_and_prove(meta.name, expr)
                 except AssertionError:

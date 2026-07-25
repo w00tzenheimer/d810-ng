@@ -4,6 +4,7 @@ This module analyzes which terminal handlers have provable return paths and
 what kind of return source (direct, epilogue corridor, shared epilogue) each has.
 It does NOT modify any CFG state -- it produces a read-only audit report.
 """
+
 from __future__ import annotations
 
 import enum

@@ -1,4 +1,5 @@
 """Unit tests for CompareChainCollector adapter."""
+
 from __future__ import annotations
 
 from types import MappingProxyType, SimpleNamespace

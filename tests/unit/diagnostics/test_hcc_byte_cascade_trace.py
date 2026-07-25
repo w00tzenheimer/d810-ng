@@ -1,4 +1,5 @@
 """Tests for the HCC byte-cascade trace parser + report."""
+
 from __future__ import annotations
 
 import json
@@ -105,20 +106,37 @@ def test_parse_log_returns_one_row_per_byte_sorted() -> None:
         [
             "noise line",
             _line(
-                byte=5, block_ea="0x180014E00", block_serial=101, entry_anchor=101,
-                dag_node="?", in_dag=1, in_corrected_dag=1, in_region_table=0,
-                raw_candidate=0, candidate_rejection="-",
-                accepted_stage="-", emitted_mod="-",
+                byte=5,
+                block_ea="0x180014E00",
+                block_serial=101,
+                entry_anchor=101,
+                dag_node="?",
+                in_dag=1,
+                in_corrected_dag=1,
+                in_region_table=0,
+                raw_candidate=0,
+                candidate_rejection="-",
+                accepted_stage="-",
+                emitted_mod="-",
                 preserved_in_insertblock=0,
                 first_dropped_stage="postprocess",
                 final_status="lost",
             ),
             _line(
-                byte=2, block_ea="0x180014C00", block_serial=56, entry_anchor=56,
-                dag_node="?", in_dag=1, in_corrected_dag=1, in_region_table=0,
-                raw_candidate=1, candidate_rejection="-",
-                accepted_stage="primary_execution", emitted_mod="InsertBlock",
-                preserved_in_insertblock=1, first_dropped_stage="-",
+                byte=2,
+                block_ea="0x180014C00",
+                block_serial=56,
+                entry_anchor=56,
+                dag_node="?",
+                in_dag=1,
+                in_corrected_dag=1,
+                in_region_table=0,
+                raw_candidate=1,
+                candidate_rejection="-",
+                accepted_stage="primary_execution",
+                emitted_mod="InsertBlock",
+                preserved_in_insertblock=1,
+                first_dropped_stage="-",
                 final_status="preserved_insertblock",
             ),
         ]
@@ -129,18 +147,38 @@ def test_parse_log_returns_one_row_per_byte_sorted() -> None:
 
 def test_parse_log_keeps_last_observation_per_byte() -> None:
     first = _line(
-        byte=3, block_ea="0x1", block_serial=10, entry_anchor=10, dag_node="?",
-        in_dag=1, in_corrected_dag=1, in_region_table=0, raw_candidate=1,
-        candidate_rejection="-", accepted_stage="primary_execution",
-        emitted_mod="InsertBlock", preserved_in_insertblock=1,
-        first_dropped_stage="-", final_status="preserved_insertblock",
+        byte=3,
+        block_ea="0x1",
+        block_serial=10,
+        entry_anchor=10,
+        dag_node="?",
+        in_dag=1,
+        in_corrected_dag=1,
+        in_region_table=0,
+        raw_candidate=1,
+        candidate_rejection="-",
+        accepted_stage="primary_execution",
+        emitted_mod="InsertBlock",
+        preserved_in_insertblock=1,
+        first_dropped_stage="-",
+        final_status="preserved_insertblock",
     )
     second = _line(
-        byte=3, block_ea="0x1", block_serial=10, entry_anchor=10, dag_node="?",
-        in_dag=1, in_corrected_dag=1, in_region_table=0, raw_candidate=0,
-        candidate_rejection="-", accepted_stage="-",
-        emitted_mod="-", preserved_in_insertblock=0,
-        first_dropped_stage="postprocess", final_status="lost",
+        byte=3,
+        block_ea="0x1",
+        block_serial=10,
+        entry_anchor=10,
+        dag_node="?",
+        in_dag=1,
+        in_corrected_dag=1,
+        in_region_table=0,
+        raw_candidate=0,
+        candidate_rejection="-",
+        accepted_stage="-",
+        emitted_mod="-",
+        preserved_in_insertblock=0,
+        first_dropped_stage="postprocess",
+        final_status="lost",
     )
     rows = parse_trace_log("\n".join([first, second]))
     assert len(rows) == 1
@@ -205,8 +243,13 @@ def test_format_report_empty_input() -> None:
 
 def test_format_report_renders_table_and_summary() -> None:
     rows = [
-        _row(2, final_status="preserved_insertblock", preserved_in_insertblock=True,
-             accepted_stage="primary_execution", emitted_mod="InsertBlock"),
+        _row(
+            2,
+            final_status="preserved_insertblock",
+            preserved_in_insertblock=True,
+            accepted_stage="primary_execution",
+            emitted_mod="InsertBlock",
+        ),
         _row(3, final_status="lost", first_dropped_stage="postprocess"),
     ]
     out = format_report(rows, func_label="sub_7FFD3338C040")
@@ -253,38 +296,79 @@ def _make_diag_db(tmp_path: Path) -> Path:
     db = create_diag_database(str(db_path))
     with diag_models_on(db):
         snap5 = Snapshot.create(
-            id=5, label="pre_d810", func_ea_hex="0x0000000000000000",
-            func_ea_i64=0, maturity="GLBOPT1", phase="unknown",
-            block_count=0, timestamp=0.0,
+            id=5,
+            label="pre_d810",
+            func_ea_hex="0x0000000000000000",
+            func_ea_i64=0,
+            maturity="GLBOPT1",
+            phase="unknown",
+            block_count=0,
+            timestamp=0.0,
         )
         snap17 = Snapshot.create(
-            id=17, label="post_bundle_stabilize", func_ea_hex="0x0000000000000000",
-            func_ea_i64=0, maturity="GLBOPT1", phase="unknown",
-            block_count=0, timestamp=0.0,
+            id=17,
+            label="post_bundle_stabilize",
+            func_ea_hex="0x0000000000000000",
+            func_ea_i64=0,
+            maturity="GLBOPT1",
+            phase="unknown",
+            block_count=0,
+            timestamp=0.0,
         )
         Snapshot.create(
-            id=18, label="post_d810", func_ea_hex="0x0000000000000000",
-            func_ea_i64=0, maturity="GLBOPT1", phase="unknown",
-            block_count=0, timestamp=0.0,
+            id=18,
+            label="post_d810",
+            func_ea_hex="0x0000000000000000",
+            func_ea_i64=0,
+            maturity="GLBOPT1",
+            phase="unknown",
+            block_count=0,
+            timestamp=0.0,
         )
-        Instruction.insert_many([
-            dict(snapshot=snap5.id, block_serial=0, insn_index=0,
-                 ea_hex="0x0000000000001000", ea_i64=0x1000,
-                 opcode=0, opcode_name="stx",
-                 dstr="stx ([ds.2:%var_190.8+#3.8].1)"),
-            dict(snapshot=snap17.id, block_serial=0, insn_index=0,
-                 ea_hex="0x0000000000001001", ea_i64=0x1001,
-                 opcode=0, opcode_name="stx",
-                 dstr="stx ([ds.2:%var_190.8+#3.8].1)"),
-            dict(snapshot=snap17.id, block_serial=0, insn_index=1,
-                 ea_hex="0x0000000000001002", ea_i64=0x1002,
-                 opcode=0, opcode_name="stx",
-                 dstr="stx ([ds.2:%var_190.8+#3.8].1) second copy"),
-            dict(snapshot=snap5.id, block_serial=0, insn_index=1,
-                 ea_hex="0x0000000000001003", ea_i64=0x1003,
-                 opcode=0, opcode_name="stx",
-                 dstr="stx ([ds.2:%var_190.8+#6.8].1)"),
-        ]).execute()
+        Instruction.insert_many(
+            [
+                dict(
+                    snapshot=snap5.id,
+                    block_serial=0,
+                    insn_index=0,
+                    ea_hex="0x0000000000001000",
+                    ea_i64=0x1000,
+                    opcode=0,
+                    opcode_name="stx",
+                    dstr="stx ([ds.2:%var_190.8+#3.8].1)",
+                ),
+                dict(
+                    snapshot=snap17.id,
+                    block_serial=0,
+                    insn_index=0,
+                    ea_hex="0x0000000000001001",
+                    ea_i64=0x1001,
+                    opcode=0,
+                    opcode_name="stx",
+                    dstr="stx ([ds.2:%var_190.8+#3.8].1)",
+                ),
+                dict(
+                    snapshot=snap17.id,
+                    block_serial=0,
+                    insn_index=1,
+                    ea_hex="0x0000000000001002",
+                    ea_i64=0x1002,
+                    opcode=0,
+                    opcode_name="stx",
+                    dstr="stx ([ds.2:%var_190.8+#3.8].1) second copy",
+                ),
+                dict(
+                    snapshot=snap5.id,
+                    block_serial=0,
+                    insn_index=1,
+                    ea_hex="0x0000000000001003",
+                    ea_i64=0x1003,
+                    opcode=0,
+                    opcode_name="stx",
+                    dstr="stx ([ds.2:%var_190.8+#6.8].1)",
+                ),
+            ]
+        ).execute()
     db.close()
     return db_path
 
@@ -328,11 +412,18 @@ def test_end_to_end_minimal_log(tmp_path: Path) -> None:
             [
                 "boilerplate line",
                 _line(
-                    byte=3, block_ea="0x180014D00", block_serial=163,
-                    entry_anchor=163, dag_node="STATE_72AFE1BC",
-                    in_dag=1, in_corrected_dag=1, in_region_table=0,
-                    raw_candidate=1, candidate_rejection="-",
-                    accepted_stage="-", emitted_mod="-",
+                    byte=3,
+                    block_ea="0x180014D00",
+                    block_serial=163,
+                    entry_anchor=163,
+                    dag_node="STATE_72AFE1BC",
+                    in_dag=1,
+                    in_corrected_dag=1,
+                    in_region_table=0,
+                    raw_candidate=1,
+                    candidate_rejection="-",
+                    accepted_stage="-",
+                    emitted_mod="-",
                     preserved_in_insertblock=0,
                     first_dropped_stage="postprocess",
                     final_status="lost",
@@ -381,7 +472,8 @@ def test_final_status_refined_with_evidence_when_post_d810_has_refs() -> None:
     refined status to ``preserved_redirect_with_evidence``."""
     ea = "0x180014d10"
     row = _row(
-        byte=3, final_status="preserved_redirect",
+        byte=3,
+        final_status="preserved_redirect",
         source_eas=(ea,),
         db_source_ea_survival=_survival(
             {
@@ -401,7 +493,8 @@ def test_final_status_refined_ignores_early_post_d810_refs() -> None:
     """
     ea = "0x180014d10"
     row = _row(
-        byte=3, final_status="preserved_redirect",
+        byte=3,
+        final_status="preserved_redirect",
         source_eas=(ea,),
         db_source_ea_survival=_survival(
             {
@@ -420,7 +513,8 @@ def test_final_status_refined_ignores_early_post_d810_refs() -> None:
 def test_final_status_refined_counts_dump_d810_lvars_refs() -> None:
     ea = "0x180014e10"
     row = _row(
-        byte=6, final_status="preserved_redirect",
+        byte=6,
+        final_status="preserved_redirect",
         source_eas=(ea,),
         db_source_ea_survival=_survival(
             {
@@ -436,7 +530,8 @@ def test_final_status_refined_counts_dump_d810_lvars_refs() -> None:
 def test_final_status_refined_finalization_loss_when_post_d810_is_zero() -> None:
     ea = "0x180014e10"
     row = _row(
-        byte=6, final_status="preserved_redirect",
+        byte=6,
+        final_status="preserved_redirect",
         source_eas=(ea,),
         db_source_ea_survival=_survival(
             {
@@ -455,7 +550,8 @@ def test_final_status_refined_treats_mmat_lvars_as_post_d810() -> None:
     count the same way as ``post_d810`` for the refinement decision."""
     ea = "0x180014f10"
     row = _row(
-        byte=4, final_status="preserved_redirect",
+        byte=4,
+        final_status="preserved_redirect",
         source_eas=(ea,),
         db_source_ea_survival=_survival(
             {"pre_d810": 1, "MMAT_LVARS_pre_d810": 0},
@@ -471,7 +567,8 @@ def test_final_status_refined_keeps_status_when_no_post_d810_snapshot() -> None:
     instead of falsely promoting/demoting it."""
     ea = "0x180014abc"
     row = _row(
-        byte=5, final_status="preserved_redirect",
+        byte=5,
+        final_status="preserved_redirect",
         source_eas=(ea,),
         db_source_ea_survival=_survival(
             {"pre_d810": 1, "post_bundle_stabilize": 1},
@@ -485,7 +582,8 @@ def test_final_status_refined_requires_source_eas() -> None:
     """A row with NO ``source_eas`` cannot be refined; broad var_190
     counts no longer drive the decision."""
     row = _row(
-        byte=3, final_status="preserved_redirect",
+        byte=3,
+        final_status="preserved_redirect",
         source_eas=(),
         db_var190_refs={"maturity_MMAT_GLBOPT1_post_d810": 0},
     )
@@ -497,7 +595,8 @@ def test_final_status_refined_promotes_if_any_source_ea_survives() -> None:
     survives at any finalization snapshot."""
     ea1, ea2 = "0x180014d10", "0x180014d20"
     row = _row(
-        byte=3, final_status="preserved_redirect",
+        byte=3,
+        final_status="preserved_redirect",
         source_eas=(ea1, ea2),
         db_source_ea_survival={
             "maturity_MMAT_GLBOPT1_post_d810": {ea1: 0, ea2: 1},
@@ -511,7 +610,8 @@ def test_report_table_shows_refined_status_column() -> None:
     ea_keep = "0x180014e10"
     rows = [
         _row(
-            byte=3, final_status="preserved_redirect",
+            byte=3,
+            final_status="preserved_redirect",
             source_eas=(ea_lost,),
             db_source_ea_survival=_survival(
                 {"pre_d810": 1, "maturity_MMAT_GLBOPT1_post_d810": 0},
@@ -519,7 +619,8 @@ def test_report_table_shows_refined_status_column() -> None:
             ),
         ),
         _row(
-            byte=6, final_status="preserved_redirect",
+            byte=6,
+            final_status="preserved_redirect",
             source_eas=(ea_keep,),
             db_source_ea_survival=_survival(
                 {"pre_d810": 1, "maturity_MMAT_GLBOPT1_post_d810": 1},
@@ -542,7 +643,8 @@ def test_summary_uses_refined_status_for_byte3_loss() -> None:
     ea = "0x180014d10"
     rows = [
         _row(
-            byte=3, final_status="preserved_redirect",
+            byte=3,
+            final_status="preserved_redirect",
             first_dropped_stage="-",
             source_eas=(ea,),
             db_source_ea_survival=_survival(
@@ -563,7 +665,8 @@ def test_summary_skips_refined_preserved_with_evidence() -> None:
     ea = "0x180014e10"
     rows = [
         _row(
-            byte=6, final_status="preserved_redirect",
+            byte=6,
+            final_status="preserved_redirect",
             source_eas=(ea,),
             db_source_ea_survival=_survival(
                 {"pre_d810": 1, "maturity_MMAT_GLBOPT1_post_d810": 1},
@@ -579,7 +682,8 @@ def test_summary_skips_refined_preserved_with_evidence() -> None:
 def test_to_dict_emits_refined_status_and_source_eas() -> None:
     ea = "0x180014d10"
     row = _row(
-        byte=3, final_status="preserved_redirect",
+        byte=3,
+        final_status="preserved_redirect",
         source_eas=(ea, "0x180014d20"),
         db_source_ea_survival=_survival(
             {"pre_d810": 1, "maturity_MMAT_GLBOPT1_post_d810": 0},
@@ -600,11 +704,21 @@ def test_to_dict_emits_refined_status_and_source_eas() -> None:
 
 def test_parse_trace_line_pulls_source_eas() -> None:
     body = _line(
-        byte=3, block_ea="0x180014D00", block_serial=163, entry_anchor=163,
-        dag_node="STATE_X", in_dag=1, in_corrected_dag=1, in_region_table=0,
-        raw_candidate=1, candidate_rejection="-",
-        accepted_stage="-", emitted_mod="-", preserved_in_insertblock=0,
-        first_dropped_stage="-", final_status="preserved_redirect",
+        byte=3,
+        block_ea="0x180014D00",
+        block_serial=163,
+        entry_anchor=163,
+        dag_node="STATE_X",
+        in_dag=1,
+        in_corrected_dag=1,
+        in_region_table=0,
+        raw_candidate=1,
+        candidate_rejection="-",
+        accepted_stage="-",
+        emitted_mod="-",
+        preserved_in_insertblock=0,
+        first_dropped_stage="-",
+        final_status="preserved_redirect",
     )
     # Tracer emits source_eas after n_evidence and before in_dag; inject it.
     body = body.replace(
@@ -624,49 +738,73 @@ def test_enrich_populates_db_source_ea_survival(tmp_path: Path) -> None:
     db = create_diag_database(str(db_path))
     with diag_models_on(db):
         snap5 = Snapshot.create(
-            id=5, label="maturity_MMAT_GLBOPT1_pre_d810",
-            func_ea_hex="0x0000000000000000", func_ea_i64=0,
-            maturity="MMAT_GLBOPT1", phase="unknown",
-            block_count=0, timestamp=0.0,
+            id=5,
+            label="maturity_MMAT_GLBOPT1_pre_d810",
+            func_ea_hex="0x0000000000000000",
+            func_ea_i64=0,
+            maturity="MMAT_GLBOPT1",
+            phase="unknown",
+            block_count=0,
+            timestamp=0.0,
         )
         snap18 = Snapshot.create(
-            id=18, label="maturity_MMAT_GLBOPT1_post_d810",
-            func_ea_hex="0x0000000000000000", func_ea_i64=0,
-            maturity="MMAT_GLBOPT1", phase="unknown",
-            block_count=0, timestamp=0.0,
+            id=18,
+            label="maturity_MMAT_GLBOPT1_post_d810",
+            func_ea_hex="0x0000000000000000",
+            func_ea_i64=0,
+            maturity="MMAT_GLBOPT1",
+            phase="unknown",
+            block_count=0,
+            timestamp=0.0,
         )
-        Instruction.insert_many([
-            dict(snapshot=snap5.id, block_serial=0, insn_index=0,
-                 ea_hex="0x0000000180014d10", ea_i64=0x180014d10,
-                 opcode=0, opcode_name="stx", dstr="stx ..."),
-            dict(snapshot=snap5.id, block_serial=0, insn_index=1,
-                 ea_hex="0x0000000180014d20", ea_i64=0x180014d20,
-                 opcode=0, opcode_name="stx", dstr="stx ..."),
-            dict(snapshot=snap18.id, block_serial=0, insn_index=0,
-                 ea_hex="0x0000000180014d20", ea_i64=0x180014d20,
-                 opcode=0, opcode_name="stx", dstr="stx ..."),
-        ]).execute()
+        Instruction.insert_many(
+            [
+                dict(
+                    snapshot=snap5.id,
+                    block_serial=0,
+                    insn_index=0,
+                    ea_hex="0x0000000180014d10",
+                    ea_i64=0x180014D10,
+                    opcode=0,
+                    opcode_name="stx",
+                    dstr="stx ...",
+                ),
+                dict(
+                    snapshot=snap5.id,
+                    block_serial=0,
+                    insn_index=1,
+                    ea_hex="0x0000000180014d20",
+                    ea_i64=0x180014D20,
+                    opcode=0,
+                    opcode_name="stx",
+                    dstr="stx ...",
+                ),
+                dict(
+                    snapshot=snap18.id,
+                    block_serial=0,
+                    insn_index=0,
+                    ea_hex="0x0000000180014d20",
+                    ea_i64=0x180014D20,
+                    opcode=0,
+                    opcode_name="stx",
+                    dstr="stx ...",
+                ),
+            ]
+        ).execute()
     db.close()
     # Tracer emits uppercase 16-digit hex; the helper normalises to lower.
     row = _row(
-        byte=3, final_status="preserved_redirect",
+        byte=3,
+        final_status="preserved_redirect",
         source_eas=("0x0000000180014D10", "0x0000000180014D20"),
     )
     [enriched] = enrich_rows_with_db([row], db_path)
     survival = enriched.db_source_ea_survival
-    assert (
-        survival["maturity_MMAT_GLBOPT1_pre_d810"]["0x0000000180014d10"] == 1
-    )
-    assert (
-        survival["maturity_MMAT_GLBOPT1_pre_d810"]["0x0000000180014d20"] == 1
-    )
+    assert survival["maturity_MMAT_GLBOPT1_pre_d810"]["0x0000000180014d10"] == 1
+    assert survival["maturity_MMAT_GLBOPT1_pre_d810"]["0x0000000180014d20"] == 1
     # Byte's first EA is dead post_d810; second survives.
-    assert (
-        survival["maturity_MMAT_GLBOPT1_post_d810"]["0x0000000180014d10"] == 0
-    )
-    assert (
-        survival["maturity_MMAT_GLBOPT1_post_d810"]["0x0000000180014d20"] == 1
-    )
+    assert survival["maturity_MMAT_GLBOPT1_post_d810"]["0x0000000180014d10"] == 0
+    assert survival["maturity_MMAT_GLBOPT1_post_d810"]["0x0000000180014d20"] == 1
     # Refinement still promotes because at least one source EA survives.
     assert enriched.final_status_refined == "preserved_redirect_with_evidence"
 
@@ -680,26 +818,40 @@ def test_enrich_marks_redirect_only_finalization_loss_when_all_source_eas_dead(
     db = create_diag_database(str(db_path))
     with diag_models_on(db):
         snap5 = Snapshot.create(
-            id=5, label="maturity_MMAT_GLBOPT1_pre_d810",
-            func_ea_hex="0x0000000000000000", func_ea_i64=0,
-            maturity="MMAT_GLBOPT1", phase="unknown",
-            block_count=0, timestamp=0.0,
+            id=5,
+            label="maturity_MMAT_GLBOPT1_pre_d810",
+            func_ea_hex="0x0000000000000000",
+            func_ea_i64=0,
+            maturity="MMAT_GLBOPT1",
+            phase="unknown",
+            block_count=0,
+            timestamp=0.0,
         )
         Snapshot.create(
-            id=18, label="maturity_MMAT_GLBOPT1_post_d810",
-            func_ea_hex="0x0000000000000000", func_ea_i64=0,
-            maturity="MMAT_GLBOPT1", phase="unknown",
-            block_count=0, timestamp=0.0,
+            id=18,
+            label="maturity_MMAT_GLBOPT1_post_d810",
+            func_ea_hex="0x0000000000000000",
+            func_ea_i64=0,
+            maturity="MMAT_GLBOPT1",
+            phase="unknown",
+            block_count=0,
+            timestamp=0.0,
         )
         # snap5 has the EA; snap18 has nothing matching.
         Instruction.insert(
-            snapshot=snap5.id, block_serial=0, insn_index=0,
-            ea_hex="0x0000000180014d10", ea_i64=0x180014d10,
-            opcode=0, opcode_name="stx", dstr="stx ...",
+            snapshot=snap5.id,
+            block_serial=0,
+            insn_index=0,
+            ea_hex="0x0000000180014d10",
+            ea_i64=0x180014D10,
+            opcode=0,
+            opcode_name="stx",
+            dstr="stx ...",
         ).execute()
     db.close()
     row = _row(
-        byte=3, final_status="preserved_redirect",
+        byte=3,
+        final_status="preserved_redirect",
         source_eas=("0x0000000180014D10",),
     )
     [enriched] = enrich_rows_with_db([row], db_path)
@@ -708,14 +860,25 @@ def test_enrich_marks_redirect_only_finalization_loss_when_all_source_eas_dead(
 
 def test_parse_trace_line_treats_dash_source_eas_as_empty_tuple() -> None:
     body = _line(
-        byte=2, block_ea="0x0", block_serial=0, entry_anchor=0,
-        dag_node="?", in_dag=1, in_corrected_dag=1, in_region_table=0,
-        raw_candidate=0, candidate_rejection="-",
-        accepted_stage="-", emitted_mod="-", preserved_in_insertblock=0,
-        first_dropped_stage="-", final_status="region_detection_gap",
+        byte=2,
+        block_ea="0x0",
+        block_serial=0,
+        entry_anchor=0,
+        dag_node="?",
+        in_dag=1,
+        in_corrected_dag=1,
+        in_region_table=0,
+        raw_candidate=0,
+        candidate_rejection="-",
+        accepted_stage="-",
+        emitted_mod="-",
+        preserved_in_insertblock=0,
+        first_dropped_stage="-",
+        final_status="region_detection_gap",
     )
     body = body.replace(
-        "block_ea=0x0", "block_ea=0x0 source_eas=-",
+        "block_ea=0x0",
+        "block_ea=0x0 source_eas=-",
     )
     row = parse_trace_line(body)
     assert row is not None

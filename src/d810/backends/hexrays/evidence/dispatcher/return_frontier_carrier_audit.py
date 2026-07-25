@@ -20,6 +20,7 @@ Env gate: D810_RECON_RETURN_FRONTIER_CARRIER_AUDIT=1 (off by default;
 when on, audit fires once at post_pipeline boundary and emits one
 log line per return-frontier block).
 """
+
 from __future__ import annotations
 
 import os
@@ -40,17 +41,17 @@ _AUDIT_ENV = "D810_RECON_RETURN_FRONTIER_CARRIER_AUDIT"
 
 @dataclass(frozen=True, slots=True)
 class ReturnFrontierCarrierEntry:
-    block_serial: int                # the BLT_STOP/m_ret block
-    writer_block: int | None         # block that actually writes the return slot
-    walk_path: tuple[int, ...]       # path from ret_blk to writer_blk
-    returned_mop_repr: str           # human-readable mop description
+    block_serial: int  # the BLT_STOP/m_ret block
+    writer_block: int | None  # block that actually writes the return slot
+    walk_path: tuple[int, ...]  # path from ret_blk to writer_blk
+    returned_mop_repr: str  # human-readable mop description
     reaching_def_block: int | None
     reaching_def_opcode: int | None
-    carrier_lvar_idx: int | None     # if mop_l carrier
-    carrier_stkoff: int | None       # if mop_S carrier
+    carrier_lvar_idx: int | None  # if mop_l carrier
+    carrier_stkoff: int | None  # if mop_S carrier
     in_protected_corridor: bool
-    classification: str              # one of CLASSIFICATIONS
-    diagnostic: str                  # human-readable explanation
+    classification: str  # one of CLASSIFICATIONS
+    diagnostic: str  # human-readable explanation
 
 
 CLASSIFICATIONS = (
@@ -238,7 +239,10 @@ def _find_return_slot_writer_in_block(
         ):
             continue
         if skip_trivial_copy and _is_trivial_return_slot_copy(
-            insn, m_mov=m_mov, mop_r=mop_r, mop_S=mop_S,
+            insn,
+            m_mov=m_mov,
+            mop_r=mop_r,
+            mop_S=mop_S,
             return_stkoff=return_stkoff,
         ):
             continue
@@ -331,9 +335,7 @@ def _walk_to_return_writer(
 
     visited: set[int] = {ret_serial}
     # Each frontier entry: (serial, depth, path_so_far)
-    frontier: list[tuple[int, int, tuple[int, ...]]] = [
-        (ret_serial, 0, (ret_serial,))
-    ]
+    frontier: list[tuple[int, int, tuple[int, ...]]] = [(ret_serial, 0, (ret_serial,))]
     found: list[tuple[object, tuple[int, ...]]] = []
     hit_max_depth = False
     hit_max_visited = False
@@ -383,9 +385,7 @@ def _walk_to_return_writer(
     if found:
         # Determine whether the writers diverge in carrier identity.
         sigs = {
-            _writer_carrier_signature(
-                w, mop_n=mop_n, mop_l=mop_l, mop_S=mop_S
-            )
+            _writer_carrier_signature(w, mop_n=mop_n, mop_l=mop_l, mop_S=mop_S)
             for w, _ in found
         }
         if len(sigs) > 1:
@@ -399,6 +399,7 @@ def _walk_to_return_writer(
                 except Exception:
                     repr_ = ""
                 return (len(p), p, repr_)
+
             found.sort(key=_stable_key)
             return found, "fan-in-divergence"
         # All converge on the same carrier identity: pick shortest.
@@ -423,7 +424,7 @@ def _detect_dead_def_state_guard(
     mop_S: int,
     mop_l: int,
 ):
-    "Detect protected non-carrier return-frontier writers.\n\n    If the writer's source mop is an m_add (or similar arithmetic op)\n    whose .l references a stkoff/lvar that has *no* live def anywhere\n    else in the function (i.e. no m_mov/m_stx writes to that stkoff\n    exist), the writer is encoding a use-of-dead-def. Preanalysis treats that\n    writer as topology evidence to preserve, not as a carrier to lower.\n\n    Returns (matched, reason_str).\n    "
+    "Detect protected non-carrier return-frontier writers.\n\n    If the writer's source mop is an m_add (or similar arithmetic op)\n    whose .l references a stkoff/lvar that has *no* live def anywhere\n    else in the function (i.e. no m_mov/m_stx writes to that stkoff\n    exist), the writer is encoding a use-of-dead-def. Preanalysis treats that\n    writer as topology evidence to preserve, not as a carrier to lower.\n\n    Returns (matched, reason_str).\n"
     if writer is None:
         return False, ""
     op = _safe_int(getattr(writer, "opcode", None), -1)
@@ -613,7 +614,7 @@ def _detect_arg_propagation(
 
 
 def audit_return_frontier_carriers(
-    mba,                              # ida_hexrays.mba_t (live)
+    mba,  # ida_hexrays.mba_t (live)
     side_effect_corridors: tuple[tuple[int, ...], ...] = (),
     *,
     label: str = "post_pipeline",
@@ -740,29 +741,36 @@ def audit_return_frontier_carriers(
             logger.warning(
                 "RETURN_FRONTIER_CARRIER_AUDIT[%s]: blk[%d] walk hit %s "
                 "bound (max_depth=%d max_visited=%d)",
-                label, block_serial_int, walk_note,
-                _DEFAULT_MAX_DEPTH, _DEFAULT_MAX_VISITED,
+                label,
+                block_serial_int,
+                walk_note,
+                _DEFAULT_MAX_DEPTH,
+                _DEFAULT_MAX_VISITED,
             )
 
         if not writers:
-            entries.append(ReturnFrontierCarrierEntry(
-                block_serial=block_serial_int,
-                writer_block=None,
-                walk_path=tuple(),
-                returned_mop_repr="<no-write-found>",
-                reaching_def_block=None,
-                reaching_def_opcode=None,
-                carrier_lvar_idx=None,
-                carrier_stkoff=None,
-                in_protected_corridor=in_corridor,
-                classification="UNKNOWN",
-                diagnostic=f"no return-slot write found ({walk_note})",
-            ))
+            entries.append(
+                ReturnFrontierCarrierEntry(
+                    block_serial=block_serial_int,
+                    writer_block=None,
+                    walk_path=tuple(),
+                    returned_mop_repr="<no-write-found>",
+                    reaching_def_block=None,
+                    reaching_def_opcode=None,
+                    carrier_lvar_idx=None,
+                    carrier_stkoff=None,
+                    in_protected_corridor=in_corridor,
+                    classification="UNKNOWN",
+                    diagnostic=f"no return-slot write found ({walk_note})",
+                )
+            )
             logger.info(
                 "RETURN_FRONTIER_CARRIER_AUDIT[%s]: ret_blk[%d] "
                 "writer_blk=<none> path=[] returned=<no-write-found> "
                 "classification=UNKNOWN reason=no-write-found(%s)",
-                label, block_serial_int, walk_note,
+                label,
+                block_serial_int,
+                walk_note,
             )
             continue
 
@@ -807,21 +815,14 @@ def audit_return_frontier_carriers(
                 if src_mop is not None and int(src_mop.t) == mop_n:
                     val = 0
                     try:
-                        val = (
-                            int(src_mop.nnn.value)
-                            if src_mop.nnn is not None else 0
-                        )
+                        val = int(src_mop.nnn.value) if src_mop.nnn is not None else 0
                     except (AttributeError, TypeError):
                         val = 0
                     masked = val & 0xFFFFFFFFFFFFFFFF
-                    if (
-                        effective_artifact_priors
-                        .is_known_impossible_return_constant(masked)
+                    if effective_artifact_priors.is_known_impossible_return_constant(
+                        masked
                     ):
-                        classification = (
-                            ReturnFrontierCarrierClassification
-                            .PROTECTED_NON_CARRIER_RETURN_WRITER.value
-                        )
+                        classification = ReturnFrontierCarrierClassification.PROTECTED_NON_CARRIER_RETURN_WRITER.value
                         diagnostic = (
                             f"returned constant 0x{masked:016x} matches "
                             f"configured protected return-artifact prior; "
@@ -858,14 +859,18 @@ def audit_return_frontier_carriers(
             # misclassify as a state-guard artifact since the caller
             # writes that slot, not us.
             if classification not in (
-                ReturnFrontierCarrierClassification
-                .PROTECTED_NON_CARRIER_RETURN_WRITER.value,
+                ReturnFrontierCarrierClassification.PROTECTED_NON_CARRIER_RETURN_WRITER.value,
                 "POINTER_IDENTITY_PROPAGATED",
             ):
                 ap_match, ap_reason = _detect_arg_propagation(
-                    return_write_insn, writer_blk, mba,
-                    m_add=m_add, m_stx=m_stx,
-                    mop_l=mop_l, mop_r=mop_r, mop_S=mop_S,
+                    return_write_insn,
+                    writer_blk,
+                    mba,
+                    m_add=m_add,
+                    m_stx=m_stx,
+                    mop_l=mop_l,
+                    mop_r=mop_r,
+                    mop_S=mop_S,
                 )
                 if ap_match:
                     classification = "POINTER_IDENTITY_PROPAGATED"
@@ -875,20 +880,21 @@ def audit_return_frontier_carriers(
             # 0xC5FB... pattern where the writer is m_add of a stkoff
             # that has no live def anywhere in the function).
             if classification not in (
-                ReturnFrontierCarrierClassification
-                .PROTECTED_NON_CARRIER_RETURN_WRITER.value,
+                ReturnFrontierCarrierClassification.PROTECTED_NON_CARRIER_RETURN_WRITER.value,
                 "POINTER_IDENTITY_PROPAGATED",
             ):
                 sg_match, sg_reason = _detect_dead_def_state_guard(
-                    mba, return_write_insn,
-                    m_mov=m_mov, m_stx=m_stx, m_add=m_add,
-                    mop_r=mop_r, mop_S=mop_S, mop_l=mop_l,
+                    mba,
+                    return_write_insn,
+                    m_mov=m_mov,
+                    m_stx=m_stx,
+                    m_add=m_add,
+                    mop_r=mop_r,
+                    mop_S=mop_S,
+                    mop_l=mop_l,
                 )
                 if sg_match:
-                    classification = (
-                        ReturnFrontierCarrierClassification
-                        .PROTECTED_NON_CARRIER_RETURN_WRITER.value
-                    )
+                    classification = ReturnFrontierCarrierClassification.PROTECTED_NON_CARRIER_RETURN_WRITER.value
                     diagnostic = f"dead-def state-guard: {sg_reason}"
 
             reaching_def_opcode: int | None = None

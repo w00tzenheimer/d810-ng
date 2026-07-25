@@ -10,10 +10,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 
 
 SCRIPT_DIR = (
-    Path(__file__).resolve().parents[3]
-    / "tools"
-    / "scripts"
-    / "rhad_investigation"
+    Path(__file__).resolve().parents[3] / "tools" / "scripts" / "rhad_investigation"
 )
 
 
@@ -79,10 +76,7 @@ def _fact(
         register_constant_writes=constants,
         register_write_eas=(
             writes
-            + tuple(
-                (register, write_ea)
-                for register, _constant, write_ea in constants
-            )
+            + tuple((register, write_ea) for register, _constant, write_ea in constants)
             + tuple(
                 (dest_register, write_ea)
                 for dest_register, _source_register, write_ea in copies
@@ -357,9 +351,7 @@ def test_recognizes_pruned_live_conditional_state_path_from_native_topology():
             alternate_state: (0x5000,),
         },
         imported_block_ranges={0x5000: (0x5000, 0x5010)},
-        live_native_eas=frozenset(
-            {source_ea, predicate_ea, 0x4000}
-        ),
+        live_native_eas=frozenset({source_ea, predicate_ea, 0x4000}),
     )
 
     assert result.abstentions == ()
@@ -374,9 +366,7 @@ def test_recognizes_pruned_live_conditional_state_path_from_native_topology():
             taken_state=alternate_state,
             fallthrough_state=default_state,
             source_owner=ports.PreoptBoundaryEndpointOwner.LIVE,
-            taken_target_owner=(
-                ports.PreoptBoundaryEndpointOwner.IMPORTED
-            ),
+            taken_target_owner=(ports.PreoptBoundaryEndpointOwner.IMPORTED),
             fallthrough_target_owner=ports.PreoptBoundaryEndpointOwner.LIVE,
             resolver_kind="preopt_pruned_conditional_state_choice",
         ),
@@ -790,9 +780,7 @@ def test_owned_literal_planner_keeps_fully_live_and_ignores_unmapped_states():
         state_register=20,
         state_handler_eas={mapped_state: (0x4000,)},
         imported_block_ranges={},
-        live_native_eas=frozenset(
-            {0x1000, 0x1004, 0x1008, 0x4000}
-        ),
+        live_native_eas=frozenset({0x1000, 0x1004, 0x1008, 0x4000}),
     )
 
     assert result.direct == (
@@ -869,9 +857,7 @@ def test_literal_state_write_planner_abstains_on_unmapped_state():
     assert result.abstentions == (
         ports.PreoptBoundaryPortAbstention(
             source_ea=0x1004,
-            reason=(
-                ports.PreoptBoundaryPortAbstentionReason.MISSING_STATE_HANDLER
-            ),
+            reason=(ports.PreoptBoundaryPortAbstentionReason.MISSING_STATE_HANDLER),
         ),
     )
 
@@ -903,9 +889,7 @@ def test_locates_preopt_cut_block_by_tail_after_a_call_split():
     )
 
     assert result.abstentions == ()
-    assert tuple(row.source_instruction_ea for row in result.direct) == (
-        0x1104,
-    )
+    assert tuple(row.source_instruction_ea for row in result.direct) == (0x1104,)
 
 
 def test_plans_source_sensitive_ports_for_two_state_arms_before_a_merge():

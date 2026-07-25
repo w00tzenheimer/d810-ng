@@ -10,6 +10,7 @@ to the end of the MBA in that order.
 The copy-to-end + serial remapping approach leaves the originals as dead code
 (no incoming edges) that IDA's deep cleaning removes.
 """
+
 from __future__ import annotations
 
 from d810.core import logging
@@ -18,14 +19,19 @@ from d810.core.typing import TYPE_CHECKING
 from d810.capabilities.providers import get_microcode_evidence
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
-from d810.transforms.reorder_blocks_planning import compute_reorder_blocks as plan_reorder_blocks
+from d810.transforms.reorder_blocks_planning import (
+    compute_reorder_blocks as plan_reorder_blocks,
+)
 from d810.transforms.plan_fragment import (
     FAMILY_DIRECT,
     BenefitMetrics,
     OwnershipScope,
     PlanFragment,
 )
-from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
+from d810.analyses.control_flow.condition_chain_model import (
+    resolve_target_via_condition_chain,
+)
+
 if TYPE_CHECKING:
     from d810.transforms.graph_modification import ReorderBlocks
     from d810.transforms.snapshot import (
@@ -82,7 +88,8 @@ class TopologicalSortStrategy:
             if (func_ea, maturity) in TopologicalSortStrategy._applied:
                 logger.debug(
                     "TopologicalSort: already applied for func_ea=0x%x maturity=%s, skipping",
-                    func_ea, maturity_to_string(maturity),
+                    func_ea,
+                    maturity_to_string(maturity),
                 )
                 return False
 
@@ -123,7 +130,9 @@ class TopologicalSortStrategy:
             ),
             dispatcher_blocks=frozenset(
                 int(block)
-                for block in (getattr(range_evidence, "condition_chain_blocks", ()) or ())
+                for block in (
+                    getattr(range_evidence, "condition_chain_blocks", ()) or ()
+                )
             ),
         )
 
@@ -180,9 +189,9 @@ class TopologicalSortStrategy:
             risk_score=0.2,
             metadata={
                 "dfs_block_count": len(reorder.dfs_block_order),
-                "handler_count": len(
-                    snapshot.state_machine.handlers
-                ) if snapshot.state_machine else 0,
+                "handler_count": len(snapshot.state_machine.handlers)
+                if snapshot.state_machine
+                else 0,
                 # Override safeguard threshold: ReorderBlocks is a single bulk
                 # operation, not per-edge redirects.  The safeguard gate counts
                 # len(modifications) which is 1 for this strategy.

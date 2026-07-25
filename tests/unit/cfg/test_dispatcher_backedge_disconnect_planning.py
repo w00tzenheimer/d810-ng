@@ -6,7 +6,9 @@ from d810.transforms.dispatcher_backedge_disconnect_planning import (
 )
 
 
-def test_plan_dispatcher_backedge_disconnects_skips_already_redirected_sources() -> None:
+def test_plan_dispatcher_backedge_disconnects_skips_already_redirected_sources() -> (
+    None
+):
     plans = plan_dispatcher_backedge_disconnects(
         block_nsucc_map={2: 0, 10: 2, 11: 2},
         block_succ_map={10: (2, 30), 11: (31, 2)},

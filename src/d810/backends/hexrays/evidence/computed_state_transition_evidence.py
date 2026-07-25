@@ -14,6 +14,7 @@ The retired block-insertion path is intentionally absent from this module. New
 materialization should go through typed CFG primitives and Hex-Rays
 materialization, not direct live-CFG helpers here.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -33,6 +34,7 @@ logger = getLogger("D810.computed_state_transition")
 @dataclass
 class ComputedStatePattern:
     """Info about a computed state-transition pattern found in a block."""
+
     block_serial: int
     instruction_ea: int
     cnst: int  # Magic constant
@@ -264,8 +266,12 @@ class ComputedStateTransitionResolver:
 
         Returns (magic_const, condition_mop, state_mop, opcode) or None.
         """
-        if inst.opcode not in [ida_hexrays.m_add, ida_hexrays.m_sub,
-                                ida_hexrays.m_or, ida_hexrays.m_xor]:
+        if inst.opcode not in [
+            ida_hexrays.m_add,
+            ida_hexrays.m_sub,
+            ida_hexrays.m_or,
+            ida_hexrays.m_xor,
+        ]:
             return None
 
         # Pattern: state = x op magic  OR  state = magic op x
@@ -301,10 +307,13 @@ class ComputedStateTransitionResolver:
         else:
             return (magic, magic)
 
-    def _resolve_target_for_state(self, state_value: int) -> ida_hexrays.mblock_t | None:
+    def _resolve_target_for_state(
+        self, state_value: int
+    ) -> ida_hexrays.mblock_t | None:
         """Resolve dispatcher target for a given state value."""
         from d810.evaluator.hexrays_microcode.emulator import (
-            MicroCodeInterpreter, MicroCodeEnvironment
+            MicroCodeInterpreter,
+            MicroCodeEnvironment,
         )
 
         microcode_interpreter = MicroCodeInterpreter(symbolic_mode=False)
@@ -359,7 +368,10 @@ class ComputedStateTransitionResolver:
 
         logger.info(
             "Computed-state evidence: block %d, magic=%d, states=(%d, %d)",
-            pattern.block_serial, pattern.cnst, state0, state1
+            pattern.block_serial,
+            pattern.cnst,
+            state0,
+            state1,
         )
 
         # Resolve targets for both state values
@@ -369,13 +381,19 @@ class ComputedStateTransitionResolver:
         if target0 is None or target1 is None:
             logger.warning(
                 "Computed-state evidence: Could not resolve targets for block %d (state0=%d->%s, state1=%d->%s)",
-                pattern.block_serial, state0, target0, state1, target1
+                pattern.block_serial,
+                state0,
+                target0,
+                state1,
+                target1,
             )
             return None
 
         logger.info(
             "Computed-state evidence: block %d -> targets (%d, %d)",
-            pattern.block_serial, target0.serial, target1.serial
+            pattern.block_serial,
+            target0.serial,
+            target1.serial,
         )
         return ComputedStateTransitionEvidence(
             pattern=pattern,

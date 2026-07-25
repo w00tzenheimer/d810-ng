@@ -1,4 +1,5 @@
 """Unit tests for shared engine provenance types."""
+
 from __future__ import annotations
 
 from d810.optimizers.microcode.flow.flattening import engine
@@ -45,10 +46,10 @@ def test_planner_inputs_builds_input_summary() -> None:
 
 
 def test_gate_accounting_summary_and_counts() -> None:
-    accounting = GateAccounting().add(
-        GateDecision("semantic_gate", GateVerdict.PASSED, "ok")
-    ).add(
-        GateDecision("safeguard", GateVerdict.FAILED, "too risky")
+    accounting = (
+        GateAccounting()
+        .add(GateDecision("semantic_gate", GateVerdict.PASSED, "ok"))
+        .add(GateDecision("safeguard", GateVerdict.FAILED, "too risky"))
     )
 
     assert accounting.passed_count == 1

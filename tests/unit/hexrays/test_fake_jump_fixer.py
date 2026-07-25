@@ -2,6 +2,7 @@
 
 This module tests the CFG-level fake/opaque jump fixing logic owned by the cleanup engine path.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -34,8 +35,13 @@ class TestFakeJumpFixerPass:
     def test_empty_fixes_no_modifications(self):
         """Pass with empty fixes should return empty modification list."""
         blk = BlockSnapshot(
-            serial=0, block_type=4, succs=(5, 10), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=4,
+            succs=(5, 10),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         pass_instance = FakeJumpFixerPass(fixes={})
@@ -46,8 +52,13 @@ class TestFakeJumpFixerPass:
     def test_single_2way_block_fix_emits_redirect_branch(self):
         """Pass with single 2-way block fix should emit one RedirectBranch."""
         blk = BlockSnapshot(
-            serial=5, block_type=4, succs=(10, 20), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=5,
+            block_type=4,
+            succs=(10, 20),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={5: blk}, entry_serial=5, func_ea=0x1000)
         fixes = {5: 10}  # Block 5 always goes to 10, never 20
@@ -63,8 +74,13 @@ class TestFakeJumpFixerPass:
     def test_single_1way_block_fix_emits_redirect_goto(self):
         """Pass with single 1-way block fix should emit one RedirectGoto."""
         blk = BlockSnapshot(
-            serial=5, block_type=3, succs=(10,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=5,
+            block_type=3,
+            succs=(10,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={5: blk}, entry_serial=5, func_ea=0x1000)
         fixes = {5: 20}  # Block 5 should goto 20, not 10
@@ -80,8 +96,13 @@ class TestFakeJumpFixerPass:
     def test_1way_block_target_matches_fix_no_modification(self):
         """1-way block where current target matches fix should emit no modification."""
         blk = BlockSnapshot(
-            serial=5, block_type=3, succs=(10,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=5,
+            block_type=3,
+            succs=(10,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={5: blk}, entry_serial=5, func_ea=0x1000)
         fixes = {5: 10}  # Already goes to 10
@@ -93,20 +114,34 @@ class TestFakeJumpFixerPass:
     def test_multiple_fixes_emit_all_modifications(self):
         """Pass with multiple fixes should emit RedirectBranch/RedirectGoto for each."""
         blk10 = BlockSnapshot(
-            serial=10, block_type=4, succs=(20, 30), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=10,
+            block_type=4,
+            succs=(20, 30),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk15 = BlockSnapshot(
-            serial=15, block_type=3, succs=(25,), preds=(),
-            flags=0, start_ea=0x2000, insn_snapshots=()
+            serial=15,
+            block_type=3,
+            succs=(25,),
+            preds=(),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(),
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=3, succs=(99,), preds=(10,),
-            flags=0, start_ea=0x3000, insn_snapshots=()
+            serial=20,
+            block_type=3,
+            succs=(99,),
+            preds=(10,),
+            flags=0,
+            start_ea=0x3000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(
-            blocks={10: blk10, 15: blk15, 20: blk20},
-            entry_serial=10, func_ea=0x1000
+            blocks={10: blk10, 15: blk15, 20: blk20}, entry_serial=10, func_ea=0x1000
         )
         fixes = {10: 20, 15: 35}  # Block 10 -> 20, Block 15 -> 35
         pass_instance = FakeJumpFixerPass(fixes=fixes)
@@ -123,8 +158,13 @@ class TestFakeJumpFixerPass:
     def test_fix_for_nonexistent_block_skipped(self):
         """Fix referencing a block not in CFG should be skipped."""
         blk5 = BlockSnapshot(
-            serial=5, block_type=4, succs=(10, 20), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=5,
+            block_type=4,
+            succs=(10, 20),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
         # Fix references block 99 which doesn't exist
@@ -137,17 +177,24 @@ class TestFakeJumpFixerPass:
     def test_mixed_valid_and_invalid_fixes(self):
         """Mix of valid and invalid fixes should emit only valid ones."""
         blk5 = BlockSnapshot(
-            serial=5, block_type=4, succs=(10, 20), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=5,
+            block_type=4,
+            succs=(10, 20),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk10 = BlockSnapshot(
-            serial=10, block_type=3, succs=(99,), preds=(5,),
-            flags=0, start_ea=0x2000, insn_snapshots=()
+            serial=10,
+            block_type=3,
+            succs=(99,),
+            preds=(5,),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(),
         )
-        cfg = FlowGraph(
-            blocks={5: blk5, 10: blk10},
-            entry_serial=5, func_ea=0x1000
-        )
+        cfg = FlowGraph(blocks={5: blk5, 10: blk10}, entry_serial=5, func_ea=0x1000)
         # Fix for 5 is valid, fix for 99 is invalid
         fixes = {5: 10, 99: 100}
         pass_instance = FakeJumpFixerPass(fixes=fixes)
@@ -177,16 +224,31 @@ class TestFakeJumpFixerPass:
         """Pass should integrate with PassPipeline and InMemoryBackend."""
         # Create a simple CFG with one 2-way block
         blk0 = BlockSnapshot(
-            serial=0, block_type=4, succs=(1, 2), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=4,
+            succs=(1, 2),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x2000, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(),
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x3000, insn_snapshots=()
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x3000,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1, 2: blk2}
         backend = InMemoryBackend(blocks)
@@ -197,7 +259,7 @@ class TestFakeJumpFixerPass:
         pipeline = FlowGraphTransformPipeline(backend, [pass_instance])
 
         # Run pipeline
-        total_mods = pipeline.run(blocks, mutation_gateway = object())
+        total_mods = pipeline.run(blocks, mutation_gateway=object())
 
         # Verify result
         assert total_mods == 1
@@ -212,24 +274,49 @@ class TestFakeJumpFixerPass:
         """Pass should work correctly when combined with other transform."""
         # Create CFG with two fake jumps
         blk0 = BlockSnapshot(
-            serial=0, block_type=4, succs=(1, 2), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=4,
+            succs=(1, 2),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=4, succs=(3, 4), preds=(0,),
-            flags=0, start_ea=0x2000, insn_snapshots=()
+            serial=1,
+            block_type=4,
+            succs=(3, 4),
+            preds=(0,),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(),
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x3000, insn_snapshots=()
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x3000,
+            insn_snapshots=(),
         )
         blk3 = BlockSnapshot(
-            serial=3, block_type=2, succs=(), preds=(1,),
-            flags=0, start_ea=0x4000, insn_snapshots=()
+            serial=3,
+            block_type=2,
+            succs=(),
+            preds=(1,),
+            flags=0,
+            start_ea=0x4000,
+            insn_snapshots=(),
         )
         blk4 = BlockSnapshot(
-            serial=4, block_type=2, succs=(), preds=(1,),
-            flags=0, start_ea=0x5000, insn_snapshots=()
+            serial=4,
+            block_type=2,
+            succs=(),
+            preds=(1,),
+            flags=0,
+            start_ea=0x5000,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1, 2: blk2, 3: blk3, 4: blk4}
         backend = InMemoryBackend(blocks)
@@ -240,7 +327,7 @@ class TestFakeJumpFixerPass:
         pipeline = FlowGraphTransformPipeline(backend, [pass1, pass2])
 
         # Run pipeline
-        total_mods = pipeline.run(blocks, mutation_gateway = object())
+        total_mods = pipeline.run(blocks, mutation_gateway=object())
 
         # Verify both transform applied
         assert total_mods == 2
@@ -257,15 +344,20 @@ class TestFakeJumpFixerPass:
         pass_instance = FakeJumpFixerPass(fixes=None)
 
         assert pass_instance._fixes == {}
-        assert not pass_instance.is_applicable(FlowGraph(
-            blocks={}, entry_serial=0, func_ea=0x1000
-        ))
+        assert not pass_instance.is_applicable(
+            FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
+        )
 
     def test_0way_block_with_fix_no_modification(self):
         """0-way block (no successors) should emit no modification even if in fixes."""
         blk5 = BlockSnapshot(
-            serial=5, block_type=2, succs=(), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=5,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
         # Fix for 0-way block (should be ignored)
@@ -279,8 +371,13 @@ class TestFakeJumpFixerPass:
         """2-way block where both successors match target should emit no modification."""
         # Edge case: block has succs (10, 10) and target is 10
         blk5 = BlockSnapshot(
-            serial=5, block_type=4, succs=(10, 10), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=5,
+            block_type=4,
+            succs=(10, 10),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
         fixes = {5: 10}

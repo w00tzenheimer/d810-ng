@@ -37,7 +37,10 @@ def find_condition_chain_default_block_snapshot(
         if blk_snap is None:
             continue
         for succ in blk_snap.succs:
-            if succ not in all_condition_chain_serials and succ not in handler_block_serials:
+            if (
+                succ not in all_condition_chain_serials
+                and succ not in handler_block_serials
+            ):
                 return succ
 
     return None

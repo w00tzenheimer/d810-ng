@@ -1,4 +1,5 @@
 """Live topology-walk backend for Hodur handler-chain composition."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -7,6 +7,7 @@ future capability populates it from a backend's reaching-definitions pass.
 Minimum viable scope: a forward (def -> uses) mapping with a lookup helper.
 Reverse (use -> reaching def) and richer chain queries are added on demand.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

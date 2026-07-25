@@ -31,6 +31,7 @@ from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups im
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent))
 from bench_utils import timed_run, save_baseline
 
@@ -45,7 +46,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 def get_func_ea(name: str) -> int:
@@ -64,9 +67,7 @@ def gen_microcode_at_maturity(func_ea: int, maturity: int):
 
     mbr = ida_hexrays.mba_ranges_t(func)
     hf = ida_hexrays.hexrays_failure_t()
-    mba = ida_hexrays.gen_microcode(
-        mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, maturity
-    )
+    mba = ida_hexrays.gen_microcode(mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, maturity)
     return mba
 
 
@@ -128,7 +129,9 @@ def real_asts(libobfuscated_setup):
     if len(all_asts) < 10:
         pytest.skip("Could not collect enough ASTs from test functions")
 
-    print(f"\n  Collected {len(all_asts)} total ASTs from {len(test_functions)} functions")
+    print(
+        f"\n  Collected {len(all_asts)} total ASTs from {len(test_functions)} functions"
+    )
     return all_asts
 
 
@@ -165,6 +168,7 @@ class TestStorageParity:
 
         rules = []
         for i, pattern in enumerate(unique_patterns):
+
             class MockRule:
                 pass
 
@@ -240,6 +244,7 @@ try:
         match_pattern_nomut as cython_match_pattern_nomut,
         COpcodeIndexedStorage,
     )
+
     HAS_CYTHON = True
 except ImportError:
     HAS_CYTHON = False
@@ -303,6 +308,7 @@ class TestCythonPythonParity:
         patterns = []
         for i, (ast, _) in enumerate(real_asts[:10]):
             if ast.is_node():
+
                 class MockRule:
                     pass
 
@@ -353,8 +359,10 @@ class TestRegistrationBenchmark:
 
         rules = []
         for i in range(len(unique_patterns)):
+
             class MockRule:
                 pass
+
             rule = MockRule()
             rule.name = f"rule_{i}"
             rules.append(rule)
@@ -413,8 +421,10 @@ class TestLookupBenchmark:
         new_storage = OpcodeIndexedStorage()
 
         for i, pattern in enumerate(unique_patterns):
+
             class MockRule:
                 pass
+
             rule = MockRule()
             rule.name = f"rule_{i}"
             legacy_storage.add_pattern_for_rule(pattern, rule)
@@ -599,7 +609,9 @@ class TestHotPathBenchmark:
     @pytest.mark.ida_required
     def test_full_optimization_pass(self, real_asts, libobfuscated_setup):
         """Benchmark full get_optimized_instruction() across all test instructions."""
-        from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer
+        from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+            PatternOptimizer,
+        )
         from d810.core import OptimizationStatistics
 
         stats = OptimizationStatistics()
@@ -617,6 +629,7 @@ class TestHotPathBenchmark:
             def __init__(self):
                 class MockMBA:
                     maturity = ida_hexrays.MMAT_PREOPTIMIZED
+
                 self.mba = MockMBA()
 
         mock_blk = MockBlock()
@@ -670,8 +683,10 @@ class TestCaptureBaseline:
         if len(unique_patterns) >= 20:
             rules = []
             for i in range(len(unique_patterns)):
+
                 class MockRule:
                     pass
+
                 rule = MockRule()
                 rule.name = f"rule_{i}"
                 rules.append(rule)
@@ -704,8 +719,10 @@ class TestCaptureBaseline:
             new_storage = OpcodeIndexedStorage()
 
             for i, pattern in enumerate(unique_patterns[:50]):
+
                 class MockRule:
                     pass
+
                 rule = MockRule()
                 rule.name = f"rule_{i}"
                 legacy_storage.add_pattern_for_rule(pattern, rule)
@@ -713,9 +730,14 @@ class TestCaptureBaseline:
 
             hit_asts = unique_patterns[:10]
             pattern_opcodes = {p.opcode for p in unique_patterns if p.is_node()}
-            miss_asts = [ast for ast, _ in real_asts if ast.is_node() and ast.opcode not in pattern_opcodes][:10]
+            miss_asts = [
+                ast
+                for ast, _ in real_asts
+                if ast.is_node() and ast.opcode not in pattern_opcodes
+            ][:10]
 
             if hit_asts:
+
                 def lookup_hit_legacy():
                     for ast in hit_asts:
                         _ = legacy_storage.get_matching_rule_pattern_info(ast)
@@ -724,17 +746,24 @@ class TestCaptureBaseline:
                     for ast in hit_asts:
                         _ = new_storage.get_candidates(ast)
 
-                legacy_hit_time = timed_run(lookup_hit_legacy, iterations=100, warmup=10)
+                legacy_hit_time = timed_run(
+                    lookup_hit_legacy, iterations=100, warmup=10
+                )
                 new_hit_time = timed_run(lookup_hit_new, iterations=100, warmup=10)
 
                 results["lookup_hit"] = {
                     "candidate_count": len(hit_asts),
-                    "legacy_us_per_lookup": (legacy_hit_time / 100 / len(hit_asts)) * 1_000_000,
-                    "new_us_per_lookup": (new_hit_time / 100 / len(hit_asts)) * 1_000_000,
-                    "speedup": legacy_hit_time / new_hit_time if new_hit_time > 0 else 0,
+                    "legacy_us_per_lookup": (legacy_hit_time / 100 / len(hit_asts))
+                    * 1_000_000,
+                    "new_us_per_lookup": (new_hit_time / 100 / len(hit_asts))
+                    * 1_000_000,
+                    "speedup": legacy_hit_time / new_hit_time
+                    if new_hit_time > 0
+                    else 0,
                 }
 
             if miss_asts:
+
                 def lookup_miss_legacy():
                     for ast in miss_asts:
                         _ = legacy_storage.get_matching_rule_pattern_info(ast)
@@ -743,14 +772,20 @@ class TestCaptureBaseline:
                     for ast in miss_asts:
                         _ = new_storage.get_candidates(ast)
 
-                legacy_miss_time = timed_run(lookup_miss_legacy, iterations=100, warmup=10)
+                legacy_miss_time = timed_run(
+                    lookup_miss_legacy, iterations=100, warmup=10
+                )
                 new_miss_time = timed_run(lookup_miss_new, iterations=100, warmup=10)
 
                 results["lookup_miss"] = {
                     "candidate_count": len(miss_asts),
-                    "legacy_us_per_lookup": (legacy_miss_time / 100 / len(miss_asts)) * 1_000_000,
-                    "new_us_per_lookup": (new_miss_time / 100 / len(miss_asts)) * 1_000_000,
-                    "speedup": legacy_miss_time / new_miss_time if new_miss_time > 0 else 0,
+                    "legacy_us_per_lookup": (legacy_miss_time / 100 / len(miss_asts))
+                    * 1_000_000,
+                    "new_us_per_lookup": (new_miss_time / 100 / len(miss_asts))
+                    * 1_000_000,
+                    "speedup": legacy_miss_time / new_miss_time
+                    if new_miss_time > 0
+                    else 0,
                 }
 
         # Match benchmarks
@@ -792,7 +827,9 @@ class TestCaptureBaseline:
             }
 
         # Hot path benchmark
-        from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer
+        from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+            PatternOptimizer,
+        )
         from d810.core import OptimizationStatistics
 
         stats = OptimizationStatistics()
@@ -804,10 +841,12 @@ class TestCaptureBaseline:
         instructions = [ins for _, ins in real_asts if ins is not None][:100]
 
         if len(instructions) >= 10:
+
             class MockBlock:
                 def __init__(self):
                     class MockMBA:
                         maturity = ida_hexrays.MMAT_PREOPTIMIZED
+
                     self.mba = MockMBA()
 
             mock_blk = MockBlock()
@@ -820,16 +859,23 @@ class TestCaptureBaseline:
 
             results["hot_path"] = {
                 "instruction_count": len(instructions),
-                "us_per_instruction": (hot_path_time / 10 / len(instructions)) * 1_000_000,
+                "us_per_instruction": (hot_path_time / 10 / len(instructions))
+                * 1_000_000,
                 "throughput_insns_per_sec": len(instructions) / (hot_path_time / 10),
             }
 
         # Save results
-        baseline_path = Path(__file__).resolve().parents[3] / "docs" / "copycat" / "benchmarks" / "baseline_pattern_engine.json"
+        baseline_path = (
+            Path(__file__).resolve().parents[3]
+            / "docs"
+            / "copycat"
+            / "benchmarks"
+            / "baseline_pattern_engine.json"
+        )
         save_baseline(results, baseline_path, "Pattern Engine Baseline (PR0)")
 
         print(f"\n  Baseline saved to: {baseline_path}")
         print(f"  Summary saved to: {baseline_path.with_suffix('.md')}")
 
         assert baseline_path.exists(), "JSON baseline file not created"
-        assert baseline_path.with_suffix('.md').exists(), "Markdown summary not created"
+        assert baseline_path.with_suffix(".md").exists(), "Markdown summary not created"

@@ -1,4 +1,5 @@
 """Pure tests for the ``tigress_flatten_indirect`` semantic oracle."""
+
 from __future__ import annotations
 
 from tests.system.e2e.tigress.tigress_indirect_semantic_oracle import (
@@ -212,9 +213,7 @@ def test_oracle_rejects_raw_indirect_jump_or_jumpoout() -> None:
     result = evaluate_tigress_indirect_semantic_oracle(inputs)
 
     assert not result.passed
-    assert any(
-        blocker.name == "no_raw_indirect_jump" for blocker in result.blockers
-    )
+    assert any(blocker.name == "no_raw_indirect_jump" for blocker in result.blockers)
 
 
 def test_diffs_show_missing_table_proof_without_changing_ref_policy() -> None:
@@ -230,9 +229,7 @@ def test_diffs_show_missing_table_proof_without_changing_ref_policy() -> None:
     result = evaluate_tigress_indirect_semantic_oracle(inputs)
 
     assert not result.passed
-    assert any(
-        blocker.name == "table_invariant_proved" for blocker in result.blockers
-    )
+    assert any(blocker.name == "table_invariant_proved" for blocker in result.blockers)
     assert not result.diffs
 
 

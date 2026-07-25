@@ -20,6 +20,7 @@ Unit-suite + golden run per BATCH by the caller, not here.
   thinning_reloc_apply.py --only snapshot,planner_context   # by stem
   add --dry-run to preview repoint counts without git mv/commit
 """
+
 from __future__ import annotations
 
 import argparse
@@ -86,7 +87,7 @@ class _Repointer(cst.CSTTransformer):
         absmod = modstr if ndots == 0 else self._resolve_relative(ndots, modstr)
 
         if absmod == self.old or absmod.startswith(self.old + "."):
-            tail = absmod[len(self.old):]
+            tail = absmod[len(self.old) :]
             self.changed = True
             return updated.with_changes(
                 module=_parse_dotted(self.dest + tail), relative=[]
@@ -146,14 +147,40 @@ def fast_gate() -> tuple[bool, str, str]:
         ("lint-imports", ["lint-imports", "--config", ".importlinter"]),
         ("sg", ["sg", "scan", "--config", "sgconfig.yml", "--report-style", "short"]),
         ("check-cycles", ["pyenv", "exec", "python", "tools/scripts/check-cycles.py"]),
-        ("unit-collect", ["pyenv", "exec", "python", "-m", "pytest",
-                          "tests/unit", "--collect-only", "-q"]),
-        ("system-collect", ["pyenv", "exec", "python", "-m", "pytest",
-                            "tests/system", "--collect-only", "-q"]),
+        (
+            "unit-collect",
+            [
+                "pyenv",
+                "exec",
+                "python",
+                "-m",
+                "pytest",
+                "tests/unit",
+                "--collect-only",
+                "-q",
+            ],
+        ),
+        (
+            "system-collect",
+            [
+                "pyenv",
+                "exec",
+                "python",
+                "-m",
+                "pytest",
+                "tests/system",
+                "--collect-only",
+                "-q",
+            ],
+        ),
     ]
     for name, cmd in checks:
         cp = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, env=ENV)
-        broken = bool(re.search(r"[1-9]\d* broken", cp.stdout)) if name == "lint-imports" else False
+        broken = (
+            bool(re.search(r"[1-9]\d* broken", cp.stdout))
+            if name == "lint-imports"
+            else False
+        )
         if cp.returncode != 0 or broken:
             return False, name, (cp.stdout + cp.stderr)[-3000:]
     return True, "", ""
@@ -177,14 +204,27 @@ def relocate_one(entry: dict, *, dry: bool) -> bool:
     files = {l for l in cand.stdout.splitlines() if l}
     # (2) by-name absolute: `from <old_parent> import ... <stem> ...` (any tree).
     #     Over-broad on purpose: repoint_file is a no-op unless <stem> is imported.
-    byname = sh(["grep", "-rlE", "--include=*.py",
-                 r"from " + re.escape(old_parent) + r" import", *TREES])
+    byname = sh(
+        [
+            "grep",
+            "-rlE",
+            "--include=*.py",
+            r"from " + re.escape(old_parent) + r" import",
+            *TREES,
+        ]
+    )
     files |= {l for l in byname.stdout.splitlines() if l}
     # (3) relative forms within the old package subtree
     old_parent_path = "src/" + old_parent.replace(".", "/")
-    rel = sh(["grep", "-rlE", "--include=*.py",
-              r"from \.+[a-zA-Z0-9_.]*" + re.escape(stem) + r" import|from \.+ import",
-              old_parent_path])
+    rel = sh(
+        [
+            "grep",
+            "-rlE",
+            "--include=*.py",
+            r"from \.+[a-zA-Z0-9_.]*" + re.escape(stem) + r" import|from \.+ import",
+            old_parent_path,
+        ]
+    )
     files |= {l for l in rel.stdout.splitlines() if l}
     files.discard(str(src_path.relative_to(ROOT)))
 
@@ -242,9 +282,12 @@ def main() -> int:
     ap.add_argument("--count", type=int, default=6)
     ap.add_argument("--only", default="")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--skip-fail", action="store_true",
-                    help="on gate failure, roll back + record + CONTINUE (defer), "
-                         "instead of halting — lets the lint gate decide relocatability")
+    ap.add_argument(
+        "--skip-fail",
+        action="store_true",
+        help="on gate failure, roll back + record + CONTINUE (defer), "
+        "instead of halting — lets the lint gate decide relocatability",
+    )
     a = ap.parse_args()
 
     plan = json.loads((ROOT / a.plan).read_text())
@@ -252,7 +295,7 @@ def main() -> int:
         stems = set(a.only.split(","))
         batch = [e for e in plan if e["old_module"].rsplit(".", 1)[-1] in stems]
     else:
-        batch = plan[a.start:a.start + a.count]
+        batch = plan[a.start : a.start + a.count]
 
     print(f"Relocating {len(batch)} files (dry={a.dry_run}, skip_fail={a.skip_fail}):")
     deferred = []
@@ -268,7 +311,9 @@ def main() -> int:
     moved = len(batch) - len(deferred)
     print(f"\nSweep done: {moved} relocated, {len(deferred)} deferred.")
     if deferred:
-        print("DEFERRED (need seam refactor / stay in optimizers): " + ", ".join(deferred))
+        print(
+            "DEFERRED (need seam refactor / stay in optimizers): " + ", ".join(deferred)
+        )
     return 0
 
 

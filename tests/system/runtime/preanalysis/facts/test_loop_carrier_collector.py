@@ -1,4 +1,5 @@
 """Tests for LoopPredicateValueFactCollector."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -71,7 +72,7 @@ def _target(*blocks: BlockSnapshot) -> SimpleNamespace:
 def _collect(target: object) -> tuple[FactObservation, ...]:
     return LoopPredicateValueFactCollector().collect(
         target,
-        func_ea=0x180012df0,
+        func_ea=0x180012DF0,
         maturity=_MATURITY_VALUES["MMAT_GLBOPT1"],
         phase="post_d810",
     )
@@ -414,71 +415,73 @@ def test_no_fact_when_predicate_block_is_not_in_loop() -> None:
 
 
 def test_legacy_opcode_only_predicate_is_not_behavioral_proof() -> None:
-    facts = _collect(_target(
-        _block(
-            52,
-            _insn(
-                index=0,
-                ea=0x180014052,
-                opcode_name="m_sub",
-                dest_stkoff=0x528,
-                src_l_stkoff=0x450,
-                src_r_stkoff=0x520,
-                dstr="sub %var_3A8.8, %var_520.8, %var_528.8",
+    facts = _collect(
+        _target(
+            _block(
+                52,
+                _insn(
+                    index=0,
+                    ea=0x180014052,
+                    opcode_name="m_sub",
+                    dest_stkoff=0x528,
+                    src_l_stkoff=0x450,
+                    src_r_stkoff=0x520,
+                    dstr="sub %var_3A8.8, %var_520.8, %var_528.8",
+                ),
+                succs=(81,),
             ),
-            succs=(81,),
-        ),
-        _block(
-            88,
-            _insn(
-                index=0,
-                ea=0x180014088,
-                opcode_name="m_bnot",
-                dest_stkoff=0x508,
-                src_l_stkoff=0x450,
-                dstr="bnot %var_3A8.8, %var_508.8",
+            _block(
+                88,
+                _insn(
+                    index=0,
+                    ea=0x180014088,
+                    opcode_name="m_bnot",
+                    dest_stkoff=0x508,
+                    src_l_stkoff=0x450,
+                    dstr="bnot %var_3A8.8, %var_508.8",
+                ),
+                succs=(81,),
             ),
-            succs=(81,),
-        ),
-        _block(
-            151,
-            _insn(
-                index=0,
-                ea=0x180014151,
-                opcode_name="m_mov",
-                dest_stkoff=0x450,
-                src_l_stkoff=0x1A0,
-                dstr="mov %var_1A0.8, %var_3A8.8",
+            _block(
+                151,
+                _insn(
+                    index=0,
+                    ea=0x180014151,
+                    opcode_name="m_mov",
+                    dest_stkoff=0x450,
+                    src_l_stkoff=0x1A0,
+                    dstr="mov %var_1A0.8, %var_3A8.8",
+                ),
+                succs=(52,),
             ),
-            succs=(52,),
-        ),
-        _block(
-            186,
-            _insn(
-                index=0,
-                ea=0x180014186,
-                opcode_name="m_mov",
-                dest_stkoff=0x450,
-                src_l_stkoff=0x4E8,
-                dstr="mov %var_4E8.8, %var_3A8.8",
+            _block(
+                186,
+                _insn(
+                    index=0,
+                    ea=0x180014186,
+                    opcode_name="m_mov",
+                    dest_stkoff=0x450,
+                    src_l_stkoff=0x4E8,
+                    dstr="mov %var_4E8.8, %var_3A8.8",
+                ),
+                succs=(88,),
             ),
-            succs=(88,),
-        ),
-        _block(
-            81,
-            _insn(
-                index=1,
-                ea=0x180014081,
-                opcode_name="m_jnz",
-                src_l_stkoff=0x528,
-                src_r_stkoff=0x508,
-                dstr="jnz (%var_528.8 + %var_508.8), %var_4F8.8, @83",
+            _block(
+                81,
+                _insn(
+                    index=1,
+                    ea=0x180014081,
+                    opcode_name="m_jnz",
+                    src_l_stkoff=0x528,
+                    src_r_stkoff=0x508,
+                    dstr="jnz (%var_528.8 + %var_508.8), %var_4F8.8, @83",
+                ),
+                succs=(82, 83),
             ),
-            succs=(82, 83),
-        ),
-        _block(82, succs=(81,)),
-        _block(83, succs=()),
-    ))
+            _block(82, succs=(81,)),
+            _block(83, succs=()),
+        )
+    )
 
     assert facts == ()
 
@@ -491,6 +494,8 @@ def _meta_stack(stkoff: int, size: int = 8) -> dict:
         "dstr": "v",
         "stkoff": stkoff,
     }
+
+
 def test_meta_less_attrs_only_rows_yield_no_fact() -> None:
     """A meta-less attrs-only graph stays on the byte-identical legacy path.
 

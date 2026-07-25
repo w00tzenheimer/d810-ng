@@ -1,11 +1,16 @@
 """Shared helpers and engine strategy wrapper for single-iteration loop cleanup."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from d810.ir.flowgraph import FlowGraph
-from d810.transforms.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
+from d810.transforms.graph_modification import (
+    ConvertToGoto,
+    GraphModification,
+    RedirectGoto,
+)
 from d810.core.typing import TYPE_CHECKING
 from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,

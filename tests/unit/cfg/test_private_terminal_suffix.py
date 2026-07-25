@@ -1,4 +1,5 @@
 """Tests for PrivateTerminalSuffix graph modification and PatchPlan compilation."""
+
 from __future__ import annotations
 
 import pytest
@@ -178,8 +179,7 @@ class TestCompilePrivateTerminalSuffix:
 
         # Should create 2 new blocks (one clone per suffix block)
         suffix_blocks = [
-            b for b in plan.new_blocks
-            if b.kind == "private_terminal_suffix_clone"
+            b for b in plan.new_blocks if b.kind == "private_terminal_suffix_clone"
         ]
         assert len(suffix_blocks) == 2
 
@@ -198,9 +198,7 @@ class TestCompilePrivateTerminalSuffix:
         )
         plan = compile_patch_plan([mod], cfg=cfg)
 
-        step = [
-            s for s in plan.steps if isinstance(s, PatchPrivateTerminalSuffix)
-        ][0]
+        step = [s for s in plan.steps if isinstance(s, PatchPrivateTerminalSuffix)][0]
         roundtripped = step.to_graph_modification()
         assert isinstance(roundtripped, PrivateTerminalSuffix)
         assert roundtripped.anchor_serial == 9
@@ -224,9 +222,7 @@ class TestSimulatorPrivateTerminalSuffix:
         adj = cfg.as_adjacency_dict()
         result = simulate_edits(adj, edits)
 
-        step = [
-            s for s in plan.steps if isinstance(s, PatchPrivateTerminalSuffix)
-        ][0]
+        step = [s for s in plan.steps if isinstance(s, PatchPrivateTerminalSuffix)][0]
         clone_entry = step.clone_assigned_serials[0]
         clone_return = step.clone_assigned_serials[1]
 
@@ -257,9 +253,7 @@ class TestSimulatorPrivateTerminalSuffix:
         adj = cfg.as_adjacency_dict()
         result = simulate_edits(adj, edits)
 
-        step = [
-            s for s in plan.steps if isinstance(s, PatchPrivateTerminalSuffix)
-        ][0]
+        step = [s for s in plan.steps if isinstance(s, PatchPrivateTerminalSuffix)][0]
 
         # Both clone serials should be in created_clones
         for clone_serial in step.clone_assigned_serials:
@@ -343,9 +337,7 @@ class TestSingleBlockSuffix:
         adj = cfg.as_adjacency_dict()
         result = simulate_edits(adj, edits)
 
-        step = [
-            s for s in plan.steps if isinstance(s, PatchPrivateTerminalSuffix)
-        ][0]
+        step = [s for s in plan.steps if isinstance(s, PatchPrivateTerminalSuffix)][0]
         clone_serial = step.clone_assigned_serials[0]
 
         # Anchor 9 points to clone, not 64

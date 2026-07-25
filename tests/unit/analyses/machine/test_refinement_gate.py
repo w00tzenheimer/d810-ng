@@ -9,6 +9,7 @@ These are the P4 acceptance criteria A1/G-AC1 (ticket llr-1d8u). The gate must:
 
 Pure-Python (no IDA, no z3): the gate reuses the portable ``fold_exact`` primitive.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -37,7 +38,9 @@ W = 4  # small width so γ enumeration is exhaustive and the Z3 CEX is 0b1111
 
 def _floor_range(lo: int, hi: int, width: int = W) -> AbstractEvidence:
     """A floor whose γ is the contiguous arc ``[lo, hi]`` (bits ⊤)."""
-    return AbstractEvidence(width, KnownBits.top(width), WrappedInterval(width, lo, hi, "range"))
+    return AbstractEvidence(
+        width, KnownBits.top(width), WrappedInterval(width, lo, hi, "range")
+    )
 
 
 def _floor_singleton(v: int, width: int = W) -> AbstractEvidence:
@@ -98,7 +101,9 @@ def test_gamma_members_is_sound_small_widths():
     """``gamma_members(floor)`` == the EXACT membership set (sound over-approx)."""
     for lo in range(1 << W):
         for hi in range(1 << W):
-            floor = AbstractEvidence(W, KnownBits.top(W), WrappedInterval(W, lo, hi, "range"))
+            floor = AbstractEvidence(
+                W, KnownBits.top(W), WrappedInterval(W, lo, hi, "range")
+            )
             members = gamma_members(floor)
             expected = {v for v in range(1 << W) if floor.contains(v)}
             assert members is not None
@@ -121,7 +126,9 @@ def test_top_floor_never_refines():
     gate = CompletenessGate(GateMode.FOLD_EXACT_FLOOR)
     cell = _top_cell(AbstractEvidence.top(W))
     cv = ConcolicCellValue(next_states=frozenset({3, 4}))
-    out = gate.refine_top_cell(cell=cell, concolic_value=cv, spine_floor=AbstractEvidence.top(W))
+    out = gate.refine_top_cell(
+        cell=cell, concolic_value=cv, spine_floor=AbstractEvidence.top(W)
+    )
     assert out.is_top is True
     assert out.transition.next_states == ()
 
@@ -243,7 +250,9 @@ def test_gate_b_singleton_accepts_when_floor_collapses():
     arc-enumerable; the singleton gate accepts V={x} iff floor.to_const()==x.
     """
     width = 64
-    floor = AbstractEvidence(width, KnownBits.of(0x2A, width), WrappedInterval.top(width))
+    floor = AbstractEvidence(
+        width, KnownBits.of(0x2A, width), WrappedInterval.top(width)
+    )
     assert floor.to_const() == 0x2A
     assert gamma_members(floor) is None  # not finitely enumerable
     gate = CompletenessGate(GateMode.FOLD_EXACT_FLOOR)
@@ -259,7 +268,9 @@ def test_gate_b_singleton_refuses_fork_on_unenumerable_floor():
     width = 64
     floor = AbstractEvidence.top(width)  # ⊤ -> but test via a non-⊤-but-unenumerable
     # use a wide interval that is not a const and not arc-enumerable
-    floor = AbstractEvidence(width, KnownBits.top(width), WrappedInterval(width, 0, (1 << 40), "range"))
+    floor = AbstractEvidence(
+        width, KnownBits.top(width), WrappedInterval(width, 0, (1 << 40), "range")
+    )
     assert gamma_members(floor) is None
     gate = CompletenessGate(GateMode.FOLD_EXACT_FLOOR)
     cell = TopCell(transition=MachineTransition(7, (), ()), floor=floor, is_top=True)
@@ -331,7 +342,9 @@ def test_gate_a_rejects_exit_path_effect_summary_when_symbol_controls_branch():
         next_states=frozenset({0x2222}),
         enumerated_inputs_complete=True,
         deterministic=True,
-        exit_path_effect_summary=_symbolic_payload_exit_path_effect_summary(branch_dependency_symbols=("R",)),
+        exit_path_effect_summary=_symbolic_payload_exit_path_effect_summary(
+            branch_dependency_symbols=("R",)
+        ),
     )
 
     out = gate.refine_top_cell(cell=cell, concolic_value=cv)
@@ -347,7 +360,9 @@ def test_gate_a_rejects_incomplete_exit_path_effect_summary():
         next_states=frozenset({0x2222}),
         enumerated_inputs_complete=True,
         deterministic=True,
-        exit_path_effect_summary=_symbolic_payload_exit_path_effect_summary(enumerated_inputs_complete=False),
+        exit_path_effect_summary=_symbolic_payload_exit_path_effect_summary(
+            enumerated_inputs_complete=False
+        ),
     )
 
     out = gate.refine_top_cell(cell=cell, concolic_value=cv)

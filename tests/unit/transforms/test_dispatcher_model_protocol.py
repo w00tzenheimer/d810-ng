@@ -5,6 +5,7 @@ The ``_DispatcherMap`` minimal Protocol is upgraded to ``DispatcherModel`` with
 ``region()``, and a deprecated default ``resolve_target`` that calls ``route``
 and unwraps a single ``Block``.  No callers switched; golden untouched.
 """
+
 from __future__ import annotations
 
 from d810.analyses.data_flow.abstract_value import (

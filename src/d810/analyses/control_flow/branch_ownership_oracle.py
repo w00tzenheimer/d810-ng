@@ -43,6 +43,7 @@ live-resolution itself lives in the backend (MopTracker / Z3), not here.  The
 in production but a duck-typed namespace in unit fixtures, so the edge readers
 stay structurally polymorphic (non-operand-slot getattr, justified).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -375,9 +376,7 @@ class Z3BranchOwnershipOracle:
         self._discarded_side_effect_depth = max(0, int(discarded_side_effect_depth))
         self._opcode_label_resolver = opcode_label_resolver
         self._required_constant_markers = tuple(
-            str(marker).upper()
-            for marker in required_constant_markers
-            if str(marker)
+            str(marker).upper() for marker in required_constant_markers if str(marker)
         )
 
     def refine(
@@ -556,28 +555,30 @@ class Z3BranchOwnershipOracle:
         identity: BranchTargetIdentity,
     ) -> dict[str, object]:
         evidence = dict(proof.evidence)
-        evidence.update({
-            "predicate_ownership_kind": PredicateOwnershipKind.PATH_CONSTANT.value,
-            "predicate_ownership_reason": "z3_jumpfixer_proved_constant",
-            "opcode": identity.opcode,
-            "opcode_sense": _opcode_sense(identity.opcode),
-            "jump_target": identity.jump_target,
-            "fallthrough_target": identity.fallthrough_target,
-            "chosen_target": identity.chosen_target,
-            "discarded_target": identity.discarded_target,
-            "taken": identity.taken,
-            "taken_arm": identity.taken_arm,
-            "discarded_arm": identity.discarded_arm,
-            "edge_branch_target": identity.target_for_arm(int(proof.branch_arm)),
-            "edge_target_entry": proof.target_entry,
-            "source_block": proof.source_block,
-            "predicate_block": proof.predicate_block,
-            "source_state": _hex_state(proof.source_state),
-            "target_state": _hex_state(proof.target_state),
-            "target_entry": proof.target_entry,
-            "branch_arm": proof.branch_arm,
-            "via_pred": _path_predecessor(edge, proof.source_block),
-        })
+        evidence.update(
+            {
+                "predicate_ownership_kind": PredicateOwnershipKind.PATH_CONSTANT.value,
+                "predicate_ownership_reason": "z3_jumpfixer_proved_constant",
+                "opcode": identity.opcode,
+                "opcode_sense": _opcode_sense(identity.opcode),
+                "jump_target": identity.jump_target,
+                "fallthrough_target": identity.fallthrough_target,
+                "chosen_target": identity.chosen_target,
+                "discarded_target": identity.discarded_target,
+                "taken": identity.taken,
+                "taken_arm": identity.taken_arm,
+                "discarded_arm": identity.discarded_arm,
+                "edge_branch_target": identity.target_for_arm(int(proof.branch_arm)),
+                "edge_target_entry": proof.target_entry,
+                "source_block": proof.source_block,
+                "predicate_block": proof.predicate_block,
+                "source_state": _hex_state(proof.source_state),
+                "target_state": _hex_state(proof.target_state),
+                "target_entry": proof.target_entry,
+                "branch_arm": proof.branch_arm,
+                "via_pred": _path_predecessor(edge, proof.source_block),
+            }
+        )
         return evidence
 
     def _replace_proof(
@@ -704,9 +705,7 @@ def _predicate_kind(
     if isinstance(resolved, PredicateKind):
         return resolved
 
-    canonical = conditional_jump_opcode_name(
-        _opcode_name(tail, opcode_label_resolver)
-    )
+    canonical = conditional_jump_opcode_name(_opcode_name(tail, opcode_label_resolver))
     return _SHORT_JUMP_PREDICATES.get(canonical)
 
 

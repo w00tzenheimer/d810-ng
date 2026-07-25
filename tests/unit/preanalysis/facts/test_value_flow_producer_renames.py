@@ -1,4 +1,5 @@
 """Acceptance tests for producer-class renames."""
+
 from __future__ import annotations
 
 import importlib.util
@@ -14,7 +15,9 @@ def test_induction_variable_collector_is_canonical_export() -> None:
 
     assert collectors.InductionVariableFactCollector is InductionVariableFactCollector
     assert not hasattr(collectors, "InductionCarrierFactCollector")
-    assert InductionVariableFactCollector.fact_kinds == frozenset({"InductionCarrierFact"})
+    assert InductionVariableFactCollector.fact_kinds == frozenset(
+        {"InductionCarrierFact"}
+    )
 
 
 def test_loop_predicate_value_collector_is_canonical_export() -> None:
@@ -50,9 +53,8 @@ def test_ollvm_value_flow_evidence_collector_is_profile_local() -> None:
     assert not hasattr(collectors, "OllvmValueFlowEvidenceCollector")
     assert not hasattr(collectors, "OllvmCarrierRawEvidenceCollector")
     assert not hasattr(collectors, "OllvmSemanticCarrierFactCollector")
-    assert (
-        OllvmCarrierRawEvidenceCollector.fact_kinds
-        == frozenset({"OllvmValueFlowEvidence"})
+    assert OllvmCarrierRawEvidenceCollector.fact_kinds == frozenset(
+        {"OllvmValueFlowEvidence"}
     )
 
 
@@ -80,6 +82,9 @@ def test_collector_module_all_exposes_only_canonical_names() -> None:
 
 
 def test_legacy_ollvm_carrier_profile_module_does_not_exist() -> None:
-    assert importlib.util.find_spec(
-        "d810.families.state_machine_cff.ollvm_carrier_profile"
-    ) is None
+    assert (
+        importlib.util.find_spec(
+            "d810.families.state_machine_cff.ollvm_carrier_profile"
+        )
+        is None
+    )

@@ -1,4 +1,5 @@
 """Cleanup strategy wrapper for side_effect_select_loop facts."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -10,7 +11,9 @@ from d810.transforms.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
-from d810.transforms.side_effect_select_loop_planning import build_side_effect_select_loop_modifications
+from d810.transforms.side_effect_select_loop_planning import (
+    build_side_effect_select_loop_modifications,
+)
 from d810.core.typing import TYPE_CHECKING
 from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,

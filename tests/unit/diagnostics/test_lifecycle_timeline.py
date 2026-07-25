@@ -61,36 +61,89 @@ def lifecycle_db_path(tmp_path: Path) -> Path:
         persist_evidence_generation(
             conn,
             EvidenceGenerationObserved(
-                "session-1", 0x40C8B0, "merge", 0, 1, "stack_selector",
-                "changed", "calls", "six carriers", maturity="MMAT_CALLS", timestamp=2.0,
+                "session-1",
+                0x40C8B0,
+                "merge",
+                0,
+                1,
+                "stack_selector",
+                "changed",
+                "calls",
+                "six carriers",
+                maturity="MMAT_CALLS",
+                timestamp=2.0,
             ),
             snapshot_id=None,
         )
         persist_identity_decision(
             conn,
             IdentityDecisionObserved(
-                "session-1", 0x40C8B0, "rebind", "rhad_importer", "target",
-                "{}", "[4244016]", "[]", 0x40C9B0, 42, 3, 1,
-                "MMAT_PREOPTIMIZED", "unique", "[]", "native EA match", timestamp=3.0,
+                "session-1",
+                0x40C8B0,
+                "rebind",
+                "rhad_importer",
+                "target",
+                "{}",
+                "[4244016]",
+                "[]",
+                0x40C9B0,
+                42,
+                3,
+                1,
+                "MMAT_PREOPTIMIZED",
+                "unique",
+                "[]",
+                "native EA match",
+                timestamp=3.0,
             ),
             snapshot_id=None,
         )
         plan = MutationPlanObserved(
-            "session-1", 0x40C8B0, "batch-1", "redirect", 1, 3, 1,
-            "MMAT_PREOPTIMIZED", "redirect one carrier",
-            items=(MutationPlanItemObserved(
-                0, "redirect", 42, 0x40C9B0, "{\"ea\":4245936}",
-                51, 0x40CA20, "{\"ea\":4246048}", "planned", "exact identity",
-            ),),
+            "session-1",
+            0x40C8B0,
+            "batch-1",
+            "redirect",
+            1,
+            3,
+            1,
+            "MMAT_PREOPTIMIZED",
+            "redirect one carrier",
+            items=(
+                MutationPlanItemObserved(
+                    0,
+                    "redirect",
+                    42,
+                    0x40C9B0,
+                    '{"ea":4245936}',
+                    51,
+                    0x40CA20,
+                    '{"ea":4246048}',
+                    "planned",
+                    "exact identity",
+                ),
+            ),
             timestamp=4.0,
         )
         persist_mutation_plan(conn, plan)
         persist_mutation_receipt(
             conn,
             MutationReceiptObserved(
-                "session-1", 0x40C8B0, "batch-1", "redirect", 3, 4, 1, 1, 1,
-                "MMAT_PREOPTIMIZED", "committed", "redirect one carrier", "",
-                ("{\"ea\":4245936}",), (0x40C9B0,), timestamp=5.0,
+                "session-1",
+                0x40C8B0,
+                "batch-1",
+                "redirect",
+                3,
+                4,
+                1,
+                1,
+                1,
+                "MMAT_PREOPTIMIZED",
+                "committed",
+                "redirect one carrier",
+                "",
+                ('{"ea":4245936}',),
+                (0x40C9B0,),
+                timestamp=5.0,
             ),
         )
         conn.commit()
@@ -103,7 +156,10 @@ def test_timeline_is_ordered_and_event_native(lifecycle_db_path: Path) -> None:
     rows = lifecycle_timeline(db.connection(), session_id="session-1")
     assert [row["event_seq"] for row in rows] == [1, 2, 3, 4]
     assert [row["event_kind"] for row in rows] == [
-        "evidence_generation", "identity_decision", "mutation_plan", "mutation_receipt"
+        "evidence_generation",
+        "identity_decision",
+        "mutation_plan",
+        "mutation_receipt",
     ]
     assert rows[1]["ea_anchor_hex"] == "0x000000000040c9b0"
     assert rows[3]["outcome"] == "committed"
@@ -111,22 +167,29 @@ def test_timeline_is_ordered_and_event_native(lifecycle_db_path: Path) -> None:
     db.close()
 
 
-def test_mutation_batch_correlates_plan_items_and_receipt(lifecycle_db_path: Path) -> None:
+def test_mutation_batch_correlates_plan_items_and_receipt(
+    lifecycle_db_path: Path,
+) -> None:
     db = open_diag_database(str(lifecycle_db_path))
     result = mutation_batch(db.connection(), "batch-1")
     assert result["plan"]["planned_operation_count"] == 1
     assert result["items"][0]["source_block"] == "blk[42]@0x40C9B0"
     assert result["items"][0]["target_block"] == "blk[51]@0x40CA20"
     assert result["receipt"]["outcome"] == "committed"
-    assert result["receipt_identities"][0]["primary_anchor_ea_hex"] == "0x000000000040c9b0"
+    assert (
+        result["receipt_identities"][0]["primary_anchor_ea_hex"] == "0x000000000040c9b0"
+    )
     db.close()
 
 
-def test_evidence_lineage_combines_generation_and_identity(lifecycle_db_path: Path) -> None:
+def test_evidence_lineage_combines_generation_and_identity(
+    lifecycle_db_path: Path,
+) -> None:
     db = open_diag_database(str(lifecycle_db_path))
     rows = evidence_lineage(db.connection(), session_id="session-1")
     assert [(row["event_kind"], row["evidence_generation"]) for row in rows] == [
-        ("evidence_generation", 1), ("identity_decision", 1)
+        ("evidence_generation", 1),
+        ("identity_decision", 1),
     ]
     assert rows[1]["identity"] == "blk[42]@0x40C9B0"
     db.close()
@@ -148,9 +211,18 @@ def test_cli_mutation_batch_and_evidence_lineage(
 ) -> None:
     assert main(["mutation-batch", "--db", str(lifecycle_db_path), "batch-1"]) == 0
     assert "committed" in capsys.readouterr().out
-    assert main([
-        "evidence-lineage", "--db", str(lifecycle_db_path), "--session", "session-1"
-    ]) == 0
+    assert (
+        main(
+            [
+                "evidence-lineage",
+                "--db",
+                str(lifecycle_db_path),
+                "--session",
+                "session-1",
+            ]
+        )
+        == 0
+    )
     assert "stack_selector" in capsys.readouterr().out
 
 
@@ -258,12 +330,12 @@ def test_mutation_batch_renders_complete_semantic_fragment_evidence() -> None:
     result = mutation_batch(conn, "fragment-batch")
 
     assert result["semantic_fragment"]["plan_id"] == "fragment-plan"
+    assert [row["postcondition"] for row in result["fragment_validations"]] == [
+        "dispatcher_absence",
+        "root_authority",
+    ]
     assert [
-        row["postcondition"] for row in result["fragment_validations"]
-    ] == ["dispatcher_absence", "root_authority"]
-    assert [
-        (row["from_state"], row["to_state"])
-        for row in result["version_transitions"]
+        (row["from_state"], row["to_state"]) for row in result["version_transitions"]
     ] == [("published", "retired"), ("staged", "published")]
     assert [
         (
@@ -273,9 +345,7 @@ def test_mutation_batch_renders_complete_semantic_fragment_evidence() -> None:
         )
         for row in result["root_publication_groups"]
     ] == [("root-group:entry", 0x40C800, 1)]
-    assert [
-        row["event_kind"] for row in result["fragment_events"]
-    ] == [
+    assert [row["event_kind"] for row in result["fragment_events"]] == [
         "plan_recorded",
         "fragment_staged",
         "prepublication_validation",

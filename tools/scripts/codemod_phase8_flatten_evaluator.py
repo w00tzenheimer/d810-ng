@@ -123,7 +123,9 @@ class RenameTransformer(cst.CSTTransformer):
         module_code = cst.Module([]).code_for_node(module)
         new_module_code = rewrite_dotted_name(module_code)
         if new_module_code != module_code:
-            return updated_node.with_changes(module=cst.parse_expression(new_module_code))
+            return updated_node.with_changes(
+                module=cst.parse_expression(new_module_code)
+            )
         return updated_node
 
 
@@ -154,7 +156,11 @@ def rewrite_files(root: Path, apply: bool) -> int:
     changed = 0
     for path in iter_python_files(root):
         src = path.read_text(encoding="utf-8")
-        if "d810.evaluator.concrete" not in src and "d810.evaluator.symbolic" not in src and "d810.evaluator.dataflow" not in src:
+        if (
+            "d810.evaluator.concrete" not in src
+            and "d810.evaluator.symbolic" not in src
+            and "d810.evaluator.dataflow" not in src
+        ):
             continue
         out = rewrite_text(src)
         if out == src:

@@ -12,6 +12,7 @@ compared variable (most comparisons) is the state variable, à la the live detec
 selection. Output is a ``StateDispatcherMap`` (``state_const -> handler``) that every downstream unflatten
 pass consumes.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -82,6 +83,7 @@ def _stkoff_of(view: StorageView) -> int | None:
     if isinstance(view, Varnode) and view.space is Space.STACK:
         return int(view.offset)
     return None
+
 
 # Matches the live HodurStateMachineDetector threshold (analysis.py MIN_STATE_CONSTANT).
 MIN_STATE_CONSTANT = 0x01000000
@@ -322,9 +324,7 @@ def _recover_computed_goto_loop_header(
                 write_scores[int(successor)] = score
         if write_scores:
             positive_successors = tuple(
-                successor
-                for successor, score in write_scores.items()
-                if score > 0
+                successor for successor, score in write_scores.items() if score > 0
             )
             if len(positive_successors) == 1:
                 return int(positive_successors[0])
@@ -332,9 +332,7 @@ def _recover_computed_goto_loop_header(
                 return int(funnel)
         return int(funnel)
     # Loop header = the funnel's re-dispatch successor, never a chain block.
-    header_candidates = [
-        int(s) for s in funnel_blk.succs if int(s) not in chain_blocks
-    ]
+    header_candidates = [int(s) for s in funnel_blk.succs if int(s) not in chain_blocks]
     if len(header_candidates) != 1:
         return fallback
     return header_candidates[0]
@@ -452,16 +450,10 @@ def build_state_dispatcher_map_from_flow_graph(
     # stack path owns it, and the disjoint gate stays closed.
     state_var_reg = (
         int(winner[1])
-        if winner is not None
-        and winner[0] == "reg"
-        and state_var_stkoff is None
+        if winner is not None and winner[0] == "reg" and state_var_stkoff is None
         else None
     )
-    rows = tuple(
-        row
-        for row, identity in raw
-        if winner is None or identity == winner
-    )
+    rows = tuple(row for row, identity in raw if winner is None or identity == winner)
     chain_blocks = frozenset(row.dispatcher_block for row in rows)
     # Dispatcher entry = the loop head the handler tails converge on. The equality-chain comparators
     # each have near-zero in-degree (reached only from the previous comparator); the block the
@@ -577,9 +569,7 @@ def _augment_residual_equality_rows(
 
     dispatcher_region = dmap.dispatcher_blocks
     equality_blocks = frozenset(
-        int(row.compare_block)
-        for row in rows
-        if row.compare_block is not None
+        int(row.compare_block) for row in rows if row.compare_block is not None
     )
     # The initial portable pass can know only live equality leaves. Resolver
     # augmentation completes the handler set, so recompute the condition-chain
@@ -598,10 +588,9 @@ def _augment_residual_equality_rows(
             chain_blocks=equality_blocks,
             handler_blocks=frozenset(int(row.target_block) for row in rows),
         )
-        if (
-            int(dmap.dispatcher_entry_block) in recomputed_region
-            and not recomputed_region.isdisjoint(equality_blocks)
-        ):
+        if int(
+            dmap.dispatcher_entry_block
+        ) in recomputed_region and not recomputed_region.isdisjoint(equality_blocks):
             dispatcher_region = recomputed_region
         if logger.info_on:
             logger.info(
@@ -610,9 +599,14 @@ def _augment_residual_equality_rows(
                 _block_label(graph, int(dmap.dispatcher_entry_block)),
                 len(dmap.rows),
                 len(rows),
-                tuple(_block_label(graph, block) for block in sorted(dmap.dispatcher_blocks)),
+                tuple(
+                    _block_label(graph, block)
+                    for block in sorted(dmap.dispatcher_blocks)
+                ),
                 tuple(_block_label(graph, block) for block in sorted(equality_blocks)),
-                tuple(_block_label(graph, block) for block in sorted(recomputed_region)),
+                tuple(
+                    _block_label(graph, block) for block in sorted(recomputed_region)
+                ),
                 dispatcher_region == recomputed_region,
             )
     if len(rows) == len(dmap.rows) and dispatcher_region == dmap.dispatcher_blocks:
@@ -656,7 +650,11 @@ def _read_state_init_const(
             # (which a STORE drops) -- the deffai m_stx d-slot precedent.
             _l_off, addr_off, _d_off = operand_stack_offsets(insn)
             src_value = _const_of(src_view)
-            if addr_off is not None and int(addr_off) == target_off and src_value is not None:
+            if (
+                addr_off is not None
+                and int(addr_off) == target_off
+                and src_value is not None
+            ):
                 return src_value
     return None
 
@@ -709,7 +707,9 @@ def recover_entry_dominated_initial_state(
     ]
     if len(qualifying) != 1:
         return None
-    return _read_state_init_const(graph.blocks.get(qualifying[0]), int(state_var_stkoff))
+    return _read_state_init_const(
+        graph.blocks.get(qualifying[0]), int(state_var_stkoff)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -924,9 +924,7 @@ def recover_dispatcher(
         recovered_initial = recover_entry_dominated_initial_state(graph, dmap)
         if recovered_initial is not None:
             dmap = replace(dmap, initial_state=recovered_initial)
-    dmap = _augment_residual_equality_rows(
-        graph, dmap, materialized_indirect_transfers
-    )
+    dmap = _augment_residual_equality_rows(graph, dmap, materialized_indirect_transfers)
     return DispatcherRecovery(
         reachable_block_serials=reachable,
         dispatcher_block_serial=dmap.dispatcher_entry_block,

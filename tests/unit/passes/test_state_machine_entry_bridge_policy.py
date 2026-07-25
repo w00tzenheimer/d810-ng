@@ -59,7 +59,9 @@ def test_entry_bridge_static_rows_are_not_emulated_endpoint_rows() -> None:
     assert _has_emulated_endpoint_rows(dmap) is False
 
 
-def test_entry_bridge_does_not_require_witness_for_unknown_router_without_provider() -> None:
+def test_entry_bridge_does_not_require_witness_for_unknown_router_without_provider() -> (
+    None
+):
     dmap = SimpleNamespace(router_kind=RouterKind.UNKNOWN)
 
     assert _entry_bridge_requires_witness(dmap) is False

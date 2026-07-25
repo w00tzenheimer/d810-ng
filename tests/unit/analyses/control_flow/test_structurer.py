@@ -1,4 +1,5 @@
 """Acyclic structural analysis: CFG -> goto-free region tree (Slice B core)."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -127,8 +128,8 @@ def test_carrier_verdict_threads_fixed_return_into_aligned_terminal():
         terminal_return=lambda serial: delivered.get(serial),
     )
     text = render_region(tree)
-    assert "return a5 + 0xD0;" in text   # aligned terminal delivers the carrier
-    assert "0x298372CC" not in text       # the leaked state is gone
+    assert "return a5 + 0xD0;" in text  # aligned terminal delivers the carrier
+    assert "0x298372CC" not in text  # the leaked state is gone
     assert "goto" not in text
 
 
@@ -166,8 +167,8 @@ def test_structure_recovered_program_end_to_end_fix():
         carrier_expr="a5 + 0xD0",
         leak_def_sites=leak,
     )
-    assert "return a5 + 0xD0;" in text   # aligned terminal delivers the carrier
-    assert "0x298372CC" not in text       # the leak is gone
+    assert "return a5 + 0xD0;" in text  # aligned terminal delivers the carrier
+    assert "0x298372CC" not in text  # the leak is gone
     assert "goto" not in text
 
 
@@ -189,8 +190,8 @@ def test_while_one_emits_break_at_midbody_exit():
     tree = build_region_tree(graph, render_block=_lines, render_condition=_cond)
     text = render_region(tree)
     assert "while ( 1 )" in text
-    assert "break;" in text          # mid-body exit -> break (loop is escapable)
-    assert "/* blk 4 */" in text     # exit block rendered after the loop
+    assert "break;" in text  # mid-body exit -> break (loop is escapable)
+    assert "/* blk 4 */" in text  # exit block rendered after the loop
     assert "goto" not in text
     # blk 4 appears after the loop body, not inside it.
     assert text.index("break;") < text.index("/* blk 4 */")

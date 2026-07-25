@@ -95,7 +95,9 @@ class TestResolveTransitionPathHorizon:
 
         assert resolved == (20, expected)
 
-    def test_conditional_fallback_uses_per_block_sites_and_overrides_state(self, monkeypatch):
+    def test_conditional_fallback_uses_per_block_sites_and_overrides_state(
+        self, monkeypatch
+    ):
         edge = _edge(kind=SemanticEdgeKind.CONDITIONAL_TRANSITION, target_state=0x44)
         stale_site = StateWriteSite(
             block_serial=20,

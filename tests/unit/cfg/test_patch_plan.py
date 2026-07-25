@@ -1,4 +1,5 @@
 """Tests for the Phase B PatchPlan execution layer."""
+
 from __future__ import annotations
 
 import ast
@@ -169,7 +170,11 @@ def _conditional_duplicate_cfg() -> FlowGraph:
 def _duplicate_replay_cfg() -> FlowGraph:
     return FlowGraph(
         blocks={
-            2: _block(2, (3, 4), (10,),),
+            2: _block(
+                2,
+                (3, 4),
+                (10,),
+            ),
             3: _block(3, (), (2,)),
             4: _block(4, (), (2,)),
             8: _block(8, (10,), ()),
@@ -257,9 +262,12 @@ def test_compile_patch_plan_finalizes_edge_split_trampoline():
         ),
     )
     assert patch_plan.new_blocks[0].kind == "edge_split_trampoline"
-    assert patch_plan.relocation_map.assigned_serial_for(
-        VirtualBlockId(namespace="edge_split", ordinal=0)
-    ) == 11
+    assert (
+        patch_plan.relocation_map.assigned_serial_for(
+            VirtualBlockId(namespace="edge_split", ordinal=0)
+        )
+        == 11
+    )
     assert patch_plan.relocation_map.stop_serial_before == 11
     assert patch_plan.relocation_map.stop_serial_after == 12
     assert patch_plan.legacy_block_operations == ()
@@ -574,7 +582,9 @@ def test_compile_patch_plan_finalizes_duplicate_block_for_private_target_split()
     assert patch_plan.legacy_block_operations == ()
 
 
-def test_compile_patch_plan_finalizes_duplicate_replay_and_redirect_without_legacy() -> None:
+def test_compile_patch_plan_finalizes_duplicate_replay_and_redirect_without_legacy() -> (
+    None
+):
     left_body = _captured_body()
     right_body = _captured_body()
     modification = DuplicateReplayAndRedirect(
@@ -846,7 +856,9 @@ def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_bl
     assert patch_plan.contains_block_creation
     assert len(patch_plan.new_blocks) == 4
     assert all(isinstance(spec, PatchBlockSpec) for spec in patch_plan.new_blocks)
-    assert all(isinstance(spec.block_id, VirtualBlockId) for spec in patch_plan.new_blocks)
+    assert all(
+        isinstance(spec.block_id, VirtualBlockId) for spec in patch_plan.new_blocks
+    )
     assert [spec.kind for spec in patch_plan.new_blocks] == [
         "edge_split_trampoline",
         "conditional_redirect_clone",
@@ -857,14 +869,19 @@ def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_bl
     assert isinstance(patch_plan.steps[1], PatchConditionalRedirect)
     assert isinstance(patch_plan.steps[2], PatchInsertBlock)
     assert len(patch_plan.legacy_block_operations) == 0
-    assert all(isinstance(step, LegacyBlockOperation) for step in patch_plan.legacy_block_operations)
+    assert all(
+        isinstance(step, LegacyBlockOperation)
+        for step in patch_plan.legacy_block_operations
+    )
     assert patch_plan.as_graph_modifications() == modifications
 
 
 def test_ensure_patch_plan_is_idempotent():
-    patch_plan = compile_patch_plan([
-        RedirectGoto(from_serial=1, old_target=2, new_target=3),
-    ])
+    patch_plan = compile_patch_plan(
+        [
+            RedirectGoto(from_serial=1, old_target=2, new_target=3),
+        ]
+    )
 
     assert ensure_patch_plan(patch_plan) is patch_plan
 
@@ -895,10 +912,16 @@ def test_patch_remove_edge_exists_but_unused_in_strategies():
         assert py_file.is_file(), f"Hodur strategy source not found: {py_file}"
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id in {"RemoveEdge", "PatchRemoveEdge"}:
+            if isinstance(node, ast.Name) and node.id in {
+                "RemoveEdge",
+                "PatchRemoveEdge",
+            }:
                 violations.append(py_file.name)
                 break
-            if isinstance(node, ast.Attribute) and node.attr in {"RemoveEdge", "PatchRemoveEdge"}:
+            if isinstance(node, ast.Attribute) and node.attr in {
+                "RemoveEdge",
+                "PatchRemoveEdge",
+            }:
                 violations.append(py_file.name)
                 break
 
@@ -924,7 +947,9 @@ def test_modification_builder_has_no_remove_edge_method():
         / "transforms"
         / "modification_builder.py"
     )
-    assert bridge_path.exists(), f"ModificationBuilder source not found at {bridge_path}"
+    assert bridge_path.exists(), (
+        f"ModificationBuilder source not found at {bridge_path}"
+    )
     source = bridge_path.read_text()
     assert "def remove_edge" not in source, (
         "ModificationBuilder gained a remove_edge method. "

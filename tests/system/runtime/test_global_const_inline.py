@@ -13,6 +13,7 @@ Sample requirements:
     libobfuscated sample contains constant folding test functions that
     exercise this path.
 """
+
 from __future__ import annotations
 
 import os
@@ -29,7 +30,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +98,7 @@ GLOBAL_CONST_INLINE_CASES = [
 def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     """Setup fixture for libobfuscated tests -- runs once per class."""
     import idaapi
+
     if not idaapi.init_hexrays_plugin():
         pytest.skip("Hex-Rays decompiler plugin not available")
     return ida_database
@@ -111,9 +115,7 @@ class TestGlobalConstantInliner:
     binary_name = _get_default_binary()
 
     @pytest.mark.ida_required
-    @pytest.mark.parametrize(
-        "case", GLOBAL_CONST_INLINE_CASES, ids=lambda c: c.test_id
-    )
+    @pytest.mark.parametrize("case", GLOBAL_CONST_INLINE_CASES, ids=lambda c: c.test_id)
     def test_global_const_inline(
         self,
         case,
@@ -139,6 +141,7 @@ class TestGlobalConstantInliner:
 # Attribute verification tests
 # ---------------------------------------------------------------------------
 
+
 class TestGlobalConstantInlinerAttributes:
     """Verify GlobalConstantInliner class-level attributes with real IDA constants."""
 
@@ -149,6 +152,7 @@ class TestGlobalConstantInlinerAttributes:
         from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             GlobalConstantInliner,
         )
+
         assert "constant" in GlobalConstantInliner.DESCRIPTION.lower()
 
     @pytest.mark.ida_required
@@ -156,6 +160,7 @@ class TestGlobalConstantInlinerAttributes:
         from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             GlobalConstantInliner,
         )
+
         assert GlobalConstantInliner.USES_DEFERRED_CFG is True
 
     @pytest.mark.ida_required
@@ -164,6 +169,7 @@ class TestGlobalConstantInlinerAttributes:
         from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             GlobalConstantInliner,
         )
+
         assert GlobalConstantInliner.SAFE_MATURITIES is None
 
     @pytest.mark.ida_required
@@ -172,6 +178,7 @@ class TestGlobalConstantInlinerAttributes:
         from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             GlobalConstantInliner,
         )
+
         rule = GlobalConstantInliner()
         assert ida_hexrays.MMAT_PREOPTIMIZED in rule.maturities
 
@@ -181,6 +188,7 @@ class TestGlobalConstantInlinerAttributes:
         from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             GlobalConstantInliner,
         )
+
         rule = GlobalConstantInliner()
         assert ida_hexrays.MMAT_LOCOPT in rule.maturities
 
@@ -188,6 +196,7 @@ class TestGlobalConstantInlinerAttributes:
 # ---------------------------------------------------------------------------
 # Helper function tests -- these exercise pure logic with real IDA modules
 # ---------------------------------------------------------------------------
+
 
 class TestHelperFunctions:
     """Test pure-logic helpers with real IDA module constants.
@@ -205,6 +214,7 @@ class TestHelperFunctions:
         from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             _looks_like_pointer,
         )
+
         assert _looks_like_pointer(0xFFFF, 1) is False
         assert _looks_like_pointer(0xFFFF, 2) is False
         assert _looks_like_pointer(0xFFFF, 3) is False
@@ -215,11 +225,14 @@ class TestHelperFunctions:
         from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             _looks_like_pointer,
         )
+
         assert _looks_like_pointer(0, 4) is False
         assert _looks_like_pointer(0, 8) is False
 
     @pytest.mark.ida_required
-    def test_looks_like_pointer_handles_getseg_typeerror(self, libobfuscated_setup, monkeypatch):
+    def test_looks_like_pointer_handles_getseg_typeerror(
+        self, libobfuscated_setup, monkeypatch
+    ):
         """_looks_like_pointer must not propagate ea_t TypeError from ida_segment.getseg."""
         from d810.optimizers.microcode.flow import global_const_inline as gci
 
@@ -239,6 +252,7 @@ class TestHelperFunctions:
         from d810.optimizers.microcode.flow.constant_prop.global_const_inline import (
             _is_constant_global,
         )
+
         # Use an address far outside the loaded binary
         assert _is_constant_global(0xDEAD_DEAD_DEAD_DEAD) is False
 

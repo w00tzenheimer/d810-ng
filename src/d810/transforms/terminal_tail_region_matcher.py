@@ -33,6 +33,7 @@ Acceptance contract for ticket uee-32r3 Piece N:
 - We can answer "where do they disappear?" by reading the
   ``first_losses`` tuple.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -60,10 +61,10 @@ class TailRegionRole(str, Enum):
 class ByteEmitSourceForm(str, Enum):
     """How the source byte is read in a ``BYTE_EMIT`` block."""
 
-    INDEXED = "indexed"        # v52[k] — explicit constant index
-    BASE_ONLY = "base_only"    # *v52  (only k==0)
-    FOLDED = "folded"          # k folded into a larger MBA expression
-    ABSENT = "absent"          # no byte-source operand present
+    INDEXED = "indexed"  # v52[k] — explicit constant index
+    BASE_ONLY = "base_only"  # *v52  (only k==0)
+    FOLDED = "folded"  # k folded into a larger MBA expression
+    ABSENT = "absent"  # no byte-source operand present
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,9 +109,7 @@ class TimelineEntry:
         return tuple(sorted(self.byte_emits))
 
     def missing_indices(self, max_index: int = 6) -> tuple[int, ...]:
-        return tuple(
-            k for k in range(max_index + 1) if k not in self.byte_emits
-        )
+        return tuple(k for k in range(max_index + 1) if k not in self.byte_emits)
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,7 +246,8 @@ def aggregate_byte_emit_timeline(
 
 
 def _infer_cause(
-    last_present: SnapshotMeta, first_absent: SnapshotMeta,
+    last_present: SnapshotMeta,
+    first_absent: SnapshotMeta,
 ) -> str:
     """Heuristic cause classification from the snapshot pair.
 
@@ -278,7 +278,9 @@ def format_report(report: TerminalTailReport) -> str:
         )
 
     lines.append("\n## First-loss report\n")
-    lines.append("| byte_index | last present (snap/maturity) | first absent | inferred cause |")
+    lines.append(
+        "| byte_index | last present (snap/maturity) | first absent | inferred cause |"
+    )
     lines.append("|-|-|-|-|")
     for fl in report.first_losses:
         lp = (
@@ -297,9 +299,7 @@ def format_report(report: TerminalTailReport) -> str:
 
     if report.glbopt1_post_d810_entry is not None:
         e = report.glbopt1_post_d810_entry
-        lines.append(
-            "\n## GLBOPT1 post-D810 (last D810-controlled snapshot)\n"
-        )
+        lines.append("\n## GLBOPT1 post-D810 (last D810-controlled snapshot)\n")
         lines.append(f"- snapshot: {e.snapshot.snapshot_id} ({e.snapshot.label})")
         lines.append(f"- present byte_emits: {list(e.present_indices())}")
         lines.append(f"- missing byte_emits: {list(e.missing_indices())}")

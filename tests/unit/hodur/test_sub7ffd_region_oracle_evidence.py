@@ -3,6 +3,7 @@
 Tests the per-side evidence schema and the canonical opcode_signature
 form. No IDA imports — all helpers operate on plain dataclasses.
 """
+
 from __future__ import annotations
 
 import json
@@ -50,7 +51,9 @@ def _ins(opcode_name: str) -> InstructionView:
 
 
 def test_opcode_signature_joins_with_semicolon_space():
-    block = _block_view(instructions=(_ins("m_mov"), _ins("m_stx_byte"), _ins("m_goto")))
+    block = _block_view(
+        instructions=(_ins("m_mov"), _ins("m_stx_byte"), _ins("m_goto"))
+    )
     assert opcode_signature(block) == "m_mov; m_stx_byte; m_goto"
 
 
@@ -210,7 +213,9 @@ def test_collect_block_views_for_snapshot_returns_blocks_with_instructions():
     assert block.preds == (120, 142)
     assert block.succs == (218,)
     assert tuple(i.opcode_name for i in block.instructions) == (
-        "m_mov", "m_stx_byte", "m_goto"
+        "m_mov",
+        "m_stx_byte",
+        "m_goto",
     )
     assert block.block_type == "BLT_1WAY"
 
@@ -311,8 +316,8 @@ def test_collect_block_views_preserves_instruction_order_per_block():
     conn.commit()
     result = collect_block_views_for_snapshot(conn, snapshot_id=17)
     assert tuple(i.opcode_name for i in result[1].instructions) == (
-        "m_mov", "m_stx_byte", "m_goto"
+        "m_mov",
+        "m_stx_byte",
+        "m_goto",
     )
-    assert tuple(i.opcode_name for i in result[2].instructions) == (
-        "m_mov", "m_goto"
-    )
+    assert tuple(i.opcode_name for i in result[2].instructions) == ("m_mov", "m_goto")

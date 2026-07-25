@@ -25,6 +25,7 @@ classifier is pure-Python, namespace-agnostic (caller chooses
 ``%var_HEX`` / stkoff hex / register names). The Hodur observability
 strategy that consumes it lives in ``hodur.strategies.backedge_audit``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -105,10 +106,7 @@ class DispatcherAwareSummary:
     @property
     def total(self) -> int:
         return (
-            self.dispatcher_round_trip
-            + self.real_loop
-            + self.spurious
-            + self.unknown
+            self.dispatcher_round_trip + self.real_loop + self.spurious + self.unknown
         )
 
 

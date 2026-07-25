@@ -10,6 +10,7 @@ This is the canonical serialized ``FactObservation.kind`` value. The
 diagnostic alias registry maps the historical ``ObservableStoreFact`` string
 to this family.
 """
+
 from __future__ import annotations
 
 OBSERVABLE_MEMORY_DEF_FACT_TYPE = "ObservableMemoryDefFact"

@@ -3,6 +3,7 @@
 These tests validate end-to-end export formatting behavior by writing generated
 C source to disk and invoking a real C compiler in syntax-check mode.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -17,7 +18,9 @@ from d810.ui.actions.export_to_c_logic import (
 from tests.conftest import PROJECT_ROOT
 
 
-def _compile_syntax_only(source_path: str, include_dirs: list[str] | None = None) -> None:
+def _compile_syntax_only(
+    source_path: str, include_dirs: list[str] | None = None
+) -> None:
     """Compile a C file in syntax-only mode."""
     compiler = shutil.which("cc")
     if compiler is None:
@@ -91,7 +94,7 @@ class TestExportToCCompileIntegration:
         pseudocode = [
             "__int64 __fastcall collapsed_case(__int64 a1, __int64 a2)",
             "{",
-            "  // [COLLAPSED LOCAL DECLARATIONS. PRESS NUMPAD \"+\" TO EXPAND]",
+            '  // [COLLAPSED LOCAL DECLARATIONS. PRESS NUMPAD "+" TO EXPAND]',
             "",
             "  v3 = a1 ^ a2;",
             "  return v3 + 1;",

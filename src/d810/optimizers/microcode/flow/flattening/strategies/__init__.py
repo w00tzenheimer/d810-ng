@@ -38,7 +38,9 @@ from d810.passes.fake_jump import (
 from d810.transforms.guarded_state_machine_planning import (
     build_guarded_state_machine_modifications,
 )
-from d810.transforms.local_select_loop_planning import build_local_select_loop_modifications
+from d810.transforms.local_select_loop_planning import (
+    build_local_select_loop_modifications,
+)
 from d810.transforms.side_effect_select_loop_planning import (
     build_side_effect_select_loop_modifications,
 )

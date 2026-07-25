@@ -1,4 +1,5 @@
 """Abstract data-flow domain Protocol."""
+
 from __future__ import annotations
 
 from d810.core.typing import Protocol, TypeVar, runtime_checkable

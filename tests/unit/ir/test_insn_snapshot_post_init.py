@@ -9,6 +9,7 @@ is still a conditional branch, so ``control_transfer_kind`` is inferred
 jump-target read that the operand-slot typed-port replaced (selector_shell /
 side_effect_select_loop, commit 0a0a78ea3).
 """
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import InsnKind, InsnSnapshot

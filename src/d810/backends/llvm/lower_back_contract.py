@@ -5,6 +5,7 @@ contract a future LLVM->microcode dropper needs in order to destructure SSA PHI
 nodes into edge moves while rejecting shapes that would need a real body emitter,
 critical-edge splitting, or unsupported side-effect modeling.
 """
+
 from __future__ import annotations
 
 import re
@@ -510,7 +511,9 @@ def _plan_edge_move_groups(
                 )
             )
             insertion_block = bridge_label
-        planned_moves = tuple(replace(move, insertion_block=insertion_block) for move in moves)
+        planned_moves = tuple(
+            replace(move, insertion_block=insertion_block) for move in moves
+        )
         edge_moves.extend(planned_moves)
         parallel_copies.append(
             LlvmParallelCopyGroup(
@@ -562,7 +565,9 @@ def _block_order_with_bridges(
     order: list[str] = []
     for block in function.blocks:
         order.append(block.label)
-        for bridge in sorted(bridges_by_predecessor.get(block.label, ()), key=lambda item: item.label):
+        for bridge in sorted(
+            bridges_by_predecessor.get(block.label, ()), key=lambda item: item.label
+        ):
             order.append(bridge.label)
     return tuple(order)
 
@@ -608,7 +613,11 @@ def _instruction_has_supported_shape(
             return False
         input_width = _scalar_width(operands[0].type)
         result_width = _scalar_width(result.type)
-        return input_width is not None and result_width is not None and result_width > input_width
+        return (
+            input_width is not None
+            and result_width is not None
+            and result_width > input_width
+        )
     return False
 
 

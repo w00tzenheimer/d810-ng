@@ -19,6 +19,7 @@ precision, never soundness.  Ticket llr-xvkt / epic llr-7ouc.
 
 Portable: no IDA, no z3 import (the S5 symbolic capability crosses a seam).
 """
+
 from __future__ import annotations
 
 import enum
@@ -37,8 +38,8 @@ class PrecisionStatus(enum.Enum):
     CONCRETE = enum.auto()  # singleton proven
     SYMBOLIC = enum.auto()  # structural term known, not folded to a constant
     ABSTRACT = enum.auto()  # only a sound over-approximation
-    BOTTOM = enum.auto()    # unreachable / infeasible
-    TOP = enum.auto()       # no information
+    BOTTOM = enum.auto()  # unreachable / infeasible
+    TOP = enum.auto()  # no information
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +61,9 @@ class ConcolicValue:
     def top(width: int) -> "ConcolicValue":
         """No information."""
         return reduce(
-            ConcolicValue(None, None, AbstractEvidence.top(width), width, PrecisionStatus.TOP)
+            ConcolicValue(
+                None, None, AbstractEvidence.top(width), width, PrecisionStatus.TOP
+            )
         )
 
     @staticmethod
@@ -68,7 +71,11 @@ class ConcolicValue:
         """Unreachable / infeasible."""
         return reduce(
             ConcolicValue(
-                None, None, AbstractEvidence.bottom(width), width, PrecisionStatus.BOTTOM
+                None,
+                None,
+                AbstractEvidence.bottom(width),
+                width,
+                PrecisionStatus.BOTTOM,
             )
         )
 
@@ -78,7 +85,11 @@ class ConcolicValue:
         c = int(value) & ((1 << width) - 1)
         return reduce(
             ConcolicValue(
-                c, None, AbstractEvidence.singleton(c, width), width, PrecisionStatus.CONCRETE
+                c,
+                None,
+                AbstractEvidence.singleton(c, width),
+                width,
+                PrecisionStatus.CONCRETE,
             )
         )
 

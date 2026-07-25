@@ -1,4 +1,5 @@
 """Tests for the redirect-reconcile diag subcommand."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,7 +7,13 @@ from pathlib import Path
 import pytest
 
 from d810.core.diag import create_diag_database, diag_models_on, open_diag_database
-from d810.core.diag.models import Block, Instruction, Modification, Snapshot, StateCfgEdge
+from d810.core.diag.models import (
+    Block,
+    Instruction,
+    Modification,
+    Snapshot,
+    StateCfgEdge,
+)
 from d810.diagnostics.redirect_reconcile import (
     compute_dispatcher_blocks,
     load_block_succs,
@@ -46,47 +53,112 @@ def _make_diag_db(tmp_path: Path) -> Path:
     db = create_diag_database(str(db_path))
     with diag_models_on(db):
         Snapshot.insert(
-            id=5, label="", func_ea_hex="0x0", func_ea_i64=0,
-            maturity="", phase="unknown", block_count=0, timestamp=0.0,
+            id=5,
+            label="",
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            maturity="",
+            phase="unknown",
+            block_count=0,
+            timestamp=0.0,
         ).execute()
-        Block.insert_many([
-            dict(snapshot=5, serial=10, block_type=0, type_name="",
-                 nsucc=1, npred=2, succs="[20]", preds="[]", insn_count=0),
-            dict(snapshot=5, serial=20, block_type=0, type_name="",
-                 nsucc=2, npred=1, succs="[30, 10]", preds="[]", insn_count=0),
-            dict(snapshot=5, serial=30, block_type=0, type_name="",
-                 nsucc=1, npred=1, succs="[10]", preds="[]", insn_count=0),
-            dict(snapshot=5, serial=40, block_type=0, type_name="",
-                 nsucc=0, npred=0, succs="[]", preds="[]", insn_count=0),
-        ]).execute()
+        Block.insert_many(
+            [
+                dict(
+                    snapshot=5,
+                    serial=10,
+                    block_type=0,
+                    type_name="",
+                    nsucc=1,
+                    npred=2,
+                    succs="[20]",
+                    preds="[]",
+                    insn_count=0,
+                ),
+                dict(
+                    snapshot=5,
+                    serial=20,
+                    block_type=0,
+                    type_name="",
+                    nsucc=2,
+                    npred=1,
+                    succs="[30, 10]",
+                    preds="[]",
+                    insn_count=0,
+                ),
+                dict(
+                    snapshot=5,
+                    serial=30,
+                    block_type=0,
+                    type_name="",
+                    nsucc=1,
+                    npred=1,
+                    succs="[10]",
+                    preds="[]",
+                    insn_count=0,
+                ),
+                dict(
+                    snapshot=5,
+                    serial=40,
+                    block_type=0,
+                    type_name="",
+                    nsucc=0,
+                    npred=0,
+                    succs="[]",
+                    preds="[]",
+                    insn_count=0,
+                ),
+            ]
+        ).execute()
         # Block 10 writes 0x100 to state var (stkoff 0x3C).
         Instruction.insert(
-            snapshot=5, block_serial=10, insn_index=0,
-            ea_hex="0x0", ea_i64=0, opcode=0, opcode_name="",
-            dest_stkoff=0x3C, src_l_value_i64=0x100,
+            snapshot=5,
+            block_serial=10,
+            insn_index=0,
+            ea_hex="0x0",
+            ea_i64=0,
+            opcode=0,
+            opcode_name="",
+            dest_stkoff=0x3C,
+            src_l_value_i64=0x100,
         ).execute()
         # Block 20 reads state var in its tail (predicate).
         Instruction.insert(
-            snapshot=5, block_serial=20, insn_index=0,
-            ea_hex="0x0", ea_i64=0, opcode=0, opcode_name="",
+            snapshot=5,
+            block_serial=20,
+            insn_index=0,
+            ea_hex="0x0",
+            ea_i64=0,
+            opcode=0,
+            opcode_name="",
             src_l_stkoff=0x3C,
         ).execute()
         # condition chain: state 0x100 -> handler at block 20.
         StateCfgEdge.insert(
-            snapshot=5, edge_id=0,
-            target_state_i64=0x100, target_entry=20,
-            edge_kind="UNKNOWN", ordered_path="[]",
+            snapshot=5,
+            edge_id=0,
+            target_state_i64=0x100,
+            target_entry=20,
+            edge_kind="UNKNOWN",
+            ordered_path="[]",
         ).execute()
         # Persisted RedirectGoto: src=10 redirects old=20 -> new=20 (AGREE).
         Modification.insert(
-            snapshot=5, mod_index=0, mod_type="RedirectGoto",
-            source_block=10, old_target=20, target_block=20,
+            snapshot=5,
+            mod_index=0,
+            mod_type="RedirectGoto",
+            source_block=10,
+            old_target=20,
+            target_block=20,
             status="emitted",
         ).execute()
         # Persisted typed clone/split at source 30 -- HCC_DUP.
         Modification.insert(
-            snapshot=5, mod_index=1, mod_type="EdgeRedirectViaPredSplit",
-            source_block=30, status="emitted",
+            snapshot=5,
+            mod_index=1,
+            mod_type="EdgeRedirectViaPredSplit",
+            source_block=30,
+            status="emitted",
         ).execute()
     db.close()
     return db_path
@@ -114,12 +186,21 @@ def test_load_persisted_dup_sources_reads_distinct_emitted_rows(diag_db: Path) -
 def test_load_persisted_dup_sources_ignores_dropped_status(tmp_path: Path) -> None:
     db = make_bound_diag_db()
     Snapshot.insert(
-        id=1, label="", func_ea_hex="0x0", func_ea_i64=0,
-        maturity="", phase="unknown", block_count=0, timestamp=0.0,
+        id=1,
+        label="",
+        func_ea_hex="0x0",
+        func_ea_i64=0,
+        maturity="",
+        phase="unknown",
+        block_count=0,
+        timestamp=0.0,
     ).execute()
     Modification.insert(
-        snapshot=1, mod_index=0, mod_type="EdgeRedirectViaPredSplit",
-        source_block=99, status="dropped",
+        snapshot=1,
+        mod_index=0,
+        mod_type="EdgeRedirectViaPredSplit",
+        source_block=99,
+        status="dropped",
     ).execute()
     assert load_persisted_dup_sources(db.connection()) == frozenset()
 
@@ -149,17 +230,28 @@ def test_load_condition_chain_table_keys_by_uint64_state_const(diag_db: Path) ->
     assert condition_chain == {0x100: 20}
 
 
-def test_load_condition_chain_table_handles_negative_i64_via_uint64_mask(tmp_path: Path) -> None:
+def test_load_condition_chain_table_handles_negative_i64_via_uint64_mask(
+    tmp_path: Path,
+) -> None:
     db = make_bound_diag_db()
     Snapshot.insert(
-        id=1, label="", func_ea_hex="0x0", func_ea_i64=0,
-        maturity="", phase="unknown", block_count=0, timestamp=0.0,
+        id=1,
+        label="",
+        func_ea_hex="0x0",
+        func_ea_i64=0,
+        maturity="",
+        phase="unknown",
+        block_count=0,
+        timestamp=0.0,
     ).execute()
     # -1 as i64 -> 0xFFFF_FFFF_FFFF_FFFF as u64.
     StateCfgEdge.insert(
-        snapshot=1, edge_id=0,
-        target_state_i64=-1, target_entry=77,
-        edge_kind="UNKNOWN", ordered_path="[]",
+        snapshot=1,
+        edge_id=0,
+        target_state_i64=-1,
+        target_entry=77,
+        edge_kind="UNKNOWN",
+        ordered_path="[]",
     ).execute()
     condition_chain = load_condition_chain_table(db.connection())
     assert condition_chain == {0xFFFFFFFFFFFFFFFF: 77}
@@ -185,7 +277,9 @@ def test_load_block_writes_and_predicates_pulls_state_consts(
     db = open_diag_database(str(diag_db))
     try:
         writes, reads, consts = load_block_writes_and_predicates(
-            db.connection(), snap_id=5, block_serials=[10, 20],
+            db.connection(),
+            snap_id=5,
+            block_serials=[10, 20],
             state_var_stkoff=0x3C,
         )
     finally:
@@ -204,7 +298,7 @@ def test_load_block_writes_and_predicates_pulls_state_consts(
 def test_compute_dispatcher_blocks_uses_min_threshold() -> None:
     succs = {
         1: (10, 10, 10, 10, 10),  # block 10 has in-deg 5
-        2: (10, 20),               # block 10 in-deg 6, block 20 in-deg 1
+        2: (10, 20),  # block 10 in-deg 6, block 20 in-deg 1
     }
     dispatchers = compute_dispatcher_blocks(succs, min_dispatcher_preds=5)
     assert dispatchers == frozenset({10})
@@ -224,7 +318,10 @@ def test_run_reconcile_emits_header_and_summary(tmp_path: Path, diag_db: Path) -
     log = tmp_path / "d810.log"
     log.write_text("(no relevant gate / trampoline-skip lines in this fixture)\n")
     out = run_reconcile(
-        diag_db, log, snap_id=5, state_var_stkoff=0x3C,
+        diag_db,
+        log,
+        snap_id=5,
+        state_var_stkoff=0x3C,
     )
     assert "# Reconciliation: snap 5" in out
     assert "condition-chain table size: 1 state -> handler entries" in out
@@ -234,10 +331,14 @@ def test_run_reconcile_emits_header_and_summary(tmp_path: Path, diag_db: Path) -
 
 
 def test_run_reconcile_returns_error_when_log_missing(
-    tmp_path: Path, diag_db: Path,
+    tmp_path: Path,
+    diag_db: Path,
 ) -> None:
     out = run_reconcile(
-        diag_db, tmp_path / "nope.log", snap_id=5, state_var_stkoff=0x3C,
+        diag_db,
+        tmp_path / "nope.log",
+        snap_id=5,
+        state_var_stkoff=0x3C,
     )
     assert out.startswith("Error: log not found")
 
@@ -246,21 +347,33 @@ def test_run_reconcile_returns_error_when_db_missing(tmp_path: Path) -> None:
     log = tmp_path / "d810.log"
     log.write_text("")
     out = run_reconcile(
-        tmp_path / "missing.sqlite3", log, snap_id=5, state_var_stkoff=0x3C,
+        tmp_path / "missing.sqlite3",
+        log,
+        snap_id=5,
+        state_var_stkoff=0x3C,
     )
     assert out.startswith("Error: db not found")
 
 
 def test_run_reconcile_show_edges_appends_detail_section(
-    tmp_path: Path, diag_db: Path,
+    tmp_path: Path,
+    diag_db: Path,
 ) -> None:
     log = tmp_path / "d810.log"
     log.write_text("")
     out_quiet = run_reconcile(
-        diag_db, log, snap_id=5, state_var_stkoff=0x3C, show_edges=False,
+        diag_db,
+        log,
+        snap_id=5,
+        state_var_stkoff=0x3C,
+        show_edges=False,
     )
     out_loud = run_reconcile(
-        diag_db, log, snap_id=5, state_var_stkoff=0x3C, show_edges=True,
+        diag_db,
+        log,
+        snap_id=5,
+        state_var_stkoff=0x3C,
+        show_edges=True,
     )
     # show_edges may produce zero detail lines if the SCC walk found no
     # round-trips on this minimal fixture, but the header is always there.
@@ -271,7 +384,8 @@ def test_run_reconcile_show_edges_appends_detail_section(
 
 
 def test_run_reconcile_persisted_dup_source_merges_into_log_signals(
-    tmp_path: Path, diag_db: Path,
+    tmp_path: Path,
+    diag_db: Path,
 ) -> None:
     """When the modifications table records a typed clone/split for a
     source that's missing from the d810.log, run_reconcile should still
@@ -280,7 +394,10 @@ def test_run_reconcile_persisted_dup_source_merges_into_log_signals(
     log = tmp_path / "d810.log"
     log.write_text("")
     out = run_reconcile(
-        diag_db, log, snap_id=5, state_var_stkoff=0x3C,
+        diag_db,
+        log,
+        snap_id=5,
+        state_var_stkoff=0x3C,
     )
     # No assertion about specific bucket counts: the synthetic CFG might not
     # produce a back-edge for source 30. We just verify the reconcile call
@@ -295,8 +412,14 @@ def test_run_reconcile_against_empty_dag_edges(tmp_path: Path) -> None:
     db = create_diag_database(str(db_path))
     with diag_models_on(db):
         Snapshot.insert(
-            id=5, label="", func_ea_hex="0x0", func_ea_i64=0,
-            maturity="", phase="unknown", block_count=0, timestamp=0.0,
+            id=5,
+            label="",
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            maturity="",
+            phase="unknown",
+            block_count=0,
+            timestamp=0.0,
         ).execute()
     db.close()
     log = tmp_path / "d810.log"
@@ -307,7 +430,8 @@ def test_run_reconcile_against_empty_dag_edges(tmp_path: Path) -> None:
 
 
 def test_run_reconcile_log_with_trampoline_intent_parses_to_logged_intent(
-    tmp_path: Path, diag_db: Path,
+    tmp_path: Path,
+    diag_db: Path,
 ) -> None:
     """A d810.log line that follows the parse_logged_intent format should
     survive into the reconciliation. We don't assert which bucket it lands
@@ -320,10 +444,12 @@ def test_run_reconcile_log_with_trampoline_intent_parses_to_logged_intent(
     # and accept either >=0 intents (parser may or may not match -- the
     # important behaviour is that the orchestrator doesn't blow up).
     log.write_text(
-        "RECON_REDIRECT_QUEUED source=blk[10] old_target=blk[20]"
-        " new_target=blk[30]\n"
+        "RECON_REDIRECT_QUEUED source=blk[10] old_target=blk[20] new_target=blk[30]\n"
     )
     out = run_reconcile(
-        diag_db, log, snap_id=5, state_var_stkoff=0x3C,
+        diag_db,
+        log,
+        snap_id=5,
+        state_var_stkoff=0x3C,
     )
     assert "Logged trampoline-skip intent:" in out

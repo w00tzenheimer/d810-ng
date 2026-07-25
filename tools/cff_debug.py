@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Compatibility wrapper for the renamed D810 operator CLI."""
+
 from __future__ import annotations
 
 import os

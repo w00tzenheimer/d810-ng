@@ -153,9 +153,9 @@ def test_high_fan_in_and_uniform_predecessors_are_ported() -> None:
 
 
 def test_state_comparisons_pick_most_common_portable_operand() -> None:
-    flow_graph = _flow([
-        _comparison_block(serial, 0x200 + serial) for serial in range(6)
-    ])
+    flow_graph = _flow(
+        [_comparison_block(serial, 0x200 + serial) for serial in range(6)]
+    )
 
     analysis = analyze_dispatcher(flow_graph)
 
@@ -183,14 +183,16 @@ def test_state_comparisons_pick_most_common_portable_operand() -> None:
 
 
 def test_state_comparison_identity_is_size_agnostic() -> None:
-    flow_graph = _flow([
-        _comparison_block_with_stack_size(
-            serial,
-            0x200 + serial,
-            size=(1 if serial % 2 else 4),
-        )
-        for serial in range(6)
-    ])
+    flow_graph = _flow(
+        [
+            _comparison_block_with_stack_size(
+                serial,
+                0x200 + serial,
+                size=(1 if serial % 2 else 4),
+            )
+            for serial in range(6)
+        ]
+    )
 
     analysis = analyze_dispatcher(flow_graph)
 
@@ -246,12 +248,14 @@ def test_initial_state_is_found_from_early_state_assignment() -> None:
 
 
 def test_nested_loops_classify_conditional_chain_without_constants() -> None:
-    flow_graph = _flow([
-        _block(0, succs=(0,)),
-        _block(1, succs=(0,)),
-        _block(2, succs=(1,)),
-        _block(3, succs=(2,)),
-    ])
+    flow_graph = _flow(
+        [
+            _block(0, succs=(0,)),
+            _block(1, succs=(0,)),
+            _block(2, succs=(1,)),
+            _block(3, succs=(2,)),
+        ]
+    )
 
     analysis = analyze_dispatcher(flow_graph)
 

@@ -1,4 +1,5 @@
 """Tests for backend-neutral instruction semantic helpers."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace

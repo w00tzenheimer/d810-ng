@@ -38,10 +38,8 @@ def _is_sub7ffd_poll_suffix_shared_group(
         int(shared_block) == _SUB7FFD_POLL_SUFFIX_SHARED_BLOCK
         and old_target is not None
         and int(old_target) == _SUB7FFD_POLL_SUFFIX_OLD_TARGET
-        and tuple(
-            (int(pred), int(target))
-            for pred, target in per_pred_targets
-        ) == _SUB7FFD_POLL_SUFFIX_PER_PRED_TARGETS
+        and tuple((int(pred), int(target)) for pred, target in per_pred_targets)
+        == _SUB7FFD_POLL_SUFFIX_PER_PRED_TARGETS
     )
 
 
@@ -132,7 +130,9 @@ def _redirect_would_be_invalid_or_noop(
     target_block: int,
     old_target: int,
 ) -> bool:
-    return int(target_block) == int(source_block) or int(target_block) == int(old_target)
+    return int(target_block) == int(source_block) or int(target_block) == int(
+        old_target
+    )
 
 
 def _goto_redirect_for_block(
@@ -149,8 +149,13 @@ def _goto_redirect_for_block(
     ):
         return None
     block = flow_graph.get_block(int(source_block))
-    if block is not None and int(getattr(block, "nsucc", len(getattr(block, "succs", ())))) == 2:
-        return ConvertToGoto(block_serial=int(source_block), goto_target=int(target_block))
+    if (
+        block is not None
+        and int(getattr(block, "nsucc", len(getattr(block, "succs", ())))) == 2
+    ):
+        return ConvertToGoto(
+            block_serial=int(source_block), goto_target=int(target_block)
+        )
     return RedirectGoto(
         from_serial=int(source_block),
         old_target=int(old_target),
@@ -172,7 +177,10 @@ def _edge_redirect_for_block(
     ):
         return None
     block = flow_graph.get_block(int(source_block))
-    if block is not None and int(getattr(block, "nsucc", len(getattr(block, "succs", ())))) == 2:
+    if (
+        block is not None
+        and int(getattr(block, "nsucc", len(getattr(block, "succs", ())))) == 2
+    ):
         succs = tuple(int(succ) for succ in getattr(block, "succs", ()))
         if (
             int(old_target) in succs
@@ -250,7 +258,9 @@ def plan_conditional_arm_reconstruction_modifications(
 ) -> ReconstructionModificationPlan:
     block = flow_graph.get_block(int(horizon_block))
     if block is None:
-        return ReconstructionModificationPlan(accepted=False, rejection_reason="missing_horizon_block")
+        return ReconstructionModificationPlan(
+            accepted=False, rejection_reason="missing_horizon_block"
+        )
 
     lowering_decision = plan_reconstruction_lowering(
         flow_graph=flow_graph,
@@ -403,15 +413,13 @@ def plan_shared_group_reconstruction_modifications(
         )
 
     per_pred_targets = tuple(
-        (int(pred), int(target))
-        for pred, target in lowering_decision.per_pred_targets
+        (int(pred), int(target)) for pred, target in lowering_decision.per_pred_targets
     )
 
     distinct_targets = {int(target) for _, target in per_pred_targets}
     allow_per_pred_redirect = (
         bool(allow_divergent_per_pred_redirect)
-        or
-        len(distinct_targets) <= 1
+        or len(distinct_targets) <= 1
         or int(old_target) in distinct_targets
     )
 
@@ -511,7 +519,8 @@ def plan_shared_group_reconstruction_modifications(
     return SharedGroupModificationPlan(
         accepted=False,
         ordered_via_preds=tuple(
-            int(candidate.via_pred) for candidate in lowering_decision.ordered_candidates
+            int(candidate.via_pred)
+            for candidate in lowering_decision.ordered_candidates
         ),
         per_pred_targets=per_pred_targets,
         emission_mode="clone_safety_gap",

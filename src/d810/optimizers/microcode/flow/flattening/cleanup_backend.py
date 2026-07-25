@@ -1,4 +1,5 @@
 """Backend boundary for live non-Hodur cleanup candidate collection."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -146,7 +147,9 @@ def _capture_bad_while_loop_side_effect_body(
             source_blocks=(int(source_serial),),
             instruction_count=len(snapshots),
             source_eas=source_eas,
-            contains_call=any(snapshot.opcode in call_opcodes for snapshot in snapshots),
+            contains_call=any(
+                snapshot.opcode in call_opcodes for snapshot in snapshots
+            ),
         ),
         payload=snapshots,
         metadata={
@@ -244,9 +247,7 @@ def _validation_graph_for_bad_while_loop(
     edits: tuple[BadWhileLoopEdit, ...],
     replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...],
     duplicate_replay_candidates: tuple[CleanupDuplicateGroupReplayCandidate, ...],
-    trampoline_isolation_candidates: tuple[
-        CleanupTrampolineIsolationCandidate, ...
-    ],
+    trampoline_isolation_candidates: tuple[CleanupTrampolineIsolationCandidate, ...],
     *,
     logger: object | None = None,
 ) -> FlowGraph | None:
@@ -328,13 +329,10 @@ class SimpleFlatteningCleanupDetection:
 
     @property
     def diagnostic_only(self) -> bool:
-        return (
-            not self.detected
-            and bool(
-                self.bad_while_loop_deferred_edits
-                or self.bad_while_loop_follow_up
-                or self.bad_while_loop_dependency_diagnostics
-            )
+        return not self.detected and bool(
+            self.bad_while_loop_deferred_edits
+            or self.bad_while_loop_follow_up
+            or self.bad_while_loop_dependency_diagnostics
         )
 
     @property
@@ -387,6 +385,7 @@ class SimpleFlatteningCleanupBackend(Protocol):
         """Return live cleanup candidates for one MBA."""
         ...
 
+
 class LiveSimpleFlatteningCleanupBackend:
     """Default IDA-backed collector for simple cleanup evidence."""
 
@@ -410,7 +409,9 @@ class LiveSimpleFlatteningCleanupBackend:
         self.fake_jump_allowed_maturities = tuple(
             int(maturity) for maturity in fake_jump_allowed_maturities
         )
-        self.allowed_maturities = tuple(int(maturity) for maturity in allowed_maturities)
+        self.allowed_maturities = tuple(
+            int(maturity) for maturity in allowed_maturities
+        )
         self.guarded_state_machine_maturities = tuple(
             int(maturity) for maturity in guarded_state_machine_maturities
         )
@@ -466,7 +467,9 @@ class LiveSimpleFlatteningCleanupBackend:
                 )
 
         bad_while_loop_edits: tuple[BadWhileLoopEdit, ...] = ()
-        bad_while_loop_replay_candidates: tuple[CleanupSideEffectReplayCandidate, ...] = ()
+        bad_while_loop_replay_candidates: tuple[
+            CleanupSideEffectReplayCandidate, ...
+        ] = ()
         bad_while_loop_duplicate_replay_candidates: tuple[
             CleanupDuplicateGroupReplayCandidate, ...
         ] = ()
@@ -548,9 +551,7 @@ class LiveSimpleFlatteningCleanupBackend:
                 )
             )
             if bad_while_loop_validation_graph is not None:
-                conditional_redirect_proofs: list[
-                    CleanupConditionalRedirectProof
-                ] = []
+                conditional_redirect_proofs: list[CleanupConditionalRedirectProof] = []
                 for edit in bad_while_loop_all_edits:
                     if not isinstance(edit, BadWhileLoopConditionalRedirect):
                         continue
@@ -714,8 +715,8 @@ class LiveSimpleFlatteningCleanupBackend:
 
             if cleanup_graph is not None:
                 try:
-                    guarded_state_machine_fixes = (
-                        collect_guarded_state_machine_fixes(cleanup_graph)
+                    guarded_state_machine_fixes = collect_guarded_state_machine_fixes(
+                        cleanup_graph
                     )
                 except Exception as exc:
                     errors.append(f"guarded_state_machine:{type(exc).__name__}")
@@ -767,9 +768,7 @@ class LiveSimpleFlatteningCleanupBackend:
             single_iteration_fixes=tuple(single_iteration_fixes),
             single_iteration_converts=tuple(single_iteration_converts),
             bad_while_loop_edits=tuple(bad_while_loop_edits),
-            bad_while_loop_replay_candidates=tuple(
-                bad_while_loop_replay_candidates
-            ),
+            bad_while_loop_replay_candidates=tuple(bad_while_loop_replay_candidates),
             bad_while_loop_duplicate_replay_candidates=tuple(
                 bad_while_loop_duplicate_replay_candidates
             ),
@@ -784,9 +783,7 @@ class LiveSimpleFlatteningCleanupBackend:
             bad_while_loop_dependency_diagnostics=tuple(
                 bad_while_loop_dependency_diagnostics
             ),
-            fix_predecessor_branch_arm_fixes=tuple(
-                fix_predecessor_branch_arm_fixes
-            ),
+            fix_predecessor_branch_arm_fixes=tuple(fix_predecessor_branch_arm_fixes),
             tail_goto_merges=tuple(tail_goto_merges),
             guarded_state_machine_fixes=tuple(guarded_state_machine_fixes),
             local_select_loop_fixes=tuple(local_select_loop_fixes),

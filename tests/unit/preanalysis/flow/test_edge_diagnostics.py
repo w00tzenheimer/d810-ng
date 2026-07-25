@@ -1,4 +1,5 @@
 """Tests for DAG edge classification."""
+
 from __future__ import annotations
 from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
@@ -23,9 +24,14 @@ from d810.diagnostics.edge_diagnostics import (
 def _make_db() -> sqlite3.Connection:
     db = make_bound_diag_db()
     Snapshot.insert(
-        id=1, label="test_snap", func_ea_hex="0x180012df0",
-        func_ea_i64=0x180012df0, maturity="MMAT_GLBOPT1", phase="pre_d810",
-        block_count=0, timestamp=0.0,
+        id=1,
+        label="test_snap",
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+        block_count=0,
+        timestamp=0.0,
     ).execute()
     return db.connection()
 
@@ -42,12 +48,17 @@ def _add_dag_edge(
     snap: int = 1,
 ) -> None:
     StateCfgEdge.insert(
-        snapshot=snap, edge_id=edge_id, source_state_hex=src_state_hex,
+        snapshot=snap,
+        edge_id=edge_id,
+        source_state_hex=src_state_hex,
         source_state_i64=int(src_state_hex, 16) if src_state_hex else None,
         target_state_hex=tgt_state_hex,
         target_state_i64=int(tgt_state_hex, 16) if tgt_state_hex else None,
-        edge_kind=kind, source_block=source_block, source_arm=None,
-        target_entry=target_entry, ordered_path="[]",
+        edge_kind=kind,
+        source_block=source_block,
+        source_arm=None,
+        target_entry=target_entry,
+        ordered_path="[]",
     ).execute()
 
 
@@ -61,8 +72,11 @@ def _add_dag_node(
 ) -> None:
     state_i64 = int(state_hex, 16)
     StateCfgNode.insert(
-        snapshot=snap, state_hex=state_hex, state_i64=state_i64,
-        entry_block=entry_block, classification=classification,
+        snapshot=snap,
+        state_hex=state_hex,
+        state_i64=state_i64,
+        entry_block=entry_block,
+        classification=classification,
         shared_suffix=None,
     ).execute()
 
@@ -78,8 +92,12 @@ def _add_dag_node_block(
     snap: int = 1,
 ) -> None:
     StateCfgNodeBlock.insert(
-        snapshot=snap, state_hex=state_hex, entry_block=entry_block,
-        block_serial=block_serial, block_index=block_index, role=role,
+        snapshot=snap,
+        state_hex=state_hex,
+        entry_block=entry_block,
+        block_serial=block_serial,
+        block_index=block_index,
+        role=role,
     ).execute()
 
 
@@ -101,12 +119,22 @@ def _add_state_const_rewritten(
         "to_maturity": "MMAT_GLBOPT1",
     }
     FactMapping.insert(
-        snapshot=snap, func_ea_hex="0x180012df0", func_ea_i64=0x180012df0,
-        mapping_index=mapping_index, source_fact_id=fact_id, target_fact_id=None,
-        source_maturity="MMAT_LOCOPT", target_maturity="MMAT_GLBOPT1",
-        status="STATE_CONST_REWRITTEN", confidence=0.9, target_block=None,
-        target_ea_hex=None, target_ea_i64=None, target_mop_signature=None,
-        reason="test", payload=json.dumps(payload),
+        snapshot=snap,
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        mapping_index=mapping_index,
+        source_fact_id=fact_id,
+        target_fact_id=None,
+        source_maturity="MMAT_LOCOPT",
+        target_maturity="MMAT_GLBOPT1",
+        status="STATE_CONST_REWRITTEN",
+        confidence=0.9,
+        target_block=None,
+        target_ea_hex=None,
+        target_ea_i64=None,
+        target_mop_signature=None,
+        reason="test",
+        payload=json.dumps(payload),
     ).execute()
 
 
@@ -125,11 +153,21 @@ def _add_terminal_tail_fact(
         "corridor_role": "terminal_tail",
     }
     FactObservation.insert(
-        snapshot=snap, func_ea_hex="0x180012df0", func_ea_i64=0x180012df0,
-        fact_id=fact_id, kind="TerminalByteEmitterFact", semantic_key=fact_id,
-        maturity="MMAT_GLBOPT1", phase="pre_d810", confidence=0.9,
-        source_block=destination_block, source_ea_hex=None, source_ea_i64=None,
-        block_fingerprint=None, mop_signature=None, payload=json.dumps(payload),
+        snapshot=snap,
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        fact_id=fact_id,
+        kind="TerminalByteEmitterFact",
+        semantic_key=fact_id,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+        confidence=0.9,
+        source_block=destination_block,
+        source_ea_hex=None,
+        source_ea_i64=None,
+        block_fingerprint=None,
+        mop_signature=None,
+        payload=json.dumps(payload),
         evidence="[]",
     ).execute()
 
@@ -139,8 +177,11 @@ def test_target_unresolved_after_rewrite() -> None:
     conn = _make_db()
     _add_dag_node(conn, state_hex="0x000000002315233c", entry_block=211)
     _add_dag_node_block(
-        conn, state_hex="0x000000002315233c",
-        entry_block=211, block_serial=211, block_index=0,
+        conn,
+        state_hex="0x000000002315233c",
+        entry_block=211,
+        block_serial=211,
+        block_index=0,
     )
     _add_dag_edge(
         conn,
@@ -151,7 +192,8 @@ def test_target_unresolved_after_rewrite() -> None:
         target_entry=57,
     )
     _add_state_const_rewritten(
-        conn, block=211,
+        conn,
+        block=211,
         original="0x000000002315233b",
         rewritten="0x000000002315233c",
         fact_id="state_write_anchor:blk=211:foo",
@@ -170,23 +212,28 @@ def test_collapsed_to_rewritten_target() -> None:
     conn = _make_db()
     _add_dag_node(conn, state_hex="0x00000000385bbe2d", entry_block=100)
     _add_dag_node_block(
-        conn, state_hex="0x00000000385bbe2d",
-        entry_block=100, block_serial=100,
+        conn,
+        state_hex="0x00000000385bbe2d",
+        entry_block=100,
+        block_serial=100,
     )
     _add_dag_edge(
-        conn, edge_id=1,
+        conn,
+        edge_id=1,
         src_state_hex="0x00000000385bbe2d",
         tgt_state_hex="0x0000000063d54755",
         source_block=100,
     )
     _add_state_const_rewritten(
-        conn, block=100,
+        conn,
+        block=100,
         original="0x000000005a21d9db",
         rewritten="0x0000000063d54755",
         fact_id="anchor:100",
     )
     _add_state_const_rewritten(
-        conn, block=21,
+        conn,
+        block=21,
         original="0x000000004f000000",
         rewritten="0x0000000063d54755",
         fact_id="anchor:21",
@@ -208,17 +255,21 @@ def test_locopt_rewritten_source_only() -> None:
     conn = _make_db()
     _add_dag_node(conn, state_hex="0x000000007d9c16ec", entry_block=56)
     _add_dag_node_block(
-        conn, state_hex="0x000000007d9c16ec",
-        entry_block=56, block_serial=56,
+        conn,
+        state_hex="0x000000007d9c16ec",
+        entry_block=56,
+        block_serial=56,
     )
     _add_dag_edge(
-        conn, edge_id=1,
+        conn,
+        edge_id=1,
         src_state_hex="0x000000007d9c16ec",
         tgt_state_hex="0x0000000072afe1bc",
         source_block=56,
     )
     _add_state_const_rewritten(
-        conn, block=56,
+        conn,
+        block=56,
         original="0x0000000027eeea11",
         rewritten="0x0000000072afe1bc",
         fact_id="anchor:56",
@@ -251,16 +302,20 @@ def test_spurious_conditional_arm() -> None:
     conn = _make_db()
     _add_dag_node(conn, state_hex="0x0000000011cd1da3", entry_block=161)
     _add_dag_edge(
-        conn, edge_id=1,
+        conn,
+        edge_id=1,
         src_state_hex="0x0000000011cd1da3",
         tgt_state_hex="0x000000004e69f350",
-        kind="TRANSITION", source_block=165,
+        kind="TRANSITION",
+        source_block=165,
     )
     _add_dag_edge(
-        conn, edge_id=2,
+        conn,
+        edge_id=2,
         src_state_hex="0x0000000011cd1da3",
         tgt_state_hex="0x000000004e69f350",
-        kind="CONDITIONAL_TRANSITION", source_block=163,
+        kind="CONDITIONAL_TRANSITION",
+        source_block=163,
     )
     diagnostics = classify_dag_edges(conn, snapshot_id=1)
     classes = {d.edge_id: d.classification for d in diagnostics}
@@ -275,7 +330,8 @@ def test_benign_default() -> None:
     conn = _make_db()
     _add_dag_node(conn, state_hex="0x000000004e69f350", entry_block=72)
     _add_dag_edge(
-        conn, edge_id=1,
+        conn,
+        edge_id=1,
         src_state_hex="0x000000004e69f350",
         tgt_state_hex="0x000000002a5adb57",
         source_block=72,
@@ -290,21 +346,30 @@ def test_terminal_tail_flag_via_source_block() -> None:
     conn = _make_db()
     _add_dag_node(conn, state_hex="0x00000000385bbe2d", entry_block=100)
     _add_dag_node_block(
-        conn, state_hex="0x00000000385bbe2d",
-        entry_block=100, block_serial=100,
+        conn,
+        state_hex="0x00000000385bbe2d",
+        entry_block=100,
+        block_serial=100,
     )
     _add_dag_node_block(
-        conn, state_hex="0x00000000385bbe2d",
-        entry_block=100, block_serial=101, block_index=1,
+        conn,
+        state_hex="0x00000000385bbe2d",
+        entry_block=100,
+        block_serial=101,
+        block_index=1,
     )
     _add_dag_edge(
-        conn, edge_id=1,
+        conn,
+        edge_id=1,
         src_state_hex="0x00000000385bbe2d",
         tgt_state_hex="0x0000000063d54755",
         source_block=100,
     )
     _add_terminal_tail_fact(
-        conn, fact_id="byte5_emit", destination_block=101, byte_index=5,
+        conn,
+        fact_id="byte5_emit",
+        destination_block=101,
+        byte_index=5,
     )
     diagnostics = classify_dag_edges(conn, snapshot_id=1)
     assert len(diagnostics) == 1
@@ -317,7 +382,8 @@ def test_persist_idempotent() -> None:
     conn = _make_db()
     _add_dag_node(conn, state_hex="0x000000004e69f350", entry_block=72)
     _add_dag_edge(
-        conn, edge_id=1,
+        conn,
+        edge_id=1,
         src_state_hex="0x000000004e69f350",
         tgt_state_hex="0x000000002a5adb57",
         source_block=72,

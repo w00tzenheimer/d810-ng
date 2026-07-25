@@ -1,4 +1,5 @@
 """DAG-authoritative fragment arbitration helpers."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -57,7 +58,7 @@ def parse_dag_target_from_reason(reason: str) -> int | None:
     idx = reason.find(marker)
     if idx == -1:
         return None
-    tail = reason[idx + len(marker):]
+    tail = reason[idx + len(marker) :]
     end = 0
     for ch in tail:
         if ch in "0123456789abcdefABCDEFxX":
@@ -182,7 +183,8 @@ def apply_dag_conformance_gate(
     if contribution is not None and hasattr(contribution, "linearizations"):
         dropped_sources = {int(r.source_block) for r in records}
         retained_linearizations = tuple(
-            d for d in contribution.linearizations
+            d
+            for d in contribution.linearizations
             if int(getattr(d, "src", -1)) not in dropped_sources
         )
         if len(retained_linearizations) != len(contribution.linearizations):

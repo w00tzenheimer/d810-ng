@@ -4,6 +4,7 @@ This module is intentionally IDA-free. It runs external ``opt`` over textual
 LLVM IR, captures stable metrics before/after optimization, and reports
 structured skipped/failed results without making LLVM a runtime dependency.
 """
+
 from __future__ import annotations
 
 import os
@@ -102,7 +103,15 @@ LLVM_M2G_CURATED_PIPELINE = LlvmOptPipeline(
 LLVM_M2_CURATED_PIPELINE = LLVM_M2G_CURATED_PIPELINE
 
 _LABEL_RE = re.compile(r"^[A-Za-z$._-][A-Za-z0-9$._-]*:\s*(?:;.*)?$")
-_TERMINATORS = ("ret ", "br ", "switch ", "indirectbr ", "invoke ", "resume ", "unreachable")
+_TERMINATORS = (
+    "ret ",
+    "br ",
+    "switch ",
+    "indirectbr ",
+    "invoke ",
+    "resume ",
+    "unreachable",
+)
 
 
 def normalize_llvm_ir(text: str) -> str:
@@ -139,7 +148,9 @@ def measure_llvm_ir(ir_text: str) -> LlvmIrMetrics:
         if _LABEL_RE.match(line):
             block_count += 1
             continue
-        if line.startswith(("define ", "declare ", "target ", "source_filename", "@", "}")):
+        if line.startswith(
+            ("define ", "declare ", "target ", "source_filename", "@", "}")
+        ):
             continue
 
         instruction_count += 1
@@ -248,7 +259,9 @@ def run_llvm_opt_pipeline(
                 optimized_ir="",
                 stdout=proc.stdout,
                 stderr=proc.stderr,
-                reason=proc.stderr or proc.stdout or f"opt exited with {proc.returncode}",
+                reason=proc.stderr
+                or proc.stdout
+                or f"opt exited with {proc.returncode}",
                 before_metrics=before,
                 after_metrics=measure_llvm_ir(""),
                 pipeline=pipeline,

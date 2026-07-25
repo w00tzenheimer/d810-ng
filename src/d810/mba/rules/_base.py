@@ -141,18 +141,16 @@ class VerifiableRule(SymbolicRule, Registrant):
 
     CONSTRAINTS: List = []  # Runtime constraints (list of callables)
     DYNAMIC_CONSTS: Dict[str, Any] = {}  # Dynamic constant generators
-    CONTEXT_VARS: Dict[str, Any] = (
-        {}
-    )  # Context providers (e.g., {"full_reg": context.dst.parent_register})
+    CONTEXT_VARS: Dict[
+        str, Any
+    ] = {}  # Context providers (e.g., {"full_reg": context.dst.parent_register})
     UPDATE_DESTINATION: str | None = (
         None  # Variable name to use as new destination (e.g., "full_reg")
     )
     KNOWN_INCORRECT: bool = (
         False  # Set to True for rules that are mathematically incorrect
     )
-    SKIP_VERIFICATION: bool = (
-        False  # Set to True to skip Z3 verification (e.g., for size-dependent constraints)
-    )
+    SKIP_VERIFICATION: bool = False  # Set to True to skip Z3 verification (e.g., for size-dependent constraints)
 
     @classmethod
     def resolve_lazy_rules(cls) -> None:

@@ -5,6 +5,7 @@ the Hodur runtime and are not generic terminal-tail policy.  Runtime mutation
 code may consume them after checking the live CFG still matches the supplied
 evidence.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -97,9 +98,7 @@ class TerminalTailCascadeEgressPriors:
 
 def _merge_ints(left: Iterable[int], right: Iterable[int]) -> tuple[int, ...]:
     return tuple(
-        dict.fromkeys(
-            [*(int(item) for item in left), *(int(item) for item in right)]
-        )
+        dict.fromkeys([*(int(item) for item in left), *(int(item) for item in right)])
     )
 
 

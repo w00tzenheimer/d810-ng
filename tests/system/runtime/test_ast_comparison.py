@@ -234,6 +234,7 @@ class TestTier2WidthBuckets:
     def test_different_width_rejected_strict(self, require_clang, clang_index):
         """With ignore_types=False, int and short should NOT be compatible."""
         from tests.system.conftest import CodeComparator
+
         comp_strict = CodeComparator(clang_index, ignore_types=False)
         code1 = "void func(int a) { }"
         code2 = "void func(short a) { }"
@@ -243,6 +244,7 @@ class TestTier2WidthBuckets:
     def test_strict_mode_rejects_width_match(self, require_clang, clang_index):
         """With ignore_types=False, int vs unsigned int should fail."""
         from tests.system.conftest import CodeComparator
+
         comp_strict = CodeComparator(clang_index, ignore_types=False)
         code1 = textwrap.dedent("""\
             __int64 __fastcall test_func(int a1)
@@ -304,7 +306,9 @@ class TestTier3CastStripping:
             }""")
         code_comparator.check_equivalence(code_actual, code_expected)
 
-    def test_unexposed_cast_wrapper_vs_bare_return(self, require_clang, code_comparator):
+    def test_unexposed_cast_wrapper_vs_bare_return(
+        self, require_clang, code_comparator
+    ):
         """Cast wrapped in UNEXPOSED_EXPR should match bare binary return."""
         code_dll = textwrap.dedent("""\
             __int64 __fastcall test_xor(int a1, int a2, int a3, int *a4)

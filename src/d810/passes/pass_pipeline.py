@@ -10,6 +10,7 @@ snapshot (the sound invalidation epoch).
 Additive + behavior-neutral: nothing here is wired into the runtime yet. Net-new types only;
 every concept that already exists is *bound to*, never duplicated.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping as ABCMapping
@@ -109,10 +110,7 @@ def _copy_json_value(value: object, field_name: str) -> object:
             result[key] = _copy_json_value(item, f"{field_name}.{key}")
         return result
     if isinstance(value, (list, tuple)):
-        return [
-            _copy_json_value(item, f"{field_name}[]")
-            for item in value
-        ]
+        return [_copy_json_value(item, f"{field_name}[]") for item in value]
     raise PipelineConfigError(f"{field_name} must be JSON-compatible")
 
 
@@ -266,9 +264,7 @@ class RuleSelection:
             "include",
             _parse_string_set(self.include, "rules.include"),
         )
-        include_order = _parse_string_tuple(
-            self.include_order, "rules.include_order"
-        )
+        include_order = _parse_string_tuple(self.include_order, "rules.include_order")
         if include_order:
             if frozenset(include_order) != self.include:
                 raise PipelineConfigError(
@@ -287,9 +283,7 @@ class RuleSelection:
             "exclude",
             _parse_string_set(self.exclude, "rules.exclude"),
         )
-        exclude_order = _parse_string_tuple(
-            self.exclude_order, "rules.exclude_order"
-        )
+        exclude_order = _parse_string_tuple(self.exclude_order, "rules.exclude_order")
         if exclude_order:
             if frozenset(exclude_order) != self.exclude:
                 raise PipelineConfigError(
@@ -427,12 +421,20 @@ class MaturityRange:
             if _MATURITY_ORDER[self.min] > _MATURITY_ORDER[self.max]:
                 raise PipelineConfigError("maturity.min must not be after maturity.max")
         if self.preferred is not None and not self.contains(self.preferred):
-            raise PipelineConfigError("maturity.preferred must be inside maturity range")
+            raise PipelineConfigError(
+                "maturity.preferred must be inside maturity range"
+            )
 
     def contains(self, maturity: IRMaturity) -> bool:
-        if self.min is not None and _MATURITY_ORDER[maturity] < _MATURITY_ORDER[self.min]:
+        if (
+            self.min is not None
+            and _MATURITY_ORDER[maturity] < _MATURITY_ORDER[self.min]
+        ):
             return False
-        if self.max is not None and _MATURITY_ORDER[maturity] > _MATURITY_ORDER[self.max]:
+        if (
+            self.max is not None
+            and _MATURITY_ORDER[maturity] > _MATURITY_ORDER[self.max]
+        ):
             return False
         return True
 
@@ -448,42 +450,28 @@ class MaturityRange:
         data = _optional_mapping(payload, "contract.maturity")
         if "runs_at" in data:
             conflicting = {
-                key
-                for key in ("range", "min", "max", "preferred")
-                if key in data
+                key for key in ("range", "min", "max", "preferred") if key in data
             }
             if conflicting:
                 raise PipelineConfigError(
-                    "maturity.runs_at must not be combined with "
-                    f"{sorted(conflicting)}"
+                    f"maturity.runs_at must not be combined with {sorted(conflicting)}"
                 )
             runs_at = _parse_enum(IRMaturity, data["runs_at"], "maturity.runs_at")
             return cls(min=runs_at, max=runs_at, preferred=runs_at)
         if "range" in data:
-            conflicting = {
-                key
-                for key in ("min", "max", "preferred")
-                if key in data
-            }
+            conflicting = {key for key in ("min", "max", "preferred") if key in data}
             if conflicting:
                 raise PipelineConfigError(
-                    "maturity.range must not be combined with "
-                    f"{sorted(conflicting)}"
+                    f"maturity.range must not be combined with {sorted(conflicting)}"
                 )
             range_data = _require_mapping(data["range"], "maturity.range")
             if "min" not in range_data:
                 raise PipelineConfigError("maturity.range.min is required")
             if "max" not in range_data:
                 raise PipelineConfigError("maturity.range.max is required")
-            min_stage = _parse_enum(
-                IRMaturity, range_data["min"], "maturity.range.min"
-            )
-            max_stage = _parse_enum(
-                IRMaturity, range_data["max"], "maturity.range.max"
-            )
-            if (
-                _MATURITY_ORDER[min_stage] > _MATURITY_ORDER[max_stage]
-            ):
+            min_stage = _parse_enum(IRMaturity, range_data["min"], "maturity.range.min")
+            max_stage = _parse_enum(IRMaturity, range_data["max"], "maturity.range.max")
+            if _MATURITY_ORDER[min_stage] > _MATURITY_ORDER[max_stage]:
                 raise PipelineConfigError(
                     "maturity.range.min must not be after maturity.range.max"
                 )
@@ -577,9 +565,7 @@ class PassOutputs:
     def from_dict(cls, payload: object) -> "PassOutputs":
         data = _optional_mapping(payload, "outputs")
         return cls(
-            facts=_parse_contract_string_set(
-                data.get("facts", ()), "outputs.facts"
-            ),
+            facts=_parse_contract_string_set(data.get("facts", ()), "outputs.facts"),
             evidence=_parse_contract_string_set(
                 data.get("evidence", ()), "outputs.evidence"
             ),
@@ -655,7 +641,9 @@ class PassSafety:
     def from_dict(cls, payload: object) -> "PassSafety":
         data = _optional_mapping(payload, "safety")
         return cls(
-            policy=_parse_nonempty_string(data.get("policy", "default"), "safety.policy"),
+            policy=_parse_nonempty_string(
+                data.get("policy", "default"), "safety.policy"
+            ),
             requires_oracle=_parse_bool(
                 data.get("requires_oracle", False), "safety.requires_oracle"
             ),
@@ -897,9 +885,7 @@ class PassResult:
         evidence_outputs: Mapping[str, object] | None = None,
     ) -> None:
         preserved_explicit = preserved is not _PRESERVED_UNSET
-        preserved_value = (
-            preserved if preserved_explicit else PreservedAnalyses.all()
-        )
+        preserved_value = preserved if preserved_explicit else PreservedAnalyses.all()
         object.__setattr__(self, "facts", facts)
         object.__setattr__(
             self,
@@ -914,12 +900,16 @@ class PassResult:
         object.__setattr__(
             self,
             "analysis_outputs",
-            MappingProxyType({} if analysis_outputs is None else dict(analysis_outputs)),
+            MappingProxyType(
+                {} if analysis_outputs is None else dict(analysis_outputs)
+            ),
         )
         object.__setattr__(
             self,
             "evidence_outputs",
-            MappingProxyType({} if evidence_outputs is None else dict(evidence_outputs)),
+            MappingProxyType(
+                {} if evidence_outputs is None else dict(evidence_outputs)
+            ),
         )
         object.__setattr__(self, "_preserved_explicit", preserved_explicit)
 

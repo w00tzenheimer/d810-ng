@@ -23,6 +23,7 @@ explicit off switch.
 Risk: LOW -- only emits ``RedirectGoto`` for 1-way trampoline blocks whose
 new_target was deterministically resolved by walking the condition-chain.
 """
+
 from __future__ import annotations
 
 import os
@@ -65,18 +66,20 @@ _GATE_ENV_ENABLE = "D810_HODUR_ENABLE_TRAMPOLINE_SKIP"
 _GATE_ENV_DISABLE = "D810_HODUR_DISABLE_TRAMPOLINE_SKIP"
 
 # Conditional opcodes the condition-chain cascade may use to discriminate state values.
-_CONDITION_CHAIN_COND_OPCODES: frozenset[int] = frozenset({
-    ida_hexrays.m_jnz,
-    ida_hexrays.m_jz,
-    ida_hexrays.m_jae,
-    ida_hexrays.m_jb,
-    ida_hexrays.m_ja,
-    ida_hexrays.m_jbe,
-    ida_hexrays.m_jg,
-    ida_hexrays.m_jge,
-    ida_hexrays.m_jl,
-    ida_hexrays.m_jle,
-})
+_CONDITION_CHAIN_COND_OPCODES: frozenset[int] = frozenset(
+    {
+        ida_hexrays.m_jnz,
+        ida_hexrays.m_jz,
+        ida_hexrays.m_jae,
+        ida_hexrays.m_jb,
+        ida_hexrays.m_ja,
+        ida_hexrays.m_jbe,
+        ida_hexrays.m_jg,
+        ida_hexrays.m_jge,
+        ida_hexrays.m_jl,
+        ida_hexrays.m_jle,
+    }
+)
 
 
 class DispatcherTrampolineSkipStrategy:
@@ -113,15 +116,15 @@ class DispatcherTrampolineSkipStrategy:
         mba = snapshot.mba
         dispatcher_root_serial = int(snapshot.dispatcher_root_serial)
         range_evidence = snapshot.range_evidence
-        condition_chain_blocks = set(getattr(range_evidence, "condition_chain_blocks", {}) or {})
+        condition_chain_blocks = set(
+            getattr(range_evidence, "condition_chain_blocks", {}) or {}
+        )
         # Always treat the root itself as a condition-chain block, even if not in node map.
         condition_chain_blocks.add(dispatcher_root_serial)
 
         state_var_stkoff = self._resolve_state_var_stkoff(snapshot)
         if state_var_stkoff is None:
-            logger.info(
-                "DispatcherTrampolineSkip: no state-var stkoff; skipping"
-            )
+            logger.info("DispatcherTrampolineSkip: no state-var stkoff; skipping")
             return None
 
         builder = ModificationBuilder.from_snapshot(snapshot)
@@ -140,9 +143,7 @@ class DispatcherTrampolineSkipStrategy:
             goto_target = self._goto_target(blk)
             direct_use_def_veto = (
                 cumulative_view is not None
-                and callable(
-                    getattr(cumulative_view, "is_direct_use_def_vetoed", None)
-                )
+                and callable(getattr(cumulative_view, "is_direct_use_def_vetoed", None))
                 and cumulative_view.is_direct_use_def_vetoed(serial)
             )
             decision = resolve_dispatcher_trampoline_skip_candidate(
@@ -168,9 +169,7 @@ class DispatcherTrampolineSkipStrategy:
                 ),
                 block_count=int(mba.qty),
             )
-            if (
-                decision.rejection_reason == "direct_use_def_veto"
-            ):
+            if decision.rejection_reason == "direct_use_def_veto":
                 logger.info(
                     "RECON_REDIRECT_REJECTED_PRIOR_USE_DEF_VETO "
                     "source=blk[%d] old_target=blk[%d]",
@@ -227,9 +226,7 @@ class DispatcherTrampolineSkipStrategy:
                                     site.fact_id,
                                     sorted(overlap),
                                     int(
-                                        (site.payload or {}).get(
-                                            "upstream_writer_ea"
-                                        )
+                                        (site.payload or {}).get("upstream_writer_ea")
                                         or 0
                                     ),
                                     (site.payload or {}).get(
@@ -412,9 +409,11 @@ class DispatcherTrampolineSkipStrategy:
             root=int(root),
             condition_chain_blocks=condition_chain_blocks,
             state_value=int(state_value),
-            tail_for_block_fn=lambda serial: DispatcherTrampolineSkipStrategy._condition_chain_tail_view(
-                mba,
-                serial,
+            tail_for_block_fn=lambda serial: (
+                DispatcherTrampolineSkipStrategy._condition_chain_tail_view(
+                    mba,
+                    serial,
+                )
             ),
             is_conditional_taken_fn=HodurStateMachineDetector._is_jump_taken_for_state,
         )

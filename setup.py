@@ -47,8 +47,7 @@ else:
 
 def _sdk_has_includes(path: pathlib.Path) -> bool:
     """Check if an SDK path has the include directory (either layout)."""
-    return ((path / "src" / "include").exists() or
-            (path / "include").exists())
+    return (path / "src" / "include").exists() or (path / "include").exists()
 
 
 def _sdk_include_dir(sdk_path: pathlib.Path) -> pathlib.Path:
@@ -65,7 +64,11 @@ def _sdk_include_dir(sdk_path: pathlib.Path) -> pathlib.Path:
 def _sdk_lib_dir(sdk_path: pathlib.Path, *sub: str) -> pathlib.Path:
     """Return a library directory for the SDK, handling both layouts."""
     if (sdk_path / "src" / "lib").exists():
-        return sdk_path / "src" / "lib" / pathlib.Path(*sub) if sub else sdk_path / "src" / "lib"
+        return (
+            sdk_path / "src" / "lib" / pathlib.Path(*sub)
+            if sub
+            else sdk_path / "src" / "lib"
+        )
     return sdk_path / "lib" / pathlib.Path(*sub) if sub else sdk_path / "lib"
 
 
@@ -144,8 +147,15 @@ def ensure_ida_sdk(sdk_path: pathlib.Path) -> pathlib.Path:
     if shutil.which("git"):
         try:
             subprocess.run(
-                ["git", "clone", "--depth=1", "--branch", IDA_SDK_BRANCH,
-                 IDA_SDK_REPO, str(DEFAULT_SDK_DIR)],
+                [
+                    "git",
+                    "clone",
+                    "--depth=1",
+                    "--branch",
+                    IDA_SDK_BRANCH,
+                    IDA_SDK_REPO,
+                    str(DEFAULT_SDK_DIR),
+                ],
                 check=True,
                 capture_output=True,
             )
@@ -196,8 +206,11 @@ def get_compile_args():
         return base + (["-g", "-O0"] if DEBUG else [])
     elif OSTYPE == "Darwin":
         warnings = [
-            "-Wno-unused-variable", "-Wno-nullability-completeness",
-            "-Wno-sign-compare", "-Wno-varargs", "-Wno-c99-extensions",
+            "-Wno-unused-variable",
+            "-Wno-nullability-completeness",
+            "-Wno-sign-compare",
+            "-Wno-varargs",
+            "-Wno-c99-extensions",
         ]
         base = ["-mmacosx-version-min=10.9"] + warnings
         return base + (["-g", "-O0", "-fno-omit-frame-pointer"] if DEBUG else [])
@@ -247,16 +260,24 @@ def get_ext_modules():
     # Platform-specific library paths
     runtime_library_dirs = []
     if OSTYPE == "Windows":
-        library_dirs.extend([
-            str(_sdk_lib_dir(IDA_SDK, "x64_win_vc_64")),
-            str(_sdk_lib_dir(IDA_SDK, "x64_win_qt")),
-        ])
+        library_dirs.extend(
+            [
+                str(_sdk_lib_dir(IDA_SDK, "x64_win_vc_64")),
+                str(_sdk_lib_dir(IDA_SDK, "x64_win_qt")),
+            ]
+        )
         # Qt6 for IDA 9.2+ (SDK >= 920), Qt5 for older
         if sdk_version >= 920:
             qt_ver = "Qt6"
         else:
             qt_ver = "Qt5"
-        libraries = [f"{qt_ver}Core", f"{qt_ver}Gui", f"{qt_ver}Widgets", "ida", "idalib"]
+        libraries = [
+            f"{qt_ver}Core",
+            f"{qt_ver}Gui",
+            f"{qt_ver}Widgets",
+            "ida",
+            "idalib",
+        ]
     elif OSTYPE == "Darwin":
         subdir = "arm64_mac_clang_64" if LIBRARY == "arm64" else "x64_mac_clang_64"
         library_dirs.append(str(_sdk_lib_dir(IDA_SDK, subdir)))

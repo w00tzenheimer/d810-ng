@@ -7,6 +7,7 @@ sits behind each CONTROL clobber. Also reports block->STOP reachability.
 
 Usage: python3 var8_reaching_defs.py <diag.sqlite3> [snapshot_id]
 """
+
 import collections
 import json
 import sqlite3
@@ -14,8 +15,8 @@ import sys
 
 DB = sys.argv[1]
 SNAP = int(sys.argv[2]) if len(sys.argv) > 2 else 5
-RET_STKOFF = 2032   # var_8 == return slot 0x7F0
-STATE_STKOFF = 60   # var_7BC == dispatcher state variable
+RET_STKOFF = 2032  # var_8 == return slot 0x7F0
+STATE_STKOFF = 60  # var_7BC == dispatcher state variable
 
 con = sqlite3.connect(DB)
 con.row_factory = sqlite3.Row
@@ -92,7 +93,8 @@ for did in sorted(defmeta):
     print(f"  {fmt(did)}")
 
 control_terms = sorted(
-    b for b, ds in defs_by_block.items()
+    b
+    for b, ds in defs_by_block.items()
     if any(defmeta[d][0].startswith("CONTROL") for d in ds)
 )
 print(f"\n=== CONTROL-clobber terminals: {control_terms} ===")
@@ -103,7 +105,9 @@ for b in control_terms:
     ctrl = [d for d in reaching if defmeta[d][0].startswith("CONTROL")]
     print(f"\n  blk{b} (preds={blocks[b]['preds']}, reaches_STOP={b in reach_stop}):")
     if not reaching:
-        print("    IN(var_8) = {} -> NO reaching def behind clobber (slot undefined here)")
+        print(
+            "    IN(var_8) = {} -> NO reaching def behind clobber (slot undefined here)"
+        )
     for d in sorted(data):
         print(f"    DATA  <- {fmt(d)}")
     for d in sorted(ctrl):
@@ -115,4 +119,6 @@ for b in sorted(blocks):
         ds = sorted(IN[b])
         nd = sum(1 for d in ds if defmeta[d][0] == "DATA")
         nc = len(ds) - nd
-        print(f"  blk{b} ({blocks[b]['type']}): {len(ds)} reaching defs ({nd} DATA, {nc} CONTROL)")
+        print(
+            f"  blk{b} ({blocks[b]['type']}): {len(ds)} reaching defs ({nd} DATA, {nc} CONTROL)"
+        )

@@ -12,7 +12,9 @@ import pytest
 # Skip all tests in this module if IDA is not available
 pytest.importorskip("ida_hexrays", reason="IDA Pro SDK not available")
 
-from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer
+from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+    PatternOptimizer,
+)
 
 
 class TestNomutMatchingHotPath:

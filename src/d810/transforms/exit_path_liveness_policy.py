@@ -5,6 +5,7 @@ whether bypassing the selected witness exit path would sever a live non-state
 use-def chain.  The state variable itself is intentionally severed by the
 unflattening and is ignored.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

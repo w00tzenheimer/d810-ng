@@ -22,8 +22,12 @@ class _FakeBackend:
         required_source_eas: frozenset[int] = frozenset(),
     ) -> CapturedBlockBody | None:
         refs = (
-            BackendInstructionRef(block_serial=block_serial, ea=0x1000, opcode_name="m_add"),
-            BackendInstructionRef(block_serial=block_serial, ea=0x1004, opcode_name="m_stx"),
+            BackendInstructionRef(
+                block_serial=block_serial, ea=0x1000, opcode_name="m_add"
+            ),
+            BackendInstructionRef(
+                block_serial=block_serial, ea=0x1004, opcode_name="m_stx"
+            ),
         )
         if omit_terminal_control:
             refs = refs[:1]

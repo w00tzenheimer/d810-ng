@@ -5,6 +5,7 @@ read folds to its ``.data`` initializer ONLY when no store to that global
 reaches the read (per read site), strictly narrower than blanket
 ``fold_writable_constants``.
 """
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import (
@@ -292,7 +293,12 @@ def test_dispatcher_barrier_folds_initial_handler_read():
     read_ea = 0x2000
     store_ea = 0x2008
     # 0: entry -> 7
-    b0 = _block(0, succs=(7,), preds=(), insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x1f00, operands=())])
+    b0 = _block(
+        0,
+        succs=(7,),
+        preds=(),
+        insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x1F00, operands=())],
+    )
     # 7: initial handler -- read qword, then store qword, goto dispatcher(2)
     b7 = _block(
         7,
@@ -318,14 +324,26 @@ def test_dispatcher_barrier_folds_initial_handler_read():
         ],
     )
     # 2: dispatcher head -> 3 ; 3 -> 7 (routes back to handler 7)
-    b2 = _block(2, succs=(3,), preds=(7,), insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x2100, operands=())])
-    b3 = _block(3, succs=(7,), preds=(2,), insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x2108, operands=())])
+    b2 = _block(
+        2,
+        succs=(3,),
+        preds=(7,),
+        insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x2100, operands=())],
+    )
+    b3 = _block(
+        3,
+        succs=(7,),
+        preds=(2,),
+        insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x2108, operands=())],
+    )
     fg = FlowGraph(blocks={0: b0, 7: b7, 2: b2, 3: b3}, entry_serial=0, func_ea=0x1000)
 
     # Without the barrier: rejected (the self-loop store reaches).
     assert read_ea not in compute_initializer_stable_global_reads(fg, _fetch_zero)
     # With the dispatcher(2) as barrier: folds (straight-line entry path is store-free).
-    folded = compute_initializer_stable_global_reads(fg, _fetch_zero, barrier_serials={2})
+    folded = compute_initializer_stable_global_reads(
+        fg, _fetch_zero, barrier_serials={2}
+    )
     assert read_ea in folded and folded[read_ea][_GADDR] == 0
 
 
@@ -338,8 +356,18 @@ def test_barrier_unreachable_block_not_folded():
     """
     read_ea = 0x2200
     # entry(0) -> dispatcher(2) -> handler9 (reads qword).  No direct entry->9.
-    b0 = _block(0, succs=(2,), preds=(), insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x1f00, operands=())])
-    b2 = _block(2, succs=(9,), preds=(9,), insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x2100, operands=())])
+    b0 = _block(
+        0,
+        succs=(2,),
+        preds=(),
+        insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x1F00, operands=())],
+    )
+    b2 = _block(
+        2,
+        succs=(9,),
+        preds=(9,),
+        insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x2100, operands=())],
+    )
     b9 = _block(
         9,
         succs=(2,),
@@ -357,7 +385,9 @@ def test_barrier_unreachable_block_not_folded():
         ],
     )
     fg = FlowGraph(blocks={0: b0, 2: b2, 9: b9}, entry_serial=0, func_ea=0x1000)
-    folded = compute_initializer_stable_global_reads(fg, _fetch_zero, barrier_serials={2})
+    folded = compute_initializer_stable_global_reads(
+        fg, _fetch_zero, barrier_serials={2}
+    )
     assert read_ea not in folded, "dispatcher-only handler is unproven -> no fold"
 
 
@@ -373,8 +403,18 @@ def test_entry_override_anchors_at_initial_handler():
     """
     read_ea = 0x2000
     store_ea = 0x2008
-    b0 = _block(0, succs=(2,), preds=(), insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x1f00, operands=())])
-    b2 = _block(2, succs=(7,), preds=(0, 7), insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x2100, operands=())])
+    b0 = _block(
+        0,
+        succs=(2,),
+        preds=(),
+        insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x1F00, operands=())],
+    )
+    b2 = _block(
+        2,
+        succs=(7,),
+        preds=(0, 7),
+        insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x2100, operands=())],
+    )
     b7 = _block(
         7,
         succs=(2,),
@@ -422,20 +462,37 @@ def test_entry_override_other_handler_read_not_folded():
     h7_read = 0x2000
     h7_store = 0x2008
     h6_read = 0x2100
-    b0 = _block(0, succs=(2,), preds=(), insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x1f00, operands=())])
-    b2 = _block(2, succs=(7, 6), preds=(0, 7, 6), insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x2050, operands=())])
+    b0 = _block(
+        0,
+        succs=(2,),
+        preds=(),
+        insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x1F00, operands=())],
+    )
+    b2 = _block(
+        2,
+        succs=(7, 6),
+        preds=(0, 7, 6),
+        insns=[InsnSnapshot(opcode=_OP_GOTO, ea=0x2050, operands=())],
+    )
     b7 = _block(
         7,
         succs=(2,),
         preds=(2,),
         insns=[
             InsnSnapshot(
-                opcode=_OP_OR, ea=h7_read, operands=(), l=_gread(), r=_const(0xF6A20),
+                opcode=_OP_OR,
+                ea=h7_read,
+                operands=(),
+                l=_gread(),
+                r=_const(0xF6A20),
                 d=MopSnapshot(t=1, size=8, reg=0),
             ),
             InsnSnapshot(
-                opcode=_OP_MOV, ea=h7_store, operands=(),
-                l=MopSnapshot(t=1, size=8, reg=0), d=_gwrite(),
+                opcode=_OP_MOV,
+                ea=h7_store,
+                operands=(),
+                l=MopSnapshot(t=1, size=8, reg=0),
+                d=_gwrite(),
             ),
             InsnSnapshot(opcode=_OP_GOTO, ea=0x2010, operands=()),
         ],
@@ -446,7 +503,11 @@ def test_entry_override_other_handler_read_not_folded():
         preds=(2,),
         insns=[
             InsnSnapshot(
-                opcode=_OP_OR, ea=h6_read, operands=(), l=_gread(), r=_const(0x40),
+                opcode=_OP_OR,
+                ea=h6_read,
+                operands=(),
+                l=_gread(),
+                r=_const(0x40),
                 d=MopSnapshot(t=1, size=8, reg=0),
             ),
         ],

@@ -1,4 +1,5 @@
 """Terminal suffix frontier models and CFG-only lowering heuristics."""
+
 from __future__ import annotations
 
 import enum
@@ -46,7 +47,11 @@ class TerminalSemanticLoweringFrontier:
 
     def summary(self) -> str:
         anchors = ",".join(str(x) for x in self.unique_anchor_serials) or "<none>"
-        start = f"blk[{self.lowering_start_serial}]" if self.lowering_start_serial is not None else "<none>"
+        start = (
+            f"blk[{self.lowering_start_serial}]"
+            if self.lowering_start_serial is not None
+            else "<none>"
+        )
         return f"action={self.action.value} start={start} anchors=[{anchors}] notes={self.notes}"
 
 
@@ -76,7 +81,11 @@ def compute_terminal_cfg_suffix_frontier(
     shared_entry_serial = suffix_serials[0]
     suffix_set = set(suffix_serials)
     unique_anchor_serials = tuple(
-        sorted(int(p) for p in predecessors_of(shared_entry_serial) if int(p) not in suffix_set)
+        sorted(
+            int(p)
+            for p in predecessors_of(shared_entry_serial)
+            if int(p) not in suffix_set
+        )
     )
     return TerminalCfgSuffixFrontier(
         shared_entry_serial=shared_entry_serial,

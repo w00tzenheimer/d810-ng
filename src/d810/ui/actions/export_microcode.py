@@ -4,6 +4,7 @@ Export the current function's microcode at a specific maturity level,
 with optional pre-deobfuscation snapshot capability.
 Available from pseudocode view.
 """
+
 from __future__ import annotations
 
 import json
@@ -85,9 +86,13 @@ class ExportMicrocodeDialog(QDialog if QT_AVAILABLE else object):  # type: ignor
         # Pre/post deobfuscation radio buttons
         deobf_layout = QHBoxLayout()
         deobf_layout.addWidget(QLabel("Capture:"))
-        self.post_deobf_radio = QtWidgets.QRadioButton("Post-deobfuscation (d810ng applied)")
+        self.post_deobf_radio = QtWidgets.QRadioButton(
+            "Post-deobfuscation (d810ng applied)"
+        )
         self.post_deobf_radio.setChecked(True)
-        self.pre_deobf_radio = QtWidgets.QRadioButton("Pre-deobfuscation (d810ng suppressed)")
+        self.pre_deobf_radio = QtWidgets.QRadioButton(
+            "Pre-deobfuscation (d810ng suppressed)"
+        )
         deobf_layout.addWidget(self.post_deobf_radio)
         deobf_layout.addWidget(self.pre_deobf_radio)
         layout.addLayout(deobf_layout)
@@ -196,17 +201,27 @@ class ExportMicrocode(D810ActionHandler):
 
         try:
             # Import microcode dump utility
-            from d810.backends.hexrays.evidence.microcode_dump import dump_function_microcode
+            from d810.backends.hexrays.evidence.microcode_dump import (
+                dump_function_microcode,
+            )
 
             # If pre-deobfuscation requested and d810ng is running, suppress hooks
-            if pre_deobfuscation and hasattr(self._state, "manager") and self._state.manager.started:
+            if (
+                pre_deobfuscation
+                and hasattr(self._state, "manager")
+                and self._state.manager.started
+            ):
                 from d810.manager import d810_hooks_suppressed
 
                 with d810_hooks_suppressed(self._state.manager):
-                    microcode_data = dump_function_microcode(func_ea, maturity=maturity_value)
+                    microcode_data = dump_function_microcode(
+                        func_ea, maturity=maturity_value
+                    )
             else:
                 # Normal export (post-deobfuscation or d810ng not running)
-                microcode_data = dump_function_microcode(func_ea, maturity=maturity_value)
+                microcode_data = dump_function_microcode(
+                    func_ea, maturity=maturity_value
+                )
 
             # Write JSON to file
             with open(output_path, "w", encoding="utf-8") as f:

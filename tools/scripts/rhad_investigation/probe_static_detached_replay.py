@@ -1,4 +1,5 @@
 """Run the static computed-goto fixpoint from one native entry with seed regs."""
+
 from __future__ import annotations
 
 import argparse

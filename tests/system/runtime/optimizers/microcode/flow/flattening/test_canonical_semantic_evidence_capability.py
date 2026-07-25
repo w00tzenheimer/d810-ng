@@ -91,13 +91,8 @@ def test_live_unflattener_injects_session_canonical_semantic_evidence(
     candidate_provider = capabilities.require(
         CanonicalSemanticCandidateEvidenceCapability
     )
-    assert (
-        candidate_provider.candidate_evidence_for(function_ea)
-        is expected_candidate
-    )
+    assert candidate_provider.candidate_evidence_for(function_ea) is expected_candidate
     assert candidate_provider.candidate_evidence_for(function_ea + 1) is None
-    frontend_provider = capabilities.require(
-        FrontendNormalizationEvidenceCapability
-    )
+    frontend_provider = capabilities.require(FrontendNormalizationEvidenceCapability)
     assert frontend_provider.evidence_for(function_ea) is expected_frontend
     assert frontend_provider.evidence_for(function_ea + 1) is None

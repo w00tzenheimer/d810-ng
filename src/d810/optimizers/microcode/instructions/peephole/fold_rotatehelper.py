@@ -10,9 +10,16 @@ from d810.core import getLogger
 from d810.evaluator.helpers.rotate import _RotateHelper as _HelperLookup
 from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.evaluator.hexrays_microcode.def_search import find_def_in_block
-from d810.hexrays.utils.hexrays_formatters import format_mop_t, opcode_to_string, sanitize_ea
+from d810.hexrays.utils.hexrays_formatters import (
+    format_mop_t,
+    opcode_to_string,
+    sanitize_ea,
+)
 from d810.hexrays.utils.hexrays_helpers import AND_TABLE  # already maps size->mask
-from d810.hexrays.utils.hexrays_helpers import extract_literal_from_mop, is_rotate_helper_call
+from d810.hexrays.utils.hexrays_helpers import (
+    extract_literal_from_mop,
+    is_rotate_helper_call,
+)
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
@@ -23,7 +30,9 @@ from d810.optimizers.microcode.instructions.peephole.normalise_helpers import (
 logger = getLogger(__name__)
 
 
-def _try_eval_mop(mop: "ida_hexrays.mop_t | None", bits: int) -> "tuple[int, int] | None":
+def _try_eval_mop(
+    mop: "ida_hexrays.mop_t | None", bits: int
+) -> "tuple[int, int] | None":
     """Try to evaluate *mop* as a constant, returning (value, size_bytes) or None.
 
     First tries the fast path via ``extract_literal_from_mop`` (handles plain
@@ -112,7 +121,11 @@ def _resolve_mop_to_constant(
                     if inner_call.l is not None
                     else ""
                 )
-                inner_helper_func = _HelperLookup.lookup(inner_helper_name) if inner_helper_name else None
+                inner_helper_func = (
+                    _HelperLookup.lookup(inner_helper_name)
+                    if inner_helper_name
+                    else None
+                )
                 if inner_helper_func is not None:
                     # Try to extract args from the inner call.
                     inner_args = None
@@ -121,19 +134,17 @@ def _resolve_mop_to_constant(
                         and inner_call.r.t == ida_hexrays.mop_f
                         and getattr(inner_call.r, "f", None) is not None
                     ):
-                        inner_args = (
-                            extract_literal_from_mop(inner_call.r)
-                            or _extract_args_from_mop_f(inner_call.r, bits)
-                        )
+                        inner_args = extract_literal_from_mop(
+                            inner_call.r
+                        ) or _extract_args_from_mop_f(inner_call.r, bits)
                     elif (
                         inner_call.d is not None
                         and inner_call.d.t == ida_hexrays.mop_f
                         and getattr(inner_call.d, "f", None) is not None
                     ):
-                        inner_args = (
-                            extract_literal_from_mop(inner_call.d)
-                            or _extract_args_from_mop_f(inner_call.d, bits)
-                        )
+                        inner_args = extract_literal_from_mop(
+                            inner_call.d
+                        ) or _extract_args_from_mop_f(inner_call.d, bits)
                     elif inner_call.r is not None and inner_call.d is not None:
                         val_ev = _try_eval_mop(inner_call.r, bits)
                         shift_ev = _try_eval_mop(inner_call.d, bits)
@@ -142,7 +153,9 @@ def _resolve_mop_to_constant(
                     if inner_args and len(inner_args) == 2:
                         lhs_val, _ = inner_args[0]
                         rhs_val, _ = inner_args[1]
-                        inner_size = def_ins.d.size if def_ins.d is not None else (bits // 8)
+                        inner_size = (
+                            def_ins.d.size if def_ins.d is not None else (bits // 8)
+                        )
                         mask = AND_TABLE.get(inner_size, 0xFFFFFFFF)
                         return inner_helper_func(lhs_val, rhs_val) & mask
 
@@ -167,7 +180,11 @@ def _extract_args_from_mop_f(
     for register operands that can be resolved via def-search.
     Returns a 2-element list or None if any argument cannot be evaluated.
     """
-    if mop_f is None or mop_f.t != ida_hexrays.mop_f or getattr(mop_f, "f", None) is None:
+    if (
+        mop_f is None
+        or mop_f.t != ida_hexrays.mop_f
+        or getattr(mop_f, "f", None) is None
+    ):
         return None
     args = mop_f.f.args
     if not args or len(args) < 2:
@@ -246,34 +263,36 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
         # opcodes, scan l and r for mop_d sub-operands containing ROL/ROR
         # calls with constant args, and replace them in-place with mop_n
         # constants.
-        _SCAN_OPCODES = frozenset({
-            # Arithmetic
-            ida_hexrays.m_add,
-            ida_hexrays.m_sub,
-            ida_hexrays.m_xor,
-            ida_hexrays.m_or,
-            ida_hexrays.m_and,
-            ida_hexrays.m_mul,
-            # Comparisons (set-cc)
-            ida_hexrays.m_setnz,
-            ida_hexrays.m_setz,
-            ida_hexrays.m_setl,
-            ida_hexrays.m_setle,
-            ida_hexrays.m_setae,
-            ida_hexrays.m_seta,
-            ida_hexrays.m_setb,
-            ida_hexrays.m_setbe,
-            ida_hexrays.m_sets,
-            # Conditional jumps
-            ida_hexrays.m_jnz,
-            ida_hexrays.m_jz,
-            ida_hexrays.m_jl,
-            ida_hexrays.m_jle,
-            ida_hexrays.m_jae,
-            ida_hexrays.m_ja,
-            ida_hexrays.m_jb,
-            ida_hexrays.m_jbe,
-        })
+        _SCAN_OPCODES = frozenset(
+            {
+                # Arithmetic
+                ida_hexrays.m_add,
+                ida_hexrays.m_sub,
+                ida_hexrays.m_xor,
+                ida_hexrays.m_or,
+                ida_hexrays.m_and,
+                ida_hexrays.m_mul,
+                # Comparisons (set-cc)
+                ida_hexrays.m_setnz,
+                ida_hexrays.m_setz,
+                ida_hexrays.m_setl,
+                ida_hexrays.m_setle,
+                ida_hexrays.m_setae,
+                ida_hexrays.m_seta,
+                ida_hexrays.m_setb,
+                ida_hexrays.m_setbe,
+                ida_hexrays.m_sets,
+                # Conditional jumps
+                ida_hexrays.m_jnz,
+                ida_hexrays.m_jz,
+                ida_hexrays.m_jl,
+                ida_hexrays.m_jle,
+                ida_hexrays.m_jae,
+                ida_hexrays.m_ja,
+                ida_hexrays.m_jb,
+                ida_hexrays.m_jbe,
+            }
+        )
 
         if ins.opcode in _SCAN_OPCODES:
             # Collect mutations to apply: list of (slot_index, result, slot_size)
@@ -281,7 +300,9 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
             # because check_and_replace's contract requires returning a *new*
             # minsn_t so the caller can do ins.swap(new_ins) without it
             # becoming a self-swap (which corrupts the instruction, INTERR 50835).
-            _bits_arith: int = ins.d.size * 8 if (ins.d is not None and ins.d.size) else 32
+            _bits_arith: int = (
+                ins.d.size * 8 if (ins.d is not None and ins.d.size) else 32
+            )
             pending: list[tuple[int, int, int]] = []  # (slot_index, result, slot_size)
             for slot_index, slot in enumerate((ins.l, ins.r)):
                 if (
@@ -305,14 +326,18 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
                     and hasattr(call_ins.r, "f")
                     and call_ins.r.f is not None
                 ):
-                    args_list = extract_literal_from_mop(call_ins.r) or _extract_args_from_mop_f(call_ins.r, _bits_arith, blk, ins)
+                    args_list = extract_literal_from_mop(
+                        call_ins.r
+                    ) or _extract_args_from_mop_f(call_ins.r, _bits_arith, blk, ins)
                 elif (
                     call_ins.d is not None
                     and call_ins.d.t == ida_hexrays.mop_f
                     and hasattr(call_ins.d, "f")
                     and call_ins.d.f is not None
                 ):
-                    args_list = extract_literal_from_mop(call_ins.d) or _extract_args_from_mop_f(call_ins.d, _bits_arith, blk, ins)
+                    args_list = extract_literal_from_mop(
+                        call_ins.d
+                    ) or _extract_args_from_mop_f(call_ins.d, _bits_arith, blk, ins)
                 elif call_ins.r is not None and call_ins.d is not None:
                     val_ev = _try_eval_mop(call_ins.r, _bits_arith)
                     if val_ev is None:
@@ -405,7 +430,9 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
             and call_ins.r.f is not None
         ):
             # Try the fast literal path first; fall back to per-arg AST eval.
-            args_list = extract_literal_from_mop(call_ins.r) or _extract_args_from_mop_f(call_ins.r, _bits, blk, ins)
+            args_list = extract_literal_from_mop(
+                call_ins.r
+            ) or _extract_args_from_mop_f(call_ins.r, _bits, blk, ins)
 
         # Pattern B: arguments packed in a mop_f stored in call_ins.d (observed when call_ins.r is mop_z)
         elif (
@@ -414,7 +441,9 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
             and hasattr(call_ins.d, "f")
             and call_ins.d.f is not None
         ):
-            args_list = extract_literal_from_mop(call_ins.d) or _extract_args_from_mop_f(call_ins.d, _bits, blk, ins)
+            args_list = extract_literal_from_mop(
+                call_ins.d
+            ) or _extract_args_from_mop_f(call_ins.d, _bits, blk, ins)
 
         # Pattern C: compact helper - r is value, d is shift amount
         elif call_ins.r is not None and call_ins.d is not None:
@@ -449,7 +478,9 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
         helper_func = _HelperLookup.lookup(helper_name)
         if helper_func is None:
             if logger.debug_on:
-                logger.debug("[RotateHelperInline] helper %s not found in registry", helper_name)
+                logger.debug(
+                    "[RotateHelperInline] helper %s not found in registry", helper_name
+                )
             return None
 
         # Safely extract literal values from the two arguments.  If either is not a

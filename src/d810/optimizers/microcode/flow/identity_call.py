@@ -19,6 +19,7 @@ The targets themselves may follow the same pattern, creating chains.
 
 Ported from the copycat project's identity_call.h/.cpp.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -35,7 +36,10 @@ from d810.core import getLogger
 from d810.hexrays.utils import arch_utils
 from d810.hexrays.utils.table_utils import is_valid_database_ea, read_global_value
 from d810.optimizers.microcode.handler import ConfigParam
-from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
+from d810.optimizers.microcode.flow.handler import (
+    FlowOptimizationRule,
+    FlowRulePriority,
+)
 from d810.optimizers.microcode.flow.jumps.indirect_call import IndirectCallResolver
 
 logger = getLogger(__name__)
@@ -138,9 +142,7 @@ def classify_table_entries(
     )
 
 
-def store_deferred_analysis(
-    func_ea: int, deferred_call: DeferredIdentityCall
-) -> None:
+def store_deferred_analysis(func_ea: int, deferred_call: DeferredIdentityCall) -> None:
     """Store deferred analysis for later application.
 
     Args:
@@ -441,7 +443,9 @@ class IdentityCallResolver(FlowOptimizationRule):
             if self._call_rewriter is None:
                 continue
 
-            if not self._call_rewriter._replace_call(transfer_ins, rec.final_target_ea, transfer_blk):
+            if not self._call_rewriter._replace_call(
+                transfer_ins, rec.final_target_ea, transfer_blk
+            ):
                 continue
 
             changed += 1
@@ -483,7 +487,9 @@ class IdentityCallResolver(FlowOptimizationRule):
     ) -> None:
         """Track simple register/stack values used for call-arg recovery."""
         if ins.opcode == ida_hexrays.m_mov:
-            value = self._eval_operand_to_ea(ins.l, reg_values, stk_values, global_writes)
+            value = self._eval_operand_to_ea(
+                ins.l, reg_values, stk_values, global_writes
+            )
             if ins.d.t == ida_hexrays.mop_r:
                 if value is None:
                     reg_values.pop(ins.d.r, None)
@@ -538,7 +544,9 @@ class IdentityCallResolver(FlowOptimizationRule):
                 args = []
             if len(args) >= 1 and args[0] is not None:
                 ptr_ea = self._extract_global_ptr_ea(args[0])
-                val = self._eval_operand_to_ea(args[0], reg_values, stk_values, global_writes)
+                val = self._eval_operand_to_ea(
+                    args[0], reg_values, stk_values, global_writes
+                )
                 return (val, ptr_ea)
 
         # ABI register fallback.
@@ -580,7 +588,8 @@ class IdentityCallResolver(FlowOptimizationRule):
 
         # Last fallback: if exactly one concrete EA was tracked, use it.
         concrete = [
-            value for _, value in reversed(list(reg_values.items()))
+            value
+            for _, value in reversed(list(reg_values.items()))
             if is_valid_database_ea(value)
         ]
         if len(concrete) == 1:
@@ -594,11 +603,17 @@ class IdentityCallResolver(FlowOptimizationRule):
             return arch_utils.BADADDR
         if mop.t == ida_hexrays.mop_v:
             return mop.g
-        if mop.t == ida_hexrays.mop_a and mop.a is not None and mop.a.t == ida_hexrays.mop_v:
+        if (
+            mop.t == ida_hexrays.mop_a
+            and mop.a is not None
+            and mop.a.t == ida_hexrays.mop_v
+        ):
             return mop.a.g
         return arch_utils.BADADDR
 
-    def _resolve_final_target(self, target_ea: int, global_writes: dict[int, set[int]]) -> int | None:
+    def _resolve_final_target(
+        self, target_ea: int, global_writes: dict[int, set[int]]
+    ) -> int | None:
         """Resolve trampoline chain with local write-map fallback."""
         if not is_valid_database_ea(target_ea):
             return None
@@ -674,9 +689,8 @@ class IdentityCallResolver(FlowOptimizationRule):
             cand_blk = mba.get_mblock(i)
             cand_ins = cand_blk.head
             while cand_ins is not None:
-                if (
-                    cand_ins.ea > call_ins.ea
-                    and self._is_paired_transfer_candidate(cand_ins, ret_reg)
+                if cand_ins.ea > call_ins.ea and self._is_paired_transfer_candidate(
+                    cand_ins, ret_reg
                 ):
                     delta = cand_ins.ea - call_ins.ea
                     if best_delta is None or delta < best_delta:
@@ -828,17 +842,27 @@ class IdentityCallResolver(FlowOptimizationRule):
                 # Address-of global/code symbol (`&symbol`) carries the EA
                 # directly; do not dereference bytes at that address.
                 return mop.a.g
-            return self._eval_operand_to_ea(mop.a, reg_values, stk_values, global_writes)
+            return self._eval_operand_to_ea(
+                mop.a, reg_values, stk_values, global_writes
+            )
 
         if t == ida_hexrays.mop_d and mop.d is not None:
             op = mop.d.opcode
             if op == ida_hexrays.m_mov:
-                return self._eval_operand_to_ea(mop.d.l, reg_values, stk_values, global_writes)
+                return self._eval_operand_to_ea(
+                    mop.d.l, reg_values, stk_values, global_writes
+                )
             if op == ida_hexrays.m_ldx:
-                return self._eval_ldx_to_ea(mop.d, reg_values, stk_values, global_writes)
+                return self._eval_ldx_to_ea(
+                    mop.d, reg_values, stk_values, global_writes
+                )
             if op in (ida_hexrays.m_add, ida_hexrays.m_sub, ida_hexrays.m_xor):
-                left = self._eval_operand_to_ea(mop.d.l, reg_values, stk_values, global_writes)
-                right = self._eval_operand_to_ea(mop.d.r, reg_values, stk_values, global_writes)
+                left = self._eval_operand_to_ea(
+                    mop.d.l, reg_values, stk_values, global_writes
+                )
+                right = self._eval_operand_to_ea(
+                    mop.d.r, reg_values, stk_values, global_writes
+                )
                 if left is None or right is None:
                     return None
                 if op == ida_hexrays.m_add:

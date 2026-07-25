@@ -334,7 +334,12 @@ def _resolve_reaching_constant_for_mop(blk, mop, *, stop_insn=None) -> int | Non
 class JnzRule1(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jnz, ida_hexrays.m_jz]
     LEFT_PATTERN = AstNode(
-        ida_hexrays.m_neg, AstNode(ida_hexrays.m_and, AstNode(ida_hexrays.m_bnot, AstLeaf("x_0")), AstConstant("1", 1))
+        ida_hexrays.m_neg,
+        AstNode(
+            ida_hexrays.m_and,
+            AstNode(ida_hexrays.m_bnot, AstLeaf("x_0")),
+            AstConstant("1", 1),
+        ),
     )
     RIGHT_PATTERN = AstLeaf("x_0")
     REPLACEMENT_OPCODE = ida_hexrays.m_goto
@@ -349,7 +354,11 @@ class JnzRule1(JumpOptimizationRule):
 
 class JnzRule2(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jnz, ida_hexrays.m_jz]
-    LEFT_PATTERN = AstNode(ida_hexrays.m_or, AstNode(ida_hexrays.m_bnot, AstLeaf("x_0")), AstConstant("1", 1))
+    LEFT_PATTERN = AstNode(
+        ida_hexrays.m_or,
+        AstNode(ida_hexrays.m_bnot, AstLeaf("x_0")),
+        AstConstant("1", 1),
+    )
     RIGHT_PATTERN = AstConstant("0", 0)
     REPLACEMENT_OPCODE = ida_hexrays.m_goto
 
@@ -399,7 +408,9 @@ class JnzRule4(JumpOptimizationRule):
 class JnzRule5(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jnz, ida_hexrays.m_jz]
     LEFT_PATTERN = AstNode(
-        ida_hexrays.m_xor, AstNode(ida_hexrays.m_sub, AstConstant("3", 3), AstLeaf("x_0")), AstLeaf("x_0")
+        ida_hexrays.m_xor,
+        AstNode(ida_hexrays.m_sub, AstConstant("3", 3), AstLeaf("x_0")),
+        AstLeaf("x_0"),
     )
     RIGHT_PATTERN = AstConstant("0", 0)
     REPLACEMENT_OPCODE = ida_hexrays.m_goto
@@ -416,7 +427,10 @@ class JnzRule6(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jnz, ida_hexrays.m_jz]
     LEFT_PATTERN = AstNode(
         ida_hexrays.m_xor,
-        AstNode(ida_hexrays.m_bnot, AstNode(ida_hexrays.m_sub, AstConstant("3", 3), AstLeaf("x_0"))),
+        AstNode(
+            ida_hexrays.m_bnot,
+            AstNode(ida_hexrays.m_sub, AstConstant("3", 3), AstLeaf("x_0")),
+        ),
         AstNode(ida_hexrays.m_bnot, AstLeaf("x_0")),
     )
     RIGHT_PATTERN = AstConstant("0", 0)
@@ -467,7 +481,10 @@ class JnzRule8(JumpOptimizationRule):
 
 class JbRule1(JumpOptimizationRule):
     ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jb]
-    LEFT_PATTERN = AstNode(ida_hexrays.m_xdu, AstNode(ida_hexrays.m_and, AstLeaf("x_0"), AstConstant("1", 1)))
+    LEFT_PATTERN = AstNode(
+        ida_hexrays.m_xdu,
+        AstNode(ida_hexrays.m_and, AstLeaf("x_0"), AstConstant("1", 1)),
+    )
     RIGHT_PATTERN = AstConstant("2", 2)
     REPLACEMENT_OPCODE = ida_hexrays.m_goto
 
@@ -514,6 +531,7 @@ class JnzRuleModIdentity(_JnzModuloEvenIdentityRule):
     so their product is always divisible by 2. The modulo 2 always yields 0.
     This rule handles the signed-mod x+1 variant.
     """
+
     # Pattern: smod(mul(X, add(X, 1)), 2) == 0
     # AstChoice was removed from the AST API; this keeps the opaque identity
     # optimization active without relying on a non-existent node type.
@@ -522,9 +540,9 @@ class JnzRuleModIdentity(_JnzModuloEvenIdentityRule):
         AstNode(
             ida_hexrays.m_mul,
             AstLeaf("x_0"),
-            AstNode(ida_hexrays.m_add, AstLeaf("x_0"), AstConstant("1", 1))
+            AstNode(ida_hexrays.m_add, AstLeaf("x_0"), AstConstant("1", 1)),
         ),
-        AstConstant("2", 2)
+        AstConstant("2", 2),
     )
 
 
@@ -536,9 +554,9 @@ class JnzRuleSmodSubIdentity(_JnzModuloEvenIdentityRule):
         AstNode(
             ida_hexrays.m_mul,
             AstLeaf("x_0"),
-            AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("1", 1))
+            AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("1", 1)),
         ),
-        AstConstant("2", 2)
+        AstConstant("2", 2),
     )
 
 
@@ -550,9 +568,9 @@ class JnzRuleUmodAddIdentity(_JnzModuloEvenIdentityRule):
         AstNode(
             ida_hexrays.m_mul,
             AstLeaf("x_0"),
-            AstNode(ida_hexrays.m_add, AstLeaf("x_0"), AstConstant("1", 1))
+            AstNode(ida_hexrays.m_add, AstLeaf("x_0"), AstConstant("1", 1)),
         ),
-        AstConstant("2", 2)
+        AstConstant("2", 2),
     )
 
 
@@ -564,9 +582,9 @@ class JnzRuleUmodSubIdentity(_JnzModuloEvenIdentityRule):
         AstNode(
             ida_hexrays.m_mul,
             AstLeaf("x_0"),
-            AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("1", 1))
+            AstNode(ida_hexrays.m_sub, AstLeaf("x_0"), AstConstant("1", 1)),
         ),
-        AstConstant("2", 2)
+        AstConstant("2", 2),
     )
 
 
@@ -673,9 +691,10 @@ class JmpRuleZ3Const(JumpOptimizationRule):
                 fallthrough_target=self.direct_block_serial,
             )
             return True
-        if opcode in (ida_hexrays.m_jnz, ida_hexrays.m_jz) and Z3MopProver().are_unequal(
-            left_candidate.mop, right_candidate.mop
-        ):
+        if opcode in (
+            ida_hexrays.m_jnz,
+            ida_hexrays.m_jz,
+        ) and Z3MopProver().are_unequal(left_candidate.mop, right_candidate.mop):
             self.jump_replacement_block_serial = _target_for_relation(
                 opcode,
                 is_equal=False,
@@ -685,10 +704,14 @@ class JmpRuleZ3Const(JumpOptimizationRule):
             return True
         # Fallback: if both sides are concretely evaluable constants, fold
         # opaque predicates for all supported paired conditional jumps.
-        jump_taken = _constant_jump_taken(opcode, left_candidate.mop, right_candidate.mop)
+        jump_taken = _constant_jump_taken(
+            opcode, left_candidate.mop, right_candidate.mop
+        )
         if jump_taken is not None:
             self.jump_replacement_block_serial = (
-                self.jump_original_block_serial if jump_taken else self.direct_block_serial
+                self.jump_original_block_serial
+                if jump_taken
+                else self.direct_block_serial
             )
             return True
         return False

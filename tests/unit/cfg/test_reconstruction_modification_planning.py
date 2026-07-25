@@ -26,7 +26,9 @@ class _DummyBlock:
 class _DummyFlowGraph:
     def __init__(self, mapping: dict[int, tuple[tuple[int, ...], tuple[int, ...]]]):
         self._mapping = {
-            int(k): _DummyBlock(tuple(int(v) for v in preds), tuple(int(v) for v in succs))
+            int(k): _DummyBlock(
+                tuple(int(v) for v in preds), tuple(int(v) for v in succs)
+            )
             for k, (preds, succs) in mapping.items()
         }
 
@@ -36,9 +38,11 @@ class _DummyFlowGraph:
 
 class TestPlanDirectReconstructionModifications:
     def test_uses_convert_to_goto_for_two_way_source(self):
-        flow_graph = _DummyFlowGraph({
-            14: ((12,), (6, 20)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                14: ((12,), (6, 20)),
+            }
+        )
 
         plan = plan_direct_reconstruction_modifications(
             flow_graph=flow_graph,
@@ -48,16 +52,16 @@ class TestPlanDirectReconstructionModifications:
         )
 
         assert plan.accepted
-        assert plan.modifications == (
-            ConvertToGoto(block_serial=14, goto_target=16),
-        )
+        assert plan.modifications == (ConvertToGoto(block_serial=14, goto_target=16),)
 
 
 class TestPlanConditionalArmReconstructionModifications:
     def test_uses_branch_redirects(self):
-        flow_graph = _DummyFlowGraph({
-            14: ((12,), (6, 20)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                14: ((12,), (6, 20)),
+            }
+        )
 
         plan = plan_conditional_arm_reconstruction_modifications(
             flow_graph=flow_graph,
@@ -74,9 +78,11 @@ class TestPlanConditionalArmReconstructionModifications:
         )
 
     def test_rejects_self_target_redirects(self):
-        flow_graph = _DummyFlowGraph({
-            161: ((159,), (2, 163)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                161: ((159,), (2, 163)),
+            }
+        )
 
         plan = plan_conditional_arm_reconstruction_modifications(
             flow_graph=flow_graph,
@@ -93,11 +99,13 @@ class TestPlanConditionalArmReconstructionModifications:
 
 class TestPlanPassthroughReconstructionModifications:
     def test_preserves_oneway_and_branch_shapes(self):
-        flow_graph = _DummyFlowGraph({
-            10: ((4,), (6,)),
-            11: ((10,), (20, 6)),
-            14: ((11,), (30,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                10: ((4,), (6,)),
+                11: ((10,), (20, 6)),
+                14: ((11,), (30,)),
+            }
+        )
 
         plan = plan_passthrough_reconstruction_modifications(
             flow_graph=flow_graph,
@@ -116,11 +124,13 @@ class TestPlanPassthroughReconstructionModifications:
 
 class TestPlanSharedGroupReconstructionModifications:
     def test_returns_per_pred_redirect_when_all_preds_can_be_rewritten(self):
-        flow_graph = _DummyFlowGraph({
-            8: ((), (10,)),
-            9: ((), (10,)),
-            10: ((8, 9), (24,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                8: ((), (10,)),
+                9: ((), (10,)),
+                10: ((8, 9), (24,)),
+            }
+        )
 
         plan = plan_shared_group_reconstruction_modifications(
             flow_graph=flow_graph,
@@ -141,13 +151,15 @@ class TestPlanSharedGroupReconstructionModifications:
         )
 
     def test_returns_typed_corridor_splits_for_shared_group_clone(self):
-        flow_graph = _DummyFlowGraph({
-            10: ((8, 9), (2,)),
-            24: ((), ()),
-            30: ((), ()),
-            8: ((), (10,)),
-            9: ((), (10,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                10: ((8, 9), (2,)),
+                24: ((), ()),
+                30: ((), ()),
+                8: ((), (10,)),
+                9: ((), (10,)),
+            }
+        )
 
         plan = plan_shared_group_reconstruction_modifications(
             flow_graph=flow_graph,
@@ -176,12 +188,14 @@ class TestPlanSharedGroupReconstructionModifications:
         )
 
     def test_force_clone_uses_typed_corridor_split_when_old_target_is_preserved(self):
-        flow_graph = _DummyFlowGraph({
-            8: ((), (10,)),
-            11: ((), (10,)),
-            10: ((8, 11), (2,)),
-            24: ((), ()),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                8: ((), (10,)),
+                11: ((), (10,)),
+                10: ((8, 11), (2,)),
+                24: ((), ()),
+            }
+        )
 
         plan = plan_shared_group_reconstruction_modifications(
             flow_graph=flow_graph,
@@ -207,10 +221,14 @@ class TestPlanSharedGroupReconstructionModifications:
             ),
         )
 
-    def test_single_candidate_single_pred_shared_block_falls_back_to_direct_redirect(self):
-        flow_graph = _DummyFlowGraph({
-            10: ((8,), (2,)),
-        })
+    def test_single_candidate_single_pred_shared_block_falls_back_to_direct_redirect(
+        self,
+    ):
+        flow_graph = _DummyFlowGraph(
+            {
+                10: ((8,), (2,)),
+            }
+        )
 
         plan = plan_shared_group_reconstruction_modifications(
             flow_graph=flow_graph,

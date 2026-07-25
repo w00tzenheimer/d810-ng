@@ -69,9 +69,9 @@ def overrides(parent_class):
         for argument, argument_type in typing.get_type_hints(method).items():
             if argument in parent_types:
                 parent_type = parent_types[argument]
-                assert (
-                    argument_type == parent_type
-                ), f"{method.__name__}: {argument}: {argument_type} != {parent_type}"
+                assert argument_type == parent_type, (
+                    f"{method.__name__}: {argument}: {argument_type} != {parent_type}"
+                )
 
         return method
 
@@ -548,12 +548,17 @@ class Scanner:
     ):
         if isinstance(package_path, pathlib.Path):
             package_path = str(package_path)
+
         # print(f"Scanning package {package_path} with prefix {prefix}")
         def _on_walk_error(name):
             print(f"Warning: failed to import package {name}", file=sys.stderr)
 
-        for mod_info in pkgutil.walk_packages(package_path, prefix=prefix, onerror=_on_walk_error):
-            if any(mod_info.name.startswith(skip_prefix) for skip_prefix in skip_prefixes):
+        for mod_info in pkgutil.walk_packages(
+            package_path, prefix=prefix, onerror=_on_walk_error
+        ):
+            if any(
+                mod_info.name.startswith(skip_prefix) for skip_prefix in skip_prefixes
+            ):
                 continue
 
             if skip_packages and mod_info.ispkg:
@@ -841,7 +846,6 @@ class Reloader:
 
 
 class Plugin(abc.ABC):
-
     @abc.abstractmethod
     def init(self): ...
 
@@ -855,7 +859,6 @@ class Plugin(abc.ABC):
 
 
 class LateInitPlugin(Plugin):
-
     def __init__(self, hook_cls: "idaapi.UI_Hooks", skip_code: int, ok_code: int):
         super().__init__()
         self._skip_code = skip_code

@@ -8,6 +8,7 @@ the dispatcher's default block (``default_block_serial``) — not a handler — 
 Without the dispatcher/default (portable/shallow path) only the no-write terminal is recognised,
 byte-identical.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.linearized_state_dag import _is_conditional_return

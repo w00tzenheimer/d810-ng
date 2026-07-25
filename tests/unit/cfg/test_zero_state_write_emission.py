@@ -7,6 +7,7 @@ Validates the single-emitter consolidation: all three legacy collectors
 now delegate through :func:`collect_zero_state_writes`. The tests below
 prove behavioural equivalence and the cross-source dedup invariant.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace

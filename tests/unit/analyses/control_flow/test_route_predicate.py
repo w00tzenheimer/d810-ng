@@ -6,6 +6,7 @@ ground-truth sub_7FFD3338C040 condition-chain dispatcher: routing must match the
 trace (``.tmp/condition_chain_trace.py``), and blk56's partition cell must be EXACTLY
 ``{0x7D9C16EC}`` -- the only state that reaches it.
 """
+
 from __future__ import annotations
 
 from d810.analyses.abstract_domains.interval_set import Interval, IntervalSet

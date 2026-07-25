@@ -1,4 +1,5 @@
 """Diagnostic manifests for native pass contracts."""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -85,9 +86,7 @@ def pass_contract_preflight_manifest(
     manifest["preflight"] = {
         "satisfied": result.satisfied,
         "declared_output_facts": _sorted_strings(result.declared_output_facts),
-        "declared_output_evidence": _sorted_strings(
-            result.declared_output_evidence
-        ),
+        "declared_output_evidence": _sorted_strings(result.declared_output_evidence),
         "diagnostics": [
             pass_contract_diagnostic_manifest(diagnostic)
             for diagnostic in result.diagnostics

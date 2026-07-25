@@ -28,6 +28,7 @@ proof to the remaining comparison kinds here.
 Soundness proof + discrimination + operational equivalence:
 ``tests/unit/analyses/control_flow/test_single_trip_peel_soundness.py``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -105,7 +106,7 @@ def _predicate(kind: CmpKind, imm_bv):
         CmpKind.ULE: lambda g: ULE(g, imm_bv),
         CmpKind.UGT: lambda g: UGT(g, imm_bv),
         CmpKind.UGE: lambda g: UGE(g, imm_bv),
-        CmpKind.SLT: lambda g: g < imm_bv,   # z3 BitVec relations are signed
+        CmpKind.SLT: lambda g: g < imm_bv,  # z3 BitVec relations are signed
         CmpKind.SLE: lambda g: g <= imm_bv,
         CmpKind.SGT: lambda g: g > imm_bv,
         CmpKind.SGE: lambda g: g >= imm_bv,
@@ -139,8 +140,8 @@ def prove_single_trip(facts: LoopFacts) -> PeelVerdict:
         )
 
     cond = _predicate(facts.continue_cmp, BitVecVal(facts.continue_imm, bw))
-    enters = _valid(cond(BitVecVal(facts.entry_const, bw)))          # ob2
-    exits = _valid(Not(cond(BitVecVal(facts.inloop_const, bw))))     # ob1
+    enters = _valid(cond(BitVecVal(facts.entry_const, bw)))  # ob2
+    exits = _valid(Not(cond(BitVecVal(facts.inloop_const, bw))))  # ob1
     proved = enters and exits
     return PeelVerdict(
         proved,

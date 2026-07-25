@@ -73,6 +73,7 @@ DOCKER_RUNNER = TOOLS_SCRIPTS_DIR / "run_system_tests_docker.sh"
 # path helpers
 # ---------------------------------------------------------------------------
 
+
 def _die(msg: str, code: int = 1) -> None:
     print(f"d810cli: error: {msg}", file=sys.stderr)
     raise SystemExit(code)
@@ -116,10 +117,7 @@ def latest_db(name: str | None) -> Path:
     d = worktree_log_dir(name)
     if not d.is_dir():
         _die(f"diag log dir not found: {d}")
-    cand = [
-        p for p in d.glob("*.diag.sqlite3")
-        if p.is_file() and p.stat().st_size > 0
-    ]
+    cand = [p for p in d.glob("*.diag.sqlite3") if p.is_file() and p.stat().st_size > 0]
     p = _latest(cand)
     if p is None:
         _die(f"no non-empty diag sqlite3 DBs under {d}")
@@ -152,10 +150,7 @@ def latest_indirect_transfer_db(name: str | None) -> Path:
     if not d.is_dir():
         _die(f"diag log dir not found: {d}")
     cand = sorted(
-        (
-            p for p in d.glob("*.diag.sqlite3")
-            if p.is_file() and p.stat().st_size > 0
-        ),
+        (p for p in d.glob("*.diag.sqlite3") if p.is_file() and p.stat().st_size > 0),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -222,6 +217,7 @@ def after_slice(lines: list[str]) -> tuple[int, int]:
 # subcommands
 # ---------------------------------------------------------------------------
 
+
 def cmd_paths(args: argparse.Namespace) -> int:
     dump = resolve_dump(args.worktree, None)
     db = resolve_db(args.worktree, None)
@@ -248,18 +244,23 @@ def cmd_dump(args: argparse.Namespace) -> int:
     out_name = f"{args.prefix}_{args.label}_{ts}.txt"
     full_diagnostics = bool(getattr(args, "full_diagnostics", False))
 
-    extras = args.extra if args.extra else (
-        list(FULL_DIAGNOSTIC_EXTRAS)
-        if full_diagnostics
-        else list(DEFAULT_EXTRAS)
+    extras = (
+        args.extra
+        if args.extra
+        else (
+            list(FULL_DIAGNOSTIC_EXTRAS) if full_diagnostics else list(DEFAULT_EXTRAS)
+        )
     )
 
     argv: list[str] = [
         str(DOCKER_RUNNER),
         "dump",
-        "-f", args.function,
-        "-p", args.project,
-        "-o", out_name,
+        "-f",
+        args.function,
+        "-p",
+        args.project,
+        "-o",
+        out_name,
     ]
     if wt is not None:
         argv.extend(["-w", wt])
@@ -276,7 +277,10 @@ def cmd_dump(args: argparse.Namespace) -> int:
     env.setdefault("D810_REPO_ROOT", str(REPO_ROOT))
 
     print(f"d810cli: dump -> {tmp / out_name}", file=sys.stderr)
-    print(f"d810cli: D810_CAPTURE_POST_MATURITY={env['D810_CAPTURE_POST_MATURITY']}", file=sys.stderr)
+    print(
+        f"d810cli: D810_CAPTURE_POST_MATURITY={env['D810_CAPTURE_POST_MATURITY']}",
+        file=sys.stderr,
+    )
     print(f"d810cli: argv: {' '.join(argv)}", file=sys.stderr)
 
     rc = subprocess.call(argv, env=env, cwd=str(REPO_ROOT))
@@ -400,7 +404,8 @@ def cmd_snap_render(args: argparse.Namespace) -> int:
         "-m",
         "d810.diagnostics",
         "snap-render",
-        "--db", str(db),
+        "--db",
+        str(db),
     ]
     if args.snapshot_id is not None:
         diag_argv += ["--snapshot-id", str(args.snapshot_id)]
@@ -443,6 +448,7 @@ def _iter_after_numbered(dump: Path):
 
 def cmd_residuals(args: argparse.Namespace) -> int:
     import re
+
     dump = resolve_dump(args.worktree, args.dump)
     vars_ = args.var or ["i"]
     # match `<var> = 0x...;` — allow leading whitespace, tolerate trailing comment
@@ -462,6 +468,7 @@ def cmd_residuals(args: argparse.Namespace) -> int:
 
 def cmd_witness(args: argparse.Namespace) -> int:
     import re
+
     dump = resolve_dump(args.worktree, args.dump)
     vars_ = args.var or ["v187", "v50", "v49"]
     patterns = [re.compile(rf"\b{re.escape(v)}\b") for v in vars_]
@@ -495,10 +502,14 @@ def cmd_state(args: argparse.Namespace) -> int:
         "-m",
         "d810.diagnostics",
         "inspect-state-node",
-        "--db", str(db),
-        "--state", args.state,
-        "--dump", str(dump),
-        "--context", str(args.context),
+        "--db",
+        str(db),
+        "--state",
+        args.state,
+        "--dump",
+        str(dump),
+        "--context",
+        str(args.context),
     ]
     return subprocess.call(diag_argv, env=env)
 
@@ -519,13 +530,21 @@ def cmd_route(args: argparse.Namespace) -> int:
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
     diag_argv = [
-        sys.executable, "-m", "d810.diagnostics", "route",
-        "--db", str(db),
-        "--snapshot", str(args.snapshot),
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "route",
+        "--db",
+        str(db),
+        "--snapshot",
+        str(args.snapshot),
         args.state,
-        "--root", str(args.root),
-        "--slot", str(args.slot),
-        "--width", str(args.width),
+        "--root",
+        str(args.root),
+        "--slot",
+        str(args.slot),
+        "--width",
+        str(args.width),
     ]
     return subprocess.call(diag_argv, env=env)
 
@@ -559,12 +578,18 @@ def cmd_indirect_transfer_map(args: argparse.Namespace) -> int:
         "-m",
         "d810.diagnostics",
         "indirect-transfer-map",
-        "--db", str(db),
-        "--state-var-stkoff", args.state_var_stkoff,
-        "--table-stkoff", args.table_stkoff,
-        "--state-base", args.state_base,
-        "--pointer-size", str(args.pointer_size),
-        "--max-depth", str(args.max_depth),
+        "--db",
+        str(db),
+        "--state-var-stkoff",
+        args.state_var_stkoff,
+        "--table-stkoff",
+        args.table_stkoff,
+        "--state-base",
+        args.state_base,
+        "--pointer-size",
+        str(args.pointer_size),
+        "--max-depth",
+        str(args.max_depth),
     ]
     if args.snapshot_id is not None:
         diag_argv.extend(["--snapshot-id", str(args.snapshot_id)])
@@ -652,7 +677,8 @@ def cmd_residual_worksheet(args: argparse.Namespace) -> int:
         "-m",
         "d810.diagnostics",
         "residual-worksheet",
-        "--diag-db", str(diag_db),
+        "--diag-db",
+        str(diag_db),
     ]
     if args.analysis_db:
         diag_argv += ["--analysis-db", args.analysis_db]
@@ -693,8 +719,12 @@ def cmd_egress_plan(args: argparse.Namespace) -> int:
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
     diag_argv = [
-        sys.executable, "-m", "d810.diagnostics", "cascade-egress-plan",
-        "--db", str(db),
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "cascade-egress-plan",
+        "--db",
+        str(db),
     ]
     if args.fact_snapshot_id is not None:
         diag_argv += ["--fact-snapshot-id", str(args.fact_snapshot_id)]
@@ -755,9 +785,7 @@ def cmd_returns(args: argparse.Namespace) -> int:
     if not args.no_dump:
         try:
             dump = (
-                Path(args.dump).expanduser().resolve()
-                if args.dump
-                else latest_dump(wt)
+                Path(args.dump).expanduser().resolve() if args.dump else latest_dump(wt)
             )
         except SystemExit:
             dump = None
@@ -768,8 +796,12 @@ def cmd_returns(args: argparse.Namespace) -> int:
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = f"{src_path}:{existing}" if existing else src_path
     diag_argv = [
-        sys.executable, "-m", "d810.diagnostics", "return-ledger",
-        "--db", str(db),
+        sys.executable,
+        "-m",
+        "d810.diagnostics",
+        "return-ledger",
+        "--db",
+        str(db),
         *dump_arg,
     ]
     if args.snapshot_id is not None:
@@ -814,11 +846,16 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
         "-m",
         "d810.diagnostics",
         "redirect-reconcile",
-        "--db", str(db),
-        "--log", str(log_path),
-        "--snap-id", str(args.snap_id),
-        "--state-var-stkoff", args.state_var_stkoff,
-        "--min-dispatcher-preds", str(args.min_dispatcher_preds),
+        "--db",
+        str(db),
+        "--log",
+        str(log_path),
+        "--snap-id",
+        str(args.snap_id),
+        "--state-var-stkoff",
+        args.state_var_stkoff,
+        "--min-dispatcher-preds",
+        str(args.min_dispatcher_preds),
     ]
     if args.show_edges:
         diag_argv.append("--show-edges")
@@ -992,8 +1029,7 @@ def cmd_unsupported_edge_kind_explain(args: argparse.Namespace) -> int:
     print(f"DB={db}", file=sys.stderr)
     print(f"LOG={log_file}", file=sys.stderr)
     print(
-        "d810cli: unsupported-edge-kind-explain: diag argv:"
-        f" {' '.join(diag_argv)}",
+        f"d810cli: unsupported-edge-kind-explain: diag argv: {' '.join(diag_argv)}",
         file=sys.stderr,
     )
     return subprocess.call(diag_argv, env=env)
@@ -1105,6 +1141,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
 # parser
 # ---------------------------------------------------------------------------
 
+
 def _add_worktree(p: argparse.ArgumentParser) -> None:
     if DEFAULT_WORKTREE:
         help_text = (
@@ -1132,13 +1169,22 @@ def cmd_fixture(args: argparse.Namespace) -> int:
     from d810.testing import fixture_builder as fb
 
     worker = REPO_ROOT / "samples/scripts/fixture_idb_worker.py"
-    out_dir = Path(args.out) if getattr(args, "out", None) else (REPO_ROOT / "samples/src/masm")
+    out_dir = (
+        Path(args.out)
+        if getattr(args, "out", None)
+        else (REPO_ROOT / "samples/src/masm")
+    )
 
     def _worker(*wargs: str) -> str:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(REPO_ROOT / "src")
-        res = subprocess.run([sys.executable, str(worker), *wargs],
-                             capture_output=True, text=True, env=env, cwd=str(REPO_ROOT))
+        res = subprocess.run(
+            [sys.executable, str(worker), *wargs],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(REPO_ROOT),
+        )
         if res.returncode != 0:
             _die(f"worker {wargs[0]} failed:\n{res.stderr}")
         return res.stdout.strip().splitlines()[-1]
@@ -1146,8 +1192,17 @@ def cmd_fixture(args: argparse.Namespace) -> int:
     sub = args.fixture_cmd
     if sub in ("extract", "retarget", "add"):
         asm_path = out_dir / f"{args.function}.asm"
-        meta = json.loads(_worker("extract", "--idb", args.idb,
-                                  "--func", args.function, "--out", str(asm_path)))
+        meta = json.loads(
+            _worker(
+                "extract",
+                "--idb",
+                args.idb,
+                "--func",
+                args.function,
+                "--out",
+                str(asm_path),
+            )
+        )
         func_name = meta["function"]
         final_path = out_dir / f"{func_name}.asm"
         if str(final_path) != meta["asm"]:
@@ -1160,14 +1215,24 @@ def cmd_fixture(args: argparse.Namespace) -> int:
 
         asm_text = asm_path.read_text()
         folds = fb.detect_indirect_call_folds(asm_text)
-        vas = ",".join(hex((f.materialized + f.const) & ((1 << 64) - 1))
-                       for f in folds if f.materialized is not None)
-        resolved_raw = json.loads(_worker("resolve", "--idb", args.idb, "--vas", vas)) if vas else {}
+        vas = ",".join(
+            hex((f.materialized + f.const) & ((1 << 64) - 1))
+            for f in folds
+            if f.materialized is not None
+        )
+        resolved_raw = (
+            json.loads(_worker("resolve", "--idb", args.idb, "--vas", vas))
+            if vas
+            else {}
+        )
         resolved = {int(k): fb.ResolvedTarget(**v) for k, v in resolved_raw.items()}
         plan = fb.plan_retargets(folds, resolved, image_symbols=set())
         print("=== retarget plan ===", file=sys.stderr)
         for a in plan.actions:
-            print(f"  retarget {a.slot_symbol} -> {a.name} - {a.const:#x}", file=sys.stderr)
+            print(
+                f"  retarget {a.slot_symbol} -> {a.name} - {a.const:#x}",
+                file=sys.stderr,
+            )
         for s in plan.skipped:
             print(f"  skip: {s}", file=sys.stderr)
         if getattr(args, "dry_run", False) and sub == "retarget":
@@ -1211,25 +1276,44 @@ def cmd_fixture(args: argparse.Namespace) -> int:
         block = src[start:end]
         new_block = fb.upsert_case_in_list(block, args.function, case_src)
         cases_file.write_text(src[:start] + new_block + src[end:])
-        print(f"d810cli: registered case for {args.function} in {cases_file}", file=sys.stderr)
+        print(
+            f"d810cli: registered case for {args.function} in {cases_file}",
+            file=sys.stderr,
+        )
         if sub == "register":
             return 0
 
     if sub in ("verify", "add"):
         binary = getattr(args, "binary_name", None) or "libobfuscated_fixturetest"
-        ok = fb.verify_fixture_case(REPO_ROOT, args.function, binary, runner=subprocess.run)
-        print(f"d810cli: verify {'PASS' if ok else 'FAIL'} for {args.function}", file=sys.stderr)
+        ok = fb.verify_fixture_case(
+            REPO_ROOT, args.function, binary, runner=subprocess.run
+        )
+        print(
+            f"d810cli: verify {'PASS' if ok else 'FAIL'} for {args.function}",
+            file=sys.stderr,
+        )
         if sub == "verify":
             return 0 if ok else 1
 
     if sub == "add":
         # HUMAN GATE: never auto-commit binaries or the case.
         print("\n=== HUMAN GATE (d81-rtfh) ===", file=sys.stderr)
-        print("Derived a MINIMAL case (must_change + skip-if-absent only). Review the", file=sys.stderr)
-        print("before/after decompile, WRITE the semantic assertions by hand, then", file=sys.stderr)
-        print("commit the .asm/stub/case yourself. Binaries are NOT auto-committed.", file=sys.stderr)
+        print(
+            "Derived a MINIMAL case (must_change + skip-if-absent only). Review the",
+            file=sys.stderr,
+        )
+        print(
+            "before/after decompile, WRITE the semantic assertions by hand, then",
+            file=sys.stderr,
+        )
+        print(
+            "commit the .asm/stub/case yourself. Binaries are NOT auto-committed.",
+            file=sys.stderr,
+        )
         if not getattr(args, "yes", False):
-            print("(re-run with --yes to acknowledge non-interactively)", file=sys.stderr)
+            print(
+                "(re-run with --yes to acknowledge non-interactively)", file=sys.stderr
+            )
         return 0
     return 0
 
@@ -1271,14 +1355,26 @@ def build_parser() -> argparse.ArgumentParser:
     _add_worktree(sp)
     sp.add_argument("-f", "--function", default=DEFAULT_FUNCTION)
     sp.add_argument("-p", "--project", default=DEFAULT_PROJECT)
-    sp.add_argument("--prefix", default="dump",
-                    help="dump filename prefix: {prefix}_{label}_{ts}.txt (default: dump)")
-    sp.add_argument("--label", default="catchup",
-                    help="label embedded in the output filename (default: catchup)")
-    sp.add_argument("--capture-post-maturity", default=DEFAULT_CAPTURE_POST_MATURITY,
-                    help="D810_CAPTURE_POST_MATURITY value (default: 8 = MMAT_GLBOPT1)")
-    sp.add_argument("--no-debug-logging", action="store_true",
-                    help="do not pass -l / --enable-debug-logging to the docker runner")
+    sp.add_argument(
+        "--prefix",
+        default="dump",
+        help="dump filename prefix: {prefix}_{label}_{ts}.txt (default: dump)",
+    )
+    sp.add_argument(
+        "--label",
+        default="catchup",
+        help="label embedded in the output filename (default: catchup)",
+    )
+    sp.add_argument(
+        "--capture-post-maturity",
+        default=DEFAULT_CAPTURE_POST_MATURITY,
+        help="D810_CAPTURE_POST_MATURITY value (default: 8 = MMAT_GLBOPT1)",
+    )
+    sp.add_argument(
+        "--no-debug-logging",
+        action="store_true",
+        help="do not pass -l / --enable-debug-logging to the docker runner",
+    )
     sp.add_argument(
         "--full-diagnostics",
         action="store_true",
@@ -1287,8 +1383,11 @@ def build_parser() -> argparse.ArgumentParser:
             "and use the full preanalysis/diagnostic microcode, valrange, and condition-chain dump set"
         ),
     )
-    sp.add_argument("--extra", action="append",
-                    help="extra pytest arg (repeatable); if any provided, replaces default/full dump extras")
+    sp.add_argument(
+        "--extra",
+        action="append",
+        help="extra pytest arg (repeatable); if any provided, replaces default/full dump extras",
+    )
     sp.set_defaults(func=cmd_dump)
 
     pseudocode = sub.add_parser(
@@ -1341,7 +1440,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_pseudocode_capture)
 
-    sp = sub.add_parser("after", help="print AFTER pseudocode body from the latest dump")
+    sp = sub.add_parser(
+        "after", help="print AFTER pseudocode body from the latest dump"
+    )
     _add_worktree(sp)
     sp.add_argument("--dump", help="explicit dump file (default: latest in worktree)")
     sp.add_argument("-n", "--line-numbers", action="store_true")
@@ -1365,7 +1466,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
     sel = sp.add_mutually_exclusive_group()
     sel.add_argument(
-        "--snapshot-id", type=int,
+        "--snapshot-id",
+        type=int,
         help="render this specific snapshot id; default is the most recent",
     )
     sel.add_argument(
@@ -1377,18 +1479,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "--serials",
-        help=(
-            "comma-separated block serials to focus on"
-            " (e.g. '116,118,238,56')"
-        ),
+        help=("comma-separated block serials to focus on (e.g. '116,118,238,56')"),
     )
     sp.add_argument(
-        "--include-eas", action="store_true",
+        "--include-eas",
+        action="store_true",
         help="emit each instruction's ea_hex alongside opcode + dstr",
     )
     sp.set_defaults(func=cmd_snap_render)
 
-    sp = sub.add_parser("stats", help="print the '=== STATS: ===' block from the latest dump")
+    sp = sub.add_parser(
+        "stats", help="print the '=== STATS: ===' block from the latest dump"
+    )
     _add_worktree(sp)
     sp.add_argument("--dump", help="explicit dump file (default: latest in worktree)")
     sp.set_defaults(func=cmd_stats)
@@ -1399,8 +1501,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_worktree(sp)
     sp.add_argument("--dump", help="explicit dump file (default: latest in worktree)")
-    sp.add_argument("--var", action="append",
-                    help="variable name to match (default: i plus vNN)")
+    sp.add_argument(
+        "--var", action="append", help="variable name to match (default: i plus vNN)"
+    )
     sp.set_defaults(func=cmd_residuals)
 
     sp = sub.add_parser(
@@ -1409,8 +1512,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_worktree(sp)
     sp.add_argument("--dump", help="explicit dump file (default: latest in worktree)")
-    sp.add_argument("--var", action="append",
-                    help="variable name to match (default: v187, v50, v49)")
+    sp.add_argument(
+        "--var",
+        action="append",
+        help="variable name to match (default: v187, v50, v49)",
+    )
     sp.set_defaults(func=cmd_witness)
 
     sp = sub.add_parser(
@@ -1439,10 +1545,19 @@ def build_parser() -> argparse.ArgumentParser:
     _add_worktree(sp)
     sp.add_argument("state", help="state value, e.g. 0x1A9A9DD9")
     sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
-    sp.add_argument("--snapshot", type=int, default=-1, help="snapshot id (-1 = latest with compares)")
-    sp.add_argument("--root", type=int, default=3, help="dispatcher root block (default 3)")
+    sp.add_argument(
+        "--snapshot",
+        type=int,
+        default=-1,
+        help="snapshot id (-1 = latest with compares)",
+    )
+    sp.add_argument(
+        "--root", type=int, default=3, help="dispatcher root block (default 3)"
+    )
     sp.add_argument("--slot", default="52", help="state-var diag stkoff (default 52)")
-    sp.add_argument("--width", type=int, default=32, help="state-var bit width (default 32)")
+    sp.add_argument(
+        "--width", type=int, default=32, help="state-var bit width (default 32)"
+    )
     sp.set_defaults(func=cmd_route)
 
     sp = sub.add_parser(
@@ -1450,8 +1565,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="passthrough to `python -m d810.diagnostics`; args after `--`",
     )
     _add_worktree(sp)
-    sp.add_argument("args", nargs=argparse.REMAINDER,
-                    help="all args after `--` are forwarded to d810.diagnostics")
+    sp.add_argument(
+        "args",
+        nargs=argparse.REMAINDER,
+        help="all args after `--` are forwarded to d810.diagnostics",
+    )
     sp.set_defaults(func=cmd_db)
 
     sp = sub.add_parser(
@@ -1494,7 +1612,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--pointer-size", type=int, default=8)
     sp.add_argument("--max-depth", type=int, default=64)
     sp.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
         help="emit JSON instead of the human-readable report",
     )
     sp.set_defaults(func=cmd_indirect_transfer_map)
@@ -1509,18 +1629,35 @@ def build_parser() -> argparse.ArgumentParser:
     _add_worktree(sp)
     sp.add_argument("-f", "--function", default=DEFAULT_FUNCTION)
     sp.add_argument("-p", "--project", default=DEFAULT_PROJECT)
-    sp.add_argument("--prefix", default="trace",
-                    help="dump filename prefix (default: trace)")
-    sp.add_argument("--label", default="hcc",
-                    help="label embedded in the output filename (default: hcc)")
-    sp.add_argument("--capture-post-maturity", default=DEFAULT_CAPTURE_POST_MATURITY,
-                    help="D810_CAPTURE_POST_MATURITY value (default: 8 = MMAT_GLBOPT1)")
-    sp.add_argument("--no-debug-logging", action="store_true",
-                    help="do not pass -l / --enable-debug-logging to the docker runner")
-    sp.add_argument("--extra", action="append",
-                    help="extra pytest arg (repeatable); if any provided, replaces defaults")
-    sp.add_argument("--json", action="store_true", dest="json_output",
-                    help="emit the trace report as JSON instead of markdown")
+    sp.add_argument(
+        "--prefix", default="trace", help="dump filename prefix (default: trace)"
+    )
+    sp.add_argument(
+        "--label",
+        default="hcc",
+        help="label embedded in the output filename (default: hcc)",
+    )
+    sp.add_argument(
+        "--capture-post-maturity",
+        default=DEFAULT_CAPTURE_POST_MATURITY,
+        help="D810_CAPTURE_POST_MATURITY value (default: 8 = MMAT_GLBOPT1)",
+    )
+    sp.add_argument(
+        "--no-debug-logging",
+        action="store_true",
+        help="do not pass -l / --enable-debug-logging to the docker runner",
+    )
+    sp.add_argument(
+        "--extra",
+        action="append",
+        help="extra pytest arg (repeatable); if any provided, replaces defaults",
+    )
+    sp.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="emit the trace report as JSON instead of markdown",
+    )
     sp.set_defaults(func=cmd_trace)
 
     sp = sub.add_parser(
@@ -1547,11 +1684,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_worktree(sp)
     sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
     sp.add_argument(
-        "--show-edges", action="store_true",
+        "--show-edges",
+        action="store_true",
         help="print every observation with snap/maturity/phase/role/src_form",
     )
     sp.add_argument(
-        "--localize", action=argparse.BooleanOptionalAction, default=True,
+        "--localize",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help=(
             "run intermediate-snapshot loss localization (default: True;"
             " pass --no-localize to print only the bare timeline). The bare"
@@ -1561,7 +1701,9 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp.add_argument(
-        "--initial-snap-id", type=int, default=5,
+        "--initial-snap-id",
+        type=int,
+        default=5,
         help="snapshot id of the initial pre-D810 state (default: 5)",
     )
     sp.set_defaults(func=cmd_byte_audit)
@@ -1584,12 +1726,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--log",
         help=(
-            "explicit d810.log path (default: <worktree>/.tmp/logs/"
-            "d810_logs/d810.log)"
+            "explicit d810.log path (default: <worktree>/.tmp/logs/d810_logs/d810.log)"
         ),
     )
     sp.add_argument(
-        "--bytes", default=None,
+        "--bytes",
+        default=None,
         help=(
             "comma-separated byte indices to explain (e.g. '2,4,5')."
             " Default: every row whose final_status_refined =="
@@ -1597,11 +1739,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp.add_argument(
-        "--func-label", default=None,
+        "--func-label",
+        default=None,
         help="optional function label rendered in the report title",
     )
     sp.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
         help="emit JSON instead of the human-readable text table",
     )
     sp.set_defaults(func=cmd_admission_explain)
@@ -1625,12 +1770,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--log",
         help=(
-            "explicit d810.log path (default: <worktree>/.tmp/logs/"
-            "d810_logs/d810.log)"
+            "explicit d810.log path (default: <worktree>/.tmp/logs/d810_logs/d810.log)"
         ),
     )
     sp.add_argument(
-        "--bytes", default=None,
+        "--bytes",
+        default=None,
         help=(
             "comma-separated byte indices to explain (e.g. '2,4,5')."
             " Default: every row whose final_refined =="
@@ -1638,11 +1783,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp.add_argument(
-        "--func-label", default=None,
+        "--func-label",
+        default=None,
         help="optional function label rendered in the report title",
     )
     sp.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
         help="emit JSON instead of the human-readable text table",
     )
     sp.set_defaults(func=cmd_compose_evidence_explain)
@@ -1664,12 +1812,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--log",
         help=(
-            "explicit d810.log path (default: <worktree>/.tmp/logs/"
-            "d810_logs/d810.log)"
+            "explicit d810.log path (default: <worktree>/.tmp/logs/d810_logs/d810.log)"
         ),
     )
     sp.add_argument(
-        "--bytes", default=None,
+        "--bytes",
+        default=None,
         help=(
             "comma-separated byte indices to explain (e.g. '0,2,3')."
             " Default: every row whose candidate_rejection =="
@@ -1677,11 +1825,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp.add_argument(
-        "--func-label", default=None,
+        "--func-label",
+        default=None,
         help="optional function label rendered in the report title",
     )
     sp.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
         help="emit JSON instead of the human-readable text table",
     )
     sp.set_defaults(func=cmd_unsupported_edge_kind_explain)
@@ -1704,11 +1855,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     sp.add_argument(
-        "--strict", action="store_true",
+        "--strict",
+        action="store_true",
         help="fail on ANY bypass, not just untracked ones",
     )
     sp.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
         help="emit JSON instead of the human-readable text table",
     )
     sp.set_defaults(func=cmd_gates)
@@ -1726,19 +1880,25 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
     sp.add_argument("--log", help="explicit d810.log (default: worktree's d810.log)")
     sp.add_argument(
-        "--snap-id", type=int, default=5,
+        "--snap-id",
+        type=int,
+        default=5,
         help="snapshot id to reconcile (default: 5 = MMAT_GLBOPT1 pre_d810)",
     )
     sp.add_argument(
-        "--state-var-stkoff", default="0x3C",
+        "--state-var-stkoff",
+        default="0x3C",
         help="state variable stack offset (hex). Default 0x3C for sub_7FFD.",
     )
     sp.add_argument(
-        "--min-dispatcher-preds", type=int, default=5,
+        "--min-dispatcher-preds",
+        type=int,
+        default=5,
         help="minimum in-degree to count a block as dispatcher region",
     )
     sp.add_argument(
-        "--show-edges", action="store_true",
+        "--show-edges",
+        action="store_true",
         help="print every edge with bucket and evidence",
     )
     sp.set_defaults(func=cmd_reconcile)
@@ -1753,22 +1913,29 @@ def build_parser() -> argparse.ArgumentParser:
     _add_worktree(sp)
     sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
     sp.add_argument(
-        "--dump", help="explicit Hodur dump file (default: latest in worktree)",
+        "--dump",
+        help="explicit Hodur dump file (default: latest in worktree)",
     )
     sp.add_argument(
-        "--no-dump", action="store_true",
+        "--no-dump",
+        action="store_true",
         help="don't correlate against AFTER pseudocode (skip dump file lookup)",
     )
     sp.add_argument(
-        "--snapshot-id", type=int, default=None,
+        "--snapshot-id",
+        type=int,
+        default=None,
         help="explicit snapshot id (default: last pre-gut_and_wire post_apply > 200 blocks)",
     )
     sp.add_argument(
-        "--list-snapshots", action="store_true",
+        "--list-snapshots",
+        action="store_true",
         help="list every snapshot in the DB and exit",
     )
     sp.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
         help="emit JSON instead of the human-readable text table",
     )
     sp.set_defaults(func=cmd_returns)
@@ -1784,35 +1951,45 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_worktree(sp)
     sp.add_argument(
-        "--diag-db", default=None,
+        "--diag-db",
+        default=None,
         help="explicit diag SQLite DB (default: latest in worktree)",
     )
     sp.add_argument(
-        "--analysis-db", default=None,
+        "--analysis-db",
+        default=None,
         help="explicit preanalysis SQLite DB (default: auto-detect)",
     )
     sp.add_argument(
-        "--log", default=None,
+        "--log",
+        default=None,
         help="explicit text log/dump (default: worktree's d810.log)",
     )
     sp.add_argument(
-        "--func-ea", default=None,
+        "--func-ea",
+        default=None,
         help="function EA in hex (default: derived from snapshot metadata)",
     )
     sp.add_argument(
-        "--snapshot-id", type=int, default=None,
+        "--snapshot-id",
+        type=int,
+        default=None,
         help="primary worksheet snapshot ID (default: resolved by maturity/phase)",
     )
     sp.add_argument(
-        "--format", choices=("markdown", "tsv", "json"), default=None,
+        "--format",
+        choices=("markdown", "tsv", "json"),
+        default=None,
         help="output format (default: markdown)",
     )
     sp.add_argument(
-        "--output", default=None,
+        "--output",
+        default=None,
         help="write output to this path instead of stdout",
     )
     sp.add_argument(
-        "--list-snapshots", action="store_true",
+        "--list-snapshots",
+        action="store_true",
         help="list snapshots in the diag DB and exit",
     )
     sp.set_defaults(func=cmd_residual_worksheet)
@@ -1833,8 +2010,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--kind",
         default="unresolved,resolved",
         help=(
-            "Filter by diagnostic kind, comma-separated "
-            "(default: unresolved,resolved)."
+            "Filter by diagnostic kind, comma-separated (default: unresolved,resolved)."
         ),
     )
     sp.add_argument(
@@ -1855,58 +2031,78 @@ def build_parser() -> argparse.ArgumentParser:
     _add_worktree(sp)
     sp.add_argument("--db", help="explicit diag DB (default: latest in worktree)")
     sp.add_argument(
-        "--fact-snapshot-id", type=int, default=None,
+        "--fact-snapshot-id",
+        type=int,
+        default=None,
         help=(
             "snapshot containing TerminalByteEmitterFact rows"
             " (default: auto-pick GLBOPT1/pre_d810)"
         ),
     )
     sp.add_argument(
-        "--target-snapshot-id", type=int, default=None,
-        help=(
-            "CFG snapshot to evaluate (default: auto-pick"
-            " post_bundle_stabilize)"
-        ),
+        "--target-snapshot-id",
+        type=int,
+        default=None,
+        help=("CFG snapshot to evaluate (default: auto-pick post_bundle_stabilize)"),
     )
     sp.set_defaults(func=cmd_egress_plan)
 
-    fixture = sub.add_parser("fixture", help="idb64 -> committed MASM fixture (d81-rtfh)")
+    fixture = sub.add_parser(
+        "fixture", help="idb64 -> committed MASM fixture (d81-rtfh)"
+    )
     fixture_sub = fixture.add_subparsers(dest="fixture_cmd", required=True)
 
     def _fx_common(sp):
         sp.add_argument("--idb", required=True, help="source .i64/.idb path")
         # dest="function" so it does NOT clobber the `func` dispatch handler
         # (main() calls args.func(args)).
-        sp.add_argument("--func", required=True, dest="function",
-                        help="function ea (0x..) or name")
+        sp.add_argument(
+            "--func", required=True, dest="function", help="function ea (0x..) or name"
+        )
         sp.add_argument("--out", help="output dir for .asm (default samples/src/masm)")
         sp.set_defaults(func=cmd_fixture)
 
     fx_extract = fixture_sub.add_parser("extract", help="emit compilable MASM")
     _fx_common(fx_extract)
 
-    fx_retarget = fixture_sub.add_parser("retarget", help="detect + retarget devirt calls")
+    fx_retarget = fixture_sub.add_parser(
+        "retarget", help="detect + retarget devirt calls"
+    )
     _fx_common(fx_retarget)
-    fx_retarget.add_argument("--dry-run", action="store_true", help="print plan, do not rewrite")
+    fx_retarget.add_argument(
+        "--dry-run", action="store_true", help="print plan, do not rewrite"
+    )
 
-    fx_build = fixture_sub.add_parser("build", help="local build_masm.sh -> throwaway DLL")
+    fx_build = fixture_sub.add_parser(
+        "build", help="local build_masm.sh -> throwaway DLL"
+    )
     _fx_common(fx_build)
     fx_build.add_argument("--binary-name", dest="binary_name", default=None)
 
-    fx_register = fixture_sub.add_parser("register", help="upsert DSL case into DAC_MASM_CASES")
+    fx_register = fixture_sub.add_parser(
+        "register", help="upsert DSL case into DAC_MASM_CASES"
+    )
     _fx_common(fx_register)
     fx_register.add_argument("--project", required=True)
 
-    fx_verify = fixture_sub.add_parser("verify", help="run the DSL case (D810_TEST_BINARY)")
+    fx_verify = fixture_sub.add_parser(
+        "verify", help="run the DSL case (D810_TEST_BINARY)"
+    )
     _fx_common(fx_verify)
     fx_verify.add_argument("--binary-name", dest="binary_name", default=None)
 
-    fx_add = fixture_sub.add_parser("add", help="run the whole pipeline (human gate at end)")
+    fx_add = fixture_sub.add_parser(
+        "add", help="run the whole pipeline (human gate at end)"
+    )
     _fx_common(fx_add)
     fx_add.add_argument("--project", required=True)
     fx_add.add_argument("--binary-name", dest="binary_name", default=None)
     fx_add.add_argument("--dry-run", action="store_true")
-    fx_add.add_argument("--yes", action="store_true", help="acknowledge the human gate non-interactively")
+    fx_add.add_argument(
+        "--yes",
+        action="store_true",
+        help="acknowledge the human gate non-interactively",
+    )
 
     return p
 

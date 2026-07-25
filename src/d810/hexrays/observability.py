@@ -14,6 +14,7 @@ already import from the facade.
 See:
     docs/diag-observability-boundary.md
 """
+
 from __future__ import annotations
 
 from d810.core.observability import (
@@ -22,6 +23,7 @@ from d810.core.observability import (
     has_subscribers as _has_subscribers,
     new_snapshot_key,
 )
+
 # Event dataclass lives under d810.core.observability_events so the
 # SQLite sink can subscribe without an upward import. The hexrays
 # facade re-exports it so call sites don't have to know where it lives.

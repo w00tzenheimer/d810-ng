@@ -67,9 +67,9 @@ class ResolverSessionState:
 
     native_preanalysis: NativePreanalysisSessionState
     native_key: NativePreanalysisKey
-    frontend_normalization_plan_provider: (
-        FrontendNormalizationPlanCapability | None
-    ) = None
+    frontend_normalization_plan_provider: FrontendNormalizationPlanCapability | None = (
+        None
+    )
     identity_index: MbaBlockIdentityIndex | None = None
     materialization: ResolverMaterializationState | None = None
     materialized: bool = False
@@ -260,10 +260,7 @@ class ResolverSessionState:
             )
         )
         if len(normalized) != len(
-            {
-                (int(start_ea), int(end_ea))
-                for start_ea, end_ea in ranges
-            }
+            {(int(start_ea), int(end_ea)) for start_ea, end_ea in ranges}
         ):
             raise ValueError(
                 "call companion requests require positive nonempty native ranges"
@@ -290,9 +287,7 @@ class ResolverSessionState:
         if normalized not in self.pending_call_companion_ranges:
             return False
         self.pending_call_companion_ranges = tuple(
-            row
-            for row in self.pending_call_companion_ranges
-            if row != normalized
+            row for row in self.pending_call_companion_ranges if row != normalized
         )
         return True
 
@@ -350,9 +345,7 @@ class ResolverSessionState:
     def bound_bootstrap_routes(self) -> tuple[BootstrapRouteEvidence, ...]:
         """Return routes owned by the live MBA's normalized generation."""
         evidence = self.native_preanalysis
-        bound_generation = (
-            evidence.normalization_published_postvalidated_generation
-        )
+        bound_generation = evidence.normalization_published_postvalidated_generation
         if bound_generation is None:
             return ()
         routes = {

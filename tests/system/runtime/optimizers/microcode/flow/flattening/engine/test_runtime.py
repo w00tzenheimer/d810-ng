@@ -1,4 +1,5 @@
 """Runtime tests for shared family pipeline helpers."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -130,13 +131,17 @@ def test_make_transactional_executor_factory_applies_policy(monkeypatch) -> None
     class _Executor:
         total_changes = 0
 
-        def __init__(self, mba, *, gate, allow_legacy_block_creation, safeguard_profile):
+        def __init__(
+            self, mba, *, gate, allow_legacy_block_creation, safeguard_profile
+        ):
             seen.append((mba, gate, allow_legacy_block_creation, safeguard_profile))
 
         def execute_pipeline(self, pipeline, total_handlers):
             return []
 
-    from d810.optimizers.microcode.flow.flattening.engine import executor as executor_mod
+    from d810.optimizers.microcode.flow.flattening.engine import (
+        executor as executor_mod,
+    )
 
     monkeypatch.setattr(executor_mod, "TransactionalExecutor", _Executor)
     gate = object()
@@ -203,12 +208,10 @@ def test_run_family_pass_orchestrates_detection_planning_and_execution() -> None
         planner="planner",
         executor_policy=ExecutorPolicy(safeguard_profile="hodur"),
         build_planner_inputs=lambda ctx, analysis: (
-            calls.append(("build_inputs", ctx, analysis))
-            or "planner_inputs"
+            calls.append(("build_inputs", ctx, analysis)) or "planner_inputs"
         ),
         select_strategies=lambda ctx, analysis: (
-            calls.append(("select_strategies", ctx, analysis))
-            or ["strategy"]
+            calls.append(("select_strategies", ctx, analysis)) or ["strategy"]
         ),
         plan_pipeline=lambda snap, strategies, *, planner, inputs=None: (
             calls.append(("plan", snap, strategies, planner, inputs))

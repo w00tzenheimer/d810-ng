@@ -13,6 +13,7 @@ mutations. Follows the same pattern as
 edges/nodes keeps this module independent of heavy ``linearized_state_dag``
 imports that pull in IDA transitively.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -21,7 +22,9 @@ from d810.core.typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from d810.analyses.control_flow.linearized_state_dag import StateDagEdge
-    from d810.analyses.control_flow.reconstruction_candidate_builder import ReconstructionCandidate
+    from d810.analyses.control_flow.reconstruction_candidate_builder import (
+        ReconstructionCandidate,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,9 +84,13 @@ def iter_residual_raw_alias_edges(
     for edge in getattr(dag, "edges", ()) or ():
         target_state = getattr(edge, "target_state", None)
         target_label = str(getattr(edge, "target_label", "") or "")
-        if target_state is None or not is_raw_state_label(target_label, int(target_state)):
+        if target_state is None or not is_raw_state_label(
+            target_label, int(target_state)
+        ):
             continue
-        ordered_path = tuple(int(serial) for serial in getattr(edge, "ordered_path", ()) or ())
+        ordered_path = tuple(
+            int(serial) for serial in getattr(edge, "ordered_path", ()) or ()
+        )
         source_block = None
         if ordered_path and int(ordered_path[-1]) in residual_set:
             source_block = int(ordered_path[-1])
@@ -98,7 +105,11 @@ def iter_residual_raw_alias_edges(
                 # In that case, only admit tails that extend past the source anchor;
                 # this keeps the late phase narrow while still catching shapes like
                 # blk[15].fallthrough -> blk[16] -> 0x4C77464F.
-                if ordered_path and anchor_block is not None and int(ordered_path[-1]) != int(anchor_block):
+                if (
+                    ordered_path
+                    and anchor_block is not None
+                    and int(ordered_path[-1]) != int(anchor_block)
+                ):
                     source_block = int(ordered_path[-1])
         if source_block is None:
             continue
@@ -169,17 +180,16 @@ def discover_residual_alias_overrides(
         return ResidualAliasDiscoveryResult(overrides=())
 
     overrides: list[ResidualAliasOverride] = []
-    seen_candidates: set[tuple[str, int, int, int | None, int | None, tuple[int, ...]]] = set()
+    seen_candidates: set[
+        tuple[str, int, int, int | None, int | None, tuple[int, ...]]
+    ] = set()
 
     for source_block, edge in iter_residual_raw_alias_edges(
         dag,
         residual_dispatcher_preds=residual_dispatcher_preds,
     ):
         target_entry = getattr(edge, "target_entry_anchor", None)
-        if (
-            resolve_effective_target_entry is not None
-            and analysis_mba is not None
-        ):
+        if resolve_effective_target_entry is not None and analysis_mba is not None:
             resolution = resolve_effective_target_entry(
                 dag,
                 edge,
@@ -245,7 +255,10 @@ def discover_residual_alias_overrides(
                 if getattr(candidate, "via_pred", None) is not None
                 else None
             ),
-            tuple(int(serial) for serial in getattr(candidate.edge, "ordered_path", ()) or ()),
+            tuple(
+                int(serial)
+                for serial in getattr(candidate.edge, "ordered_path", ()) or ()
+            ),
         )
         if candidate_key in seen_candidates:
             continue

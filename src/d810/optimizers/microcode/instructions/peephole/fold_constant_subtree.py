@@ -6,7 +6,11 @@ from d810.core import typing
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstBase
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
-from d810.hexrays.utils.hexrays_formatters import format_mop_t, opcode_to_string, sanitize_ea
+from d810.hexrays.utils.hexrays_formatters import (
+    format_mop_t,
+    opcode_to_string,
+    sanitize_ea,
+)
 from d810.hexrays.utils.hexrays_helpers import AND_TABLE
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
@@ -20,29 +24,31 @@ logger = getLogger(__name__)
 
 # Opcodes where it is not safe to replace the whole instruction with m_ldc.
 # Control-flow instructions must be left alone.
-_SKIP_OPCODES: frozenset[int] = frozenset({
-    ida_hexrays.m_goto,
-    ida_hexrays.m_jcnd,
-    ida_hexrays.m_jnz,
-    ida_hexrays.m_jz,
-    ida_hexrays.m_jae,
-    ida_hexrays.m_jb,
-    ida_hexrays.m_ja,
-    ida_hexrays.m_jbe,
-    ida_hexrays.m_jg,
-    ida_hexrays.m_jge,
-    ida_hexrays.m_jl,
-    ida_hexrays.m_jle,
-    ida_hexrays.m_jtbl,
-    ida_hexrays.m_ijmp,
-    ida_hexrays.m_call,
-    ida_hexrays.m_icall,
-    ida_hexrays.m_ret,
-    ida_hexrays.m_push,
-    ida_hexrays.m_pop,
-    ida_hexrays.m_ldx,
-    ida_hexrays.m_stx,
-})
+_SKIP_OPCODES: frozenset[int] = frozenset(
+    {
+        ida_hexrays.m_goto,
+        ida_hexrays.m_jcnd,
+        ida_hexrays.m_jnz,
+        ida_hexrays.m_jz,
+        ida_hexrays.m_jae,
+        ida_hexrays.m_jb,
+        ida_hexrays.m_ja,
+        ida_hexrays.m_jbe,
+        ida_hexrays.m_jg,
+        ida_hexrays.m_jge,
+        ida_hexrays.m_jl,
+        ida_hexrays.m_jle,
+        ida_hexrays.m_jtbl,
+        ida_hexrays.m_ijmp,
+        ida_hexrays.m_call,
+        ida_hexrays.m_icall,
+        ida_hexrays.m_ret,
+        ida_hexrays.m_push,
+        ida_hexrays.m_pop,
+        ida_hexrays.m_ldx,
+        ida_hexrays.m_stx,
+    }
+)
 
 # Set/comparison opcodes: their destination is always 1 byte (the flag),
 # but the source operands can be wider.  Replacing the whole instruction
@@ -51,19 +57,21 @@ _SKIP_OPCODES: frozenset[int] = frozenset({
 # size mismatch that causes INTERR 50832 in IDA's verifier.
 # These opcodes must fall through to the partial-fold path which
 # reconstructs the instruction from the folded AST, preserving sizes.
-_SET_OPCODES: frozenset[int] = frozenset({
-    ida_hexrays.m_setz,
-    ida_hexrays.m_setnz,
-    ida_hexrays.m_setae,
-    ida_hexrays.m_setb,
-    ida_hexrays.m_seta,
-    ida_hexrays.m_setbe,
-    ida_hexrays.m_setg,
-    ida_hexrays.m_setge,
-    ida_hexrays.m_setl,
-    ida_hexrays.m_setle,
-    ida_hexrays.m_setp,
-})
+_SET_OPCODES: frozenset[int] = frozenset(
+    {
+        ida_hexrays.m_setz,
+        ida_hexrays.m_setnz,
+        ida_hexrays.m_setae,
+        ida_hexrays.m_setb,
+        ida_hexrays.m_seta,
+        ida_hexrays.m_setbe,
+        ida_hexrays.m_setg,
+        ida_hexrays.m_setge,
+        ida_hexrays.m_setl,
+        ida_hexrays.m_setle,
+        ida_hexrays.m_setp,
+    }
+)
 
 
 class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
@@ -78,7 +86,9 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
     we attempt algebraic folding.
     """
 
-    DESCRIPTION = "Fold constant subtrees bottom-up (handles nested ROL/XOR/SBox chains)"
+    DESCRIPTION = (
+        "Fold constant subtrees bottom-up (handles nested ROL/XOR/SBox chains)"
+    )
     CATEGORY = "Constant Folding"
 
     def __init__(self, *args: typing.Any, **kwargs: typing.Any) -> None:
@@ -169,7 +179,10 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
         # against xdu/xds whose folded child is a SET node, and against
         # _SET_OPCODES themselves — create_minsn on partially-folded set/cmp
         # trees produces size-mismatched instructions (INTERR 50832).
-        if ins.opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds) or ins.opcode in _SET_OPCODES:
+        if (
+            ins.opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds)
+            or ins.opcode in _SET_OPCODES
+        ):
             return None
 
         if not folded.is_node():

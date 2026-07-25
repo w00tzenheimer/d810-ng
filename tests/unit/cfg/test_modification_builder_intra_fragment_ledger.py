@@ -13,6 +13,7 @@ Only the ``RedirectGoto`` emission paths are tracked:
 ``ConvertToGoto``, ``RedirectBranch``, and ``EdgeRedirectViaPredSplit`` are
 explicitly out of scope for this ledger.
 """
+
 from __future__ import annotations
 
 import logging

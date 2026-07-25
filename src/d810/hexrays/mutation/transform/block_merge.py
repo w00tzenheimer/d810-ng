@@ -21,6 +21,7 @@ Example:
     >>> # Before: Block 10 -> goto -> Block 20 (no other edges)
     >>> # After:  Block 10 merged with Block 20 (goto NOPed)
 """
+
 from __future__ import annotations
 
 import ida_hexrays
@@ -82,6 +83,7 @@ class BlockMergeTransform(FlowGraphTransform):
         >>> mods[0].insn_eas
         (4096,)
     """
+
     name = "block_merge"
     tags = frozenset({"cleanup", "topology"})
 
@@ -165,10 +167,7 @@ class BlockMergeTransform(FlowGraphTransform):
             if not self._goto_targets_successor(tail_insn, succ_serial):
                 continue
 
-            mods.append(NopInstructions(
-                block_serial=serial,
-                insn_eas=(tail_insn.ea,)
-            ))
+            mods.append(NopInstructions(block_serial=serial, insn_eas=(tail_insn.ea,)))
 
         return mods
 

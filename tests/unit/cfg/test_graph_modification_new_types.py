@@ -1,4 +1,5 @@
 """Tests for new GraphModification dataclasses."""
+
 from dataclasses import FrozenInstanceError
 
 import pytest

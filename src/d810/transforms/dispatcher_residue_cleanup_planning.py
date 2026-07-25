@@ -1,4 +1,5 @@
 """CFG-owned dispatcher residue and unreachable-region cleanup plans."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -92,9 +93,7 @@ def plan_dispatcher_residue_cleanup(
     )
     return DispatcherResidueCleanupPlan(
         dispatcher_serial=int(facts.dispatcher_serial),
-        one_way_edge_severs=tuple(
-            int(serial) for serial in facts.one_way_predecessors
-        ),
+        one_way_edge_severs=tuple(int(serial) for serial in facts.one_way_predecessors),
         two_way_conversions=conversions,
         dispatcher_outgoing_successors=tuple(
             int(serial) for serial in facts.dispatcher_outgoing_successors

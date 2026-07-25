@@ -1,4 +1,5 @@
 """Tests for built-in inference factories."""
+
 from __future__ import annotations
 
 from d810.passes.inferences import unflattening_inference
@@ -6,7 +7,9 @@ from d810.analyses.control_flow.models import DeobfuscationHints
 
 
 class TestUnflatteningInference:
-    def _make_hints(self, confidence: float, obfuscation_type: str | None = None) -> DeobfuscationHints:
+    def _make_hints(
+        self, confidence: float, obfuscation_type: str | None = None
+    ) -> DeobfuscationHints:
         return DeobfuscationHints(
             func_ea=0x1000,
             obfuscation_type=obfuscation_type,

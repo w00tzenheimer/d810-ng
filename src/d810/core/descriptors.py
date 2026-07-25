@@ -13,6 +13,7 @@ Contents:
     deferred_property / lazy_type - lazy initialisation helpers
     reify                 - cached-property descriptor
 """
+
 from __future__ import annotations
 
 import functools
@@ -107,6 +108,7 @@ def survives_reload(cls=None, *, reload_key: str = ""):
 
         BLAH = survives_reload(MyClass, reload_key="FOO")
     """
+
     def decorator(inner_cls):
         _reload_key = reload_key or f"_SHARED_{inner_cls.__name__}"
         _module = sys.modules[inner_cls.__module__]
@@ -139,10 +141,7 @@ def survives_reload(cls=None, *, reload_key: str = ""):
 
 class CombineMeta:
     def __prepare__(
-        self,
-        name: str,
-        bases: tuple[type, ...],
-        **kwargs: Any
+        self, name: str, bases: tuple[type, ...], **kwargs: Any
     ) -> MutableMapping[str, Any]:
         namespace: MutableMapping[str, Any] = {}
         for metaclass in self._get_most_derived_metaclasses(bases):
@@ -152,7 +151,7 @@ class CombineMeta:
             else:
                 if type(namespace) is not dict:
                     raise TypeError(
-                        "metaclass conflict: " "multiple custom namespaces defined."
+                        "metaclass conflict: multiple custom namespaces defined."
                     )
                 ns.update(namespace)
                 namespace = ns
@@ -163,7 +162,7 @@ class CombineMeta:
         name: str,
         bases: tuple[type, ...],
         namespace: MutableMapping[str, Any],
-        **kwargs: Any
+        **kwargs: Any,
     ) -> type:
         metaclasses = self._get_most_derived_metaclasses(bases)
         if len(metaclasses) > 1:
@@ -175,9 +174,7 @@ class CombineMeta:
         return metaclass(name, bases, dict(namespace), **kwargs)
 
     @staticmethod
-    def _get_most_derived_metaclasses(
-        bases: tuple[type, ...]
-    ) -> list[type]:
+    def _get_most_derived_metaclasses(bases: tuple[type, ...]) -> list[type]:
         metaclasses: list[type] = []
         for metaclass in map(type, bases):
             if metaclass is not type:

@@ -79,9 +79,9 @@ class TigressIncrementRule(VerifiableRule):
     REPLACEMENT = x + k_res
 
     CONSTRAINTS = [
-        k_res == c2 >> ONE,        # defining: k = c2 / 2
+        k_res == c2 >> ONE,  # defining: k = c2 / 2
         (c2 & ONE) == Const("0", 0),  # checking: c2 must be even
-        (c1 ^ k_res) == NEG_ONE,   # checking: c1 == ~k_res  (value-based)
+        (c1 ^ k_res) == NEG_ONE,  # checking: c1 == ~k_res  (value-based)
     ]
 
     DESCRIPTION = "Fold (x ^ ~k) + ((2*x) | 2k) + 1 to x + k (increment idiom)"
@@ -172,8 +172,8 @@ class TigressXorViaSubOrRule(VerifiableRule):
     REPLACEMENT = x ^ k_res
 
     CONSTRAINTS = [
-        k_res == ~c1,          # defining: K = ~c1   (value-based; left is fresh)
-        c2 == (k_res + TWO),   # checking: c2 == K + 2
+        k_res == ~c1,  # defining: K = ~c1   (value-based; left is fresh)
+        c2 == (k_res + TWO),  # checking: c2 == K + 2
     ]
 
     DESCRIPTION = "Fold x - 2*(x | ~K) - (K + 2) to x ^ K"
@@ -211,7 +211,7 @@ class TigressNotEqualSignBitRule(VerifiableRule):
     SH = Const("0x1F", 0x1F)
     d = x - y
 
-    PATTERN = (((d.sar(SH) & (TWO * d)) - d) >> SH)
+    PATTERN = ((d.sar(SH) & (TWO * d)) - d) >> SH
     REPLACEMENT = (x != y).to_int()
 
     DESCRIPTION = "Fold sign-bit non-zero idiom over (x - y) to (x != y) [32-bit]"
@@ -233,7 +233,7 @@ class TigressNotEqualSignBitRule64(VerifiableRule):
     SH = Const("0x3F", 0x3F)
     d = x - y
 
-    PATTERN = (((d.sar(SH) & (TWO * d)) - d) >> SH)
+    PATTERN = ((d.sar(SH) & (TWO * d)) - d) >> SH
     REPLACEMENT = (x != y).to_int()
 
     DESCRIPTION = "Fold sign-bit non-zero idiom over (x - y) to (x != y) [64-bit]"
@@ -267,7 +267,9 @@ class TigressMultiplyBitPartitionRule(VerifiableRule):
 
     maturities = _LOCOPT_AND_LATER
 
-    SKIP_VERIFICATION = True  # 3 multiplications -> Z3 times out; proven by algebra + 2.5M samples
+    SKIP_VERIFICATION = (
+        True  # 3 multiplications -> Z3 times out; proven by algebra + 2.5M samples
+    )
 
     PATTERN = (a & bnot_b) * (bnot_a & b) + (a | b) * (a & b)
     REPLACEMENT = a * b

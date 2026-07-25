@@ -5,6 +5,7 @@ The Hex-Rays adapter normalizes a snippet MBA into
 about IDA: it validates only complete, already-evaluated microcode facts and
 returns an immutable proof or abstains.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

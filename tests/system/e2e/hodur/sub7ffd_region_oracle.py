@@ -19,6 +19,7 @@ observations for fact-level detection.
 Strictly read-only. No CFG edits, no behavior change. This module is a
 diagnostic/test-support harness for a known REF artifact, not a CFG primitive.
 """
+
 from __future__ import annotations
 
 import json
@@ -302,11 +303,18 @@ def build_ref_evidence_from_spec_path(
 
 _REF_FEATURE_TABLE: tuple[tuple[FeatureRegion, str, object, str], ...] = (
     # Real loops — both isolated as self-loops in REF GLBOPT1.
-    (FeatureRegion.HEAD_LOOP, "head_2byte_stride_loop_isolated", True,
-     "ref_microcode_dump.txt:MMAT_GLBOPT1:blk[9] BLT_2WAY succs=[10,9] self-loop"),
-    (FeatureRegion.CHUNK_LOOP, "chunk_block_loop_isolated", True,
-     "ref_microcode_dump.txt:MMAT_GLBOPT1:blk[21] BLT_2WAY succs=[22,21] self-loop"),
-
+    (
+        FeatureRegion.HEAD_LOOP,
+        "head_2byte_stride_loop_isolated",
+        True,
+        "ref_microcode_dump.txt:MMAT_GLBOPT1:blk[9] BLT_2WAY succs=[10,9] self-loop",
+    ),
+    (
+        FeatureRegion.CHUNK_LOOP,
+        "chunk_block_loop_isolated",
+        True,
+        "ref_microcode_dump.txt:MMAT_GLBOPT1:blk[21] BLT_2WAY succs=[22,21] self-loop",
+    ),
     # Terminal-tail byte_emit blocks present.
     (FeatureRegion.TERMINAL_TAIL, "byte_emit_0_present", True, "ref.c:494"),
     (FeatureRegion.TERMINAL_TAIL, "byte_emit_1_present", True, "ref.c:503"),
@@ -315,65 +323,188 @@ _REF_FEATURE_TABLE: tuple[tuple[FeatureRegion, str, object, str], ...] = (
     (FeatureRegion.TERMINAL_TAIL, "byte_emit_4_present", True, "ref.c:532"),
     (FeatureRegion.TERMINAL_TAIL, "byte_emit_5_present", True, "ref.c:537"),
     (FeatureRegion.TERMINAL_TAIL, "byte_emit_6_present", True, "ref.c:541"),
-
     # Source form: each emit reads v52[k] explicitly.
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_0_source_form", "indexed_base_plus_k", "ref.c:494 *v52"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_1_source_form", "indexed_base_plus_k", "ref.c:503 v52[1]"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_2_source_form", "indexed_base_plus_k", "ref.c:521 v52[2]"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_3_source_form", "indexed_base_plus_k", "ref.c:527 v52[3]"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_4_source_form", "indexed_base_plus_k", "ref.c:532 v52[4]"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_5_source_form", "indexed_base_plus_k", "ref.c:537 v52[5]"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_6_source_form", "indexed_base_plus_k", "ref.c:541 v52[6]"),
-
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_0_source_form",
+        "indexed_base_plus_k",
+        "ref.c:494 *v52",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_1_source_form",
+        "indexed_base_plus_k",
+        "ref.c:503 v52[1]",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_2_source_form",
+        "indexed_base_plus_k",
+        "ref.c:521 v52[2]",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_3_source_form",
+        "indexed_base_plus_k",
+        "ref.c:527 v52[3]",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_4_source_form",
+        "indexed_base_plus_k",
+        "ref.c:532 v52[4]",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_5_source_form",
+        "indexed_base_plus_k",
+        "ref.c:537 v52[5]",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_6_source_form",
+        "indexed_base_plus_k",
+        "ref.c:541 v52[6]",
+    ),
     # Destination + counter update for each byte.
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_0_destination_present", True, "ref.c:494 *(_QWORD*)"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_0_counter_update_present", True, "ref.c:495 *v49 + 1"),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_0_destination_present",
+        True,
+        "ref.c:494 *(_QWORD*)",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_0_counter_update_present",
+        True,
+        "ref.c:495 *v49 + 1",
+    ),
     (FeatureRegion.TERMINAL_TAIL, "byte_emit_1_destination_present", True, "ref.c:503"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_1_counter_update_present", True, "ref.c:504"),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_1_counter_update_present",
+        True,
+        "ref.c:504",
+    ),
     (FeatureRegion.TERMINAL_TAIL, "byte_emit_2_destination_present", True, "ref.c:521"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_2_counter_update_present", True, "ref.c:523"),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_2_counter_update_present",
+        True,
+        "ref.c:523",
+    ),
     (FeatureRegion.TERMINAL_TAIL, "byte_emit_3_destination_present", True, "ref.c:527"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_3_counter_update_present", True, "ref.c:528"),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_3_counter_update_present",
+        True,
+        "ref.c:528",
+    ),
     (FeatureRegion.TERMINAL_TAIL, "byte_emit_4_destination_present", True, "ref.c:532"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_4_counter_update_present", True, "ref.c:533"),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_4_counter_update_present",
+        True,
+        "ref.c:533",
+    ),
     (FeatureRegion.TERMINAL_TAIL, "byte_emit_5_destination_present", True, "ref.c:537"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_5_counter_update_present", True, "ref.c:539"),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_5_counter_update_present",
+        True,
+        "ref.c:539",
+    ),
     (FeatureRegion.TERMINAL_TAIL, "byte_emit_6_destination_present", True, "ref.c:541"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_emit_6_counter_update_present", True, "ref.c:542"),
-
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_emit_6_counter_update_present",
+        True,
+        "ref.c:542",
+    ),
     # Early-return guards before each emit (REF cascade).
-    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_0_present", True, "ref.c:497 if(v152==1) return"),
-    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_1_present", True, "ref.c:515 if(v152==2)"),
-    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_2_present", True, "ref.c:525 if(v152!=3)"),
-    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_3_present", True, "ref.c:530 if(v152!=4)"),
-    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_4_present", True, "ref.c:535 if(v152!=6)"),
-    (FeatureRegion.TERMINAL_TAIL, "early_return_guard_5_present", True, "ref.c:535 same gate"),
-    (FeatureRegion.TERMINAL_TAIL, "byte_6_fallthrough_return_present", True, "ref.c:542 ++*v49 then return"),
-
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "early_return_guard_0_present",
+        True,
+        "ref.c:497 if(v152==1) return",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "early_return_guard_1_present",
+        True,
+        "ref.c:515 if(v152==2)",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "early_return_guard_2_present",
+        True,
+        "ref.c:525 if(v152!=3)",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "early_return_guard_3_present",
+        True,
+        "ref.c:530 if(v152!=4)",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "early_return_guard_4_present",
+        True,
+        "ref.c:535 if(v152!=6)",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "early_return_guard_5_present",
+        True,
+        "ref.c:535 same gate",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "byte_6_fallthrough_return_present",
+        True,
+        "ref.c:542 ++*v49 then return",
+    ),
     # Terminal tail topology.
-    (FeatureRegion.TERMINAL_TAIL, "terminal_tail_acyclic", True,
-     "ref_microcode_dump.txt:MMAT_GLBOPT1: terminal blocks 107..213 acyclic"),
-    (FeatureRegion.TERMINAL_TAIL, "tail_init_present", True, "ref.c:466 v53 = ... ;if (!v53) return"),
-
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "terminal_tail_acyclic",
+        True,
+        "ref_microcode_dump.txt:MMAT_GLBOPT1: terminal blocks 107..213 acyclic",
+    ),
+    (
+        FeatureRegion.TERMINAL_TAIL,
+        "tail_init_present",
+        True,
+        "ref.c:466 v53 = ... ;if (!v53) return",
+    ),
     # Cleanup (zero store16) — present and separated from byte emits.
-    (FeatureRegion.CLEANUP, "zero_store16_cleanup_blocks_present", True,
-     "ref.c:245-252 + 291-298 + 306-313 (3x8=24 STORE_OWORD_N)"),
-    (FeatureRegion.CLEANUP, "cleanup_separated_from_byte_emits", True,
-     "ref_microcode_dump.txt: cleanup blocks 25..105 separate from terminal_tail"),
-
+    (
+        FeatureRegion.CLEANUP,
+        "zero_store16_cleanup_blocks_present",
+        True,
+        "ref.c:245-252 + 291-298 + 306-313 (3x8=24 STORE_OWORD_N)",
+    ),
+    (
+        FeatureRegion.CLEANUP,
+        "cleanup_separated_from_byte_emits",
+        True,
+        "ref_microcode_dump.txt: cleanup blocks 25..105 separate from terminal_tail",
+    ),
     # SCC structure.
-    (FeatureRegion.SCC, "nontrivial_scc_count", 2,
-     "ref_microcode_dump.txt:MMAT_GLBOPT1: 2 self-loops, no giant SCC"),
-    (FeatureRegion.SCC, "max_scc_size", 1,
-     "self-loops are size-1 SCCs"),
-    (FeatureRegion.SCC, "max_in_degree", 9,
-     "blk[213] exit fanout"),
+    (
+        FeatureRegion.SCC,
+        "nontrivial_scc_count",
+        2,
+        "ref_microcode_dump.txt:MMAT_GLBOPT1: 2 self-loops, no giant SCC",
+    ),
+    (FeatureRegion.SCC, "max_scc_size", 1, "self-loops are size-1 SCCs"),
+    (FeatureRegion.SCC, "max_in_degree", 9, "blk[213] exit fanout"),
 )
 
 
 for _sub_7ffd_ea in (
-    "0x0000000180012df0",   # earlier binary build
-    "0x00000001800134e0",   # current binary build (post 2026-05-09 rebuild)
+    "0x0000000180012df0",  # earlier binary build
+    "0x00000001800134e0",  # current binary build (post 2026-05-09 rebuild)
 ):
     _register_spec(
         RefSpec(
@@ -437,7 +568,9 @@ def d810_features(inputs: D810SnapshotInputs) -> tuple[RegionFeature, ...]:
     snap = inputs.snapshot_id
     out: list[RegionFeature] = []
 
-    def add(region: FeatureRegion, feature: str, value: object, **evidence: object) -> None:
+    def add(
+        region: FeatureRegion, feature: str, value: object, **evidence: object
+    ) -> None:
         out.append(
             RegionFeature(
                 source=FeatureSource.D810_SNAPSHOT,
@@ -449,19 +582,39 @@ def d810_features(inputs: D810SnapshotInputs) -> tuple[RegionFeature, ...]:
             )
         )
 
-    add(FeatureRegion.HEAD_LOOP, "head_2byte_stride_loop_isolated", inputs.head_loop_isolated)
-    add(FeatureRegion.CHUNK_LOOP, "chunk_block_loop_isolated", inputs.chunk_loop_isolated)
+    add(
+        FeatureRegion.HEAD_LOOP,
+        "head_2byte_stride_loop_isolated",
+        inputs.head_loop_isolated,
+    )
+    add(
+        FeatureRegion.CHUNK_LOOP,
+        "chunk_block_loop_isolated",
+        inputs.chunk_loop_isolated,
+    )
     add(FeatureRegion.SCC, "nontrivial_scc_count", inputs.nontrivial_scc_count)
     add(FeatureRegion.SCC, "max_scc_size", inputs.max_scc_size)
     add(FeatureRegion.SCC, "max_in_degree", inputs.max_in_degree)
-    add(FeatureRegion.TERMINAL_TAIL, "terminal_tail_acyclic", inputs.terminal_tail_acyclic)
-    add(FeatureRegion.CLEANUP, "zero_store16_cleanup_blocks_present", inputs.cleanup_blocks_present)
+    add(
+        FeatureRegion.TERMINAL_TAIL,
+        "terminal_tail_acyclic",
+        inputs.terminal_tail_acyclic,
+    )
+    add(
+        FeatureRegion.CLEANUP,
+        "zero_store16_cleanup_blocks_present",
+        inputs.cleanup_blocks_present,
+    )
 
     for k in range(7):
         present = inputs.byte_emit_present.get(k, False)
-        add(FeatureRegion.TERMINAL_TAIL, f"byte_emit_{k}_present", present,
+        add(
+            FeatureRegion.TERMINAL_TAIL,
+            f"byte_emit_{k}_present",
+            present,
             block_serial=inputs.byte_emit_block_serial.get(k),
-            fact_detected=inputs.byte_emit_fact_detected.get(k, False))
+            fact_detected=inputs.byte_emit_fact_detected.get(k, False),
+        )
         add(
             FeatureRegion.TERMINAL_TAIL,
             f"byte_emit_{k}_source_form",
@@ -485,8 +638,11 @@ def d810_features(inputs: D810SnapshotInputs) -> tuple[RegionFeature, ...]:
         )
 
     for k in range(6):
-        add(FeatureRegion.TERMINAL_TAIL, f"early_return_guard_{k}_present",
-            inputs.early_return_guard_present.get(k, False))
+        add(
+            FeatureRegion.TERMINAL_TAIL,
+            f"early_return_guard_{k}_present",
+            inputs.early_return_guard_present.get(k, False),
+        )
 
     return tuple(out)
 
@@ -523,8 +679,10 @@ def diff_features(
         if rf.value != df.value:
             diffs.append(
                 FeatureDiff(
-                    feature=key, region=rf.region,
-                    ref_value=rf.value, d810_value=df.value,
+                    feature=key,
+                    region=rf.region,
+                    ref_value=rf.value,
+                    d810_value=df.value,
                     snapshot_id=df.snapshot_id or -1,
                 )
             )
@@ -550,7 +708,9 @@ def format_diff_table(diffs: tuple[FeatureDiff, ...]) -> str:
 
 
 def collect_block_views_for_snapshot(
-    conn: sqlite3.Connection, *, snapshot_id: int,
+    conn: sqlite3.Connection,
+    *,
+    snapshot_id: int,
 ) -> dict[int, BlockView]:
     """Build BlockView objects for every block at one snapshot.
 

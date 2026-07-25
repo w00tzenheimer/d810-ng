@@ -1,4 +1,5 @@
 """Graph-only dominator tree computation for control-flow graphs."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

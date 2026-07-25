@@ -2,6 +2,7 @@
 
 Uses SimpleNamespace mock FlowGraph objects — no IDA dependency.
 """
+
 from __future__ import annotations
 
 import json
@@ -17,6 +18,7 @@ from d810.analyses.control_flow.return_frontier_collector import ReturnFrontierC
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_site(site_id: str, origin_block: int) -> ReturnSite:
     return ReturnSite(
@@ -50,8 +52,8 @@ def _make_target(
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestReturnFrontierCollector:
 
+class TestReturnFrontierCollector:
     def test_collect_with_return_sites(self):
         "Provide full metadata \u2014 verify PreanalysisResult has correct metrics."
         site = _make_site("s0", origin_block=1)

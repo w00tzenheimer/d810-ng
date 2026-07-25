@@ -14,10 +14,7 @@ from d810.analyses.control_flow.detached_handler_island import (
 
 
 SCRIPT_DIR = (
-    Path(__file__).resolve().parents[3]
-    / "tools"
-    / "scripts"
-    / "rhad_investigation"
+    Path(__file__).resolve().parents[3] / "tools" / "scripts" / "rhad_investigation"
 )
 
 
@@ -102,9 +99,7 @@ def _fact(
                 for register, _constant, write_ea in normalized_constant_writes
             )
         ),
-        has_synthetic_function_exit_successor=(
-            has_synthetic_function_exit_successor
-        ),
+        has_synthetic_function_exit_successor=(has_synthetic_function_exit_successor),
         has_side_effects=has_side_effects,
         tail_ea=tail,
         taken_successor_ea=taken_successor,
@@ -205,9 +200,7 @@ def test_selects_coherent_imported_and_live_bindings_for_duplicate_endpoint():
         capture.PreoptDirectOwnerBinding(
             source_owner=ports.PreoptBoundaryEndpointOwner.IMPORTED,
             endpoint_owner=ports.PreoptBoundaryEndpointOwner.IMPORTED,
-            old_successor_owners=(
-                ports.PreoptBoundaryEndpointOwner.IMPORTED,
-            ),
+            old_successor_owners=(ports.PreoptBoundaryEndpointOwner.IMPORTED,),
         ),
         capture.PreoptDirectOwnerBinding(
             source_owner=ports.PreoptBoundaryEndpointOwner.LIVE,
@@ -266,9 +259,7 @@ def test_keeps_live_duplicate_when_its_old_successor_was_pruned():
         capture.PreoptDirectOwnerBinding(
             source_owner=ports.PreoptBoundaryEndpointOwner.IMPORTED,
             endpoint_owner=ports.PreoptBoundaryEndpointOwner.IMPORTED,
-            old_successor_owners=(
-                ports.PreoptBoundaryEndpointOwner.IMPORTED,
-            ),
+            old_successor_owners=(ports.PreoptBoundaryEndpointOwner.IMPORTED,),
         ),
         capture.PreoptDirectOwnerBinding(
             source_owner=ports.PreoptBoundaryEndpointOwner.LIVE,
@@ -276,6 +267,7 @@ def test_keeps_live_duplicate_when_its_old_successor_was_pruned():
             old_successor_owners=(ports.PreoptBoundaryEndpointOwner.LIVE,),
         ),
     )
+
 
 def test_excludes_live_direct_endpoint_bypassed_by_a_replacement_conditional():
     ports, capture = _modules()
@@ -326,9 +318,7 @@ def test_excludes_live_direct_endpoint_bypassed_by_a_replacement_conditional():
         abstentions=(),
     )
 
-    result = capture.exclude_direct_endpoints_superseded_by_conditionals(
-        captured
-    )
+    result = capture.exclude_direct_endpoints_superseded_by_conditionals(captured)
 
     assert result.direct == ()
     assert result.conditional == captured.conditional
@@ -383,9 +373,7 @@ def test_excludes_direct_port_that_shares_a_physical_conditional_source():
         abstentions=(),
     )
 
-    result = capture.exclude_direct_endpoints_superseded_by_conditionals(
-        captured
-    )
+    result = capture.exclude_direct_endpoints_superseded_by_conditionals(captured)
 
     assert result.direct == ()
     assert result.conditional == captured.conditional
@@ -421,9 +409,7 @@ def test_captures_unique_corridor_and_stops_before_dispatcher():
 
     (direct,) = result.direct
     assert direct.corridor_block_eas == (0x1000, 0x1100)
-    assert direct.frontier_edges == (
-        capture.PreoptPortBoundaryEdge(0x1100, 0x2000),
-    )
+    assert direct.frontier_edges == (capture.PreoptPortBoundaryEdge(0x1100, 0x2000),)
     assert direct.delivery_mode is capture.PreoptPortDeliveryMode.REDIRECT_EDGE
     assert result.abstentions == ()
 
@@ -476,9 +462,7 @@ def test_captures_a_live_owned_source_from_the_live_preopt_graph():
 
     (direct,) = result.direct
     assert direct.corridor_block_eas == (0x1000, 0x1100)
-    assert direct.frontier_edges == (
-        capture.PreoptPortBoundaryEdge(0x1100, 0x2000),
-    )
+    assert direct.frontier_edges == (capture.PreoptPortBoundaryEdge(0x1100, 0x2000),)
     assert result.abstentions == ()
 
 
@@ -513,9 +497,7 @@ def test_live_facts_do_not_override_an_imported_owned_source():
     )
 
     (direct,) = result.direct
-    assert direct.frontier_edges == (
-        capture.PreoptPortBoundaryEdge(0x1000, 0x2000),
-    )
+    assert direct.frontier_edges == (capture.PreoptPortBoundaryEdge(0x1000, 0x2000),)
     assert result.abstentions == ()
 
 
@@ -758,9 +740,7 @@ def test_preserves_call_at_the_terminal_corridor_endpoint():
     )
 
     (direct,) = result.direct
-    assert direct.frontier_edges == (
-        capture.PreoptPortBoundaryEdge(0x1000, 0x2000),
-    )
+    assert direct.frontier_edges == (capture.PreoptPortBoundaryEdge(0x1000, 0x2000),)
     assert direct.delivery_mode is capture.PreoptPortDeliveryMode.PRESERVE_CALL
 
 
@@ -844,9 +824,7 @@ def test_preserves_branch_and_redirects_only_its_dispatcher_frontier_arm():
 
     (direct,) = result.direct
     assert direct.corridor_block_eas == (0x1000, 0x1100)
-    assert direct.frontier_edges == (
-        capture.PreoptPortBoundaryEdge(0x1000, 0x2000),
-    )
+    assert direct.frontier_edges == (capture.PreoptPortBoundaryEdge(0x1000, 0x2000),)
     assert result.abstentions == ()
 
 
@@ -878,9 +856,7 @@ def test_preserves_a_synthetic_function_stop_arm_without_redirecting_it():
     )
 
     (direct,) = result.direct
-    assert direct.frontier_edges == (
-        capture.PreoptPortBoundaryEdge(0x1000, 0x2000),
-    )
+    assert direct.frontier_edges == (capture.PreoptPortBoundaryEdge(0x1000, 0x2000),)
     assert direct.terminal_endpoint_block_eas == ()
 
 
@@ -957,9 +933,7 @@ def test_abstains_on_a_cycle_before_the_dispatcher():
     )
 
     (direct,) = result.direct
-    assert direct.frontier_edges == (
-        capture.PreoptPortBoundaryEdge(0x1000, 0x2000),
-    )
+    assert direct.frontier_edges == (capture.PreoptPortBoundaryEdge(0x1000, 0x2000),)
     assert result.abstentions == ()
 
 
@@ -991,9 +965,7 @@ def test_stops_before_an_unlisted_later_literal_state_write():
 
     (direct,) = result.direct
     assert direct.corridor_block_eas == (0x1000,)
-    assert direct.frontier_edges == (
-        capture.PreoptPortBoundaryEdge(0x1000, 0x2000),
-    )
+    assert direct.frontier_edges == (capture.PreoptPortBoundaryEdge(0x1000, 0x2000),)
 
 
 def test_accepts_only_resolver_proven_indirect_as_a_terminal_frontier():
@@ -1060,18 +1032,22 @@ def test_mixed_frontier_uses_terminal_goto_only_for_zero_way_endpoint():
     )
 
     (direct,) = result.direct
-    assert direct.frontier_edges == (
-        capture.PreoptPortBoundaryEdge(0x1100, 0x2000),
-    )
+    assert direct.frontier_edges == (capture.PreoptPortBoundaryEdge(0x1100, 0x2000),)
     assert direct.terminal_endpoint_block_eas == (0x1200,)
-    assert capture.direct_endpoint_delivery_mode(
-        direct,
-        old_successor_eas=(0x2000,),
-    ) is capture.PreoptPortDeliveryMode.REDIRECT_EDGE
-    assert capture.direct_endpoint_delivery_mode(
-        direct,
-        old_successor_eas=(),
-    ) is capture.PreoptPortDeliveryMode.TERMINAL_GOTO
+    assert (
+        capture.direct_endpoint_delivery_mode(
+            direct,
+            old_successor_eas=(0x2000,),
+        )
+        is capture.PreoptPortDeliveryMode.REDIRECT_EDGE
+    )
+    assert (
+        capture.direct_endpoint_delivery_mode(
+            direct,
+            old_successor_eas=(),
+        )
+        is capture.PreoptPortDeliveryMode.TERMINAL_GOTO
+    )
     assert capture.state_transition_owned_endpoint_eas(result) == frozenset(
         {0x1100, 0x1200}
     )
@@ -1080,11 +1056,14 @@ def test_mixed_frontier_uses_terminal_goto_only_for_zero_way_endpoint():
 def test_capture_owner_prefers_actual_imported_block_over_live_alias():
     ports, capture = _modules()
 
-    assert capture.classify_captured_endpoint_owner(
-        0x1200,
-        imported_block_eas=frozenset({0x1200}),
-        live_native_eas=frozenset({0x1200}),
-    ) is ports.PreoptBoundaryEndpointOwner.IMPORTED
+    assert (
+        capture.classify_captured_endpoint_owner(
+            0x1200,
+            imported_block_eas=frozenset({0x1200}),
+            live_native_eas=frozenset({0x1200}),
+        )
+        is ports.PreoptBoundaryEndpointOwner.IMPORTED
+    )
 
 
 def test_shared_dispatcher_edge_with_two_reaching_writes_is_not_owned():
@@ -1131,9 +1110,9 @@ def test_shared_dispatcher_edge_with_two_reaching_writes_is_not_owned():
     )
 
     assert result.direct == ()
-    assert {
-        row.reason for row in result.abstentions
-    } == {capture.PreoptPortCaptureAbstentionReason.NO_SOURCE_SENSITIVE_FRONTIER}
+    assert {row.reason for row in result.abstentions} == {
+        capture.PreoptPortCaptureAbstentionReason.NO_SOURCE_SENSITIVE_FRONTIER
+    }
 
 
 def test_extends_router_cut_through_side_effect_free_resolver_source():
@@ -1171,9 +1150,7 @@ def test_extends_router_cut_through_side_effect_free_resolver_source():
     )
 
     (direct,) = result.direct
-    assert direct.frontier_edges == (
-        capture.PreoptPortBoundaryEdge(0x1000, 0x1500),
-    )
+    assert direct.frontier_edges == (capture.PreoptPortBoundaryEdge(0x1000, 0x1500),)
 
 
 def test_excludes_imported_overlay_when_native_internal_edge_reaches_target():
@@ -1425,9 +1402,7 @@ def test_captures_live_to_imported_direct_closure_crossing():
     assert direct.source_block_ea == 0x1000
     assert direct.source_instruction_ea == 0x1008
     assert direct.old_successor_eas == (0x2000,)
-    assert direct.old_successor_owners == (
-        DetachedSnippetBoundaryPortOwner.LIVE,
-    )
+    assert direct.old_successor_owners == (DetachedSnippetBoundaryPortOwner.LIVE,)
     assert direct.target_ea == 0x2000
     assert direct.source_owner is DetachedSnippetBoundaryPortOwner.LIVE
     assert direct.target_owner is DetachedSnippetBoundaryPortOwner.IMPORTED
@@ -1466,15 +1441,11 @@ def test_captures_live_conditional_with_one_imported_arm():
     assert conditional.old_fallthrough_target_ea == 0x3200
     assert conditional.taken_target_ea == 0x3100
     assert conditional.fallthrough_target_ea == 0x3200
-    assert conditional.old_taken_target_owner is (
-        DetachedSnippetBoundaryPortOwner.LIVE
-    )
+    assert conditional.old_taken_target_owner is (DetachedSnippetBoundaryPortOwner.LIVE)
     assert conditional.old_fallthrough_target_owner is (
         DetachedSnippetBoundaryPortOwner.LIVE
     )
-    assert conditional.taken_target_owner is (
-        DetachedSnippetBoundaryPortOwner.IMPORTED
-    )
+    assert conditional.taken_target_owner is (DetachedSnippetBoundaryPortOwner.IMPORTED)
     assert conditional.fallthrough_target_owner is (
         DetachedSnippetBoundaryPortOwner.LIVE
     )

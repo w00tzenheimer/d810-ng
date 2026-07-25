@@ -19,6 +19,7 @@ makes the recovery gap *visible* rather than a silent wrong edge):
 * an unrepresentable result returns ⊤, never a wrong concrete value;
 * ``widen`` guarantees termination (ascending chains stabilise).
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Protocol, TypeVar, runtime_checkable

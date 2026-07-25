@@ -91,9 +91,9 @@ def test_system_ci_allows_llvm_backed_tests_to_skip_when_opt_is_unavailable() ->
 
     assert "system-tests (idapro-9.2, pure-python)" in workflow
     assert "system-tests (idapro-9.2, speedups)" in workflow
-    assert "LLVM_OPT_PATH=\\\"\\$(command -v opt" in workflow
-    assert workflow.count("LLVM_OPT_PATH=\\\"\\$(command -v opt") >= 2
-    assert "export LLVM_OPT=\\\"\\$LLVM_OPT_PATH\\\"" in workflow
+    assert 'LLVM_OPT_PATH=\\"\\$(command -v opt' in workflow
+    assert workflow.count('LLVM_OPT_PATH=\\"\\$(command -v opt') >= 2
+    assert 'export LLVM_OPT=\\"\\$LLVM_OPT_PATH\\"' in workflow
     assert "LLVM opt: not found; LLVM-backed system tests will skip" in workflow
     assert "ERROR: system tests require LLVM opt for verifier coverage" not in workflow
     assert "export D810_REQUIRE_LLVM_OPT=1" not in workflow

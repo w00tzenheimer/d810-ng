@@ -9,6 +9,7 @@ each watched candidate's provenance.
 These are strictly observability; no CFG mutations, no claim updates, no
 plan-fragment assembly. Safe to call at any point inside the strategy pass.
 """
+
 from __future__ import annotations
 
 from collections import Counter
@@ -25,7 +26,26 @@ logger = logging.getLogger(
 # Sub_7FFD-focused block watch-list. Probes filter to these serials so the
 # emitted logs stay compact. Does not affect pipeline behaviour.
 RECON_PHASE_WATCH_BLOCKS: tuple[int, ...] = (
-    8, 11, 20, 32, 35, 45, 64, 69, 81, 83, 95, 100, 104, 156, 184, 187, 192, 195, 200, 203,
+    8,
+    11,
+    20,
+    32,
+    35,
+    45,
+    64,
+    69,
+    81,
+    83,
+    95,
+    100,
+    104,
+    156,
+    184,
+    187,
+    192,
+    195,
+    200,
+    203,
 )
 
 
@@ -117,7 +137,9 @@ def log_reconstruction_phase_probe(
 def _candidate_probe_signature(candidate) -> str:
     edge = getattr(candidate, "edge", None)
     source_anchor = getattr(edge, "source_anchor", None)
-    ordered_path = tuple(int(serial) for serial in getattr(edge, "ordered_path", ()) or ())
+    ordered_path = tuple(
+        int(serial) for serial in getattr(edge, "ordered_path", ()) or ()
+    )
     return (
         f"src={int(getattr(source_anchor, 'block_serial', -1))}"
         f"/arm={getattr(source_anchor, 'branch_arm', None)}"
@@ -133,7 +155,9 @@ def _candidate_probe_signature(candidate) -> str:
 def _should_watch_candidate(candidate) -> bool:
     edge = getattr(candidate, "edge", None)
     source_anchor = getattr(edge, "source_anchor", None)
-    ordered_path = tuple(int(serial) for serial in getattr(edge, "ordered_path", ()) or ())
+    ordered_path = tuple(
+        int(serial) for serial in getattr(edge, "ordered_path", ()) or ()
+    )
     interesting_values = {
         int(getattr(source_anchor, "block_serial", -1)),
         int(getattr(candidate, "horizon_block", -1)),

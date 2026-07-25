@@ -1,4 +1,5 @@
 """Tests for the terminal-tail audit diag subcommand."""
+
 from __future__ import annotations
 
 import json
@@ -32,84 +33,227 @@ def _make_diag_db(tmp_path: Path) -> Path:
     db_path = tmp_path / "diag.sqlite3"
     db_obj = create_diag_database(str(db_path))
     with diag_models_on(db_obj):
-        Snapshot.insert_many([
-            dict(id=5,  label="pre_d810",              func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_GLBOPT1", phase="pre_d810",   block_count=0, timestamp=0.0),
-            dict(id=17, label="post_bundle_stabilize", func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_GLBOPT1", phase="post_apply", block_count=0, timestamp=0.0),
-            dict(id=99, label="dump_raw_lvars",        func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_LVARS",   phase="post_d810",  block_count=0, timestamp=0.0),
-        ]).execute()
-        Block.insert_many([
-            dict(snapshot=5,  serial=56,  block_type=1, type_name="BLT_1WAY", start_ea_hex="0x180014C00", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=1, succs="[]", preds="[]", insn_count=3),
-            dict(snapshot=5,  serial=163, block_type=2, type_name="BLT_2WAY", start_ea_hex="0x180014D00", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=2, npred=2, succs="[]", preds="[]", insn_count=5),
-            dict(snapshot=5,  serial=217, block_type=1, type_name="BLT_1WAY", start_ea_hex="0x180014E00", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=1, succs="[]", preds="[]", insn_count=4),
-            dict(snapshot=17, serial=56,  block_type=1, type_name="BLT_1WAY", start_ea_hex="0x180014C00", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=1, succs="[]", preds="[]", insn_count=3),
-            dict(snapshot=17, serial=163, block_type=2, type_name="BLT_2WAY", start_ea_hex="0x180014D00", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=2, npred=2, succs="[]", preds="[]", insn_count=5),
-        ]).execute()
+        Snapshot.insert_many(
+            [
+                dict(
+                    id=5,
+                    label="pre_d810",
+                    func_ea_hex="0x0",
+                    func_ea_i64=0,
+                    maturity="MMAT_GLBOPT1",
+                    phase="pre_d810",
+                    block_count=0,
+                    timestamp=0.0,
+                ),
+                dict(
+                    id=17,
+                    label="post_bundle_stabilize",
+                    func_ea_hex="0x0",
+                    func_ea_i64=0,
+                    maturity="MMAT_GLBOPT1",
+                    phase="post_apply",
+                    block_count=0,
+                    timestamp=0.0,
+                ),
+                dict(
+                    id=99,
+                    label="dump_raw_lvars",
+                    func_ea_hex="0x0",
+                    func_ea_i64=0,
+                    maturity="MMAT_LVARS",
+                    phase="post_d810",
+                    block_count=0,
+                    timestamp=0.0,
+                ),
+            ]
+        ).execute()
+        Block.insert_many(
+            [
+                dict(
+                    snapshot=5,
+                    serial=56,
+                    block_type=1,
+                    type_name="BLT_1WAY",
+                    start_ea_hex="0x180014C00",
+                    start_ea_i64=0,
+                    end_ea_hex=None,
+                    end_ea_i64=None,
+                    nsucc=1,
+                    npred=1,
+                    succs="[]",
+                    preds="[]",
+                    insn_count=3,
+                ),
+                dict(
+                    snapshot=5,
+                    serial=163,
+                    block_type=2,
+                    type_name="BLT_2WAY",
+                    start_ea_hex="0x180014D00",
+                    start_ea_i64=0,
+                    end_ea_hex=None,
+                    end_ea_i64=None,
+                    nsucc=2,
+                    npred=2,
+                    succs="[]",
+                    preds="[]",
+                    insn_count=5,
+                ),
+                dict(
+                    snapshot=5,
+                    serial=217,
+                    block_type=1,
+                    type_name="BLT_1WAY",
+                    start_ea_hex="0x180014E00",
+                    start_ea_i64=0,
+                    end_ea_hex=None,
+                    end_ea_i64=None,
+                    nsucc=1,
+                    npred=1,
+                    succs="[]",
+                    preds="[]",
+                    insn_count=4,
+                ),
+                dict(
+                    snapshot=17,
+                    serial=56,
+                    block_type=1,
+                    type_name="BLT_1WAY",
+                    start_ea_hex="0x180014C00",
+                    start_ea_i64=0,
+                    end_ea_hex=None,
+                    end_ea_i64=None,
+                    nsucc=1,
+                    npred=1,
+                    succs="[]",
+                    preds="[]",
+                    insn_count=3,
+                ),
+                dict(
+                    snapshot=17,
+                    serial=163,
+                    block_type=2,
+                    type_name="BLT_2WAY",
+                    start_ea_hex="0x180014D00",
+                    start_ea_i64=0,
+                    end_ea_hex=None,
+                    end_ea_i64=None,
+                    nsucc=2,
+                    npred=2,
+                    succs="[]",
+                    preds="[]",
+                    insn_count=5,
+                ),
+            ]
+        ).execute()
         # byte 2 fact at snap 5
         FactObservation.insert(
-            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
-            fact_id="1", kind="TerminalByteEmitterFact",
-            semantic_key="byte_emit_2", maturity="MMAT_GLBOPT1", phase="pre_d810",
-            confidence=1.0, payload=json.dumps({
-                "byte_index": 2,
-                "block_serial": 56,
-                "corridor_role": "terminal_tail",
-                "source_byte_expression": "xdu([ds.2:%var_190.8+#2.8].1)",
-                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                "counter_carrier": "var_178",
-                "block_ea_hex": "0x180014C00",
-            }), evidence="{}",
+            snapshot=5,
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            fact_id="1",
+            kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_2",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
+            confidence=1.0,
+            payload=json.dumps(
+                {
+                    "byte_index": 2,
+                    "block_serial": 56,
+                    "corridor_role": "terminal_tail",
+                    "source_byte_expression": "xdu([ds.2:%var_190.8+#2.8].1)",
+                    "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                    "counter_carrier": "var_178",
+                    "block_ea_hex": "0x180014C00",
+                }
+            ),
+            evidence="{}",
         ).execute()
         # byte 3 fact at snap 5
         FactObservation.insert(
-            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
-            fact_id="2", kind="TerminalByteEmitterFact",
-            semantic_key="byte_emit_3", maturity="MMAT_GLBOPT1", phase="pre_d810",
-            confidence=1.0, payload=json.dumps({
-                "byte_index": 3,
-                "block_serial": 163,
-                "corridor_role": "terminal_tail",
-                "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
-                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                "counter_carrier": "var_178",
-                "block_ea_hex": "0x180014D00",
-            }), evidence="{}",
+            snapshot=5,
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            fact_id="2",
+            kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_3",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
+            confidence=1.0,
+            payload=json.dumps(
+                {
+                    "byte_index": 3,
+                    "block_serial": 163,
+                    "corridor_role": "terminal_tail",
+                    "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
+                    "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                    "counter_carrier": "var_178",
+                    "block_ea_hex": "0x180014D00",
+                }
+            ),
+            evidence="{}",
         ).execute()
         # byte 3 fact at snap 17 (survives bundle stabilize)
         FactObservation.insert(
-            snapshot=17, func_ea_hex="0x0", func_ea_i64=0,
-            fact_id="3", kind="TerminalByteEmitterFact",
-            semantic_key="byte_emit_3", maturity="MMAT_GLBOPT1", phase="post_apply",
-            confidence=1.0, payload=json.dumps({
-                "byte_index": 3,
-                "block_serial": 163,
-                "corridor_role": "terminal_tail",
-                "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
-                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                "counter_carrier": "var_178",
-                "block_ea_hex": "0x180014D00",
-            }), evidence="{}",
+            snapshot=17,
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            fact_id="3",
+            kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_3",
+            maturity="MMAT_GLBOPT1",
+            phase="post_apply",
+            confidence=1.0,
+            payload=json.dumps(
+                {
+                    "byte_index": 3,
+                    "block_serial": 163,
+                    "corridor_role": "terminal_tail",
+                    "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
+                    "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                    "counter_carrier": "var_178",
+                    "block_ea_hex": "0x180014D00",
+                }
+            ),
+            evidence="{}",
         ).execute()
         # byte 6 fact at snap 5 only (lost at snap 17 in our fixture)
         FactObservation.insert(
-            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
-            fact_id="4", kind="TerminalByteEmitterFact",
-            semantic_key="byte_emit_6", maturity="MMAT_GLBOPT1", phase="pre_d810",
-            confidence=1.0, payload=json.dumps({
-                "byte_index": 6,
-                "block_serial": 217,
-                "corridor_role": "terminal_tail",
-                "source_byte_expression": "xdu([ds.2:%var_190.8+#6.8].1)",
-                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                "counter_carrier": "var_178",
-                "block_ea_hex": "0x180014E00",
-            }), evidence="{}",
+            snapshot=5,
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            fact_id="4",
+            kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_6",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
+            confidence=1.0,
+            payload=json.dumps(
+                {
+                    "byte_index": 6,
+                    "block_serial": 217,
+                    "corridor_role": "terminal_tail",
+                    "source_byte_expression": "xdu([ds.2:%var_190.8+#6.8].1)",
+                    "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                    "counter_carrier": "var_178",
+                    "block_ea_hex": "0x180014E00",
+                }
+            ),
+            evidence="{}",
         ).execute()
         # An unrelated fact that should NOT show up in the audit.
         FactObservation.insert(
-            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
-            fact_id="5", kind="LoopCarrierFact",
-            semantic_key="loop_carrier", maturity="MMAT_GLBOPT1", phase="pre_d810",
-            confidence=1.0, payload=json.dumps({"some_field": "ignored"}),
+            snapshot=5,
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            fact_id="5",
+            kind="LoopCarrierFact",
+            semantic_key="loop_carrier",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
+            confidence=1.0,
+            payload=json.dumps({"some_field": "ignored"}),
             evidence="{}",
         ).execute()
         db_obj.connection().commit()
@@ -127,7 +271,9 @@ def diag_db(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_iter_observations_returns_only_terminal_byte_emitter_rows(diag_db: Path) -> None:
+def test_iter_observations_returns_only_terminal_byte_emitter_rows(
+    diag_db: Path,
+) -> None:
     db = open_diag_database(str(diag_db))
     try:
         obs = iter_observations(db.connection())
@@ -168,8 +314,14 @@ def test_iter_observations_skips_rows_without_block_serial(tmp_path: Path) -> No
         )
         conn.execute(
             "INSERT INTO fact_observations VALUES (?, ?, ?, ?, ?, ?)",
-            (5, 1, "TerminalByteEmitterFact", "MMAT_GLBOPT1", "pre_d810",
-             json.dumps({"byte_index": 2})),  # no block_serial
+            (
+                5,
+                1,
+                "TerminalByteEmitterFact",
+                "MMAT_GLBOPT1",
+                "pre_d810",
+                json.dumps({"byte_index": 2}),
+            ),  # no block_serial
         )
         conn.commit()
     finally:
@@ -245,12 +397,20 @@ def test_build_initial_states_skips_when_block_row_missing(tmp_path: Path) -> No
         )
         conn.execute(
             "INSERT INTO fact_observations VALUES (?, ?, ?, ?, ?, ?)",
-            (5, 1, "TerminalByteEmitterFact", "MMAT_GLBOPT1", "pre_d810",
-             json.dumps({
-                 "byte_index": 3,
-                 "block_serial": 999,
-                 "corridor_role": "terminal_tail",
-             })),
+            (
+                5,
+                1,
+                "TerminalByteEmitterFact",
+                "MMAT_GLBOPT1",
+                "pre_d810",
+                json.dumps(
+                    {
+                        "byte_index": 3,
+                        "block_serial": 999,
+                        "corridor_role": "terminal_tail",
+                    }
+                ),
+            ),
         )
         conn.commit()
     finally:
@@ -302,17 +462,25 @@ def test_glbopt1_snapshots_skips_dump_raw_and_blockless(diag_db: Path) -> None:
     with diag_models_on(extra_db):
         # Add a blockless GLBOPT1 snapshot that the helper must skip.
         Snapshot.insert(
-            id=10, label="state_write_reconstruction_dag",
-            func_ea_hex="0x0", func_ea_i64=0,
-            maturity="MMAT_GLBOPT1", phase="unknown",
-            block_count=0, timestamp=0.0,
+            id=10,
+            label="state_write_reconstruction_dag",
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            maturity="MMAT_GLBOPT1",
+            phase="unknown",
+            block_count=0,
+            timestamp=0.0,
         ).execute()
         # Add a dump_raw GLBOPT1 snapshot that the helper must skip.
         Snapshot.insert(
-            id=50, label="dump_raw_lvars_after",
-            func_ea_hex="0x0", func_ea_i64=0,
-            maturity="MMAT_GLBOPT1", phase="post_apply",
-            block_count=0, timestamp=0.0,
+            id=50,
+            label="dump_raw_lvars_after",
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            maturity="MMAT_GLBOPT1",
+            phase="post_apply",
+            block_count=0,
+            timestamp=0.0,
         ).execute()
         extra_db.connection().commit()
     snaps = glbopt1_snapshots(extra_db.connection())

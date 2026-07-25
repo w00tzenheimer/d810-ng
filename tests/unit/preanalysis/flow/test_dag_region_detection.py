@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from d810.analyses.control_flow.dag_region_detection import detect_linear_transition_regions
+from d810.analyses.control_flow.dag_region_detection import (
+    detect_linear_transition_regions,
+)
 from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     RedirectSourceKind,
@@ -72,7 +74,9 @@ def _dag(
     )
 
 
-def _entries(regions: tuple[tuple[StateDagNode, ...], ...]) -> tuple[tuple[int, ...], ...]:
+def _entries(
+    regions: tuple[tuple[StateDagNode, ...], ...],
+) -> tuple[tuple[int, ...], ...]:
     return tuple(tuple(node.entry_anchor for node in region) for region in regions)
 
 

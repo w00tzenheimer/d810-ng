@@ -16,6 +16,7 @@ Prerequisites: ``["state_write_reconstruction"]`` -- the reconstruction pass
 must already have rewritten the semantic handoffs before stale state-variable
 reads are removed.
 """
+
 from __future__ import annotations
 
 from d810.core import logging
@@ -86,7 +87,9 @@ class DeadStateVariableEliminationStrategy:
         range_evidence = getattr(snapshot, "range_evidence", None)
         condition_chain_blocks = frozenset(
             int(block)
-            for block in (getattr(range_evidence, "condition_chain_blocks", set()) or set())
+            for block in (
+                getattr(range_evidence, "condition_chain_blocks", set()) or set()
+            )
         )
         evidence = _DEAD_STATE_BACKEND.collect_dead_state_read_cleanup_evidence(
             mba,
@@ -167,4 +170,6 @@ class DeadStateVariableEliminationStrategy:
     @staticmethod
     def _collect_state_constants(snapshot: AnalysisSnapshot) -> frozenset[int]:
         """Collect all known state constants from the snapshot and condition-chain result."""
-        return collect_state_constants(snapshot.state_constants, snapshot.range_evidence)
+        return collect_state_constants(
+            snapshot.state_constants, snapshot.range_evidence
+        )

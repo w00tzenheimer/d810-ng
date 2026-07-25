@@ -44,9 +44,7 @@ def _manifest_row(
         via_block_serial=None if via_block_ea is None else 8,
         via_block_ea=via_block_ea,
         next_state=next_state,
-        target_handler_serial=(
-            None if target_handler_ea is None else 9
-        ),
+        target_handler_serial=(None if target_handler_ea is None else 9),
         target_handler_ea=target_handler_ea,
         is_return=is_return,
         branch_arm=None,
@@ -269,9 +267,7 @@ def test_replay_capture_selection_prefers_trusted_resolved_nonreturn_coverage() 
         _manifest_row(capture_index=2, write_site_ea=0x402020),
     )
 
-    selected = select_replay_transition_manifest(
-        (unresolved_heavy, replay_heavy)
-    )
+    selected = select_replay_transition_manifest((unresolved_heavy, replay_heavy))
 
     assert selected == replay_heavy
 

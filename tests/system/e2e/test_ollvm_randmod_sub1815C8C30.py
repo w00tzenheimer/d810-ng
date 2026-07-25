@@ -212,7 +212,9 @@ def randmod_database():
 
 
 @pytest.fixture
-def randmod_rendered(randmod_database, configure_hexrays, d810_state, pseudocode_to_string):
+def randmod_rendered(
+    randmod_database, configure_hexrays, d810_state, pseudocode_to_string
+):
     """Decompile ``sub_1815C8C30`` with the OLLVM project and return the text.
 
     Function scoped because it composes the function-scoped ``d810_state`` /
@@ -297,7 +299,9 @@ class TestOllvmRandModSub1815C8C30:
             f"regressed. Fired rules: {sorted(fired_rules)}"
         )
 
-    def test_entry_projection_preserves_rand_call_exit_path(self, randmod_rendered) -> None:
+    def test_entry_projection_preserves_rand_call_exit_path(
+        self, randmod_rendered
+    ) -> None:
         """Entry bridge must not shortcut over the live rand()-call exit path.
 
         The recovered function must include the real ``rand`` call (or the
@@ -340,8 +344,7 @@ class TestOllvmRandModSub1815C8C30:
             for row in exit_path_rows
         ), f"{diag_path} does not show blk2 defining rax = &rand"
         assert any(
-            row["block_serial"] == 3
-            and "&($sub_18010A890).8, rax.8" in row["dstr"]
+            row["block_serial"] == 3 and "&($sub_18010A890).8, rax.8" in row["dstr"]
             for row in exit_path_rows
         ), f"{diag_path} does not show blk3 defining the rejected call target"
         assert any(
@@ -364,9 +367,8 @@ class TestOllvmRandModSub1815C8C30:
             row["outcome"] == "rejected"
             and row["reason"] == "exit_path_liveness_unsafe"
             and json.loads(row["exit_path_blocks_json"]) == [2, 4]
-            and json.loads(row["live_definitions_json"]) == [
-                {"kind": "reg", "value": 8}
-            ]
+            and json.loads(row["live_definitions_json"])
+            == [{"kind": "reg", "value": 8}]
             for row in liveness_rows
         ), f"{diag_path} does not explain the rejected blk1 -> blk5 exit-path shortcut"
 

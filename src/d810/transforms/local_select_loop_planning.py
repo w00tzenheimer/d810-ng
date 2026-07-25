@@ -1,4 +1,5 @@
 """CFG planning for local_select_loop facts."""
+
 from __future__ import annotations
 
 from d810.transforms.graph_modification import (

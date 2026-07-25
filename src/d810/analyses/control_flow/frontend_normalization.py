@@ -40,9 +40,7 @@ class NativeTransferShape(str, Enum):
 def _identifier(value: str, description: str) -> str:
     normalized = str(value).strip()
     if not normalized:
-        raise FrontendNormalizationEvidenceRejected(
-            f"{description} must not be empty"
-        )
+        raise FrontendNormalizationEvidenceRejected(f"{description} must not be empty")
     return normalized
 
 
@@ -129,7 +127,9 @@ class NativeIndirectTransferProof:
             )
 
         endpoints = tuple(self.endpoints)
-        if any(not isinstance(endpoint, NativeTransferEndpoint) for endpoint in endpoints):
+        if any(
+            not isinstance(endpoint, NativeTransferEndpoint) for endpoint in endpoints
+        ):
             raise TypeError("native transfer proof contains an invalid endpoint")
         if any(
             endpoint.identity.native_key != self.source_identity.native_key
@@ -162,8 +162,7 @@ class NativeIndirectTransferProof:
         )
         flag_corridor = tuple(self.flag_corridor)
         if any(
-            not isinstance(identity, StableBlockIdentity)
-            for identity in flag_corridor
+            not isinstance(identity, StableBlockIdentity) for identity in flag_corridor
         ):
             raise TypeError("native transfer flag corridor requires stable identities")
         if any(
@@ -218,9 +217,7 @@ class NativeIndirectTransferProof:
                     "conditional native transfer requires producer and predicate anchors"
                 )
             if not isinstance(predicate_kind, PredicateKind):
-                raise TypeError(
-                    "conditional native transfer requires a PredicateKind"
-                )
+                raise TypeError("conditional native transfer requires a PredicateKind")
             if not _identity_contains(self.source_identity, predicate_anchor_ea):
                 raise FrontendNormalizationEvidenceRejected(
                     "native transfer predicate anchor is outside its source identity"
@@ -318,9 +315,7 @@ class FrontendNormalizationEvidence:
             raise FrontendNormalizationEvidenceRejected(
                 "frontend evidence proof native key mismatch"
             )
-        if any(
-            proof.atomic_group_id != atomic_group_id for proof in transfer_proofs
-        ):
+        if any(proof.atomic_group_id != atomic_group_id for proof in transfer_proofs):
             raise FrontendNormalizationEvidenceRejected(
                 "frontend evidence proofs require one atomic group"
             )
@@ -330,8 +325,7 @@ class FrontendNormalizationEvidence:
                 "frontend evidence contains duplicate proof ids"
             )
         source_keys = tuple(
-            (proof.source_identity, proof.source_anchor_ea)
-            for proof in transfer_proofs
+            (proof.source_identity, proof.source_anchor_ea) for proof in transfer_proofs
         )
         if len(set(source_keys)) != len(source_keys):
             raise FrontendNormalizationEvidenceRejected(
@@ -447,8 +441,7 @@ class DetachedSemanticClosureImportRequest:
                 "detached import requires entries and proof ids"
             )
         if not native_ranges or any(
-            not isinstance(native_range, NativeRange)
-            for native_range in native_ranges
+            not isinstance(native_range, NativeRange) for native_range in native_ranges
         ):
             raise FrontendNormalizationEvidenceRejected(
                 "detached import requires portable native ranges"

@@ -89,7 +89,9 @@ def classify_path(root: Path, path: Path) -> str:
     rel = _relative_path(root, path).as_posix()
     if rel.startswith("src/"):
         return "blocking-production"
-    if rel.startswith("tests/system/runtime/optimizers/microcode/flow/flattening/engine/"):
+    if rel.startswith(
+        "tests/system/runtime/optimizers/microcode/flow/flattening/engine/"
+    ):
         return "compat-test-fixture"
     if rel.startswith("tests/") and "/hodur/" in rel:
         return "hodur-local-test"
@@ -132,7 +134,10 @@ def scan_file(root: Path, path: Path) -> list[ImportHit]:
             elif module == HODUR_PACKAGE:
                 for alias in node.names:
                     candidate = f"{HODUR_PACKAGE}.{alias.name}"
-                    if alias.name in PACKAGE_ALIAS_NAMES and candidate in MODULE_RENAMES:
+                    if (
+                        alias.name in PACKAGE_ALIAS_NAMES
+                        and candidate in MODULE_RENAMES
+                    ):
                         hits.append(_hit(root, path, node.lineno, candidate))
     return hits
 

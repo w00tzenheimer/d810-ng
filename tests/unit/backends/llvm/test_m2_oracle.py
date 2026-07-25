@@ -134,12 +134,15 @@ entry:
   ret i32 %a
 }
 """
-    actual = expected + """
+    actual = (
+        expected
+        + """
 define i32 @evil(i32 %a) {
 entry:
   ret i32 999
 }
 """
+    )
 
     result = check_m2_fixture_oracle(
         subject="x",
@@ -158,12 +161,15 @@ entry:
   ret i32 %a
 }
 """
-    expected = actual + """
+    expected = (
+        actual
+        + """
 define i32 @unexpected_expected(i32 %a) {
 entry:
   ret i32 999
 }
 """
+    )
 
     result = check_m2_fixture_oracle(
         subject="x",

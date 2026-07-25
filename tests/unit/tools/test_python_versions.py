@@ -16,7 +16,7 @@ def test_supported_syntax_check_rejects_pep701_nested_fstring_backslash(tmp_path
     source = tmp_path / "bad_fstring.py"
     source.write_text(
         "node = type('N', (), {'state_label': 'STATE', 'entry_anchor': 1})()\n"
-        "label = f'label=\"{_dot_escape(f\"{node.state_label}\\\\nblk[{node.entry_anchor}]\")}\"'\n",
+        'label = f\'label="{_dot_escape(f"{node.state_label}\\\\nblk[{node.entry_anchor}]")}"\'\n',
         encoding="utf-8",
     )
 

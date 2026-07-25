@@ -1,4 +1,5 @@
 """Tests for the sub7FFD Hodur region-shape oracle support."""
+
 from __future__ import annotations
 
 from tests.system.e2e.hodur.sub7ffd_region_oracle import (
@@ -34,8 +35,7 @@ class TestRefFeatures:
     def test_ref_marks_terminal_tail_acyclic(self) -> None:
         feats = _ref_feats()
         assert any(
-            f.feature == "terminal_tail_acyclic" and f.value is True
-            for f in feats
+            f.feature == "terminal_tail_acyclic" and f.value is True for f in feats
         )
 
     def test_ref_loops_isolated(self) -> None:
@@ -45,8 +45,7 @@ class TestRefFeatures:
             for f in feats
         )
         assert any(
-            f.feature == "chunk_block_loop_isolated" and f.value is True
-            for f in feats
+            f.feature == "chunk_block_loop_isolated" and f.value is True for f in feats
         )
 
     def test_ref_source_is_REF(self) -> None:
@@ -124,14 +123,20 @@ class TestDiffFeatures:
         )
         diffs = diff_features(_ref_feats(), d810_features(inputs))
         match_features = {
-            "byte_emit_0_present", "byte_emit_6_present",
-            "byte_emit_0_source_form", "byte_emit_6_source_form",
-            "byte_emit_0_destination_present", "byte_emit_6_destination_present",
-            "byte_emit_0_counter_update_present", "byte_emit_6_counter_update_present",
-            "terminal_tail_acyclic", "head_2byte_stride_loop_isolated",
+            "byte_emit_0_present",
+            "byte_emit_6_present",
+            "byte_emit_0_source_form",
+            "byte_emit_6_source_form",
+            "byte_emit_0_destination_present",
+            "byte_emit_6_destination_present",
+            "byte_emit_0_counter_update_present",
+            "byte_emit_6_counter_update_present",
+            "terminal_tail_acyclic",
+            "head_2byte_stride_loop_isolated",
             "chunk_block_loop_isolated",
             "zero_store16_cleanup_blocks_present",
-            "nontrivial_scc_count", "max_scc_size",
+            "nontrivial_scc_count",
+            "max_scc_size",
         }
         for d in diffs:
             assert d.feature not in match_features, (
@@ -142,7 +147,9 @@ class TestDiffFeatures:
     def test_diff_lists_byte_emit_differences(self) -> None:
         inputs = D810SnapshotInputs(
             snapshot_id=18,
-            nontrivial_scc_count=1, max_scc_size=31, max_in_degree=4,
+            nontrivial_scc_count=1,
+            max_scc_size=31,
+            max_in_degree=4,
             byte_emit_present={k: (k in (1, 6)) for k in range(7)},
             byte_emit_block_serial={k: None for k in range(7)},
             byte_emit_fact_detected={k: (k in (1, 6)) for k in range(7)},
@@ -164,7 +171,9 @@ class TestDiffFeatures:
     def test_format_diff_table_renders_markdown(self) -> None:
         inputs = D810SnapshotInputs(
             snapshot_id=18,
-            nontrivial_scc_count=1, max_scc_size=31, max_in_degree=4,
+            nontrivial_scc_count=1,
+            max_scc_size=31,
+            max_in_degree=4,
             byte_emit_present={k: False for k in range(7)},
             byte_emit_block_serial={k: None for k in range(7)},
             byte_emit_fact_detected={k: False for k in range(7)},
@@ -180,6 +189,7 @@ class TestDiffFeatures:
 
 def test_spec_for_known_function_returns_spec():
     from tests.system.e2e.hodur.sub7ffd_region_oracle import RefSpec, spec_for
+
     spec = spec_for("0x0000000180012df0")
     assert spec is not None
     assert isinstance(spec, RefSpec)
@@ -188,23 +198,31 @@ def test_spec_for_known_function_returns_spec():
 
 def test_spec_for_unknown_function_returns_none():
     from tests.system.e2e.hodur.sub7ffd_region_oracle import spec_for
+
     assert spec_for("0x00000000DEADBEEF") is None
 
 
 def test_spec_for_is_case_insensitive_in_hex_digits():
     from tests.system.e2e.hodur.sub7ffd_region_oracle import spec_for
+
     assert spec_for("0X0000000180012DF0") is not None
     assert spec_for("0x0000000180012DF0") is not None
 
 
 def test_is_registered_matches_spec_for():
     from tests.system.e2e.hodur.sub7ffd_region_oracle import is_registered, spec_for
-    assert is_registered("0x0000000180012df0") is (spec_for("0x0000000180012df0") is not None)
-    assert is_registered("0x00000000DEADBEEF") is (spec_for("0x00000000DEADBEEF") is not None)
+
+    assert is_registered("0x0000000180012df0") is (
+        spec_for("0x0000000180012df0") is not None
+    )
+    assert is_registered("0x00000000DEADBEEF") is (
+        spec_for("0x00000000DEADBEEF") is not None
+    )
 
 
 def test_spec_carries_snap_label_preferences():
     from tests.system.e2e.hodur.sub7ffd_region_oracle import spec_for
+
     spec = spec_for("0x0000000180012df0")
     assert spec is not None
     assert spec.snap17_label_preferences[0] == "post_bundle_stabilize"
@@ -213,6 +231,7 @@ def test_spec_carries_snap_label_preferences():
 
 def test_ref_features_requires_spec_arg():
     from tests.system.e2e.hodur.sub7ffd_region_oracle import ref_features, spec_for
+
     spec = spec_for("0x0000000180012df0")
     assert spec is not None
     feats = list(ref_features(spec))

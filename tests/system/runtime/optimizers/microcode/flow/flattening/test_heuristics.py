@@ -76,6 +76,7 @@ class TestDispatcherHeuristics:
     def ida_setup(self, ida_database, configure_hexrays, setup_libobfuscated_funcs):
         """Setup IDA and Hex-Rays for real microcode tests."""
         import idaapi
+
         if not idaapi.init_hexrays_plugin():
             pytest.skip("Hex-Rays decompiler plugin not available")
         return ida_database
@@ -84,6 +85,7 @@ class TestDispatcherHeuristics:
         """Get function address by name, handling macOS underscore prefix."""
         import ida_name
         import idaapi
+
         ea = ida_name.get_name_ea(idaapi.BADADDR, name)
         if ea == idaapi.BADADDR:
             ea = ida_name.get_name_ea(idaapi.BADADDR, "_" + name)
@@ -192,8 +194,10 @@ class TestDispatcherHeuristics:
             if blk and blk.npred() >= 5:
                 result = heuristics.check_block(blk)
                 assert result.has_many_predecessors is True
-                print(f"\n  Block {blk.serial}: npred={blk.npred()}, "
-                      f"has_many_predecessors={result.has_many_predecessors}")
+                print(
+                    f"\n  Block {blk.serial}: npred={blk.npred()}, "
+                    f"has_many_predecessors={result.has_many_predecessors}"
+                )
                 return  # Test passed
 
         pytest.skip("No blocks with >=5 predecessors found")
@@ -220,8 +224,10 @@ class TestDispatcherHeuristics:
             if blk and blk.npred() <= 1:
                 result = heuristics.check_block(blk)
                 assert result.has_many_predecessors is False
-                print(f"\n  Block {blk.serial}: npred={blk.npred()}, "
-                      f"has_many_predecessors={result.has_many_predecessors}")
+                print(
+                    f"\n  Block {blk.serial}: npred={blk.npred()}, "
+                    f"has_many_predecessors={result.has_many_predecessors}"
+                )
                 return  # Test passed
 
         pytest.skip("No blocks with <=1 predecessors found")
@@ -252,15 +258,19 @@ class TestDispatcherHeuristics:
         assert heuristics.blocks_checked >= 2
         assert heuristics.blocks_skipped >= 0
 
-        print(f"\n  Checked {heuristics.blocks_checked} blocks, "
-              f"skipped {heuristics.blocks_skipped}")
+        print(
+            f"\n  Checked {heuristics.blocks_checked} blocks, "
+            f"skipped {heuristics.blocks_skipped}"
+        )
 
     def test_skip_rate_calculation(self, ida_setup):
         """Test that skip rate is calculated correctly."""
         import ida_hexrays
         import idaapi
 
-        func_name = "test_cst_simplification"  # Simple function (should have high skip rate)
+        func_name = (
+            "test_cst_simplification"  # Simple function (should have high skip rate)
+        )
         func_ea = self._get_func_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"{func_name} not found in binary")
@@ -281,8 +291,10 @@ class TestDispatcherHeuristics:
 
         # Simple functions should have high skip rate
         assert 0.0 <= skip_rate <= 1.0
-        print(f"\n  Skip rate: {skip_rate:.1%} "
-              f"({heuristics.blocks_skipped}/{heuristics.blocks_checked} blocks)")
+        print(
+            f"\n  Skip rate: {skip_rate:.1%} "
+            f"({heuristics.blocks_skipped}/{heuristics.blocks_checked} blocks)"
+        )
 
 
 @pytest.mark.ida_required
@@ -295,6 +307,7 @@ class TestDefUseCache:
     def ida_setup(self, ida_database, configure_hexrays, setup_libobfuscated_funcs):
         """Setup IDA and Hex-Rays for real microcode tests."""
         import idaapi
+
         if not idaapi.init_hexrays_plugin():
             pytest.skip("Hex-Rays decompiler plugin not available")
         return ida_database
@@ -303,6 +316,7 @@ class TestDefUseCache:
         """Get function address by name, handling macOS underscore prefix."""
         import ida_name
         import idaapi
+
         ea = ida_name.get_name_ea(idaapi.BADADDR, name)
         if ea == idaapi.BADADDR:
             ea = ida_name.get_name_ea(idaapi.BADADDR, "_" + name)
@@ -423,8 +437,9 @@ class TestDefUseCache:
         # First pass: all misses, subsequent passes: hits
         assert 0.0 <= hit_rate <= 1.0
 
-        print(f"\n  Hit rate: {hit_rate:.1%} "
-              f"({cache.hits} hits, {cache.misses} misses)")
+        print(
+            f"\n  Hit rate: {hit_rate:.1%} ({cache.hits} hits, {cache.misses} misses)"
+        )
 
     def test_empty_cache_hit_rate(self):
         """Test hit rate when cache is empty."""
@@ -443,6 +458,7 @@ class TestEarlyExitOptimizer:
     def ida_setup(self, ida_database, configure_hexrays, setup_libobfuscated_funcs):
         """Setup IDA and Hex-Rays for real microcode tests."""
         import idaapi
+
         if not idaapi.init_hexrays_plugin():
             pytest.skip("Hex-Rays decompiler plugin not available")
         return ida_database
@@ -451,6 +467,7 @@ class TestEarlyExitOptimizer:
         """Get function address by name, handling macOS underscore prefix."""
         import ida_name
         import idaapi
+
         ea = ida_name.get_name_ea(idaapi.BADADDR, name)
         if ea == idaapi.BADADDR:
             ea = ida_name.get_name_ea(idaapi.BADADDR, "_" + name)
@@ -492,8 +509,10 @@ class TestEarlyExitOptimizer:
             if blk and blk.npred() == 1 and blk.nsucc() > 1:
                 is_candidate = EarlyExitOptimizer.try_single_predecessor_inline(blk)
                 assert is_candidate is True
-                print(f"\n  Block {blk.serial}: npred=1, nsucc={blk.nsucc()}, "
-                      f"inline_candidate=True")
+                print(
+                    f"\n  Block {blk.serial}: npred=1, nsucc={blk.nsucc()}, "
+                    f"inline_candidate=True"
+                )
                 return  # Test passed
 
         pytest.skip("No blocks with npred=1 and nsucc>1 found")
@@ -518,8 +537,10 @@ class TestEarlyExitOptimizer:
             if blk and blk.npred() >= 5:
                 is_candidate = EarlyExitOptimizer.try_single_predecessor_inline(blk)
                 assert is_candidate is False
-                print(f"\n  Block {blk.serial}: npred={blk.npred()}, "
-                      f"inline_candidate=False")
+                print(
+                    f"\n  Block {blk.serial}: npred={blk.npred()}, "
+                    f"inline_candidate=False"
+                )
                 return  # Test passed
 
         pytest.skip("No blocks with npred>=5 found")
@@ -535,6 +556,7 @@ class TestSelectiveScanning:
     def ida_setup(self, ida_database, configure_hexrays, setup_libobfuscated_funcs):
         """Setup IDA and Hex-Rays for real microcode tests."""
         import idaapi
+
         if not idaapi.init_hexrays_plugin():
             pytest.skip("Hex-Rays decompiler plugin not available")
         return ida_database
@@ -543,6 +565,7 @@ class TestSelectiveScanning:
         """Get function address by name, handling macOS underscore prefix."""
         import ida_name
         import idaapi
+
         ea = ida_name.get_name_ea(idaapi.BADADDR, name)
         if ea == idaapi.BADADDR:
             ea = ida_name.get_name_ea(idaapi.BADADDR, "_" + name)
@@ -585,8 +608,10 @@ class TestSelectiveScanning:
         assert len(candidates) < mba.qty
         assert len(candidates) > 0
 
-        print(f"\n  Found {len(candidates)}/{mba.qty} candidates "
-              f"(skip rate: {1 - len(candidates)/mba.qty:.1%})")
+        print(
+            f"\n  Found {len(candidates)}/{mba.qty} candidates "
+            f"(skip rate: {1 - len(candidates) / mba.qty:.1%})"
+        )
 
     def test_selective_scanning_with_custom_heuristics(self, ida_setup):
         """Test that custom heuristics can be provided."""

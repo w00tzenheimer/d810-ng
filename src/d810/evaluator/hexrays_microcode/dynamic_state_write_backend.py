@@ -227,7 +227,9 @@ def recognize_derived_xor_dispatcher_model(
     return None
 
 
-def recognize_derived_xor_dispatcher_models(*, mba) -> tuple[DerivedXorDispatcherModel, ...]:
+def recognize_derived_xor_dispatcher_models(
+    *, mba
+) -> tuple[DerivedXorDispatcherModel, ...]:
     """Return all derived-XOR dispatcher key models visible in an MBA."""
 
     try:
@@ -306,7 +308,9 @@ def recognize_carrier_xor_transition(
                     lvar_idx=model.carrier_lvar_idx,
                 )
             ):
-                target_state = (int(from_state) ^ (int(const_value) & model.mask)) & model.mask
+                target_state = (
+                    int(from_state) ^ (int(const_value) & model.mask)
+                ) & model.mask
                 if target_state not in known_state_set:
                     return None
                 return DerivedXorTransitionEvidence(
@@ -340,13 +344,10 @@ def derive_initial_xor_dispatch_state(
 
     insn = getattr(blk, "head", None)
     while insn is not None:
-        if (
-            getattr(insn, "opcode", None) == ida_hexrays.m_mov
-            and _mop_matches_identity(
-                getattr(insn, "d", None),
-                stkoff=model.carrier_stkoff,
-                lvar_idx=model.carrier_lvar_idx,
-            )
+        if getattr(insn, "opcode", None) == ida_hexrays.m_mov and _mop_matches_identity(
+            getattr(insn, "d", None),
+            stkoff=model.carrier_stkoff,
+            lvar_idx=model.carrier_lvar_idx,
         ):
             value = _mop_const_value(getattr(insn, "l", None))
             if value is not None:
@@ -412,14 +413,11 @@ def recognize_global_or_state_write_transition(
             and pending_target_state is not None
         ):
             src_global = _mop_global_ea(getattr(insn, "l", None))
-            if (
-                src_global == pending_global_ea
-                and _mop_matches_state_var(
-                    getattr(insn, "d", None),
-                    mba=mba,
-                    state_var_stkoff=state_var_stkoff,
-                    state_var_lvar_idx=state_var_lvar_idx,
-                )
+            if src_global == pending_global_ea and _mop_matches_state_var(
+                getattr(insn, "d", None),
+                mba=mba,
+                state_var_stkoff=state_var_stkoff,
+                state_var_lvar_idx=state_var_lvar_idx,
             ):
                 state_write_ea = int(getattr(insn, "ea", 0) or 0) or None
                 return DynamicStateWriteEvidence(
@@ -554,7 +552,9 @@ def _eval_mop(mop, env: dict, vd: KnownBitsValueDomain, xresolve=None, use_block
     return vd.top(_FOLD_WIDTH)
 
 
-def _eval_insn(insn, env: dict, vd: KnownBitsValueDomain, xresolve=None, use_block=None):
+def _eval_insn(
+    insn, env: dict, vd: KnownBitsValueDomain, xresolve=None, use_block=None
+):
     opcode = getattr(insn, "opcode", None)
     binmap = _binary_op_map()
     unmap = _unary_op_map()
@@ -779,7 +779,9 @@ def resolve_predecessor_seeded_write_value(
     env: dict = {}
     resolver = cross_block_resolver
 
-    def _seed_block(block, use_block: int, *, capture_result: bool) -> AbstractValue | None:
+    def _seed_block(
+        block, use_block: int, *, capture_result: bool
+    ) -> AbstractValue | None:
         result = None
         ins = getattr(block, "head", None)
         while ins is not None:
@@ -842,7 +844,9 @@ def _state_write_source_identity(
     source_identity: tuple[int | None, int | None] | None = None
     insn = getattr(blk, "head", None)
     while insn is not None:
-        if getattr(insn, "opcode", None) == ida_hexrays.m_mov and _mop_matches_state_var(
+        if getattr(
+            insn, "opcode", None
+        ) == ida_hexrays.m_mov and _mop_matches_state_var(
             getattr(insn, "d", None),
             mba=mba,
             state_var_stkoff=int(state_var_stkoff),
@@ -914,7 +918,11 @@ def _find_corridor_state_write_block(
         )
         # A bare *stack* source in a DOWNSTREAM block (not the handler entry) is a
         # staging write -> resolve its value set there.
-        if serial != int(handler_serial) and identity is not None and identity[0] is not None:
+        if (
+            serial != int(handler_serial)
+            and identity is not None
+            and identity[0] is not None
+        ):
             return serial, identity
         for succ in _block_succset(mba, serial):
             if succ not in visited:

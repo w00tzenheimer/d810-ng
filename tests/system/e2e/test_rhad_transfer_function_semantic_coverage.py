@@ -1,4 +1,5 @@
 """Semantic-coverage regression for a second Rhadamanthys loader function."""
+
 from __future__ import annotations
 
 import json
@@ -16,11 +17,7 @@ pytest.importorskip("idapro")
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 _BINARY = _REPO / "samples" / "bins" / "rhad_loader_unpacked.bin"
 _PROBE = (
-    _REPO
-    / "tools"
-    / "scripts"
-    / "rhad_investigation"
-    / "probe_transfer_function.py"
+    _REPO / "tools" / "scripts" / "rhad_investigation" / "probe_transfer_function.py"
 )
 _FUNCTION_EA = 0x40D200
 _FUNCTION_END = 0x40F82F
@@ -53,9 +50,11 @@ def _assert_lifecycle_diag_authority(diag_path: pathlib.Path) -> None:
             "LEFT JOIN diagnostic_sessions ds ON ds.session_id=le.session_id "
             "WHERE ds.session_id IS NULL"
         ).fetchone() == (0,)
-        counts = dict(conn.execute(
-            "SELECT event_kind,COUNT(*) FROM lifecycle_events GROUP BY event_kind"
-        ))
+        counts = dict(
+            conn.execute(
+                "SELECT event_kind,COUNT(*) FROM lifecycle_events GROUP BY event_kind"
+            )
+        )
         assert counts.get("session_active", 0) == 1
         assert counts.get("evidence_generation", 0) >= 2
         assert counts.get("identity_decision", 0) >= 6
@@ -70,8 +69,7 @@ def _assert_lifecycle_diag_authority(diag_path: pathlib.Path) -> None:
             "AND r.correlation_id=p.correlation_id)"
         ).fetchone() == (0,)
         assert conn.execute(
-            "SELECT COALESCE(SUM(diagnostic_error_count),0) "
-            "FROM diagnostic_sessions"
+            "SELECT COALESCE(SUM(diagnostic_error_count),0) FROM diagnostic_sessions"
         ).fetchone() == (0,)
 
 
@@ -131,8 +129,7 @@ def test_second_real_loader_fully_unflattens_beyond_native_range_oracle(
     assert "JUMPOUT(" not in recovered
     assert recovered.count("while (") == 1
     assert (
-        "while ( **(_DWORD **)(WindowLongA + 8) "
-        "!= *(_DWORD *)(WindowLongA + 8) )"
+        "while ( **(_DWORD **)(WindowLongA + 8) != *(_DWORD *)(WindowLongA + 8) )"
     ) in recovered
     assert "free(" in recovered
     for call in (
@@ -146,9 +143,7 @@ def test_second_real_loader_fully_unflattens_beyond_native_range_oracle(
 
     transfers = json.loads(transfer_path.read_text(encoding="utf-8"))
     terminal_rows = [
-        row
-        for row in transfers
-        if int(row["source_jmp_ea"], 0) == _TERMINAL_JMP_EA
+        row for row in transfers if int(row["source_jmp_ea"], 0) == _TERMINAL_JMP_EA
     ]
     assert len(terminal_rows) == 1
     assert terminal_rows[0]["resolver_kind"] in {
@@ -164,12 +159,8 @@ def test_second_real_loader_fully_unflattens_beyond_native_range_oracle(
     ]
     assert len(return_dispatch_rows) == 1
     assert return_dispatch_rows[0]["condition_code"] == 4
-    assert int(return_dispatch_rows[0]["selector_compare_constant"], 0) == (
-        0x81F82C5E
-    )
-    assert int(return_dispatch_rows[0]["true_target_ea"], 0) == (
-        _RETURN_EPILOGUE_EA
-    )
+    assert int(return_dispatch_rows[0]["selector_compare_constant"], 0) == (0x81F82C5E)
+    assert int(return_dispatch_rows[0]["true_target_ea"], 0) == (_RETURN_EPILOGUE_EA)
     assert "TRANSFER_RESULT" in log_text
     assert "while1=0" in log_text
     assert "jumpout=0" in log_text
@@ -247,9 +238,7 @@ def test_third_real_loader_recovers_structured_terminal_values(
     ]
     assert len(return_dispatch_rows) == 1
     assert return_dispatch_rows[0]["condition_code"] == 4
-    assert int(return_dispatch_rows[0]["selector_compare_constant"], 0) == (
-        0x069225E4
-    )
+    assert int(return_dispatch_rows[0]["selector_compare_constant"], 0) == (0x069225E4)
     assert int(return_dispatch_rows[0]["true_target_ea"], 0) == (
         _THIRD_RETURN_EPILOGUE_EA
     )

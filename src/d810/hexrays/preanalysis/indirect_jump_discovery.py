@@ -20,6 +20,7 @@ The entry count is bounded structurally: walk table entries while each qword
 points inside the owning function; stop at the first out-of-range / non-code /
 next-function pointer (Tigress packs string/data immediately after the table).
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence

@@ -48,9 +48,7 @@ def test_ast_cache_key_scopes_nested_stack_operands_by_mba(monkeypatch) -> None:
 
     assert mop_utils._mop_ast_cache_key(
         _nested_operand(_stack_operand(0x1111))
-    ) != mop_utils._mop_ast_cache_key(
-        _nested_operand(_stack_operand(0x2222))
-    )
+    ) != mop_utils._mop_ast_cache_key(_nested_operand(_stack_operand(0x2222)))
 
 
 @pytest.mark.parametrize("nested", (False, True))

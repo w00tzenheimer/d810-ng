@@ -4,6 +4,7 @@ These tests drive Task 4 (query helpers). They will FAIL until query.py
 is implemented -- the expected failure mode is ImportError or AttributeError
 on the query functions, NOT on fixture setup.
 """
+
 from __future__ import annotations
 from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
@@ -24,9 +25,7 @@ def test_chain_detects_broken_hop_at_blk206():
     blk[206].succs=[207,208], not 217.
     """
     conn = _db()
-    result = chain(
-        conn, 1, [131, 174, 176, 200, 23, 24, 32, 62, 206, 217, 218, 219]
-    )
+    result = chain(conn, 1, [131, 174, 176, 200, 23, 24, 32, 62, 206, 217, 218, 219])
     # Find the hop from 206 to 217
     hop_206 = next(r for r in result if r and r["serial"] == 206)
     assert hop_206["hop_ok"] is False, (

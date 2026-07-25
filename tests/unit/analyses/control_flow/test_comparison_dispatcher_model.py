@@ -4,6 +4,7 @@ The 28-orphan fix: an interval-routed next-state (sub_7FFD's
 ``0x79F598F7 ∈ [0x737189d6, 0x7c2c0220] -> blk 52``) must ``route`` to block 52
 via ``WrappedInterval.contains`` instead of returning ``None`` exact-only.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -55,7 +56,9 @@ def _row(state_const, target, *, block=2):
 # --- the pure routing function --------------------------------------------
 
 
-def _route(value, *, state_to_handler, handler_range_map=None, default_target_block=None):
+def _route(
+    value, *, state_to_handler, handler_range_map=None, default_target_block=None
+):
     """Route via the single IntervalSet router over the complete partition."""
     return route_via_interval_sets(
         value,
@@ -67,18 +70,14 @@ def _route(value, *, state_to_handler, handler_range_map=None, default_target_bl
 
 
 def test_route_exact_first():
-    assert (
-        _route(0xAA, state_to_handler={0xAA: 7}) == 7
-    )
+    assert _route(0xAA, state_to_handler={0xAA: 7}) == 7
 
 
 def test_route_interval_resolves_the_dropped_edge():
     # THE bug: exact-only returns None; interval row resolves to 52.
     assert _route(_STATE, state_to_handler={}) is None
     assert (
-        _route(
-            _STATE, state_to_handler={}, handler_range_map={_BLK52: (_LO, _HI)}
-        )
+        _route(_STATE, state_to_handler={}, handler_range_map={_BLK52: (_LO, _HI)})
         == _BLK52
     )
 
@@ -96,9 +95,7 @@ def test_route_interval_miss_returns_none():
 def test_route_skips_degenerate_catchall_span():
     # A near-full-word span is the dispatcher default arm, not a handler range.
     assert (
-        _route(
-            0x1234, state_to_handler={}, handler_range_map={99: (0, 0xFFFFFFFF)}
-        )
+        _route(0x1234, state_to_handler={}, handler_range_map={99: (0, 0xFFFFFFFF)})
         is None
     )
 
@@ -114,10 +111,7 @@ def test_route_skips_rows_already_claimed_exactly():
 
 
 def test_route_default_arm_last():
-    assert (
-        _route(0xDEAD, state_to_handler={}, default_target_block=3)
-        == 3
-    )
+    assert _route(0xDEAD, state_to_handler={}, default_target_block=3) == 3
 
 
 # --- the model wrapper -----------------------------------------------------
@@ -260,9 +254,7 @@ def test_from_recovery_multi_interval_handler_resolves_every_range():
         def __init__(self):
             self.dispatcher = self.dispatcher_attr
 
-    model = ComparisonDispatcherModel.from_recovery(
-        _map(), range_evidence=_Evidence()
-    )
+    model = ComparisonDispatcherModel.from_recovery(_map(), range_evidence=_Evidence())
     # Range A (the one the lossy map kept) AND range B (the one it dropped)
     # both resolve to blk 52 -- the multi-interval completeness fix.
     assert model.resolve_target(0x150) == _BLK52

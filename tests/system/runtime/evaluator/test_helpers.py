@@ -13,8 +13,14 @@ import pytest
 
 from d810.evaluator.helpers.rotate import (
     _RotateHelper,
-    ROL1, ROL2, ROL4, ROL8,
-    ROR1, ROR2, ROR4, ROR8,
+    ROL1,
+    ROL2,
+    ROL4,
+    ROL8,
+    ROR1,
+    ROR2,
+    ROR4,
+    ROR8,
 )
 
 
@@ -58,16 +64,19 @@ class TestRotateHelperRegistry:
         fn = _RotateHelper.lookup(name)
         assert callable(fn), f"{name} lookup result is not callable"
 
-    @pytest.mark.parametrize("name,expected_width", [
-        ("__ROL1__", 8),
-        ("__ROL2__", 16),
-        ("__ROL4__", 32),
-        ("__ROL8__", 64),
-        ("__ROR1__", 8),
-        ("__ROR2__", 16),
-        ("__ROR4__", 32),
-        ("__ROR8__", 64),
-    ])
+    @pytest.mark.parametrize(
+        "name,expected_width",
+        [
+            ("__ROL1__", 8),
+            ("__ROL2__", 16),
+            ("__ROL4__", 32),
+            ("__ROL8__", 64),
+            ("__ROR1__", 8),
+            ("__ROR2__", 16),
+            ("__ROR4__", 32),
+            ("__ROR8__", 64),
+        ],
+    )
     def test_bit_width_classvar(self, name: str, expected_width: int):
         """Each helper class has the correct bit_width ClassVar."""
         klass = _RotateHelper.find(name)

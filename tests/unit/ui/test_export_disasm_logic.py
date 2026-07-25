@@ -2,6 +2,7 @@
 
 These tests verify the pure Python logic without requiring IDA Pro.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -195,6 +196,7 @@ class TestSuggestDisasmFilename:
 class TestMasmPrinter:
     def test_indent_and_newline(self):
         from d810.ui.actions.export_disasm_logic import MasmPrinter
+
         p = MasmPrinter()
         p.line("_TEXT SEGMENT")
         p.indent(2)
@@ -207,27 +209,37 @@ class TestMasmPrinter:
 
     def test_hex_small_decimal(self):
         from d810.ui.actions.export_disasm_logic import MasmPrinter
-        p = MasmPrinter(); p.hex(9)
+
+        p = MasmPrinter()
+        p.hex(9)
         assert str(p) == "9"
 
     def test_hex_leading_zero_and_negative(self):
         from d810.ui.actions.export_disasm_logic import MasmPrinter
-        p = MasmPrinter(); p.hex(0xFF)
+
+        p = MasmPrinter()
+        p.hex(0xFF)
         assert str(p) == "0FFh"
-        p = MasmPrinter(); p.hex(0xFFFFFFFFFFFFFFFF)  # -1 sign-extended
+        p = MasmPrinter()
+        p.hex(0xFFFFFFFFFFFFFFFF)  # -1 sign-extended
         assert str(p) == "-1"
 
     def test_force_sign(self):
         from d810.ui.actions.export_disasm_logic import MasmPrinter
-        p = MasmPrinter(); p.hex(0x10, force_sign=True)
+
+        p = MasmPrinter()
+        p.hex(0x10, force_sign=True)
         assert str(p) == "+10h"
 
     def test_write_bytes_rows(self):
         from d810.ui.actions.export_disasm_logic import MasmPrinter
-        p = MasmPrinter(); p.write_bytes(bytes(range(4)), 0, 4, per_line=2)
+
+        p = MasmPrinter()
+        p.write_bytes(bytes(range(4)), 0, 4, per_line=2)
         assert str(p) == "db 0,1\ndb 2,3"
 
     def test_sext64(self):
         from d810.ui.actions.export_disasm_logic import masm_sext64
+
         assert masm_sext64(0xFFFFFFFFFFFFFFFF) == -1
         assert masm_sext64(0x10) == 16

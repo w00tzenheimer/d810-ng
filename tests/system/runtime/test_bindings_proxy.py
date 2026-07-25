@@ -19,6 +19,7 @@ from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups im
 
 class MockMopSnapshot:
     """Mock MopSnapshot for testing (avoids IDA dependency)."""
+
     def __init__(self, value=None, size=4):
         self.value = value
         self.size = size
@@ -31,7 +32,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 class TestBindingsProxy:

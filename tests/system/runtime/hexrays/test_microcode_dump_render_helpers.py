@@ -42,7 +42,9 @@ def test_print_list_pair_delegates_may_only_live_formatting(monkeypatch) -> None
     assert calls == [(may, must)]
 
 
-def test_stack_frame_overview_delegates_saved_register_live_formatting(monkeypatch) -> None:
+def test_stack_frame_overview_delegates_saved_register_live_formatting(
+    monkeypatch,
+) -> None:
     saved_register = object()
     calls: list[tuple[object, int]] = []
 

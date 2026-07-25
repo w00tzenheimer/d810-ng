@@ -3,6 +3,7 @@
 These tests exercise `run_forward_fixpoint` with simple integer-based
 domains -- no IDA dependency required.
 """
+
 from __future__ import annotations
 
 import pytest

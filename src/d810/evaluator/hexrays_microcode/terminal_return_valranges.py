@@ -6,6 +6,7 @@ read-only and intended for debugging terminal-return ambiguity, especially in
 cases like ``sub_7FFD3338C040`` where multiple terminal handlers merge into a
 shared epilogue and the decompiler collapses return-carrier precision.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -18,8 +19,10 @@ from d810.analyses.control_flow.terminal_frontier import (
     TerminalSemanticLoweringFrontier,
     compute_terminal_cfg_suffix_frontier,
 )
-from d810.analyses.control_flow.terminal_return_audit import \
-    TerminalReturnSourceKind, TerminalReturnAuditReport
+from d810.analyses.control_flow.terminal_return_audit import (
+    TerminalReturnSourceKind,
+    TerminalReturnAuditReport,
+)
 from d810.core.typing import Iterable
 from d810.evaluator.hexrays_microcode.valranges import (
     ValrangeLocation,
@@ -94,20 +97,18 @@ class TerminalReturnValrangeGroup:
             lines.append(
                 "  suffix snapshots: "
                 + " | ".join(
-                    f"blk[{snap.block_serial}] { _format_snapshot(snap) }"
+                    f"blk[{snap.block_serial}] {_format_snapshot(snap)}"
                     for snap in self.suffix_snapshots
                 )
             )
-        lines.append(
-            f"  merge start: { _format_snapshot(self.merge_snapshot) }"
-        )
-        lines.append(
-            f"  shared stop: { _format_snapshot(self.return_snapshot) }"
-        )
+        lines.append(f"  merge start: {_format_snapshot(self.merge_snapshot)}")
+        lines.append(f"  shared stop: {_format_snapshot(self.return_snapshot)}")
         for snap in self.predecessor_snapshots:
-            lines.append(f"  pred blk[{snap.block_serial}]: { _format_snapshot(snap) }")
+            lines.append(f"  pred blk[{snap.block_serial}]: {_format_snapshot(snap)}")
         if self.current_paths:
-            path_bits = ", ".join("->".join(str(x) for x in path) for path in self.current_paths)
+            path_bits = ", ".join(
+                "->".join(str(x) for x in path) for path in self.current_paths
+            )
             lines.append(f"  current paths: {path_bits}")
         return "\n".join(lines)
 
@@ -257,12 +258,28 @@ def _build_snapshot(
     )
 
 
-def _preferred_range_text(snapshot: TerminalValrangeSnapshot, *, state_first: bool = False) -> str | None:
+def _preferred_range_text(
+    snapshot: TerminalValrangeSnapshot, *, state_first: bool = False
+) -> str | None:
     candidates: list[ValrangeRecord | None] = []
     if state_first:
-        candidates.extend([snapshot.state_tail, snapshot.state_start, snapshot.rax_tail, snapshot.rax_start])
+        candidates.extend(
+            [
+                snapshot.state_tail,
+                snapshot.state_start,
+                snapshot.rax_tail,
+                snapshot.rax_start,
+            ]
+        )
     else:
-        candidates.extend([snapshot.rax_tail, snapshot.rax_start, snapshot.state_tail, snapshot.state_start])
+        candidates.extend(
+            [
+                snapshot.rax_tail,
+                snapshot.rax_start,
+                snapshot.state_tail,
+                snapshot.state_start,
+            ]
+        )
     for rec in candidates:
         if rec is not None:
             return rec.range_text
@@ -350,10 +367,21 @@ def _format_snapshot(snapshot: TerminalValrangeSnapshot) -> str:
 
 
 def _snapshot_has_carrier_activity(snapshot: TerminalValrangeSnapshot) -> bool:
-    return any(
-        x is not None
-        for x in (snapshot.rax_start, snapshot.rax_tail, snapshot.state_start, snapshot.state_tail)
-    ) or bool(snapshot.stack_start) or bool(snapshot.stack_tail) or bool(snapshot.use_text) or bool(snapshot.def_text)
+    return (
+        any(
+            x is not None
+            for x in (
+                snapshot.rax_start,
+                snapshot.rax_tail,
+                snapshot.state_start,
+                snapshot.state_tail,
+            )
+        )
+        or bool(snapshot.stack_start)
+        or bool(snapshot.stack_tail)
+        or bool(snapshot.use_text)
+        or bool(snapshot.def_text)
+    )
 
 
 def _choose_semantic_frontier(
@@ -377,7 +405,11 @@ def _choose_semantic_frontier(
         )
 
     first_active_serial = next(
-        (snap.block_serial for snap in suffix_snapshots if _snapshot_has_carrier_activity(snap)),
+        (
+            snap.block_serial
+            for snap in suffix_snapshots
+            if _snapshot_has_carrier_activity(snap)
+        ),
         None,
     )
 
@@ -389,7 +421,10 @@ def _choose_semantic_frontier(
             notes="ambiguity appears only at the terminal stop",
         )
 
-    if merge_kind in {TerminalValrangeMergeKind.AT_SHARED_ENTRY, TerminalValrangeMergeKind.UNKNOWN}:
+    if merge_kind in {
+        TerminalValrangeMergeKind.AT_SHARED_ENTRY,
+        TerminalValrangeMergeKind.UNKNOWN,
+    }:
         if first_active_serial is not None:
             action = (
                 TerminalLoweringAction.PRIVATE_RETURN_BLOCK
@@ -412,7 +447,9 @@ def _choose_semantic_frontier(
     if merge_kind == TerminalValrangeMergeKind.BEFORE_SHARED_ENTRY:
         return TerminalSemanticLoweringFrontier(
             action=TerminalLoweringAction.DIRECT_TERMINAL_LOWERING,
-            lowering_start_serial=cfg_frontier.unique_anchor_serials[0] if cfg_frontier.unique_anchor_serials else None,
+            lowering_start_serial=cfg_frontier.unique_anchor_serials[0]
+            if cfg_frontier.unique_anchor_serials
+            else None,
             unique_anchor_serials=cfg_frontier.unique_anchor_serials,
             notes="carrier diverges before the shared suffix; lower at per-path anchors",
         )
@@ -441,7 +478,9 @@ def build_terminal_return_valrange_report(
     - do predecessor carrier ranges differ?
     - does the merge begin at the shared epilogue entry or only at the stop?
     """
-    grouped: dict[tuple[int, int], list[tuple[object, tuple[int, ...], int | None]]] = {}
+    grouped: dict[
+        tuple[int, int], list[tuple[object, tuple[int, ...], int | None]]
+    ] = {}
 
     for site in audit_report.sites:
         if site.source_kind not in {
@@ -557,7 +596,9 @@ def _build_group(
         )
         for suffix_serial in cfg_frontier.suffix_serials
     )
-    merge_kind, notes = _infer_merge_kind(pred_snapshots, merge_snapshot, return_snapshot)
+    merge_kind, notes = _infer_merge_kind(
+        pred_snapshots, merge_snapshot, return_snapshot
+    )
     semantic_frontier = _choose_semantic_frontier(
         cfg_frontier,
         suffix_snapshots=suffix_snapshots,
@@ -566,7 +607,14 @@ def _build_group(
     return TerminalReturnValrangeGroup(
         shared_entry_serial=shared_entry,
         return_block_serial=return_block,
-        handler_serials=tuple(sorted(int(getattr(site, "handler_serial", -1)) for site, _, _ in entries if getattr(site, "handler_serial", None) is not None and int(getattr(site, "handler_serial", -1)) >= 0)),
+        handler_serials=tuple(
+            sorted(
+                int(getattr(site, "handler_serial", -1))
+                for site, _, _ in entries
+                if getattr(site, "handler_serial", None) is not None
+                and int(getattr(site, "handler_serial", -1)) >= 0
+            )
+        ),
         terminal_predecessor_serials=tuple(terminal_preds),
         current_paths=tuple(path for _, path, _ in entries if path),
         cfg_frontier=cfg_frontier,
@@ -589,7 +637,7 @@ def build_terminal_return_valrange_report_from_mba(
     carrier_mreg: int = 0,
     carrier_size: int = 8,
 ) -> TerminalReturnValrangeReport:
-    "Discover shared terminal merges directly from the current MBA.\n\n    This is a fallback for dump/debug paths where preanalysis-store terminal audit\n    artifacts are unavailable. It scans for:\n    - BLT_STOP / no-succ blocks with multiple predecessors, or\n    - BLT_STOP / no-succ blocks whose sole predecessor already has multiple\n      predecessors (shared epilogue entry followed by private stop).\n    "
+    "Discover shared terminal merges directly from the current MBA.\n\n    This is a fallback for dump/debug paths where preanalysis-store terminal audit\n    artifacts are unavailable. It scans for:\n    - BLT_STOP / no-succ blocks with multiple predecessors, or\n    - BLT_STOP / no-succ blocks whose sole predecessor already has multiple\n      predecessors (shared epilogue entry followed by private stop).\n"
     discovered: list[tuple[int, int]] = []
     qty = int(getattr(mba, "qty", 0))
     for serial in range(qty):

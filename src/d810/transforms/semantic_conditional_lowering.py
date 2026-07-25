@@ -1,4 +1,5 @@
 "Backend-neutral exact conditional site analysis.\n\nThis module classifies conditional semantic-DAG sites that are safe to lower as\nsmall SESE-style hammocks.  It deliberately accepts DAG-like objects from the\ncaller instead of importing preanalysis models, and it does not touch live Hex-Rays\nobjects.  Hodur remains responsible for strategy ordering, logging policy, and\nmaterializing any returned sites into backend-specific modifications.\n"
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -15,7 +16,9 @@ from d810.analyses.control_flow.sese_hammock import (
     compute_postdominator_tree,
 )
 
-logger = logging.getLogger("D810.transforms.semantic_conditional_lowering", logging.DEBUG)
+logger = logging.getLogger(
+    "D810.transforms.semantic_conditional_lowering", logging.DEBUG
+)
 
 __all__ = [
     "ConditionalExactNodeSite",
@@ -69,7 +72,9 @@ def collect_conditional_node_scope(
     source_block: int,
 ) -> tuple[set[int], set[tuple[int, int]]]:
     """Collect owned blocks/edges for the conditional site and its sibling exits."""
-    owned_blocks: set[int] = set(int(node) for node in getattr(edge, "ordered_path", ()) or ())
+    owned_blocks: set[int] = set(
+        int(node) for node in getattr(edge, "ordered_path", ()) or ()
+    )
     owned_edges: set[tuple[int, int]] = set()
 
     def _record_path(path: tuple[int, ...] | list[int] | None) -> None:
@@ -84,7 +89,10 @@ def collect_conditional_node_scope(
         sibling_key = site_key(sibling)
         if sibling_key != (source_state, source_block):
             continue
-        if edge_kind_name(sibling) not in {"CONDITIONAL_TRANSITION", "CONDITIONAL_RETURN"}:
+        if edge_kind_name(sibling) not in {
+            "CONDITIONAL_TRANSITION",
+            "CONDITIONAL_RETURN",
+        }:
             continue
         _record_path(getattr(sibling, "ordered_path", ()))
     return owned_blocks, owned_edges
@@ -316,16 +324,17 @@ def normalize_clean_conditional_fork_arms(
                 return None
             seen_path_blocks.add(int(block_serial))
 
-    return tuple(
-        replace(arm, tail=int(path[-2]))
-        for arm, path in zip(arms, paths)
-    )
+    return tuple(replace(arm, tail=int(path[-2])) for arm, path in zip(arms, paths))
 
 
-def _describe_sibling_transitions(transition_edges: list[object]) -> list[tuple[int, int | None, int | None, object]]:
+def _describe_sibling_transitions(
+    transition_edges: list[object],
+) -> list[tuple[int, int | None, int | None, object]]:
     sibling_transitions = []
     for sibling in transition_edges:
-        ordered_path = tuple(int(node) for node in getattr(sibling, "ordered_path", ()) or ())
+        ordered_path = tuple(
+            int(node) for node in getattr(sibling, "ordered_path", ()) or ()
+        )
         sibling_transitions.append(
             (
                 int(getattr(sibling, "target_state", 0) & 0xFFFFFFFF),
@@ -396,7 +405,9 @@ def analyze_exact_conditional_sites(
         edges_by_site.setdefault(key, []).append(edge)
         source_block = key[1]
         if kind_name == "CONDITIONAL_TRANSITION":
-            ordered_path = tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
+            ordered_path = tuple(
+                int(node) for node in getattr(edge, "ordered_path", ()) or ()
+            )
             target_entry_anchor = getattr(edge, "target_entry_anchor", None)
             if ordered_path and target_entry_anchor is not None:
                 transitions_by_source_block.setdefault(source_block, set()).add(
@@ -420,12 +431,18 @@ def analyze_exact_conditional_sites(
         source_state, source_block = key
         siblings = edges_by_site.get(key, [])
         transition_edges = [
-            sibling for sibling in siblings if edge_kind_name(sibling) == "CONDITIONAL_TRANSITION"
+            sibling
+            for sibling in siblings
+            if edge_kind_name(sibling) == "CONDITIONAL_TRANSITION"
         ]
         return_edges = [
-            sibling for sibling in siblings if edge_kind_name(sibling) == "CONDITIONAL_RETURN"
+            sibling
+            for sibling in siblings
+            if edge_kind_name(sibling) == "CONDITIONAL_RETURN"
         ]
-        ordered_path = tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
+        ordered_path = tuple(
+            int(node) for node in getattr(edge, "ordered_path", ()) or ()
+        )
         target_entry_anchor = getattr(edge, "target_entry_anchor", None)
         if len(ordered_path) < 2 or target_entry_anchor is None:
             continue
@@ -434,7 +451,9 @@ def analyze_exact_conditional_sites(
         if taken_snapshot is None:
             continue
         target_entry = int(target_entry_anchor)
-        if target_entry in tuple(int(succ) for succ in getattr(taken_snapshot, "succs", ())):
+        if target_entry in tuple(
+            int(succ) for succ in getattr(taken_snapshot, "succs", ())
+        ):
             continue
         physical_site_key = (source_block, taken_tail, target_entry)
         if physical_site_key in seen_site_keys:

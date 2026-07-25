@@ -5,6 +5,7 @@ state: the ``v52`` alignment switch rendered as structured ``if``/``return`` wit
 the aligned path delivering ``a5 + 0xD0`` (not the ``0x298372CC`` leak), and no
 ``goto`` anywhere.
 """
+
 from __future__ import annotations
 
 from d810.ir.structured_region import (
@@ -19,13 +20,15 @@ from d810.ir.structured_region import (
 
 
 def test_carrier_endstate_is_goto_free_and_correct():
-    tree = SequenceRegion((
-        # aligned terminal, FIXED: delivers the real carrier, not the leaked state
-        ConditionRegion("!v52", ReturnRegion("a5 + 0xD0")),
-        BlockRegion(2, ("/* byte compute */",)),
-        ConditionRegion("v52 == 1", ReturnRegion("0xC5FB34A1D9A6E315uLL")),
-        ReturnRegion("a5 + 0xD0"),
-    ))
+    tree = SequenceRegion(
+        (
+            # aligned terminal, FIXED: delivers the real carrier, not the leaked state
+            ConditionRegion("!v52", ReturnRegion("a5 + 0xD0")),
+            BlockRegion(2, ("/* byte compute */",)),
+            ConditionRegion("v52 == 1", ReturnRegion("0xC5FB34A1D9A6E315uLL")),
+            ReturnRegion("a5 + 0xD0"),
+        )
+    )
     text = render_region(tree)
     assert "goto" not in text
     assert "if ( !v52 )" in text
@@ -40,14 +43,7 @@ def test_nested_if_else_indentation():
         else_region=BlockRegion(2, ("a = 2;",)),
     )
     assert render_region(tree) == (
-        "if ( x == 1 )\n"
-        "{\n"
-        "    a = 1;\n"
-        "}\n"
-        "else\n"
-        "{\n"
-        "    a = 2;\n"
-        "}"
+        "if ( x == 1 )\n{\n    a = 1;\n}\nelse\n{\n    a = 2;\n}"
     )
 
 

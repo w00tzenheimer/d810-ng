@@ -1,5 +1,8 @@
 import pytest
-from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult, resolve_target_via_condition_chain
+from d810.analyses.control_flow.condition_chain_model import (
+    ConditionChainAnalysisResult,
+    resolve_target_via_condition_chain,
+)
 
 
 def _make_condition_chain_result(exact_map, range_map=None):
@@ -25,24 +28,34 @@ class TestResolveTargetViaConditionChain:
         assert resolve_target_via_condition_chain(condition_chain, 0x450) == 30
 
     def test_range_boundary(self):
-        condition_chain = _make_condition_chain_result({}, range_map={20: (0x200, 0x300)})
+        condition_chain = _make_condition_chain_result(
+            {}, range_map={20: (0x200, 0x300)}
+        )
         assert resolve_target_via_condition_chain(condition_chain, 0x200) == 20
         assert resolve_target_via_condition_chain(condition_chain, 0x300) == 20
 
     def test_no_match_returns_none(self):
-        condition_chain = _make_condition_chain_result({10: 0x100}, range_map={20: (0x200, 0x300)})
+        condition_chain = _make_condition_chain_result(
+            {10: 0x100}, range_map={20: (0x200, 0x300)}
+        )
         assert resolve_target_via_condition_chain(condition_chain, 0x999) is None
 
     def test_exact_takes_priority_over_range(self):
-        condition_chain = _make_condition_chain_result({10: 0x250}, range_map={20: (0x200, 0x300)})
+        condition_chain = _make_condition_chain_result(
+            {10: 0x250}, range_map={20: (0x200, 0x300)}
+        )
         assert resolve_target_via_condition_chain(condition_chain, 0x250) == 10
 
     def test_open_range_low_none(self):
-        condition_chain = _make_condition_chain_result({}, range_map={20: (None, 0x300)})
+        condition_chain = _make_condition_chain_result(
+            {}, range_map={20: (None, 0x300)}
+        )
         assert resolve_target_via_condition_chain(condition_chain, 0x100) == 20
         assert resolve_target_via_condition_chain(condition_chain, 0x400) is None
 
     def test_open_range_high_none(self):
-        condition_chain = _make_condition_chain_result({}, range_map={20: (0x200, None)})
+        condition_chain = _make_condition_chain_result(
+            {}, range_map={20: (0x200, None)}
+        )
         assert resolve_target_via_condition_chain(condition_chain, 0x999) == 20
         assert resolve_target_via_condition_chain(condition_chain, 0x100) is None

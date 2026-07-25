@@ -1,4 +1,5 @@
 """Operational config-v2 pass registry composition tests."""
+
 from __future__ import annotations
 
 from pathlib import Path

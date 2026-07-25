@@ -9,6 +9,7 @@ wall-clock budget (design §11: k=6 ≈ seconds/function), so it never blows up.
 Portable: no IDA.  ``should_escalate`` consumes the spine's own ``top_density``
 (``deffai.AnalysisResult.top_density``) so the trigger reuses the proven metric.
 """
+
 from __future__ import annotations
 
 import time

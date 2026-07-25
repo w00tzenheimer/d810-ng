@@ -16,6 +16,7 @@ try:
         SIMD_AVX2,
         SIMD_NEON,
     )
+
     HAS_CYTHON = True
 except ImportError:
     HAS_CYTHON = False
@@ -34,17 +35,20 @@ class TestSimdBestLevel:
 class TestTzcnt32:
     """Test tzcnt32()."""
 
-    @pytest.mark.parametrize("x, expected", [
-        (0, 32),
-        (1, 0),
-        (2, 1),
-        (4, 2),
-        (8, 3),
-        (0x80000000, 31),
-        (0b10100, 2),
-        (0x10, 4),
-        (0xFF00, 8),
-    ])
+    @pytest.mark.parametrize(
+        "x, expected",
+        [
+            (0, 32),
+            (1, 0),
+            (2, 1),
+            (4, 2),
+            (8, 3),
+            (0x80000000, 31),
+            (0b10100, 2),
+            (0x10, 4),
+            (0xFF00, 8),
+        ],
+    )
     def test_tzcnt32(self, x, expected):
         assert tzcnt32(x) == expected
 
@@ -66,12 +70,12 @@ class TestMemEq:
             cy_mem_eq_16(b"\x00" * 15, b"\x00" * 16)
 
     def test_mem_eq_32_equal(self):
-        data = b"\xAB" * 32
+        data = b"\xab" * 32
         assert cy_mem_eq_32(data, data) is True
 
     def test_mem_eq_32_not_equal(self):
-        a = b"\xAB" * 32
-        b = b"\xAB" * 31 + b"\xCD"
+        a = b"\xab" * 32
+        b = b"\xab" * 31 + b"\xcd"
         assert cy_mem_eq_32(a, b) is False
 
     def test_mem_eq_32_too_short(self):
@@ -80,7 +84,7 @@ class TestMemEq:
 
     def test_mem_eq_16_longer_buffers(self):
         """Only first 16 bytes matter."""
-        a = b"\x42" * 16 + b"\xFF" * 16
+        a = b"\x42" * 16 + b"\xff" * 16
         b = b"\x42" * 16 + b"\x00" * 16
         assert cy_mem_eq_16(a, b) is True
 

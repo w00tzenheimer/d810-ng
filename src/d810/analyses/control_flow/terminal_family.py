@@ -10,7 +10,10 @@ from d810.ir.storage_identity import (
     storage_identity_from_varnode,
 )
 from d810.ir.varnode import Space, Varnode
-from d810.analyses.control_flow.linearized_state_dag import SemanticEdgeKind, StateDagEdge
+from d810.analyses.control_flow.linearized_state_dag import (
+    SemanticEdgeKind,
+    StateDagEdge,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +111,9 @@ def terminal_varnode_source_signature(vn: Varnode | None) -> tuple[object, ...]:
     return ("varnode", vn.space.value, int(vn.offset), int(vn.size))
 
 
-def terminal_instruction_write_signature(instruction: Instruction) -> tuple[object, ...]:
+def terminal_instruction_write_signature(
+    instruction: Instruction,
+) -> tuple[object, ...]:
     inputs = instruction.inputs
     return (
         "op",
@@ -263,7 +268,8 @@ def probe_terminal_family_seed(
         else:
             candidate_targets.extend(int(succ) for succ in source_snapshot.succs)
             non_dispatcher_targets = [
-                target for target in candidate_targets
+                target
+                for target in candidate_targets
                 if target not in dispatcher_region
             ]
             if non_dispatcher_targets:
@@ -271,7 +277,8 @@ def probe_terminal_family_seed(
 
         if rejection_reason == "accepted":
             non_dispatcher_targets = [
-                target for target in candidate_targets
+                target
+                for target in candidate_targets
                 if target not in dispatcher_region
             ]
             if not non_dispatcher_targets:
@@ -281,11 +288,14 @@ def probe_terminal_family_seed(
                 if family_entry not in reachable_blocks:
                     rejection_reason = "family_entry_unreachable"
                 else:
-                    path = collect_linear_terminal_path(
-                        projected_flow_graph,
-                        start_block=family_entry,
-                        dispatcher_region=dispatcher_region,
-                    ) or ()
+                    path = (
+                        collect_linear_terminal_path(
+                            projected_flow_graph,
+                            start_block=family_entry,
+                            dispatcher_region=dispatcher_region,
+                        )
+                        or ()
+                    )
                     if not path:
                         rejection_reason = "terminal_path_non_linear"
                     elif len(path) < 2:
@@ -302,19 +312,13 @@ def probe_terminal_family_seed(
     if stop_block is None and path:
         stop_block = int(path[-1])
 
-    arm_target_projected_only = (
-        arm_target is not None
-        and is_projected_only_block(
-            arm_target,
-            base_flow_graph=base_flow_graph,
-        )
+    arm_target_projected_only = arm_target is not None and is_projected_only_block(
+        arm_target,
+        base_flow_graph=base_flow_graph,
     )
-    family_entry_projected_only = (
-        family_entry is not None
-        and is_projected_only_block(
-            family_entry,
-            base_flow_graph=base_flow_graph,
-        )
+    family_entry_projected_only = family_entry is not None and is_projected_only_block(
+        family_entry,
+        base_flow_graph=base_flow_graph,
     )
     path_projected_only_blocks = tuple(
         int(block_serial)
@@ -324,13 +328,10 @@ def probe_terminal_family_seed(
             base_flow_graph=base_flow_graph,
         )
     )
-    if (
-        rejection_reason == "terminal_path_non_linear"
-        and (
-            arm_target_projected_only
-            or family_entry_projected_only
-            or path_projected_only_blocks
-        )
+    if rejection_reason == "terminal_path_non_linear" and (
+        arm_target_projected_only
+        or family_entry_projected_only
+        or path_projected_only_blocks
     ):
         rejection_reason = "terminal_path_collapsed_into_projected_only"
 
@@ -420,7 +421,9 @@ def seed_terminal_family_probes(
                     seed_origins[
                         (
                             int(seed.source_block),
-                            int(seed.branch_arm) if seed.branch_arm is not None else None,
+                            int(seed.branch_arm)
+                            if seed.branch_arm is not None
+                            else None,
                         )
                     ]
                 )
@@ -562,10 +565,7 @@ def terminal_value_family_signature(
 ) -> tuple[object, ...]:
     if not chain:
         return ("unresolved_terminal_value",)
-    semantic_chain = tuple(
-        terminal_write_signature(write)
-        for write in chain
-    )
+    semantic_chain = tuple(terminal_write_signature(write) for write in chain)
     return ("terminal_value_chain", semantic_chain)
 
 
@@ -638,9 +638,7 @@ def build_terminal_family_candidates(
         )
         materializer_block = int(chain[-1].block_serial) if chain else None
         writer_block = int(chain[0].block_serial) if chain else None
-        materializer_chain_blocks = tuple(
-            int(write.block_serial) for write in chain
-        )
+        materializer_chain_blocks = tuple(int(write.block_serial) for write in chain)
         lineage_eas = tuple(int(write.ea) for write in chain)
         signature = terminal_value_family_signature(chain)
 

@@ -1,4 +1,5 @@
-"Live Hex-Rays implementation of the preanalysis ``CarrierResolver`` boundary.\n\nThis adapter lives in the optimizer layer (permitted to import\n``d810.hexrays`` and the live evaluator), so the pure preanalysis\n``exit_path_effect_discovery`` never imports Hex-Rays to answer the one\ngenuinely-live question it delegates: \"what constant did this indirect\nstate-variable write resolve to?\"\n\nThe two ``_resolve_*`` helpers were moved here verbatim from\n``d810.analyses.control_flow.exit_path_effect_discovery``; their logic is\nunchanged.\n"
+'Live Hex-Rays implementation of the preanalysis ``CarrierResolver`` boundary.\n\nThis adapter lives in the optimizer layer (permitted to import\n``d810.hexrays`` and the live evaluator), so the pure preanalysis\n``exit_path_effect_discovery`` never imports Hex-Rays to answer the one\ngenuinely-live question it delegates: "what constant did this indirect\nstate-variable write resolve to?"\n\nThe two ``_resolve_*`` helpers were moved here verbatim from\n``d810.analyses.control_flow.exit_path_effect_discovery``; their logic is\nunchanged.\n'
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import InsnKind, OperandKind
@@ -55,7 +56,10 @@ def _resolve_indirect_state_write_via_mba(
                             source_mop_type=int(source_mop.t),
                         )
                     break
-                if classify_live_operand_kind(source_mop) not in (OperandKind.REGISTER, OperandKind.STACK):
+                if classify_live_operand_kind(source_mop) not in (
+                    OperandKind.REGISTER,
+                    OperandKind.STACK,
+                ):
                     break
                 def_ins = find_def_in_block(source_mop, live_blk, cur_ins)
                 if def_ins is None:
@@ -79,12 +83,18 @@ def _resolve_indirect_state_write_via_mba(
                                 and scan.d.t == source_mop.t
                             ):
                                 dest_matches = False
-                                if classify_live_operand_kind(source_mop) is OperandKind.STACK:
+                                if (
+                                    classify_live_operand_kind(source_mop)
+                                    is OperandKind.STACK
+                                ):
                                     try:
                                         dest_matches = scan.d.s.off == source_mop.s.off
                                     except Exception:
                                         pass
-                                elif classify_live_operand_kind(source_mop) is OperandKind.REGISTER:
+                                elif (
+                                    classify_live_operand_kind(source_mop)
+                                    is OperandKind.REGISTER
+                                ):
                                     try:
                                         dest_matches = scan.d.r == source_mop.r
                                     except Exception:
@@ -92,7 +102,8 @@ def _resolve_indirect_state_write_via_mba(
                                 if (
                                     dest_matches
                                     and scan.l is not None
-                                    and classify_live_operand_kind(scan.l) is OperandKind.NUMBER
+                                    and classify_live_operand_kind(scan.l)
+                                    is OperandKind.NUMBER
                                 ):
                                     def_ins = scan
                                     live_blk = pred_blk
@@ -116,7 +127,10 @@ def _resolve_indirect_state_write_via_mba(
                                 src_stkoff = source_mop.s.off
                             except Exception:
                                 pass
-                        elif classify_live_operand_kind(source_mop) is OperandKind.REGISTER:
+                        elif (
+                            classify_live_operand_kind(source_mop)
+                            is OperandKind.REGISTER
+                        ):
                             try:
                                 src_mreg = int(source_mop.r)
                             except Exception:
@@ -165,7 +179,10 @@ def _resolve_state_const_via_valranges(
 
     source_mop = state_write_ins.l
     source_kind = classify_live_operand_kind(source_mop)
-    if source_mop is None or source_kind not in (OperandKind.REGISTER, OperandKind.STACK):
+    if source_mop is None or source_kind not in (
+        OperandKind.REGISTER,
+        OperandKind.STACK,
+    ):
         return None
 
     if source_kind is OperandKind.REGISTER:

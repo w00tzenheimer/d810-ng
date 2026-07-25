@@ -16,7 +16,9 @@ from d810.analyses.control_flow.linearized_state_dag import (
 from d810.analyses.control_flow.reconstruction_candidate_builder import (
     build_reconstruction_candidate,
 )
-from d810.analyses.control_flow.reconstruction_discovery import ReconstructionCandidateSeed
+from d810.analyses.control_flow.reconstruction_discovery import (
+    ReconstructionCandidateSeed,
+)
 from d810.analyses.control_flow.state_machine_analysis import (
     SnapshotConstantFixpointResult,
     StateWriteSite,

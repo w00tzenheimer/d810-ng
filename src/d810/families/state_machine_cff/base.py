@@ -15,6 +15,7 @@ Each profile implements the unflatten Family Protocol — ``detect`` + ``pipelin
 on the ONE shared spine (``passes.driver.run_pipeline`` over the five passes). The base
 adds discovery only; it never patches microcode.
 """
+
 from __future__ import annotations
 
 import abc

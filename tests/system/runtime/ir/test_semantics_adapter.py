@@ -116,7 +116,9 @@ class TestClassifyBranchPredicate:
         insn = _StubInsn(_required(opcode_name))
         assert classify_branch_predicate(insn) is expected
 
-    @pytest.mark.parametrize("opcode_name", ["m_goto", "m_call", "m_icall", "m_ret", "m_mov", "m_add"])
+    @pytest.mark.parametrize(
+        "opcode_name", ["m_goto", "m_call", "m_icall", "m_ret", "m_mov", "m_add"]
+    )
     def test_non_predicate_opcodes_return_none(self, opcode_name: str) -> None:
         """Non-predicate opcodes carry no PredicateKind."""
         insn = _StubInsn(_required(opcode_name))
@@ -204,7 +206,9 @@ class TestClassifyCallKind:
         insn = _StubInsn(_required(opcode_name))
         assert classify_call_kind(insn) is expected
 
-    @pytest.mark.parametrize("opcode_name", ["m_jz", "m_goto", "m_ret", "m_mov", "m_add"])
+    @pytest.mark.parametrize(
+        "opcode_name", ["m_jz", "m_goto", "m_ret", "m_mov", "m_add"]
+    )
     def test_non_call_opcodes_return_none(self, opcode_name: str) -> None:
         insn = _StubInsn(_required(opcode_name))
         assert classify_call_kind(insn) is None

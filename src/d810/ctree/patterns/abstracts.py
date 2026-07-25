@@ -5,6 +5,7 @@ combine or recursively search sub-patterns.
 
 Ported from herast (herast/tree/patterns/abstracts.py).
 """
+
 from __future__ import annotations
 
 from d810.core import typing

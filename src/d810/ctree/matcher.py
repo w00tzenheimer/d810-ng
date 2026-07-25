@@ -5,6 +5,7 @@
 
 Ported from herast (herast/tree/matcher.py).
 """
+
 from __future__ import annotations
 
 import traceback
@@ -82,9 +83,7 @@ class Matcher:
         for s in singulars:
             self.match_ast_tree(ast_tree, ast_ctx, [s])
 
-        schemes = [
-            s for s in self.schemes.values() if s.stype is s.SchemeType.READONLY
-        ]
+        schemes = [s for s in self.schemes.values() if s.stype is s.SchemeType.READONLY]
         self.match_ast_tree(ast_tree, ast_ctx, schemes)
 
     def match_ast_tree(

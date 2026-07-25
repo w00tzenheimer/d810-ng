@@ -89,6 +89,7 @@ class _FakeBlock:
     def make_nop(self, ins):
         self.nopped.append(ins)
 
+
 def test_ensure_child_skips_default_child_rewrite(monkeypatch):
     """Default-child path must not create helper blocks (orphan risk / INTERR 50856)."""
     from d810.hexrays.mutation import cfg_mutations
@@ -167,7 +168,9 @@ def test_ensure_child_conditional_path_rewires_via_helper_block(monkeypatch):
     # Patch in cfg_mutations (where ensure_child_has_an_unconditional_father
     # is defined and calls these helpers directly via module-level names).
     monkeypatch.setattr(cfg_mutations, "create_standalone_block", _create_standalone)
-    monkeypatch.setattr(cfg_mutations, "change_2way_block_conditional_successor", _change_2way)
+    monkeypatch.setattr(
+        cfg_mutations, "change_2way_block_conditional_successor", _change_2way
+    )
 
     changed = cfg_mutations.ensure_child_has_an_unconditional_father(
         father,
@@ -184,8 +187,12 @@ def test_ensure_child_conditional_path_rewires_via_helper_block(monkeypatch):
     "father_factory",
     [
         lambda mba: None,
-        lambda mba: _FakeBlock(1, mba, succs=[2], tail=SimpleNamespace(d=SimpleNamespace(b=2))),
-        lambda mba: _FakeBlock(2, mba, succs=[3, 4, 5], tail=SimpleNamespace(d=SimpleNamespace(b=5))),
+        lambda mba: _FakeBlock(
+            1, mba, succs=[2], tail=SimpleNamespace(d=SimpleNamespace(b=2))
+        ),
+        lambda mba: _FakeBlock(
+            2, mba, succs=[3, 4, 5], tail=SimpleNamespace(d=SimpleNamespace(b=5))
+        ),
         lambda mba: _FakeBlock(3, mba, succs=[4, 5], tail=None),
     ],
 )
@@ -210,12 +217,16 @@ def test_ensure_child_guard_paths_noop(father_factory, monkeypatch):
     monkeypatch.setattr(
         cfg_mutations,
         "change_1way_block_successor",
-        lambda *_a, **_k: pytest.fail("change_1way_block_successor should not be called"),
+        lambda *_a, **_k: pytest.fail(
+            "change_1way_block_successor should not be called"
+        ),
     )
     monkeypatch.setattr(
         cfg_mutations,
         "change_2way_block_conditional_successor",
-        lambda *_a, **_k: pytest.fail("change_2way_block_conditional_successor should not be called"),
+        lambda *_a, **_k: pytest.fail(
+            "change_2way_block_conditional_successor should not be called"
+        ),
     )
 
     changed = cfg_mutations.ensure_child_has_an_unconditional_father(
@@ -476,6 +487,7 @@ def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch, request):
     mba.verify_error = RuntimeError("Unknown exception")
 
     from d810.core.settings import configure_settings, reset_settings
+
     configure_settings(verify_capture=True, verify_capture_dir=str(tmp_path))
     request.addfinalizer(reset_settings)
 
@@ -500,10 +512,7 @@ def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch, request):
         )
 
     assert caught.value.d810_interr_code == 50856
-    assert (
-        caught.value.d810_verification_context
-        == "unit-test verify failure"
-    )
+    assert caught.value.d810_verification_context == "unit-test verify failure"
 
     artifacts = list(tmp_path.glob("verify_fail_*.json"))
     assert len(artifacts) == 1
@@ -517,7 +526,9 @@ def test_safe_verify_persists_failure_artifact(tmp_path, monkeypatch, request):
     assert 1 in captured_serials
 
 
-def test_safe_verify_persists_failure_artifact_for_non_runtime_exception(tmp_path, monkeypatch, request):
+def test_safe_verify_persists_failure_artifact_for_non_runtime_exception(
+    tmp_path, monkeypatch, request
+):
     """safe_verify should capture verify failures even when IDA raises a non-RuntimeError."""
     from d810.hexrays.mutation import cfg_verify
 
@@ -528,6 +539,7 @@ def test_safe_verify_persists_failure_artifact_for_non_runtime_exception(tmp_pat
     mba.verify_error = ValueError("opaque verify failure")
 
     from d810.core.settings import configure_settings, reset_settings
+
     configure_settings(verify_capture=True, verify_capture_dir=str(tmp_path))
     request.addfinalizer(reset_settings)
     monkeypatch.setattr(cfg_verify, "log_block_info", lambda *_a, **_k: None)
@@ -544,12 +556,17 @@ def test_safe_verify_persists_failure_artifact_for_non_runtime_exception(tmp_pat
     assert len(artifacts) == 1
 
     payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
-    assert payload["context"] == "verify failure after unit-test non-runtime verify failure"
+    assert (
+        payload["context"]
+        == "verify failure after unit-test non-runtime verify failure"
+    )
     assert payload["error_type"] == "ValueError"
     assert payload["metadata"]["rule"] == "unit_test_rule_non_runtime"
 
 
-def test_verify_failure_analyzer_contract_matches_capture_artifact(tmp_path, monkeypatch, capsys, request):
+def test_verify_failure_analyzer_contract_matches_capture_artifact(
+    tmp_path, monkeypatch, capsys, request
+):
     """Analyzer contract should accept payloads produced by safe_verify/capture_failure_artifact."""
     from d810.hexrays.mutation import cfg_verify
     from tools import analyze_verify_failures as avf
@@ -574,6 +591,7 @@ def test_verify_failure_analyzer_contract_matches_capture_artifact(tmp_path, mon
     mba.verify_error = RuntimeError("Unknown exception")
 
     from d810.core.settings import configure_settings, reset_settings
+
     configure_settings(verify_capture=True, verify_capture_dir=str(tmp_path))
     request.addfinalizer(reset_settings)
 

@@ -99,6 +99,7 @@ class AstBaseProtocol(Protocol):
         """Returns True if this is a constant value."""
         ...
 
+
 # Try to import Cython-optimized version first, respecting CythonMode
 if CythonMode().is_enabled():
     try:

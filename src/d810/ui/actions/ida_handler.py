@@ -3,6 +3,7 @@
 This module provides the glue between D810ActionHandler instances and IDA's
 action system by creating ida_kernwin.action_handler_t wrappers.
 """
+
 from __future__ import annotations
 
 from d810.core import typing
@@ -13,6 +14,7 @@ if typing.TYPE_CHECKING:
     from d810.ui.actions.base import D810ActionHandler
 
 logger = getLogger("D810.ui")
+
 
 def make_ida_handler(
     action: "D810ActionHandler",
@@ -93,9 +95,7 @@ def make_ida_handler(
                     exc_info=True,
                 )
                 if idaapi_shim is not None:
-                    idaapi_shim.warning(
-                        f"Action failed:\n{exc}"
-                    )
+                    idaapi_shim.warning(f"Action failed:\n{exc}")
                 return 0
 
         def update(self, ctx: typing.Any) -> int:
@@ -153,7 +153,7 @@ def make_ida_handler(
                         # Prompt user
                         result = idaapi_shim.ask_yn(
                             idaapi_shim.ASKBTN_YES,
-                            "d810-ng is not running. Start d810-ng?"
+                            "d810-ng is not running. Start d810-ng?",
                         )
                         if result == idaapi_shim.ASKBTN_YES:
                             try:
@@ -190,7 +190,9 @@ def make_ida_handler(
                 return
             gui = state.gui
             if not hasattr(gui, "d810_config_form") or gui.d810_config_form is None:
-                logger.debug("Cannot update status indicator: config form not available")
+                logger.debug(
+                    "Cannot update status indicator: config form not available"
+                )
                 return
             config_form = gui.d810_config_form
             if hasattr(config_form, "_update_status"):

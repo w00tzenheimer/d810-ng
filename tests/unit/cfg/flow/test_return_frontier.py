@@ -1,4 +1,5 @@
 """Unit tests for the ReturnFrontierAudit engine."""
+
 from __future__ import annotations
 
 import pytest
@@ -14,6 +15,7 @@ from d810.analyses.control_flow.return_frontier import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _site(site_id: str, origin_block: int) -> ReturnSite:
     return ReturnSite(
@@ -93,6 +95,7 @@ def _linear_graph() -> tuple[dict[int, list[int]], int, frozenset[int]]:
 # Test 1: all sites intact — linear graph
 # ---------------------------------------------------------------------------
 
+
 def test_all_intact():
     """All sites postdominated by exit in a linear graph — 0 broken."""
     successors, entry, exits = _linear_graph()
@@ -115,6 +118,7 @@ def test_all_intact():
 # ---------------------------------------------------------------------------
 # Test 2: site lost at post_plan (unreachable) → coalesce_drop
 # ---------------------------------------------------------------------------
+
 
 def test_site_lost_at_post_plan():
     """Site reachable in pre_plan, dropped (unreachable) in post_plan → coalesce_drop."""
@@ -140,6 +144,7 @@ def test_site_lost_at_post_plan():
 # ---------------------------------------------------------------------------
 # Test 3: site loses postdomination at post_apply → apply_failure
 # ---------------------------------------------------------------------------
+
 
 def test_site_lost_at_post_apply():
     """Site intact through post_plan, loses postdom at post_apply → apply_failure."""
@@ -168,6 +173,7 @@ def test_site_lost_at_post_apply():
 # Test 4: site intact through post_apply, breaks at post_pipeline → later_pass_rewrite
 # ---------------------------------------------------------------------------
 
+
 def test_site_lost_at_post_pipeline():
     """Site intact through post_apply, broken at post_pipeline → later_pass_rewrite."""
     good_succs = {0: [1], 1: [2], 2: []}
@@ -187,12 +193,15 @@ def test_site_lost_at_post_pipeline():
     assert report["broken_count"] == 1
     s = report["sites"][0]
     assert s["first_break_stage"] == "post_pipeline"
-    assert s["stages"]["post_pipeline"]["classification"] == BreakKind.LATER_PASS_REWRITE
+    assert (
+        s["stages"]["post_pipeline"]["classification"] == BreakKind.LATER_PASS_REWRITE
+    )
 
 
 # ---------------------------------------------------------------------------
 # Test 5: first_break_stage returns correct stage
 # ---------------------------------------------------------------------------
+
 
 def test_first_break_stage():
     """first_break_stage returns the earliest stage with a break."""
@@ -214,6 +223,7 @@ def test_first_break_stage():
 # ---------------------------------------------------------------------------
 # Test 6: report structure has expected keys
 # ---------------------------------------------------------------------------
+
 
 def test_report_structure():
     """Report dict has all required top-level and per-site keys."""
@@ -249,6 +259,7 @@ def test_report_structure():
 # Test 7: diamond graph with two exits
 # ---------------------------------------------------------------------------
 
+
 def test_multiple_exits():
     """Diamond: 0->1(exit), 0->2->3(exit).
 
@@ -273,7 +284,9 @@ def test_multiple_exits():
     assert len(results) == 2
     # Both sites should be intact
     for status in results:
-        assert status.reachable_from_entry is True, f"{status.site.site_id} not reachable"
+        assert status.reachable_from_entry is True, (
+            f"{status.site.site_id} not reachable"
+        )
         assert status.postdominated_by_exit is True, (
             f"{status.site.site_id} not postdominated: {status.detail}"
         )

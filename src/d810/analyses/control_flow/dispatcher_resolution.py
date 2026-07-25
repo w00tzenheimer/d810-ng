@@ -4,6 +4,7 @@ This model is intentionally dispatcher-shape neutral. Equality chains,
 interval trees, and future switch-table adapters can all provide the same
 core relation: concrete state constant -> handler entry block.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -96,10 +97,7 @@ class StateDispatcherMap:
         grouped: dict[int, list[int]] = {}
         for row in self.rows:
             grouped.setdefault(int(row.target_block), []).append(int(row.state_const))
-        return {
-            target: tuple(states)
-            for target, states in grouped.items()
-        }
+        return {target: tuple(states) for target, states in grouped.items()}
 
     def resolve_target(self, state_value: int) -> int | None:
         """Resolve a concrete state value to a handler block (EXACT rows only).
@@ -117,7 +115,9 @@ class StateDispatcherMap:
 
     def to_dispatcher_handler_map(self):
         """Convert to the existing dispatcher-agnostic handler map."""
-        from d810.analyses.control_flow.dispatcher_handler_map import DispatcherHandlerMap
+        from d810.analyses.control_flow.dispatcher_handler_map import (
+            DispatcherHandlerMap,
+        )
 
         return DispatcherHandlerMap.from_state_dispatcher_map(self)
 

@@ -7,6 +7,7 @@ so these tests drive deterministic stubs and exercise the orchestration only.
 The T2 stub projects a real :class:`StateValue`, proving the value-set tier's
 ``Const | OneOf | Top`` projection flows through unchanged.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.state_transition_domain import StateValue
@@ -46,8 +47,7 @@ def test_resolve_point_repr_carries_ea():
     assert repr(ResolvePoint(52, 0x18001450D)) == "ResolvePoint(52@0x18001450d)"
     assert repr(ResolvePoint(52)) == "ResolvePoint(52)"
     assert (
-        repr(ResolvePoint(52, 0x1450D, 0x1451A))
-        == "ResolvePoint(52@0x1450d#0x1451a)"
+        repr(ResolvePoint(52, 0x1450D, 0x1451A)) == "ResolvePoint(52@0x1450d#0x1451a)"
     )
 
 

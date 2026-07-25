@@ -1,4 +1,5 @@
 """Tests for the KnownBits (bitfield) abstract domain."""
+
 from __future__ import annotations
 
 from d810.analyses.abstract_domains import AbstractDomain, KnownBits
@@ -20,8 +21,8 @@ def test_join_keeps_only_agreeing_bits():
     a = KnownBits.of(0b1010, 4)
     b = KnownBits.of(0b1000, 4)
     j = a.join(b)
-    assert j.to_const() is None            # they differ -> not fully known
-    assert a.leq(j) and b.leq(j)           # join is an upper bound
+    assert j.to_const() is None  # they differ -> not fully known
+    assert a.leq(j) and b.leq(j)  # join is an upper bound
     # bit1 differs (1 vs 0) -> unknown; bits 3,2,0 agree (1,0,0)
     assert j.one == 0b1000 and j.zero == 0b0101
 
@@ -29,7 +30,7 @@ def test_join_keeps_only_agreeing_bits():
 def test_meet_clash_is_bottom():
     a = KnownBits.of(0b01, 2)
     b = KnownBits.of(0b10, 2)
-    assert a.meet(b).is_bottom()           # bit0: 1 vs 0 -> infeasible
+    assert a.meet(b).is_bottom()  # bit0: 1 vs 0 -> infeasible
 
 
 def test_meet_refines():

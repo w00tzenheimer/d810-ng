@@ -18,6 +18,7 @@ subclasses of ``Instruction``: callers that need instruction identity and raw
 provenance should project an ``Instruction`` first; callers that need a focused
 statement shape can derive these views from the same ``InsnSnapshot``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

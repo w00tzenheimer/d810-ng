@@ -19,6 +19,7 @@ autouse ``_release_diag_test_binds`` fixture in ``tests/unit/conftest.py``
 unwinds every bind at teardown so nothing leaks between tests. ``bind_ctx``
 restores the prior binding, so this is re-entrant across several DBs in one test.
 """
+
 from __future__ import annotations
 
 from contextlib import ExitStack

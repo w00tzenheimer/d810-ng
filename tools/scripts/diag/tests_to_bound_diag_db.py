@@ -15,6 +15,7 @@ the original import and gains the helper import alongside.
 
 Exact ``str.replace`` (count-checked), NOT regex/AST.
 """
+
 from __future__ import annotations
 
 import sys
@@ -41,7 +42,10 @@ REPLACE_FILES = [
     ("tests/unit/diagnostics/test_hcc_region_admission_explainer.py", False),
     ("tests/unit/diagnostics/test_hcc_unsupported_edge_kind_explainer.py", False),
     ("tests/unit/diagnostics/test_hcc_anchor_snapshot_context.py", False),
-    ("tests/unit/diagnostics/test_frontier_diagnostics.py", True),  # keeps create_diag_database
+    (
+        "tests/unit/diagnostics/test_frontier_diagnostics.py",
+        True,
+    ),  # keeps create_diag_database
 ]
 
 

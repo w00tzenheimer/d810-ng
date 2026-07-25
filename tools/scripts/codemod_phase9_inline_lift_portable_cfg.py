@@ -13,7 +13,7 @@ import difflib
 from pathlib import Path
 
 
-HELPER_BLOCK = '''
+HELPER_BLOCK = """
 try:
     import ida_hexrays
 
@@ -75,7 +75,7 @@ def lift(mba: "ida_hexrays.mba_t") -> PortableCFG:
         func_ea=mba.entry_ea,
         metadata={"maturity": mba.maturity},
     )
-'''
+"""
 
 
 def rewrite_translator(src: str) -> str:
@@ -89,8 +89,14 @@ def rewrite_translator(src: str) -> str:
     out = out.replace("return _lift(mba)", "return lift(mba)")
     marker = "logger = getLogger(__name__)\n\n\nclass IDAIRTranslator:"
     if marker in out and "def lift(" not in out:
-        out = out.replace(marker, f"logger = getLogger(__name__)\n{HELPER_BLOCK}\n\n\nclass IDAIRTranslator:")
-    out = out.replace('__all__ = ["IDAIRTranslator"]', '__all__ = ["IDAIRTranslator", "lift", "lift_block"]')
+        out = out.replace(
+            marker,
+            f"logger = getLogger(__name__)\n{HELPER_BLOCK}\n\n\nclass IDAIRTranslator:",
+        )
+    out = out.replace(
+        '__all__ = ["IDAIRTranslator"]',
+        '__all__ = ["IDAIRTranslator", "lift", "lift_block"]',
+    )
     return out
 
 

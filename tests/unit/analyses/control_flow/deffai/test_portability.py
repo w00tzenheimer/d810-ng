@@ -5,6 +5,7 @@ Importing the DEFFAI subpackage must pull in **no** ``ida_*`` module -- it is th
 exactly as DEFFAI runs on LLVM bitcode).  This makes the portability guarantee a
 CI-enforced unit test rather than a manual check.
 """
+
 from __future__ import annotations
 
 import subprocess

@@ -118,9 +118,7 @@ def run_live_frontend_normalization(
     source = _lift_live_function(mba)
     backend = _new_live_backend(
         mutation_gateway=mutation_gateway,
-        semantic_native_body_materializer=(
-            semantic_native_body_materializer
-        ),
+        semantic_native_body_materializer=(semantic_native_body_materializer),
     )
     try:
         result = run_frontend_normalization_pipeline(
@@ -131,9 +129,7 @@ def run_live_frontend_normalization(
                 native_key=session.native_key,
                 state=session.native_preanalysis,
             ),
-            plan_authority=(
-                session.frontend_normalization_plan_authority
-            ),
+            plan_authority=(session.frontend_normalization_plan_authority),
             lifecycle_state=session.native_preanalysis,
             native_key=session.native_key,
         )
@@ -146,9 +142,7 @@ def run_live_frontend_normalization(
                 event_kind="frontend_normalization_rejected",
                 provider=_HANDLER_NAME,
                 phase="frontend_normalization",
-                evidence_generation=int(
-                    session.native_preanalysis.evidence_generation
-                ),
+                evidence_generation=int(session.native_preanalysis.evidence_generation),
                 summary="frontend normalization planning rejected",
                 payload={
                     "outcome": "rejected",
@@ -183,9 +177,7 @@ def run_live_frontend_normalization(
             event_kind="current_mba_import_identity_bound",
             provider=_HANDLER_NAME,
             phase="frontend_normalization",
-            evidence_generation=int(
-                session.native_preanalysis.evidence_generation
-            ),
+            evidence_generation=int(session.native_preanalysis.evidence_generation),
             summary="receipt-backed current-MBA import identity bound",
             payload={
                 "outcome": "bound",
@@ -194,19 +186,12 @@ def run_live_frontend_normalization(
                     {int(native_ea) for _live_ea, native_ea in committed_origins}
                 ),
                 "native_eas": sorted(
-                    {
-                        int(native_ea)
-                        for _live_ea, native_ea in committed_origins
-                    }
+                    {int(native_ea) for _live_ea, native_ea in committed_origins}
                 ),
-                "block_binding_count": len(
-                    committed_identity.block_bindings
-                ),
+                "block_binding_count": len(committed_identity.block_bindings),
                 "block_bindings": [
                     {
-                        "live_instruction_eas": sorted(
-                            binding.live_instruction_eas
-                        ),
+                        "live_instruction_eas": sorted(binding.live_instruction_eas),
                         "exact_instruction_eas": sorted(
                             binding.stable_identity.exact_instruction_eas
                         ),

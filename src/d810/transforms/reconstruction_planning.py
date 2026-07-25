@@ -10,7 +10,9 @@ from d810.analyses.control_flow.reconstruction_planning_context import (
     ReconstructionPlanningContext,
     ReconstructionPlanningDecision,
 )
-from d810.transforms.reconstruction_emission_planning import plan_reconstruction_emission
+from d810.transforms.reconstruction_emission_planning import (
+    plan_reconstruction_emission,
+)
 from d810.transforms.reconstruction_lowering import (
     ConditionalArmEmissionPlan,
     DirectEmissionPlan,
@@ -175,9 +177,7 @@ def plan_reconstruction_lowering(
     if context.kind == ReconstructionLoweringKind.DIRECT:
         direct_plan = plan_direct_emission(
             old_target=(
-                int(context.old_target)
-                if context.old_target is not None
-                else None
+                int(context.old_target) if context.old_target is not None else None
             ),
             target_entry=int(context.target_entry),
         )
@@ -203,9 +203,7 @@ def plan_reconstruction_lowering(
             shared_block=int(context.shared_block),
             shared_preds=tuple(int(pred) for pred in context.shared_preds),
             old_target=(
-                int(context.old_target)
-                if context.old_target is not None
-                else None
+                int(context.old_target) if context.old_target is not None else None
             ),
             candidates=tuple(context.shared_candidates),
         )

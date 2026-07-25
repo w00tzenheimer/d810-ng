@@ -40,9 +40,13 @@ def select_plannable_dag_edges(
                 0 if edge.kind == SemanticEdgeKind.TRANSITION else 1,
                 -(len(edge.ordered_path)),
                 edge.source_anchor.block_serial,
-                -1 if edge.source_anchor.branch_arm is None else edge.source_anchor.branch_arm,
+                -1
+                if edge.source_anchor.branch_arm is None
+                else edge.source_anchor.branch_arm,
                 edge.kind.value,
-                edge.target_entry_anchor if edge.target_entry_anchor is not None else -1,
+                edge.target_entry_anchor
+                if edge.target_entry_anchor is not None
+                else -1,
                 _edge_priority(edge),
             ),
         )

@@ -35,9 +35,15 @@ def _instruction(opcode: int, ea: int, destination, following=None):
 
 def test_collects_complete_contiguous_outgoing_stack_arguments() -> None:
     tail = _instruction(ida_hexrays.m_icall, 0x1030, _operand(ida_hexrays.mop_z))
-    third = _instruction(ida_hexrays.m_ldx, 0x1020, _operand(ida_hexrays.mop_S, offset=0x24), tail)
-    second = _instruction(ida_hexrays.m_mov, 0x1010, _operand(ida_hexrays.mop_S, offset=0x28), third)
-    first = _instruction(ida_hexrays.m_mov, 0x1000, _operand(ida_hexrays.mop_S, offset=0x2C), second)
+    third = _instruction(
+        ida_hexrays.m_ldx, 0x1020, _operand(ida_hexrays.mop_S, offset=0x24), tail
+    )
+    second = _instruction(
+        ida_hexrays.m_mov, 0x1010, _operand(ida_hexrays.mop_S, offset=0x28), third
+    )
+    first = _instruction(
+        ida_hexrays.m_mov, 0x1000, _operand(ida_hexrays.mop_S, offset=0x2C), second
+    )
     block = SimpleNamespace(
         head=first,
         tail=tail,
@@ -51,14 +57,18 @@ def test_collects_complete_contiguous_outgoing_stack_arguments() -> None:
 
 def test_argument_collection_rejects_duplicate_or_wrong_sized_writes() -> None:
     tail = _instruction(ida_hexrays.m_icall, 0x1030, _operand(ida_hexrays.mop_z))
-    duplicate = _instruction(ida_hexrays.m_mov, 0x1020, _operand(ida_hexrays.mop_S, offset=0x28), tail)
+    duplicate = _instruction(
+        ida_hexrays.m_mov, 0x1020, _operand(ida_hexrays.mop_S, offset=0x28), tail
+    )
     wrong_size = _instruction(
         ida_hexrays.m_mov,
         0x1010,
         _operand(ida_hexrays.mop_S, offset=0x28, size=2),
         duplicate,
     )
-    first = _instruction(ida_hexrays.m_mov, 0x1000, _operand(ida_hexrays.mop_S, offset=0x2C), wrong_size)
+    first = _instruction(
+        ida_hexrays.m_mov, 0x1000, _operand(ida_hexrays.mop_S, offset=0x2C), wrong_size
+    )
     block = SimpleNamespace(
         head=first,
         tail=tail,
@@ -71,9 +81,8 @@ def test_argument_collection_rejects_duplicate_or_wrong_sized_writes() -> None:
 def test_argument_collection_stops_at_equal_swig_tail_proxy() -> None:
     class _EqualInstruction(SimpleNamespace):
         def __eq__(self, other) -> bool:
-            return (
-                int(self.ea) == int(other.ea)
-                and int(self.opcode) == int(other.opcode)
+            return int(self.ea) == int(other.ea) and int(self.opcode) == int(
+                other.opcode
             )
 
     tail_in_chain = _EqualInstruction(
@@ -227,10 +236,13 @@ def test_native_corridor_abstains_on_early_control_transfer(monkeypatch) -> None
         lambda instruction: instruction.mnemonic,
     )
 
-    assert native_corridor_has_no_stack_adjustment(
-        0x1000,
-        frozenset({0x1005}),
-    ) is None
+    assert (
+        native_corridor_has_no_stack_adjustment(
+            0x1000,
+            frozenset({0x1005}),
+        )
+        is None
+    )
 
 
 class TestStdcallTypeMaterialization:

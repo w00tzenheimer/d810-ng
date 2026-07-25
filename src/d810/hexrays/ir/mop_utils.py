@@ -422,7 +422,9 @@ def mop_to_ast_internal(
         dest_size = (
             mop.size
             if mop.t != ida_hexrays.mop_d
-            else mop.d.d.size if mop.d.d is not None else mop.size
+            else mop.d.d.size
+            if mop.d.d is not None
+            else mop.size
         )
         tree.dest_size = dest_size
         new_index = len(context.unique_asts)

@@ -128,10 +128,7 @@ def residual_mba_minus_fe(x: z3.BitVecRef) -> z3.BitVecRef:
     """
     return (
         bv64(4) * (x | bv64(0xFFFFFFFFFFFFFF80))
-        - (
-            bv64(4) * (x & bv64(0x3FFFFFFFFFFFFF80))
-            + bv64(5) * (x & bv64(0x7F))
-        )
+        - (bv64(4) * (x & bv64(0x3FFFFFFFFFFFFF80)) + bv64(5) * (x & bv64(0x7F)))
         - bv64(4) * ((~x) & bv64(0x3FFFFFFFFFFFFF80))
         - bv64(2) * bnot32_as_64(zext8(x) | bv64(0xFFFFFF80))
     )
@@ -285,7 +282,9 @@ def tail_index_update_mba(cursor: z3.BitVecRef, count: z3.BitVecRef) -> z3.BitVe
 
 def tail_residual_mask_mba(count: z3.BitVecRef) -> z3.BitVecRef:
     """Reference's MBA mask for residual bytes after qword copy."""
-    return count & (bv64(0xF89735C1B4F67C3C) + bv64(0xCE6CD82DC6189490) - bv64(0xC7040DEF7B0F10C5))
+    return count & (
+        bv64(0xF89735C1B4F67C3C) + bv64(0xCE6CD82DC6189490) - bv64(0xC7040DEF7B0F10C5)
+    )
 
 
 def byte0_ref_shift_mba(cursor: z3.BitVecRef) -> z3.BitVecRef:
@@ -297,31 +296,44 @@ def byte0_ref_shift_mba(cursor: z3.BitVecRef) -> z3.BitVecRef:
 
 
 def byte2_ref_shift_mba(cursor: z3.BitVecRef) -> z3.BitVecRef:
-    v218 = bv64(0xAC) + bv64(8) * (bv64(0x1A) & ~bv64(0xE)) - bv64(2) * (bv64(0xE) & bv64(0x1A)) - bv64(7) * (bv64(0xE) ^ bv64(0x1A)) - bv64(0x84) + bv64(0x20) - bv64(0x25)
+    v218 = (
+        bv64(0xAC)
+        + bv64(8) * (bv64(0x1A) & ~bv64(0xE))
+        - bv64(2) * (bv64(0xE) & bv64(0x1A))
+        - bv64(7) * (bv64(0xE) ^ bv64(0x1A))
+        - bv64(0x84)
+        + bv64(0x20)
+        - bv64(0x25)
+    )
     return cursor << z3.ZeroExt(56, z3.Extract(7, 0, v218))
 
 
 def byte4_ref_right_index_mba(cursor: z3.BitVecRef) -> z3.BitVecRef:
     shift = (
-        (
-            z3.Extract(
-                7,
-                0,
-                bv64(0xFF)
-                + bv64(0xFD)
-                - (bv64(2) * (bv64(0x45) & bv64(0x22)) + bv64(2) * (bv64(0x45) & bv64(0xDD)))
-                - bv64(0x88)
-                - bv64(0xC8),
+        z3.Extract(
+            7,
+            0,
+            bv64(0xFF)
+            + bv64(0xFD)
+            - (
+                bv64(2) * (bv64(0x45) & bv64(0x22))
+                + bv64(2) * (bv64(0x45) & bv64(0xDD))
             )
-            ^ z3.Extract(7, 0, bv64(0x87) + (bv64(0x79) ^ bv64(0x9A)))
+            - bv64(0x88)
+            - bv64(0xC8),
         )
-        - z3.Extract(7, 0, bv64(0x45))
-    )
+        ^ z3.Extract(7, 0, bv64(0x87) + (bv64(0x79) ^ bv64(0x9A)))
+    ) - z3.Extract(7, 0, bv64(0x45))
     return cursor >> z3.ZeroExt(56, shift)
 
 
 def byte4_ref_left_shift_mba(cursor: z3.BitVecRef) -> z3.BitVecRef:
-    v12 = bv64(0x7F) - (bv64(2) * (bv64(0x88) & bv64(0xC3)) + bv64(2) * (bv64(0x88) & bv64(0x3C))) - bv64(0xC) - bv64(0x9C)
+    v12 = (
+        bv64(0x7F)
+        - (bv64(2) * (bv64(0x88) & bv64(0xC3)) + bv64(2) * (bv64(0x88) & bv64(0x3C)))
+        - bv64(0xC)
+        - bv64(0x9C)
+    )
     v232 = v12 - bv64(0x19)
     v74 = v12 + bv64(0x41)
     v75 = bv64(0x88) + bv64(0x1A) + ((v12 - bv64(0x4B)) ^ bv64(0xF))
@@ -351,10 +363,24 @@ def ref_byte4_stop_constant() -> z3.BitVecRef:
     v239 = bv64(0x80489FC03845D864)
     v240 = bv64(0x7059E4000B40024E)
     v241 = bv64(0xBEDFFFC117E1F77F)
-    v31 = v238 + v239 + v240 + (v76 & bv64(0x65F5CA3EE93E08BB)) + bv64(0xB) * (v76 & bv64(0x9A0A35C116C1F744)) - bv64(0xB) * v241
+    v31 = (
+        v238
+        + v239
+        + v240
+        + (v76 & bv64(0x65F5CA3EE93E08BB))
+        + bv64(0xB) * (v76 & bv64(0x9A0A35C116C1F744))
+        - bv64(0xB) * v241
+    )
     v32 = v31 + bv64(0x43DC1B5AE8F2871E)
     v33 = v76 + bv64(0x6AE9D418B40DF218) - v31
-    return ~((~v32) | v33) + bv64(6) * ((~v32) & v33) + bv64(8) * (v32 & v33) - bv64(5) * ((~v32) | v33) - bv64(3) * ~(v33 ^ v32) + bv64(8) * ~(v32 | v33)
+    return (
+        ~((~v32) | v33)
+        + bv64(6) * ((~v32) & v33)
+        + bv64(8) * (v32 & v33)
+        - bv64(5) * ((~v32) | v33)
+        - bv64(3) * ~(v33 ^ v32)
+        + bv64(8) * ~(v32 | v33)
+    )
 
 
 def bulk_loop_count(total_remaining: z3.ArithRef) -> z3.ArithRef:
@@ -411,7 +437,9 @@ def main(argv: list[str] | None = None) -> int:
     }
     int_variables = {"bulk_remaining_i": bulk_remaining_i}
 
-    ref_call11 = z3.And(bulk_remaining >= bv64(0x80), cursor_after_0x55 == ref_0x11_state_constant())
+    ref_call11 = z3.And(
+        bulk_remaining >= bv64(0x80), cursor_after_0x55 == ref_0x11_state_constant()
+    )
     hcc_call11 = z3.And(bulk_remaining >= bv64(0x80), cursor_after_0x55 == bv64(0x80))
     ref_call62 = bulk_remaining >= bv64(0x80)
     hcc_call62 = bulk_remaining >= bv64(0x80)
@@ -427,8 +455,13 @@ def main(argv: list[str] | None = None) -> int:
     ref_call27 = z3.And(tail_nonzero, selector == bv64(0x80))
     hcc_call27 = z3.And(z3.Not(hcc_guard_early_return), selector == bv64(0x80))
 
-    ref_zero_stores = z3.And(tail_nonzero, z3.Or(selector == bv64(0), selector == bv64(0x80)))
-    hcc_zero_stores = z3.And(z3.Not(hcc_guard_early_return), z3.Or(selector == bv64(0), selector == bv64(0x80)))
+    ref_zero_stores = z3.And(
+        tail_nonzero, z3.Or(selector == bv64(0), selector == bv64(0x80))
+    )
+    hcc_zero_stores = z3.And(
+        z3.Not(hcc_guard_early_return),
+        z3.Or(selector == bv64(0), selector == bv64(0x80)),
+    )
 
     ref_call2e = tail_nonzero
     hcc_call2e = z3.Not(hcc_guard_early_return)
@@ -476,7 +509,9 @@ def main(argv: list[str] | None = None) -> int:
             variables,
         ),
         prove_bool_equiv("0x27/0x36 call guard", hcc_call27, ref_call27, variables),
-        prove_bool_equiv("zero-store corridor guard", hcc_zero_stores, ref_zero_stores, variables),
+        prove_bool_equiv(
+            "zero-store corridor guard", hcc_zero_stores, ref_zero_stores, variables
+        ),
         prove_bool_equiv("0x2E call guard", hcc_call2e, ref_call2e, variables),
         prove_bv_equiv(
             "tail residual mask MBA == count & 7",
@@ -576,7 +611,9 @@ def main(argv: list[str] | None = None) -> int:
     print("  hcc_v35 == bnot32(0xE03CAABA): reaching-def fact observed in microcode")
     print("  tail_cursor: *v49 value before the final residual byte-copy")
     print("  tail_count: residual byte count before qword copy plus final byte-copy")
-    print("  residual byte-copy algebra: proves address/shift MBAs, not the entire rendered control-flow schedule")
+    print(
+        "  residual byte-copy algebra: proves address/shift MBAs, not the entire rendered control-flow schedule"
+    )
     print("  remaining: final tail length/count value entering the copy corridor")
     print("  selector:  path selector that chooses no-zero, zero-only, or 0x27+zero")
     print("  selector == 0x80: reset-call path")
@@ -585,7 +622,9 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("Not modeled:")
     print("  full residual byte-copy control-flow equivalence after 0x2E")
-    print("  call argument equivalence for calls other than the modeled 0x11/0x4A first argument")
+    print(
+        "  call argument equivalence for calls other than the modeled 0x11/0x4A first argument"
+    )
     print("  whole-function path reachability into this corridor")
 
     return 1 if failed or not triton_ok else 0

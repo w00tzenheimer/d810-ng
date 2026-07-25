@@ -4,6 +4,7 @@ Hand-port of HodurStateMachineDetector — verifies state_const -> handler routi
 target, NE -> fall-through), dominant-state-variable selection, and the StateDispatcherMap the
 downstream passes consume.
 """
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import (
@@ -43,15 +44,25 @@ def _ne_check(const: int, target: int) -> InsnSnapshot:
     r = MopSnapshot(kind=OperandKind.NUMBER, value=const, size=4)
     d = MopSnapshot(kind=OperandKind.BLOCK, block_ref=target)
     return InsnSnapshot(
-        opcode=1, ea=0x1000, operands=(l, r, d), l=l, r=r, d=d,
-        kind=InsnKind.EQUALITY_JUMP, branch_predicate=PredicateKind.NE,
+        opcode=1,
+        ea=0x1000,
+        operands=(l, r, d),
+        l=l,
+        r=r,
+        d=d,
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.NE,
         is_conditional_jump=True,
     )
 
 
 def _blk(serial, succs, preds, tail=None) -> BlockSnapshot:
     return BlockSnapshot(
-        serial=serial, block_type=1, succs=succs, preds=preds, flags=0,
+        serial=serial,
+        block_type=1,
+        succs=succs,
+        preds=preds,
+        flags=0,
         start_ea=0x1000 + serial,
         insn_snapshots=(tail,) if tail is not None else (),
         tail_opcode=tail.opcode if tail is not None else None,
@@ -78,7 +89,7 @@ def _chain_graph() -> FlowGraph:
 def test_detects_equality_chain_and_routes_states_to_handlers():
     dmap = build_state_dispatcher_map_from_flow_graph(_chain_graph())
     assert dmap is not None
-    assert dmap.resolve_target(C1) == 1   # NE: state==C1 -> fall-through handler
+    assert dmap.resolve_target(C1) == 1  # NE: state==C1 -> fall-through handler
     assert dmap.resolve_target(C2) == 3
     assert dmap.resolve_target(0xDEAD) is None
     assert dmap.state_var_stkoff == STATE_OFF
@@ -265,7 +276,8 @@ def test_small_constants_are_not_state_checks():
     blk0 = _blk(0, (1, 2), (), _ne_check(3, 2))  # const 3 << MIN_STATE_CONSTANT
     g = FlowGraph(
         blocks={0: blk0, 1: _blk(1, (), (0,)), 2: _blk(2, (), (0,))},
-        entry_serial=0, func_ea=0x1000,
+        entry_serial=0,
+        func_ea=0x1000,
     )
     assert build_state_dispatcher_map_from_flow_graph(g) is None
 
@@ -304,7 +316,9 @@ def test_dispatcher_entry_is_loop_head_not_midchain_comparator():
     assert dmap.resolve_target(C1) == 1
     assert dmap.resolve_target(C2) == 3
     assert dmap.dispatcher_entry_block == 10
-    assert 10 not in dmap.dispatcher_blocks  # the head is not itself a state-comparison block
+    assert (
+        10 not in dmap.dispatcher_blocks
+    )  # the head is not itself a state-comparison block
 
 
 def test_computed_goto_loop_header_accepts_direct_two_way_redispatch_hub():
@@ -327,9 +341,10 @@ def test_computed_goto_loop_header_accepts_direct_two_way_redispatch_hub():
         func_ea=0x1000,
     )
 
-    assert _recover_computed_goto_loop_header(
-        graph, frozenset({1, 2, 3}), fallback=1
-    ) == 10
+    assert (
+        _recover_computed_goto_loop_header(graph, frozenset({1, 2, 3}), fallback=1)
+        == 10
+    )
 
 
 def test_computed_goto_loop_header_prefers_state_write_successor_of_two_way_funnel():
@@ -363,12 +378,15 @@ def test_computed_goto_loop_header_prefers_state_write_successor_of_two_way_funn
         func_ea=0x1000,
     )
 
-    assert _recover_computed_goto_loop_header(
-        graph,
-        frozenset({1, 2, 3}),
-        fallback=1,
-        state_identity=("reg", REG_SV),
-    ) == 30
+    assert (
+        _recover_computed_goto_loop_header(
+            graph,
+            frozenset({1, 2, 3}),
+            fallback=1,
+            state_identity=("reg", REG_SV),
+        )
+        == 30
+    )
 
 
 def test_computed_goto_loop_header_keeps_two_way_root_when_both_arms_have_state_writers():
@@ -406,12 +424,15 @@ def test_computed_goto_loop_header_keeps_two_way_root_when_both_arms_have_state_
         func_ea=0x1000,
     )
 
-    assert _recover_computed_goto_loop_header(
-        graph,
-        frozenset({1, 2, 3}),
-        fallback=1,
-        state_identity=("reg", REG_SV),
-    ) == 10
+    assert (
+        _recover_computed_goto_loop_header(
+            graph,
+            frozenset({1, 2, 3}),
+            fallback=1,
+            state_identity=("reg", REG_SV),
+        )
+        == 10
+    )
 
 
 def test_dispatcher_entry_prefers_majority_redispatch_hub_over_busy_subtree_root():
@@ -494,9 +515,10 @@ def test_computed_goto_loop_header_follows_one_way_funnel_to_header():
         func_ea=0x1000,
     )
 
-    assert _recover_computed_goto_loop_header(
-        graph, frozenset({1, 2, 3}), fallback=1
-    ) == 20
+    assert (
+        _recover_computed_goto_loop_header(graph, frozenset({1, 2, 3}), fallback=1)
+        == 20
+    )
 
 
 def test_recover_dispatcher_surfaces_map_and_state_var():
@@ -513,7 +535,12 @@ def _state_init_mov(const: int) -> InsnSnapshot:
     l = MopSnapshot(kind=OperandKind.NUMBER, value=const, size=4)
     d = MopSnapshot(kind=OperandKind.STACK, stkoff=STATE_OFF, size=4)
     return InsnSnapshot(
-        opcode=2, ea=0x2000, operands=(l, d), l=l, d=d, kind=InsnKind.MOV,
+        opcode=2,
+        ea=0x2000,
+        operands=(l, d),
+        l=l,
+        d=d,
+        kind=InsnKind.MOV,
     )
 
 
@@ -597,8 +624,14 @@ def _reg_ne_check(const: int, target: int) -> InsnSnapshot:
     r = MopSnapshot(kind=OperandKind.NUMBER, value=const, size=4)
     d = MopSnapshot(kind=OperandKind.BLOCK, block_ref=target)
     return InsnSnapshot(
-        opcode=1, ea=0x1000, operands=(l, r, d), l=l, r=r, d=d,
-        kind=InsnKind.EQUALITY_JUMP, branch_predicate=PredicateKind.NE,
+        opcode=1,
+        ea=0x1000,
+        operands=(l, r, d),
+        l=l,
+        r=r,
+        d=d,
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.NE,
         is_conditional_jump=True,
     )
 

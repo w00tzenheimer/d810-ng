@@ -57,6 +57,7 @@ lands on the roadmap, the natural primitive is an engine-owned
 ``PassLedger`` that records ``(strategy_name, round_context, fact)`` tuples
 as rounds fire — a different surface, not a ``plan()`` parameter.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

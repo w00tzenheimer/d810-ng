@@ -1,4 +1,5 @@
 """Bulk CFG reconstruction safeguard for dispatcher-elimination rewrites."""
+
 from __future__ import annotations
 
 from d810.core import getLogger

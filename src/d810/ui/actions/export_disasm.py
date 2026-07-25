@@ -3,6 +3,7 @@
 Export the current function's disassembly using IDA's native exporters.
 Available from disassembly view.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -203,7 +204,9 @@ class ExportDisassembly(D810ActionHandler):
         # compilable ml64 source with materialized data references.
         if logic_settings.format == "MASM":
             return self._export_masm(
-                idaapi_shim, func, output_path,
+                idaapi_shim,
+                func,
+                output_path,
                 const_data=bool(settings.get("const_data", False)),
             )
 

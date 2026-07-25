@@ -7,6 +7,7 @@ verify configuration logic without requiring IDA.
 IMPORTANT: This module CANNOT import handler.py (requires ida_hexrays).
 We test only the configuration logic that would be present.
 """
+
 import os
 from unittest import mock
 

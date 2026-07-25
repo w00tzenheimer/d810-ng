@@ -38,7 +38,9 @@ class TestPlanPathTailEmission:
 
         assert plan.accepted
         assert plan.kind == PathTailEmissionKind.SHARED_GOTO
-        assert plan.modification == RedirectGoto(from_serial=20, old_target=6, new_target=30)
+        assert plan.modification == RedirectGoto(
+            from_serial=20, old_target=6, new_target=30
+        )
 
     def test_emits_direct_goto_for_single_pred(self):
         plan = plan_path_tail_emission(
@@ -63,7 +65,9 @@ class TestPlanPathTailEmission:
 
         assert plan.accepted
         assert plan.kind == PathTailEmissionKind.DIRECT_GOTO
-        assert plan.modification == RedirectGoto(from_serial=20, old_target=6, new_target=30)
+        assert plan.modification == RedirectGoto(
+            from_serial=20, old_target=6, new_target=30
+        )
 
     def test_emits_pred_split_when_pair_is_valid(self):
         plan = plan_path_tail_emission(

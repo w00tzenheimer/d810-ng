@@ -1,4 +1,5 @@
 """Native contract evidence token extraction tests."""
+
 from __future__ import annotations
 
 import pytest
@@ -94,9 +95,7 @@ def test_state_write_anchor_fact_provides_state_variable_write_token():
         evidence=("mov #1, %var_10.4",),
     )
 
-    assert contract_evidence_tokens(observation) == frozenset(
-        {"state_variable_writes"}
-    )
+    assert contract_evidence_tokens(observation) == frozenset({"state_variable_writes"})
 
 
 def test_projected_state_write_fact_carries_explicit_contract_token_metadata():
@@ -113,9 +112,5 @@ def test_projected_state_write_fact_carries_explicit_contract_token_metadata():
     (projected,) = project_value_flow_facts((anchor,))
 
     assert projected.kind == "StateWriteFact"
-    assert projected.payload["contract_evidence_tokens"] == [
-        "state_variable_writes"
-    ]
-    assert contract_evidence_tokens(projected) == frozenset(
-        {"state_variable_writes"}
-    )
+    assert projected.payload["contract_evidence_tokens"] == ["state_variable_writes"]
+    assert contract_evidence_tokens(projected) == frozenset({"state_variable_writes"})

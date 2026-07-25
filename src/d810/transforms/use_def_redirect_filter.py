@@ -10,6 +10,7 @@ the caller passes the opaque live function (``ida_hexrays.mba_t``) and the pre-m
 ``FlowGraph``.  When no capability / live function is available the redirects pass through unfiltered
 (the portable/test path).
 """
+
 from __future__ import annotations
 
 import os

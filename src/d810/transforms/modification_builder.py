@@ -1,4 +1,5 @@
 """Snapshot-backed helpers for emitting GraphModification intents."""
+
 from __future__ import annotations
 
 import sys
@@ -187,7 +188,10 @@ class ModificationBuilder:
         )
         _mod_builder_logger.info(
             "GOTO_REDIRECT_CALL src=%s tgt=%s old=%s caller=%s",
-            source_block, target_block, old_target, _caller,
+            source_block,
+            target_block,
+            old_target,
+            _caller,
         )
 
         nsucc = self.block_nsucc_map.get(source_block, 1)
@@ -217,10 +221,14 @@ class ModificationBuilder:
     def convert_to_goto(self, source_block: int, target_block: int) -> ConvertToGoto:
         return ConvertToGoto(block_serial=source_block, goto_target=target_block)
 
-    def nop_instruction(self, source_block: int, instruction_ea: int) -> NopInstructions:
+    def nop_instruction(
+        self, source_block: int, instruction_ea: int
+    ) -> NopInstructions:
         return NopInstructions(block_serial=source_block, insn_eas=(instruction_ea,))
 
-    def zero_state_write(self, source_block: int, instruction_ea: int) -> ZeroStateWrite:
+    def zero_state_write(
+        self, source_block: int, instruction_ea: int
+    ) -> ZeroStateWrite:
         return ZeroStateWrite(block_serial=source_block, insn_ea=instruction_ea)
 
     def state_write_cleanup(
@@ -237,9 +245,7 @@ class ModificationBuilder:
         operand_side: str,
     ) -> PromoteOperandToScalar:
         if operand_side not in ("l", "r"):
-            raise ValueError(
-                f"operand_side must be 'l' or 'r', got {operand_side!r}"
-            )
+            raise ValueError(f"operand_side must be 'l' or 'r', got {operand_side!r}")
         return PromoteOperandToScalar(
             block_serial=source_block,
             host_ea=host_ea,

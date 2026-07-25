@@ -220,7 +220,9 @@ def collect_condition_chain_default_transition_candidates(
 
             final_state = path_result.final_state & 0xFFFFFFFF
             from_block = path_result.exit_block
-            target_entry = resolve_target_via_condition_chain(range_evidence, final_state)
+            target_entry = resolve_target_via_condition_chain(
+                range_evidence, final_state
+            )
             if target_entry is None or from_block == target_entry:
                 continue
             candidates.append(
@@ -295,7 +297,9 @@ def collect_valrange_exit_transition_candidates(
             if resolved_value is None:
                 continue
 
-            target_entry = resolve_target_via_condition_chain(range_evidence, resolved_value)
+            target_entry = resolve_target_via_condition_chain(
+                range_evidence, resolved_value
+            )
             if target_entry is None:
                 continue
 

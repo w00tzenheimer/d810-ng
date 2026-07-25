@@ -8,6 +8,7 @@ whether each byte tail can be redirected into a REF-like acyclic cascade.
 Pure-Python orchestrator with no d810 runtime imports beyond the cfg-layer
 planner that already owns the report shape.
 """
+
 from __future__ import annotations
 
 import json
@@ -75,7 +76,9 @@ def _parse_diag_int_literal(text: str | None) -> int | None:
 def _diag_block_state_views(
     opcodes: tuple[str, ...],
     text: tuple[str, ...],
-) -> tuple[tuple[TerminalTailGuardRequirement, ...], tuple[TerminalTailConstWrite, ...]]:
+) -> tuple[
+    tuple[TerminalTailGuardRequirement, ...], tuple[TerminalTailConstWrite, ...]
+]:
     guards: list[TerminalTailGuardRequirement] = []
     writes: list[TerminalTailConstWrite] = []
     seen_store = False
@@ -118,7 +121,7 @@ def _diag_block_state_views(
 
 
 def choose_fact_snapshot(conn: sqlite3.Connection) -> int:
-    "Pick the snapshot that holds the ``TerminalByteEmitterFact`` rows.\n\n    Preference order:\n\n    1. Most recent ``MMAT_GLBOPT1 / pre_d810`` snapshot with at least one\n       ``TerminalByteEmitterFact`` row -- this is the preanalysis collector's\n       expected fire site.\n    2. Fall back to the most recent snapshot of any maturity / phase that\n       has TerminalByteEmitterFact rows.\n\n    Raises :class:`LookupError` when no fact rows exist at all (callers\n    surface this as a CLI error rather than crashing the parser).\n    "
+    "Pick the snapshot that holds the ``TerminalByteEmitterFact`` rows.\n\n    Preference order:\n\n    1. Most recent ``MMAT_GLBOPT1 / pre_d810`` snapshot with at least one\n       ``TerminalByteEmitterFact`` row -- this is the preanalysis collector's\n       expected fire site.\n    2. Fall back to the most recent snapshot of any maturity / phase that\n       has TerminalByteEmitterFact rows.\n\n    Raises :class:`LookupError` when no fact rows exist at all (callers\n    surface this as a CLI error rather than crashing the parser).\n"
     # raw-SQL: GROUP BY snapshot over a fact/snapshot JOIN with a multi-
     # predicate maturity/phase gate, latest-first; a grouped latest-with-
     # fact probe reads more clearly as SQL (§3 complex-SQL policy).
@@ -195,7 +198,8 @@ def choose_target_snapshot(conn: sqlite3.Connection) -> int:
 
 
 def load_blocks(
-    conn: sqlite3.Connection, snapshot_id: int,
+    conn: sqlite3.Connection,
+    snapshot_id: int,
 ) -> dict[int, TerminalTailBlock]:
     """Build the planner-shaped block map for *snapshot_id*."""
     rows = (
@@ -247,7 +251,8 @@ def load_blocks(
 
 
 def load_sites(
-    conn: sqlite3.Connection, snapshot_id: int,
+    conn: sqlite3.Connection,
+    snapshot_id: int,
 ) -> list[TerminalByteEmitSite]:
     """Adapt ``TerminalByteEmitterFact`` payloads at *snapshot_id* into
     planner-shaped :class:`TerminalByteEmitSite` rows.
@@ -329,7 +334,5 @@ def run_plan(
     plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
     return (
         f"# fact snapshot: {fact_id}\n"
-        f"# target snapshot: {target_id}\n"
-        + format_cascade_egress_plan(plan)
-        + "\n"
+        f"# target snapshot: {target_id}\n" + format_cascade_egress_plan(plan) + "\n"
     )

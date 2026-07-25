@@ -4,6 +4,7 @@ This module contains all functions that modify control flow graph structure,
 including edge rewiring, block creation, and CFG cleanup. Split from cfg_utils.py
 as part of the CFG Pass Pipeline refactor (Phase 1).
 """
+
 from __future__ import annotations
 
 import ida_hexrays
@@ -214,7 +215,9 @@ def change_1way_call_block_successor(
     insert_goto_instruction(
         nop_blk, call_blk_successor_serial, nop_previous_instruction=True
     )
-    is_ok = change_1way_block_successor(nop_blk, call_blk_successor_serial, verify=verify)
+    is_ok = change_1way_block_successor(
+        nop_blk, call_blk_successor_serial, verify=verify
+    )
     if not is_ok:
         return False
 
@@ -231,7 +234,9 @@ def change_1way_call_block_successor(
         raise e
 
 
-def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True) -> bool:
+def change_1way_block_successor(
+    blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True
+) -> bool:
     if blk.nsucc() != 1 or blk.serial == 0:
         return False
 
@@ -240,6 +245,7 @@ def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
     previous_blk_successor = mba.get_mblock(previous_blk_successor_serial)
     try:
         from d810.core.observability_cfg import observe_cfg_provenance
+
         observe_cfg_provenance(
             pass_name="cfg_mutations",
             action="REDIRECT_EDGE",
@@ -268,7 +274,9 @@ def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
     elif blk.tail.opcode == ida_hexrays.m_call:
         #  Before maturity MMAT_CALLS, we can't add a goto after a call instruction
         if mba.maturity < ida_hexrays.MMAT_CALLS:
-            return change_1way_call_block_successor(blk, blk_successor_serial, verify=verify)
+            return change_1way_call_block_successor(
+                blk, blk_successor_serial, verify=verify
+            )
         else:
             insert_goto_instruction(
                 blk, blk_successor_serial, nop_previous_instruction=False
@@ -312,7 +320,9 @@ def change_1way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
         raise e
 
 
-def change_0way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True) -> bool:
+def change_0way_block_successor(
+    blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True
+) -> bool:
     if blk.nsucc() != 0:
         return False
     mba = blk.mba
@@ -361,7 +371,9 @@ def change_0way_block_successor(blk: ida_hexrays.mblock_t, blk_successor_serial:
 
 
 def change_2way_block_conditional_successor(
-    blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True,
+    blk: ida_hexrays.mblock_t,
+    blk_successor_serial: int,
+    verify: bool = True,
     old_target: int | None = None,
 ) -> bool:
     if blk.nsucc() != 2:
@@ -369,14 +381,20 @@ def change_2way_block_conditional_successor(
 
     mba = blk.mba
     previous_blk_conditional_successor_serial = blk.tail.d.b
-    if old_target is not None and previous_blk_conditional_successor_serial != old_target:
+    if (
+        old_target is not None
+        and previous_blk_conditional_successor_serial != old_target
+    ):
         helper_logger.warning(
             "change_2way_block_conditional_successor: blk[%d] expected old_target=%d "
             "but current branch target is %d",
-            blk.serial, old_target, previous_blk_conditional_successor_serial,
+            blk.serial,
+            old_target,
+            previous_blk_conditional_successor_serial,
         )
     try:
         from d810.core.observability_cfg import observe_cfg_provenance
+
         observe_cfg_provenance(
             pass_name="cfg_mutations",
             action="REDIRECT_EDGE",
@@ -429,7 +447,10 @@ def change_2way_block_conditional_successor(
 
 
 def update_blk_successor(
-    blk: ida_hexrays.mblock_t, old_successor_serial: int, new_successor_serial: int, verify: bool = True
+    blk: ida_hexrays.mblock_t,
+    old_successor_serial: int,
+    new_successor_serial: int,
+    verify: bool = True,
 ) -> int:
     if blk.nsucc() == 1:
         change_1way_block_successor(blk, new_successor_serial, verify=verify)
@@ -442,20 +463,25 @@ def update_blk_successor(
             )
             return 0
         else:
-            change_2way_block_conditional_successor(blk, new_successor_serial, verify=verify)
+            change_2way_block_conditional_successor(
+                blk, new_successor_serial, verify=verify
+            )
     else:
         helper_logger.info("Can't update block successor: {0} ".format(blk.serial))
         return 0
     return 1
 
 
-def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True) -> bool:
+def make_2way_block_goto(
+    blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True
+) -> bool:
     if blk.nsucc() != 2:
         return False
     mba = blk.mba
     previous_blk_successor_serials = [x for x in blk.succset]
     try:
         from d810.core.observability_cfg import observe_cfg_provenance
+
         observe_cfg_provenance(
             pass_name="cfg_mutations",
             action="REDIRECT_EDGE",
@@ -509,7 +535,10 @@ def make_2way_block_goto(blk: ida_hexrays.mblock_t, blk_successor_serial: int, v
 
 
 def create_block(
-    blk: ida_hexrays.mblock_t, blk_ins: list[ida_hexrays.minsn_t], is_0_way: bool = False, verify: bool = True
+    blk: ida_hexrays.mblock_t,
+    blk_ins: list[ida_hexrays.minsn_t],
+    is_0_way: bool = False,
+    verify: bool = True,
 ) -> ida_hexrays.mblock_t:
     mba = blk.mba
     new_blk = insert_nop_blk(blk)
@@ -583,6 +612,7 @@ def create_standalone_block(
     new_blk = copy_block_keep(mba, ref_blk, mba.qty - 1)
     try:
         from d810.core.observability_cfg import observe_cfg_provenance
+
         observe_cfg_provenance(
             pass_name="cfg_mutations",
             action="CREATE",
@@ -656,7 +686,9 @@ def create_standalone_block(
         new_blk.type = ida_hexrays.BLT_1WAY
         if target_serial is not None:
             # Add goto instruction to the target
-            insert_goto_instruction(new_blk, target_serial, nop_previous_instruction=False)
+            insert_goto_instruction(
+                new_blk, target_serial, nop_previous_instruction=False
+            )
             new_blk.flags |= ida_hexrays.MBL_GOTO
             # Wire successor edge: new_blk -> target
             new_blk.succset.push_back(target_serial)
@@ -753,12 +785,17 @@ def _update_jtbl_case_targets(
                 updated += 1
                 helper_logger.debug(
                     "Updated m_jtbl case target in block %d: %d -> %d (index %d)",
-                    blk.serial, old_target, new_target, j,
+                    blk.serial,
+                    old_target,
+                    new_target,
+                    j,
                 )
     if updated:
         helper_logger.info(
             "Updated %d m_jtbl case target(s): %d -> %d",
-            updated, old_target, new_target,
+            updated,
+            old_target,
+            new_target,
         )
     return updated
 
@@ -795,6 +832,7 @@ def coalesce_jtbl_cases(blk: "ida_hexrays.mblock_t") -> int:
 
     # Phase 1: Extract ALL data to pure Python (no SWIG proxies held)
     from collections import defaultdict
+
     groups: dict[int, list[int]] = defaultdict(list)
     for i in range(n):
         tgt = int(cases.targets[i])
@@ -819,7 +857,9 @@ def coalesce_jtbl_cases(blk: "ida_hexrays.mblock_t") -> int:
 
     helper_logger.debug(
         "Coalesced %d -> %d unique jtbl entries in block %d",
-        n, len(groups), blk.serial,
+        n,
+        len(groups),
+        blk.serial,
     )
 
     blk.succset.clear()
@@ -828,7 +868,9 @@ def coalesce_jtbl_cases(blk: "ida_hexrays.mblock_t") -> int:
 
     mba = blk.mba
     blk_serial = int(blk.serial)
-    new_unique_succs: set[int] = set(int(cases.targets[i]) for i in range(cases.targets.size()))
+    new_unique_succs: set[int] = set(
+        int(cases.targets[i]) for i in range(cases.targets.size())
+    )
 
     for removed_target in sorted(old_unique_succs - new_unique_succs):
         removed_blk = mba.get_mblock(removed_target)
@@ -910,7 +952,9 @@ def retarget_jtbl_block_cases(
 
     mba = blk.mba
     blk_serial = int(blk.serial)
-    new_unique_succs: set[int] = set(int(cases.targets[i]) for i in range(cases.targets.size()))
+    new_unique_succs: set[int] = set(
+        int(cases.targets[i]) for i in range(cases.targets.size())
+    )
 
     for removed_target in sorted(old_unique_succs - new_unique_succs):
         removed_blk = mba.get_mblock(removed_target)
@@ -1018,7 +1062,11 @@ def _get_fallthrough_successor_serial(blk: ida_hexrays.mblock_t) -> int | None:
         return blk.succset[0]
 
     # For conditional jumps, fallthrough is the non-conditional successor.
-    if blk.nsucc() == 2 and blk.tail is not None and ida_hexrays.is_mcode_jcond(blk.tail.opcode):
+    if (
+        blk.nsucc() == 2
+        and blk.tail is not None
+        and ida_hexrays.is_mcode_jcond(blk.tail.opcode)
+    ):
         cond_target = blk.tail.d.b
         for succ_serial in blk.succset:
             if succ_serial != cond_target:
@@ -1068,6 +1116,7 @@ def insert_nop_blk(
         nop_block = copy_block_keep(mba, blk, mba.qty - 1)
     try:
         from d810.core.observability_cfg import observe_cfg_provenance
+
         observe_cfg_provenance(
             pass_name="cfg_mutations",
             action="CREATE",
@@ -1114,7 +1163,9 @@ def insert_nop_blk(
 
     # Add a goto instruction to the NOP block targeting the original successor,
     # since the NOP block is appended at the end and cannot fall through.
-    insert_goto_instruction(nop_block, original_successor_serial, nop_previous_instruction=False)
+    insert_goto_instruction(
+        nop_block, original_successor_serial, nop_previous_instruction=False
+    )
     nop_block.flags |= ida_hexrays.MBL_GOTO
 
     # Point the NOP block's successor to the original next block of blk,
@@ -1143,7 +1194,10 @@ def insert_nop_blk(
             blk.succset.push_back(nop_block.serial)
         # Update blk's tail instruction if it is a goto pointing to the old successor
         if blk.tail is not None and blk.tail.opcode == ida_hexrays.m_goto:
-            if blk.tail.l.t == ida_hexrays.mop_b and blk.tail.l.b == original_successor_serial:
+            if (
+                blk.tail.l.t == ida_hexrays.mop_b
+                and blk.tail.l.b == original_successor_serial
+            ):
                 blk.tail.l.make_blkref(nop_block.serial)
         blk.mark_lists_dirty()
 
@@ -1224,7 +1278,10 @@ def insert_nop_blk(
                 helper_logger.debug(
                     "insert_nop_blk: Updated m_jtbl case target in block %d: "
                     "%d -> %d (index %d)",
-                    blk.serial, original_successor_serial, nop_block.serial, j,
+                    blk.serial,
+                    original_successor_serial,
+                    nop_block.serial,
+                    j,
                 )
 
     nop_block.mark_lists_dirty()
@@ -1246,7 +1303,9 @@ def ensure_last_block_is_goto(mba: ida_hexrays.mbl_array_t, verify: bool = True)
         )
 
 
-def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t, verify: bool = True) -> tuple[ida_hexrays.mblock_t, ida_hexrays.mblock_t | None]:
+def duplicate_block(
+    block_to_duplicate: ida_hexrays.mblock_t, verify: bool = True
+) -> tuple[ida_hexrays.mblock_t, ida_hexrays.mblock_t | None]:
     mba = block_to_duplicate.mba
     duplicated_blk = copy_block_keep(mba, block_to_duplicate, mba.qty - 1)
 
@@ -1269,13 +1328,10 @@ def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t, verify: bool = Tru
     prev_blk = duplicated_blk.prevb
     if prev_blk is not None and prev_blk.serial != block_to_duplicate.serial:
         tail = prev_blk.tail
-        has_explicit_target = (
-            tail is not None
-            and (
-                tail.opcode == ida_hexrays.m_goto
-                or ida_hexrays.is_mcode_jcond(tail.opcode)
-                or tail.opcode == ida_hexrays.m_ijmp
-            )
+        has_explicit_target = tail is not None and (
+            tail.opcode == ida_hexrays.m_goto
+            or ida_hexrays.is_mcode_jcond(tail.opcode)
+            or tail.opcode == ida_hexrays.m_ijmp
         )
         if not has_explicit_target and prev_blk.nsucc() == 1:
             if tail is not None and tail.opcode == ida_hexrays.m_ret:
@@ -1339,7 +1395,9 @@ def duplicate_block(block_to_duplicate: ida_hexrays.mblock_t, verify: bool = Tru
                 duplicated_blk.serial, block_to_duplicate.succset[0]
             )
         )
-        change_1way_block_successor(duplicated_blk, block_to_duplicate.succset[0], verify=verify)
+        change_1way_block_successor(
+            duplicated_blk, block_to_duplicate.succset[0], verify=verify
+        )
     elif duplicated_blk.nsucc() == 0:
         helper_logger.debug(
             "  Duplicated block {0} has no successor => Nothing to do".format(
@@ -1396,7 +1454,9 @@ def change_block_address(block: ida_hexrays.mblock_t, new_ea: int):
         mb_curr = mb_curr.next
 
 
-def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = True) -> int:
+def mba_remove_simple_goto_blocks(
+    mba: ida_hexrays.mbl_array_t, verify: bool = True
+) -> int:
     last_block_index = mba.qty - 1
     nb_change = 0
     for goto_blk_serial in range(last_block_index):
@@ -1408,9 +1468,7 @@ def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = T
             # rewrite the direct fallthrough edge of a BLT_2WAY block, which
             # the legacy helpers intentionally reject.
             if any(
-                (
-                    father_blk := mba.get_mblock(father_serial)
-                ) is not None
+                (father_blk := mba.get_mblock(father_serial)) is not None
                 and father_blk.nsucc() == 2
                 and father_blk.nextb is not None
                 and father_blk.nextb.serial == goto_blk_serial
@@ -1431,6 +1489,7 @@ def mba_remove_simple_goto_blocks(mba: ida_hexrays.mbl_array_t, verify: bool = T
                 )
                 try:
                     from d810.core.observability_cfg import observe_cfg_provenance
+
                     observe_cfg_provenance(
                         pass_name="remove_simple_goto",
                         action="REDIRECT_EDGE",
@@ -1478,6 +1537,7 @@ def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> in
     # are now out-of-range (qty shrunk).
     try:
         from d810.core.observability_cfg import observe_cfg_provenance
+
         observe_cfg_provenance(
             pass_name="mba_deep_cleaning",
             action="BULK_DEEP_CLEAN",
@@ -1514,7 +1574,9 @@ def mba_deep_cleaning(mba: ida_hexrays.mba_t, call_mba_combine_block=True) -> in
 
 
 def ensure_child_has_an_unconditional_father(
-    father_block: ida_hexrays.mblock_t, child_block: ida_hexrays.mblock_t, verify: bool = True
+    father_block: ida_hexrays.mblock_t,
+    child_block: ida_hexrays.mblock_t,
+    verify: bool = True,
 ) -> int:
     if father_block is None:
         return 0
@@ -1616,7 +1678,10 @@ def downgrade_nway_null_tail_to_1way(
     helper_logger.debug(
         "downgrade_nway_null_tail_to_1way: blk %d BLT_NWAY null-tail "
         "succset=%s -> BLT_1WAY goto blk %d (dropping dispatcher trampoline %d)",
-        blk.serial, succ_serials, keep_serial, dispatcher_entry_serial,
+        blk.serial,
+        succ_serials,
+        keep_serial,
+        dispatcher_entry_serial,
     )
 
     # 1. Insert m_goto tail pointing to the surviving successor
@@ -1655,7 +1720,8 @@ def downgrade_nway_null_tail_to_1way(
     except RuntimeError as e:
         helper_logger.error(
             "downgrade_nway_null_tail_to_1way: verify failed for blk %d: %s",
-            blk.serial, e,
+            blk.serial,
+            e,
         )
         log_block_info(blk, helper_logger.error)
         raise
@@ -1697,9 +1763,10 @@ def remove_block_edge(
         succs = [s for s in blk.succset]
         if to_serial not in succs:
             helper_logger.warning(
-                "remove_block_edge: block %d does not have successor %d "
-                "(succs=%s)",
-                blk.serial, to_serial, succs,
+                "remove_block_edge: block %d does not have successor %d (succs=%s)",
+                blk.serial,
+                to_serial,
+                succs,
             )
             return False
         remaining = [s for s in succs if s != to_serial]
@@ -1707,7 +1774,8 @@ def remove_block_edge(
             helper_logger.warning(
                 "remove_block_edge: block %d has both successors == %d; "
                 "cannot determine remaining target",
-                blk.serial, to_serial,
+                blk.serial,
+                to_serial,
             )
             return False
         return make_2way_block_goto(blk, remaining[0], verify=verify)
@@ -1716,7 +1784,9 @@ def remove_block_edge(
         if blk.succset[0] != to_serial:
             helper_logger.warning(
                 "remove_block_edge: block %d successor is %d, not %d",
-                blk.serial, blk.succset[0], to_serial,
+                blk.serial,
+                blk.succset[0],
+                to_serial,
             )
             return False
 
@@ -1735,7 +1805,8 @@ def remove_block_edge(
     helper_logger.warning(
         "remove_block_edge: block %d has %d successors; only 1-way and "
         "2-way blocks are supported",
-        blk.serial, nsucc,
+        blk.serial,
+        nsucc,
     )
     return False
 

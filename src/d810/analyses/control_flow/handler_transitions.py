@@ -1,4 +1,5 @@
 "Handler transition preanalysis collector.\n\nThin adapter over the canonical transition report API. The collector accepts:\n\n- a prebuilt report object or serialized report payload in target metadata\n- graph-portable inputs (`flow_graph` + `transition_result`)\n- live condition-chain inputs (`mba` + dispatcher metadata) as a last resort\n"
+
 from __future__ import annotations
 
 import time
@@ -112,7 +113,9 @@ class HandlerTransitionsCollector:
                     cls._get_field(target, metadata, "initial_state")
                 ),
                 handler_range_map=metadata.get("handler_range_map"),
-                condition_chain_blocks=tuple(metadata.get("condition_chain_blocks", ())),
+                condition_chain_blocks=tuple(
+                    metadata.get("condition_chain_blocks", ())
+                ),
                 diagnostics=tuple(metadata.get("diagnostics", ())),
             )
 

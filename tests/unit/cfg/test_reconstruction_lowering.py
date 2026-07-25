@@ -121,12 +121,14 @@ class TestPlanConditionalArmEmission:
 
 class TestPlanPassthroughRedirects:
     def test_collects_oneway_and_arm1_dispatcher_redirects(self):
-        flow_graph = _DummyFlowGraph({
-            10: (6,),
-            11: (20, 6),
-            12: (6, 21),
-            14: (30,),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                10: (6,),
+                11: (20, 6),
+                12: (6, 21),
+                14: (30,),
+            }
+        )
 
         redirects = plan_passthrough_redirects(
             flow_graph=flow_graph,
@@ -142,12 +144,14 @@ class TestPlanPassthroughRedirects:
         )
 
     def test_ignores_suffix_blocks_after_horizon(self):
-        flow_graph = _DummyFlowGraph({
-            10: (6,),
-            11: (20, 6),
-            14: (30, 31),
-            15: (6,),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                10: (6,),
+                11: (20, 6),
+                14: (30, 31),
+                15: (6,),
+            }
+        )
 
         redirects = plan_passthrough_redirects(
             flow_graph=flow_graph,

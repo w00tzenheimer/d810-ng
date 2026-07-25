@@ -1,10 +1,13 @@
 """Live Hex-Rays adapter for equality-chain dispatcher extraction."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from d810.backends.hexrays import condition_chain_runtime as _hexrays_condition_chain_runtime
+from d810.backends.hexrays import (
+    condition_chain_runtime as _hexrays_condition_chain_runtime,
+)
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 from d810.analyses.control_flow.equality_chain_dispatcher import (
     extract_state_dispatcher_map_from_mba,
@@ -120,7 +123,7 @@ class _MopView:
 
 
 def _mop_snapshot_from_view(view: _MopView | None) -> MopSnapshot | None:
-    "Materialize a normalized ``_MopView`` into a frozen ``MopSnapshot``.\n\n    The ``_MopView`` already normalizes the raw Hex-Rays operand into portable\n    fields (``kind`` / ``size`` / ``value`` / ``stkoff`` / ``reg`` /\n    ``block_ref`` / ``gaddr`` / ``lvar_off``); copying them onto a real\n    ``MopSnapshot`` lets the canonical preanalysis extractor read operands through\n    ``operand_storages`` / ``project_instruction`` instead of raw operand slots.\n    "
+    "Materialize a normalized ``_MopView`` into a frozen ``MopSnapshot``.\n\n    The ``_MopView`` already normalizes the raw Hex-Rays operand into portable\n    fields (``kind`` / ``size`` / ``value`` / ``stkoff`` / ``reg`` /\n    ``block_ref`` / ``gaddr`` / ``lvar_off``); copying them onto a real\n    ``MopSnapshot`` lets the canonical preanalysis extractor read operands through\n    ``operand_storages`` / ``project_instruction`` instead of raw operand slots.\n"
     if view is None:
         return None
     kind = view.kind
@@ -145,7 +148,7 @@ def _insn_snapshot_from_live(
     opcode_names: Mapping[int, str],
     mop_type_names: Mapping[int, str],
 ) -> InsnSnapshot:
-    "Build a portable ``InsnSnapshot`` from one live microcode instruction.\n\n    The raw opcode / operand types are normalized through the same\n    ``opcode_names`` / ``mop_type_names`` maps the legacy views used, then the\n    portable semantic ``kind`` / ``predicate_kind`` and the ``l`` / ``r`` / ``d``\n    ``MopSnapshot`` operands are stamped onto a real ``InsnSnapshot``.  The\n    canonical projection infers ``control_transfer_kind`` (CONDITIONAL_BRANCH for\n    the equality-jump ``kind``) so the preanalysis extractor's\n    ``project_instruction`` reads of ``control.target`` / ``control.predicate``\n    resolve.\n    "
+    "Build a portable ``InsnSnapshot`` from one live microcode instruction.\n\n    The raw opcode / operand types are normalized through the same\n    ``opcode_names`` / ``mop_type_names`` maps the legacy views used, then the\n    portable semantic ``kind`` / ``predicate_kind`` and the ``l`` / ``r`` / ``d``\n    ``MopSnapshot`` operands are stamped onto a real ``InsnSnapshot``.  The\n    canonical projection infers ``control_transfer_kind`` (CONDITIONAL_BRANCH for\n    the equality-jump ``kind``) so the preanalysis extractor's\n    ``project_instruction`` reads of ``control.target`` / ``control.predicate``\n    resolve.\n"
     raw_opcode = getattr(insn, "opcode", None)
     try:
         opcode_name = opcode_names.get(int(raw_opcode), raw_opcode)
@@ -236,9 +239,7 @@ class _BlockView:
         tail = getattr(self._blk, "tail", None)
         if tail is None:
             return None
-        return _insn_snapshot_from_live(
-            tail, self._opcode_names, self._mop_type_names
-        )
+        return _insn_snapshot_from_live(tail, self._opcode_names, self._mop_type_names)
 
     def _iter_live_insns(self):
         head = getattr(self._blk, "head", None)

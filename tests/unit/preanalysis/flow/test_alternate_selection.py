@@ -1,4 +1,5 @@
 """Tests for alternate-edge selector."""
+
 from __future__ import annotations
 from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
@@ -23,9 +24,14 @@ from d810.diagnostics.alternate_selection import (
 def _make_db() -> sqlite3.Connection:
     db = make_bound_diag_db()
     Snapshot.insert(
-        id=1, label="preanalysis_dag", func_ea_hex="0x180012df0",
-        func_ea_i64=0x180012df0, maturity="MMAT_GLBOPT1", phase="pre_d810",
-        block_count=0, timestamp=0.0,
+        id=1,
+        label="preanalysis_dag",
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+        block_count=0,
+        timestamp=0.0,
     ).execute()
     return db.connection()
 
@@ -41,8 +47,12 @@ def _add_block(
     snap: int = 1,
 ) -> None:
     StateCfgNodeBlock.insert(
-        snapshot=snap, state_hex=state_hex, entry_block=entry_block,
-        block_serial=block_serial, block_index=block_index, role=role,
+        snapshot=snap,
+        state_hex=state_hex,
+        entry_block=entry_block,
+        block_serial=block_serial,
+        block_index=block_index,
+        role=role,
     ).execute()
 
 
@@ -63,10 +73,17 @@ def _add_edge(
         )
         edge_id = (max_id or 0) + 1
     StateCfgEdge.insert(
-        snapshot=snap, edge_id=edge_id, source_state_hex=src,
-        source_state_i64=int(src, 16) if src else None, target_state_hex=tgt,
-        target_state_i64=int(tgt, 16) if tgt else None, edge_kind=edge_kind,
-        source_block=None, source_arm=None, target_entry=None, ordered_path="[]",
+        snapshot=snap,
+        edge_id=edge_id,
+        source_state_hex=src,
+        source_state_i64=int(src, 16) if src else None,
+        target_state_hex=tgt,
+        target_state_i64=int(tgt, 16) if tgt else None,
+        edge_kind=edge_kind,
+        source_block=None,
+        source_arm=None,
+        target_entry=None,
+        ordered_path="[]",
     ).execute()
 
 
@@ -84,11 +101,21 @@ def _add_terminal_tail_fact(
         "corridor_role": "terminal_tail",
     }
     FactObservation.insert(
-        snapshot=snap, func_ea_hex="0x180012df0", func_ea_i64=0x180012df0,
-        fact_id=fact_id, kind="TerminalByteEmitterFact", semantic_key=fact_id,
-        maturity="MMAT_GLBOPT1", phase="pre_d810", confidence=0.9,
-        source_block=destination_block, source_ea_hex=None, source_ea_i64=None,
-        block_fingerprint=None, mop_signature=None, payload=json.dumps(payload),
+        snapshot=snap,
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        fact_id=fact_id,
+        kind="TerminalByteEmitterFact",
+        semantic_key=fact_id,
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+        confidence=0.9,
+        source_block=destination_block,
+        source_ea_hex=None,
+        source_ea_i64=None,
+        block_fingerprint=None,
+        mop_signature=None,
+        payload=json.dumps(payload),
         evidence="[]",
     ).execute()
 
@@ -105,11 +132,16 @@ def _add_correlation(
     snap: int = 1,
 ) -> None:
     StateCfgEdgeAlternateCorrelation.insert(
-        snapshot=snap, collapsed_edge_id=collapsed_edge,
-        alternate_edge_id=alt_edge, collapsed_source_state=collapsed_src,
-        collapsed_target_state=collapsed_tgt, alternate_source_state=alt_src,
-        alternate_target_state=alt_tgt, alternate_ordered_path="[]",
-        overlap_blocks="[]", alternate_classification="RANGE_BACKED",
+        snapshot=snap,
+        collapsed_edge_id=collapsed_edge,
+        alternate_edge_id=alt_edge,
+        collapsed_source_state=collapsed_src,
+        collapsed_target_state=collapsed_tgt,
+        alternate_source_state=alt_src,
+        alternate_target_state=alt_tgt,
+        alternate_ordered_path="[]",
+        overlap_blocks="[]",
+        alternate_classification="RANGE_BACKED",
         reason="test",
     ).execute()
 
@@ -119,45 +151,66 @@ def test_byte5_selects_alt_with_byte6_continuation() -> None:
     conn = _make_db()
     # Source: STATE_385BBE2D owns blk[101] (byte5 terminal_tail).
     _add_block(
-        conn, state_hex="0x00000000385bbe2d",
-        entry_block=100, block_serial=100,
+        conn,
+        state_hex="0x00000000385bbe2d",
+        entry_block=100,
+        block_serial=100,
     )
     _add_block(
-        conn, state_hex="0x00000000385bbe2d",
-        entry_block=100, block_serial=101, block_index=1,
+        conn,
+        state_hex="0x00000000385bbe2d",
+        entry_block=100,
+        block_serial=101,
+        block_index=1,
     )
     _add_terminal_tail_fact(
-        conn, fact_id="byte5", destination_block=101, byte_index=5,
+        conn,
+        fact_id="byte5",
+        destination_block=101,
+        byte_index=5,
     )
     # Alt 68 target: STATE_10743C4C, has outgoing to STATE_6107F8EC.
     # STATE_6107F8EC owns blk[217] which is byte6 terminal_tail.
     _add_block(
-        conn, state_hex="0x000000006107f8ec",
-        entry_block=15, block_serial=217,
+        conn,
+        state_hex="0x000000006107f8ec",
+        entry_block=15,
+        block_serial=217,
     )
     _add_terminal_tail_fact(
-        conn, fact_id="byte6", destination_block=217, byte_index=6,
+        conn,
+        fact_id="byte6",
+        destination_block=217,
+        byte_index=6,
     )
     _add_edge(
-        conn, edge_id=39,
-        src="0x0000000010743c4c", tgt="0x000000006107f8ec",
+        conn,
+        edge_id=39,
+        src="0x0000000010743c4c",
+        tgt="0x000000006107f8ec",
     )
     # Alt 112 target: STATE_6E958F99, has only CONDITIONAL_RETURN (dead-end).
     _add_edge(
-        conn, edge_id=134,
-        src="0x000000006e958f99", tgt=None,
+        conn,
+        edge_id=134,
+        src="0x000000006e958f99",
+        tgt=None,
         edge_kind="CONDITIONAL_RETURN",
     )
 
     _add_correlation(
-        conn, collapsed_edge=144, alt_edge=68,
+        conn,
+        collapsed_edge=144,
+        alt_edge=68,
         collapsed_src="0x00000000385bbe2d",
         collapsed_tgt="0x0000000063d54755",
         alt_src="0x000000003873bc53",
         alt_tgt="0x0000000010743c4c",
     )
     _add_correlation(
-        conn, collapsed_edge=144, alt_edge=112,
+        conn,
+        collapsed_edge=144,
+        alt_edge=112,
         collapsed_src="0x00000000385bbe2d",
         collapsed_tgt="0x0000000063d54755",
         alt_src="0x000000003873bc53",
@@ -178,21 +231,23 @@ def test_byte5_selects_alt_with_byte6_continuation() -> None:
     assert sel_112.selected is False
     assert sel_112.source_byte_index == 5
     assert sel_112.reached_byte_index is None
-    assert sel_112.reason == (
-        "early_return_arm_no_later_terminal_tail"
-    )
+    assert sel_112.reason == ("early_return_arm_no_later_terminal_tail")
 
 
 def test_no_source_byte_index_no_decision() -> None:
     """Source state with no terminal_tail emit -> reason no_source_byte_index."""
     conn = _make_db()
     _add_block(
-        conn, state_hex="0x00000000aaaaaaaa",
-        entry_block=10, block_serial=10,
+        conn,
+        state_hex="0x00000000aaaaaaaa",
+        entry_block=10,
+        block_serial=10,
     )
     # No TerminalByteEmitterFact at blk[10].
     _add_correlation(
-        conn, collapsed_edge=1, alt_edge=2,
+        conn,
+        collapsed_edge=1,
+        alt_edge=2,
         collapsed_src="0x00000000aaaaaaaa",
         collapsed_tgt="0x00000000bbbbbbbb",
         alt_src="0x00000000cccccccc",
@@ -209,31 +264,49 @@ def test_depth_cap_respected() -> None:
     """Later-byte reachable only at depth 3 -> rejected when max_depth=2."""
     conn = _make_db()
     _add_block(
-        conn, state_hex="0x00000000aaaaaaaa",
-        entry_block=10, block_serial=10,
+        conn,
+        state_hex="0x00000000aaaaaaaa",
+        entry_block=10,
+        block_serial=10,
     )
     _add_terminal_tail_fact(
-        conn, fact_id="src", destination_block=10, byte_index=5,
+        conn,
+        fact_id="src",
+        destination_block=10,
+        byte_index=5,
     )
     # Chain: alt_target -> A -> B -> C; only C owns a byte6 block.
     _add_edge(
-        conn, src="0x00000000bbbbbbbb", tgt="0x00000000cccccccc",
+        conn,
+        src="0x00000000bbbbbbbb",
+        tgt="0x00000000cccccccc",
     )
     _add_edge(
-        conn, src="0x00000000cccccccc", tgt="0x00000000dddddddd",
+        conn,
+        src="0x00000000cccccccc",
+        tgt="0x00000000dddddddd",
     )
     _add_edge(
-        conn, src="0x00000000dddddddd", tgt="0x00000000eeeeeeee",
+        conn,
+        src="0x00000000dddddddd",
+        tgt="0x00000000eeeeeeee",
     )
     _add_block(
-        conn, state_hex="0x00000000eeeeeeee",
-        entry_block=99, block_serial=99,
+        conn,
+        state_hex="0x00000000eeeeeeee",
+        entry_block=99,
+        block_serial=99,
     )
     _add_terminal_tail_fact(
-        conn, fact_id="b6", destination_block=99, byte_index=6,
+        conn,
+        fact_id="b6",
+        destination_block=99,
+        byte_index=6,
     )
     _add_correlation(
-        conn, collapsed_edge=1, alt_edge=2,
+        conn,
+        collapsed_edge=1,
+        alt_edge=2,
         collapsed_src="0x00000000aaaaaaaa",
         collapsed_tgt="0x00000000ffffffff",
         alt_src="0x00000000cafecafe",
@@ -252,7 +325,9 @@ def test_depth_cap_respected() -> None:
 def test_persist_idempotent() -> None:
     conn = _make_db()
     _add_correlation(
-        conn, collapsed_edge=1, alt_edge=2,
+        conn,
+        collapsed_edge=1,
+        alt_edge=2,
         collapsed_src="0x00000000aaaaaaaa",
         collapsed_tgt="0x00000000bbbbbbbb",
         alt_src="0x00000000cccccccc",

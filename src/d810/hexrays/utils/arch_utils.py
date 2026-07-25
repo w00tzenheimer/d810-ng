@@ -11,6 +11,7 @@ Key abstractions:
 
 Supports x86-64 and ARM64 architectures.
 """
+
 from __future__ import annotations
 
 import enum
@@ -221,11 +222,7 @@ def _analyze_identity_function(func_ea: int) -> bool:
         # Also accept stack-spill wrappers:
         #   mov [rsp+off], arg
         #   mov ret, [rsp+off]
-        if (
-            arg_reg >= 0
-            and ret_reg >= 0
-            and idaapi.ua_mnem(insn.ea) == "mov"
-        ):
+        if arg_reg >= 0 and ret_reg >= 0 and idaapi.ua_mnem(insn.ea) == "mov":
             dst = insn.Op1
             src = insn.Op2
             if (

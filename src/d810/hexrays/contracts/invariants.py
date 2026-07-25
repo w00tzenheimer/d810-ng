@@ -499,9 +499,7 @@ def block_type_vs_tail(
             continue
 
         is_nway = blk_type == ida_hexrays.BLT_NWAY
-        is_jtbl = tail is not None and tail_opcode == int(
-            ida_hexrays.m_jtbl
-        )
+        is_jtbl = tail is not None and tail_opcode == int(ida_hexrays.m_jtbl)
         if is_nway != is_jtbl:
             violations.append(
                 _violation(
@@ -540,9 +538,9 @@ def block_type_vs_tail(
                 )
             )
 
-        if blk_type == int(
-            ida_hexrays.BLT_2WAY
-        ) and not _is_conditional_jump_opcode(tail_opcode):
+        if blk_type == int(ida_hexrays.BLT_2WAY) and not _is_conditional_jump_opcode(
+            tail_opcode
+        ):
             violations.append(
                 _violation(
                     code="CFG_BLT2WAY_NON_JCC_TAIL",

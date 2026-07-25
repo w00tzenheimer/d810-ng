@@ -9,6 +9,7 @@ duck-typed (``get_mblock`` / ``start`` / ``maturity`` attributes), so
 this stays portable at the ``core`` layer and both the log line and the
 event payload use the exact same label strings (no drift).
 """
+
 from __future__ import annotations
 
 from d810.core.formatting import format_block_id

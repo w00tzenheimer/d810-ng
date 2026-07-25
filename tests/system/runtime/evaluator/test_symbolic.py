@@ -20,6 +20,7 @@ import pytest
 # Minimal fake ida_hexrays — must be in sys.modules before any evaluator call
 # ---------------------------------------------------------------------------
 
+
 class _MopT:
     """Sentinel class standing in for ida_hexrays.mop_t.
 
@@ -46,25 +47,23 @@ _IDA_HEX = types.SimpleNamespace(
     mop_t=_MopT,
     # vd_printer_t stand-in class (needed by hexrays_formatters class defs)
     vd_printer_t=_VdPrinterT,
-
     # mop operand-type enum constants (mop_snapshot.py uses these)
-    mop_z=0,   # undefined / zero
-    mop_n=1,   # numeric constant
-    mop_r=2,   # register
-    mop_S=3,   # stack variable
-    mop_v=4,   # global variable
-    mop_d=5,   # result of another instruction
-    mop_a=6,   # address of operand
-    mop_f=7,   # list of arguments
-    mop_l=8,   # local variable
-    mop_b=9,   # micro basic-block reference
+    mop_z=0,  # undefined / zero
+    mop_n=1,  # numeric constant
+    mop_r=2,  # register
+    mop_S=3,  # stack variable
+    mop_v=4,  # global variable
+    mop_d=5,  # result of another instruction
+    mop_a=6,  # address of operand
+    mop_f=7,  # list of arguments
+    mop_l=8,  # local variable
+    mop_b=9,  # micro basic-block reference
     mop_p=10,  # operand pair
     mop_c=11,  # switch cases
     mop_str=12,  # string constant
     mop_h=13,  # helper function name
     mop_fn=14,  # floating point constant
     mop_sc=15,  # scattered operand
-
     m_nop=0x00,
     m_stx=0x01,
     m_ldx=0x02,
@@ -138,7 +137,6 @@ _IDA_HEX = types.SimpleNamespace(
     m_fsub=0x46,
     m_fmul=0x47,
     m_fdiv=0x48,
-
     # mba_maturity_t constants
     MMAT_ZERO=0,
     MMAT_GENERATED=1,
@@ -347,7 +345,9 @@ def _default_binary() -> str:
     override = _os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if _platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if _platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 class TestSymbolicWithRealAst:
@@ -383,9 +383,7 @@ class TestSymbolicWithRealAst:
                 probe_is_constant(ast, leaf_info_list)
             except AstEvaluationException as exc:
                 if "Unsupported AST node type" in str(exc):
-                    type_failures.append(
-                        f"{type(ast).__name__}: {exc}"
-                    )
+                    type_failures.append(f"{type(ast).__name__}: {exc}")
             except Exception:
                 # ZeroDivisionError, ValueError etc. are not type-dispatch bugs
                 pass

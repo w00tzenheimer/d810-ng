@@ -10,6 +10,7 @@ orchestrator consumes (design §4).
 IDA-free: the oracles are pure callables; the live Hex-Rays oracles live in the
 backend engine and are covered by system tests (``portable-core-no-ida``).
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.concolic_machine_walk import (

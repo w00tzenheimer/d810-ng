@@ -1,4 +1,5 @@
 """Stable pass-id registry for PipelineConfig v2."""
+
 from __future__ import annotations
 
 from d810.core.typing import Callable
@@ -26,9 +27,7 @@ class PassRegistry:
             str, Callable[[PipelineConfig], PipelinePass]
         ] = {}
 
-    def register(
-        self, pass_id: str, pass_factory: Callable[..., PipelinePass]
-    ) -> None:
+    def register(self, pass_id: str, pass_factory: Callable[..., PipelinePass]) -> None:
         """Register ``pass_factory`` under ``pass_id``."""
         if not pass_id:
             raise PassRegistryError("pass_id must be non-empty")

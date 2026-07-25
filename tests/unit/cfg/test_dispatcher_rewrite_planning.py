@@ -117,9 +117,7 @@ def test_plans_convert_to_goto_for_conditional_source() -> None:
         )
     )
 
-    assert decision.modifications == (
-        ConvertToGoto(block_serial=9, goto_target=1),
-    )
+    assert decision.modifications == (ConvertToGoto(block_serial=9, goto_target=1),)
 
 
 def test_blocks_unsafe_side_effects() -> None:

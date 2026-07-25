@@ -14,6 +14,7 @@ runtime; this reconstructs the equivalent tree from the flat test inputs so the
 operand-tree-diag path produces the canonical ``Instruction`` the collectors
 read.
 """
+
 from __future__ import annotations
 
 import json
@@ -90,10 +91,18 @@ def flat_meta(
         "dstr": dstr,
     }
     left = _operand_meta(
-        src_l_type, stkoff=src_l_stkoff, value=src_l_value, register=src_l_register, size=src_l_size
+        src_l_type,
+        stkoff=src_l_stkoff,
+        value=src_l_value,
+        register=src_l_register,
+        size=src_l_size,
     )
     right = _operand_meta(
-        src_r_type, stkoff=src_r_stkoff, value=src_r_value, register=src_r_register, size=src_r_size
+        src_r_type,
+        stkoff=src_r_stkoff,
+        value=src_r_value,
+        register=src_r_register,
+        size=src_r_size,
     )
     dest = _operand_meta(
         dest_type, stkoff=dest_stkoff, register=dest_register, size=dest_size

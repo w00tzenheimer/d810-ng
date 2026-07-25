@@ -5,6 +5,7 @@ observation models can format block ids without importing core.diag.
 This module is kept for back-compat with existing callers (mainly
 :mod:`d810.diagnostics.__main__`).
 """
+
 from __future__ import annotations
 
 from d810.core.formatting import format_block_id as format_block_id

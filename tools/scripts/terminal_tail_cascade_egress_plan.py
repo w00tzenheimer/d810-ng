@@ -14,6 +14,7 @@ The full implementation now lives in
 ``tests/unit/diagnostics/test_cascade_egress_plan.py``. The cfg-layer
 planner in ``d810.transforms.terminal_tail_cascade_egress_planner`` is unchanged.
 """
+
 from __future__ import annotations
 
 import os

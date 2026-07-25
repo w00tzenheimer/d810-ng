@@ -4,6 +4,7 @@ Extracts expected return sites from Hodur's analysis data
 (handler path results, condition-chain analysis, state machine) and provides
 them in the generic ReturnSite format for frontier audit.
 """
+
 from __future__ import annotations
 
 from d810.core import logging

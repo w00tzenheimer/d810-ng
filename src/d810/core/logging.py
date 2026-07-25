@@ -535,6 +535,7 @@ def configure_loggers(log_dir: str | pathlib.Path) -> None:
     # created loggers that aren't in the dict-config.
     try:
         from d810.core.settings import get_settings
+
         if get_settings().debug_logging:
             for _name, _cfg in conf.get("loggers", {}).items():
                 # Third-party loggers pinned for noise control (peewee's per-query
@@ -590,6 +591,7 @@ def getLogger(name: str, default_level: int = logging.INFO) -> D810Logger:
     # Honor D810_DEBUG_LOGGING setting: promote default level to DEBUG when
     # the caller relies on the built-in default (logging.INFO).
     from d810.core.settings import get_settings
+
     if default_level == logging.INFO and get_settings().debug_logging:
         default_level = logging.DEBUG
 

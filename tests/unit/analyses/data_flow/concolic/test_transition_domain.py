@@ -6,6 +6,7 @@ byte-identical fixpoint results to StateTransitionDomain on the existing corpus.
 The StateValue<->ValueLatticeOps adapter lives here (test-only) so the concolic
 package stays decoupled from control_flow.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.state_transition_domain import (
@@ -99,7 +100,9 @@ class TestReproducesStateTransitionDomain:
         _, conc = _run_concolic(nodes, succ, pred)
         assert conc.converged is oracle.converged is True
         for n in nodes:
-            assert conc.out_states[n].store()[_STATE] == oracle.out_states[n], f"out {n}"
+            assert conc.out_states[n].store()[_STATE] == oracle.out_states[n], (
+                f"out {n}"
+            )
             assert conc.in_states[n].store()[_STATE] == oracle.in_states[n], f"in {n}"
 
     def test_known_landmarks(self) -> None:
@@ -107,9 +110,9 @@ class TestReproducesStateTransitionDomain:
         nodes, succ, pred = _topology(_CFF_EDGES)
         _, conc = _run_concolic(nodes, succ, pred)
         out = {n: conc.out_states[n].store()[_STATE] for n in nodes}
-        assert out[3] == StateValue.of(20)                 # strong update overwrites loop set
-        assert out[1].constants == {10, 20, 30}            # dispatcher accumulates (powerset!)
-        assert out[9].is_bottom                            # unreachable block stays ⊥
+        assert out[3] == StateValue.of(20)  # strong update overwrites loop set
+        assert out[1].constants == {10, 20, 30}  # dispatcher accumulates (powerset!)
+        assert out[9].is_bottom  # unreachable block stays ⊥
 
 
 class TestPartitioningAndConformance:
@@ -130,8 +133,10 @@ class TestPartitioningAndConformance:
         domain = ConcolicTransitionDomain(
             writes={}, vops=_StateValueOps(), cells={_STATE}
         )
-        assert isinstance(domain, FlowDomain)            # structural (runtime_checkable)
-        assert domain.bottom().store()[_STATE].is_bottom  # bottom builds a complete ⊥ store
+        assert isinstance(domain, FlowDomain)  # structural (runtime_checkable)
+        assert (
+            domain.bottom().store()[_STATE].is_bottom
+        )  # bottom builds a complete ⊥ store
 
     def test_confluence_is_cellwise_join(self) -> None:
         domain = ConcolicTransitionDomain(

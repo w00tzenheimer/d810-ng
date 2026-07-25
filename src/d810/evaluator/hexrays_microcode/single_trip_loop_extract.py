@@ -23,6 +23,7 @@ Every precondition is a count, a dominance check, or a discharged proof:
 
 If any precondition fails, the recognizer ABSTAINS -- it never peels on suspicion.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

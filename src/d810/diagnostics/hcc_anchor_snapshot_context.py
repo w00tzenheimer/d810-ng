@@ -5,6 +5,7 @@ opaque-call anchor blocks disappear across HCC/pipeline snapshots. Runtime
 strategy code should emit observations or log fields; persisted diag DB lookup
 belongs here.
 """
+
 from __future__ import annotations
 
 import json
@@ -88,9 +89,7 @@ def _open_diag_db_readonly() -> sqlite3.Connection | None:
                 )
                 has_glbopt1_post = (
                     Snapshot.select(Snapshot.id)
-                    .where(
-                        Snapshot.label == "maturity_MMAT_GLBOPT1_post_d810"
-                    )
+                    .where(Snapshot.label == "maturity_MMAT_GLBOPT1_post_d810")
                     .exists()
                 )
             except Exception:
@@ -133,10 +132,7 @@ def _query_block_state_in_snapshot(
     try:
         blk_row = (
             Block.select(Block.preds, Block.succs)
-            .where(
-                (Block.snapshot == snapshot_id)
-                & (Block.serial == block_serial)
-            )
+            .where((Block.snapshot == snapshot_id) & (Block.serial == block_serial))
             .tuples()
             .first()
         )
@@ -160,9 +156,7 @@ def _query_block_state_in_snapshot(
         succ_map: dict[int, list[int]] = {}
         for serial, succs_blob in all_rows:
             try:
-                succ_map[int(serial)] = (
-                    json.loads(succs_blob) if succs_blob else []
-                )
+                succ_map[int(serial)] = json.loads(succs_blob) if succs_blob else []
             except Exception:
                 succ_map[int(serial)] = []
         visited: set[int] = set()
@@ -194,7 +188,9 @@ def collect_anchor_snapshot_context_from_connection(
     for label in _KILL_POINT_SNAPSHOT_ORDER:
         try:
             snapshot_results[label] = _query_block_state_in_snapshot(
-                conn, label, anchor_serial,
+                conn,
+                label,
+                anchor_serial,
             )
         except Exception:
             snapshot_results[label] = None
@@ -220,9 +216,7 @@ def collect_anchor_snapshot_context_from_connection(
     survives_glbopt1 = "UNKNOWN"
     snap_glbopt1 = snapshot_results.get(post_glbopt1_lbl)
     if snap_glbopt1 is not None:
-        survives_glbopt1 = (
-            "NO" if snap_glbopt1.get("preds") is None else "YES"
-        )
+        survives_glbopt1 = "NO" if snap_glbopt1.get("preds") is None else "YES"
 
     earliest_kill_point = "NEVER"
     first_snap = snapshot_results.get(_KILL_POINT_SNAPSHOT_ORDER[0])

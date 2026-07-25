@@ -10,6 +10,7 @@ mapping for each backend is recorded per member below.
 Portable: pure ``enum`` — NO ``ida_*`` import (this module is portable-core; the live
 mapping lives in the vendor adapter).
 """
+
 from __future__ import annotations
 
 import json
@@ -139,14 +140,13 @@ class MaturityEnvelope:
             return SnapshotForm(text)
 
     @classmethod
-    def load(cls, record: Mapping[str, object] | "MaturityEnvelope") -> "MaturityEnvelope":
+    def load(
+        cls, record: Mapping[str, object] | "MaturityEnvelope"
+    ) -> "MaturityEnvelope":
         if isinstance(record, cls):
             return record
         provider_id_value = record.get("provider_id")
-        provider_id = (
-            int(provider_id_value)
-            if provider_id_value is not None else None
-        )
+        provider_id = int(provider_id_value) if provider_id_value is not None else None
         provider_value = record.get("provider")
         provider_name_value = record.get("provider_name")
         return cls(
@@ -155,8 +155,7 @@ class MaturityEnvelope:
             provider=str(provider_value) if provider_value is not None else "",
             provider_id=provider_id,
             provider_name=(
-                str(provider_name_value)
-                if provider_name_value is not None else None
+                str(provider_name_value) if provider_name_value is not None else None
             ),
         )
 

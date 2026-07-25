@@ -1,4 +1,5 @@
 """FunctionPassManager wrapper behavior."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -111,11 +112,14 @@ def test_manager_threads_scheduler_across_maturity_runs():
         maturity=IRMaturity.CANONICAL,
     )
     assert calls == [IRMaturity.CANONICAL]
-    assert manager.scheduler.drain(
-        func_ea=0x1000,
-        current_maturity=IRMaturity.GLOBAL_ANALYZED,
-        domain=RunLaterDomain.OPTIMIZER_RULE,
-    ) == ()
+    assert (
+        manager.scheduler.drain(
+            func_ea=0x1000,
+            current_maturity=IRMaturity.GLOBAL_ANALYZED,
+            domain=RunLaterDomain.OPTIMIZER_RULE,
+        )
+        == ()
+    )
 
     manager.run(
         source=_Src(),
@@ -316,11 +320,7 @@ def test_manager_threads_input_facts_and_seeded_analysis_inputs():
             captured["range_evidence"] = ctx.facts.get_analysis("range_evidence")
             return PassResult()
 
-    family = _MatchingFamily(
-        (
-            PassSpec("read_facts", _ReadFacts, no_caps, default),
-        )
-    )
+    family = _MatchingFamily((PassSpec("read_facts", _ReadFacts, no_caps, default),))
     manager = FunctionPassManager()
 
     manager.run(
@@ -394,11 +394,14 @@ def test_manager_reset_func_clears_owned_facts_and_pipeline_scheduler():
     manager.reset_func(0x1000)
 
     assert manager.analysis_manager_for(0x1000) is None
-    assert manager.scheduler.drain(
-        func_ea=0x1000,
-        current_maturity=IRMaturity.GLOBAL_ANALYZED,
-        domain=RunLaterDomain.PIPELINE_PASS,
-    ) == ()
+    assert (
+        manager.scheduler.drain(
+            func_ea=0x1000,
+            current_maturity=IRMaturity.GLOBAL_ANALYZED,
+            domain=RunLaterDomain.PIPELINE_PASS,
+        )
+        == ()
+    )
 
 
 def test_function_pass_manager_stays_ida_free():

@@ -1,4 +1,5 @@
 """Print native conditional-state choices and their dispatcher bindings."""
+
 from __future__ import annotations
 
 import os
@@ -95,9 +96,7 @@ def main() -> int:
                         "predicate": hex(int(choice.source_jmp_ea)),
                         "state_reg": choice.selector_state_var_reg,
                         "taken": hex(int(choice.predicate_true_state or 0)),
-                        "fallthrough": hex(
-                            int(choice.predicate_false_state or 0)
-                        ),
+                        "fallthrough": hex(int(choice.predicate_false_state or 0)),
                     }
                     for choice in _static_branch_state_choices(
                         entry_state,
@@ -152,21 +151,15 @@ def main() -> int:
                                 hex(int(jmp_ea)): [
                                     hex(int(target)) for target in targets
                                 ]
-                                for jmp_ea, targets in sorted(
-                                    arm_fixpoint[1].items()
-                                )
+                                for jmp_ea, targets in sorted(arm_fixpoint[1].items())
                             },
                             "unresolved": {
                                 hex(int(jmp_ea)): reason
-                                for jmp_ea, reason in sorted(
-                                    arm_fixpoint[2].items()
-                                )
+                                for jmp_ea, reason in sorted(arm_fixpoint[2].items())
                             },
                             "block_entry_of": {
                                 hex(int(jmp_ea)): hex(int(block_ea))
-                                for jmp_ea, block_ea in sorted(
-                                    arm_fixpoint[3].items()
-                                )
+                                for jmp_ea, block_ea in sorted(arm_fixpoint[3].items())
                             },
                         },
                     )

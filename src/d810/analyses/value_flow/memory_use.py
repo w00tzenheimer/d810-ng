@@ -5,6 +5,7 @@ MemorySSA terms this is the read side of a def-use relation; in D-810 it is
 used when existing producer evidence already identifies a memory-backed
 semantic use such as a Hodur return-slot use.
 """
+
 from __future__ import annotations
 
 MEMORY_USE_FACT_TYPE = "MemoryUseFact"

@@ -29,6 +29,7 @@ populates ``block_types`` from ``mblock_t.type`` (mapped to the names
 ``BLT_1WAY``/``BLT_2WAY``/etc.). The Hodur-strategy wrapper handles all
 of that.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -87,11 +88,7 @@ def plan_spurious_backedge_redirects(
     seen: set[tuple[int, int]] = set()
 
     for scc in nontrivial_sccs(sccs):
-        edges = sorted(
-            edge
-            for edge in scc.cyclic_edges
-            if edge in dom_backedges
-        )
+        edges = sorted(edge for edge in scc.cyclic_edges if edge in dom_backedges)
         if not edges:
             continue
         classifications = classify_backedges(

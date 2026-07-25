@@ -31,7 +31,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 # =========================================================================
@@ -45,7 +47,9 @@ class TestEngineBackendDetection:
     @pytest.mark.ida_required
     def test_engine_info_reports_backend(self):
         """get_engine_info() correctly reports which backend is active."""
-        from d810.optimizers.microcode.instructions.pattern_matching.engine import get_engine_info
+        from d810.optimizers.microcode.instructions.pattern_matching.engine import (
+            get_engine_info,
+        )
 
         info = get_engine_info()
         assert "backend" in info
@@ -84,7 +88,9 @@ class TestMatchParity:
     binary_name = _get_default_binary()
 
     @pytest.mark.ida_required
-    def test_match_results_identical_across_backends(self, real_asts, populated_storages):
+    def test_match_results_identical_across_backends(
+        self, real_asts, populated_storages
+    ):
         """Engine-dispatched match vs forced-Python match produces same results."""
         from d810.optimizers.microcode.instructions.pattern_matching.engine import (
             match_pattern_nomut,
@@ -125,7 +131,9 @@ class TestMatchParity:
                     )
 
         assert total > 0, "No match attempts were made"
-        assert mismatches == 0, f"{mismatches}/{total} match results differ between backends"
+        assert mismatches == 0, (
+            f"{mismatches}/{total} match results differ between backends"
+        )
 
         print(f"\n  Match parity verified: {total} comparisons, 0 mismatches")
 
@@ -172,6 +180,7 @@ class TestStorageParity:
 
         rules = []
         for i, pattern in enumerate(unique_patterns):
+
             class MockRule:
                 pass
 
@@ -198,7 +207,9 @@ class TestStorageParity:
                 mismatches += 1
 
         assert total > 0, "No ASTs tested"
-        assert mismatches == 0, f"{mismatches}/{total} candidate sets differ between backends"
+        assert mismatches == 0, (
+            f"{mismatches}/{total} candidate sets differ between backends"
+        )
 
         print(f"\n  Storage parity verified: {total} ASTs, 0 mismatches")
 
@@ -254,7 +265,9 @@ class TestPostOptimizationBenchmark:
             print(f"    Matches/sec: {matches_per_sec:.0f}")
 
             # Verify reasonable performance (not regressed to unusable)
-            assert us_per_match < 1000, "Match performance unexpectedly slow (>1ms/match)"
+            assert us_per_match < 1000, (
+                "Match performance unexpectedly slow (>1ms/match)"
+            )
         else:
             pytest.skip("No matches performed, cannot measure performance")
 
@@ -263,8 +276,12 @@ class TestPostOptimizationBenchmark:
         """Measure full optimizer hot path throughput."""
         import time
 
-        from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer
-        from d810.optimizers.microcode.instructions.pattern_matching.engine import get_engine_info
+        from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+            PatternOptimizer,
+        )
+        from d810.optimizers.microcode.instructions.pattern_matching.engine import (
+            get_engine_info,
+        )
         from d810.core import OptimizationStatistics
 
         stats = OptimizationStatistics()
@@ -282,6 +299,7 @@ class TestPostOptimizationBenchmark:
             def __init__(self):
                 class MockMBA:
                     maturity = ida_hexrays.MMAT_PREOPTIMIZED
+
                 self.mba = MockMBA()
 
         mock_blk = MockBlock()

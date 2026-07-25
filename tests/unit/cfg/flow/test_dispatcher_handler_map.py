@@ -1,4 +1,5 @@
 """Unit tests for DispatcherHandlerMap shared IR type."""
+
 from __future__ import annotations
 
 import pytest
@@ -99,7 +100,10 @@ class TestFromConditionChainResult:
     """Bridge from ConditionChainAnalysisResult."""
 
     def test_round_trip_fields(self):
-        from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult, ConditionChainNodeMap
+        from d810.analyses.control_flow.condition_chain_model import (
+            ConditionChainAnalysisResult,
+            ConditionChainNodeMap,
+        )
 
         node_map = ConditionChainNodeMap()
         node_map.add(5)
@@ -111,7 +115,9 @@ class TestFromConditionChainResult:
             initial_state=0xAABB,
         )
         m = DispatcherHandlerMap.from_condition_chain_result(
-            condition_chain, dispatcher_serial=5, state_var_stkoff=0x3C,
+            condition_chain,
+            dispatcher_serial=5,
+            state_var_stkoff=0x3C,
         )
         assert m.handler_state_map == {10: 0xAABB, 11: 0xCCDD}
         assert m.handler_range_map == {12: (0x1000, 0x2000)}
@@ -126,7 +132,9 @@ class TestToConditionChainResult:
     """Synthesize ConditionChainAnalysisResult for downstream consumers."""
 
     def test_synthetic_condition_chain_has_handler_state_map(self):
-        from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
+        from d810.analyses.control_flow.condition_chain_model import (
+            ConditionChainAnalysisResult,
+        )
 
         m = DispatcherHandlerMap(
             handler_state_map={10: 0, 11: 1, 12: 2},

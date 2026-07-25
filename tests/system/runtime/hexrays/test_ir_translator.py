@@ -5,6 +5,7 @@ IRTranslator protocol and exposes the expected interface.
 
 Runs in IDA environment (system/runtime); skips gracefully without IDA.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -50,7 +51,10 @@ from d810.transforms.plan import (
     VirtualBlockId,
     compile_patch_plan,
 )
-from d810.transforms.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
+from d810.transforms.materialization_payload import (
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
+)
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.mutation.ir_translator import (
     _build_lvar_stkoff_map,
@@ -63,7 +67,9 @@ from d810.hexrays.mutation.ir_translator import (
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 
-_DEFAULT_TEST_BINARY = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+_DEFAULT_TEST_BINARY = (
+    "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+)
 
 
 class _FakeLocation:
@@ -85,8 +91,7 @@ class _FakeVars:
     def __init__(self, locations: tuple[_FakeLocation, ...]) -> None:
         self.size_called = False
         self.values = tuple(
-            SimpleNamespace(location=location)
-            for location in locations
+            SimpleNamespace(location=location) for location in locations
         )
 
     def size(self) -> int:
@@ -126,7 +131,9 @@ class _BlockRef:
     block_num: int
 
 
-def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+def _block(
+    serial: int, succs: tuple[int, ...], preds: tuple[int, ...]
+) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
         block_type=1 if succs else 0,
@@ -275,22 +282,12 @@ def test_capture_mop_snapshot_preserves_nested_value_op_kind():
 
 
 def test_hexrays_branch_opcodes_map_to_backend_neutral_predicates():
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jnz) is (
-        PredicateKind.NE
-    )
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jnz) is (PredicateKind.NE)
     assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jz) is PredicateKind.EQ
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jae) is (
-        PredicateKind.UGE
-    )
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jb) is (
-        PredicateKind.ULT
-    )
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jg) is (
-        PredicateKind.SGT
-    )
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jle) is (
-        PredicateKind.SLE
-    )
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jae) is (PredicateKind.UGE)
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jb) is (PredicateKind.ULT)
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jg) is (PredicateKind.SGT)
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jle) is (PredicateKind.SLE)
 
 
 def _conditional_duplicate_cfg() -> FlowGraph:
@@ -436,7 +433,9 @@ def _find_conditional_duplicate_candidate(mba) -> tuple[int, int] | None:
             continue
         if source_blk.nsucc() != 2:
             continue
-        if source_blk.tail is None or not ida_hexrays.is_mcode_jcond(source_blk.tail.opcode):
+        if source_blk.tail is None or not ida_hexrays.is_mcode_jcond(
+            source_blk.tail.opcode
+        ):
             continue
 
         for pred_idx in range(source_blk.npred()):
@@ -478,7 +477,8 @@ class TestIDAIRTranslatorBasics:
             backend.lower(  # type: ignore[arg-type]
                 [RedirectGoto(from_serial=1, old_target=2, new_target=3)],
                 object(),
-            mutation_gateway = make_mutation_gateway())
+                mutation_gateway=make_mutation_gateway(),
+            )
 
 
 class _FakeDeferredGraphModifier:
@@ -499,7 +499,9 @@ class _FakeDeferredGraphModifier:
     ) -> None:
         self.calls.append(("branch", src, new, old_target, description))
 
-    def queue_convert_to_goto(self, serial: int, target: int, description: str = "") -> None:
+    def queue_convert_to_goto(
+        self, serial: int, target: int, description: str = ""
+    ) -> None:
         self.calls.append(("convert", serial, target, description))
 
     def queue_edge_redirect(
@@ -649,8 +651,7 @@ class _FakeDeferredGraphModifier:
                         clone_serial,
                         len(instructions),
                     )
-                    for pred, target, replay_serial, clone_serial, instructions
-                    in per_pred_replays
+                    for pred, target, replay_serial, clone_serial, instructions in per_pred_replays
                 ),
                 description,
             )
@@ -679,7 +680,9 @@ class _FakeDeferredGraphModifier:
     def queue_insn_nop(self, serial: int, ea: int, description: str = "") -> None:
         self.calls.append(("nop", serial, ea, description))
 
-    def queue_remove_edge(self, from_serial: int, to_serial: int, description: str = "") -> None:
+    def queue_remove_edge(
+        self, from_serial: int, to_serial: int, description: str = ""
+    ) -> None:
         self.calls.append(("remove_edge", from_serial, to_serial, description))
 
     def _check_edge_split_trampoline_preconditions(
@@ -726,7 +729,9 @@ class TestIDAIntegration:
         assert hasattr(backend, "verify")
         assert callable(backend.verify)
 
-    def test_lower_applies_insert_block_patch_plan_to_real_mba(self, libobfuscated_setup):
+    def test_lower_applies_insert_block_patch_plan_to_real_mba(
+        self, libobfuscated_setup
+    ):
         mba = _get_real_mba()
         edge = _find_insertable_edge(mba)
         if edge is None:
@@ -739,7 +744,9 @@ class TestIDAIntegration:
                 InsertBlock(
                     pred_serial=pred_serial,
                     succ_serial=succ_serial,
-                    instructions=(InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),),
+                    instructions=(
+                        InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),
+                    ),
                 )
             ],
             backend.lift(mba),
@@ -748,7 +755,9 @@ class TestIDAIntegration:
             step for step in patch_plan.steps if isinstance(step, PatchInsertBlock)
         )
 
-        count = backend.lower(patch_plan, mba, mutation_gateway = make_mutation_gateway(mba))
+        count = backend.lower(
+            patch_plan, mba, mutation_gateway=make_mutation_gateway(mba)
+        )
 
         assert count == 1
         mba.verify(True)
@@ -763,11 +772,15 @@ class TestIDAIntegration:
         assert inserted_blk.nsucc() == 1
         assert inserted_blk.succ(0) == insert_step.succ_serial
 
-    def test_lower_applies_duplicate_block_patch_plan_to_real_mba(self, libobfuscated_setup):
+    def test_lower_applies_duplicate_block_patch_plan_to_real_mba(
+        self, libobfuscated_setup
+    ):
         mba = _get_real_mba()
         candidate = _find_duplicate_candidate(mba)
         if candidate is None:
-            pytest.skip("No supported predecessor/source pair available for DuplicateBlock runtime test")
+            pytest.skip(
+                "No supported predecessor/source pair available for DuplicateBlock runtime test"
+            )
 
         pred_serial, source_serial = candidate
         backend = IDAIRTranslator()
@@ -785,7 +798,9 @@ class TestIDAIntegration:
             step for step in patch_plan.steps if isinstance(step, PatchDuplicateBlock)
         )
 
-        count = backend.lower(patch_plan, mba, mutation_gateway = make_mutation_gateway(mba))
+        count = backend.lower(
+            patch_plan, mba, mutation_gateway=make_mutation_gateway(mba)
+        )
 
         assert count == 1
         mba.verify(True)
@@ -793,13 +808,17 @@ class TestIDAIntegration:
         pred_blk = mba.get_mblock(pred_serial)
         assert pred_blk is not None
         assert duplicate_step.pred_serial == pred_serial
-        assert duplicate_step.assigned_serial in {pred_blk.succ(i) for i in range(pred_blk.nsucc())}
+        assert duplicate_step.assigned_serial in {
+            pred_blk.succ(i) for i in range(pred_blk.nsucc())
+        }
 
         duplicated_blk = mba.get_mblock(duplicate_step.assigned_serial)
         assert duplicated_blk is not None
         assert duplicated_blk.nsucc() == len(duplicate_step.source_successors)
 
-    def test_lower_applies_conditional_duplicate_block_patch_plan_to_real_mba(self, libobfuscated_setup):
+    def test_lower_applies_conditional_duplicate_block_patch_plan_to_real_mba(
+        self, libobfuscated_setup
+    ):
         mba = _get_real_mba()
         candidate = _find_conditional_duplicate_candidate(mba)
         if candidate is None:
@@ -825,7 +844,9 @@ class TestIDAIntegration:
 
         assert duplicate_step.fallthrough_serial is not None
 
-        count = backend.lower(patch_plan, mba, mutation_gateway = make_mutation_gateway(mba))
+        count = backend.lower(
+            patch_plan, mba, mutation_gateway=make_mutation_gateway(mba)
+        )
 
         assert count == 1
         mba.verify(True)
@@ -866,7 +887,9 @@ class TestIDAIntegration:
             steps=(PatchRedirectGoto(from_serial=7, old_target=8, new_target=9),)
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 1
         assert len(created) == 1
@@ -898,7 +921,9 @@ class TestIDAIntegration:
             steps=(PatchRedirectBranch(from_serial=15, old_target=16, new_target=66),)
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 1
         assert len(created) == 1
@@ -944,7 +969,9 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 1
         assert len(created) == 1
@@ -986,7 +1013,9 @@ class TestIDAIntegration:
             _corridor_cfg(),
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 1
         assert len(created) == 1
@@ -1024,7 +1053,9 @@ class TestIDAIntegration:
             ]
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 0
         assert created == []
@@ -1065,7 +1096,9 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 1
         assert len(created) == 1
@@ -1113,7 +1146,11 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan,
+            SimpleNamespace(entry_ea=0x180000000),
+            mutation_gateway=make_mutation_gateway(),
+        )
 
         assert count == 1
         assert len(created) == 1
@@ -1152,7 +1189,9 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 1
         assert len(created) == 1
@@ -1203,7 +1242,9 @@ class TestIDAIntegration:
         )
 
         assert isinstance(patch_plan.steps[0], PatchDuplicateReplayAndRedirect)
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 1
         assert len(created) == 1
@@ -1260,7 +1301,9 @@ class TestIDAIntegration:
             )
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 0
         assert created == []
@@ -1297,7 +1340,9 @@ class TestIDAIntegration:
             _conditional_duplicate_cfg(),
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 1
         assert len(created) == 1
@@ -1338,7 +1383,9 @@ class TestIDAIntegration:
             _conditional_duplicate_cfg(),
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 1
         assert len(created) == 1
@@ -1378,7 +1425,9 @@ class TestIDAIntegration:
             _conditional_duplicate_cfg(),
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 1
         assert len(created) == 1
@@ -1417,7 +1466,9 @@ class TestIDAIntegration:
             ]
         )
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert count == 0
         assert created == []
@@ -1448,13 +1499,19 @@ class TestIDAIntegration:
                 InsertBlock(
                     pred_serial=45,
                     succ_serial=199,
-                    instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=(object(),)),),
+                    instructions=(
+                        InsnSnapshot(opcode=0x77, ea=0x1000, operands=(object(),)),
+                    ),
                 )
             ],
             _cfg(),
         )
 
-        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan,
+            SimpleNamespace(entry_ea=0x180000000),
+            mutation_gateway=make_mutation_gateway(),
+        )
 
         assert count == 0
         assert created == []
@@ -1493,7 +1550,11 @@ class TestIDAIntegration:
 
         assert isinstance(patch_plan.steps[0], PatchInsertBlock)
 
-        count = backend.lower(patch_plan, SimpleNamespace(entry_ea=0x180000000), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan,
+            SimpleNamespace(entry_ea=0x180000000),
+            mutation_gateway=make_mutation_gateway(),
+        )
 
         assert count == 0
         assert created == []
@@ -1521,7 +1582,9 @@ class TestIDAIntegration:
         backend = IDAIRTranslator()
         patch_plan = compile_patch_plan([RemoveEdge(from_serial=45, to_serial=2)])
 
-        count = backend.lower(patch_plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(
+            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        )
 
         assert len(created) == 1
         modifier = created[0]
@@ -1562,7 +1625,9 @@ class TestExecutionPolicyGuard:
             created.append(modifier)
             return modifier
 
-        deferred_modifier = importlib.import_module("d810.hexrays.mutation.deferred_modifier")
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
 
         backend = IDAIRTranslator()
@@ -1572,9 +1637,11 @@ class TestExecutionPolicyGuard:
             [RedirectGoto(from_serial=10, old_target=20, new_target=30)],
             execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
         )
-        count = backend.lower(plan, object(), mutation_gateway = make_mutation_gateway())
+        count = backend.lower(plan, object(), mutation_gateway=make_mutation_gateway())
 
-        assert count == 0, "CFG-edit plan must be rejected when policy is NOP_CLEANUP_RELAXED"
+        assert count == 0, (
+            "CFG-edit plan must be rejected when policy is NOP_CLEANUP_RELAXED"
+        )
         assert created == [], "Modifier must not be created when guard rejects the plan"
 
     def test_nop_only_plan_passes_guard(
@@ -1593,7 +1660,9 @@ class TestExecutionPolicyGuard:
             created.append(modifier)
             return modifier
 
-        deferred_modifier = importlib.import_module("d810.hexrays.mutation.deferred_modifier")
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
 
         backend = IDAIRTranslator()
@@ -1603,7 +1672,7 @@ class TestExecutionPolicyGuard:
             steps=(PatchNopInstructions(block_serial=7, insn_eas=(0xDEAD,)),),
             execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
         )
-        backend.lower(nop_plan, object(), mutation_gateway = make_mutation_gateway())
+        backend.lower(nop_plan, object(), mutation_gateway=make_mutation_gateway())
 
         assert len(created) == 1, (
             "NOP-only plan must not be rejected by the step-type guard; "
@@ -1637,7 +1706,10 @@ class TestExecutionPolicyGuard:
             execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
         )
 
-        assert backend.lower(nop_plan, object(), mutation_gateway = make_mutation_gateway()) == 1
+        assert (
+            backend.lower(nop_plan, object(), mutation_gateway=make_mutation_gateway())
+            == 1
+        )
         assert len(created) == 1
         apply_calls = [call for call in created[0].calls if call[0] == "apply"]
         assert len(apply_calls) == 1
@@ -1666,7 +1738,10 @@ class TestExecutionPolicyGuard:
             execution_policy=ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED,
         )
 
-        assert backend.lower(nop_plan, object(), mutation_gateway = make_mutation_gateway()) == 1
+        assert (
+            backend.lower(nop_plan, object(), mutation_gateway=make_mutation_gateway())
+            == 1
+        )
         apply_calls = [call for call in created[0].calls if call[0] == "apply"]
         assert len(apply_calls) == 1
         assert apply_calls[0][1]["run_deep_cleaning"] is True

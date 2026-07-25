@@ -205,7 +205,9 @@ def _flattening_score(
     return float(best)
 
 
-def compute_flow_profile_stats(flow_graph: FlowGraph, analysis: Any) -> FlowProfileStats:
+def compute_flow_profile_stats(
+    flow_graph: FlowGraph, analysis: Any
+) -> FlowProfileStats:
     nodes, succs, preds = _collect_cfg_graph(flow_graph)
     entry = _get_entry_serial(nodes)
     total_blocks = len(nodes)
@@ -240,9 +242,7 @@ def compute_flow_profile_stats(flow_graph: FlowGraph, analysis: Any) -> FlowProf
     relay_depth = _relay_depth_estimate(dispatch_region, succs)
     dispatch_scc_n = _largest_dispatch_scc_size(dispatch_region, succs)
     flattening_score = _flattening_score(entry, nodes, succs, preds)
-    has_nested_dispatch = bool(
-        int(getattr(analysis, "nested_loop_depth", 0) or 0) >= 2
-    )
+    has_nested_dispatch = bool(int(getattr(analysis, "nested_loop_depth", 0) or 0) >= 2)
 
     return FlowProfileStats(
         total_blocks=total_blocks,
@@ -274,17 +274,13 @@ def summarize_dispatcher_detection(
         if name == "NONE":
             continue
         count = sum(
-            1
-            for info in blocks.values()
-            if strategy in getattr(info, "strategies", ())
+            1 for info in blocks.values() if strategy in getattr(info, "strategies", ())
         )
         if count > 0:
             strategies_used[name] = count
 
     skip_rate = (
-        float(blocks_skipped) / float(blocks_analyzed)
-        if blocks_analyzed > 0
-        else 0.0
+        float(blocks_skipped) / float(blocks_analyzed) if blocks_analyzed > 0 else 0.0
     )
 
     return {
@@ -294,6 +290,8 @@ def summarize_dispatcher_detection(
         "skip_rate": skip_rate,
         "dispatchers_found": len(getattr(analysis, "dispatchers", [])),
         "strategies_used": strategies_used,
-        "router_kind": getattr(getattr(analysis, "router_kind", None), "name", "UNKNOWN"),
+        "router_kind": getattr(
+            getattr(analysis, "router_kind", None), "name", "UNKNOWN"
+        ),
         "state_constants_count": len(getattr(analysis, "state_constants", set())),
     }

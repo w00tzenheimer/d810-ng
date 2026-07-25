@@ -9,6 +9,7 @@ move those dicts on and off a portable ``FlowGraph``'s ``metadata``. Splitting t
 ``ida_hexrays`` (ticket llr-1330 follow-up: a portable ``passes`` module must import cleanly with no
 IDA present).
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -37,9 +38,7 @@ def serialize_bad_while_loop_dependency_diagnostics(
 ) -> list[dict[str, object]]:
     """Return JSON-friendly diagnostic metadata rows."""
     return [
-        _json_sanitize(dict(row))
-        for row in diagnostics
-        if isinstance(row, Mapping)
+        _json_sanitize(dict(row)) for row in diagnostics if isinstance(row, Mapping)
     ]
 
 
@@ -55,11 +54,7 @@ def extract_bad_while_loop_dependency_diagnostics(
     raw = metadata.get(BAD_WHILE_LOOP_DEPENDENCY_DIAGNOSTICS_METADATA_KEY)
     if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
         return ()
-    return tuple(
-        _json_sanitize(dict(row))
-        for row in raw
-        if isinstance(row, Mapping)
-    )
+    return tuple(_json_sanitize(dict(row)) for row in raw if isinstance(row, Mapping))
 
 
 __all__ = [

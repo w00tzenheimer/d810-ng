@@ -1,4 +1,5 @@
 """Cleanup-family strategy for linear tail-goto block merge."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -203,9 +204,7 @@ class TailGotoMergeStrategy:
             strategy_name=self.name,
             family=self.family,
             ownership=OwnershipScope(
-                blocks=frozenset(
-                    candidate.block_serial for candidate in candidates
-                ),
+                blocks=frozenset(candidate.block_serial for candidate in candidates),
                 edges=frozenset(
                     (candidate.block_serial, candidate.successor_serial)
                     for candidate in candidates

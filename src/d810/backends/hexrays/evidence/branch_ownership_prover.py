@@ -33,6 +33,7 @@ block + tail from ``predicate.source_block`` via ``mba.get_mblock`` and runs
 the engine.  No live ``mblock_t``/``minsn_t``/``mop_t`` ever crosses back into
 ``analyses``.
 """
+
 from __future__ import annotations
 
 from d810.backends.ast.z3 import Z3MopProver
@@ -352,11 +353,7 @@ def _resolve_mop_value(
         values = get_all_possibles_values(histories, [mop])
     except Exception:
         return None
-    concrete = {
-        int(entry[0])
-        for entry in values
-        if entry and entry[0] is not None
-    }
+    concrete = {int(entry[0]) for entry in values if entry and entry[0] is not None}
     if len(concrete) != 1:
         return None
     return next(iter(concrete))

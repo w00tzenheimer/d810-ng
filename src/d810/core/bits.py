@@ -15,33 +15,33 @@ import ctypes
 # Used in rules that need to know the modulus for a given bit width
 # Example: For 8-bit (1 byte), modulus is 0x100 (256)
 SUB_TABLE: dict[int, int] = {
-    1: 0x100,                                    # 8-bit:  2^8  = 256
-    2: 0x10000,                                  # 16-bit: 2^16 = 65536
-    4: 0x100000000,                              # 32-bit: 2^32
-    8: 0x10000000000000000,                      # 64-bit: 2^64
-    16: 0x100000000000000000000000000000000,     # 128-bit: 2^128
+    1: 0x100,  # 8-bit:  2^8  = 256
+    2: 0x10000,  # 16-bit: 2^16 = 65536
+    4: 0x100000000,  # 32-bit: 2^32
+    8: 0x10000000000000000,  # 64-bit: 2^64
+    16: 0x100000000000000000000000000000000,  # 128-bit: 2^128
 }
 
 # All-ones mask (bitwise NOT mask) for different bit widths
 # XORing with an all-ones mask is equivalent to bitwise NOT (~)
 # Example: For 8-bit, mask is 0xFF (all bits set)
 AND_TABLE: dict[int, int] = {
-    1: 0xFF,                                     # 8-bit:  all ones
-    2: 0xFFFF,                                   # 16-bit: all ones
-    4: 0xFFFFFFFF,                               # 32-bit: all ones
-    8: 0xFFFFFFFFFFFFFFFF,                       # 64-bit: all ones
-    16: 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF,      # 128-bit: all ones
+    1: 0xFF,  # 8-bit:  all ones
+    2: 0xFFFF,  # 16-bit: all ones
+    4: 0xFFFFFFFF,  # 32-bit: all ones
+    8: 0xFFFFFFFFFFFFFFFF,  # 64-bit: all ones
+    16: 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF,  # 128-bit: all ones
 }
 
 # Most Significant Bit mask for different bit widths
 # Used to check/extract the sign bit
 # Example: For 8-bit, MSB mask is 0x80 (bit 7)
 MSB_TABLE: dict[int, int] = {
-    1: 0x80,                                     # 8-bit:  bit 7
-    2: 0x8000,                                   # 16-bit: bit 15
-    4: 0x80000000,                               # 32-bit: bit 31
-    8: 0x8000000000000000,                       # 64-bit: bit 63
-    16: 0x80000000000000000000000000000000,      # 128-bit: bit 127
+    1: 0x80,  # 8-bit:  bit 7
+    2: 0x8000,  # 16-bit: bit 15
+    4: 0x80000000,  # 32-bit: bit 31
+    8: 0x8000000000000000,  # 64-bit: bit 63
+    16: 0x80000000000000000000000000000000,  # 128-bit: bit 127
 }
 
 # ctypes lookup tables for signed/unsigned integer conversions
@@ -66,6 +66,7 @@ CTYPE_UNSIGNED_TABLE: dict[int, type] = {
 # =============================================================================
 # Conversion Functions
 # =============================================================================
+
 
 def unsigned_to_signed(unsigned_value: int, nb_bytes: int) -> int:
     """Convert an unsigned integer to its signed representation.
@@ -124,6 +125,7 @@ def signed_to_unsigned(signed_value: int, nb_bytes: int) -> int:
 # Bit Manipulation Functions
 # =============================================================================
 
+
 def get_msb(value: int, nb_bytes: int) -> int:
     """Get the most significant bit of a value.
 
@@ -176,6 +178,7 @@ def get_parity_flag(op1: int, op2: int, nb_bytes: int) -> int:
 # =============================================================================
 # Rotation Functions
 # =============================================================================
+
 
 def ror(x: int, n: int, nb_bits: int = 32) -> int:
     """Rotate right.

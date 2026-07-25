@@ -1,4 +1,5 @@
 """IDA/Hex-Rays specific mutation transform."""
+
 from __future__ import annotations
 
 from d810.hexrays.mutation.transform.block_merge import BlockMergeTransform

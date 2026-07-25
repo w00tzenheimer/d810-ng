@@ -1,4 +1,5 @@
 """Tests for OLLVM profile-local raw evidence collection."""
+
 from __future__ import annotations
 
 import json
@@ -108,31 +109,33 @@ def test_requires_ollvm_marker() -> None:
 
 
 def test_records_argument_and_password_call_carriers() -> None:
-    facts = _collect(_target(
-        _block(
-            1,
-            _insn(index=0, dstr="mov    rdx.8{1}, %var_30.8{1}"),
-            _insn(index=1, dstr="mov    rcx.8{2}, %var_38.8{2}"),
-            _insn(
-                index=2,
-                opcode_name="op_10",
-                dstr=(
-                    "low call $0x180000000<fast:_QWORD &(%var_98{46}).8,"
-                    "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
-                    "%var_58.4{67}"
+    facts = _collect(
+        _target(
+            _block(
+                1,
+                _insn(index=0, dstr="mov    rdx.8{1}, %var_30.8{1}"),
+                _insn(index=1, dstr="mov    rcx.8{2}, %var_38.8{2}"),
+                _insn(
+                    index=2,
+                    opcode_name="op_10",
+                    dstr=(
+                        "low call $0x180000000<fast:_QWORD &(%var_98{46}).8,"
+                        "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
+                        "%var_58.4{67}"
+                    ),
                 ),
-            ),
-            _insn(
-                index=3,
-                opcode_name="op_10",
-                dstr=(
-                    "low call $0x180000000<...:\"const char *\" &($aS).8,"
-                    "\"const char *\" &(%var_98{46}).8> => __int64 .8, "
-                    "%var_54.4{64}"
+                _insn(
+                    index=3,
+                    opcode_name="op_10",
+                    dstr=(
+                        'low call $0x180000000<...:"const char *" &($aS).8,'
+                        '"const char *" &(%var_98{46}).8> => __int64 .8, '
+                        "%var_54.4{64}"
+                    ),
                 ),
-            ),
+            )
         )
-    ))
+    )
 
     by_role = {fact.payload["role"]: fact for fact in facts}
     assert by_role["ARG_INPUT_POINTER"].payload["carrier_token"] == "%var_38"
@@ -142,29 +145,31 @@ def test_records_argument_and_password_call_carriers() -> None:
 
 
 def test_records_native_imagebase_password_compare_carriers() -> None:
-    facts = _collect(_target(
-        _block(
-            1,
-            _insn(
-                index=0,
-                opcode_name="op_56",
-                dstr=(
-                    "call   $printf <...:\"const char *const Format\" "
-                    "&($aPleaseEnterPassword).8> => int .0"
+    facts = _collect(
+        _target(
+            _block(
+                1,
+                _insn(
+                    index=0,
+                    opcode_name="op_56",
+                    dstr=(
+                        'call   $printf <...:"const char *const Format" '
+                        "&($aPleaseEnterPassword).8> => int .0"
+                    ),
                 ),
-            ),
-            _insn(
-                index=1,
-                opcode_name="op_4",
-                dstr=(
-                    "mov    call $__ImageBase<std:\"HINSTANCE hinstDLL\" "
-                    "&(%var_98{40}).8,\"DWORD fdwReason\" "
-                    "low.4(&($hinstDLL@3).8),\"LPVOID lpReserved\" #0x64.8> "
-                    "=> BOOL .4, %var_58.4{61}"
+                _insn(
+                    index=1,
+                    opcode_name="op_4",
+                    dstr=(
+                        'mov    call $__ImageBase<std:"HINSTANCE hinstDLL" '
+                        '&(%var_98{40}).8,"DWORD fdwReason" '
+                        'low.4(&($hinstDLL@3).8),"LPVOID lpReserved" #0x64.8> '
+                        "=> BOOL .4, %var_58.4{61}"
+                    ),
                 ),
-            ),
+            )
         )
-    ))
+    )
 
     by_role = {fact.payload["role"]: fact for fact in facts}
     assert by_role["PASSWORD_BUFFER"].payload["carrier_token"] == "%var_98"
@@ -174,55 +179,54 @@ def test_records_native_imagebase_password_compare_carriers() -> None:
         == "native_imagebase_strncmp_like"
     )
     assert (
-        by_role["PASSWORD_COMPARE_RESULT"].payload["password_buffer_token"]
-        == "%var_98"
+        by_role["PASSWORD_COMPARE_RESULT"].payload["password_buffer_token"] == "%var_98"
     )
 
 
 def test_distinguishes_loop_index_from_accumulator() -> None:
-    facts = _collect(_target(
-        _block(
-            10,
-            _insn(
-                index=0,
-                dstr="mov    &(%var_18{43}).8, %var_378.8",
-            ),
-            _insn(
-                index=1,
-                dstr="mov    %var_378.8, %var_390.8",
-            ),
-            _insn(
-                index=2,
-                opcode_name="op_35",
-                dstr="setb [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1",
-            ),
-            _insn(
-                index=3,
-                opcode_name="op_1",
-                dstr=(
-                    "stx ((#5.4*[ds.2:%var_378.8].4)+[ds.2:%var_390.8].4), "
-                    "ds.2, %var_378.8"
+    facts = _collect(
+        _target(
+            _block(
+                10,
+                _insn(
+                    index=0,
+                    dstr="mov    &(%var_18{43}).8, %var_378.8",
                 ),
-            ),
-            _insn(
-                index=4,
-                opcode_name="op_10",
-                dstr=(
-                    "low call $0x180000000<fast:_QWORD &(%var_98).8,"
-                    "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
-                    "%var_58.4"
+                _insn(
+                    index=1,
+                    dstr="mov    %var_378.8, %var_390.8",
                 ),
-            ),
+                _insn(
+                    index=2,
+                    opcode_name="op_35",
+                    dstr="setb [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1",
+                ),
+                _insn(
+                    index=3,
+                    opcode_name="op_1",
+                    dstr=(
+                        "stx ((#5.4*[ds.2:%var_378.8].4)+[ds.2:%var_390.8].4), "
+                        "ds.2, %var_378.8"
+                    ),
+                ),
+                _insn(
+                    index=4,
+                    opcode_name="op_10",
+                    dstr=(
+                        "low call $0x180000000<fast:_QWORD &(%var_98).8,"
+                        "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
+                        "%var_58.4"
+                    ),
+                ),
+            )
         )
-    ))
+    )
 
     index_facts = [
-        fact for fact in facts
-        if fact.payload["role"] == "LOOP_INDEX_CARRIER"
+        fact for fact in facts if fact.payload["role"] == "LOOP_INDEX_CARRIER"
     ]
     accumulator_facts = [
-        fact for fact in facts
-        if fact.payload["role"] == "ACCUMULATOR_CARRIER"
+        fact for fact in facts if fact.payload["role"] == "ACCUMULATOR_CARRIER"
     ]
 
     assert index_facts[0].payload["carrier_token"] == "%var_398"
@@ -231,44 +235,48 @@ def test_distinguishes_loop_index_from_accumulator() -> None:
     assert accumulator_facts[0].payload["multiply_add_same_base_alias_tokens"] == (
         "%var_390",
     )
-    assert index_facts[0].payload["carrier_token"] != accumulator_facts[0].payload["carrier_token"]
+    assert (
+        index_facts[0].payload["carrier_token"]
+        != accumulator_facts[0].payload["carrier_token"]
+    )
 
 
 def test_multiply_add_without_same_base_alias_is_not_proven() -> None:
-    facts = _collect(_target(
-        _block(
-            10,
-            _insn(
-                index=0,
-                dstr="mov    &(%var_18{43}).8, %var_378.8",
-            ),
-            _insn(
-                index=1,
-                dstr="mov    &(%var_84{44}).8, %var_390.8",
-            ),
-            _insn(
-                index=2,
-                opcode_name="op_1",
-                dstr=(
-                    "stx ((#5.4*[ds.2:%var_378.8].4)+[ds.2:%var_390.8].4), "
-                    "ds.2, %var_378.8"
+    facts = _collect(
+        _target(
+            _block(
+                10,
+                _insn(
+                    index=0,
+                    dstr="mov    &(%var_18{43}).8, %var_378.8",
                 ),
-            ),
-            _insn(
-                index=3,
-                opcode_name="op_10",
-                dstr=(
-                    "low call $0x180000000<fast:_QWORD &(%var_98).8,"
-                    "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
-                    "%var_58.4"
+                _insn(
+                    index=1,
+                    dstr="mov    &(%var_84{44}).8, %var_390.8",
                 ),
-            ),
+                _insn(
+                    index=2,
+                    opcode_name="op_1",
+                    dstr=(
+                        "stx ((#5.4*[ds.2:%var_378.8].4)+[ds.2:%var_390.8].4), "
+                        "ds.2, %var_378.8"
+                    ),
+                ),
+                _insn(
+                    index=3,
+                    opcode_name="op_10",
+                    dstr=(
+                        "low call $0x180000000<fast:_QWORD &(%var_98).8,"
+                        "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
+                        "%var_58.4"
+                    ),
+                ),
+            )
         )
-    ))
+    )
 
     accumulator_facts = [
-        fact for fact in facts
-        if fact.payload["role"] == "ACCUMULATOR_CARRIER"
+        fact for fact in facts if fact.payload["role"] == "ACCUMULATOR_CARRIER"
     ]
 
     assert accumulator_facts[0].payload["carrier_token"] == "%var_378"
@@ -276,69 +284,77 @@ def test_multiply_add_without_same_base_alias_is_not_proven() -> None:
 
 
 def test_records_masked_arg_output_store_candidate() -> None:
-    facts = _collect(_target(
-        _block(
-            20,
-            _insn(index=0, dstr="mov    rdx.8{1}, %var_370.8{1}"),
-            _insn(
-                index=1,
-                opcode_name="op_1",
-                dstr=(
-                    "stx ((([ds.2:%var_378.8].4 ^ bnot([ds.2:%var_378.8].4)) "
-                    "& #0xCD536960.4) ^ #0x259CF55E.4), ds.2, "
-                    "[ds.2:%var_370.8].8"
+    facts = _collect(
+        _target(
+            _block(
+                20,
+                _insn(index=0, dstr="mov    rdx.8{1}, %var_370.8{1}"),
+                _insn(
+                    index=1,
+                    opcode_name="op_1",
+                    dstr=(
+                        "stx ((([ds.2:%var_378.8].4 ^ bnot([ds.2:%var_378.8].4)) "
+                        "& #0xCD536960.4) ^ #0x259CF55E.4), ds.2, "
+                        "[ds.2:%var_370.8].8"
+                    ),
                 ),
-            ),
-            _insn(
-                index=2,
-                opcode_name="op_10",
-                dstr=(
-                    "low call $0x180000000<fast:_QWORD &(%var_98).8,"
-                    "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
-                    "%var_58.4"
+                _insn(
+                    index=2,
+                    opcode_name="op_10",
+                    dstr=(
+                        "low call $0x180000000<fast:_QWORD &(%var_98).8,"
+                        "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
+                        "%var_58.4"
+                    ),
                 ),
-            ),
+            )
         )
-    ))
+    )
 
     output_facts = [
-        fact for fact in facts
-        if fact.payload["role"] == "ARG_OUTPUT_STORE_CANDIDATE"
+        fact for fact in facts if fact.payload["role"] == "ARG_OUTPUT_STORE_CANDIDATE"
     ]
     assert output_facts[0].payload["carrier_token"] == "%var_370"
 
 
 def test_records_local_working_store_when_target_is_address_of_local() -> None:
-    facts = _collect(_target(
-        _block(
-            20,
-            _insn(index=0, dstr="mov    &(%var_18{43}).8, %var_370.8"),
-            _insn(
-                index=1,
-                opcode_name="op_1",
-                dstr=(
-                    "stx ((([ds.2:%var_378.8].4 ^ bnot([ds.2:%var_378.8].4)) "
-                    "& #0xCD536960.4) ^ #0x259CF55E.4), ds.2, "
-                    "[ds.2:%var_370.8].8"
+    facts = _collect(
+        _target(
+            _block(
+                20,
+                _insn(index=0, dstr="mov    &(%var_18{43}).8, %var_370.8"),
+                _insn(
+                    index=1,
+                    opcode_name="op_1",
+                    dstr=(
+                        "stx ((([ds.2:%var_378.8].4 ^ bnot([ds.2:%var_378.8].4)) "
+                        "& #0xCD536960.4) ^ #0x259CF55E.4), ds.2, "
+                        "[ds.2:%var_370.8].8"
+                    ),
                 ),
-            ),
-            _insn(
-                index=2,
-                opcode_name="op_10",
-                dstr=(
-                    "low call $0x180000000<fast:_QWORD &(%var_98).8,"
-                    "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
-                    "%var_58.4"
+                _insn(
+                    index=2,
+                    opcode_name="op_10",
+                    dstr=(
+                        "low call $0x180000000<fast:_QWORD &(%var_98).8,"
+                        "_QWORD &($aSecret).8,_QWORD #0x64.8> => __int64 .8, "
+                        "%var_58.4"
+                    ),
                 ),
-            ),
+            )
         )
-    ))
+    )
 
     by_role = {fact.payload["role"]: fact for fact in facts}
     assert by_role["LOCAL_WORKING_POINTER"].payload["carrier_token"] == "%var_370"
     assert by_role["LOCAL_WORKING_POINTER"].payload["local_base_token"] == "%var_18"
-    assert by_role["LOCAL_WORKING_STORE_CANDIDATE"].payload["carrier_token"] == "%var_370"
-    assert by_role["LOCAL_WORKING_STORE_CANDIDATE"].payload["local_base_token"] == "%var_18"
+    assert (
+        by_role["LOCAL_WORKING_STORE_CANDIDATE"].payload["carrier_token"] == "%var_370"
+    )
+    assert (
+        by_role["LOCAL_WORKING_STORE_CANDIDATE"].payload["local_base_token"]
+        == "%var_18"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +565,12 @@ def _var_copy_snap(
 
 
 def _accumulator_snap(
-    *, idx: int, carrier_off: int, addend_off: int, carrier_token: str, addend_token: str
+    *,
+    idx: int,
+    carrier_off: int,
+    addend_off: int,
+    carrier_token: str,
+    addend_token: str,
 ) -> InsnSnapshot:
     """``stx ((#5 * carrier) + addend), ds.2, carrier`` self-update store.
 
@@ -620,23 +641,34 @@ def _ir_flowgraph(serial: int, *insns: InsnSnapshot) -> FlowGraph:
 
 
 def test_structural_distinguishes_loop_index_from_accumulator() -> None:
-    facts = _collect(_ir_flowgraph(
-        10,
-        _lea_local_snap(
-            idx=0, base_off=0x18, dest_off=0x378,
-            base_token="%var_18", dest_token="%var_378",
-        ),
-        _var_copy_snap(
-            idx=1, src_off=0x378, dest_off=0x390,
-            src_token="%var_378", dest_token="%var_390",
-        ),
-        _text_snap(idx=2, opcode=0x35, display_text=_LOOP_SETB_TEXT),
-        _accumulator_snap(
-            idx=3, carrier_off=0x378, addend_off=0x390,
-            carrier_token="%var_378", addend_token="%var_390",
-        ),
-        _text_snap(idx=4, opcode=0x10, display_text=_MARKER_CALL_TEXT),
-    ))
+    facts = _collect(
+        _ir_flowgraph(
+            10,
+            _lea_local_snap(
+                idx=0,
+                base_off=0x18,
+                dest_off=0x378,
+                base_token="%var_18",
+                dest_token="%var_378",
+            ),
+            _var_copy_snap(
+                idx=1,
+                src_off=0x378,
+                dest_off=0x390,
+                src_token="%var_378",
+                dest_token="%var_390",
+            ),
+            _text_snap(idx=2, opcode=0x35, display_text=_LOOP_SETB_TEXT),
+            _accumulator_snap(
+                idx=3,
+                carrier_off=0x378,
+                addend_off=0x390,
+                carrier_token="%var_378",
+                addend_token="%var_390",
+            ),
+            _text_snap(idx=4, opcode=0x10, display_text=_MARKER_CALL_TEXT),
+        )
+    )
 
     index_facts = [
         fact for fact in facts if fact.payload["role"] == "LOOP_INDEX_CARRIER"
@@ -658,22 +690,33 @@ def test_structural_distinguishes_loop_index_from_accumulator() -> None:
 
 
 def test_structural_multiply_add_without_same_base_alias_is_not_proven() -> None:
-    facts = _collect(_ir_flowgraph(
-        10,
-        _lea_local_snap(
-            idx=0, base_off=0x18, dest_off=0x378,
-            base_token="%var_18", dest_token="%var_378",
-        ),
-        _lea_local_snap(
-            idx=1, base_off=0x84, dest_off=0x390,
-            base_token="%var_84", dest_token="%var_390",
-        ),
-        _accumulator_snap(
-            idx=2, carrier_off=0x378, addend_off=0x390,
-            carrier_token="%var_378", addend_token="%var_390",
-        ),
-        _text_snap(idx=3, opcode=0x10, display_text=_MARKER_CALL_TEXT),
-    ))
+    facts = _collect(
+        _ir_flowgraph(
+            10,
+            _lea_local_snap(
+                idx=0,
+                base_off=0x18,
+                dest_off=0x378,
+                base_token="%var_18",
+                dest_token="%var_378",
+            ),
+            _lea_local_snap(
+                idx=1,
+                base_off=0x84,
+                dest_off=0x390,
+                base_token="%var_84",
+                dest_token="%var_390",
+            ),
+            _accumulator_snap(
+                idx=2,
+                carrier_off=0x378,
+                addend_off=0x390,
+                carrier_token="%var_378",
+                addend_token="%var_390",
+            ),
+            _text_snap(idx=3, opcode=0x10, display_text=_MARKER_CALL_TEXT),
+        )
+    )
 
     accumulator_facts = [
         fact for fact in facts if fact.payload["role"] == "ACCUMULATOR_CARRIER"
@@ -690,25 +733,35 @@ def test_structural_accumulator_payload_matches_legacy_golden() -> None:
     """Byte-identical regression guard: the structural ACCUMULATOR_CARRIER
     payload equals the exact dict the regex path produces for the canonical
     ``5*x + addend`` self-update with a shared ``%var_18`` local base."""
-    facts = _collect(_ir_flowgraph(
-        10,
-        _lea_local_snap(
-            idx=0, base_off=0x18, dest_off=0x378,
-            base_token="%var_18", dest_token="%var_378",
-        ),
-        _var_copy_snap(
-            idx=1, src_off=0x378, dest_off=0x390,
-            src_token="%var_378", dest_token="%var_390",
-        ),
-        _accumulator_snap(
-            idx=2, carrier_off=0x378, addend_off=0x390,
-            carrier_token="%var_378", addend_token="%var_390",
-        ),
-        _text_snap(idx=3, opcode=0x10, display_text=_MARKER_CALL_TEXT),
-    ))
+    facts = _collect(
+        _ir_flowgraph(
+            10,
+            _lea_local_snap(
+                idx=0,
+                base_off=0x18,
+                dest_off=0x378,
+                base_token="%var_18",
+                dest_token="%var_378",
+            ),
+            _var_copy_snap(
+                idx=1,
+                src_off=0x378,
+                dest_off=0x390,
+                src_token="%var_378",
+                dest_token="%var_390",
+            ),
+            _accumulator_snap(
+                idx=2,
+                carrier_off=0x378,
+                addend_off=0x390,
+                carrier_token="%var_378",
+                addend_token="%var_390",
+            ),
+            _text_snap(idx=3, opcode=0x10, display_text=_MARKER_CALL_TEXT),
+        )
+    )
     payload = next(
-        fact.payload for fact in facts
-        if fact.payload["role"] == "ACCUMULATOR_CARRIER"
+        fact.payload for fact in facts if fact.payload["role"] == "ACCUMULATOR_CARRIER"
     )
     legacy_golden = {
         "role": "ACCUMULATOR_CARRIER",

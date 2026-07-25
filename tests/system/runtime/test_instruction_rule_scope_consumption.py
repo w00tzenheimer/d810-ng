@@ -13,8 +13,12 @@ from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.ir.maturity import IRMaturity
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
-from d810.optimizers.microcode.instructions.pattern_matching import handler as _pattern_handler
-from d810.optimizers.microcode.instructions.pattern_matching.handler import PatternOptimizer
+from d810.optimizers.microcode.instructions.pattern_matching import (
+    handler as _pattern_handler,
+)
+from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+    PatternOptimizer,
+)
 from d810.passes.scheduler import PassScheduler, RunLater
 
 
@@ -22,7 +26,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 class _NamedRule:
@@ -237,7 +243,9 @@ def test_instruction_optimizer_scheduled_rule_bypasses_static_maturity():
 
 
 def test_pattern_optimizer_filters_matches_by_allowed_rule_names(monkeypatch):
-    optimizer = PatternOptimizer([ida_hexrays.MMAT_PREOPTIMIZED], OptimizationStatistics(), log_dir=Path("."))
+    optimizer = PatternOptimizer(
+        [ida_hexrays.MMAT_PREOPTIMIZED], OptimizationStatistics(), log_dir=Path(".")
+    )
     optimizer._use_legacy_storage = True
     optimizer.rules = {object()}
     optimizer._allowed_root_opcodes = {ida_hexrays.m_add}

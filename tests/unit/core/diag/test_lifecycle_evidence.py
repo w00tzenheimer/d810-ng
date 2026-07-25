@@ -5,7 +5,10 @@ from unittest.mock import patch
 import pytest
 
 from d810.core.diag import create_diag_database
-from d810.core.diag.event_handlers import install_diag_event_handlers, uninstall_diag_event_handlers
+from d810.core.diag.event_handlers import (
+    install_diag_event_handlers,
+    uninstall_diag_event_handlers,
+)
 from d810.core.observability import emit, reset_diagnostic_bus
 from d810.core.observability_events import (
     DiagnosticSessionObserved,

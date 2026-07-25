@@ -37,6 +37,7 @@ Design Notes
 - RedirectGoto is for 1-way (unconditional goto) blocks
 - RedirectBranch is for 2-way (conditional branch) blocks
 """
+
 from __future__ import annotations
 
 import enum
@@ -128,6 +129,7 @@ class RedirectGoto:
         >>> mod.new_target
         30
     """
+
     from_serial: int
     old_target: int
     new_target: int
@@ -137,7 +139,9 @@ class RedirectGoto:
             return
         _redirect_goto_tracer.info(
             "REDIRECT_GOTO_CONSTRUCTED from_serial=%s old=%s new=%s caller=%s",
-            self.from_serial, self.old_target, self.new_target,
+            self.from_serial,
+            self.old_target,
+            self.new_target,
             _construction_caller(),
         )
 
@@ -161,6 +165,7 @@ class RedirectBranch:
         >>> mod.new_target
         30
     """
+
     from_serial: int
     old_target: int
     new_target: int
@@ -170,7 +175,9 @@ class RedirectBranch:
             return
         _redirect_goto_tracer.info(
             "REDIRECT_BRANCH_CONSTRUCTED from_serial=%s old=%s new=%s caller=%s",
-            self.from_serial, self.old_target, self.new_target,
+            self.from_serial,
+            self.old_target,
+            self.new_target,
             _construction_caller(),
         )
 
@@ -194,6 +201,7 @@ class ConvertToGoto:
         >>> mod.goto_target
         25
     """
+
     block_serial: int
     goto_target: int
 
@@ -345,6 +353,7 @@ class InsertBlock:
         >>> mod.pred_serial
         5
     """
+
     pred_serial: int
     succ_serial: int
     instructions: tuple[InsnSnapshot, ...] = ()
@@ -371,6 +380,7 @@ class RemoveEdge:
         >>> mod.to_serial
         20
     """
+
     from_serial: int
     to_serial: int
 
@@ -393,6 +403,7 @@ class NopInstructions:
         >>> 0x1000 in mod.insn_eas
         True
     """
+
     block_serial: int
     insn_eas: tuple[int, ...]
 
@@ -414,6 +425,7 @@ class ZeroStateWrite:
         >>> mod.block_serial
         10
     """
+
     block_serial: int
     insn_ea: int
 
@@ -422,7 +434,9 @@ class ZeroStateWrite:
             return
         _redirect_goto_tracer.info(
             "ZERO_STATE_WRITE_CONSTRUCTED block=%s insn_ea=0x%x caller=%s",
-            self.block_serial, self.insn_ea, _construction_caller(),
+            self.block_serial,
+            self.insn_ea,
+            _construction_caller(),
         )
 
 
@@ -456,6 +470,7 @@ class PromoteOperandToScalar:
         >>> mod.operand_side
         'l'
     """
+
     block_serial: int
     host_ea: int
     host_opcode: int
@@ -491,6 +506,7 @@ class PrivateTerminalSuffix:
         >>> mod.suffix_serials
         (63, 64)
     """
+
     anchor_serial: int
     shared_entry_serial: int
     return_block_serial: int
@@ -528,9 +544,12 @@ class ReorderBlocks:
     consumers (projector, edit simulator) know which blocks will actually be copied
     by the backend (Phase A skips BLT_2WAY).
     """
+
     dfs_block_order: tuple[int, ...]
     non_2way_serials: tuple[int, ...] = ()
-    two_way_serials: tuple[int, ...] = ()   # handler-internal BLT_2WAY blocks to copy with trampoline
+    two_way_serials: tuple[
+        int, ...
+    ] = ()  # handler-internal BLT_2WAY blocks to copy with trampoline
 
 
 @dataclass(frozen=True)
@@ -737,6 +756,7 @@ class PhaseCycleLowering:
 
 class ExitPathLoweringKind(str, enum.Enum):
     """Kind of direct terminal lowering to apply per anchor."""
+
     RETURN_CONST = "return_const"
     RETURN_FROM_SLOT = "return_from_slot"
     RETURN_FROM_REG = "return_from_reg"
@@ -746,6 +766,7 @@ class ExitPathLoweringKind(str, enum.Enum):
 @dataclass(frozen=True)
 class ExitPathLoweringSite:
     """Per-anchor lowering specification."""
+
     anchor_serial: int
     kind: ExitPathLoweringKind
     const_value: int | None = None
@@ -758,6 +779,7 @@ class ExitPathLoweringSite:
 @dataclass(frozen=True)
 class ExitPathLoweringGroup:
     """Grouped direct terminal lowering for multiple anchors sharing the same suffix."""
+
     shared_entry_serial: int
     return_block_serial: int
     suffix_serials: tuple[int, ...]

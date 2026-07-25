@@ -5,6 +5,7 @@ lab DLL, so the global D810_TEST_BINARY override (e.g. =libobfuscated.dll, set
 for the full system suite) is intentionally NOT honored here.
 See samples/restructuring_lab/specs/2026-06-06-insert-unflatten-phase1.md.
 """
+
 from __future__ import annotations
 
 import re
@@ -42,9 +43,13 @@ def _map_state_machine(mba):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None \
-               and ins.l.t == ida_hexrays.mop_n \
-               and (int(ins.l.nnn.value) & 0xFFFFFFFF) == STATE_K0 and ins.d is not None:
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and (int(ins.l.nnn.value) & 0xFFFFFFFF) == STATE_K0
+                and ins.d is not None
+            ):
                 state_dest = ins.d.dstr()
                 break
             ins = ins.next
@@ -55,9 +60,13 @@ def _map_state_machine(mba):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None \
-               and ins.l.t == ida_hexrays.mop_n and ins.d is not None \
-               and ins.d.dstr() == state_dest:
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and ins.d is not None
+                and ins.d.dstr() == state_dest
+            ):
                 v = int(ins.l.nnn.value) & 0xFFFFFFFF
                 if v in (STATE_K1, STATE_K2, STATE_TERM):
                     writers[v] = blk.serial
@@ -68,8 +77,7 @@ def _map_state_machine(mba):
     common = set.intersection(*succ_sets) if succ_sets else set()
     dispatcher = min(common) if common else -1
     stop = next(
-        (i for i in range(mba.qty)
-         if mba.get_mblock(i).type == ida_hexrays.BLT_STOP),
+        (i for i in range(mba.qty) if mba.get_mblock(i).type == ida_hexrays.BLT_STOP),
         mba.qty - 1,
     )
     terminal = -1
@@ -116,8 +124,10 @@ class TestInsertUnflattenMini:
         if not idaapi.init_hexrays_plugin():
             pytest.skip("Hex-Rays decompiler plugin not available")
         ea = get_func_ea(FUNCTION)
-        for label, mat in [("CALLS", ida_hexrays.MMAT_CALLS),
-                           ("GLBOPT1", ida_hexrays.MMAT_GLBOPT1)]:
+        for label, mat in [
+            ("CALLS", ida_hexrays.MMAT_CALLS),
+            ("GLBOPT1", ida_hexrays.MMAT_GLBOPT1),
+        ]:
             mba = gen_microcode_at_maturity(ea, mat)
             if mba is None:
                 print(f"\n=== {label}: None ===")
@@ -128,10 +138,13 @@ class TestInsertUnflattenMini:
                 blk = mba.get_mblock(i)
                 ins = blk.head if blk else None
                 while ins is not None:
-                    if int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None \
-                       and ins.l.t == ida_hexrays.mop_n \
-                       and (int(ins.l.nnn.value) & 0xFFFFFFFF) == STATE_K0 \
-                       and ins.d is not None:
+                    if (
+                        int(ins.opcode) == ida_hexrays.m_mov
+                        and ins.l is not None
+                        and ins.l.t == ida_hexrays.mop_n
+                        and (int(ins.l.nnn.value) & 0xFFFFFFFF) == STATE_K0
+                        and ins.d is not None
+                    ):
                         state_dest = ins.d.dstr()
                         break
                     ins = ins.next
@@ -150,14 +163,20 @@ class TestInsertUnflattenMini:
                 sw = None
                 ins = blk.head
                 while ins is not None:
-                    if int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None \
-                       and ins.l.t == ida_hexrays.mop_n and ins.d is not None \
-                       and ins.d.dstr() == state_dest:
+                    if (
+                        int(ins.opcode) == ida_hexrays.m_mov
+                        and ins.l is not None
+                        and ins.l.t == ida_hexrays.mop_n
+                        and ins.d is not None
+                        and ins.d.dstr() == state_dest
+                    ):
                         sw = hex(int(ins.l.nnn.value) & 0xFFFFFFFF)
                     ins = ins.next
                 stag = f" STATE_WRITE={sw}" if sw else ""
-                print(f"  blk[{i}] type={int(blk.type)} preds={preds} "
-                      f"succs={succs} tail_op={tail_op}{stag}")
+                print(
+                    f"  blk[{i}] type={int(blk.type)} preds={preds} "
+                    f"succs={succs} tail_op={tail_op}{stag}"
+                )
         # The mapping helper must resolve a clean 3-handler machine at GLBOPT1.
         mba = gen_microcode_at_maturity(ea, ida_hexrays.MMAT_GLBOPT1)
         writers, disp, terminal, _sd = _map_state_machine(mba)
@@ -268,13 +287,17 @@ class TestInsertUnflattenMini:
             cfunc = ida_hexrays.decompile(ea, hf)
         finally:
             hook.unhook()
-        print(f"\n=== decompile: calls={hook.calls} applied={hook.applied} "
-              f"verify_ok={hook.verify_ok} hook_err={hook.error} "
-              f"hf.code={hf.code} hf.errea={hf.errea:#x} hf.desc={hf.desc()!r} ===")
+        print(
+            f"\n=== decompile: calls={hook.calls} applied={hook.applied} "
+            f"verify_ok={hook.verify_ok} hook_err={hook.error} "
+            f"hf.code={hf.code} hf.errea={hf.errea:#x} hf.desc={hf.desc()!r} ==="
+        )
         assert cfunc is not None, f"decompile failed: code={hf.code} {hf.desc()!r}"
         text = str(cfunc)
-        print(f"\n=== rendered (calls={hook.calls} applied={hook.applied} "
-              f"verify_ok={hook.verify_ok} error={hook.error}) ===")
+        print(
+            f"\n=== rendered (calls={hook.calls} applied={hook.applied} "
+            f"verify_ok={hook.verify_ok} error={hook.error}) ==="
+        )
         print(text)
         print("=== end render ===")
         assert hook.applied >= 3, f"hook applied={hook.applied}; mutation did not fire"
@@ -305,8 +328,11 @@ class TestInsertUnflattenMini:
             def func(self, blk):  # returns number of changes
                 try:
                     mba = blk.mba
-                    if (self.done or mba is None
-                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                    if (
+                        self.done
+                        or mba is None
+                        or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)
+                    ):
                         return 0
                     plan, disp = _build_insert_plan(mba)
                     if len(plan) != 3 or disp < 0:
@@ -316,7 +342,9 @@ class TestInsertUnflattenMini:
                         mba, mutation_gateway=make_mutation_gateway(mba)
                     )
                     for src, final, old in plan:
-                        mod.queue_create_and_redirect(src, final, [], old_target_serial=old)
+                        mod.queue_create_and_redirect(
+                            src, final, [], old_target_serial=old
+                        )
                     mod.coalesce()
                     self.applied = mod.apply(run_optimize_local=True)
                     return self.applied  # signal IDA: CFG changed, re-run + re-verify
@@ -332,8 +360,10 @@ class TestInsertUnflattenMini:
             cfunc = ida_hexrays.decompile(ea, hf)
         finally:
             opt.remove()
-        print(f"\n=== optblock render (applied={opt.applied} err={opt.error} "
-              f"hf={hf.code}/{hf.desc()!r}) ===")
+        print(
+            f"\n=== optblock render (applied={opt.applied} err={opt.error} "
+            f"hf={hf.code}/{hf.desc()!r}) ==="
+        )
         if cfunc is not None:
             print(str(cfunc))
         print("=== end optblock render ===")
@@ -358,11 +388,16 @@ def _state_slot(mba):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                    and ins.l.t == ida_hexrays.mop_n
-                    and (int(ins.l.nnn.value) & 0xFFFFFFFF) in STATE_CONSTS
-                    and ins.d is not None):
-                writes.setdefault(ins.d.dstr(), []).append(int(ins.l.nnn.value) & 0xFFFFFFFF)
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and (int(ins.l.nnn.value) & 0xFFFFFFFF) in STATE_CONSTS
+                and ins.d is not None
+            ):
+                writes.setdefault(ins.d.dstr(), []).append(
+                    int(ins.l.nnn.value) & 0xFFFFFFFF
+                )
             ins = ins.next
     if not writes:
         return None
@@ -378,10 +413,16 @@ def _state_writers(mba, state_dest):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                    and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                    and ins.d.dstr() == state_dest):
-                writers.setdefault(int(ins.l.nnn.value) & 0xFFFFFFFF, []).append(blk.serial)
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and ins.d is not None
+                and ins.d.dstr() == state_dest
+            ):
+                writers.setdefault(int(ins.l.nnn.value) & 0xFFFFFFFF, []).append(
+                    blk.serial
+                )
             ins = ins.next
     return writers
 
@@ -399,7 +440,10 @@ def _dispatcher_routing(mba, state_dest=None):
         if blk is None or blk.type != ida_hexrays.BLT_2WAY:
             continue
         tail = blk.tail
-        if tail is None or int(tail.opcode) not in (ida_hexrays.m_jz, ida_hexrays.m_jnz):
+        if tail is None or int(tail.opcode) not in (
+            ida_hexrays.m_jz,
+            ida_hexrays.m_jnz,
+        ):
             continue
         imm = None
         for op in (tail.l, tail.r):
@@ -409,7 +453,11 @@ def _dispatcher_routing(mba, state_dest=None):
                     imm = v
         if imm is None:
             continue
-        tgt = int(tail.d.b) if (tail.d is not None and tail.d.t == ida_hexrays.mop_b) else None
+        tgt = (
+            int(tail.d.b)
+            if (tail.d is not None and tail.d.t == ida_hexrays.mop_b)
+            else None
+        )
         succs = [int(s) for s in blk.succset]
         other = [s for s in succs if s != tgt]
         # m_jz: taken target reached when state == imm; m_jnz: the inverse.
@@ -423,8 +471,10 @@ def _dispatcher_routing(mba, state_dest=None):
 
 
 def _terminal_serial(mba):
-    stop = next((i for i in range(mba.qty)
-                 if mba.get_mblock(i).type == ida_hexrays.BLT_STOP), mba.qty - 1)
+    stop = next(
+        (i for i in range(mba.qty) if mba.get_mblock(i).type == ida_hexrays.BLT_STOP),
+        mba.qty - 1,
+    )
     for i in range(mba.qty):
         blk = mba.get_mblock(i)
         if blk.type != ida_hexrays.BLT_STOP and stop in [int(s) for s in blk.succset]:
@@ -445,12 +495,13 @@ def _build_cond_insert_plan(mba):
     h1 = routing[STATE_K1]
     h2 = routing[STATE_K2]
     # dispatcher = the block every redirected source currently flows to.
-    succ_sets = [set(int(s) for s in mba.get_mblock(b).succset)
-                 for b in (arm_k1, arm_k2, h1, h2)]
+    succ_sets = [
+        set(int(s) for s in mba.get_mblock(b).succset) for b in (arm_k1, arm_k2, h1, h2)
+    ]
     disp = min(set.intersection(*succ_sets))
     plan = [
-        (arm_k1, h1, disp),   # H0 taken arm -> H1
-        (arm_k2, h2, disp),   # H0 fallthrough arm -> H2
+        (arm_k1, h1, disp),  # H0 taken arm -> H1
+        (arm_k2, h2, disp),  # H0 fallthrough arm -> H2
         (h1, terminal, disp),  # H1 -> return
         (h2, terminal, disp),  # H2 -> return
     ]
@@ -476,16 +527,21 @@ class TestInsertUnflattenCond:
             blk = mba.get_mblock(i)
             ins = blk.head if blk else None
             while ins is not None:
-                if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                        and ins.l.t == ida_hexrays.mop_n
-                        and (int(ins.l.nnn.value) & 0xFFFFFFFF) == STATE_K0
-                        and ins.d is not None):
+                if (
+                    int(ins.opcode) == ida_hexrays.m_mov
+                    and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n
+                    and (int(ins.l.nnn.value) & 0xFFFFFFFF) == STATE_K0
+                    and ins.d is not None
+                ):
                     state_dest = ins.d.dstr()
                     break
                 ins = ins.next
             if state_dest is not None:
                 break
-        print(f"\n=== lab_flat_cond GLBOPT1 qty={mba.qty} state_slot={state_dest!r} ===")
+        print(
+            f"\n=== lab_flat_cond GLBOPT1 qty={mba.qty} state_slot={state_dest!r} ==="
+        )
         for i in range(mba.qty):
             blk = mba.get_mblock(i)
             if blk is None:
@@ -497,16 +553,22 @@ class TestInsertUnflattenCond:
             sw = None
             ins = blk.head
             while ins is not None:
-                if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                        and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                        and ins.d.dstr() == state_dest):
+                if (
+                    int(ins.opcode) == ida_hexrays.m_mov
+                    and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n
+                    and ins.d is not None
+                    and ins.d.dstr() == state_dest
+                ):
                     v = int(ins.l.nnn.value) & 0xFFFFFFFF
                     if v in (STATE_K1, STATE_K2, STATE_TERM):
                         sw = hex(v)
                 ins = ins.next
             two = "(2WAY)" if blk.type == ida_hexrays.BLT_2WAY else ""
-            print(f"  blk[{i}] type={int(blk.type)}{two} preds={preds} succs={succs} "
-                  f"tail_op={top}{' STATE_WRITE=' + sw if sw else ''}")
+            print(
+                f"  blk[{i}] type={int(blk.type)}{two} preds={preds} succs={succs} "
+                f"tail_op={top}{' STATE_WRITE=' + sw if sw else ''}"
+            )
         assert state_dest is not None
 
     def test_cond_renders_branch_optblock(self, ida_database, configure_hexrays):
@@ -529,8 +591,11 @@ class TestInsertUnflattenCond:
             def func(self, blk):
                 try:
                     mba = blk.mba
-                    if (self.done or mba is None
-                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                    if (
+                        self.done
+                        or mba is None
+                        or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)
+                    ):
                         return 0
                     sd = _state_slot(mba)
                     writers = _state_writers(mba, sd)
@@ -539,27 +604,39 @@ class TestInsertUnflattenCond:
                     self.dbg = (sd, dict(writers), dict(routing), term)
                     # Only act once the dispatcher is fully mapped; otherwise let
                     # a later pass retry (the live mba stabilizes during GLBOPT1).
-                    if not (STATE_K1 in writers and STATE_K2 in writers
-                            and STATE_K1 in routing and STATE_K2 in routing
-                            and term >= 0):
+                    if not (
+                        STATE_K1 in writers
+                        and STATE_K2 in writers
+                        and STATE_K1 in routing
+                        and STATE_K2 in routing
+                        and term >= 0
+                    ):
                         return 0
                     arm_k1, arm_k2 = writers[STATE_K1][0], writers[STATE_K2][0]
                     h1, h2 = routing[STATE_K1], routing[STATE_K2]
-                    succ_sets = [set(int(s) for s in mba.get_mblock(b).succset)
-                                 for b in (arm_k1, arm_k2, h1, h2)]
+                    succ_sets = [
+                        set(int(s) for s in mba.get_mblock(b).succset)
+                        for b in (arm_k1, arm_k2, h1, h2)
+                    ]
                     inter = set.intersection(*succ_sets)
                     if not inter:
                         return 0
                     disp = min(inter)
-                    plan = [(arm_k1, h1, disp), (arm_k2, h2, disp),
-                            (h1, term, disp), (h2, term, disp)]
+                    plan = [
+                        (arm_k1, h1, disp),
+                        (arm_k2, h2, disp),
+                        (h1, term, disp),
+                        (h2, term, disp),
+                    ]
                     self.plan = plan
                     self.done = True
                     mod = DeferredGraphModifier(
                         mba, mutation_gateway=make_mutation_gateway(mba)
                     )
                     for src, final, old in plan:
-                        mod.queue_create_and_redirect(src, final, [], old_target_serial=old)
+                        mod.queue_create_and_redirect(
+                            src, final, [], old_target_serial=old
+                        )
                     mod.coalesce()
                     self.applied = mod.apply(run_optimize_local=True)
                     return self.applied
@@ -575,8 +652,10 @@ class TestInsertUnflattenCond:
             cfunc = ida_hexrays.decompile(ea, hf)
         finally:
             opt.remove()
-        print(f"\n=== cond render (plan={opt.plan} applied={opt.applied} "
-              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===\nlive_maps={opt.dbg}")
+        print(
+            f"\n=== cond render (plan={opt.plan} applied={opt.applied} "
+            f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===\nlive_maps={opt.dbg}"
+        )
         if cfunc is not None:
             print(str(cfunc))
         print("=== end cond render ===")
@@ -601,12 +680,22 @@ SHARED_FUNCTION = "lab_flat_shared"
 STATE_KS = STATE_K2
 
 
-_CONTROL_OPS = frozenset({
-    ida_hexrays.m_goto, ida_hexrays.m_jcnd,
-    ida_hexrays.m_jnz, ida_hexrays.m_jz,
-    ida_hexrays.m_jae, ida_hexrays.m_jb, ida_hexrays.m_ja, ida_hexrays.m_jbe,
-    ida_hexrays.m_jg, ida_hexrays.m_jge, ida_hexrays.m_jl, ida_hexrays.m_jle,
-})
+_CONTROL_OPS = frozenset(
+    {
+        ida_hexrays.m_goto,
+        ida_hexrays.m_jcnd,
+        ida_hexrays.m_jnz,
+        ida_hexrays.m_jz,
+        ida_hexrays.m_jae,
+        ida_hexrays.m_jb,
+        ida_hexrays.m_ja,
+        ida_hexrays.m_jbe,
+        ida_hexrays.m_jg,
+        ida_hexrays.m_jge,
+        ida_hexrays.m_jl,
+        ida_hexrays.m_jle,
+    }
+)
 
 
 def _capture_state_free(blk):
@@ -620,9 +709,12 @@ def _capture_state_free(blk):
     ins = blk.head
     while ins is not None:
         op = int(ins.opcode)
-        is_state_const_write = (op == ida_hexrays.m_mov and ins.l is not None
-                                and ins.l.t == ida_hexrays.mop_n
-                                and (int(ins.l.nnn.value) & 0xFFFFFFFF) in STATE_CONSTS)
+        is_state_const_write = (
+            op == ida_hexrays.m_mov
+            and ins.l is not None
+            and ins.l.t == ida_hexrays.mop_n
+            and (int(ins.l.nnn.value) & 0xFFFFFFFF) in STATE_CONSTS
+        )
         if not is_state_const_write and op not in _CONTROL_OPS:
             insns.append(ins)
         ins = ins.next
@@ -651,12 +743,16 @@ class TestInsertUnflattenShared:
             b = mba.get_mblock(i)
             ins = b.head if b else None
             while ins is not None:
-                if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                        and ins.l.t == ida_hexrays.mop_n
-                        and (int(ins.l.nnn.value) & 0xFFFFFFFF) in STATE_CONSTS
-                        and ins.d is not None):
+                if (
+                    int(ins.opcode) == ida_hexrays.m_mov
+                    and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n
+                    and (int(ins.l.nnn.value) & 0xFFFFFFFF) in STATE_CONSTS
+                    and ins.d is not None
+                ):
                     per_slot.setdefault(ins.d.dstr(), []).append(
-                        "blk%d:%#x" % (i, int(ins.l.nnn.value) & 0xFFFFFFFF))
+                        "blk%d:%#x" % (i, int(ins.l.nnn.value) & 0xFFFFFFFF)
+                    )
                 ins = ins.next
         print(f"\n=== lab_flat_shared GLBOPT1 qty={mba.qty} state_slot={sd!r} ===")
         print(f"  per_slot_state_writes={per_slot}")
@@ -665,8 +761,10 @@ class TestInsertUnflattenShared:
         shared = routing.get(STATE_KS)
         if shared is not None:
             free = _capture_state_free(mba.get_mblock(shared))
-            print(f"  SHARED=blk[{shared}] state-free insns: "
-                  f"{[ins.dstr() for ins in free]}")
+            print(
+                f"  SHARED=blk[{shared}] state-free insns: "
+                f"{[ins.dstr() for ins in free]}"
+            )
         # KS is written by BOTH A and B (2 preds to SHARED).
         assert len(writers.get(STATE_KS, [])) == 2, writers
         assert shared is not None
@@ -690,8 +788,11 @@ class TestInsertUnflattenShared:
             def func(self, blk):
                 try:
                     mba = blk.mba
-                    if (self.done or mba is None
-                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                    if (
+                        self.done
+                        or mba is None
+                        or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)
+                    ):
                         return 0
                     sd = _state_slot(mba)
                     writers = _state_writers(mba, sd)
@@ -705,7 +806,9 @@ class TestInsertUnflattenShared:
                     if not free:
                         return 0
                     self.captured = [ins.dstr() for ins in free]
-                    succ_sets = [set(int(s) for s in mba.get_mblock(a).succset) for a in arms]
+                    succ_sets = [
+                        set(int(s) for s in mba.get_mblock(a).succset) for a in arms
+                    ]
                     inter = set.intersection(*succ_sets)
                     if not inter:
                         return 0
@@ -717,7 +820,8 @@ class TestInsertUnflattenShared:
                     for arm in arms:
                         # Insert a private STATE-FREE copy of SHARED on each path.
                         mod.queue_create_and_redirect(
-                            arm, term, list(free), old_target_serial=disp)
+                            arm, term, list(free), old_target_serial=disp
+                        )
                     mod.coalesce()
                     self.applied = mod.apply(run_optimize_local=True)
                     return self.applied
@@ -733,8 +837,10 @@ class TestInsertUnflattenShared:
             cfunc = ida_hexrays.decompile(ea, hf)
         finally:
             opt.remove()
-        print(f"\n=== shared de-share (applied={opt.applied} captured={opt.captured} "
-              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        print(
+            f"\n=== shared de-share (applied={opt.applied} captured={opt.captured} "
+            f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ==="
+        )
         if cfunc is not None:
             print(str(cfunc))
         print("=== end shared de-share ===")
@@ -773,8 +879,8 @@ def _build_unflatten_plan(mba):
     redirects.
     """
     state_dest = _state_slot(mba)
-    writers = _state_writers(mba, state_dest)        # K -> [writer serials]
-    routing = _dispatcher_routing(mba, state_dest)   # K -> handler serial
+    writers = _state_writers(mba, state_dest)  # K -> [writer serials]
+    routing = _dispatcher_routing(mba, state_dest)  # K -> handler serial
     terminal = _terminal_serial(mba)
     # Dispatcher head = the block handlers re-enter to re-read the state: the MOST
     # COMMON successor among all state-writer blocks (NOT their intersection). A
@@ -836,18 +942,26 @@ class TestInsertUnflattenLoop:
             sw = None
             ins = blk.head
             while ins is not None:
-                if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                        and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                        and ins.d.dstr() == sd):
+                if (
+                    int(ins.opcode) == ida_hexrays.m_mov
+                    and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n
+                    and ins.d is not None
+                    and ins.d.dstr() == sd
+                ):
                     sw = hex(int(ins.l.nnn.value) & 0xFFFFFFFF)
                 ins = ins.next
             two = "(2WAY)" if blk.type == ida_hexrays.BLT_2WAY else ""
-            print(f"  blk[{i}] type={int(blk.type)}{two} preds={preds} "
-                  f"succs={succs} tail_op={top}"
-                  f"{' STATE_WRITE=' + sw if sw else ''}")
+            print(
+                f"  blk[{i}] type={int(blk.type)}{two} preds={preds} "
+                f"succs={succs} tail_op={top}"
+                f"{' STATE_WRITE=' + sw if sw else ''}"
+            )
         print(f"  writers={ {hex(k): v for k, v in writers.items()} }")
-        print(f"  routing={ {hex(k): v for k, v in routing.items()} } "
-              f"disp={disp} terminal={term}")
+        print(
+            f"  routing={ {hex(k): v for k, v in routing.items()} } "
+            f"disp={disp} terminal={term}"
+        )
         print(f"  plan={plan}")
         # The exit transition (K2) routes to a handler distinct from the body.
         assert STATE_K1 in routing and STATE_K2 in routing, routing
@@ -862,9 +976,10 @@ class TestInsertUnflattenLoop:
         body_redirects = [s for (s, f, _o) in plan if f == body]
         assert len(body_redirects) >= 2, f"no back-edge in plan: {plan}"
         back_arm = body  # the body handler; its successor arm is the back-edge src
-        assert any(back_arm in [int(p) for p in mba.get_mblock(s).predset]
-                   for s in body_redirects), (
-            f"no continue-arm whose pred is the body handler: {body_redirects}")
+        assert any(
+            back_arm in [int(p) for p in mba.get_mblock(s).predset]
+            for s in body_redirects
+        ), f"no continue-arm whose pred is the body handler: {body_redirects}"
 
     def test_loop_renders_optblock(self, ida_database, configure_hexrays):
         """Reconstruct the loop via the general unflatten plan at the optblock
@@ -885,16 +1000,24 @@ class TestInsertUnflattenLoop:
             def func(self, blk):
                 try:
                     mba = blk.mba
-                    if (self.done or mba is None
-                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                    if (
+                        self.done
+                        or mba is None
+                        or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)
+                    ):
                         return 0
                     plan, disp, info = _build_unflatten_plan(mba)
                     _sd, writers, routing, term = info
                     # Act only once the machine is fully mapped (the live mba
                     # stabilizes during GLBOPT1; let earlier passes retry).
-                    if not (len(writers.get(STATE_K1, [])) >= 2
-                            and STATE_K1 in routing and STATE_K2 in routing
-                            and term >= 0 and disp >= 0 and len(plan) >= 4):
+                    if not (
+                        len(writers.get(STATE_K1, [])) >= 2
+                        and STATE_K1 in routing
+                        and STATE_K2 in routing
+                        and term >= 0
+                        and disp >= 0
+                        and len(plan) >= 4
+                    ):
                         return 0
                     self.plan = plan
                     self.done = True
@@ -903,7 +1026,8 @@ class TestInsertUnflattenLoop:
                     )
                     for src, final, old in plan:
                         mod.queue_create_and_redirect(
-                            src, final, [], old_target_serial=old)
+                            src, final, [], old_target_serial=old
+                        )
                     mod.coalesce()
                     self.applied = mod.apply(run_optimize_local=True)
                     return self.applied
@@ -919,8 +1043,10 @@ class TestInsertUnflattenLoop:
             cfunc = ida_hexrays.decompile(ea, hf)
         finally:
             opt.remove()
-        print(f"\n=== loop render (plan={opt.plan} applied={opt.applied} "
-              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        print(
+            f"\n=== loop render (plan={opt.plan} applied={opt.applied} "
+            f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ==="
+        )
         if cfunc is not None:
             print(str(cfunc))
         print("=== end loop render ===")
@@ -935,7 +1061,8 @@ class TestInsertUnflattenLoop:
         # A REAL structured loop over the counter survives (the back-edge was
         # reconstructed). Hex-Rays emits a lowercase while/do/for keyword.
         assert re.search(r"\b(while|do|for)\b", text), (
-            f"no structured loop keyword (back-edge not structured):\n{text}")
+            f"no structured loop keyword (back-edge not structured):\n{text}"
+        )
         # Body + exit work present (the volatile sink forces materialization).
         assert "0X22" in up, f"body XOR work missing:\n{text}"
         assert "0X33" in up, f"exit subtract work missing:\n{text}"
@@ -954,8 +1081,12 @@ def _find_jtbl(mba):
     for i in range(mba.qty):
         blk = mba.get_mblock(i)
         tail = blk.tail if blk else None
-        if (tail is not None and int(tail.opcode) == ida_hexrays.m_jtbl
-                and tail.r is not None and tail.r.t == ida_hexrays.mop_c):
+        if (
+            tail is not None
+            and int(tail.opcode) == ida_hexrays.m_jtbl
+            and tail.r is not None
+            and tail.r.t == ida_hexrays.mop_c
+        ):
             return blk.serial, tail.r.c
     return -1, None
 
@@ -982,9 +1113,13 @@ def _writers_of_values(mba, slot, values):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                    and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                    and ins.d.dstr() == slot):
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and ins.d is not None
+                and ins.d.dstr() == slot
+            ):
                 v = int(ins.l.nnn.value) & 0xFFFFFFFF
                 if v in values:
                     out.setdefault(v, []).append(blk.serial)
@@ -999,9 +1134,13 @@ def _jtbl_state_slot(mba, case_values):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                    and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                    and (int(ins.l.nnn.value) & 0xFFFFFFFF) in case_values):
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and ins.d is not None
+                and (int(ins.l.nnn.value) & 0xFFFFFFFF) in case_values
+            ):
                 counts[ins.d.dstr()] = counts.get(ins.d.dstr(), 0) + 1
             ins = ins.next
     return max(counts, key=counts.get) if counts else None
@@ -1028,11 +1167,16 @@ def _build_jtbl_unflatten_plan(mba):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                    and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                    and re.sub(r"\{[^}]*\}", "", ins.d.dstr()) == slot):
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and ins.d is not None
+                and re.sub(r"\{[^}]*\}", "", ins.d.dstr()) == slot
+            ):
                 writers.setdefault(int(ins.l.nnn.value) & 0xFFFFFFFF, []).append(
-                    blk.serial)
+                    blk.serial
+                )
             ins = ins.next
     plan = []
     for val, wblocks in writers.items():
@@ -1056,17 +1200,22 @@ class TestInsertUnflattenJtbl:
         if not idaapi.init_hexrays_plugin():
             pytest.skip("Hex-Rays decompiler plugin not available")
         ea = get_func_ea(JTBL_FUNCTION)
-        for label, mat in [("CALLS", ida_hexrays.MMAT_CALLS),
-                           ("GLBOPT1", ida_hexrays.MMAT_GLBOPT1)]:
+        for label, mat in [
+            ("CALLS", ida_hexrays.MMAT_CALLS),
+            ("GLBOPT1", ida_hexrays.MMAT_GLBOPT1),
+        ]:
             mba = gen_microcode_at_maturity(ea, mat)
             if mba is None:
-                print(f"\n=== {label}: None ==="); continue
+                print(f"\n=== {label}: None ===")
+                continue
             jserial, cases = _find_jtbl(mba)
             jidx = None
             if jserial >= 0:
                 jt = mba.get_mblock(jserial).tail
                 jidx = jt.l.dstr() if jt is not None and jt.l is not None else None
-            print(f"\n=== {label} qty={mba.qty} jtbl_block={jserial} jtbl_index={jidx!r} ===")
+            print(
+                f"\n=== {label} qty={mba.qty} jtbl_block={jserial} jtbl_index={jidx!r} ==="
+            )
             for i in range(mba.qty):
                 blk = mba.get_mblock(i)
                 if blk is None:
@@ -1076,11 +1225,15 @@ class TestInsertUnflattenJtbl:
                 tail = blk.tail
                 top = int(tail.opcode) if tail is not None else -1
                 tag = " JTBL" if top == ida_hexrays.m_jtbl else ""
-                print(f"  blk[{i}] type={int(blk.type)} preds={preds} "
-                      f"succs={succs} tail_op={top}{tag}")
+                print(
+                    f"  blk[{i}] type={int(blk.type)} preds={preds} "
+                    f"succs={succs} tail_op={top}{tag}"
+                )
             routing, _ = _jtbl_routing(mba)
-            print(f"  jtbl routing (case->target): "
-                  f"{ {hex(k): v for k, v in routing.items()} }")
+            print(
+                f"  jtbl routing (case->target): "
+                f"{ {hex(k): v for k, v in routing.items()} }"
+            )
         mba = gen_microcode_at_maturity(ea, ida_hexrays.MMAT_GLBOPT1)
         routing, jserial = _jtbl_routing(mba)
         assert jserial >= 0, "no m_jtbl at GLBOPT1 (fixture compiled to a jz-chain?)"
@@ -1104,8 +1257,11 @@ class TestInsertUnflattenJtbl:
             def func(self, blk):
                 try:
                     mba = blk.mba
-                    if (self.done or mba is None
-                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                    if (
+                        self.done
+                        or mba is None
+                        or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)
+                    ):
                         return 0
                     plan, jserial, info = _build_jtbl_unflatten_plan(mba)
                     if jserial < 0 or len(plan) < 4:
@@ -1117,7 +1273,8 @@ class TestInsertUnflattenJtbl:
                     )
                     for src, final, old in plan:
                         mod.queue_create_and_redirect(
-                            src, final, [], old_target_serial=old)
+                            src, final, [], old_target_serial=old
+                        )
                     mod.coalesce()
                     self.applied = mod.apply(run_optimize_local=True)
                     return self.applied
@@ -1133,8 +1290,10 @@ class TestInsertUnflattenJtbl:
             cfunc = ida_hexrays.decompile(ea, hf)
         finally:
             opt.remove()
-        print(f"\n=== jtbl render (plan={opt.plan} applied={opt.applied} "
-              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        print(
+            f"\n=== jtbl render (plan={opt.plan} applied={opt.applied} "
+            f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ==="
+        )
         if cfunc is not None:
             print(str(cfunc))
         print("=== end jtbl render ===")
@@ -1167,9 +1326,12 @@ def _find_low_bit_predicate(mop):
         return None
     if int(getattr(mop, "t", -1)) == ida_hexrays.mop_d and mop.d is not None:
         ins = mop.d
-        if (int(ins.opcode) == ida_hexrays.m_and and ins.r is not None
-                and ins.r.t == ida_hexrays.mop_n
-                and (int(ins.r.nnn.value) & 0xFFFFFFFF) == 1):
+        if (
+            int(ins.opcode) == ida_hexrays.m_and
+            and ins.r is not None
+            and ins.r.t == ida_hexrays.mop_n
+            and (int(ins.r.nnn.value) & 0xFFFFFFFF) == 1
+        ):
             cloned = ida_hexrays.mop_t()
             cloned.assign(mop)
             return cloned
@@ -1210,8 +1372,10 @@ class TestInsertUnflattenBranchless:
             tail = blk.tail
             top = int(tail.opcode) if tail is not None else -1
             two = "(2WAY)" if blk.type == ida_hexrays.BLT_2WAY else ""
-            print(f"  blk[{i}] type={int(blk.type)}{two} preds={preds} "
-                  f"succs={succs} tail_op={top}")
+            print(
+                f"  blk[{i}] type={int(blk.type)}{two} preds={preds} "
+                f"succs={succs} tail_op={top}"
+            )
             ins = blk.head
             while ins is not None:
                 print(f"        op={int(ins.opcode):>2}  {ins.dstr()}")
@@ -1238,16 +1402,23 @@ class TestInsertUnflattenBranchless:
             def func(self, blk):
                 try:
                     mba = blk.mba
-                    if (self.done or mba is None
-                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                    if (
+                        self.done
+                        or mba is None
+                        or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)
+                    ):
                         return 0
                     sd = _state_slot(mba)
                     writers = _state_writers(mba, sd)
                     routing = _dispatcher_routing(mba, sd)
                     term = _terminal_serial(mba)
-                    if not (STATE_K0 in routing and STATE_K1 in routing
-                            and STATE_K2 in routing and term >= 0
-                            and STATE_K0 in writers):
+                    if not (
+                        STATE_K0 in routing
+                        and STATE_K1 in routing
+                        and STATE_K2 in routing
+                        and term >= 0
+                        and STATE_K0 in writers
+                    ):
                         return 0
                     h0 = routing[STATE_K0]
                     h1 = routing[STATE_K1]
@@ -1263,14 +1434,26 @@ class TestInsertUnflattenBranchless:
                     cond = None
                     ins = h0blk.head
                     while ins is not None:
-                        if (int(ins.opcode) == ida_hexrays.m_or and ins.d is not None
-                                and re.sub(r"\{[^}]*\}", "", ins.d.dstr()) == sd):
+                        if (
+                            int(ins.opcode) == ida_hexrays.m_or
+                            and ins.d is not None
+                            and re.sub(r"\{[^}]*\}", "", ins.d.dstr()) == sd
+                        ):
                             or_ea = int(ins.ea)
                             for sub in (ins.l, ins.r):
                                 cond = cond or _find_low_bit_predicate(sub)
                         ins = ins.next
-                    self.dbg = (sd, h0, h1, h2, entry, disp, term,
-                                or_ea, cond is not None)
+                    self.dbg = (
+                        sd,
+                        h0,
+                        h1,
+                        h2,
+                        entry,
+                        disp,
+                        term,
+                        or_ea,
+                        cond is not None,
+                    )
                     if or_ea is None or cond is None:
                         return 0
                     self.done = True
@@ -1305,8 +1488,10 @@ class TestInsertUnflattenBranchless:
             cfunc = ida_hexrays.decompile(ea, hf)
         finally:
             opt.remove()
-        print(f"\n=== branchless synth (applied={opt.applied} dbg={opt.dbg} "
-              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        print(
+            f"\n=== branchless synth (applied={opt.applied} dbg={opt.dbg} "
+            f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ==="
+        )
         if cfunc is not None:
             print(str(cfunc))
         print("=== end branchless synth ===")
@@ -1326,7 +1511,9 @@ class TestInsertUnflattenBranchless:
         # H0's +0x11 into `- 0x22` (0x11-0x33 = -0x22), so witness the folded form.
         assert "^ 0x22" in text, f"taken-arm XOR missing:\n{text}"
         assert re.search(r"-\s*0x22", text), f"else-arm (folded -0x33) missing:\n{text}"
-        assert "WHILE" not in up and "FOR (" not in up, f"dispatcher loop survived:\n{text}"
+        assert "WHILE" not in up and "FOR (" not in up, (
+            f"dispatcher loop survived:\n{text}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1335,10 +1522,11 @@ class TestInsertUnflattenBranchless:
 # reconstruction must preserve the region's internal structure.
 # ---------------------------------------------------------------------------
 REGION_FUNCTION = "lab_flat_region"
-STATE_RT = 0x7D4E1F3A      # region tail state (extra, beyond the K0/K1/K2/TERM set)
+STATE_RT = 0x7D4E1F3A  # region tail state (extra, beyond the K0/K1/K2/TERM set)
 STATE_KENTRY = 0xDEADBEEF  # single entry-handler state (routes to A or B)
 REGION_CONSTS = frozenset(
-    {STATE_KENTRY, STATE_K0, STATE_K1, STATE_K2, STATE_RT, STATE_TERM})
+    {STATE_KENTRY, STATE_K0, STATE_K1, STATE_K2, STATE_RT, STATE_TERM}
+)
 
 
 def _region_state_slot(mba):
@@ -1349,12 +1537,16 @@ def _region_state_slot(mba):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                    and ins.l.t == ida_hexrays.mop_n
-                    and (int(ins.l.nnn.value) & 0xFFFFFFFF) in REGION_CONSTS
-                    and ins.d is not None):
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and (int(ins.l.nnn.value) & 0xFFFFFFFF) in REGION_CONSTS
+                and ins.d is not None
+            ):
                 writes.setdefault(ins.d.dstr(), []).append(
-                    int(ins.l.nnn.value) & 0xFFFFFFFF)
+                    int(ins.l.nnn.value) & 0xFFFFFFFF
+                )
             ins = ins.next
     if not writes:
         return None
@@ -1372,7 +1564,10 @@ def _region_routing(mba, slot):
         if blk is None or blk.type != ida_hexrays.BLT_2WAY:
             continue
         tail = blk.tail
-        if tail is None or int(tail.opcode) not in (ida_hexrays.m_jz, ida_hexrays.m_jnz):
+        if tail is None or int(tail.opcode) not in (
+            ida_hexrays.m_jz,
+            ida_hexrays.m_jnz,
+        ):
             continue
         imm = None
         for op in (tail.l, tail.r):
@@ -1382,10 +1577,18 @@ def _region_routing(mba, slot):
                     imm = v
         if imm is None:
             continue
-        tgt = int(tail.d.b) if (tail.d is not None and tail.d.t == ida_hexrays.mop_b) else None
+        tgt = (
+            int(tail.d.b)
+            if (tail.d is not None and tail.d.t == ida_hexrays.mop_b)
+            else None
+        )
         succs = [int(s) for s in blk.succset]
         other = [s for s in succs if s != tgt]
-        handler = tgt if int(tail.opcode) == ida_hexrays.m_jz else (other[0] if other else None)
+        handler = (
+            tgt
+            if int(tail.opcode) == ida_hexrays.m_jz
+            else (other[0] if other else None)
+        )
         if handler is not None:
             routing[imm] = handler
     return routing
@@ -1398,9 +1601,13 @@ def _region_writers(mba, slot):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                    and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                    and ins.d.dstr() == slot):
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and ins.d is not None
+                and ins.d.dstr() == slot
+            ):
                 v = int(ins.l.nnn.value) & 0xFFFFFFFF
                 if v in REGION_CONSTS:
                     writers.setdefault(v, []).append(blk.serial)
@@ -1461,9 +1668,13 @@ class TestInsertUnflattenRegion:
             blk = mba.get_mblock(i)
             ins = blk.head if blk else None
             while ins is not None:
-                if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                        and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                        and ins.d.dstr() == sd):
+                if (
+                    int(ins.opcode) == ida_hexrays.m_mov
+                    and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n
+                    and ins.d is not None
+                    and ins.d.dstr() == sd
+                ):
                     v = int(ins.l.nnn.value) & 0xFFFFFFFF
                     if v in REGION_CONSTS:
                         writers.setdefault(v, []).append(blk.serial)
@@ -1480,29 +1691,38 @@ class TestInsertUnflattenRegion:
             sw = None
             ins = blk.head
             while ins is not None:
-                if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                        and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                        and ins.d.dstr() == sd):
+                if (
+                    int(ins.opcode) == ida_hexrays.m_mov
+                    and ins.l is not None
+                    and ins.l.t == ida_hexrays.mop_n
+                    and ins.d is not None
+                    and ins.d.dstr() == sd
+                ):
                     v = int(ins.l.nnn.value) & 0xFFFFFFFF
                     if v in REGION_CONSTS:
                         sw = hex(v)
                 ins = ins.next
             two = "(2WAY)" if blk.type == ida_hexrays.BLT_2WAY else ""
-            print(f"  blk[{i}] type={int(blk.type)}{two} preds={preds} "
-                  f"succs={succs} tail_op={top}"
-                  f"{' STATE_WRITE=' + sw if sw else ''}")
+            print(
+                f"  blk[{i}] type={int(blk.type)}{two} preds={preds} "
+                f"succs={succs} tail_op={top}"
+                f"{' STATE_WRITE=' + sw if sw else ''}"
+            )
         print(f"  writers={ {hex(k): v for k, v in writers.items()} }")
         print(f"  routing={ {hex(k): v for k, v in routing.items()} }")
-        rh = routing.get(STATE_K2)   # region head
-        rt = routing.get(STATE_RT)   # region tail
+        rh = routing.get(STATE_K2)  # region head
+        rt = routing.get(STATE_RT)  # region tail
         print(f"  region_head(K2)={rh} region_tail(RT)={rt}")
         if rh is not None:
             rhblk = mba.get_mblock(rh)
-            print(f"  region_head succs={[int(s) for s in rhblk.succset]} "
-                  f"type={int(rhblk.type)} (internal branch if 2WAY)")
+            print(
+                f"  region_head succs={[int(s) for s in rhblk.succset]} "
+                f"type={int(rhblk.type)} (internal branch if 2WAY)"
+            )
         # Both A and B write the region-head state K2 (the region is SHARED).
         assert len(writers.get(STATE_K2, [])) >= 2, (
-            f"region head not shared (K2 writers): {writers}")
+            f"region head not shared (K2 writers): {writers}"
+        )
         # The region is 2 blocks: head routes to a distinct tail (RT).
         assert STATE_RT in routing, f"no region tail in routing: {routing}"
         assert rh is not None and rt is not None and rh != rt, (rh, rt)
@@ -1527,16 +1747,24 @@ class TestInsertUnflattenRegion:
             def func(self, blk):
                 try:
                     mba = blk.mba
-                    if (self.done or mba is None
-                            or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                    if (
+                        self.done
+                        or mba is None
+                        or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)
+                    ):
                         return 0
                     plan, disp, info = _build_region_join_plan(mba)
                     _slot, writers, routing, term = info
                     # Act once the machine is fully mapped: the region head (K2) is
                     # shared (2 writers), the tail (RT) routes, terminal resolved.
-                    if not (len(writers.get(STATE_K2, [])) >= 2
-                            and STATE_RT in routing and STATE_K2 in routing
-                            and term >= 0 and disp >= 0 and len(plan) >= 6):
+                    if not (
+                        len(writers.get(STATE_K2, [])) >= 2
+                        and STATE_RT in routing
+                        and STATE_K2 in routing
+                        and term >= 0
+                        and disp >= 0
+                        and len(plan) >= 6
+                    ):
                         return 0
                     self.plan = plan
                     self.done = True
@@ -1545,7 +1773,8 @@ class TestInsertUnflattenRegion:
                     )
                     for src, final, old in plan:
                         mod.queue_create_and_redirect(
-                            src, final, [], old_target_serial=old)
+                            src, final, [], old_target_serial=old
+                        )
                     mod.coalesce()
                     self.applied = mod.apply(run_optimize_local=True)
                     return self.applied
@@ -1561,8 +1790,10 @@ class TestInsertUnflattenRegion:
             cfunc = ida_hexrays.decompile(ea, hf)
         finally:
             opt.remove()
-        print(f"\n=== region join render (plan={opt.plan} applied={opt.applied} "
-              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        print(
+            f"\n=== region join render (plan={opt.plan} applied={opt.applied} "
+            f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ==="
+        )
         if cfunc is not None:
             print(str(cfunc))
         print("=== end region join render ===")
@@ -1580,7 +1811,8 @@ class TestInsertUnflattenRegion:
         assert "& 2" in text, f"region internal (token&2) branch missing:\n{text}"
         # The region head's work (-0x22) appears ONCE (shared join, not duplicated).
         assert text.count("- 0x22") == 1, (
-            f"region head not a single shared join (expected 1 `- 0x22`):\n{text}")
+            f"region head not a single shared join (expected 1 `- 0x22`):\n{text}"
+        )
         assert "WHILE" not in up and "FOR (" not in up, f"loop survived:\n{text}"
 
     def test_region_deshare_duplicate_optblock(self, ida_database, configure_hexrays):
@@ -1608,10 +1840,14 @@ class TestInsertUnflattenRegion:
                 blk = mba.get_mblock(serial)
                 ins = blk.head if blk else None
                 while ins is not None:
-                    if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                            and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                            and ins.d.dstr() == slot
-                            and (int(ins.l.nnn.value) & 0xFFFFFFFF) == value):
+                    if (
+                        int(ins.opcode) == ida_hexrays.m_mov
+                        and ins.l is not None
+                        and ins.l.t == ida_hexrays.mop_n
+                        and ins.d is not None
+                        and ins.d.dstr() == slot
+                        and (int(ins.l.nnn.value) & 0xFFFFFFFF) == value
+                    ):
                         return True
                     ins = ins.next
                 return False
@@ -1619,7 +1855,9 @@ class TestInsertUnflattenRegion:
             def func(self, blk):
                 try:
                     mba = blk.mba
-                    if mba is None or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1):
+                    if mba is None or int(mba.maturity) != int(
+                        ida_hexrays.MMAT_GLBOPT1
+                    ):
                         return 0
                     if self.phase == 0:
                         slot = _region_state_slot(mba)
@@ -1628,10 +1866,11 @@ class TestInsertUnflattenRegion:
                         term = _terminal_serial(mba)
                         head = routing.get(STATE_K2)
                         tail = routing.get(STATE_RT)
-                        paths = list(writers.get(STATE_K2, []))      # [A, B]
-                        ent_h = routing.get(STATE_KENTRY)            # entry handler
-                        if not (head and tail and ent_h and len(paths) >= 2
-                                and term >= 0):
+                        paths = list(writers.get(STATE_K2, []))  # [A, B]
+                        ent_h = routing.get(STATE_KENTRY)  # entry handler
+                        if not (
+                            head and tail and ent_h and len(paths) >= 2 and term >= 0
+                        ):
                             return 0
                         hblk = mba.get_mblock(head)
                         if hblk.type != ida_hexrays.BLT_2WAY or hblk.tail is None:
@@ -1643,8 +1882,14 @@ class TestInsertUnflattenRegion:
                                     succ_counter[int(s)] += 1
                         disp = succ_counter.most_common(1)[0][0]
                         # Which arm of the head jcc leads to the tail (writes RT)?
-                        taken = int(hblk.tail.d.b) if (hblk.tail.d is not None
-                                  and hblk.tail.d.t == ida_hexrays.mop_b) else -1
+                        taken = (
+                            int(hblk.tail.d.b)
+                            if (
+                                hblk.tail.d is not None
+                                and hblk.tail.d.t == ida_hexrays.mop_b
+                            )
+                            else -1
+                        )
                         taken_to_tail = self._writes(mba, taken, STATE_RT, slot)
                         cond_t, ft = (tail, term) if taken_to_tail else (term, tail)
                         # Record the tail's instruction EAs to re-find it in pass 1.
@@ -1655,11 +1900,20 @@ class TestInsertUnflattenRegion:
                             eas.append(int(ins.ea))
                             ins = ins.next
                         self.tail_eas = eas
-                        self.dbg0 = dict(slot=slot, head=head, tail=tail, paths=paths,
-                                         ent_h=ent_h, disp=disp, term=term,
-                                         taken=taken, taken_to_tail=taken_to_tail,
-                                         cond_t=cond_t, ft=ft,
-                                         ent_writers={hex(k): v for k, v in writers.items()})
+                        self.dbg0 = dict(
+                            slot=slot,
+                            head=head,
+                            tail=tail,
+                            paths=paths,
+                            ent_h=ent_h,
+                            disp=disp,
+                            term=term,
+                            taken=taken,
+                            taken_to_tail=taken_to_tail,
+                            cond_t=cond_t,
+                            ft=ft,
+                            ent_writers={hex(k): v for k, v in writers.items()},
+                        )
                         self.phase = 1
                         mod = DeferredGraphModifier(
                             mba, mutation_gateway=make_mutation_gateway(mba)
@@ -1673,14 +1927,17 @@ class TestInsertUnflattenRegion:
                             for w in writers.get(k, []):
                                 if disp in [int(s) for s in mba.get_mblock(w).succset]:
                                     mod.queue_create_and_redirect(
-                                        w, tgt, [], old_target_serial=disp)
+                                        w, tgt, [], old_target_serial=disp
+                                    )
                         # Clone the region HEAD (conditional) per path A, B.
                         for P in paths[:2]:
                             mod.queue_create_conditional_redirect(
-                                source_blk_serial=P, ref_blk_serial=head,
+                                source_blk_serial=P,
+                                ref_blk_serial=head,
                                 conditional_target_serial=cond_t,
                                 fallthrough_target_serial=ft,
-                                old_target_serial=disp)
+                                old_target_serial=disp,
+                            )
                         mod.coalesce()
                         self.applied0 = mod.apply(run_optimize_local=True)
                         return self.applied0
@@ -1705,8 +1962,13 @@ class TestInsertUnflattenRegion:
                         tblk = mba.get_mblock(best)
                         preds = [int(p) for p in tblk.predset]
                         payload = _capture_state_free(tblk)
-                        self.dbg1 = dict(tail=best, ov=best_ov, preds=preds,
-                                         payload=[x.dstr() for x in payload], term=term)
+                        self.dbg1 = dict(
+                            tail=best,
+                            ov=best_ov,
+                            preds=preds,
+                            payload=[x.dstr() for x in payload],
+                            term=term,
+                        )
                         if len(preds) < 2:
                             return 0
                         mod = DeferredGraphModifier(
@@ -1714,7 +1976,8 @@ class TestInsertUnflattenRegion:
                         )
                         for P in preds:
                             mod.queue_create_and_redirect(
-                                P, term, list(payload), old_target_serial=best)
+                                P, term, list(payload), old_target_serial=best
+                            )
                         mod.coalesce()
                         self.applied1 = mod.apply(run_optimize_local=True)
                         return self.applied1
@@ -1731,8 +1994,10 @@ class TestInsertUnflattenRegion:
             cfunc = ida_hexrays.decompile(ea, hf)
         finally:
             opt.remove()
-        print(f"\n=== region de-share (applied0={opt.applied0} applied1={opt.applied1} "
-              f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ===")
+        print(
+            f"\n=== region de-share (applied0={opt.applied0} applied1={opt.applied1} "
+            f"err={opt.error} hf={hf.code}/{hf.desc()!r}) ==="
+        )
         print(f"  dbg0={opt.dbg0}")
         print(f"  dbg1={opt.dbg1}")
         if cfunc is not None:
@@ -1749,7 +2014,8 @@ class TestInsertUnflattenRegion:
         # internal branch + tail work, which don't fold, appearing TWICE.)
         assert "& 1" in text, f"entry (token&1) branch missing:\n{text}"
         assert len(re.findall(r"token & 2", text)) >= 2, (
-            f"region internal branch not duplicated per path (expected >=2):\n{text}")
+            f"region internal branch not duplicated per path (expected >=2):\n{text}"
+        )
         # The region tail work (^0x33) duplicated into both paths.
         assert up.count("0X33") >= 2, f"tail not de-shared (expected >=2 0x33):\n{text}"
         # No state constants survive, no dispatcher loop.

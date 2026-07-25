@@ -11,12 +11,17 @@ Example:
     >>> # Before: blk0 -> goto_blk (goto only) -> target
     >>> # After:  blk0 -> target
 """
+
 from __future__ import annotations
 
 import ida_hexrays
 
 from d810.transforms._base import FlowGraphTransform
-from d810.transforms.graph_modification import GraphModification, RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    GraphModification,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.ir.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
 
 _BLT_1WAY = ida_hexrays.BLT_1WAY
@@ -142,6 +147,7 @@ class GotoChainRemovalPass(FlowGraphTransform):
         >>> mods[0].new_target
         20
     """
+
     name = "goto_chain_removal"
     tags = frozenset({"cleanup", "topology"})
 

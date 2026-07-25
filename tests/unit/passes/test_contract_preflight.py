@@ -141,9 +141,7 @@ def test_preflight_aliases_legacy_facts_and_evidence_to_canonical_requirements()
         "needs_canonical_context",
         requires=PassRequires(
             facts=FactRequirement(
-                required=frozenset(
-                    {"recovered.state_transition", "role.dispatcher"}
-                )
+                required=frozenset({"recovered.state_transition", "role.dispatcher"})
             ),
             evidence=frozenset({"ir.branch_target", "ir.state_variable_write"}),
         ),
@@ -243,9 +241,7 @@ def test_pipeline_preflight_declared_ollvm_candidate_evidence_feeds_later_valida
     result = preflight_pipeline_contract((first, second), facts)
 
     assert result.satisfied
-    assert result.results[0].declared_output_evidence == (
-        "ir.memory_def.candidate",
-    )
+    assert result.results[0].declared_output_evidence == ("ir.memory_def.candidate",)
     assert [item.satisfied for item in result.results] == [True, True]
     assert facts.available_facts() == ()
     assert facts.available_evidence() == ()

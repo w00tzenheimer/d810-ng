@@ -8,6 +8,7 @@ IDA-bound rule resolves the declaration here.
 Import this only inside an IDA Python / Hex-Rays runtime — it touches ``ida_hexrays``.
 The portable enum (:mod:`d810.ir.maturity`) stays independent of the SDK.
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -131,19 +132,17 @@ def hexrays_maturity_envelope(
 
     if isinstance(maturity, str):
         provider_stage = HexRaysMaturity.from_name(maturity)
-        provider_id = (
-            int(provider_stage.value) if provider_stage is not None else None
-        )
+        provider_id = int(provider_stage.value) if provider_stage is not None else None
         provider_name = (
-            provider_stage.name
-            if provider_stage is not None else str(maturity)
+            provider_stage.name if provider_stage is not None else str(maturity)
         )
     else:
         provider_stage = HexRaysMaturity.from_id(int(maturity))
         provider_id = int(maturity)
         provider_name = (
             provider_stage.name
-            if provider_stage is not None else maturity_to_name(provider_id)
+            if provider_stage is not None
+            else maturity_to_name(provider_id)
         )
 
     ir_maturity: IRMaturity | None
@@ -154,7 +153,8 @@ def hexrays_maturity_envelope(
 
     snapshot_form = (
         snapshot_form_for_maturity(ir_maturity)
-        if ir_maturity is not None else SnapshotForm.UNKNOWN
+        if ir_maturity is not None
+        else SnapshotForm.UNKNOWN
     )
     return HexRaysMaturityEnvelope(
         ir=ir_maturity,

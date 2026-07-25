@@ -11,6 +11,7 @@ The Hex-Rays engine is migrated onto this solver in a later slice; today
 this module is the step-5 worked example proving the step-3 vocabulary
 carries a real fixpoint computation.
 """
+
 from __future__ import annotations
 
 from d810.core.logging import getLogger

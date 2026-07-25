@@ -27,6 +27,7 @@ Default-on. Disable for archaeology / regression isolation with
 Risk: LOW -- the rewrite is semantically equivalent (same value computed,
 same memory write); only the def-use shape changes.
 """
+
 from __future__ import annotations
 
 import os
@@ -47,9 +48,7 @@ if TYPE_CHECKING:
         AnalysisSnapshot,
     )
 
-logger = logging.getLogger(
-    "D810.hodur.strategy.counter_hoist", logging.DEBUG
-)
+logger = logging.getLogger("D810.hodur.strategy.counter_hoist", logging.DEBUG)
 
 __all__ = ["CounterHoistStrategy"]
 
@@ -104,8 +103,7 @@ class CounterHoistStrategy:
             owned_blocks.add(block_serial)
             match_count += 1
             logger.info(
-                "counter_hoist: queued promote at blk[%d]@0x%x "
-                "opcode=%d side=%s",
+                "counter_hoist: queued promote at blk[%d]@0x%x opcode=%d side=%s",
                 block_serial,
                 host_ea,
                 host_opcode,

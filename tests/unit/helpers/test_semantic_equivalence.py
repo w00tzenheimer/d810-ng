@@ -245,10 +245,12 @@ class TestMixedDispatcherPattern:
         # Test cases that take the "light" path (sum+10 <= 100)
         test_cases = [
             ((10, 20), 39),  # sum=30, +10=40, -1=39
-            ((5, 5), 19),    # sum=10, +10=20, -1=19
-            ((0, 0), 9),     # sum=0, +10=10, -1=9
+            ((5, 5), 19),  # sum=10, +10=20, -1=19
+            ((0, 0), 9),  # sum=0, +10=10, -1=9
             ((20, 20), 49),  # sum=40, +10=50, -1=49
-            ((1, 1), 11),    # sum=2, +10=12, -1=11
+            ((1, 1), 11),  # sum=2, +10=12, -1=11
         ]
 
-        assert_semantic_equivalence(str(c_source), "mixed_dispatcher_pattern", test_cases)
+        assert_semantic_equivalence(
+            str(c_source), "mixed_dispatcher_pattern", test_cases
+        )

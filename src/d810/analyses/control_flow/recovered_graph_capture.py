@@ -11,6 +11,7 @@ Diagnostics only: it never drives planning or mutation. A module-level slot is
 acceptable because it is read solely by the dump path, immediately after the
 live unflatten run that set it, for the same function.
 """
+
 from __future__ import annotations
 
 _LAST_RECOVERED_FLOW_GRAPH: object | None = None

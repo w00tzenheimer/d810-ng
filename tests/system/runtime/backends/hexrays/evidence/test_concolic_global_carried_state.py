@@ -24,6 +24,7 @@ The result is map_rows 0 -> 3 with the global-carried transition
 ``0xF6A1F -> 0xF6A20`` recovered.  IDA-dependent (live ``mba`` + ``.data`` reads) ->
 system/runtime.
 """
+
 from __future__ import annotations
 
 import os
@@ -36,7 +37,9 @@ import idaapi
 import idc
 
 from d810.analyses.control_flow.dispatcher_recovery import build_dispatch_map_any_kind
-from d810.backends.hexrays.evidence.condition_chain_analysis import build_condition_chain_walker_provider
+from d810.backends.hexrays.evidence.condition_chain_analysis import (
+    build_condition_chain_walker_provider,
+)
 from d810.backends.hexrays.evidence.concolic_emulation_engine import (
     ConcolicEmulationEngine,
 )
@@ -55,7 +58,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 def _get_func_ea(name: str) -> int:

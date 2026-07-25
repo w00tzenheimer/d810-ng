@@ -9,6 +9,7 @@ today.  ``ValueOpKind`` is broader: it is the stable, backend-neutral operation
 vocabulary a lifter can use before every operation has a dedicated expression
 node.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

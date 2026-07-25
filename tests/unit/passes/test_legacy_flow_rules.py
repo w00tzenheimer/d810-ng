@@ -1,4 +1,5 @@
 """Config-v2 simple legacy flow-rule adapter behavior."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from d810.passes.pipeline_config_parser import (
     pass_specs_from_project_config,
     pipeline_configs_from_project_config,
 )
+
 _CONF_DIR = Path("src/d810/conf")
 
 
@@ -65,7 +67,9 @@ class _Facts:
         return self
 
     def invalidate_to(self, graph, preserved):
-        raise AssertionError("legacy flow-rule adapter should not emit PatchPlan mutations")
+        raise AssertionError(
+            "legacy flow-rule adapter should not emit PatchPlan mutations"
+        )
 
 
 class _Backend:
@@ -76,7 +80,9 @@ class _Backend:
         return self._caps
 
     def apply(self, plan, live_source, safety_policy):
-        raise AssertionError("legacy flow-rule adapter should not use MutationBackend.apply")
+        raise AssertionError(
+            "legacy flow-rule adapter should not use MutationBackend.apply"
+        )
 
 
 class _Family:

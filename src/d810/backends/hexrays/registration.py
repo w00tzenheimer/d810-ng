@@ -1,4 +1,5 @@
 """Hex-Rays backend provider registration."""
+
 from __future__ import annotations
 
 from d810.backends.hexrays.evidence import condition_chain_analysis

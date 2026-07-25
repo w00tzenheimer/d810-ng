@@ -294,10 +294,7 @@ def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance
 
     assert result.microcode_modified is True
     assert result.published_generation is None
-    assert (
-        result.published_work_item_id
-        == "frontend-normalization:g7:root@0x1100"
-    )
+    assert result.published_work_item_id == "frontend-normalization:g7:root@0x1100"
     assert result.remaining_obligation_count == 1
     assert state.normalization_published_postvalidated_generation is None
     assert len(backend.plans) == 1

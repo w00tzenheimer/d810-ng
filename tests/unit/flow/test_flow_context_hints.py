@@ -3,6 +3,7 @@
 These tests verify the consumer-specific hint summary types and their
 derivation from DeobfuscationHints, without requiring IDA.
 """
+
 from __future__ import annotations
 
 import pytest

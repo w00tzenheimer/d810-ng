@@ -49,4 +49,3 @@ def resolve_loopback_target(
         if exit_block_info.comparison_value == state_value:
             return (exit_block_info.serial, state_value)
     return None
-

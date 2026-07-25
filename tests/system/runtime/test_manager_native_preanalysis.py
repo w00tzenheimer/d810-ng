@@ -227,7 +227,9 @@ def test_current_mba_identity_index_reports_ambiguous_candidate_owners(
         "blk0@0x40D348",
         "blk1@0x40D348",
     )
-    assert all(candidate["stable_identity"] == identity.to_dict() for candidate in candidates)
+    assert all(
+        candidate["stable_identity"] == identity.to_dict() for candidate in candidates
+    )
 
 
 def test_current_mba_mutation_gateway_uses_session_lifecycle_authority() -> None:
@@ -429,9 +431,7 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
                     error_type="RuntimeError",
                     error_message="INTERR: 50856",
                     interr_code=50856,
-                    verification_context=(
-                        "staged semantic fragment rollback sweep"
-                    ),
+                    verification_context=("staged semantic fragment rollback sweep"),
                 ),
             ),
         )
@@ -534,10 +534,9 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
     monkeypatch.setattr(
         computed_goto_resolver,
         "discover_static_native_bootstrap_routes",
-        lambda function_ea, state: calls.append(
-            ("discover-bootstrap", function_ea, state)
-        )
-        or True,
+        lambda function_ea, state: (
+            calls.append(("discover-bootstrap", function_ea, state)) or True
+        ),
     )
 
     assert manager.prepare_native_preanalysis(0x401000) == 5

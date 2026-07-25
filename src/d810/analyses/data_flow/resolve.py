@@ -38,6 +38,7 @@ pass here (S4 ``explore()`` is the consumer).  The legacy recovery path is
 byte-identical: ``recognize_constant_folded_state_write`` unwraps the new T1
 ``Const -> int`` so its external behaviour is unchanged.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

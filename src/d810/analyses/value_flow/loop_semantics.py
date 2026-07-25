@@ -9,6 +9,7 @@ from the sibling fact modules and from any backend.
 Minimum viable scope: a small evidence-flag heuristic.  Replace the flags with
 the concrete sibling fact types once a backend wires per-loop fact collection.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

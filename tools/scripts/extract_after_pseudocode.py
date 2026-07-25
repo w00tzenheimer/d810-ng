@@ -12,6 +12,7 @@ To use the new command directly:
 The pure marker parser now lives in ``src/d810/diagnostics/dump_after.py``
 with unit tests under ``tests/unit/diagnostics/test_dump_after.py``.
 """
+
 from __future__ import annotations
 
 import os

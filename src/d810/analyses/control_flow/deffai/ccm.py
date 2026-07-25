@@ -18,6 +18,7 @@ successor handler, so the partial CFG is the real, sequential body.
 
 Portable-core: no IDA imports.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

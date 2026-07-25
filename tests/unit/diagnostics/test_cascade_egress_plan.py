@@ -1,4 +1,5 @@
 """Tests for the cascade-egress-plan diag subcommand."""
+
 from __future__ import annotations
 
 import json
@@ -41,63 +42,203 @@ def _make_diag_db(tmp_path: Path) -> Path:
     db_path = tmp_path / "diag.sqlite3"
     db_obj = create_diag_database(str(db_path))
     with diag_models_on(db_obj):
-        Snapshot.insert_many([
-            dict(id=5,  label="pre_d810",              func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_GLBOPT1", phase="pre_d810",   block_count=0, timestamp=0.0),
-            dict(id=17, label="post_bundle_stabilize", func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_GLBOPT1", phase="post_apply", block_count=0, timestamp=0.0),
-            dict(id=99, label="dump_raw_lvars",        func_ea_hex="0x0", func_ea_i64=0, maturity="MMAT_LVARS",   phase="post_d810",  block_count=0, timestamp=0.0),
-        ]).execute()
-        Block.insert_many([
-            dict(snapshot=17, serial=0,   block_type=4, type_name="BLT_NWAY", start_ea_hex="0x180014000", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=0,    succs="[10]",       preds="[]",        insn_count=0),
-            dict(snapshot=17, serial=10,  block_type=2, type_name="BLT_2WAY", start_ea_hex="0x180014100", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=2, npred=1,    succs="[20, 30]",   preds="[0]",       insn_count=0),
-            dict(snapshot=17, serial=20,  block_type=1, type_name="BLT_1WAY", start_ea_hex="0x180014200", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=1,    succs="[100]",      preds="[10]",      insn_count=0),
-            dict(snapshot=17, serial=30,  block_type=1, type_name="BLT_1WAY", start_ea_hex="0x180014300", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=1, npred=1,    succs="[100]",      preds="[10]",      insn_count=0),
-            dict(snapshot=17, serial=100, block_type=0, type_name="BLT_STOP", start_ea_hex="0x180014FFF", start_ea_i64=0, end_ea_hex=None, end_ea_i64=None, nsucc=0, npred=2,    succs="[]",         preds="[20, 30]",  insn_count=0),
-        ]).execute()
-        Instruction.insert_many([
-            dict(snapshot=17, block_serial=20, insn_index=0, ea_hex="0x0", ea_i64=0, opcode=4, opcode_name="m_mov", dstr="mov #0xAA.8, %var_8.8"),
-            dict(snapshot=17, block_serial=30, insn_index=0, ea_hex="0x0", ea_i64=0, opcode=4, opcode_name="m_mov", dstr="mov #0xBB.8, %var_8.8"),
-        ]).execute()
+        Snapshot.insert_many(
+            [
+                dict(
+                    id=5,
+                    label="pre_d810",
+                    func_ea_hex="0x0",
+                    func_ea_i64=0,
+                    maturity="MMAT_GLBOPT1",
+                    phase="pre_d810",
+                    block_count=0,
+                    timestamp=0.0,
+                ),
+                dict(
+                    id=17,
+                    label="post_bundle_stabilize",
+                    func_ea_hex="0x0",
+                    func_ea_i64=0,
+                    maturity="MMAT_GLBOPT1",
+                    phase="post_apply",
+                    block_count=0,
+                    timestamp=0.0,
+                ),
+                dict(
+                    id=99,
+                    label="dump_raw_lvars",
+                    func_ea_hex="0x0",
+                    func_ea_i64=0,
+                    maturity="MMAT_LVARS",
+                    phase="post_d810",
+                    block_count=0,
+                    timestamp=0.0,
+                ),
+            ]
+        ).execute()
+        Block.insert_many(
+            [
+                dict(
+                    snapshot=17,
+                    serial=0,
+                    block_type=4,
+                    type_name="BLT_NWAY",
+                    start_ea_hex="0x180014000",
+                    start_ea_i64=0,
+                    end_ea_hex=None,
+                    end_ea_i64=None,
+                    nsucc=1,
+                    npred=0,
+                    succs="[10]",
+                    preds="[]",
+                    insn_count=0,
+                ),
+                dict(
+                    snapshot=17,
+                    serial=10,
+                    block_type=2,
+                    type_name="BLT_2WAY",
+                    start_ea_hex="0x180014100",
+                    start_ea_i64=0,
+                    end_ea_hex=None,
+                    end_ea_i64=None,
+                    nsucc=2,
+                    npred=1,
+                    succs="[20, 30]",
+                    preds="[0]",
+                    insn_count=0,
+                ),
+                dict(
+                    snapshot=17,
+                    serial=20,
+                    block_type=1,
+                    type_name="BLT_1WAY",
+                    start_ea_hex="0x180014200",
+                    start_ea_i64=0,
+                    end_ea_hex=None,
+                    end_ea_i64=None,
+                    nsucc=1,
+                    npred=1,
+                    succs="[100]",
+                    preds="[10]",
+                    insn_count=0,
+                ),
+                dict(
+                    snapshot=17,
+                    serial=30,
+                    block_type=1,
+                    type_name="BLT_1WAY",
+                    start_ea_hex="0x180014300",
+                    start_ea_i64=0,
+                    end_ea_hex=None,
+                    end_ea_i64=None,
+                    nsucc=1,
+                    npred=1,
+                    succs="[100]",
+                    preds="[10]",
+                    insn_count=0,
+                ),
+                dict(
+                    snapshot=17,
+                    serial=100,
+                    block_type=0,
+                    type_name="BLT_STOP",
+                    start_ea_hex="0x180014FFF",
+                    start_ea_i64=0,
+                    end_ea_hex=None,
+                    end_ea_i64=None,
+                    nsucc=0,
+                    npred=2,
+                    succs="[]",
+                    preds="[20, 30]",
+                    insn_count=0,
+                ),
+            ]
+        ).execute()
+        Instruction.insert_many(
+            [
+                dict(
+                    snapshot=17,
+                    block_serial=20,
+                    insn_index=0,
+                    ea_hex="0x0",
+                    ea_i64=0,
+                    opcode=4,
+                    opcode_name="m_mov",
+                    dstr="mov #0xAA.8, %var_8.8",
+                ),
+                dict(
+                    snapshot=17,
+                    block_serial=30,
+                    insn_index=0,
+                    ea_hex="0x0",
+                    ea_i64=0,
+                    opcode=4,
+                    opcode_name="m_mov",
+                    dstr="mov #0xBB.8, %var_8.8",
+                ),
+            ]
+        ).execute()
         FactObservation.insert(
-            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
-            fact_id="fact_byte_3", kind="TerminalByteEmitterFact",
-            semantic_key="byte_emit_3", maturity="MMAT_GLBOPT1", phase="pre_d810",
+            snapshot=5,
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            fact_id="fact_byte_3",
+            kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_3",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
             confidence=0.85,
             source_ea_hex="0x180014210",
-            payload=json.dumps({
-                "byte_index": 3,
-                "destination_block": 20,
-                "block_ea": 0x180014200,
-                "opcode": "m_stx",
-                "emitter_role": "memory_store",
-                "corridor_role": "terminal_tail",
-                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
-            }),
+            payload=json.dumps(
+                {
+                    "byte_index": 3,
+                    "destination_block": 20,
+                    "block_ea": 0x180014200,
+                    "opcode": "m_stx",
+                    "emitter_role": "memory_store",
+                    "corridor_role": "terminal_tail",
+                    "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                    "source_byte_expression": "xdu([ds.2:%var_190.8+#3.8].1)",
+                }
+            ),
             evidence="{}",
         ).execute()
         FactObservation.insert(
-            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
-            fact_id="fact_byte_6", kind="TerminalByteEmitterFact",
-            semantic_key="byte_emit_6", maturity="MMAT_GLBOPT1", phase="pre_d810",
+            snapshot=5,
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            fact_id="fact_byte_6",
+            kind="TerminalByteEmitterFact",
+            semantic_key="byte_emit_6",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
             confidence=0.85,
             source_ea_hex="0x180014310",
-            payload=json.dumps({
-                "byte_index": 6,
-                "destination_block": 30,
-                "block_ea": 0x180014300,
-                "opcode": "m_stx",
-                "emitter_role": "memory_store",
-                "corridor_role": "terminal_tail",
-                "destination_buffer_expression": "[ds.2:.+%var_188.8]",
-                "source_byte_expression": "xdu([ds.2:%var_190.8+#6.8].1)",
-            }),
+            payload=json.dumps(
+                {
+                    "byte_index": 6,
+                    "destination_block": 30,
+                    "block_ea": 0x180014300,
+                    "opcode": "m_stx",
+                    "emitter_role": "memory_store",
+                    "corridor_role": "terminal_tail",
+                    "destination_buffer_expression": "[ds.2:.+%var_188.8]",
+                    "source_byte_expression": "xdu([ds.2:%var_190.8+#6.8].1)",
+                }
+            ),
             evidence="{}",
         ).execute()
         # An unrelated fact that must be skipped.
         FactObservation.insert(
-            snapshot=5, func_ea_hex="0x0", func_ea_i64=0,
-            fact_id="fact_other", kind="LoopCarrierFact",
-            semantic_key="loop_carrier", maturity="MMAT_GLBOPT1", phase="pre_d810",
+            snapshot=5,
+            func_ea_hex="0x0",
+            func_ea_i64=0,
+            fact_id="fact_other",
+            kind="LoopCarrierFact",
+            semantic_key="loop_carrier",
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
             confidence=0.0,
             payload=json.dumps({}),
             evidence="{}",

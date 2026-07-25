@@ -67,14 +67,18 @@ class StateDagIndex:
         self._by_target_state: dict[int, list[DagParentEdge]] = {}
         self._by_target_entry: dict[int, list[DagParentEdge]] = {}
         for edge in edges:
-            self._by_anchor.setdefault((edge.source_block, edge.branch_arm), []).append(edge)
+            self._by_anchor.setdefault((edge.source_block, edge.branch_arm), []).append(
+                edge
+            )
             child_identity = _node_identity(edge.child_key)
             if child_identity is not None:
                 self._by_child_key.setdefault(child_identity, []).append(edge)
             if edge.target_state is not None:
                 self._by_target_state.setdefault(edge.target_state, []).append(edge)
             if edge.target_entry_anchor is not None:
-                self._by_target_entry.setdefault(edge.target_entry_anchor, []).append(edge)
+                self._by_target_entry.setdefault(edge.target_entry_anchor, []).append(
+                    edge
+                )
 
     @classmethod
     def from_dag(cls, dag: object | None) -> "StateDagIndex":
@@ -119,7 +123,8 @@ class StateDagIndex:
                         else int(getattr(edge, "target_entry_anchor"))
                     ),
                     ordered_path=tuple(
-                        int(block) for block in (getattr(edge, "ordered_path", ()) or ())
+                        int(block)
+                        for block in (getattr(edge, "ordered_path", ()) or ())
                     ),
                     last_write_site=last_write_site,
                     semantic_kind=kind_name,

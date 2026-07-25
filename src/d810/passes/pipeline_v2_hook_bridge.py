@@ -5,6 +5,7 @@ portable pass manager.  It derives the legacy live hook rule activations needed
 for an explicit ``pipeline_v2_mode: config-v2`` project, while leaving the
 generated ``pipeline_v2`` payload as the source of truth.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -54,7 +55,9 @@ def _rule_config(name: str, config: object) -> RuleConfiguration:
     )
 
 
-def _state_machine_rule_config(configs: tuple[PipelineConfig, ...]) -> RuleConfiguration:
+def _state_machine_rule_config(
+    configs: tuple[PipelineConfig, ...],
+) -> RuleConfiguration:
     native_configs = tuple(
         config for config in configs if config.pass_id in STATE_MACHINE_NATIVE_PASS_IDS
     )
@@ -196,7 +199,9 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
     )
 
 
-def pipeline_v2_native_state_machine_configs(project_config) -> tuple[PipelineConfig, ...]:
+def pipeline_v2_native_state_machine_configs(
+    project_config,
+) -> tuple[PipelineConfig, ...]:
     """Return only native state-machine spine configs from an explicit v2 payload."""
     return tuple(
         config

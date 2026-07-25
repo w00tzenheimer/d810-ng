@@ -13,6 +13,7 @@ Tests are organized into:
     (find_xor_with_globals, analyze_table_encoding, find_table_reference).
     These are skipped until a binary with suitable table patterns is available.
 """
+
 from __future__ import annotations
 
 import os
@@ -38,13 +39,16 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 @pytest.fixture(scope="class")
 def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     """Setup fixture for libobfuscated tests -- runs once per class."""
     import idaapi
+
     if not idaapi.init_hexrays_plugin():
         pytest.skip("Hex-Rays decompiler plugin not available")
     return ida_database
@@ -94,7 +98,10 @@ class TestTableEncoding:
     @pytest.mark.ida_required
     def test_members(self, libobfuscated_setup):
         assert set(TableEncoding.__members__.keys()) == {
-            "DIRECT", "OFFSET", "XOR", "OFFSET_XOR",
+            "DIRECT",
+            "OFFSET",
+            "XOR",
+            "OFFSET_XOR",
         }
 
     @pytest.mark.ida_required
@@ -277,6 +284,7 @@ class TestReadGlobalValue:
     def test_read_from_valid_address(self, libobfuscated_setup):
         """Reading from a valid address within the binary should return an int."""
         import idaapi
+
         min_ea = idaapi.inf_get_min_ea()
         result = read_global_value(min_ea, 4)
         assert result is not None
@@ -286,6 +294,7 @@ class TestReadGlobalValue:
     def test_read_1_byte(self, libobfuscated_setup):
         """Reading 1 byte from a valid address should return a value 0..255."""
         import idaapi
+
         min_ea = idaapi.inf_get_min_ea()
         result = read_global_value(min_ea, 1)
         assert result is not None
@@ -295,6 +304,7 @@ class TestReadGlobalValue:
     def test_read_2_bytes(self, libobfuscated_setup):
         """Reading 2 bytes from a valid address should return a value 0..65535."""
         import idaapi
+
         min_ea = idaapi.inf_get_min_ea()
         result = read_global_value(min_ea, 2)
         assert result is not None
@@ -304,6 +314,7 @@ class TestReadGlobalValue:
     def test_read_4_bytes(self, libobfuscated_setup):
         """Reading 4 bytes from a valid address should return a 32-bit value."""
         import idaapi
+
         min_ea = idaapi.inf_get_min_ea()
         result = read_global_value(min_ea, 4)
         assert result is not None
@@ -313,6 +324,7 @@ class TestReadGlobalValue:
     def test_read_8_bytes(self, libobfuscated_setup):
         """Reading 8 bytes from a valid address should return a 64-bit value."""
         import idaapi
+
         min_ea = idaapi.inf_get_min_ea()
         result = read_global_value(min_ea, 8)
         assert result is not None
@@ -328,6 +340,7 @@ class TestReadGlobalValue:
     def test_read_consistency(self, libobfuscated_setup):
         """Reading the same address twice should return the same value."""
         import idaapi
+
         min_ea = idaapi.inf_get_min_ea()
         result1 = read_global_value(min_ea, 4)
         result2 = read_global_value(min_ea, 4)
@@ -340,6 +353,7 @@ class TestReadGlobalValue:
         read_global_value(ea, 4) == (byte[0] | byte[1]<<8 | byte[2]<<16 | byte[3]<<24)
         """
         import idaapi
+
         min_ea = idaapi.inf_get_min_ea()
         full = read_global_value(min_ea, 4)
         if full is None:
@@ -368,6 +382,7 @@ class TestReadTableEntries:
     def test_reads_entries_from_valid_address(self, libobfuscated_setup):
         """Reading entries from a valid address should return a non-empty list."""
         import idaapi
+
         min_ea = idaapi.inf_get_min_ea()
         entries = read_table_entries(min_ea, 3, entry_size=4)
         assert isinstance(entries, list)
@@ -379,6 +394,7 @@ class TestReadTableEntries:
     def test_entry_count_matches_request(self, libobfuscated_setup):
         """When all reads succeed, the number of entries should match the count."""
         import idaapi
+
         min_ea = idaapi.inf_get_min_ea()
         count = 5
         entries = read_table_entries(min_ea, count, entry_size=4)
@@ -389,6 +405,7 @@ class TestReadTableEntries:
     def test_entries_consistent_with_read_global_value(self, libobfuscated_setup):
         """Each entry should match what read_global_value returns at that offset."""
         import idaapi
+
         min_ea = idaapi.inf_get_min_ea()
         entry_size = 4
         entries = read_table_entries(min_ea, 3, entry_size=entry_size)
@@ -477,6 +494,7 @@ class TestValidateCodeTarget:
             pytest.skip("Cannot determine function bounds")
 
         import ida_bytes
+
         flags = ida_bytes.get_flags(func_end)
         if ida_bytes.is_code(flags):
             # func_end itself might be code (next function), so validate_code_target
@@ -527,7 +545,9 @@ class TestFindXorWithGlobals:
     def test_xor_pattern_detection(self, libobfuscated_setup):
         """find_xor_with_globals should accept real mblock_t and return typed results."""
         blk = _get_any_real_mblock()
-        assert blk is not None, "Could not build a real microcode block from current binary"
+        assert blk is not None, (
+            "Could not build a real microcode block from current binary"
+        )
         result = find_xor_with_globals(blk)
         assert isinstance(result, list)
         for item in result:
@@ -556,7 +576,9 @@ class TestAnalyzeTableEncoding:
     def test_xor_encoding_detection(self, libobfuscated_setup):
         """analyze_table_encoding should return a valid triple on real mblock_t."""
         blk = _get_any_real_mblock()
-        assert blk is not None, "Could not build a real microcode block from current binary"
+        assert blk is not None, (
+            "Could not build a real microcode block from current binary"
+        )
         encoding, xor_key, base = analyze_table_encoding(blk)
         assert isinstance(encoding, TableEncoding)
         assert isinstance(xor_key, int)
@@ -566,7 +588,9 @@ class TestAnalyzeTableEncoding:
     def test_offset_encoding_detection(self, libobfuscated_setup):
         """analyze_table_encoding should be stable across repeated calls."""
         blk = _get_any_real_mblock()
-        assert blk is not None, "Could not build a real microcode block from current binary"
+        assert blk is not None, (
+            "Could not build a real microcode block from current binary"
+        )
         first = analyze_table_encoding(blk)
         second = analyze_table_encoding(blk)
         assert first == second
@@ -595,7 +619,8 @@ class TestFindTableReference:
     def test_ldx_global_detection(self, libobfuscated_setup):
         """find_table_reference should accept real mblock_t and return int/None."""
         blk = _get_any_real_mblock()
-        assert blk is not None, "Could not build a real microcode block from current binary"
+        assert blk is not None, (
+            "Could not build a real microcode block from current binary"
+        )
         result = find_table_reference(blk)
         assert result is None or isinstance(result, int)
-

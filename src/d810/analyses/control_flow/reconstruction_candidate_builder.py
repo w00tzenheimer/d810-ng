@@ -17,9 +17,9 @@ from d810.analyses.control_flow.shared_corridor import is_backward_same_corridor
 # wire the real planner).  This module-level name is kept ONLY as the legacy
 # monkeypatch seam used by unit tests; it defaults to ``None`` and is never the
 # transforms planner (dissolution, llr-lyly).
-plan_reconstruction_candidate: (
-    Callable[..., ReconstructionPlanningDecision] | None
-) = None
+plan_reconstruction_candidate: Callable[..., ReconstructionPlanningDecision] | None = (
+    None
+)
 from d810.analyses.control_flow.edge_metadata import make_edge_metadata
 from d810.analyses.control_flow.linearized_state_dag import (
     SemanticEdgeKind,
@@ -118,7 +118,9 @@ def build_reconstruction_candidate(
 ) -> tuple[ReconstructionCandidate | None, dict[str, int | str | None] | None]:
     # The transforms-bound planner is injected by the live caller; tests still
     # monkeypatch the module-level ``plan_reconstruction_candidate`` seam.
-    planner = plan_reconstruction_candidate or globals()["plan_reconstruction_candidate"]
+    planner = (
+        plan_reconstruction_candidate or globals()["plan_reconstruction_candidate"]
+    )
     if edge.kind not in (
         SemanticEdgeKind.TRANSITION,
         SemanticEdgeKind.CONDITIONAL_TRANSITION,
@@ -283,7 +285,9 @@ def build_reconstruction_candidate(
             is_conditional_transition=(
                 edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION
             ),
-            shared_suffix_blocks=frozenset(int(block) for block in shared_suffix_blocks),
+            shared_suffix_blocks=frozenset(
+                int(block) for block in shared_suffix_blocks
+            ),
             dispatcher_region=frozenset(int(block) for block in dispatcher_region),
             has_unsafe_trailing_insns=bool(site.unsafe_trailing_insn_eas),
         ),

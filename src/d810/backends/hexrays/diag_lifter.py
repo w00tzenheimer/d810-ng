@@ -22,6 +22,7 @@ Registration funnels through the idempotent ``ensure_diag_lifter_registered()``;
 ``backends/`` is the single lawful ``register_live_lifter()`` call site (the
 ``register-live-lifter-only-in-backends`` ast-grep rule ignores ``backends/**``).
 """
+
 from __future__ import annotations
 
 import json
@@ -85,22 +86,22 @@ _OPCODE_NAME_TO_INSN_KIND: Mapping[str, InsnKind] = MappingProxyType(
 # mop ``t`` type-num -> portable OperandKind (relocated from ir; diag-only).
 _TYPE_NUM_TO_OPERAND_KIND: Mapping[int, OperandKind] = MappingProxyType(
     {
-        0: OperandKind.EMPTY,      # mop_z
-        1: OperandKind.REGISTER,   # mop_r
-        2: OperandKind.NUMBER,     # mop_n
-        3: OperandKind.STRING,     # mop_str
-        4: OperandKind.SUBINSN,    # mop_d
-        5: OperandKind.STACK,      # mop_S
-        6: OperandKind.GLOBAL,     # mop_v
-        7: OperandKind.BLOCK,      # mop_b
-        8: OperandKind.ARG_LIST,   # mop_f
-        9: OperandKind.LVAR,       # mop_l
-        10: OperandKind.ADDRESS,   # mop_a
-        11: OperandKind.HELPER,    # mop_h
-        12: OperandKind.CASE_LIST, # mop_c
+        0: OperandKind.EMPTY,  # mop_z
+        1: OperandKind.REGISTER,  # mop_r
+        2: OperandKind.NUMBER,  # mop_n
+        3: OperandKind.STRING,  # mop_str
+        4: OperandKind.SUBINSN,  # mop_d
+        5: OperandKind.STACK,  # mop_S
+        6: OperandKind.GLOBAL,  # mop_v
+        7: OperandKind.BLOCK,  # mop_b
+        8: OperandKind.ARG_LIST,  # mop_f
+        9: OperandKind.LVAR,  # mop_l
+        10: OperandKind.ADDRESS,  # mop_a
+        11: OperandKind.HELPER,  # mop_h
+        12: OperandKind.CASE_LIST,  # mop_c
         13: OperandKind.FP_CONST,  # mop_fn
-        14: OperandKind.PAIR,      # mop_p
-        15: OperandKind.SCATTERED, # mop_sc
+        14: OperandKind.PAIR,  # mop_p
+        15: OperandKind.SCATTERED,  # mop_sc
     }
 )
 
@@ -262,8 +263,7 @@ def diag_row_has_operand_tree(row: object) -> bool:
     if not meta:
         return False
     return any(
-        parse_diag_meta_operand(meta.get(slot)) is not None
-        for slot in ("l", "r", "d")
+        parse_diag_meta_operand(meta.get(slot)) is not None for slot in ("l", "r", "d")
     )
 
 
@@ -321,7 +321,7 @@ class DiagSourceLifter:
     """Lift an offline diag-snapshot source into a canonical ``FlowGraph``."""
 
     def matches(self, source: Any) -> bool:
-        "True iff ``source`` is a diag-snapshot graph.\n\n        A diag block carries raw instruction rows (``instructions``) and no\n        canonical ``insn_snapshots`` -- the exact discriminator the removed\n        inline collector branch used (``getattr(blk, \"insn_snapshots\", None) is\n        not None``).  Duck-typed so it covers both\n        :class:`d810.core.diag.snapshot.BlockSnapshot` and the loose\n        ``SimpleNamespace`` doubles some collector tests build.  Canonical\n        ``FlowGraph`` snapshots (``d810.ir`` blocks carry ``insn_snapshots``) and\n        live ``mba`` sources (no ``blocks``) do not match, so the preanalysis default\n        iteration / the live lifter handle them."
+        'True iff ``source`` is a diag-snapshot graph.\n\n        A diag block carries raw instruction rows (``instructions``) and no\n        canonical ``insn_snapshots`` -- the exact discriminator the removed\n        inline collector branch used (``getattr(blk, "insn_snapshots", None) is\n        not None``).  Duck-typed so it covers both\n        :class:`d810.core.diag.snapshot.BlockSnapshot` and the loose\n        ``SimpleNamespace`` doubles some collector tests build.  Canonical\n        ``FlowGraph`` snapshots (``d810.ir`` blocks carry ``insn_snapshots``) and\n        live ``mba`` sources (no ``blocks``) do not match, so the preanalysis default\n        iteration / the live lifter handle them.'
         blocks_attr = getattr(source, "blocks", None)
         if blocks_attr is None:
             return False
@@ -363,9 +363,7 @@ class DiagSourceLifter:
         if entry is None or int(entry) not in canonical:
             entry = min(canonical) if canonical else 0
         func_ea = int(getattr(source, "func_ea", 0) or 0)
-        return FlowGraph(
-            blocks=canonical, entry_serial=int(entry), func_ea=func_ea
-        )
+        return FlowGraph(blocks=canonical, entry_serial=int(entry), func_ea=func_ea)
 
 
 # Module-level singleton so repeated registration (e.g. after a registry reset

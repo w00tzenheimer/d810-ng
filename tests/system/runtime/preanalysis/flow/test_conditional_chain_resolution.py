@@ -72,7 +72,12 @@ def _replaced_attr(obj: object, name: str, value: object):
         setattr(obj, name, original)
 
 
-def _snapshot(*, flow_graph: object, transitions: list[StateTransition], handlers: dict[int, StateHandler]):
+def _snapshot(
+    *,
+    flow_graph: object,
+    transitions: list[StateTransition],
+    handlers: dict[int, StateHandler],
+):
     sm = DispatcherStateMachine(
         mba=SimpleNamespace(entry_ea=0x401000, maturity=1),
         state_var=SimpleNamespace(name="state"),
@@ -105,8 +110,12 @@ def test_collect_conditional_fork_resolution_candidates_static_chain():
     snapshot = _snapshot(
         flow_graph=fg,
         transitions=[
-            StateTransition(from_state=0x10, to_state=1, from_block=10, is_conditional=True),
-            StateTransition(from_state=0x10, to_state=2, from_block=10, is_conditional=True),
+            StateTransition(
+                from_state=0x10, to_state=1, from_block=10, is_conditional=True
+            ),
+            StateTransition(
+                from_state=0x10, to_state=2, from_block=10, is_conditional=True
+            ),
         ],
         handlers={
             1: StateHandler(state_value=1, check_block=20, handler_blocks=[20]),
@@ -118,7 +127,9 @@ def test_collect_conditional_fork_resolution_candidates_static_chain():
         snapshot,
         conditional_opcodes=(0x99,),
         normalize_reversed_jump_opcode=lambda opcode: opcode,
-        is_jump_taken_for_state=lambda check_opcode, state_value, check_const, check_size: state_value == 1,
+        is_jump_taken_for_state=lambda check_opcode, state_value, check_const, check_size: (
+            state_value == 1
+        ),
     )
 
     assert len(candidates) == 1
@@ -149,8 +160,12 @@ def test_collect_conditional_fork_resolution_candidates_uses_emulation_fallback(
     snapshot = _snapshot(
         flow_graph=fg,
         transitions=[
-            StateTransition(from_state=0x10, to_state=1, from_block=10, is_conditional=True),
-            StateTransition(from_state=0x10, to_state=2, from_block=10, is_conditional=True),
+            StateTransition(
+                from_state=0x10, to_state=1, from_block=10, is_conditional=True
+            ),
+            StateTransition(
+                from_state=0x10, to_state=2, from_block=10, is_conditional=True
+            ),
         ],
         handlers={
             1: StateHandler(state_value=1, check_block=30, handler_blocks=[30]),
@@ -172,16 +187,26 @@ def test_collect_conditional_fork_resolution_candidates_uses_emulation_fallback(
         return 200 if int(state_value) == 1 else 201
 
     with (
-        _replaced_attr(resolution, "resolve_conditional_chain_target", lambda *args, **kwargs: None),
-        _replaced_attr(resolution, "_collect_ladder_use_before_def", lambda *args, **kwargs: ["seed"]),
-        _replaced_attr(resolution, "get_successor_into_dispatcher", lambda *args, **kwargs: 77),
+        _replaced_attr(
+            resolution, "resolve_conditional_chain_target", lambda *args, **kwargs: None
+        ),
+        _replaced_attr(
+            resolution,
+            "_collect_ladder_use_before_def",
+            lambda *args, **kwargs: ["seed"],
+        ),
+        _replaced_attr(
+            resolution, "get_successor_into_dispatcher", lambda *args, **kwargs: 77
+        ),
         _replaced_attr(resolution, "_emulate_chain_exit", _fake_emulate),
     ):
         candidates = resolution.collect_conditional_fork_resolution_candidates(
             snapshot,
             conditional_opcodes=(0x99,),
             normalize_reversed_jump_opcode=lambda opcode: opcode,
-            is_jump_taken_for_state=lambda check_opcode, state_value, check_const, check_size: state_value == 1,
+            is_jump_taken_for_state=lambda check_opcode, state_value, check_const, check_size: (
+                state_value == 1
+            ),
         )
 
     assert len(candidates) == 1

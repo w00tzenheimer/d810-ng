@@ -3,6 +3,7 @@
 Tests BasePat, AnyPat, OrPat, AndPat, DeepExprPat, AbstractBinaryOpPat,
 NumPat, CallPat, IfPat, BlockPat, InstructionPat, and the base_check decorator.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -29,14 +30,17 @@ _MOCK_UNARY_OP = 9991
 _MOCK_BINARY_OP = 9992
 _MOCK_BLOCK_OP = 9993
 
+
 def _register_mock_ops():
     from d810.ctree import ast_iteration
+
     if _MOCK_UNARY_OP not in ast_iteration.op2func:
         ast_iteration.op2func[_MOCK_UNARY_OP] = lambda x: tuple(x._children)
     if _MOCK_BINARY_OP not in ast_iteration.op2func:
         ast_iteration.op2func[_MOCK_BINARY_OP] = lambda x: tuple(x._children)
     if _MOCK_BLOCK_OP not in ast_iteration.op2func:
         ast_iteration.op2func[_MOCK_BLOCK_OP] = lambda x: tuple(x._children)
+
 
 _register_mock_ops()
 
@@ -57,6 +61,7 @@ class MockItem:
 
 class MockPat:
     """Minimal stand-in for pattern field in MatchContext."""
+
     pass
 
 
@@ -213,6 +218,7 @@ class TestAndPat:
 # DeepExprPat tests (Issue D6)
 # -------------------------------------------------------------------------
 
+
 class MockTreeNode:
     """Mock AST node with children for DeepExprPat iteration."""
 
@@ -310,6 +316,7 @@ class TestDeepExprPat:
 # AbstractBinaryOpPat.symmetric tests (Issue D7)
 # -------------------------------------------------------------------------
 
+
 class MockBinaryExpr:
     """Mock binary expression with x and y operands."""
 
@@ -377,6 +384,7 @@ class TestAbstractBinaryOpPatSymmetric:
 # NumPat tests (Expression pattern coverage)
 # -------------------------------------------------------------------------
 
+
 class MockNumExpr:
     """Mock numeric expression for NumPat testing."""
 
@@ -386,7 +394,9 @@ class MockNumExpr:
 
     def __init__(self, value: int, op: int | None = None):
         # NumPat.check_op == idaapi.cot_num when IDA is available; mock must match.
-        self.op = op if op is not None else (idaapi.cot_num if idaapi is not None else None)
+        self.op = (
+            op if op is not None else (idaapi.cot_num if idaapi is not None else None)
+        )
         self.ea = 0x1000
         self.opname = "cot_num"
         self.n = self._NumVal(value)
@@ -420,12 +430,15 @@ class TestNumPat:
 # CallPat tests (Expression pattern coverage)
 # -------------------------------------------------------------------------
 
+
 class MockCallExpr:
     """Mock call expression for CallPat testing."""
 
     def __init__(self, x_op: int, args: list | None = None, op: int | None = None):
         # CallPat.check_op == idaapi.cot_call when IDA is available; mock must match.
-        self.op = op if op is not None else (idaapi.cot_call if idaapi is not None else None)
+        self.op = (
+            op if op is not None else (idaapi.cot_call if idaapi is not None else None)
+        )
         self.ea = 0x1000
         self.opname = "cot_call"
         self.x = MockItem(op=x_op)
@@ -467,6 +480,7 @@ class TestCallPat:
 # -------------------------------------------------------------------------
 # InstructionPat label checking tests
 # -------------------------------------------------------------------------
+
 
 class TestInstructionPatLabel:
     def test_skip_label_check(self):
@@ -546,6 +560,7 @@ class TestInstructionPatLabel:
 # IfPat tests (Instruction pattern coverage)
 # -------------------------------------------------------------------------
 
+
 class MockIfItem:
     """Mock for an if instruction item."""
 
@@ -557,7 +572,9 @@ class MockIfItem:
 
     def __init__(self, expr, ithen, ielse=None, op=None, label_num=-1):
         # IfPat.check_op == idaapi.cit_if when IDA is available; mock must match.
-        self.op = op if op is not None else (idaapi.cit_if if idaapi is not None else None)
+        self.op = (
+            op if op is not None else (idaapi.cit_if if idaapi is not None else None)
+        )
         self.ea = 0x1000
         self.opname = "cit_if"
         self.label_num = label_num
@@ -613,12 +630,15 @@ class TestIfPat:
 # BlockPat tests (Instruction pattern coverage)
 # -------------------------------------------------------------------------
 
+
 class MockBlockItem:
     """Mock for a block instruction item."""
 
     def __init__(self, block_items: list, op=None, label_num=-1):
         # BlockPat.check_op == idaapi.cit_block when IDA is available; mock must match.
-        self.op = op if op is not None else (idaapi.cit_block if idaapi is not None else None)
+        self.op = (
+            op if op is not None else (idaapi.cit_block if idaapi is not None else None)
+        )
         self.ea = 0x1000
         self.opname = "cit_block"
         self.label_num = label_num

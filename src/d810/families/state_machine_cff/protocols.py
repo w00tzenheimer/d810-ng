@@ -7,6 +7,7 @@ interfaces, so both this ``d810.families`` mid-layer and the
 module keeps the symbols importable from the old path for back-compat.
 New code should import from ``d810.capabilities.unflattening_strategy``.
 """
+
 from __future__ import annotations
 
 from d810.capabilities.unflattening_strategy import (

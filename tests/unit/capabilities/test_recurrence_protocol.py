@@ -3,6 +3,7 @@
 Pure-Python, no IDA. The layer constraint (no capabilities->analyses upward
 edge) is proven by lint-imports; here we check structural conformance.
 """
+
 from __future__ import annotations
 
 from d810.capabilities import ExternalRecurrenceCapability as ExternalReexport

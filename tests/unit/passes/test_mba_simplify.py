@@ -1,4 +1,5 @@
 """Config-v2 ``mba-simplify`` adapter behavior."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -243,9 +244,7 @@ def test_mba_simplify_pipeline_executes_when_string_and_typed_capabilities_exist
     config = PipelineConfig.from_dict(
         {
             "pass": "mba-simplify",
-            "requires": {
-                "capabilities": ["local_instruction_rewrite", "z3_solver"]
-            },
+            "requires": {"capabilities": ["local_instruction_rewrite", "z3_solver"]},
             "rules": {
                 "include": ["RuleB", "RuleA"],
                 "options": {"RuleA": {"limit": 3}},

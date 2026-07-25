@@ -23,6 +23,7 @@ Emit preconditions (beyond the proven gate), both checked on the live blocks:
 
 If either fails, the rule ABSTAINS.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -71,7 +72,9 @@ def plan_single_trip_peel(mba, candidate: PeelCandidate) -> PeelPlan | None:
     hblk = mba.get_mblock(header)
     lblk = mba.get_mblock(latch)
     if hblk is None or lblk is None:
-        logger.debug("peel plan abstain: missing block header=%s latch=%s", header, latch)
+        logger.debug(
+            "peel plan abstain: missing block header=%s latch=%s", header, latch
+        )
         return None
     # P3: header is a pure-test block -- exactly one instruction (the cond jump).
     # NB compare by list structure, NOT ``head is tail``: SWIG returns a fresh
@@ -82,7 +85,9 @@ def plan_single_trip_peel(mba, candidate: PeelCandidate) -> PeelPlan | None:
         while ins is not None:
             n += 1
             ins = ins.next
-        logger.debug("peel plan abstain P3: header %d not pure-test (ninsn=%d)", header, n)
+        logger.debug(
+            "peel plan abstain P3: header %d not pure-test (ninsn=%d)", header, n
+        )
         return None
     # P4: latch is a 1-way goto whose sole successor is the header.
     if (
@@ -110,9 +115,7 @@ def plan_single_trip_peel(mba, candidate: PeelCandidate) -> PeelPlan | None:
             list(hblk.succset),
         )
         return None
-    logger.debug(
-        "peel plan OK: header=%d latch=%d exit=%d", header, latch, exits[0]
-    )
+    logger.debug("peel plan OK: header=%d latch=%d exit=%d", header, latch, exits[0])
     return PeelPlan(header=header, latch=latch, exit_succ=exits[0])
 
 

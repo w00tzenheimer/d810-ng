@@ -9,6 +9,7 @@ Tests verify:
 These tests avoid importing IDA-dependent modules (ida_hexrays, d810.manager,
 d810.hexrays.hooks.hexrays_hooks).
 """
+
 from __future__ import annotations
 
 from d810.passes.pipeline import FlowGraphTransformPipeline
@@ -25,6 +26,7 @@ from d810.transforms.simplify_identical_branch import SimplifyIdenticalBranchPas
 # ---------------------------------------------------------------------------
 # Factory: Hex-Rays adapter from portable spec
 # ---------------------------------------------------------------------------
+
 
 def build_cleanup_pipeline() -> FlowGraphTransformPipeline:
     """Construct the Hex-Rays PassPipeline from the portable cleanup spec."""
@@ -163,18 +165,20 @@ class TestBlockOptimizerManagerPipelineIntegration:
     def _read_block_adapter_source(self) -> str:
         """Return the source of optblock_adapter.py as a string."""
         import pathlib
+
         repo_root = pathlib.Path(__file__).parent.parent.parent.parent.parent
-        candidates = (
-            repo_root / "src/d810/hexrays/hooks/optblock_adapter.py",
-        )
+        candidates = (repo_root / "src/d810/hexrays/hooks/optblock_adapter.py",)
         for path in candidates:
             if path.exists():
                 return path.read_text(encoding="utf-8")
-        raise FileNotFoundError(f"optblock_adapter.py not found in candidates: {candidates}")
+        raise FileNotFoundError(
+            f"optblock_adapter.py not found in candidates: {candidates}"
+        )
 
     def _read_hook_source(self) -> str:
         """Return the source of hexrays_hooks.py as a string."""
         import pathlib
+
         repo_root = pathlib.Path(__file__).parent.parent.parent.parent.parent
         candidates = (
             repo_root / "src/d810/hexrays/hooks/hexrays_hooks.py",
@@ -183,7 +187,9 @@ class TestBlockOptimizerManagerPipelineIntegration:
         for path in candidates:
             if path.exists():
                 return path.read_text(encoding="utf-8")
-        raise FileNotFoundError(f"hexrays_hooks.py not found in candidates: {candidates}")
+        raise FileNotFoundError(
+            f"hexrays_hooks.py not found in candidates: {candidates}"
+        )
 
     def test_block_optimizer_has_pass_pipeline_attribute(self):
         """BlockOptimizerManager source must declare _pass_pipeline attribute."""
@@ -235,7 +241,9 @@ class TestBlockOptimizerManagerPipelineIntegration:
         assert glbopt_start != -1, "glbopt() method must exist"
         # Find the next method after glbopt
         next_method = src.find("\n    def ", glbopt_start + 1)
-        glbopt_body = src[glbopt_start:next_method] if next_method != -1 else src[glbopt_start:]
+        glbopt_body = (
+            src[glbopt_start:next_method] if next_method != -1 else src[glbopt_start:]
+        )
         assert "pass_pipeline" not in glbopt_body, (
             "glbopt() must NOT reference pass_pipeline - pipeline runs in BlockOptimizerManager"
         )

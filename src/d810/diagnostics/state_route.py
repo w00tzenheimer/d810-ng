@@ -18,6 +18,7 @@ routes a concrete state through the *same* router the recovery uses
 
 Offline + portable: reads only the diag DB and ``d810.analyses`` (no IDA).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -106,13 +107,18 @@ def build_decision_dag_from_diag(
                 false_target = s
                 break
         nodes[int(blk)] = RouteComparison(
-            serial=int(blk), op=op, const=const,
-            true_target=taken, false_target=false_target,
+            serial=int(blk),
+            op=op,
+            const=const,
+            true_target=taken,
+            false_target=false_target,
         )
     return DecisionDag(width, nodes, root)
 
 
-def _block_entry_ea(conn: sqlite3.Connection, snapshot_id: int, block: int) -> str | None:
+def _block_entry_ea(
+    conn: sqlite3.Connection, snapshot_id: int, block: int
+) -> str | None:
     row = conn.execute(
         "SELECT ea_hex FROM instructions WHERE snapshot_id=? AND block_serial=? "
         "ORDER BY ea_hex LIMIT 1",
@@ -234,7 +240,9 @@ def route_state(
 
 def format_provenance(prov: RouteProvenance) -> str:
     out: list[str] = []
-    out.append(f"state 0x{prov.state:08X}  (snapshot {prov.snapshot_id}, root blk{prov.root})")
+    out.append(
+        f"state 0x{prov.state:08X}  (snapshot {prov.snapshot_id}, root blk{prov.root})"
+    )
     out.append("-" * 72)
     out.append("condition-chain route path:")
     if prov.path:
@@ -266,7 +274,9 @@ def format_provenance(prov: RouteProvenance) -> str:
             f"[{prov.recovery_source}]{flag}"
         )
     else:
-        out.append("recovery recorded target: (none found in dag_edges / dispatcher rows)")
+        out.append(
+            "recovery recorded target: (none found in dag_edges / dispatcher rows)"
+        )
     return "\n".join(out)
 
 
@@ -318,9 +328,15 @@ def run(args: argparse.Namespace) -> int:
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("state", help="State value (hex, e.g. 0x1A9A9DD9)")
-    parser.add_argument("--root", type=int, default=3, help="Dispatcher root block (default 3)")
-    parser.add_argument("--slot", default="52", help="State-var diag stkoff (default 52)")
-    parser.add_argument("--width", type=int, default=32, help="State-var bit width (default 32)")
+    parser.add_argument(
+        "--root", type=int, default=3, help="Dispatcher root block (default 3)"
+    )
+    parser.add_argument(
+        "--slot", default="52", help="State-var diag stkoff (default 52)"
+    )
+    parser.add_argument(
+        "--width", type=int, default=32, help="State-var bit width (default 32)"
+    )
 
 
 __all__ = [

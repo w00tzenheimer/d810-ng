@@ -5,6 +5,7 @@ Exercises the ``WorkingSet`` worklist logic and smoke-checks the
 dataclasses / Protocol / enum the later fixpoint-solver migration
 (step 5) is written against.
 """
+
 from __future__ import annotations
 
 import dataclasses

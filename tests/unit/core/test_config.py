@@ -50,7 +50,11 @@ def load_conf_classes():
             module = importlib.reload(sys.modules["d810.core.config"])
         else:
             module = importlib.import_module("d810.core.config")
-        yield module.D810Configuration, module.ProjectConfiguration, module.RuleConfiguration
+        yield (
+            module.D810Configuration,
+            module.ProjectConfiguration,
+            module.RuleConfiguration,
+        )
     finally:
         if orig is not None:
             sys.modules["ida_diskio"] = orig
@@ -59,7 +63,6 @@ def load_conf_classes():
 
 
 class TestConfiguration(unittest.TestCase):
-
     def setUp(self):
         """Set up dummy files for testing."""
         self.dummy_options_file = Path("./options.json")
@@ -169,8 +172,12 @@ class TestConfiguration(unittest.TestCase):
                 config.save()
 
                 reloaded = ProjectConfiguration.from_file(project_path)
-                self.assertTrue(reloaded.additional_configuration["enable_pass_pipeline"])
-                self.assertTrue(reloaded.additional_configuration["enable_analysis_pipeline"])
+                self.assertTrue(
+                    reloaded.additional_configuration["enable_pass_pipeline"]
+                )
+                self.assertTrue(
+                    reloaded.additional_configuration["enable_analysis_pipeline"]
+                )
             finally:
                 project_path.unlink(missing_ok=True)
 
@@ -227,7 +234,9 @@ class TestConfiguration(unittest.TestCase):
 
                 # Check that the list of configurations was saved back to options.json
                 config.save()
-                reloaded_config = D810Configuration(config.config_file, ida_user_dir=ida_dir)
+                reloaded_config = D810Configuration(
+                    config.config_file, ida_user_dir=ida_dir
+                )
                 saved_configs = reloaded_config.get("configurations")
                 self.assertIn("my_user_project.json", saved_configs)
                 self.assertIn("hodur_flag2.json", saved_configs)

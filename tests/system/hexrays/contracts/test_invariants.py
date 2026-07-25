@@ -89,7 +89,9 @@ class _MBA:
 
 
 def _linear_mba(qty: int, default_type: int | None = None) -> tuple[_MBA, list[_Block]]:
-    block_type = int(default_type if default_type is not None else getattr(_HR, "BLT_0WAY"))
+    block_type = int(
+        default_type if default_type is not None else getattr(_HR, "BLT_0WAY")
+    )
     blocks = [_Block(i, block_type=block_type) for i in range(qty)]
     for i, blk in enumerate(blocks):
         blk.prevb = blocks[i - 1] if i > 0 else None
@@ -165,7 +167,9 @@ def _build_50854():
     mba, blocks = _linear_mba(4)
     blocks[1].type = int(getattr(_HR, "BLT_1WAY"))
     blocks[1].succset = _Vec([0])
-    blocks[1].tail = _Insn(int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=0))
+    blocks[1].tail = _Insn(
+        int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=0)
+    )
     blocks[1]._call_block = True
     return mba
 
@@ -174,7 +178,9 @@ def _build_50855():
     mba, blocks = _linear_mba(3)
     blocks[1].type = int(getattr(_HR, "BLT_NWAY"))
     blocks[1].succset = _Vec([2])
-    blocks[1].tail = _Insn(int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=2))
+    blocks[1].tail = _Insn(
+        int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=2)
+    )
     return mba
 
 
@@ -182,7 +188,9 @@ def _build_50856():
     mba, blocks = _linear_mba(4)
     blocks[1].type = int(getattr(_HR, "BLT_2WAY"))
     blocks[1].succset = _Vec([2])
-    blocks[1].tail = _Insn(int(getattr(_HR, "m_jnz")), d=_Mop(int(getattr(_HR, "mop_b")), b=3))
+    blocks[1].tail = _Insn(
+        int(getattr(_HR, "m_jnz")), d=_Mop(int(getattr(_HR, "mop_b")), b=3)
+    )
     return mba
 
 
@@ -214,7 +222,9 @@ def _build_50860():
     mba, blocks = _linear_mba(3)
     blocks[1].type = int(getattr(_HR, "BLT_1WAY"))
     blocks[1].succset = _Vec([0])
-    blocks[1].tail = _Insn(int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=2))
+    blocks[1].tail = _Insn(
+        int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=2)
+    )
     return mba
 
 
@@ -252,14 +262,26 @@ def _build_51815():
         ("CFG_50840_BLOCK_LIST_NEXT_PREV", _build_50840, inv.block_list_consistency),
         ("CFG_50841_BLOCK_LIST_PREV_NEXT", _build_50841, inv.block_list_consistency),
         ("CFG_50842_BLOCK_LIST_END_BOUNDARY", _build_50842, inv.block_list_consistency),
-        ("CFG_50843_BLOCK_LIST_BEGIN_BOUNDARY", _build_50843, inv.block_list_consistency),
+        (
+            "CFG_50843_BLOCK_LIST_BEGIN_BOUNDARY",
+            _build_50843,
+            inv.block_list_consistency,
+        ),
         ("CFG_50854_CALL_BLOCK_FLOW_MISMATCH", _build_50854, inv.block_type_vs_tail),
         ("CFG_50855_NWAY_JTBL_MISMATCH", _build_50855, inv.block_type_vs_tail),
         ("CFG_50856_BAD_NSUCC", _build_50856, inv.block_type_vs_tail),
         ("CFG_50857_SUCC_OUT_OF_RANGE", _build_50857, inv.pred_succ_symmetry),
         ("CFG_50858_SUCC_PRED_MISMATCH", _build_50858, inv.pred_succ_symmetry),
-        ("CFG_50859_JTBL_CASELIST_INVALID", _build_50859, inv.successor_set_matches_tail_semantics),
-        ("CFG_50860_SUCC_MISMATCH", _build_50860, inv.successor_set_matches_tail_semantics),
+        (
+            "CFG_50859_JTBL_CASELIST_INVALID",
+            _build_50859,
+            inv.successor_set_matches_tail_semantics,
+        ),
+        (
+            "CFG_50860_SUCC_MISMATCH",
+            _build_50860,
+            inv.successor_set_matches_tail_semantics,
+        ),
         ("CFG_50861_PRED_SUCC_MISMATCH", _build_50861, inv.pred_succ_symmetry),
         ("CFG_50862_DUPLICATE_PRED", _build_50862, inv.predecessor_uniqueness),
         ("CFG_51774_NORET_CALL_BLOCK_NOT_0WAY", _build_51774, inv.block_type_vs_tail),
@@ -277,7 +299,9 @@ def test_successor_derivation_parity_for_conditional_default_and_jtbl():
 
     blocks[0].type = int(getattr(_HR, "BLT_2WAY"))
     blocks[0].succset = _Vec([1, 2])
-    blocks[0].tail = _Insn(int(getattr(_HR, "m_jnz")), d=_Mop(int(getattr(_HR, "mop_b")), b=2))
+    blocks[0].tail = _Insn(
+        int(getattr(_HR, "m_jnz")), d=_Mop(int(getattr(_HR, "mop_b")), b=2)
+    )
 
     blocks[1].type = int(getattr(_HR, "BLT_1WAY"))
     blocks[1].succset = _Vec([2])
@@ -369,7 +393,9 @@ class _ExtBlock(_Block):
 class _ExtMBA:
     """MBA with maturity, entry_ea, and mixed block types."""
 
-    def __init__(self, blocks: list[_ExtBlock], *, maturity: int = 0, entry_ea: int = 0x401000):
+    def __init__(
+        self, blocks: list[_ExtBlock], *, maturity: int = 0, entry_ea: int = 0x401000
+    ):
         self._blocks = {blk.serial: blk for blk in blocks}
         self.qty = len(blocks)
         self.maturity = maturity
@@ -512,7 +538,9 @@ def _build_50869_clean():
     mbl_fake = int(getattr(_HR, "MBL_FAKE", 0x10))
     # entry block (fake), normal block with valid range, exit block (fake)
     blk0 = _ExtBlock(0, block_type=int(getattr(_HR, "BLT_0WAY")), flags=mbl_fake)
-    blk1 = _ExtBlock(1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401000, end=0x401010)
+    blk1 = _ExtBlock(
+        1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401000, end=0x401010
+    )
     blk2 = _ExtBlock(2, block_type=int(getattr(_HR, "BLT_0WAY")), flags=mbl_fake)
     mba = _ExtMBA([blk0, blk1, blk2], entry_ea=0x401000)
     return mba
@@ -521,8 +549,12 @@ def _build_50869_clean():
 def _build_50869_bad():
     # block with start >= end (inverted range)
     blk0 = _ExtBlock(0, block_type=int(getattr(_HR, "BLT_0WAY")))
-    blk1 = _ExtBlock(1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401010, end=0x401000)
-    blk2 = _ExtBlock(2, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401020, end=0x401030)
+    blk1 = _ExtBlock(
+        1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401010, end=0x401000
+    )
+    blk2 = _ExtBlock(
+        2, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401020, end=0x401030
+    )
     return _ExtMBA([blk0, blk1, blk2], entry_ea=0x401000)
 
 
@@ -539,17 +571,29 @@ def test_50869_triggers_violation():
 
 
 def _build_50870_clean():
-    blk0 = _ExtBlock(0, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401000, end=0x401010)
-    blk1 = _ExtBlock(1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401010, end=0x401020)
-    blk2 = _ExtBlock(2, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401020, end=0x401030)
+    blk0 = _ExtBlock(
+        0, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401000, end=0x401010
+    )
+    blk1 = _ExtBlock(
+        1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401010, end=0x401020
+    )
+    blk2 = _ExtBlock(
+        2, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401020, end=0x401030
+    )
     return _ExtMBA([blk0, blk1, blk2], entry_ea=0x401000)
 
 
 def _build_50870_bad():
     # blk1 starts before entry_ea
-    blk0 = _ExtBlock(0, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401000, end=0x401010)
-    blk1 = _ExtBlock(1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x400000, end=0x401010)
-    blk2 = _ExtBlock(2, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401010, end=0x401020)
+    blk0 = _ExtBlock(
+        0, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401000, end=0x401010
+    )
+    blk1 = _ExtBlock(
+        1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x400000, end=0x401010
+    )
+    blk2 = _ExtBlock(
+        2, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401010, end=0x401020
+    )
     return _ExtMBA([blk0, blk1, blk2], entry_ea=0x401000)
 
 
@@ -584,7 +628,9 @@ def _build_51814_bad():
     m_nop = int(getattr(_HR, "m_nop"))
     # entry block (serial 0) has instructions — violation
     head0 = _make_chain(m_nop)
-    blk0 = _ExtBlock(0, block_type=int(getattr(_HR, "BLT_0WAY")), head=head0, tail_insn=_Insn(m_nop))
+    blk0 = _ExtBlock(
+        0, block_type=int(getattr(_HR, "BLT_0WAY")), head=head0, tail_insn=_Insn(m_nop)
+    )
     blk1 = _ExtBlock(1, block_type=int(getattr(_HR, "BLT_0WAY")), head=None)
     blk2 = _ExtBlock(2, block_type=int(getattr(_HR, "BLT_0WAY")), head=None)
     return _ExtMBA([blk0, blk1, blk2])

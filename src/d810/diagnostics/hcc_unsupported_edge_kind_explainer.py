@@ -1,4 +1,5 @@
-"Read-only explainer for HCC ``unsupported_edge_kind`` rejections.\n\nFor every byte the byte-cascade trace marks with\n``candidate_rejection=unsupported_edge_kind``, this module lists the\nexact outgoing DAG edges that triggered the rejection, the actual edge\nkind HCC observed, the kinds the check accepts, and whether existing\nTerminalByteEmitterFact rows on the rejected target make the edge\n\"byte-cascade safe\" -- so we can say either:\n\n    \"rejected because edge kind X is not accepted by check Y, despite\n     facts Z\" (likely safe to allow)\n\nor\n\n    \"rejected correctly; byte N needs a different path\" (no byte\n     facts on the target state).\n\nThis is the gate before any HCC behavior change to the\n``candidate_build`` edge-kind check. It never imports ``ida_hexrays``.\n\nSource of the rejection (single point in the codebase):\n\n- ``src/d810/preanalysis/flow/reconstruction_candidate_builder.py``\n  ``build_reconstruction_candidate``: ``edge.kind not in\n  (SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION)``\n- ``src/d810/preanalysis/flow/reconstruction_discovery.py``\n  ``discover_reconstruction_candidate_seed``: same check.\n\nBoth return ``rejection_reason=\"unsupported_edge_kind\"``. So the\n\"allowed kinds\" set is ``{TRANSITION, CONDITIONAL_TRANSITION}`` and\nthe \"first responsible check\" is ``build_reconstruction_candidate``.\n"
+'Read-only explainer for HCC ``unsupported_edge_kind`` rejections.\n\nFor every byte the byte-cascade trace marks with\n``candidate_rejection=unsupported_edge_kind``, this module lists the\nexact outgoing DAG edges that triggered the rejection, the actual edge\nkind HCC observed, the kinds the check accepts, and whether existing\nTerminalByteEmitterFact rows on the rejected target make the edge\n"byte-cascade safe" -- so we can say either:\n\n    "rejected because edge kind X is not accepted by check Y, despite\n     facts Z" (likely safe to allow)\n\nor\n\n    "rejected correctly; byte N needs a different path" (no byte\n     facts on the target state).\n\nThis is the gate before any HCC behavior change to the\n``candidate_build`` edge-kind check. It never imports ``ida_hexrays``.\n\nSource of the rejection (single point in the codebase):\n\n- ``src/d810/preanalysis/flow/reconstruction_candidate_builder.py``\n  ``build_reconstruction_candidate``: ``edge.kind not in\n  (SemanticEdgeKind.TRANSITION, SemanticEdgeKind.CONDITIONAL_TRANSITION)``\n- ``src/d810/preanalysis/flow/reconstruction_discovery.py``\n  ``discover_reconstruction_candidate_seed``: same check.\n\nBoth return ``rejection_reason="unsupported_edge_kind"``. So the\n"allowed kinds" set is ``{TRANSITION, CONDITIONAL_TRANSITION}`` and\nthe "first responsible check" is ``build_reconstruction_candidate``.\n'
+
 from __future__ import annotations
 
 import json
@@ -25,10 +26,12 @@ from d810.diagnostics.hcc_byte_cascade_trace import (
 # Mirrors SemanticEdgeKind.{TRANSITION, CONDITIONAL_TRANSITION}.name in
 # d810.analyses.control_flow.linearized_state_dag. Keep this in sync if the enum
 # names change.
-ALLOWED_EDGE_KINDS: frozenset[str] = frozenset({
-    "TRANSITION",
-    "CONDITIONAL_TRANSITION",
-})
+ALLOWED_EDGE_KINDS: frozenset[str] = frozenset(
+    {
+        "TRANSITION",
+        "CONDITIONAL_TRANSITION",
+    }
+)
 
 # Hardcoded attribution to the rejection check in the codebase. If the
 # check ever moves, update both this string and the module docstring.
@@ -241,9 +244,7 @@ def _byte_facts_on_blocks(
             .where(
                 (FactObservation.snapshot == snapshot_id)
                 & (FactObservation.kind == "TerminalByteEmitterFact")
-                & FactObservation.source_block.in_(
-                    [int(s) for s in block_serials]
-                )
+                & FactObservation.source_block.in_([int(s) for s in block_serials])
             )
             .tuples()
         )
@@ -283,8 +284,7 @@ def _block_succs_preds(
         row = (
             Block.select(Block.succs)
             .where(
-                (Block.snapshot == snapshot_id)
-                & (Block.serial == int(block_serial))
+                (Block.snapshot == snapshot_id) & (Block.serial == int(block_serial))
             )
             .tuples()
             .first()
@@ -395,7 +395,9 @@ def explain_byte(
             narrative="diag DB has no state_cfg_nodes rows; cannot resolve edges",
         )
     state_hex = _resolve_state_hex_for_block(
-        conn, snap_id, row.block_serial,
+        conn,
+        snap_id,
+        row.block_serial,
     )
     if state_hex is None:
         return EdgeKindExplanation(
@@ -422,24 +424,28 @@ def explain_byte(
         if tgt_state:
             target_blocks = _blocks_owned_by_state(conn, snap_id, tgt_state)
             target_byte_facts = _byte_facts_on_blocks(
-                conn, snap_id, target_blocks,
+                conn,
+                snap_id,
+                target_blocks,
             )
             target_entry = _entry_block_for_state(conn, snap_id, tgt_state)
         succs, preds = _block_succs_preds(conn, snap_id, src_block)
-        rejected_rows.append(RejectedEdgeRow(
-            edge_id=edge_id,
-            source_block=src_block,
-            source_state_hex=src_state or state_hex,
-            target_state_hex=tgt_state,
-            target_entry_block=target_entry,
-            edge_kind=kind,
-            ordered_path=_parse_ordered_path(ordered_path_str),
-            target_block_serials=tuple(target_blocks),
-            target_byte_facts=tuple(sorted(target_byte_facts)),
-            target_has_same_byte_fact=row.byte in target_byte_facts,
-            cfg_source_succs=succs,
-            cfg_source_preds=preds,
-        ))
+        rejected_rows.append(
+            RejectedEdgeRow(
+                edge_id=edge_id,
+                source_block=src_block,
+                source_state_hex=src_state or state_hex,
+                target_state_hex=tgt_state,
+                target_entry_block=target_entry,
+                edge_kind=kind,
+                ordered_path=_parse_ordered_path(ordered_path_str),
+                target_block_serials=tuple(target_blocks),
+                target_byte_facts=tuple(sorted(target_byte_facts)),
+                target_has_same_byte_fact=row.byte in target_byte_facts,
+                cfg_source_succs=succs,
+                cfg_source_preds=preds,
+            )
+        )
     verdict, narrative = _verdict_for(rejected_rows)
     return EdgeKindExplanation(
         byte=row.byte,
@@ -470,7 +476,8 @@ def select_target_rows(
         wanted = {int(b) for b in explicit_bytes}
         return [r for r in rows if r.byte in wanted]
     return [
-        r for r in rows
+        r
+        for r in rows
         if (r.candidate_rejection or "").strip() == "unsupported_edge_kind"
     ]
 
@@ -552,17 +559,21 @@ def format_report(
         for e in ex.rejected_edges:
             lines.append(
                 "| "
-                + " | ".join([
-                    str(e.edge_id),
-                    str(e.source_block) if e.source_block is not None else "?",
-                    e.edge_kind,
-                    e.target_state_hex or "?",
-                    str(e.target_entry_block) if e.target_entry_block is not None else "?",
-                    ",".join(str(b) for b in e.target_byte_facts) or "-",
-                    "yes" if e.target_has_same_byte_fact else "no",
-                    ",".join(str(s) for s in e.cfg_source_succs) or "-",
-                    ",".join(str(p) for p in e.cfg_source_preds) or "-",
-                ])
+                + " | ".join(
+                    [
+                        str(e.edge_id),
+                        str(e.source_block) if e.source_block is not None else "?",
+                        e.edge_kind,
+                        e.target_state_hex or "?",
+                        str(e.target_entry_block)
+                        if e.target_entry_block is not None
+                        else "?",
+                        ",".join(str(b) for b in e.target_byte_facts) or "-",
+                        "yes" if e.target_has_same_byte_fact else "no",
+                        ",".join(str(s) for s in e.cfg_source_succs) or "-",
+                        ",".join(str(p) for p in e.cfg_source_preds) or "-",
+                    ]
+                )
                 + " |"
             )
         lines.append("")

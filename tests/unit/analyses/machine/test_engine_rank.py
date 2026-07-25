@@ -1,4 +1,5 @@
 """Engine ranking tests (P4, llr-1d8u; design §6 ranking / §7)."""
+
 from __future__ import annotations
 
 import pytest
@@ -55,8 +56,8 @@ def test_specificity_counts_resolved_forks_only():
         Soundness.SOUND_OVERAPPROX,
         rows=(_row(1),),
         transitions=(
-            MachineTransition(1, (), (2, 3)),   # resolved fork -> counts
-            MachineTransition(4, (), ()),        # ⊤ cell -> does NOT count
+            MachineTransition(1, (), (2, 3)),  # resolved fork -> counts
+            MachineTransition(4, (), ()),  # ⊤ cell -> does NOT count
         ),
     )
     assert specificity(m) == 2  # 1 row + 1 resolved fork

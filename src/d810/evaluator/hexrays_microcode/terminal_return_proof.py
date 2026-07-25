@@ -1,11 +1,15 @@
 "Layered proof orchestrator for terminal return handlers.\n\nGiven an MBA and a :class:`TerminalReturnAuditReport` from preanalysis, determine\nwhether each terminal handler has a provable return-carrier (rax.8) definition\nusing progressively heavier analysis layers:\n\n1. **Topology** -- consume audit report (no live analysis)\n2. **Single-predecessor walk** -- backward walk through single-pred chain\n3. **Chain-backed merge** -- UD chain query at merge points\n4. **Reaching-def** -- forward dataflow on handler subgraph\n5. **Emulator** -- MopTracker fallback (future)\n\nAll layers are fault-tolerant: if any layer throws, it is logged and the\norchestrator continues to the next layer.\n"
+
 from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
 
-from d810.analyses.control_flow.terminal_return_audit import \
-    TerminalReturnSourceKind, TerminalReturnSiteAudit, TerminalReturnAuditReport
+from d810.analyses.control_flow.terminal_return_audit import (
+    TerminalReturnSourceKind,
+    TerminalReturnSiteAudit,
+    TerminalReturnAuditReport,
+)
 from d810.core.logging import getLogger
 from d810.core.typing import NamedTuple, Optional
 
@@ -270,7 +274,9 @@ def _chain_backed_proof(
     """
     from d810.evaluator.hexrays_microcode.chains import find_reaching_defs_for_reg
 
-    chain_defs = find_reaching_defs_for_reg(mba, return_block_serial, carrier_mreg, carrier_size)
+    chain_defs = find_reaching_defs_for_reg(
+        mba, return_block_serial, carrier_mreg, carrier_size
+    )
     if not chain_defs:
         return (), False
 
@@ -563,13 +569,16 @@ def prove_terminal_returns(
     carrier_mreg: int = _DEFAULT_CARRIER_MREG,
     carrier_size: int = 8,
 ) -> TerminalReturnProofReport:
-    "Orchestrate layered proof for all terminal return handlers.\n\n    For each site in *audit_report*, run progressively heavier analysis\n    layers until one resolves or all are exhausted.\n\n    Args:\n        mba: An ``ida_hexrays.mba_t`` instance (or ``None`` for topology-only).\n        audit_report: The terminal return audit from preanalysis.\n        carrier_mreg: Micro-register number for the return carrier (default: mr_rax=0).\n        carrier_size: Operand size in bytes for the return carrier (default: 8).\n\n    Returns:\n        A :class:`TerminalReturnProofReport` with per-handler proof results.\n    "
+    "Orchestrate layered proof for all terminal return handlers.\n\n    For each site in *audit_report*, run progressively heavier analysis\n    layers until one resolves or all are exhausted.\n\n    Args:\n        mba: An ``ida_hexrays.mba_t`` instance (or ``None`` for topology-only).\n        audit_report: The terminal return audit from preanalysis.\n        carrier_mreg: Micro-register number for the return carrier (default: mr_rax=0).\n        carrier_size: Operand size in bytes for the return carrier (default: 8).\n\n    Returns:\n        A :class:`TerminalReturnProofReport` with per-handler proof results.\n"
     carrier_kind = f"mreg{carrier_mreg}.{carrier_size}"
     proofs: list[TerminalReturnValueProof] = []
 
     for site in audit_report.sites:
         proof = _prove_single_site(
-            mba, site, carrier_mreg=carrier_mreg, carrier_size=carrier_size,
+            mba,
+            site,
+            carrier_mreg=carrier_mreg,
+            carrier_size=carrier_size,
             carrier_kind=carrier_kind,
         )
         proof = _enrich_proof_with_classification(mba, proof)
@@ -591,7 +600,7 @@ def _prove_single_site(
     carrier_size: int,
     carrier_kind: str,
 ) -> TerminalReturnValueProof:
-    "Run the layered proof for a single terminal handler site.\n\n    Args:\n        mba: An ``ida_hexrays.mba_t`` instance (or ``None`` for topology-only).\n        site: A single audit site from the preanalysis report.\n        carrier_mreg: Micro-register number for the return carrier.\n        carrier_size: Operand size in bytes.\n        carrier_kind: Human-readable carrier description.\n\n    Returns:\n        A :class:`TerminalReturnValueProof` for this handler.\n    "
+    "Run the layered proof for a single terminal handler site.\n\n    Args:\n        mba: An ``ida_hexrays.mba_t`` instance (or ``None`` for topology-only).\n        site: A single audit site from the preanalysis report.\n        carrier_mreg: Micro-register number for the return carrier.\n        carrier_size: Operand size in bytes.\n        carrier_kind: Human-readable carrier description.\n\n    Returns:\n        A :class:`TerminalReturnValueProof` for this handler.\n"
     # --- Layer 1: Topology ---
     try:
         if (
@@ -616,7 +625,10 @@ def _prove_single_site(
     if mba is not None and site.return_block_serial is not None:
         try:
             def_site = _single_pred_walk_for_carrier(
-                mba, site.return_block_serial, carrier_mreg, carrier_size,
+                mba,
+                site.return_block_serial,
+                carrier_mreg,
+                carrier_size,
             )
             if def_site is not None:
                 return TerminalReturnValueProof(
@@ -639,7 +651,10 @@ def _prove_single_site(
     if mba is not None and site.return_block_serial is not None:
         try:
             chain_sites, chain_ambiguous = _chain_backed_proof(
-                mba, site.return_block_serial, carrier_mreg, carrier_size,
+                mba,
+                site.return_block_serial,
+                carrier_mreg,
+                carrier_size,
             )
             if chain_sites:
                 return TerminalReturnValueProof(

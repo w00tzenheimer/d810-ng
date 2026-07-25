@@ -31,7 +31,9 @@ def _leaf(size: int, value: int | None = None):
 
 
 def _node(size: int, *, left=None, right=None, dst_mop=None):
-    return SimpleNamespace(size=size, dest_size=size, left=left, right=right, dst_mop=dst_mop)
+    return SimpleNamespace(
+        size=size, dest_size=size, left=left, right=right, dst_mop=dst_mop
+    )
 
 
 def _candidate(*, dst_size=4, high_size=4, magic_size=8):

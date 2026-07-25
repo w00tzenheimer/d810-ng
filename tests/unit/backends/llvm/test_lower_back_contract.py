@@ -42,7 +42,9 @@ def _tiny_phi_function() -> LlvmLowerBackFunction:
             LlvmLowerBackBlock(
                 label="entry",
                 predecessors=(),
-                terminator=_term(LlvmLowerBackTerminatorKind.COND_BRANCH, "then", "else"),
+                terminator=_term(
+                    LlvmLowerBackTerminatorKind.COND_BRANCH, "then", "else"
+                ),
             ),
             LlvmLowerBackBlock(
                 label="then",
@@ -91,7 +93,13 @@ def test_plans_diamond_phi_as_ordered_edge_moves():
     assert result.plan is not None
     assert result.plan.block_order == ("entry", "then", "else", "merge")
     assert tuple(
-        (move.predecessor, move.successor, move.insertion_block, move.target.name, move.value.name)
+        (
+            move.predecessor,
+            move.successor,
+            move.insertion_block,
+            move.target.name,
+            move.value.name,
+        )
         for move in result.plan.edge_moves
     ) == (
         ("then", "merge", "then", "x", "a"),
@@ -143,7 +151,9 @@ def test_phi_incoming_must_name_a_real_predecessor():
         ),
         terminator=merge.terminator,
     )
-    bad = LlvmLowerBackFunction(name=fn.name, entry=fn.entry, blocks=(*fn.blocks[:-1], bad_merge))
+    bad = LlvmLowerBackFunction(
+        name=fn.name, entry=fn.entry, blocks=(*fn.blocks[:-1], bad_merge)
+    )
 
     result = plan_lower_back(bad)
 
@@ -165,7 +175,9 @@ def test_phi_must_cover_each_real_predecessor_exactly_once():
         ),
         terminator=merge.terminator,
     )
-    bad = LlvmLowerBackFunction(name=fn.name, entry=fn.entry, blocks=(*fn.blocks[:-1], bad_merge))
+    bad = LlvmLowerBackFunction(
+        name=fn.name, entry=fn.entry, blocks=(*fn.blocks[:-1], bad_merge)
+    )
 
     result = plan_lower_back(bad)
 
@@ -190,7 +202,9 @@ def test_duplicate_phi_incoming_predecessor_fails_as_phi_shape():
         ),
         terminator=merge.terminator,
     )
-    bad = LlvmLowerBackFunction(name=fn.name, entry=fn.entry, blocks=(*fn.blocks[:-1], bad_merge))
+    bad = LlvmLowerBackFunction(
+        name=fn.name, entry=fn.entry, blocks=(*fn.blocks[:-1], bad_merge)
+    )
 
     result = plan_lower_back(bad)
 
@@ -239,7 +253,9 @@ def test_phi_incoming_predecessor_must_have_real_edge_to_phi_block():
                 phis=(
                     LlvmPhiNode(
                         result=_value("x"),
-                        incoming=(LlvmPhiIncoming(predecessor="entry", value=_value("a")),),
+                        incoming=(
+                            LlvmPhiIncoming(predecessor="entry", value=_value("a")),
+                        ),
                     ),
                 ),
                 terminator=_term(LlvmLowerBackTerminatorKind.RETURN),
@@ -268,7 +284,9 @@ def test_non_scalar_phi_fails_closed():
         ),
         terminator=merge.terminator,
     )
-    bad = LlvmLowerBackFunction(name=fn.name, entry=fn.entry, blocks=(*fn.blocks[:-1], bad_merge))
+    bad = LlvmLowerBackFunction(
+        name=fn.name, entry=fn.entry, blocks=(*fn.blocks[:-1], bad_merge)
+    )
 
     result = plan_lower_back(bad)
 
@@ -298,7 +316,9 @@ def test_plans_loop_carried_phi_backedge_move():
                         ),
                     ),
                 ),
-                terminator=_term(LlvmLowerBackTerminatorKind.COND_BRANCH, "body", "exit"),
+                terminator=_term(
+                    LlvmLowerBackTerminatorKind.COND_BRANCH, "body", "exit"
+                ),
             ),
             LlvmLowerBackBlock(
                 label="body",
@@ -318,7 +338,13 @@ def test_plans_loop_carried_phi_backedge_move():
     assert result.status is LlvmLowerBackStatus.PLANNED
     assert result.plan is not None
     assert tuple(
-        (move.predecessor, move.successor, move.insertion_block, move.target.name, move.value.name)
+        (
+            move.predecessor,
+            move.successor,
+            move.insertion_block,
+            move.target.name,
+            move.value.name,
+        )
         for move in result.plan.edge_moves
     ) == (
         ("entry", "header", "entry", "i", "zero"),
@@ -334,7 +360,9 @@ def test_critical_edge_phi_move_plans_bridge_block():
             LlvmLowerBackBlock(
                 label="entry",
                 predecessors=(),
-                terminator=_term(LlvmLowerBackTerminatorKind.COND_BRANCH, "merge", "side"),
+                terminator=_term(
+                    LlvmLowerBackTerminatorKind.COND_BRANCH, "merge", "side"
+                ),
             ),
             LlvmLowerBackBlock(
                 label="side",
@@ -370,7 +398,12 @@ def test_critical_edge_phi_move_plans_bridge_block():
         (rewrite.predecessor, rewrite.successor, rewrite.bridge)
         for rewrite in result.plan.edge_rewrites
     ) == (("entry", "merge", "m3_split__entry__merge"),)
-    assert result.plan.block_order == ("entry", "m3_split__entry__merge", "side", "merge")
+    assert result.plan.block_order == (
+        "entry",
+        "m3_split__entry__merge",
+        "side",
+        "merge",
+    )
     assert tuple(
         (group.predecessor, group.successor, group.insertion_block, len(group.moves))
         for group in result.plan.parallel_copies
@@ -388,7 +421,9 @@ def test_critical_edge_bridge_label_must_not_collide_with_existing_block():
             LlvmLowerBackBlock(
                 label="entry",
                 predecessors=(),
-                terminator=_term(LlvmLowerBackTerminatorKind.COND_BRANCH, "merge", "side"),
+                terminator=_term(
+                    LlvmLowerBackTerminatorKind.COND_BRANCH, "merge", "side"
+                ),
             ),
             LlvmLowerBackBlock(
                 label="side",
@@ -437,12 +472,16 @@ def test_critical_edge_generated_bridge_labels_must_be_unique_after_sanitizing()
             LlvmLowerBackBlock(
                 label="a/b",
                 predecessors=("entry",),
-                terminator=_term(LlvmLowerBackTerminatorKind.COND_BRANCH, "merge", "exit"),
+                terminator=_term(
+                    LlvmLowerBackTerminatorKind.COND_BRANCH, "merge", "exit"
+                ),
             ),
             LlvmLowerBackBlock(
                 label="a_b",
                 predecessors=("entry",),
-                terminator=_term(LlvmLowerBackTerminatorKind.COND_BRANCH, "merge", "exit"),
+                terminator=_term(
+                    LlvmLowerBackTerminatorKind.COND_BRANCH, "merge", "exit"
+                ),
             ),
             LlvmLowerBackBlock(
                 label="exit",
@@ -481,7 +520,9 @@ def test_multiple_phis_plan_ordered_parallel_copies_on_same_edge():
             LlvmLowerBackBlock(
                 label="entry",
                 predecessors=(),
-                terminator=_term(LlvmLowerBackTerminatorKind.COND_BRANCH, "then", "else"),
+                terminator=_term(
+                    LlvmLowerBackTerminatorKind.COND_BRANCH, "then", "else"
+                ),
             ),
             LlvmLowerBackBlock(
                 label="then",
@@ -522,7 +563,10 @@ def test_multiple_phis_plan_ordered_parallel_copies_on_same_edge():
     assert result.status is LlvmLowerBackStatus.PLANNED
     assert result.plan is not None
     assert tuple(
-        (group.predecessor, tuple((move.target.name, move.value.name) for move in group.moves))
+        (
+            group.predecessor,
+            tuple((move.target.name, move.value.name) for move in group.moves),
+        )
         for group in result.plan.parallel_copies
     ) == (
         ("then", (("x", "a"), ("y", "b"))),
@@ -546,11 +590,15 @@ def test_parallel_copy_cycle_fails_closed_until_temp_plan_exists():
                 phis=(
                     LlvmPhiNode(
                         result=_value("x"),
-                        incoming=(LlvmPhiIncoming(predecessor="entry", value=_value("y")),),
+                        incoming=(
+                            LlvmPhiIncoming(predecessor="entry", value=_value("y")),
+                        ),
                     ),
                     LlvmPhiNode(
                         result=_value("y"),
-                        incoming=(LlvmPhiIncoming(predecessor="entry", value=_value("x")),),
+                        incoming=(
+                            LlvmPhiIncoming(predecessor="entry", value=_value("x")),
+                        ),
                     ),
                 ),
                 terminator=_term(LlvmLowerBackTerminatorKind.RETURN),
@@ -574,8 +622,14 @@ def test_unsupported_memory_and_call_are_diagnostics_not_plans():
                 label="entry",
                 predecessors=(),
                 instructions=(
-                    LlvmLowerBackInstruction(opcode="load", result=_value("x"), operands=(_value("p", "ptr"),)),
-                    LlvmLowerBackInstruction(opcode="call", result=_value("y"), operands=(_value("x"),)),
+                    LlvmLowerBackInstruction(
+                        opcode="load",
+                        result=_value("x"),
+                        operands=(_value("p", "ptr"),),
+                    ),
+                    LlvmLowerBackInstruction(
+                        opcode="call", result=_value("y"), operands=(_value("x"),)
+                    ),
                 ),
                 terminator=_term(LlvmLowerBackTerminatorKind.RETURN),
             ),

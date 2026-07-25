@@ -1,14 +1,22 @@
 from types import SimpleNamespace
 
-from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
+from d810.analyses.control_flow.condition_chain_model import (
+    ConditionChainAnalysisResult,
+)
 from d810.capabilities.dispatcher import RouterKind
-from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     collect_predecessor_dispatcher_target_facts,
     resolve_predecessor_dispatcher_target,
 )
-from d810.analyses.control_flow.transition_builder import StateTransition, TransitionResult
+from d810.analyses.control_flow.transition_builder import (
+    StateTransition,
+    TransitionResult,
+)
 
 
 def test_resolves_predecessor_target_from_exact_dispatcher_row() -> None:

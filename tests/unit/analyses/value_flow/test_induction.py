@@ -4,6 +4,7 @@ Synthetic instruction views (SimpleNamespace) stand in for backend snapshot
 rows. Includes the mandated loop-head-merge coverage: the optimistic union meet
 must NOT wipe a body-block candidate at an empty loop head (LS6 bug class).
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace

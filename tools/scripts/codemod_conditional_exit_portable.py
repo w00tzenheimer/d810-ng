@@ -23,6 +23,7 @@ The test's ``_make_blk`` mock is switched from live-API lambdas
 
 Read-only by default; pass ``--apply`` to write.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,9 +31,7 @@ import difflib
 import pathlib
 import re
 
-ROOT = pathlib.Path(
-    "/Users/mahmoud/src/idapro/d810/.worktrees/llvm-lisa-restructure"
-)
+ROOT = pathlib.Path("/Users/mahmoud/src/idapro/d810/.worktrees/llvm-lisa-restructure")
 
 SRC = "src/d810/analyses/control_flow/conditional_exit.py"
 TEST = "tests/system/runtime/optimizers/flow/test_conditional_exit.py"
@@ -97,9 +96,16 @@ def _apply(rel: str, subs, docsub, raw_old_new, apply: bool) -> bool:
     changed = out != src
     print(f"{rel}: changed={changed}")
     if changed and not apply:
-        print("".join(difflib.unified_diff(
-            src.splitlines(keepends=True), out.splitlines(keepends=True),
-            fromfile=rel, tofile=rel + " (new)")))
+        print(
+            "".join(
+                difflib.unified_diff(
+                    src.splitlines(keepends=True),
+                    out.splitlines(keepends=True),
+                    fromfile=rel,
+                    tofile=rel + " (new)",
+                )
+            )
+        )
     if changed and apply:
         path.write_text(out, encoding="utf-8")
     return changed

@@ -3,6 +3,7 @@
 This module is intentionally IDA-free. It wraps the external ``opt`` verifier
 used by M1 tests and live probes without making LLVM a runtime dependency.
 """
+
 from __future__ import annotations
 
 import os

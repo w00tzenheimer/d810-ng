@@ -48,6 +48,7 @@ Consumer (inside an optimizer backend)::
 
     emitter.subscribe(DeferredEvent.DEFERRED_VERIFY_FAILED, _on_verify_failed)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

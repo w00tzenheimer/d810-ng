@@ -1,4 +1,5 @@
 """Tests for the portable loop / SCC analysis (LS8 S2). Pure-Python, no IDA."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -21,7 +22,11 @@ def _components_as_sets(succs):
 def test_scc_dag_each_node_singleton() -> None:
     # 0 -> 1 -> 2 (acyclic): three singleton components.
     succs = {0: (1,), 1: (2,), 2: ()}
-    assert _components_as_sets(succs) == {frozenset({0}), frozenset({1}), frozenset({2})}
+    assert _components_as_sets(succs) == {
+        frozenset({0}),
+        frozenset({1}),
+        frozenset({2}),
+    }
 
 
 def test_scc_full_cycle_is_one_component() -> None:

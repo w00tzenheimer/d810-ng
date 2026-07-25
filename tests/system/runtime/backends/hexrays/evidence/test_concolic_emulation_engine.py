@@ -14,6 +14,7 @@ mop-type constants, no full decompile), exactly the pattern of
 IDA-dependent (reads ``ida_hexrays`` constants) -> system/runtime, not a unit. The
 runtime conftest auto-marks this ``ida_required``.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -53,7 +54,12 @@ def _stk(off, size=4):
 
 def _const(value, size=4):
     return SimpleNamespace(
-        t=ida_hexrays.mop_n, nnn=SimpleNamespace(value=value), size=size, s=None, d=None, l=None
+        t=ida_hexrays.mop_n,
+        nnn=SimpleNamespace(value=value),
+        size=size,
+        s=None,
+        d=None,
+        l=None,
     )
 
 
@@ -190,7 +196,11 @@ def _engine_with(mba):
 
 def _disc(entry, stkoff, init=0):
     return SimpleNamespace(
-        entry=entry, stkoff=stkoff, var_size=4, state_mop=_stk(stkoff), initial_state=init
+        entry=entry,
+        stkoff=stkoff,
+        var_size=4,
+        state_mop=_stk(stkoff),
+        initial_state=init,
     )
 
 
@@ -202,7 +212,9 @@ class TestForkRegionFacts:
         mba = _mba([h])
         eng = _engine_with(mba)
         host = EmulationDispatcherResolver(mba=mba)
-        facts = eng._fork_region_facts(host, _disc(1, OFF_STATE), 10, {}, RecoveryCaps())
+        facts = eng._fork_region_facts(
+            host, _disc(1, OFF_STATE), 10, {}, RecoveryCaps()
+        )
         assert facts.arms == ((None, 5),)
         assert facts.complete is True
         assert facts.via_block == 10
@@ -215,7 +227,9 @@ class TestForkRegionFacts:
         mba = _mba([h])
         eng = _engine_with(mba)
         host = EmulationDispatcherResolver(mba=mba)
-        facts = eng._fork_region_facts(host, _disc(1, OFF_STATE), 10, {}, RecoveryCaps())
+        facts = eng._fork_region_facts(
+            host, _disc(1, OFF_STATE), 10, {}, RecoveryCaps()
+        )
         assert facts.arms == ((ida_hexrays.m_xor, 0x11),)
 
     def test_conditional_handler_yields_two_arm_fork(self):
@@ -226,7 +240,9 @@ class TestForkRegionFacts:
         mba = _mba([h0, h1, h2])
         eng = _engine_with(mba)
         host = EmulationDispatcherResolver(mba=mba)
-        facts = eng._fork_region_facts(host, _disc(1, OFF_STATE), 10, {}, RecoveryCaps())
+        facts = eng._fork_region_facts(
+            host, _disc(1, OFF_STATE), 10, {}, RecoveryCaps()
+        )
         assert facts.complete is True
         assert set(facts.arms) == {(None, 2), (None, 3)}
         assert len(facts.arms) == 2
@@ -240,7 +256,9 @@ class TestForkRegionFacts:
         mba = _mba([h0, h1, h2, h3])
         eng = _engine_with(mba)
         host = EmulationDispatcherResolver(mba=mba)
-        facts = eng._fork_region_facts(host, _disc(1, OFF_STATE), 10, {}, RecoveryCaps())
+        facts = eng._fork_region_facts(
+            host, _disc(1, OFF_STATE), 10, {}, RecoveryCaps()
+        )
         assert len(facts.arms) == 3
         assert facts.complete is False
 
@@ -251,7 +269,9 @@ class TestForkRegionFacts:
         mba = _mba([h, entry])
         eng = _engine_with(mba)
         host = EmulationDispatcherResolver(mba=mba)
-        facts = eng._fork_region_facts(host, _disc(1, OFF_STATE), 10, {}, RecoveryCaps())
+        facts = eng._fork_region_facts(
+            host, _disc(1, OFF_STATE), 10, {}, RecoveryCaps()
+        )
         assert facts.arms == ((None, 9),)  # 0xDEAD from entry excluded
 
 
@@ -321,7 +341,9 @@ class TestEngineAssembly:
             rows_map={0: 10, 1: 11, 2: 12},
             transitions=[
                 WalkTransition(src_state=0, next_states=(1, 2), via_block=10),
-                WalkTransition(src_state=1, next_states=(2,), via_block=11, op="^", const=3),
+                WalkTransition(
+                    src_state=1, next_states=(2,), via_block=11, op="^", const=3
+                ),
             ],
             dispatch_blocks_seen={1, 5},
             truncated=False,

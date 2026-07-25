@@ -1,4 +1,5 @@
 """k-escalation policy tests (P4, llr-1d8u; design §6.5/§11)."""
+
 from __future__ import annotations
 
 import pytest

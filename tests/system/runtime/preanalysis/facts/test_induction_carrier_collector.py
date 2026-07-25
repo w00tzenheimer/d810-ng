@@ -1,4 +1,5 @@
 """Tests for InductionVariableFactCollector."""
+
 from __future__ import annotations
 
 import json
@@ -320,6 +321,8 @@ def test_collects_commuted_add() -> None:
     assert len(facts) == 1
     assert facts[0].payload["step"] == 4
     assert facts[0].payload["source_side"] == "left"
+
+
 def test_collects_memory_store_update_from_flowgraph_instruction_snapshots() -> None:
     collector = InductionVariableFactCollector()
 
@@ -419,6 +422,8 @@ def test_memory_store_update_does_not_pair_temp_across_blocks() -> None:
     )
 
     assert facts == ()
+
+
 def test_ignores_non_self_update() -> None:
     collector = InductionVariableFactCollector()
 

@@ -90,12 +90,10 @@ LIBOBFUSCATED_CASES = [
 
 # Quick smoke tests (fastest subset)
 SMOKE_TEST_CASES = [
-    case for case in LIBOBFUSCATED_CASES
-    if case.function in {"test_chained_add"}
+    case for case in LIBOBFUSCATED_CASES if case.function in {"test_chained_add"}
 ]
 
 # Z3-dependent tests
 Z3_TEST_CASES = [
-    case for case in LIBOBFUSCATED_CASES
-    if case.function in {"test_cst_simplification"}
+    case for case in LIBOBFUSCATED_CASES if case.function in {"test_cst_simplification"}
 ]

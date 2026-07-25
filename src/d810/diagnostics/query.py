@@ -2,6 +2,7 @@
 
 Pure Python + sqlite3 -- no IDA imports.
 """
+
 from __future__ import annotations
 
 import json
@@ -68,8 +69,7 @@ def block_detail(
 
     # Attach classification (if present)
     cur3 = conn.execute(
-        "SELECT * FROM block_classification "
-        "WHERE snapshot_id=? AND serial=?",
+        "SELECT * FROM block_classification WHERE snapshot_id=? AND serial=?",
         (snapshot_id, serial),
     )
     cls = cur3.fetchone()
@@ -175,13 +175,15 @@ def return_paths(
                 hop["write_opcode"] = None
             hops.append(hop)
 
-        results.append({
-            "edge_id": edge["edge_id"],
-            "source_state": edge["source_state_hex"],
-            "target_state": edge["target_state_hex"],
-            "path_serials": path_serials,
-            "hops": hops,
-        })
+        results.append(
+            {
+                "edge_id": edge["edge_id"],
+                "source_state": edge["source_state_hex"],
+                "target_state": edge["target_state_hex"],
+                "path_serials": path_serials,
+                "hops": hops,
+            }
+        )
     return results
 
 
@@ -458,8 +460,7 @@ def _fallback_block_rows_by_ea(
     for row in rows:
         row["source"] = "blocks"
         start_match = (
-            row.get("start_ea_i64") == ea_i64
-            or row.get("start_ea_hex") in hexes
+            row.get("start_ea_i64") == ea_i64 or row.get("start_ea_hex") in hexes
         )
         row["match_kind"] = "start_ea" if start_match else "range_contains"
     return rows
@@ -758,11 +759,9 @@ def block_lineage(
             child_params,
         )
         children = [
-            row for row in children
-            if not (
-                row["snapshot_id"] == snapshot_id
-                and row["serial"] == serial
-            )
+            row
+            for row in children
+            if not (row["snapshot_id"] == snapshot_id and row["serial"] == serial)
         ]
     else:
         messages.append(
@@ -834,10 +833,7 @@ def state_local(
         "state_cfg_local_segments",
         "state_cfg_local_edges",
     )
-    table_presence = {
-        table: _table_exists(conn, table)
-        for table in required_tables
-    }
+    table_presence = {table: _table_exists(conn, table) for table in required_tables}
     tables_available = all(table_presence.values())
     result: dict[str, Any] = {
         "node": node,
@@ -853,13 +849,17 @@ def state_local(
         return result
 
     entry_block = int(node["entry_block"])
-    state_hexes = tuple(dict.fromkeys((
-        node["state_hex"],
-        fixed_hex,
-        fixed_hex_upper,
-        short_hex,
-        short_hex_upper,
-    )))
+    state_hexes = tuple(
+        dict.fromkeys(
+            (
+                node["state_hex"],
+                fixed_hex,
+                fixed_hex_upper,
+                short_hex,
+                short_hex_upper,
+            )
+        )
+    )
     state_hex_placeholders = ",".join("?" for _ in state_hexes)
 
     blocks_by_role: dict[str, list[int]] = {
@@ -905,9 +905,7 @@ def state_local(
     result["blocks_by_role"] = blocks_by_role
     result["segments"] = segments
     result["local_edges"] = local_edges
-    result["local_facts_available"] = bool(
-        block_rows or segment_rows or local_edges
-    )
+    result["local_facts_available"] = bool(block_rows or segment_rows or local_edges)
     return result
 
 
@@ -1071,6 +1069,7 @@ def merge_causality(
         "vanished": vanished_rows,
     }
 
+
 def _fact_rows(
     conn: sqlite3.Connection,
     table: str,
@@ -1229,8 +1228,7 @@ def fact_trace(
         params,
     ).fetchall()
     observations_by_fact_key = {
-        (row["func_ea_hex"], row["fact_id"]): row
-        for row in observations
+        (row["func_ea_hex"], row["fact_id"]): row for row in observations
     }
     fact_ids = sorted({row["fact_id"] for row in observations})
     func_eas = sorted({row["func_ea_hex"] for row in observations})
@@ -1246,10 +1244,12 @@ def fact_trace(
             (*fact_ids, *func_eas),
         ).fetchall()
         for mapping in mappings:
-            source = observations_by_fact_key.get((
-                mapping["func_ea_hex"],
-                mapping["source_fact_id"],
-            ))
+            source = observations_by_fact_key.get(
+                (
+                    mapping["func_ea_hex"],
+                    mapping["source_fact_id"],
+                )
+            )
             if source is None:
                 continue
             mapping["source_block"] = source["source_block"]
@@ -1330,10 +1330,7 @@ def fact_diff(
         f"WHERE {' AND '.join(target_clauses)}",
         target_params,
     ).fetchall()
-    target_fact_keys = {
-        (row["func_ea_hex"], row["fact_id"])
-        for row in target_rows
-    }
+    target_fact_keys = {(row["func_ea_hex"], row["fact_id"]) for row in target_rows}
 
     result: list[dict[str, Any]] = []
     for source in source_rows:
@@ -1341,42 +1338,44 @@ def fact_diff(
         mappings = mappings_by_source.get(source_key, [])
         if mappings:
             for mapping in mappings:
-                result.append({
-                    "source_fact_id": source["fact_id"],
-                    "target_fact_id": mapping["target_fact_id"],
-                    "kind": source["kind"],
-                    "semantic_key": source["semantic_key"],
-                    "source_maturity": source_maturity,
-                    "target_maturity": target_maturity,
-                    "status": mapping["status"],
-                    "source_block": source["source_block"],
-                    "source_ea_hex": source["source_ea_hex"],
-                    "target_block": mapping["target_block"],
-                    "target_ea_hex": mapping["target_ea_hex"],
-                    "source_snapshot_id": source["snapshot_id"],
-                    "mapping_snapshot_id": mapping["snapshot_id"],
-                    "reason": mapping["reason"],
-                })
+                result.append(
+                    {
+                        "source_fact_id": source["fact_id"],
+                        "target_fact_id": mapping["target_fact_id"],
+                        "kind": source["kind"],
+                        "semantic_key": source["semantic_key"],
+                        "source_maturity": source_maturity,
+                        "target_maturity": target_maturity,
+                        "status": mapping["status"],
+                        "source_block": source["source_block"],
+                        "source_ea_hex": source["source_ea_hex"],
+                        "target_block": mapping["target_block"],
+                        "target_ea_hex": mapping["target_ea_hex"],
+                        "source_snapshot_id": source["snapshot_id"],
+                        "mapping_snapshot_id": mapping["snapshot_id"],
+                        "reason": mapping["reason"],
+                    }
+                )
             continue
-        status = (
-            "ACTIVE"
-            if source_key in target_fact_keys
-            else "CARRIED_FORWARD"
+        status = "ACTIVE" if source_key in target_fact_keys else "CARRIED_FORWARD"
+        result.append(
+            {
+                "source_fact_id": source["fact_id"],
+                "target_fact_id": source["fact_id"] if status == "ACTIVE" else None,
+                "kind": source["kind"],
+                "semantic_key": source["semantic_key"],
+                "source_maturity": source_maturity,
+                "target_maturity": target_maturity,
+                "status": status,
+                "source_block": source["source_block"],
+                "source_ea_hex": source["source_ea_hex"],
+                "target_block": source["source_block"] if status == "ACTIVE" else None,
+                "target_ea_hex": source["source_ea_hex"]
+                if status == "ACTIVE"
+                else None,
+                "source_snapshot_id": source["snapshot_id"],
+                "mapping_snapshot_id": None,
+                "reason": None,
+            }
         )
-        result.append({
-            "source_fact_id": source["fact_id"],
-            "target_fact_id": source["fact_id"] if status == "ACTIVE" else None,
-            "kind": source["kind"],
-            "semantic_key": source["semantic_key"],
-            "source_maturity": source_maturity,
-            "target_maturity": target_maturity,
-            "status": status,
-            "source_block": source["source_block"],
-            "source_ea_hex": source["source_ea_hex"],
-            "target_block": source["source_block"] if status == "ACTIVE" else None,
-            "target_ea_hex": source["source_ea_hex"] if status == "ACTIVE" else None,
-            "source_snapshot_id": source["snapshot_id"],
-            "mapping_snapshot_id": None,
-            "reason": None,
-        })
     return result

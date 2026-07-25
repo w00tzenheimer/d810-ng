@@ -6,6 +6,7 @@ gate -- against the REAL ``bogus_loops`` (``for (i=0; !i; i=1)``).  The recogniz
 must extract exactly c0=0, c1=1, CONTINUE = (guard == 0), and the gate must
 PROVE trip_count == 1.
 """
+
 from __future__ import annotations
 
 import os

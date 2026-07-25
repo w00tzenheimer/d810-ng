@@ -1,4 +1,5 @@
 """Config-v2 cleanup-family adapter boundary behavior."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

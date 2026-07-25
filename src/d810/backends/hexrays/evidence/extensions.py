@@ -104,7 +104,11 @@ class DestinationHelpers:
             return False
 
         # Memory can be: address (mop_a), stack var (mop_S), or global var (mop_v)
-        return candidate.dst_mop.t in (ida_hexrays.mop_a, ida_hexrays.mop_S, ida_hexrays.mop_v)
+        return candidate.dst_mop.t in (
+            ida_hexrays.mop_a,
+            ida_hexrays.mop_S,
+            ida_hexrays.mop_v,
+        )
 
 
 class ContextProviders:
@@ -187,10 +191,10 @@ when = WhenBuilder()
 
 # Export public API
 __all__ = [
-    'context',
-    'when',
-    'ContextProviders',
-    'DestinationHelpers',
-    'ContextBuilder',
-    'WhenBuilder',
+    "context",
+    "when",
+    "ContextProviders",
+    "DestinationHelpers",
+    "ContextBuilder",
+    "WhenBuilder",
 ]

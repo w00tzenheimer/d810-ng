@@ -4,6 +4,7 @@ This module is intentionally read-only. It bucketizes predecessor/conditional
 topologies against existing planner shapes so corpus evidence can drive which
 typed CFG primitive is worth adding next.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -138,9 +139,7 @@ def _resolve_predecessor_arm(
     explicit_arm = infer_conditional_target(pred_block)
     if explicit_arm is None:
         return None
-    fallthrough = infer_fallthrough_target(
-        pred_block, conditional_target=explicit_arm
-    )
+    fallthrough = infer_fallthrough_target(pred_block, conditional_target=explicit_arm)
     if fallthrough is None:
         return None
     if target_serial == explicit_arm:
@@ -266,8 +265,7 @@ def classify_predecessor_modification(
 
     clone_required = cond_npred > 1
     direct_redirect_equivalent = (
-        cond_npred == 1
-        and predecessor_topology == PredecessorTopology.ONE_WAY
+        cond_npred == 1 and predecessor_topology == PredecessorTopology.ONE_WAY
     )
     conditional_has_body_side_effects = conditional_serial in side_effect_blocks
 
@@ -277,9 +275,10 @@ def classify_predecessor_modification(
     # keeps the field useful as a "why was this not admitted" signal
     # regardless of which sibling primitive is the natural fit.
     if predecessor_topology == PredecessorTopology.TWO_WAY:
-        active_decision: FixPredecessorCloneAsGotoDecision | FixPredecessorCloneAsGotoFromBranchArmDecision = (
-            branch_arm_decision
-        )
+        active_decision: (
+            FixPredecessorCloneAsGotoDecision
+            | FixPredecessorCloneAsGotoFromBranchArmDecision
+        ) = branch_arm_decision
     else:
         active_decision = decision
     planner_rejection: Optional[FixPredecessorRejectReason] = (

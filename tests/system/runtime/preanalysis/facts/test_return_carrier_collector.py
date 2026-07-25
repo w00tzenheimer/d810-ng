@@ -1,4 +1,5 @@
 """Tests for ReturnSlotFactCollector."""
+
 from __future__ import annotations
 
 import json
@@ -145,9 +146,7 @@ def _cfg_insn(
         ea=0x180010000 + index,
         operands=tuple(op for op in (l, r, d) if op is not None),
         operand_slots=tuple(
-            (slot, op)
-            for slot, op in (("l", l), ("r", r), ("d", d))
-            if op is not None
+            (slot, op) for slot, op in (("l", l), ("r", r), ("d", d)) if op is not None
         ),
         display_text=display_text,
         l=l,
@@ -455,7 +454,7 @@ def test_records_upstream_mba_for_stack_identity_carrier() -> None:
 
     facts = collector.collect(
         _target(upstream, carrier, rax_trampoline),
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )
@@ -523,7 +522,7 @@ def test_does_not_record_upstream_when_no_writer_present() -> None:
 
     facts = collector.collect(
         _target(carrier, rax_trampoline),
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )
@@ -535,15 +534,15 @@ def test_does_not_record_upstream_when_no_writer_present() -> None:
     assert "upstream_writer_source_storage_keys" not in fact.payload
 
 
-def _multi_block_target(blocks: dict[int, list[InstructionSnapshot]]) -> SimpleNamespace:
+def _multi_block_target(
+    blocks: dict[int, list[InstructionSnapshot]],
+) -> SimpleNamespace:
     """Build a snapshot with multiple blocks.  Each entry in ``blocks``
     maps a block serial to its ordered instructions list."""
     block_snapshots = {}
     sorted_serials = sorted(blocks.keys())
     for idx, serial in enumerate(sorted_serials):
-        succs = (
-            [sorted_serials[idx + 1]] if idx + 1 < len(sorted_serials) else []
-        )
+        succs = [sorted_serials[idx + 1]] if idx + 1 < len(sorted_serials) else []
         preds = [sorted_serials[idx - 1]] if idx > 0 else []
         block_snapshots[serial] = BlockSnapshot(
             serial=serial,
@@ -628,16 +627,18 @@ def test_upstream_writer_walk_picks_canonical_producer_not_function_wide_last() 
         source_stkoffs=(0x1C8,),
     )
 
-    target = _multi_block_target({
-        140: [canonical_writer],          # the canonical OLLVM MBA
-        141: [carrier_mov, rax_trampoline],  # the trampoline mov
-        254: [late_writer],               # function-wide LAST writer; not the reaching def
-    })
+    target = _multi_block_target(
+        {
+            140: [canonical_writer],  # the canonical OLLVM MBA
+            141: [carrier_mov, rax_trampoline],  # the trampoline mov
+            254: [late_writer],  # function-wide LAST writer; not the reaching def
+        }
+    )
 
     collector = ReturnSlotFactCollector()
     facts = collector.collect(
         target,
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )
@@ -779,7 +780,9 @@ def test_collects_return_slot_identity_carrier_from_meta_rich_diag_row() -> None
     assert fact.source_ea == 0x180014333
 
 
-def test_records_upstream_mba_for_stack_identity_carrier_from_meta_rich_diag_row() -> None:
+def test_records_upstream_mba_for_stack_identity_carrier_from_meta_rich_diag_row() -> (
+    None
+):
     """The upstream-writer backward trace works on operand-tree diag rows too:
     the upstream MBA's structured source-stack identities are recovered from the
     operand tree (recursive ``stack_refs``), NOT parsed from the display text.
@@ -820,7 +823,7 @@ def test_records_upstream_mba_for_stack_identity_carrier_from_meta_rich_diag_row
 
     facts = collector.collect(
         _target(upstream, carrier, rax_trampoline),
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )
@@ -872,7 +875,7 @@ def test_meta_less_attrs_only_row_yields_no_observations() -> None:
 
     facts = collector.collect(
         _target(carrier, attrs_only),
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )

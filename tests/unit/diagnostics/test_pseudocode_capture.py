@@ -1,4 +1,5 @@
 """Unit tests for pseudocode capture parsing and persistence."""
+
 from __future__ import annotations
 
 import json

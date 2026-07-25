@@ -18,6 +18,7 @@ This probe dumps the reaching defs (with each defining instruction's ``dstr()``)
 so we can confirm the DU chain preserves what the fixpoints discarded.  It
 asserts only that the mechanism runs; the peel verdict is printed to read.
 """
+
 from __future__ import annotations
 
 import os
@@ -158,7 +159,7 @@ class TestDuReachingDefsSingleTrip:
             back = sorted(fg.back_edges())
             lines.append(f"[{label}] qty={mba.qty} backedges={back}")
 
-            for (latch, header) in back:
+            for latch, header in back:
                 hblk = mba.get_mblock(header)
                 loc = _guard_locator(hblk.tail)
                 if loc is None:
@@ -225,10 +226,7 @@ class TestDuReachingDefsSingleTrip:
 
         report = "\n".join(lines)
         print(report)
-        print(
-            f"\nVERDICT: ran={ran_any} "
-            f"du_proves_single_trip={du_proves_single_trip}"
-        )
+        print(f"\nVERDICT: ran={ran_any} du_proves_single_trip={du_proves_single_trip}")
 
         assert ran_any, (
             "find_reaching_defs never produced a result (DU chains unavailable "

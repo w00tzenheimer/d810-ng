@@ -4,6 +4,7 @@ This module is deliberately narrow: it does not parse arbitrary LLVM IR and it
 does not implement a compiled LLVM plugin.  It provides the first M2b socket for
 running d810-verified MBA rewrites around the stock ``opt`` runner.
 """
+
 from __future__ import annotations
 
 import re
@@ -215,7 +216,9 @@ def _run_xor_or_sub_and_pass(
     scopes = _function_scopes(lines)
     line_scopes = {line_index: scope for scope in scopes for line_index in scope}
     diagnostics: list[LlvmCustomPassDiagnostic] = []
-    candidates: list[tuple[_ParsedInstruction, _ParsedInstruction, _ParsedInstruction]] = []
+    candidates: list[
+        tuple[_ParsedInstruction, _ParsedInstruction, _ParsedInstruction]
+    ] = []
     for scope in scopes:
         scope_candidates, scope_diagnostics = _find_xor_or_sub_and_candidates(
             lines,
@@ -299,7 +302,9 @@ def _run_xor_or_sub_and_pass(
         )
 
     after = "\n".join(
-        line for index, line in enumerate(rewritten_lines) if index not in removed_indexes
+        line
+        for index, line in enumerate(rewritten_lines)
+        if index not in removed_indexes
     )
     if ir_text.endswith("\n"):
         after += "\n"
@@ -409,7 +414,9 @@ def _run_or_and_xor_add_pass(
         )
 
     after = "\n".join(
-        line for index, line in enumerate(rewritten_lines) if index not in removed_indexes
+        line
+        for index, line in enumerate(rewritten_lines)
+        if index not in removed_indexes
     )
     if ir_text.endswith("\n"):
         after += "\n"
@@ -436,7 +443,9 @@ def _find_xor_or_sub_and_candidates(
     parsed_defs: dict[str, _ParsedInstruction] = {}
     invalid_defs: dict[str, LlvmCustomPassDiagnostic] = {}
     diagnostics: list[LlvmCustomPassDiagnostic] = []
-    candidates: list[tuple[_ParsedInstruction, _ParsedInstruction, _ParsedInstruction]] = []
+    candidates: list[
+        tuple[_ParsedInstruction, _ParsedInstruction, _ParsedInstruction]
+    ] = []
 
     for index in scope:
         raw = _parse_raw_instruction(index, lines[index])
@@ -509,7 +518,11 @@ def _find_xor_or_sub_and_candidates(
         if raw.op != "sub" or raw.result not in invalid_defs:
             continue
         operands = _extract_ssa_operands(raw.body)
-        if len(operands) != 2 or operands[0] not in raw_defs or operands[1] not in raw_defs:
+        if (
+            len(operands) != 2
+            or operands[0] not in raw_defs
+            or operands[1] not in raw_defs
+        ):
             continue
         lhs_raw = raw_defs[operands[0]]
         rhs_raw = raw_defs[operands[1]]
@@ -532,7 +545,9 @@ def _find_or_and_xor_add_candidates(
     parsed_defs: dict[str, _ParsedInstruction] = {}
     invalid_defs: dict[str, LlvmCustomPassDiagnostic] = {}
     diagnostics: list[LlvmCustomPassDiagnostic] = []
-    candidates: list[tuple[_ParsedInstruction, _ParsedInstruction, _ParsedInstruction, str]] = []
+    candidates: list[
+        tuple[_ParsedInstruction, _ParsedInstruction, _ParsedInstruction, str]
+    ] = []
 
     for index in scope:
         raw = _parse_raw_instruction(index, lines[index])
@@ -598,7 +613,11 @@ def _find_or_and_xor_add_candidates(
         if raw.op != "add" or raw.result not in invalid_defs:
             continue
         operands = _extract_ssa_operands(raw.body)
-        if len(operands) != 2 or operands[0] not in raw_defs or operands[1] not in raw_defs:
+        if (
+            len(operands) != 2
+            or operands[0] not in raw_defs
+            or operands[1] not in raw_defs
+        ):
             continue
         lhs_raw = raw_defs[operands[0]]
         rhs_raw = raw_defs[operands[1]]

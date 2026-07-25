@@ -47,6 +47,7 @@ Bucket priority (first match wins):
 
 Pure module; no ``ida_hexrays`` import; fully unit-testable.
 """
+
 from __future__ import annotations
 
 import json
@@ -69,17 +70,21 @@ from d810.diagnostics.hcc_byte_cascade_trace import (
 # Bucket attribution constants
 # ---------------------------------------------------------------------------
 
-_REDIRECT_KINDS: frozenset[str] = frozenset({
-    "RedirectGoto",
-    "RedirectBranch",
-    "ConvertToGoto",
-    "EdgeRedirectViaPredSplit",
-    "CreateConditionalRedirect",
-})
-_INSERTBLOCK_KINDS: frozenset[str] = frozenset({
-    "InsertBlock",
-    "DuplicateBlock",
-})
+_REDIRECT_KINDS: frozenset[str] = frozenset(
+    {
+        "RedirectGoto",
+        "RedirectBranch",
+        "ConvertToGoto",
+        "EdgeRedirectViaPredSplit",
+        "CreateConditionalRedirect",
+    }
+)
+_INSERTBLOCK_KINDS: frozenset[str] = frozenset(
+    {
+        "InsertBlock",
+        "DuplicateBlock",
+    }
+)
 
 # Bucket -> first responsible composition step.
 _BUCKET_TO_STEP: dict[str, str] = {
@@ -214,9 +219,7 @@ class ComposeEvidenceExplanation:
 def _latest_modifications_snapshot_id(conn: sqlite3.Connection) -> int | None:
     """Return the snapshot id of the latest modifications row, or ``None``."""
     try:
-        value = Modification.select(
-            fn.MAX(Modification.snapshot)
-        ).scalar()
+        value = Modification.select(fn.MAX(Modification.snapshot)).scalar()
     except sqlite3.OperationalError:
         return None
     if value is None:
@@ -266,16 +269,18 @@ def _mods_touching_block(
             role = "old_target"
         else:
             role = "unknown"
-        out.append(ModRow(
-            mod_index=int(mod_index),
-            mod_type=str(mod_type),
-            source_block=int(src) if src is not None else None,
-            target_block=int(tgt) if tgt is not None else None,
-            old_target=int(old_t) if old_t is not None else None,
-            status=str(status),
-            reason=str(reason) if reason else None,
-            role=role,
-        ))
+        out.append(
+            ModRow(
+                mod_index=int(mod_index),
+                mod_type=str(mod_type),
+                source_block=int(src) if src is not None else None,
+                target_block=int(tgt) if tgt is not None else None,
+                old_target=int(old_t) if old_t is not None else None,
+                status=str(status),
+                reason=str(reason) if reason else None,
+                role=role,
+            )
+        )
     return out
 
 
@@ -307,26 +312,28 @@ def _parse_region_lowering_log(log_text: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for match in _REGION_LOWERING_RE.finditer(log_text):
         groups = match.groupdict()
-        out.append({
-            "head_state": groups.get("head_state", "?"),
-            "head_entry": _safe_int(groups.get("head_entry")),
-            "tail_state": groups.get("tail_state", "?"),
-            "exit_target": groups.get("exit_target", "?"),
-            "transition_sources": _extract_blk_serials(
-                groups.get("transition_sources", "")
-            ),
-            "nontransition_sources": _extract_blk_serials(
-                groups.get("nontransition_sources", "")
-            ),
-            "splice_source_block": _extract_first_blk(
-                groups.get("splice_source", "")
-            ),
-            "exit_target_blocks": _extract_blk_serials(
-                groups.get("exit_target", "")
-            ),
-            "eligibility": groups.get("eligibility", "?"),
-            "reason": _strip_quotes(groups.get("reason", "")),
-        })
+        out.append(
+            {
+                "head_state": groups.get("head_state", "?"),
+                "head_entry": _safe_int(groups.get("head_entry")),
+                "tail_state": groups.get("tail_state", "?"),
+                "exit_target": groups.get("exit_target", "?"),
+                "transition_sources": _extract_blk_serials(
+                    groups.get("transition_sources", "")
+                ),
+                "nontransition_sources": _extract_blk_serials(
+                    groups.get("nontransition_sources", "")
+                ),
+                "splice_source_block": _extract_first_blk(
+                    groups.get("splice_source", "")
+                ),
+                "exit_target_blocks": _extract_blk_serials(
+                    groups.get("exit_target", "")
+                ),
+                "eligibility": groups.get("eligibility", "?"),
+                "reason": _strip_quotes(groups.get("reason", "")),
+            }
+        )
     return out
 
 
@@ -377,16 +384,18 @@ def _region_hits_for_block(
             roles.append("exit_target")
         if not roles:
             continue
-        hits.append(RegionLoweringHit(
-            head_state_hex=str(entry["head_state"]),
-            head_entry=entry["head_entry"],
-            tail_state_hex=entry["tail_state"],
-            eligibility=str(entry["eligibility"]),
-            reason=str(entry["reason"]),
-            splice_source_block=entry["splice_source_block"],
-            exit_target=str(entry["exit_target"]),
-            role=",".join(roles),
-        ))
+        hits.append(
+            RegionLoweringHit(
+                head_state_hex=str(entry["head_state"]),
+                head_entry=entry["head_entry"],
+                tail_state_hex=entry["tail_state"],
+                eligibility=str(entry["eligibility"]),
+                reason=str(entry["reason"]),
+                splice_source_block=entry["splice_source_block"],
+                exit_target=str(entry["exit_target"]),
+                role=",".join(roles),
+            )
+        )
     return hits
 
 
@@ -457,7 +466,8 @@ def select_target_rows(
         wanted = {int(b) for b in explicit_bytes}
         return [r for r in rows if r.byte in wanted]
     return [
-        r for r in rows
+        r
+        for r in rows
         if r.final_status_refined == "unmaterialized_original_block"
         or r.final_status == "unmaterialized_original_block"
     ]
@@ -484,7 +494,8 @@ def explain_byte(
         )
     mods = _mods_touching_block(conn, snap_id, int(row.block_serial))
     region_hits = _region_hits_for_block(
-        region_entries, int(row.block_serial),
+        region_entries,
+        int(row.block_serial),
     )
     return classify(row, mods, region_hits, snap_id)
 
@@ -554,15 +565,17 @@ def format_report(
     for ex in explanations:
         lines.append(
             "| "
-            + " | ".join([
-                str(ex.byte),
-                ex.block_ea,
-                ex.bucket,
-                ex.first_responsible_step,
-                "1" if ex.preserved_in_insertblock else "0",
-                str(len(ex.mod_rows)),
-                str(len(ex.region_hits)),
-            ])
+            + " | ".join(
+                [
+                    str(ex.byte),
+                    ex.block_ea,
+                    ex.bucket,
+                    ex.first_responsible_step,
+                    "1" if ex.preserved_in_insertblock else "0",
+                    str(len(ex.mod_rows)),
+                    str(len(ex.region_hits)),
+                ]
+            )
             + " |"
         )
     lines.extend(["", "### Verdict per byte", ""])

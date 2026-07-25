@@ -44,7 +44,9 @@ class TestReconstructionRescueExecution:
         assert captured["dag"] == "dag"
         assert captured["dispatcher_region"] == {6}
 
-    def test_late_rescue_collects_diagnostics_only_when_no_emission(self, monkeypatch) -> None:
+    def test_late_rescue_collects_diagnostics_only_when_no_emission(
+        self, monkeypatch
+    ) -> None:
         monkeypatch.setattr(
             rescue_exec,
             "plan_entry_island_rescues",

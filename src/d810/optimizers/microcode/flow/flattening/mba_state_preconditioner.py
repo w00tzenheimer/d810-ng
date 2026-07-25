@@ -35,7 +35,10 @@ import ida_hexrays
 from d810.core import getLogger, typing
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
-from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
+from d810.optimizers.microcode.flow.handler import (
+    FlowOptimizationRule,
+    FlowRulePriority,
+)
 from d810.optimizers.microcode.handler import ConfigParam
 
 logger = getLogger(__name__)
@@ -95,9 +98,9 @@ class MbaStatePreconditioner(FlowOptimizationRule):
         self.max_optimize_local_rounds = 2
         self.require_unflattening_gate = True
         self.verify_after_round = True
-        self._seen: weakref.WeakKeyDictionary[
-            ida_hexrays.mba_t, set[_RunKey]
-        ] = weakref.WeakKeyDictionary()
+        self._seen: weakref.WeakKeyDictionary[ida_hexrays.mba_t, set[_RunKey]] = (
+            weakref.WeakKeyDictionary()
+        )
         self._in_progress: weakref.WeakSet[ida_hexrays.mba_t] = weakref.WeakSet()
 
     @typing.override
@@ -130,7 +133,7 @@ class MbaStatePreconditioner(FlowOptimizationRule):
         if self.require_unflattening_gate and self.flow_context is not None:
             gate = self.flow_context.evaluate_unflattening_gate()
             # Record flow gate outcome
-            if hasattr(self.flow_context, 'report_outcome'):
+            if hasattr(self.flow_context, "report_outcome"):
                 self.flow_context.report_outcome(gate, "preconditioner_gate")
             if not gate.allowed:
                 if logger.debug_on:
@@ -194,4 +197,3 @@ class MbaStatePreconditioner(FlowOptimizationRule):
                 total_changes,
             )
         return total_changes
-

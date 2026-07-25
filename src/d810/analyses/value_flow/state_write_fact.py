@@ -7,6 +7,7 @@ This is the canonical serialized ``FactObservation.kind`` value. The
 diagnostic alias registry maps the historical ``StateVariableWriteFact``
 string to this family.
 """
+
 from __future__ import annotations
 
 STATE_WRITE_FACT_TYPE = "StateWriteFact"

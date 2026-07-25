@@ -86,10 +86,11 @@ class Phase2Transformer(cst.CSTTransformer):
 
         module_code = cst.Module([]).code_for_node(module)
 
-        if (
-            module_code in {"d810.hexrays", "d810.hexrays.mutation", "d810.hexrays.utils"}
-            and not isinstance(updated_node.names, cst.ImportStar)
-        ):
+        if module_code in {
+            "d810.hexrays",
+            "d810.hexrays.mutation",
+            "d810.hexrays.utils",
+        } and not isinstance(updated_node.names, cst.ImportStar):
             aliases = list(updated_node.names)
             grouped: dict[str, list[cst.ImportAlias]] = {}
             for alias in aliases:
@@ -119,7 +120,9 @@ class Phase2Transformer(cst.CSTTransformer):
 
         new_module_code = rewrite_dotted_name(module_code)
         if new_module_code != module_code:
-            return updated_node.with_changes(module=cst.parse_expression(new_module_code))
+            return updated_node.with_changes(
+                module=cst.parse_expression(new_module_code)
+            )
 
         return updated_node
 

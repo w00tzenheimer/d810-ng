@@ -270,9 +270,9 @@ def _get_addrsize(mba) -> int:
 # Each entry: opcode → (needs_l, needs_r, needs_d)
 # None means "don't care"; True = must be present; False = must be absent.
 # ---------------------------------------------------------------------------
-def _operand_presence_table() -> (
-    dict[int, tuple[bool | None, bool | None, bool | None]]
-):
+def _operand_presence_table() -> dict[
+    int, tuple[bool | None, bool | None, bool | None]
+]:
     hr = ida_hexrays
     T, F, N = True, False, None
     return {
@@ -2224,8 +2224,7 @@ def insn_call_validity(
                             code=MINSN_51264_DUPLICATE_CALL_ADDRS,
                             phase=phase,
                             message=(
-                                f"Block {serial}: duplicate call address "
-                                f"ea=0x{ea:x}"
+                                f"Block {serial}: duplicate call address ea=0x{ea:x}"
                             ),
                             block_serial=int(serial),
                             insn_ea=ea,

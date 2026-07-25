@@ -42,7 +42,9 @@ def incoming_edges_by_target_entry(
 def build_dag_node_maps(dag: LinearizedStateDag) -> DagNodeMaps:
     """Build stable node/edge lookup tables for one DAG snapshot."""
     node_by_key = {node.key: node for node in dag.nodes}
-    outgoing_by_key: defaultdict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(list)
+    outgoing_by_key: defaultdict[StateDagNodeKey, list[StateDagEdge]] = defaultdict(
+        list
+    )
     nodes_by_entry_anchor: defaultdict[int, list[StateDagNode]] = defaultdict(list)
     for node in dag.nodes:
         nodes_by_entry_anchor[int(node.entry_anchor)].append(node)

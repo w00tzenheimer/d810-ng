@@ -1,4 +1,5 @@
 """ConcolicValue reduced-product + reduce() (ticket llr-xvkt, S1 acceptance)."""
+
 from __future__ import annotations
 
 import pytest
@@ -32,7 +33,7 @@ def test_reduce_with_concrete_meets_singleton_into_abstract() -> None:
     # raw value whose abstract is wide-open but concrete is known
     raw = ConcolicValue(5, None, AbstractEvidence.top(W), W, PrecisionStatus.TOP)
     r = reduce(raw)
-    assert r.abstract.to_const() == 5            # abstract = abstract.meet(singleton)
+    assert r.abstract.to_const() == 5  # abstract = abstract.meet(singleton)
     assert r.status is PrecisionStatus.CONCRETE
 
 
@@ -75,7 +76,7 @@ def test_widen_widens_abstract_and_never_renarrows() -> None:
     a = ConcolicValue.of(1, W)
     b = ConcolicValue.of(200, W)
     w = a.widen(b)
-    assert w.concrete is None                    # concretes differ -> dropped
+    assert w.concrete is None  # concretes differ -> dropped
     assert w.abstract.contains(1) and w.abstract.contains(200)
     assert a.abstract.leq(w.abstract) and b.abstract.leq(w.abstract)
     # re-widening does not move further down (stable)

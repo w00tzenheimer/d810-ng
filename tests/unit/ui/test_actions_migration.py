@@ -3,6 +3,7 @@
 Verifies that all 8 actions are properly migrated to the new framework
 and registered in the D810ActionHandler registry.
 """
+
 from __future__ import annotations
 
 from d810.ui.actions import D810ActionHandler, load_builtin_actions
@@ -34,9 +35,9 @@ class TestActionMigration:
 
         # Verify all expected actions are registered
         for action_id in expected_actions:
-            assert (
-                action_id in registered_actions
-            ), f"Action {action_id} not found in registry"
+            assert action_id in registered_actions, (
+                f"Action {action_id} not found in registry"
+            )
 
     def test_pseudocode_actions_count(self):
         """7 actions should support pseudocode view."""
@@ -72,9 +73,9 @@ class TestActionMigration:
 
         for cls in D810ActionHandler.registry.values():
             if cls.__name__ in migrated_action_names:
-                assert cls.ACTION_ID.startswith(
-                    "d810ng:"
-                ), f"Action {cls.__name__} uses wrong prefix: {cls.ACTION_ID}"
+                assert cls.ACTION_ID.startswith("d810ng:"), (
+                    f"Action {cls.__name__} uses wrong prefix: {cls.ACTION_ID}"
+                )
 
     def test_menu_order_set(self):
         """All migrated actions should have explicit MENU_ORDER."""
@@ -92,9 +93,9 @@ class TestActionMigration:
         for cls in D810ActionHandler.registry.values():
             if cls.__name__ in migrated_action_names:
                 # Should have explicit order, not default 100
-                assert (
-                    cls.MENU_ORDER != 100
-                ), f"Action {cls.__name__} should have explicit MENU_ORDER"
+                assert cls.MENU_ORDER != 100, (
+                    f"Action {cls.__name__} should have explicit MENU_ORDER"
+                )
 
     def test_backward_compat_all_actions_list(self):
         """Legacy ALL_ACTIONS list should still work."""

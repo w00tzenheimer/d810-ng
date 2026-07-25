@@ -1,4 +1,5 @@
 "DAG edge diagnostic classification.\n\nThis module classifies preanalysis-time ``state_cfg_edges`` rows by correlating them\nwith three fact-substrate sources written elsewhere in the diag DB:\n\n* ``StateWriteAnchor STATE_CONST_REWRITTEN`` mappings (per-block proof\n  that IDA's MMAT_LOCOPT/CALLS pass replaced a state-write constant\n  between maturities).\n* ``StateTransitionAnchorFact`` observations (per-source-block CFG\n  transit chain captured at LOCOPT-pre).\n* ``TerminalByteEmitterFact`` observations with\n  ``corridor_role=terminal_tail`` (used to flag whether an edge belongs\n  to the terminal byte-tail class we care about most).\n\nObservability-only: classifications are persisted to the\n``state_cfg_edge_diagnostics`` table; no preanalysis edge target selection or HCC\nbehavior depends on them.  Future fact-backed correction passes can\ntarget specific classification rows for narrow review.\n\nClassification rules\n--------------------\n\n``LOCOPT_REWRITTEN_SOURCE``\n    The edge's source-state entry block has at least one\n    ``STATE_CONST_REWRITTEN`` mapping (its state-write was rewritten by\n    IDA between LOCOPT and CALLS/GLBOPT1).  This is the base\n    classification for any edge whose source has been touched by IDA's\n    constant propagation.\n\n``TARGET_UNRESOLVED_AFTER_REWRITE``\n    The edge's source is ``LOCOPT_REWRITTEN_SOURCE`` AND the edge has a\n    NULL ``target_state_hex`` (preanalysis could not resolve a successor\n    state).  Strict subset of ``LOCOPT_REWRITTEN_SOURCE``.\n\n``COLLAPSED_TO_REWRITTEN_TARGET``\n    The edge's source is ``LOCOPT_REWRITTEN_SOURCE`` AND the edge's\n    ``target_state_hex`` matches the *rewritten* constant of some other\n    block's ``STATE_CONST_REWRITTEN`` mapping (i.e. preanalysis's edge target\n    is itself a state-constant that IDA created via CP, not a state\n    that existed at LOCOPT).  Strict subset of\n    ``LOCOPT_REWRITTEN_SOURCE``.\n\n``SPURIOUS_CONDITIONAL_ARM``\n    The edge has ``edge_kind = CONDITIONAL_TRANSITION`` AND another\n    edge from the same ``source_state_hex`` carries the same\n    ``target_state_hex`` (often a sibling ``TRANSITION``).  These are\n    typically over-resolved branch arms preanalysis emitted because the\n    multi-arm branch was not canonicalized.  Independent of the\n    rewrite-source axis: an edge can be both ``LOCOPT_REWRITTEN_SOURCE``\n    and ``SPURIOUS_CONDITIONAL_ARM``; the classifier prefers the\n    REWRITTEN axis when both apply (rewrite is the more load-bearing\n    diagnostic) and includes the spurious flag in the ``reason`` text.\n\n``BENIGN``\n    None of the above.  The edge has no rewritten source and is not a\n    redundant conditional arm.\n\nTerminal-tail filter\n--------------------\n\nAn edge is marked ``is_terminal_tail = 1`` when its\n``source_block`` matches the ``destination_block`` of some\n``terminal_tail`` ``TerminalByteEmitterFact``, OR its source-state\nentry_block (per ``state_cfg_node_blocks``) matches such a destination_block.\nThe flag is independent of the classification axis -- it lets queries\nfilter to the byte1..byte6 corridor without re-deriving the mapping.\n"
+
 from __future__ import annotations
 
 import json
@@ -15,13 +16,15 @@ from d810.core.diag.models import (
 from d810.core.typing import Iterable
 
 
-_VALID_CLASSIFICATIONS: frozenset[str] = frozenset({
-    "BENIGN",
-    "LOCOPT_REWRITTEN_SOURCE",
-    "TARGET_UNRESOLVED_AFTER_REWRITE",
-    "COLLAPSED_TO_REWRITTEN_TARGET",
-    "SPURIOUS_CONDITIONAL_ARM",
-})
+_VALID_CLASSIFICATIONS: frozenset[str] = frozenset(
+    {
+        "BENIGN",
+        "LOCOPT_REWRITTEN_SOURCE",
+        "TARGET_UNRESOLVED_AFTER_REWRITE",
+        "COLLAPSED_TO_REWRITTEN_TARGET",
+        "SPURIOUS_CONDITIONAL_ARM",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -60,9 +63,11 @@ def _select_state_const_rewritten_index(
     conn: sqlite3.Connection,
     snapshot_id: int,
 ) -> tuple[
-    dict[int, list[dict]],  # block_serial -> list of mapping dicts (orig+rewritten consts)
-    set[str],               # rewritten consts (lower-cased, padded hex 0x000000XX)
-    dict[str, list[str]],   # rewritten_const_hex -> list of source_fact_ids
+    dict[
+        int, list[dict]
+    ],  # block_serial -> list of mapping dicts (orig+rewritten consts)
+    set[str],  # rewritten consts (lower-cased, padded hex 0x000000XX)
+    dict[str, list[str]],  # rewritten_const_hex -> list of source_fact_ids
 ]:
     """Build the per-block rewrite map at ``snapshot_id``.
 
@@ -300,12 +305,8 @@ def classify_dag_edges(
             and src_state_lower is not None
             and tgt_state_lower is not None
         ):
-            siblings = sibling_index.get(
-                (src_state_lower, tgt_state_lower), []
-            )
-            non_self_kinds = [
-                k for (eid, k) in siblings if int(eid) != int(edge_id)
-            ]
+            siblings = sibling_index.get((src_state_lower, tgt_state_lower), [])
+            non_self_kinds = [k for (eid, k) in siblings if int(eid) != int(edge_id)]
             if non_self_kinds:
                 is_spurious = True
 
@@ -351,7 +352,11 @@ def classify_dag_edges(
             classification = "BENIGN"
             reason = ""
 
-        if classification != "BENIGN" and is_spurious and classification != "SPURIOUS_CONDITIONAL_ARM":
+        if (
+            classification != "BENIGN"
+            and is_spurious
+            and classification != "SPURIOUS_CONDITIONAL_ARM"
+        ):
             reason = f"{reason}; also SPURIOUS_CONDITIONAL_ARM"
 
         diagnostics.append(

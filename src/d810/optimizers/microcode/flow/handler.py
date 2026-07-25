@@ -10,7 +10,11 @@ import idc
 
 from d810.core import getLogger, Registrant
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
-from d810.optimizers.microcode.handler import ConfigParam, DEFAULT_FLOW_MATURITIES, OptimizationRule
+from d810.optimizers.microcode.handler import (
+    ConfigParam,
+    DEFAULT_FLOW_MATURITIES,
+    OptimizationRule,
+)
 
 logger = getLogger("D810.optimizer")
 
@@ -58,9 +62,18 @@ class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
 
     CATEGORY = "Control Flow"
     CONFIG_SCHEMA = OptimizationRule.CONFIG_SCHEMA + (
-        ConfigParam("priority", int, int(FlowRulePriority.DEFAULT), "Execution priority (higher runs earlier)"),
-        ConfigParam("whitelisted_functions", list, [], "Function EAs to process (hex strings)"),
-        ConfigParam("blacklisted_functions", list, [], "Function EAs to skip (hex strings)"),
+        ConfigParam(
+            "priority",
+            int,
+            int(FlowRulePriority.DEFAULT),
+            "Execution priority (higher runs earlier)",
+        ),
+        ConfigParam(
+            "whitelisted_functions", list, [], "Function EAs to process (hex strings)"
+        ),
+        ConfigParam(
+            "blacklisted_functions", list, [], "Function EAs to skip (hex strings)"
+        ),
     )
 
     # CFG modification safety markers - subclasses should override

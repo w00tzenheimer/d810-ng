@@ -9,6 +9,7 @@ System/runtime because ``dispatcher_history`` imports ``lift`` (hence
 ``ida_hexrays``) at module top; ``lift`` / ``analyze_dispatcher`` are
 stubbed so no real decompilation runs.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -43,8 +44,9 @@ def _install_stubs(monkeypatch, analyses):
     def fake_lift(mba):
         return SimpleNamespace(blocks={})
 
-    def fake_analyze(flow_graph, *, previous_router_kind=None,
-                     persisted_initial_state=None):
+    def fake_analyze(
+        flow_graph, *, previous_router_kind=None, persisted_initial_state=None
+    ):
         calls.append((previous_router_kind, persisted_initial_state))
         dtype, istate = next(seq)
         return SimpleNamespace(router_kind=dtype, initial_state=istate, blocks={})
@@ -59,14 +61,12 @@ def test_advanced_with_promotes_type_and_keeps_state_when_none() -> None:
     when not None."""
     h0 = DispatcherHistory()
     h1 = h0.advanced_with(
-        SimpleNamespace(router_kind=RouterKind.CONDITION_CHAIN,
-                        initial_state=0x1234)
+        SimpleNamespace(router_kind=RouterKind.CONDITION_CHAIN, initial_state=0x1234)
     )
     assert h1 == DispatcherHistory(RouterKind.CONDITION_CHAIN, 0x1234)
 
     h2 = h1.advanced_with(
-        SimpleNamespace(router_kind=RouterKind.TABLE,
-                        initial_state=None)
+        SimpleNamespace(router_kind=RouterKind.TABLE, initial_state=None)
     )
     assert h2 == DispatcherHistory(RouterKind.TABLE, 0x1234)
 

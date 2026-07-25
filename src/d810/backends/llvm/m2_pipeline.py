@@ -4,6 +4,7 @@ This module is IDA-free. It composes the M2b d810 MBA/Z3 custom-pass socket
 with the curated M2 ``opt`` runner and structured verifier without changing the
 default behavior of either lower-level API.
 """
+
 from __future__ import annotations
 
 import os
@@ -165,9 +166,7 @@ def run_llvm_m2_pipeline(
             optimization_result=optimized,
         )
     )
-    custom_rewrite_count = sum(
-        len(result.rewrites) for result in custom.pass_results
-    )
+    custom_rewrite_count = sum(len(result.rewrites) for result in custom.pass_results)
     if optimized.failed or (optimized.skipped and require_opt):
         return LlvmM2PipelineResult(
             status=LlvmM2PipelineStatus.FAILED,

@@ -160,7 +160,10 @@ def simulate_edits(
                 logger.warning(
                     "simulate_edits: %s on block %d skipped — old_target %d "
                     "not in current successors %s (new_target was %d)",
-                    edit.kind, edit.source, edit.old_target, new_succs,
+                    edit.kind,
+                    edit.source,
+                    edit.old_target,
+                    new_succs,
                     edit.new_target,
                 )
                 continue

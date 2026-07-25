@@ -1,9 +1,14 @@
 """Engine strategy for proven selector/state-machine shell facts."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-from d810.transforms.graph_modification import GraphModification, RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    GraphModification,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.transforms.selector_shell_planning import plan_selector_shell_cleanup
 from d810.core.typing import TYPE_CHECKING
 from d810.transforms.plan_fragment import (

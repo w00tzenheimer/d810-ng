@@ -1,4 +1,5 @@
 """Tests for the CFF strategy family abstraction."""
+
 from __future__ import annotations
 
 from d810.families.protocols import DetectionResult
@@ -90,14 +91,8 @@ def test_engine_package_re_exports_family_types() -> None:
     assert engine.CFFStrategyFamily is CFFStrategyFamily
     assert engine.DetectionResult is DetectionResult
     assert EngineDetectionResult is DetectionResult
-    assert (
-        engine.StateMachineFamilyRuntimeServices
-        is StateMachineFamilyRuntimeServices
-    )
-    assert (
-        EngineStateMachineFamilyRuntimeServices
-        is StateMachineFamilyRuntimeServices
-    )
+    assert engine.StateMachineFamilyRuntimeServices is StateMachineFamilyRuntimeServices
+    assert EngineStateMachineFamilyRuntimeServices is StateMachineFamilyRuntimeServices
     # UnflatteningStrategy canonical home is
     # d810.capabilities.unflattening_strategy.  The
     # d810.families.state_machine_cff.protocols re-export, the engine

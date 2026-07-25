@@ -11,6 +11,7 @@ optimize_global drop documented in the byte-cascade verdict.
 
 Pure module, no ``ida_hexrays`` import, fully unit-testable.
 """
+
 from __future__ import annotations
 
 import json
@@ -32,7 +33,7 @@ _KV_RE = re.compile(
     r"(?P<key>[A-Za-z_][A-Za-z0-9_]*)=(?P<value>"
     r"'(?:\\.|[^'\\])*'|"  # single-quoted
     r'"(?:\\.|[^"\\])*"|'  # double-quoted
-    r"[^\s]+"               # bareword
+    r"[^\s]+"  # bareword
     r")"
 )
 
@@ -40,8 +41,13 @@ _KV_RE = re.compile(
 _INT_FIELDS = frozenset({"byte", "block_serial", "entry_anchor"})
 # Fields the tracer emits as 0/1 booleans.
 _BOOL_FIELDS = frozenset(
-    {"in_dag", "in_corrected_dag", "in_region_table",
-     "raw_candidate", "preserved_in_insertblock"}
+    {
+        "in_dag",
+        "in_corrected_dag",
+        "in_region_table",
+        "raw_candidate",
+        "preserved_in_insertblock",
+    }
 )
 
 
@@ -106,9 +112,7 @@ class ByteCascadeRow:
         if not finalization_per_ea:
             return self.final_status
         any_survives = any(
-            count > 0
-            for per_ea in finalization_per_ea
-            for count in per_ea.values()
+            count > 0 for per_ea in finalization_per_ea for count in per_ea.values()
         )
         if any_survives:
             return "preserved_redirect_with_evidence"
@@ -204,7 +208,7 @@ def parse_trace_line(line: str) -> ByteCascadeRow | None:
     marker = line.find(ROW_LOG_PREFIX)
     if marker < 0:
         return None
-    body = line[marker + len(ROW_LOG_PREFIX):].strip()
+    body = line[marker + len(ROW_LOG_PREFIX) :].strip()
     raw_fields: dict[str, str] = {}
     for match in _KV_RE.finditer(body):
         raw_fields[match.group("key")] = match.group("value")
@@ -223,17 +227,13 @@ def parse_trace_line(line: str) -> ByteCascadeRow | None:
         in_corrected_dag=_coerce_bool(raw_fields.get("in_corrected_dag", "0")),
         in_region_table=_coerce_bool(raw_fields.get("in_region_table", "0")),
         raw_candidate=_coerce_bool(raw_fields.get("raw_candidate", "0")),
-        candidate_rejection=_strip_quotes(
-            raw_fields.get("candidate_rejection", "-")
-        ),
+        candidate_rejection=_strip_quotes(raw_fields.get("candidate_rejection", "-")),
         accepted_stage=_strip_quotes(raw_fields.get("accepted_stage", "-")),
         emitted_mod=_strip_quotes(raw_fields.get("emitted_mod", "-")),
         preserved_in_insertblock=_coerce_bool(
             raw_fields.get("preserved_in_insertblock", "0")
         ),
-        first_dropped_stage=_strip_quotes(
-            raw_fields.get("first_dropped_stage", "-")
-        ),
+        first_dropped_stage=_strip_quotes(raw_fields.get("first_dropped_stage", "-")),
         final_status=_strip_quotes(raw_fields.get("final_status", "unknown")),
         source_eas=_coerce_ea_list(raw_fields.get("source_eas", "-")),
         raw_fields=dict(raw_fields),
@@ -327,16 +327,12 @@ def _count_source_ea_survival_per_snapshot(
 
     Returns ``{}`` on any schema mismatch or empty input.
     """
-    eas_lower = [
-        ea.lower() for ea in source_eas if isinstance(ea, str) and ea.strip()
-    ]
+    eas_lower = [ea.lower() for ea in source_eas if isinstance(ea, str) and ea.strip()]
     if not eas_lower:
         return {}
     try:
         snap_rows = (
-            Snapshot.select(Snapshot.id, Snapshot.label)
-            .order_by(Snapshot.id)
-            .tuples()
+            Snapshot.select(Snapshot.id, Snapshot.label).order_by(Snapshot.id).tuples()
         )
         placeholders = ",".join("?" for _ in eas_lower)
         # raw-SQL: GROUP BY (snapshot, LOWER(ea_hex)) COUNT aggregate with a
@@ -388,9 +384,7 @@ def enrich_rows_with_db(
         out: list[ByteCascadeRow] = []
         for row in rows:
             refs = _count_var190_refs_per_snapshot(conn, row.byte)
-            survival = _count_source_ea_survival_per_snapshot(
-                conn, row.source_eas
-            )
+            survival = _count_source_ea_survival_per_snapshot(conn, row.source_eas)
             out.append(
                 _dc_replace(
                     row,
@@ -456,7 +450,11 @@ def format_report(
 
     if any(r.db_var190_refs for r in rows):
         lines.extend(
-            ["", "### Cross-reference: `%var_190.8+#k.8` instruction count per snapshot", ""]
+            [
+                "",
+                "### Cross-reference: `%var_190.8+#k.8` instruction count per snapshot",
+                "",
+            ]
         )
         snap_labels: list[str] = []
         seen: set[str] = set()
@@ -482,17 +480,14 @@ def format_report(
 
 _STATUS_TO_NARRATIVE: dict[str, str] = {
     "region_detection_gap": (
-        "in DAG but never picked up as part of any HCC raw region or"
-        " InsertBlock body"
+        "in DAG but never picked up as part of any HCC raw region or InsertBlock body"
     ),
     "unmaterialized_original_block": (
         "in HCC raw region, but no InsertBlock body or redirect materialised"
         " the evidence; original block remains in the CFG but HCC made no"
         " positive claim on it"
     ),
-    "redirected_away": (
-        "block was rewired away by a redirect with no replacement"
-    ),
+    "redirected_away": ("block was rewired away by a redirect with no replacement"),
     "redirect_only_finalization_loss": (
         "HCC redirected to/through the byte's block, but the redirect"
         " carries no byte-write evidence; IDA's snap17 -> snap18"
@@ -521,14 +516,12 @@ def _summarize_drops(rows: Iterable[ByteCascadeRow]) -> list[str]:
         if status.startswith("preserved"):
             continue
         loc = (
-            r.first_dropped_stage if r.first_dropped_stage and r.first_dropped_stage != "-"
+            r.first_dropped_stage
+            if r.first_dropped_stage and r.first_dropped_stage != "-"
             else "no_stage_recorded"
         )
         narrative = _STATUS_TO_NARRATIVE.get(status, status)
-        bullet = (
-            f"- byte {r.byte}: `{status}` -- {narrative}; first"
-            f" dropped at `{loc}`"
-        )
+        bullet = f"- byte {r.byte}: `{status}` -- {narrative}; first dropped at `{loc}`"
         if r.candidate_rejection and r.candidate_rejection not in ("-", ""):
             bullet += f" (candidate rejection: {r.candidate_rejection})"
         out.append(bullet)

@@ -5,6 +5,7 @@ and ``parse_diag_meta_operand`` now live in the backend diag lifter
 (``d810.backends.hexrays.diag_lifter``).  These suites import it and therefore
 live under tests/system/runtime; they are pure-offline (no IDA).
 """
+
 import json
 
 from d810.backends.hexrays.diag_lifter import (
@@ -41,11 +42,23 @@ def _diag_meta_S(stkoff: int, size: int = 4) -> dict:
 
 
 def _diag_meta_N(value: int, size: int = 4) -> dict:
-    return {"type": "mop_n", "type_num": 2, "size": size, "dstr": f"#{value:#x}", "value": value}
+    return {
+        "type": "mop_n",
+        "type_num": 2,
+        "size": size,
+        "dstr": f"#{value:#x}",
+        "value": value,
+    }
 
 
 def _diag_meta_R(register: int, size: int = 8) -> dict:
-    return {"type": "mop_r", "type_num": 1, "size": size, "dstr": "r", "register": register}
+    return {
+        "type": "mop_r",
+        "type_num": 1,
+        "size": size,
+        "dstr": "r",
+        "register": register,
+    }
 
 
 def _diag_row(
@@ -155,9 +168,9 @@ def test_project_diag_instruction_stx_recovers_address_stkoff_canonically():
         "opcode_name": "m_stx",
         "ea": "0x2000",
         "dstr": "*(&x) = rax",
-        "l": _diag_meta_R(8, size=8),   # value
+        "l": _diag_meta_R(8, size=8),  # value
         "r": _diag_meta_R(16, size=2),  # segment
-        "d": addr,                       # target address (stack)
+        "d": addr,  # target address (stack)
     }
     row = _diag_row(
         opcode=0x13,

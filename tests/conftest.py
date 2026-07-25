@@ -20,12 +20,10 @@ if _mem_limit > 0:
     try:
         import resource as _resource
 
-        _resource.setrlimit(
-            _resource.RLIMIT_DATA, (_mem_limit, _mem_limit)
-        )
+        _resource.setrlimit(_resource.RLIMIT_DATA, (_mem_limit, _mem_limit))
         print(
             f"[d810] RLIMIT_DATA set to "
-            f"{_mem_limit / (1024 ** 3):.1f}GB "
+            f"{_mem_limit / (1024**3):.1f}GB "
             f"({_mem_limit} bytes)"
         )
     except (ImportError, ValueError, OSError) as _exc:

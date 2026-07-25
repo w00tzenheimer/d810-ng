@@ -5,6 +5,7 @@ any reach raises ``ImportError`` (the airtight proof -- execution, not static
 analysis), and z3 is asserted absent from ``sys.modules`` after exercising the
 domain (ticket llr-xvkt acceptance: "No ida_* / z3 import").
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -30,5 +31,7 @@ def test_concolic_loads_and_runs_without_ida_or_z3() -> None:
         "print('CONCOLIC_PORTABLE_OK')\n"
     )
     r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
-    assert r.returncode == 0, f"rc={r.returncode}\nstderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    assert r.returncode == 0, (
+        f"rc={r.returncode}\nstderr:\n{r.stderr}\nstdout:\n{r.stdout}"
+    )
     assert "CONCOLIC_PORTABLE_OK" in r.stdout, r.stdout

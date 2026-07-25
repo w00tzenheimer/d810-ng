@@ -195,7 +195,9 @@ class TestEmitDispatchIntervals:
 
     def test_balanced_condition_chain(self) -> None:
         # JBE root with JNZ leaves → 2 point intervals + INTERVAL_DEFAULT remainders
-        yes_leaf = Node(kind=NodeKind.JNZ, imm=0x10, target=10, yes=None, block_serial=5)
+        yes_leaf = Node(
+            kind=NodeKind.JNZ, imm=0x10, target=10, yes=None, block_serial=5
+        )
         no_leaf = Node(kind=NodeKind.JNZ, imm=0x50, target=50, yes=None, block_serial=6)
         root = Node(kind=NodeKind.JBE, imm=0x30, yes=yes_leaf, no=no_leaf)
         emitted = emit_dispatch_intervals(root)
@@ -320,7 +322,7 @@ class TestComputeGaps:
 class TestIntervalDispatcher:
     def _build(self) -> IntervalDispatcher:
         rows = [
-            IntervalRow(10, 11, "exact_ten"),   # point
+            IntervalRow(10, 11, "exact_ten"),  # point
             IntervalRow(20, 30, "range_20_29"),  # range
             IntervalRow(50, 51, "exact_fifty"),  # point
         ]
@@ -383,9 +385,9 @@ class TestIntervalDispatcher:
 
     def test_to_handler_state_map(self) -> None:
         rows = [
-            IntervalRow(10, 11, 100),    # width-1 → included
-            IntervalRow(20, 30, 200),    # width-10 → excluded
-            IntervalRow(50, 51, 300),    # width-1 → included
+            IntervalRow(10, 11, 100),  # width-1 → included
+            IntervalRow(20, 30, 200),  # width-10 → excluded
+            IntervalRow(50, 51, 300),  # width-1 → included
         ]
         d = IntervalDispatcher(rows)
         state_map = d.to_handler_state_map()
@@ -393,8 +395,8 @@ class TestIntervalDispatcher:
 
     def test_to_handler_range_map(self) -> None:
         rows = [
-            IntervalRow(10, 11, 100),    # [10, 11) → hi_incl = 10
-            IntervalRow(20, 30, 200),    # [20, 30) → hi_incl = 29
+            IntervalRow(10, 11, 100),  # [10, 11) → hi_incl = 10
+            IntervalRow(20, 30, 200),  # [20, 30) → hi_incl = 29
         ]
         d = IntervalDispatcher(rows)
         range_map = d.to_handler_range_map()

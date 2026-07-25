@@ -1,4 +1,5 @@
-"E2E per-function preanalysis pipeline spot checks.\n\nLayer 2: For known-flattened functions, verify that the preanalysis pipeline\nproduced correct analysis AND the inference layer acted on it:\n- Classification is a flattening type\n- Confidence >= 0.7\n- \"unflattening\" inference is recommended\n- Session summary records the inference\n- Consumer outcomes are recorded\n\nUses the same IDB/fixture chain as the DSL test suite.\n"
+'E2E per-function preanalysis pipeline spot checks.\n\nLayer 2: For known-flattened functions, verify that the preanalysis pipeline\nproduced correct analysis AND the inference layer acted on it:\n- Classification is a flattening type\n- Confidence >= 0.7\n- "unflattening" inference is recommended\n- Session summary records the inference\n- Consumer outcomes are recorded\n\nUses the same IDB/fixture chain as the DSL test suite.\n'
+
 import platform
 
 import pytest
@@ -8,7 +9,9 @@ import idc
 
 
 def _get_default_binary() -> str:
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 def _resolve_ea(name: str) -> int:
@@ -29,7 +32,9 @@ KNOWN_FLATTENED = [
 
 
 @pytest.mark.e2e
-@pytest.mark.usefixtures("ida_database", "configure_hexrays", "setup_libobfuscated_funcs")
+@pytest.mark.usefixtures(
+    "ida_database", "configure_hexrays", "setup_libobfuscated_funcs"
+)
 class TestAnalysisPipelineSpotChecks:
     """Per-function pipeline assertions for known cases."""
 
@@ -37,7 +42,9 @@ class TestAnalysisPipelineSpotChecks:
 
     @pytest.mark.parametrize("func_name", KNOWN_FLATTENED)
     def test_flattened_function_classified_correctly(
-        self, func_name, analysis_store_session,
+        self,
+        func_name,
+        analysis_store_session,
     ):
         """Known-flattened functions should be classified as flattening."""
         if analysis_store_session is None:
@@ -57,7 +64,9 @@ class TestAnalysisPipelineSpotChecks:
 
     @pytest.mark.parametrize("func_name", KNOWN_FLATTENED)
     def test_flattened_function_high_confidence(
-        self, func_name, analysis_store_session,
+        self,
+        func_name,
+        analysis_store_session,
     ):
         """Known-flattened functions should have confidence >= 0.7."""
         if analysis_store_session is None:
@@ -74,7 +83,9 @@ class TestAnalysisPipelineSpotChecks:
 
     @pytest.mark.parametrize("func_name", KNOWN_FLATTENED)
     def test_flattened_function_recommends_unflattening(
-        self, func_name, analysis_store_session,
+        self,
+        func_name,
+        analysis_store_session,
     ):
         """Known-flattened functions should recommend 'unflattening' inference."""
         if analysis_store_session is None:
@@ -91,7 +102,9 @@ class TestAnalysisPipelineSpotChecks:
 
     @pytest.mark.parametrize("func_name", KNOWN_FLATTENED)
     def test_flattened_function_session_summary_has_inference(
-        self, func_name, analysis_store_session,
+        self,
+        func_name,
+        analysis_store_session,
     ):
         """Session summary for flattened functions should list unflattening."""
         if analysis_store_session is None:
@@ -101,9 +114,7 @@ class TestAnalysisPipelineSpotChecks:
             pytest.skip(f"Function {func_name} not found in IDB")
 
         summary = analysis_store_session.load_session_summary(func_ea)
-        assert summary is not None, (
-            f"{func_name} (0x{func_ea:x}): no session summary"
-        )
+        assert summary is not None, f"{func_name} (0x{func_ea:x}): no session summary"
         assert "unflattening" in summary["inferences"], (
             f"{func_name}: 'unflattening' not in session inferences: "
             f"{summary['inferences']}"
@@ -111,7 +122,9 @@ class TestAnalysisPipelineSpotChecks:
 
     @pytest.mark.parametrize("func_name", KNOWN_FLATTENED)
     def test_flattened_function_consumer_outcome(
-        self, func_name, analysis_store_session,
+        self,
+        func_name,
+        analysis_store_session,
     ):
         """Flattened functions should have consumer outcomes recorded."""
         if analysis_store_session is None:

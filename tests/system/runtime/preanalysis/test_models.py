@@ -2,7 +2,11 @@ from __future__ import annotations
 import time
 from types import MappingProxyType
 import pytest
-from d810.analyses.control_flow.models import CandidateFlag, PreanalysisResult, DeobfuscationHints
+from d810.analyses.control_flow.models import (
+    CandidateFlag,
+    PreanalysisResult,
+    DeobfuscationHints,
+)
 
 
 class TestCandidateFlag:
@@ -19,7 +23,9 @@ class TestCandidateFlag:
         assert flag.detail == "block 3 has 12 predecessors"
 
     def test_frozen(self):
-        flag = CandidateFlag(kind="opaque_predicate", block_serial=0, confidence=0.5, detail="")
+        flag = CandidateFlag(
+            kind="opaque_predicate", block_serial=0, confidence=0.5, detail=""
+        )
         with pytest.raises((AttributeError, TypeError)):
             flag.confidence = 0.9  # type: ignore[misc]
 
@@ -32,13 +38,17 @@ class TestCandidateFlag:
 
 class TestPreanalysisResult:
     def test_construction(self):
-        flag = CandidateFlag(kind="flattened_switch", block_serial=2, confidence=0.9, detail="d")
+        flag = CandidateFlag(
+            kind="flattened_switch", block_serial=2, confidence=0.9, detail="d"
+        )
         result = PreanalysisResult(
             collector_name="CFGShapeCollector",
             func_ea=0x401000,
             maturity=5,
             timestamp=1_000_000.0,
-            metrics=MappingProxyType({"block_count": 20, "edge_count": 25, "flattening_score": 0.72}),
+            metrics=MappingProxyType(
+                {"block_count": 20, "edge_count": 25, "flattening_score": 0.72}
+            ),
             candidates=(flag,),
         )
         assert result.collector_name == "CFGShapeCollector"
@@ -48,8 +58,12 @@ class TestPreanalysisResult:
 
     def test_frozen(self):
         result = PreanalysisResult(
-            collector_name="x", func_ea=0, maturity=0,
-            timestamp=0.0, metrics=MappingProxyType({}), candidates=(),
+            collector_name="x",
+            func_ea=0,
+            maturity=0,
+            timestamp=0.0,
+            metrics=MappingProxyType({}),
+            candidates=(),
         )
         with pytest.raises((AttributeError, TypeError)):
             result.func_ea = 1  # type: ignore[misc]
@@ -57,8 +71,11 @@ class TestPreanalysisResult:
     def test_metrics_must_be_mapping_proxy(self):
         with pytest.raises(TypeError):
             PreanalysisResult(
-                collector_name="x", func_ea=0, maturity=0,
-                timestamp=0.0, metrics={"raw": 1},  # type: ignore[arg-type]
+                collector_name="x",
+                func_ea=0,
+                maturity=0,
+                timestamp=0.0,
+                metrics={"raw": 1},  # type: ignore[arg-type]
                 candidates=(),
             )
 
@@ -92,8 +109,12 @@ class TestDeobfuscationHints:
 
     def test_frozen(self):
         hints = DeobfuscationHints(
-            func_ea=0, obfuscation_type=None, confidence=0.0,
-            recommended_inferences=(), candidates=(), suppress_rules=(),
+            func_ea=0,
+            obfuscation_type=None,
+            confidence=0.0,
+            recommended_inferences=(),
+            candidates=(),
+            suppress_rules=(),
         )
         with pytest.raises((AttributeError, TypeError)):
             hints.func_ea = 1  # type: ignore[misc]

@@ -1,4 +1,5 @@
 """Tests for portable recurrence facts (LS8 S4). Pure-Python, no IDA."""
+
 from __future__ import annotations
 
 import dataclasses

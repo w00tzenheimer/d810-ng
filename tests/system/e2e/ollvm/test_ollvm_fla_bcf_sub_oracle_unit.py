@@ -1,4 +1,5 @@
 """Pure tests for the ``test_function_ollvm_fla_bcf_sub`` oracle."""
+
 from __future__ import annotations
 
 import json
@@ -55,8 +56,7 @@ def _diag_db_with_carrier_facts() -> sqlite3.Connection:
             "role": "ACCUMULATOR_CARRIER",
             "carrier_token": "%var_378",
             "instruction_dstr": (
-                "stx ((#5.4*[ds.2:%var_378.8].4)+[ds.2:%var_390.8].4), "
-                "ds.2, %var_378.8"
+                "stx ((#5.4*[ds.2:%var_378.8].4)+[ds.2:%var_390.8].4), ds.2, %var_378.8"
             ),
             "same_carrier_alias_proof": True,
         },
@@ -116,7 +116,8 @@ def test_oracle_accepts_current_style_after_with_fact_backing() -> None:
     assert result.fact_summary.role_counts["ACCUMULATOR_CARRIER"] == 3
     assert result.fact_summary.alias_multiply_add_proof_count == 1
     warning = next(
-        check for check in result.checks
+        check
+        for check in result.checks
         if check.name == "return_result_is_presentation_artifact"
     )
     assert not warning.passed
@@ -165,28 +166,35 @@ def test_oracle_accepts_folded_single_xor_terminal_write() -> None:
 
     assert result.passed
     terminal = next(
-        check for check in result.checks
+        check
+        for check in result.checks
         if check.name == "terminal_bcf_forms_equivalent"
     )
     assert terminal.passed
 
 
 def test_oracle_accepts_output_sink_through_a2_local_alias() -> None:
-    alias_after = CURRENT_STYLE_AFTER.replace(
-        "unsigned int **a2)",
-        "int *a2)",
-    ).replace(
-        "    __int64 result;\n",
-        "    __int64 result;\n    int *v25;\n",
-    ).replace(
-        "    MEMORY[0x180000000](v8, 0, 0x64);\n",
-        "    v25 = a2;\n    MEMORY[0x180000000](v8, 0, 0x64);\n",
-    ).replace(
-        "    **a2 = v5 ^ 0x173063C1;",
-        "    *v25 = v5 ^ 0x173063C1;",
-    ).replace(
-        "\n    **a2 = (v5 ^ ~v5) & 0xCD536960 ^ ~v5 ^ 0x259CF55E;",
-        "",
+    alias_after = (
+        CURRENT_STYLE_AFTER.replace(
+            "unsigned int **a2)",
+            "int *a2)",
+        )
+        .replace(
+            "    __int64 result;\n",
+            "    __int64 result;\n    int *v25;\n",
+        )
+        .replace(
+            "    MEMORY[0x180000000](v8, 0, 0x64);\n",
+            "    v25 = a2;\n    MEMORY[0x180000000](v8, 0, 0x64);\n",
+        )
+        .replace(
+            "    **a2 = v5 ^ 0x173063C1;",
+            "    *v25 = v5 ^ 0x173063C1;",
+        )
+        .replace(
+            "\n    **a2 = (v5 ^ ~v5) & 0xCD536960 ^ ~v5 ^ 0x259CF55E;",
+            "",
+        )
     )
 
     result = evaluate_ollvm_fla_bcf_sub_oracle(
@@ -309,9 +317,7 @@ def test_oracle_rejects_non_counted_dispatcher_while_loop() -> None:
     )
 
     assert not result.passed
-    assert any(
-        blocker.name == "dispatcher_loop_removed" for blocker in result.blockers
-    )
+    assert any(blocker.name == "dispatcher_loop_removed" for blocker in result.blockers)
 
 
 def test_oracle_rejects_self_feeding_loop_even_with_fact_backed_carrier_split() -> None:
@@ -327,9 +333,7 @@ def test_oracle_rejects_self_feeding_loop_even_with_fact_backed_carrier_split() 
     )
 
     assert not result.passed
-    assert any(
-        blocker.name == "clean_counted_loop" for blocker in result.blockers
-    )
+    assert any(blocker.name == "clean_counted_loop" for blocker in result.blockers)
 
 
 def test_oracle_rejects_current_self_feeding_do_while_loop() -> None:
@@ -354,9 +358,7 @@ def test_oracle_rejects_current_self_feeding_do_while_loop() -> None:
     )
 
     assert not result.passed
-    assert any(
-        blocker.name == "clean_counted_loop" for blocker in result.blockers
-    )
+    assert any(blocker.name == "clean_counted_loop" for blocker in result.blockers)
 
 
 def test_oracle_rejects_empty_parity_do_while_loop() -> None:
@@ -372,12 +374,8 @@ def test_oracle_rejects_empty_parity_do_while_loop() -> None:
     )
 
     assert not result.passed
-    assert any(
-        blocker.name == "dispatcher_loop_removed" for blocker in result.blockers
-    )
-    assert any(
-        blocker.name == "clean_counted_loop" for blocker in result.blockers
-    )
+    assert any(blocker.name == "dispatcher_loop_removed" for blocker in result.blockers)
+    assert any(blocker.name == "clean_counted_loop" for blocker in result.blockers)
 
 
 def test_oracle_rejects_missing_carrier_fact_roles() -> None:
@@ -397,10 +395,12 @@ def test_oracle_rejects_missing_carrier_fact_roles() -> None:
     # not failures.  Verify the checks are present but not in .blockers.
     fact_checks = [c for c in result.checks if c.name.startswith("fact_")]
     assert fact_checks, "expected fact_* checks to be present when conn supplied"
-    assert all(not c.passed for c in fact_checks), "all fact checks should fail (empty DB)"
-    assert not any(
-        b.name.startswith("fact_") for b in result.blockers
-    ), "fact_* checks must not appear in blockers"
+    assert all(not c.passed for c in fact_checks), (
+        "all fact checks should fail (empty DB)"
+    )
+    assert not any(b.name.startswith("fact_") for b in result.blockers), (
+        "fact_* checks must not appear in blockers"
+    )
 
 
 def test_oracle_rejects_return_result_without_output_sink() -> None:
@@ -467,8 +467,9 @@ def test_fact_witness_checks_are_non_blocking() -> None:
     )
     witness = [c for c in result.checks if c.name.startswith("fact_")]
     assert witness, "expected fact_* witness checks to be present"
-    assert all(not c.blocker for c in witness), \
+    assert all(not c.blocker for c in witness), (
         "fact_* checks must be non-blocking diagnostics, not gates"
+    )
     assert not any(b.name.startswith("fact_") for b in result.blockers)
 
 

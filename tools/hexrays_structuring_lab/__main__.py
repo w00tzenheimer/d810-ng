@@ -1,4 +1,5 @@
 """CLI for the Hex-Rays structuring lab."""
+
 from __future__ import annotations
 
 import argparse
@@ -18,25 +19,31 @@ DEFAULT_OUTPUT_SUBDIR = "hexrays_structuring_lab"
 DEFAULT_FROM_LABEL = "state_write_reconstruction_post_apply"
 DEFAULT_TO_LABEL = "maturity_MMAT_GLBOPT1_post_d810"
 CFG_VALIDATION_OUTPUT_SUBDIR = "hexrays_structuring_lab/cfg_validation"
-ALLOWED_CASE_STATUSES = frozenset({
-    "planned",
-    "compiled_cfg_validated",
-    "observed",
-    "invalid_compiled_cfg",
-})
-ALLOWED_CFG_VALIDATION_STATUSES = frozenset({
-    "not_run",
-    "passed",
-    "failed",
-    "not_provided",
-})
-ALLOWED_OUTCOME_CLASSES = frozenset({
-    "expression_folded_deleted",
-    "absorbed_cleanly",
-    "semantic_visible_boundary_folded",
-    "clean_structured_compaction",
-    "bad_topology_collapse",
-})
+ALLOWED_CASE_STATUSES = frozenset(
+    {
+        "planned",
+        "compiled_cfg_validated",
+        "observed",
+        "invalid_compiled_cfg",
+    }
+)
+ALLOWED_CFG_VALIDATION_STATUSES = frozenset(
+    {
+        "not_run",
+        "passed",
+        "failed",
+        "not_provided",
+    }
+)
+ALLOWED_OUTCOME_CLASSES = frozenset(
+    {
+        "expression_folded_deleted",
+        "absorbed_cleanly",
+        "semantic_visible_boundary_folded",
+        "clean_structured_compaction",
+        "bad_topology_collapse",
+    }
+)
 
 
 class LabError(Exception):
@@ -119,7 +126,9 @@ def load_observation_artifact(case: dict[str, object]) -> dict[str, object] | No
     except FileNotFoundError as exc:
         raise LabError(f"observation artifact not found: {path}") from exc
     except json.JSONDecodeError as exc:
-        raise LabError(f"observation artifact is not valid JSON: {path}: {exc}") from exc
+        raise LabError(
+            f"observation artifact is not valid JSON: {path}: {exc}"
+        ) from exc
     if not isinstance(data, dict):
         raise LabError(f"observation artifact must be a JSON object: {path}")
     case_id = _string_field(case, "id")
@@ -229,16 +238,18 @@ def render_case_command(
     ]
     if worktree:
         docker_cmd.extend(["-w", worktree])
-    docker_cmd.extend([
-        "-f",
-        function,
-        "-p",
-        project,
-        "-o",
-        f"{output_subdir}/{case_id}.txt",
-        "-l",
-        "--enable-debug-logging",
-    ])
+    docker_cmd.extend(
+        [
+            "-f",
+            function,
+            "-p",
+            project,
+            "-o",
+            f"{output_subdir}/{case_id}.txt",
+            "-l",
+            "--enable-debug-logging",
+        ]
+    )
     maturity = _string_field(case, "maturity")
     if maturity:
         docker_cmd.extend(["-m", maturity])
@@ -278,20 +289,22 @@ def render_validate_cfg_command(
     ]
     if worktree:
         command.extend(["-w", worktree])
-    command.extend([
-        "-o",
-        f"{output_subdir}/{case_id}.txt",
-        "--enable-debug-logging",
-        "--",
-        "tests/system/runtime/hexrays/test_structuring_lab_cfg_validation.py",
-        "-q",
-        "--hexrays-lab-case",
-        case_id,
-        "--hexrays-lab-function",
-        function,
-        "--hexrays-lab-output-json",
-        f".tmp/{output_subdir}/{case_id}.json",
-    ])
+    command.extend(
+        [
+            "-o",
+            f"{output_subdir}/{case_id}.txt",
+            "--enable-debug-logging",
+            "--",
+            "tests/system/runtime/hexrays/test_structuring_lab_cfg_validation.py",
+            "-q",
+            "--hexrays-lab-case",
+            case_id,
+            "--hexrays-lab-function",
+            function,
+            "--hexrays-lab-output-json",
+            f".tmp/{output_subdir}/{case_id}.json",
+        ]
+    )
     binary = _string_field(case, "binary")
     env = _env_field(case)
     if binary:
@@ -335,7 +348,9 @@ def load_cfg_validation_result(path: Path) -> dict[str, object]:
     try:
         data = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
-        raise LabError(f"compiled-CFG validation JSON is invalid: {path}: {exc}") from exc
+        raise LabError(
+            f"compiled-CFG validation JSON is invalid: {path}: {exc}"
+        ) from exc
     if not isinstance(data, dict):
         raise LabError("compiled-CFG validation result must be a JSON object")
     status = data.get("status")
@@ -493,10 +508,7 @@ def format_summary_markdown(summary: dict[str, object], *, limit: int = 10) -> s
             f"(`{summary['from_label']}`) -> `{summary['to_snapshot_id']}` "
             f"(`{summary['to_label']}`)"
         ),
-        (
-            f"- Blocks: `{summary['from_block_count']}` -> "
-            f"`{summary['to_block_count']}`"
-        ),
+        (f"- Blocks: `{summary['from_block_count']}` -> `{summary['to_block_count']}`"),
         f"- Vanished blocks: `{summary['vanished_count']}`",
         "",
         "## Cross-Tab",
@@ -512,13 +524,15 @@ def format_summary_markdown(summary: dict[str, object], *, limit: int = 10) -> s
 
     vanished = list(summary["vanished"])
     if limit > 0 and vanished:
-        lines.extend([
-            "",
-            "## Vanished Blocks",
-            "",
-            "| block | type | content | disposition | absorber |",
-            "|-|-|-|-|-|",
-        ])
+        lines.extend(
+            [
+                "",
+                "## Vanished Blocks",
+                "",
+                "| block | type | content | disposition | absorber |",
+                "|-|-|-|-|-|",
+            ]
+        )
         for row in vanished[:limit]:
             absorber = row.get("absorber")
             absorber_text = "-"
@@ -535,10 +549,7 @@ def format_summary_markdown(summary: dict[str, object], *, limit: int = 10) -> s
 def _format_counts(value: object) -> str:
     if not isinstance(value, dict) or not value:
         return "-"
-    return ",".join(
-        f"{key}:{value[key]}"
-        for key in sorted(value)
-    )
+    return ",".join(f"{key}:{value[key]}" for key in sorted(value))
 
 
 def build_matrix(registry: dict[str, object]) -> list[dict[str, object]]:
@@ -555,20 +566,22 @@ def build_matrix(registry: dict[str, object]) -> list[dict[str, object]]:
         cfg_validation = hydrated.get("cfg_validation")
         if not isinstance(cfg_validation, dict):
             cfg_validation = {}
-        rows.append({
-            "case": _string_field(hydrated, "id"),
-            "status": _string_field(hydrated, "status"),
-            "cfg_validation": str(cfg_validation.get("status", "not_run")),
-            "locopt_blocks": observation.get("from_block_count", "-"),
-            "glbopt1_blocks": observation.get("to_block_count", "-"),
-            "vanished_count": observation.get("vanished_count", "-"),
-            "disposition": _format_counts(
-                observation.get("disposition_counts"),
-            ),
-            "pseudocode_changed": pseudocode.get("changed", "-"),
-            "outcome_class": str(observation.get("outcome_class", "-")),
-            "classification": str(observation.get("classification", "")),
-        })
+        rows.append(
+            {
+                "case": _string_field(hydrated, "id"),
+                "status": _string_field(hydrated, "status"),
+                "cfg_validation": str(cfg_validation.get("status", "not_run")),
+                "locopt_blocks": observation.get("from_block_count", "-"),
+                "glbopt1_blocks": observation.get("to_block_count", "-"),
+                "vanished_count": observation.get("vanished_count", "-"),
+                "disposition": _format_counts(
+                    observation.get("disposition_counts"),
+                ),
+                "pseudocode_changed": pseudocode.get("changed", "-"),
+                "outcome_class": str(observation.get("outcome_class", "-")),
+                "classification": str(observation.get("classification", "")),
+            }
+        )
     return rows
 
 
@@ -605,11 +618,7 @@ def format_matrix_markdown(rows: list[dict[str, object]]) -> str:
         "|" + "|".join("-" for _title, _key in columns) + "|",
     ]
     for row in rows:
-        lines.append(
-            "| "
-            + " | ".join(str(row[key]) for _title, key in columns)
-            + " |"
-        )
+        lines.append("| " + " | ".join(str(row[key]) for _title, key in columns) + " |")
     return "\n".join(lines)
 
 
@@ -642,7 +651,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
 def _cmd_command(args: argparse.Namespace) -> int:
     registry = load_registry(Path(args.registry))
     case = _case_by_id(registry, args.case_id)
-    if case.get("status") not in {"compiled_cfg_validated", "observed"} and not args.quiet:
+    if (
+        case.get("status") not in {"compiled_cfg_validated", "observed"}
+        and not args.quiet
+    ):
         print(
             f"warning: case '{args.case_id}' status is {case.get('status')}; "
             "run validate-cfg and record a passed result before treating this "

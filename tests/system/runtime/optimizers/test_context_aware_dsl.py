@@ -109,7 +109,10 @@ def test_extensions_module_has_docstring():
 
 def test_helpers_have_docstrings():
     """Verify all helpers have documentation."""
-    from d810.backends.hexrays.evidence.extensions import ContextProviders, DestinationHelpers
+    from d810.backends.hexrays.evidence.extensions import (
+        ContextProviders,
+        DestinationHelpers,
+    )
 
     # Check DestinationHelpers
     assert DestinationHelpers.is_high_half.__doc__ is not None

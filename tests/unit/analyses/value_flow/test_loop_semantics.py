@@ -1,4 +1,5 @@
 """Tests for the unwired loop-semantics classifier (LS8 S7). Pure-Python, no IDA."""
+
 from __future__ import annotations
 
 from d810.analyses.value_flow.loop_semantics import (
@@ -20,9 +21,7 @@ def test_induction_only_is_counted() -> None:
 
 
 def test_strided_store_is_memory_copy() -> None:
-    result = LoopSemanticsClassifier().classify(
-        has_strided_access=True, has_store=True
-    )
+    result = LoopSemanticsClassifier().classify(has_strided_access=True, has_store=True)
     assert result.kind is LoopSemanticsKind.MEMORY_COPY
 
 

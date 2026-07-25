@@ -7,6 +7,7 @@ and debug output.
 
 Ported from herast (herast/tree/patterns/base_pattern.py).
 """
+
 from __future__ import annotations
 
 import traceback
@@ -55,6 +56,7 @@ class BasePat:
     def get_opname(cls) -> str | None:
         """Return the human-readable name of this pattern's op code."""
         from d810.ctree import consts as consts_mod
+
         return consts_mod.op2str.get(cls.op, None)
 
     @staticmethod
@@ -63,7 +65,9 @@ class BasePat:
         before and after calls are needed.
         """
 
-        def __perform_base_check(self: BasePat, item: typing.Any, ctx: MatchContext) -> bool:
+        def __perform_base_check(
+            self: BasePat, item: typing.Any, ctx: MatchContext
+        ) -> bool:
             if item is None:
                 return False
 

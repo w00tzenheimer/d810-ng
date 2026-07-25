@@ -12,6 +12,7 @@ exercises (copied here so the two suites stay independent): a strong-update arm,
 genuinely-conditional split, an overwritten arm, an MBA (⊤) next-state write, and
 an unreachable block.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.state_transition_domain import (

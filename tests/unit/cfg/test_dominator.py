@@ -1,4 +1,5 @@
 """Tests for graph-map dominator tree computation."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.dominator import compute_dom_tree

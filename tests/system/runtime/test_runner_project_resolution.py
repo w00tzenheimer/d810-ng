@@ -58,7 +58,9 @@ def test_resolve_test_project_index_falls_back_for_unknown_project():
         )
     )
 
-    idx = runner._resolve_test_project_index(state, "custom_project_that_does_not_exist.json")
+    idx = runner._resolve_test_project_index(
+        state, "custom_project_that_does_not_exist.json"
+    )
 
     assert idx == 3
     assert state.project_manager.updated is None

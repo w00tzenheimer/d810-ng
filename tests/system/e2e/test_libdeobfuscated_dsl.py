@@ -50,7 +50,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 @pytest.fixture(scope="class")
@@ -136,7 +138,9 @@ class TestABCPatterns:
 
     binary_name = _get_default_binary()
 
-    @pytest.mark.parametrize("case", ABC_F6_CASES + ABC_XOR_CASES, ids=lambda c: c.test_id)
+    @pytest.mark.parametrize(
+        "case", ABC_F6_CASES + ABC_XOR_CASES, ids=lambda c: c.test_id
+    )
     def test_abc_patterns(
         self,
         case,
@@ -411,7 +415,9 @@ class TestLoopPatterns:
 
     binary_name = _get_default_binary()
 
-    @pytest.mark.parametrize("case", UNWRAP_LOOPS_CASES + WHILE_SWITCH_CASES, ids=lambda c: c.test_id)
+    @pytest.mark.parametrize(
+        "case", UNWRAP_LOOPS_CASES + WHILE_SWITCH_CASES, ids=lambda c: c.test_id
+    )
     def test_loop_patterns(
         self,
         case,
@@ -443,7 +449,9 @@ class TestHardenedConditionalChains:
 
     binary_name = _get_default_binary()
 
-    @pytest.mark.parametrize("case", HARDENED_OLLVM_COND_CHAIN_CASES, ids=lambda c: c.test_id)
+    @pytest.mark.parametrize(
+        "case", HARDENED_OLLVM_COND_CHAIN_CASES, ids=lambda c: c.test_id
+    )
     def test_hardened_conditional_chains(
         self,
         case,

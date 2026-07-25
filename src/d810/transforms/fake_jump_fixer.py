@@ -21,10 +21,15 @@ Example:
     >>> isinstance(mods[0], RedirectBranch)
     True
 """
+
 from __future__ import annotations
 
 from d810.transforms._base import FlowGraphTransform
-from d810.transforms.graph_modification import GraphModification, RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    GraphModification,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.ir.flowgraph import FlowGraph
 
 
@@ -71,6 +76,7 @@ class FakeJumpFixerPass(FlowGraphTransform):
         >>> mods[0].new_target
         10
     """
+
     name = "fake_jump_fixer"
     tags = frozenset({"unflattening", "cleanup"})
 
@@ -137,7 +143,9 @@ class FakeJumpFixerPass(FlowGraphTransform):
                 # 2-way: redirect the branch that doesn't match correct_target
                 for old_target in blk.succs:
                     if old_target != correct_target:
-                        mods.append(RedirectBranch(block_serial, old_target, correct_target))
+                        mods.append(
+                            RedirectBranch(block_serial, old_target, correct_target)
+                        )
                         break
             elif blk.nsucc == 1 and blk.succs[0] != correct_target:
                 # 1-way: redirect if current target differs from correct_target

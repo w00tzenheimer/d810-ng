@@ -7,6 +7,7 @@ equivalence.
 
 This is the canonical serialized ``FactObservation.kind`` value.
 """
+
 from __future__ import annotations
 
 MAY_ALIAS_FACT_TYPE = "MayAliasFact"

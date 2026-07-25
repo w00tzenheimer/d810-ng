@@ -1,4 +1,5 @@
 """Unit tests for shared engine planner exports and pure-Python behavior."""
+
 from __future__ import annotations
 
 from d810.transforms.graph_modification import RedirectGoto

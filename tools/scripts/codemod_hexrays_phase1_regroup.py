@@ -137,7 +137,9 @@ class HexraysPhase1Transformer(cst.CSTTransformer):
         module_code = cst.Module([]).code_for_node(module)
 
         # Special case: from d810.hexrays import <symbol>
-        if module_code == "d810.hexrays" and not isinstance(updated_node.names, cst.ImportStar):
+        if module_code == "d810.hexrays" and not isinstance(
+            updated_node.names, cst.ImportStar
+        ):
             aliases = list(updated_node.names)
             grouped: dict[str, list[cst.ImportAlias]] = {}
             for alias in aliases:

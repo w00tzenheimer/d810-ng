@@ -44,6 +44,7 @@ def _symbolic_expr_to_pattern_expr(expr, var_cache: dict | None = None):
         PatternExpr representation, or None if conversion fails.
     """
     from d810.mba.dsl import SymbolicExpressionProtocol
+
     PatternExpr = _egglog_provider().pattern_expr_type()
 
     if var_cache is None:
@@ -157,6 +158,7 @@ def _symbolic_expr_to_pattern_expr_positional(expr):
         PatternExpr representation with positional variable names, or None if conversion fails.
     """
     from d810.mba.dsl import SymbolicExpressionProtocol
+
     PatternExpr = _egglog_provider().pattern_expr_type()
 
     if expr is None:
@@ -303,7 +305,9 @@ def check_inverse_rules(rule1: "VerifiableRule", rule2: "VerifiableRule") -> boo
     replacement2 = _get_rule_replacement(rule2)
 
     if pattern1 is None or replacement2 is None:
-        logger.debug(f"Cannot get pattern/replacement from rules: {rule1.name}, {rule2.name}")
+        logger.debug(
+            f"Cannot get pattern/replacement from rules: {rule1.name}, {rule2.name}"
+        )
         return False
 
     # Convert to PatternExpr with POSITIONAL variable naming
@@ -347,7 +351,7 @@ def find_inverse_rule_pairs(
     inverse_pairs = []
 
     for i, rule1 in enumerate(rules):
-        for rule2 in rules[i + 1:]:  # Avoid checking (a, b) and (b, a)
+        for rule2 in rules[i + 1 :]:  # Avoid checking (a, b) and (b, a)
             # Check if rule1.PATTERN ~ rule2.REPLACEMENT
             if check_inverse_rules(rule1, rule2):
                 inverse_pairs.append((rule1, rule2))
@@ -381,7 +385,7 @@ def find_equivalent_rule_patterns(
     equivalent_pairs = []
 
     for i, rule1 in enumerate(rules):
-        for rule2 in rules[i + 1:]:
+        for rule2 in rules[i + 1 :]:
             if check_rules_equivalent(rule1, rule2):
                 equivalent_pairs.append((rule1, rule2))
 

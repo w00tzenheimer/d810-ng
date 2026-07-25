@@ -1,4 +1,5 @@
 "Return-frontier artifact evidence labels owned by preanalysis.\n\nThese labels are not core policy and are not general return-frontier taxonomy.\nThey describe a narrow preanalysis proof: a return-frontier writer is not a recoverable\nreturn carrier, but it is still topology-sensitive and must be protected from\nblind graph rewrites.\n"
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ class ReturnFrontierArtifactKind(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class ReturnFrontierArtifactEdgeProof:
-    "Exact edge proof for materializing a protected return-frontier artifact.\n\n    Preanalysis/profile code owns the layout proof. Backend runtimes must verify the\n    live edge identities before applying the corresponding graph mutation.\n    "
+    "Exact edge proof for materializing a protected return-frontier artifact.\n\n    Preanalysis/profile code owns the layout proof. Backend runtimes must verify the\n    live edge identities before applying the corresponding graph mutation.\n"
 
     source_block: int
     artifact_block: int
@@ -34,12 +35,10 @@ class ReturnFrontierArtifactEdgeProof:
 
 @dataclass(frozen=True, slots=True)
 class ReturnFrontierArtifactPriors:
-    "Function/profile priors for protected return-frontier artifacts.\n\n    Preanalysis does not own the set of impossible return constants. A caller that\n    knows a constant cannot be a legitimate return value for a specific\n    function supplies that fact here.\n    "
+    "Function/profile priors for protected return-frontier artifacts.\n\n    Preanalysis does not own the set of impossible return constants. A caller that\n    knows a constant cannot be a legitimate return value for a specific\n    function supplies that fact here.\n"
 
     known_impossible_return_constants: frozenset[int] = frozenset()
-    impossible_return_artifact_edges: tuple[
-        ReturnFrontierArtifactEdgeProof, ...
-    ] = ()
+    impossible_return_artifact_edges: tuple[ReturnFrontierArtifactEdgeProof, ...] = ()
 
     @classmethod
     def from_known_impossible_return_constants(
@@ -71,9 +70,7 @@ class ReturnFrontierArtifactPriors:
         edge_proofs: Iterable[ReturnFrontierArtifactEdgeProof],
     ) -> "ReturnFrontierArtifactPriors":
         merged = tuple(
-            dict.fromkeys(
-                (*self.impossible_return_artifact_edges, *tuple(edge_proofs))
-            )
+            dict.fromkeys((*self.impossible_return_artifact_edges, *tuple(edge_proofs)))
         )
         return ReturnFrontierArtifactPriors(
             self.known_impossible_return_constants,

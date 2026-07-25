@@ -211,14 +211,12 @@ def test_explicit_conditional_bridge_requires_dynamic_provenance() -> None:
     assert not _is_supported_explicit_conditional_transition(untagged)
     assert _is_supported_explicit_conditional_transition(dynamic)
     assert not _is_supported_explicit_conditional_transition(derived_xor)
-    untagged_support = (
-        classify_transition_trust_for_explicit_conditional_bridge(untagged)
+    untagged_support = classify_transition_trust_for_explicit_conditional_bridge(
+        untagged
     )
-    dynamic_support = (
-        classify_transition_trust_for_explicit_conditional_bridge(dynamic)
-    )
-    derived_support = (
-        classify_transition_trust_for_explicit_conditional_bridge(derived_xor)
+    dynamic_support = classify_transition_trust_for_explicit_conditional_bridge(dynamic)
+    derived_support = classify_transition_trust_for_explicit_conditional_bridge(
+        derived_xor
     )
 
     assert not untagged_support.authorizes_explicit_conditional_bridge
@@ -227,10 +225,7 @@ def test_explicit_conditional_bridge_requires_dynamic_provenance() -> None:
     assert dynamic_support.reason == "dynamic_state_write"
     assert not derived_support.authorizes_explicit_conditional_bridge
     assert derived_support.reason == "dispatch_key_transform_not_authority"
-    assert (
-        derived_support.dispatch_key_transform_kind
-        == DispatchKeyTransformKind.XOR
-    )
+    assert derived_support.dispatch_key_transform_kind == DispatchKeyTransformKind.XOR
 
 
 def _make_branch_flow_graph() -> FlowGraph:
@@ -431,10 +426,13 @@ def test_state_label_for_transition_row_preserves_nonraw_semantic_alias() -> Non
         ),
     )
 
-    assert _state_label_for_transition_row(
-        row,
-        node_kind=StateNodeKind.EXACT,
-    ) == "STATE_474EEEBB"
+    assert (
+        _state_label_for_transition_row(
+            row,
+            node_kind=StateNodeKind.EXACT,
+        )
+        == "STATE_474EEEBB"
+    )
 
 
 def test_state_label_for_range_transition_row_preserves_nonraw_semantic_alias() -> None:
@@ -461,10 +459,13 @@ def test_state_label_for_range_transition_row_preserves_nonraw_semantic_alias() 
         ),
     )
 
-    assert _state_label_for_transition_row(
-        row,
-        node_kind=StateNodeKind.RANGE_BACKED,
-    ) == "0x2E6C61F2"
+    assert (
+        _state_label_for_transition_row(
+            row,
+            node_kind=StateNodeKind.RANGE_BACKED,
+        )
+        == "0x2E6C61F2"
+    )
 
 
 def test_resolves_supplemental_source_family_alias_to_same_state_exact_entry() -> None:
@@ -518,7 +519,9 @@ def test_resolves_supplemental_source_family_alias_to_same_state_exact_entry() -
     ) == (66, "0x4C77464F")
 
 
-def test_resolves_supplemental_source_family_alias_prefers_semantic_alias_over_raw_exact() -> None:
+def test_resolves_supplemental_source_family_alias_prefers_semantic_alias_over_raw_exact() -> (
+    None
+):
     raw_exact_key = StateDagNodeKey(handler_serial=66, state_const=0x4C77464F)
     dag = LinearizedStateDag(
         dispatcher_entry_serial=0,
@@ -643,7 +646,9 @@ def test_resolves_nonraw_owner_semantic_alias_for_raw_exact_cover_anchor() -> No
     ) == (63, "0x474EEEBB")
 
 
-def test_resolves_nonraw_owner_semantic_alias_to_owner_exclusive_head_when_entry_is_seed() -> None:
+def test_resolves_nonraw_owner_semantic_alias_to_owner_exclusive_head_when_entry_is_seed() -> (
+    None
+):
     dag = LinearizedStateDag(
         dispatcher_entry_serial=0,
         state_var_stkoff=None,
@@ -678,7 +683,9 @@ def test_resolves_nonraw_owner_semantic_alias_to_owner_exclusive_head_when_entry
     ) == (63, "0x474EEEBB")
 
 
-def test_resolves_nonraw_owner_semantic_alias_returns_none_without_nonraw_owner() -> None:
+def test_resolves_nonraw_owner_semantic_alias_returns_none_without_nonraw_owner() -> (
+    None
+):
     dag = LinearizedStateDag(
         dispatcher_entry_serial=0,
         state_var_stkoff=None,
@@ -891,7 +898,9 @@ def test_resolves_nonraw_dispatcher_cover_alias_skips_raw_exact_range_row() -> N
     ) == (63, "0x474EEEBB")
 
 
-def test_resolves_nonraw_dispatcher_cover_alias_skips_known_cover_anchor_without_dag_node() -> None:
+def test_resolves_nonraw_dispatcher_cover_alias_skips_known_cover_anchor_without_dag_node() -> (
+    None
+):
     dispatcher = IntervalDispatcher(
         [
             IntervalRow(lo=0x432DC78A, hi=0x474EEEBB, target=63),
@@ -935,7 +944,9 @@ def test_resolves_nonraw_dispatcher_cover_alias_skips_known_cover_anchor_without
     ) == (63, "0x474EEEBB")
 
 
-def test_selects_branchy_cover_exact_as_raw_alias_candidate_when_source_family_is_dispatcher() -> None:
+def test_selects_branchy_cover_exact_as_raw_alias_candidate_when_source_family_is_dispatcher() -> (
+    None
+):
     dag = LinearizedStateDag(
         dispatcher_entry_serial=0,
         state_var_stkoff=None,
@@ -949,46 +960,51 @@ def test_selects_branchy_cover_exact_as_raw_alias_candidate_when_source_family_i
         diagnostics=(),
     )
 
-    assert _select_raw_alias_candidate_anchor(
-        state_value=0x4C77464F,
-        dag=dag,
-        source_family_alias_anchor=71,
-        source_family_alias_is_raw=False,
-        cover_exact_anchor=66,
-        dispatcher_anchor=71,
-        candidate_results_by_anchor={
-            66: (
-                (
-                    HandlerPathResult(
-                        exit_block=69,
-                        final_state=0x12ACFB20,
-                        state_writes=[(69, 0x12ACFB20)],
-                        ordered_path=[66, 68, 69],
+    assert (
+        _select_raw_alias_candidate_anchor(
+            state_value=0x4C77464F,
+            dag=dag,
+            source_family_alias_anchor=71,
+            source_family_alias_is_raw=False,
+            cover_exact_anchor=66,
+            dispatcher_anchor=71,
+            candidate_results_by_anchor={
+                66: (
+                    (
+                        HandlerPathResult(
+                            exit_block=69,
+                            final_state=0x12ACFB20,
+                            state_writes=[(69, 0x12ACFB20)],
+                            ordered_path=[66, 68, 69],
+                        ),
+                        HandlerPathResult(
+                            exit_block=67,
+                            final_state=0x32FCD904,
+                            state_writes=[(67, 0x32FCD904)],
+                            ordered_path=[66, 67],
+                        ),
                     ),
-                    HandlerPathResult(
-                        exit_block=67,
-                        final_state=0x32FCD904,
-                        state_writes=[(67, 0x32FCD904)],
-                        ordered_path=[66, 67],
+                    (
+                        ConditionalTransition(
+                            handler_entry=66,
+                            branch_block=66,
+                            target_state=0x12ACFB20,
+                            target_handler=69,
+                            state_write_block=69,
+                            state_write_ea=0x401000,
+                            branch_arm=0,
+                        ),
                     ),
                 ),
-                (
-                    ConditionalTransition(
-                        handler_entry=66,
-                        branch_block=66,
-                        target_state=0x12ACFB20,
-                        target_handler=69,
-                        state_write_block=69,
-                        state_write_ea=0x401000,
-                        branch_arm=0,
-                    ),
-                ),
-            ),
-        },
-    ) == 66
+            },
+        )
+        == 66
+    )
 
 
-def test_selects_branchy_source_family_as_raw_alias_candidate_when_exact_entry_is_shared() -> None:
+def test_selects_branchy_source_family_as_raw_alias_candidate_when_exact_entry_is_shared() -> (
+    None
+):
     dag = LinearizedStateDag(
         dispatcher_entry_serial=0,
         state_var_stkoff=None,
@@ -1027,43 +1043,46 @@ def test_selects_branchy_source_family_as_raw_alias_candidate_when_exact_entry_i
         diagnostics=(),
     )
 
-    assert _select_raw_alias_candidate_anchor(
-        state_value=0x4C77464F,
-        dag=dag,
-        source_family_alias_anchor=66,
-        source_family_alias_is_raw=False,
-        cover_exact_anchor=66,
-        dispatcher_anchor=None,
-        candidate_results_by_anchor={
-            66: (
-                (
-                    HandlerPathResult(
-                        exit_block=69,
-                        final_state=0x12ACFB20,
-                        state_writes=[(69, 0x12ACFB20)],
-                        ordered_path=[66, 68, 69],
+    assert (
+        _select_raw_alias_candidate_anchor(
+            state_value=0x4C77464F,
+            dag=dag,
+            source_family_alias_anchor=66,
+            source_family_alias_is_raw=False,
+            cover_exact_anchor=66,
+            dispatcher_anchor=None,
+            candidate_results_by_anchor={
+                66: (
+                    (
+                        HandlerPathResult(
+                            exit_block=69,
+                            final_state=0x12ACFB20,
+                            state_writes=[(69, 0x12ACFB20)],
+                            ordered_path=[66, 68, 69],
+                        ),
+                        HandlerPathResult(
+                            exit_block=67,
+                            final_state=0x32FCD904,
+                            state_writes=[(67, 0x32FCD904)],
+                            ordered_path=[66, 67],
+                        ),
                     ),
-                    HandlerPathResult(
-                        exit_block=67,
-                        final_state=0x32FCD904,
-                        state_writes=[(67, 0x32FCD904)],
-                        ordered_path=[66, 67],
+                    (
+                        ConditionalTransition(
+                            handler_entry=66,
+                            branch_block=66,
+                            target_state=0x12ACFB20,
+                            target_handler=69,
+                            state_write_block=69,
+                            state_write_ea=0x401000,
+                            branch_arm=0,
+                        ),
                     ),
                 ),
-                (
-                    ConditionalTransition(
-                        handler_entry=66,
-                        branch_block=66,
-                        target_state=0x12ACFB20,
-                        target_handler=69,
-                        state_write_block=69,
-                        state_write_ea=0x401000,
-                        branch_arm=0,
-                    ),
-                ),
-            ),
-        },
-    ) == 66
+            },
+        )
+        == 66
+    )
 
 
 def test_build_linearized_state_program_normalizes_rendered_raw_alias_labels() -> None:
@@ -1174,7 +1193,9 @@ def test_build_linearized_state_program_normalizes_rendered_raw_alias_labels() -
     assert "STATE_474EEEBB" in rendered
 
 
-def test_semantic_entry_anchor_keeps_non_condition_chain_handler_over_unique_path_root() -> None:
+def test_semantic_entry_anchor_keeps_non_condition_chain_handler_over_unique_path_root() -> (
+    None
+):
     paths = (
         HandlerPathResult(
             exit_block=68,
@@ -1309,7 +1330,9 @@ def test_does_not_prefer_family_fallback_over_straight_raw_exact_anchor() -> Non
     )
 
 
-def test_does_not_prefer_family_fallback_when_source_family_alias_is_raw_exact() -> None:
+def test_does_not_prefer_family_fallback_when_source_family_alias_is_raw_exact() -> (
+    None
+):
     raw_exact_key = StateDagNodeKey(handler_serial=66, state_const=0x4C77464F)
     dag = LinearizedStateDag(
         dispatcher_entry_serial=0,
@@ -1376,7 +1399,9 @@ def test_does_not_prefer_family_fallback_when_source_family_alias_is_raw_exact()
     )
 
 
-def test_prefers_family_fallback_when_source_family_alias_is_raw_exact_with_distinct_cover() -> None:
+def test_prefers_family_fallback_when_source_family_alias_is_raw_exact_with_distinct_cover() -> (
+    None
+):
     raw_exact_key = StateDagNodeKey(handler_serial=66, state_const=0x4C77464F)
     dag = LinearizedStateDag(
         dispatcher_entry_serial=0,
@@ -1523,7 +1548,9 @@ def test_prefers_family_fallback_over_branchy_duplicate_cover_exact_anchor() -> 
     )
 
 
-def test_does_not_prefer_family_fallback_over_branchy_nonraw_cover_exact_anchor() -> None:
+def test_does_not_prefer_family_fallback_over_branchy_nonraw_cover_exact_anchor() -> (
+    None
+):
     dag = LinearizedStateDag(
         dispatcher_entry_serial=0,
         state_var_stkoff=None,
@@ -1656,11 +1683,14 @@ def test_resolves_exact_cover_anchor_to_preceding_exact_row() -> None:
         diagnostics=(),
     )
 
-    assert _resolve_exact_cover_anchor(
-        0x4C77464F,
-        report,
-        condition_chain_blocks=set(),
-    ) == 66
+    assert (
+        _resolve_exact_cover_anchor(
+            0x4C77464F,
+            report,
+            condition_chain_blocks=set(),
+        )
+        == 66
+    )
 
 
 def test_resolves_exact_cover_anchor_from_dispatcher_singleton_row() -> None:
@@ -1714,15 +1744,20 @@ def test_resolves_exact_cover_anchor_from_dispatcher_singleton_row() -> None:
         ]
     )
 
-    assert _resolve_exact_cover_anchor(
-        0x4C77464F,
-        report,
-        dispatcher=dispatcher,
-        condition_chain_blocks=set(),
-    ) == 66
+    assert (
+        _resolve_exact_cover_anchor(
+            0x4C77464F,
+            report,
+            dispatcher=dispatcher,
+            condition_chain_blocks=set(),
+        )
+        == 66
+    )
 
 
-def test_build_state_resolver_preserves_raw_exact_row_over_dispatcher_corridor() -> None:
+def test_build_state_resolver_preserves_raw_exact_row_over_dispatcher_corridor() -> (
+    None
+):
     report = DispatcherTransitionReport(
         dispatcher_entry_serial=2,
         state_var_stkoff=0x3C,
@@ -1927,7 +1962,9 @@ def test_build_state_resolver_still_overrides_nonraw_exact_row_to_dispatcher() -
     assert resolve_handler(0x474EEEBB) == 71
 
 
-def test_build_state_resolver_prefers_dispatcher_over_protected_non_carrier_return_writer() -> None:
+def test_build_state_resolver_prefers_dispatcher_over_protected_non_carrier_return_writer() -> (
+    None
+):
     report = DispatcherTransitionReport(
         dispatcher_entry_serial=2,
         state_var_stkoff=0x3C,
@@ -2004,7 +2041,9 @@ def test_build_state_resolver_prefers_dispatcher_over_protected_non_carrier_retu
     assert resolve_handler(0x474EEEBB) == 71
 
 
-def test_build_state_resolver_preserves_nonraw_semantic_alias_row_over_dispatcher() -> None:
+def test_build_state_resolver_preserves_nonraw_semantic_alias_row_over_dispatcher() -> (
+    None
+):
     report = DispatcherTransitionReport(
         dispatcher_entry_serial=2,
         state_var_stkoff=0x3C,
@@ -2164,15 +2203,18 @@ def test_embedded_exact_owner_override_preserves_distinct_local_corridor() -> No
 
 
 def test_sub7ffd_corridor_dispatcher_anchor_override_prefers_dispatcher_body() -> None:
-    assert _resolve_sub7ffd_corridor_dispatcher_anchor_override(
-        0x0B2FECE0,
-        selected_anchor=132,
-        dispatcher_anchor=130,
-        dispatcher_exact_anchor=None,
-        cover_anchor=132,
-        family_fallback_anchor=155,
-        bridge_anchor=116,
-    ) == 130
+    assert (
+        _resolve_sub7ffd_corridor_dispatcher_anchor_override(
+            0x0B2FECE0,
+            selected_anchor=132,
+            dispatcher_anchor=130,
+            dispatcher_exact_anchor=None,
+            cover_anchor=132,
+            family_fallback_anchor=155,
+            bridge_anchor=116,
+        )
+        == 130
+    )
 
     assert (
         _resolve_sub7ffd_corridor_dispatcher_anchor_override(
@@ -2188,7 +2230,9 @@ def test_sub7ffd_corridor_dispatcher_anchor_override_prefers_dispatcher_body() -
     )
 
 
-def test_sub7ffd_corridor_dispatcher_exact_override_keeps_semantic_child_anchor() -> None:
+def test_sub7ffd_corridor_dispatcher_exact_override_keeps_semantic_child_anchor() -> (
+    None
+):
     assert (
         _resolve_sub7ffd_corridor_dispatcher_anchor_override(
             0x4E69F350,
@@ -2203,7 +2247,9 @@ def test_sub7ffd_corridor_dispatcher_exact_override_keeps_semantic_child_anchor(
     )
 
 
-def test_sub7ffd_corridor_dispatcher_exact_override_does_not_force_4e69_dispatcher_row() -> None:
+def test_sub7ffd_corridor_dispatcher_exact_override_does_not_force_4e69_dispatcher_row() -> (
+    None
+):
     assert (
         _resolve_sub7ffd_corridor_dispatcher_anchor_override(
             0x4E69F350,
@@ -2218,7 +2264,9 @@ def test_sub7ffd_corridor_dispatcher_exact_override_does_not_force_4e69_dispatch
     )
 
 
-def test_alias_label_override_preserves_node_local_prefix_over_prelude_collapse() -> None:
+def test_alias_label_override_preserves_node_local_prefix_over_prelude_collapse() -> (
+    None
+):
     flow_graph = FlowGraph(
         blocks={
             122: BlockSnapshot(122, 0, (45,), (), 0, 0, ()),
@@ -2440,7 +2488,9 @@ def test_alias_label_override_rejects_sibling_prelude_from_branch_source() -> No
     )
 
 
-def test_alias_label_override_preserves_dispatcher_body_anchor_for_upper_gap_collapse() -> None:
+def test_alias_label_override_preserves_dispatcher_body_anchor_for_upper_gap_collapse() -> (
+    None
+):
     flow_graph = FlowGraph(
         blocks={
             78: BlockSnapshot(78, 0, (14,), (), 0, 0, ()),
@@ -2462,9 +2512,7 @@ def test_alias_label_override_preserves_dispatcher_body_anchor_for_upper_gap_col
         owned_blocks=(81,),
         exclusive_blocks=(81,),
         shared_suffix_blocks=(),
-        local_segments=(
-            StateLocalSegment("blk[81]", LocalSegmentKind.BRANCH, (81,)),
-        ),
+        local_segments=(StateLocalSegment("blk[81]", LocalSegmentKind.BRANCH, (81,)),),
         local_edges=(),
     )
     incoming_edge = StateDagEdge(
@@ -2616,7 +2664,9 @@ def test_alias_label_override_preserves_dispatcher_body_anchor_for_upper_gap_col
     ) == ("0x606DC166_fallback", 80, True)
 
 
-def test_alias_label_override_preserves_dispatcher_body_anchor_for_cover_collapse() -> None:
+def test_alias_label_override_preserves_dispatcher_body_anchor_for_cover_collapse() -> (
+    None
+):
     flow_graph = FlowGraph(
         blocks={
             78: BlockSnapshot(78, 0, (14,), (), 0, 0, ()),
@@ -2835,7 +2885,10 @@ def test_branch_anchors_and_local_cfg_are_preserved() -> None:
         if edge.source_key.handler_serial == 2
         and edge.kind == SemanticEdgeKind.CONDITIONAL_TRANSITION
     ]
-    assert {(edge.source_anchor.block_serial, edge.source_anchor.branch_arm) for edge in outgoing} == {
+    assert {
+        (edge.source_anchor.block_serial, edge.source_anchor.branch_arm)
+        for edge in outgoing
+    } == {
         (2, 0),
         (2, 1),
     }
@@ -2976,9 +3029,7 @@ def test_render_linearized_state_program_can_use_ida_block_serial_labels() -> No
     assert "// state-family: STATE_00000030" in rendered
     assert "// state-family: STATE_00000040" in rendered
     assert "goto LABEL_7;  /* STATE_00000040 */" in rendered
-    assert (
-        "goto LABEL_3;  /* STATE_00000030 */  // blk[2].fallthrough" in rendered
-    )
+    assert "goto LABEL_3;  /* STATE_00000030 */  // blk[2].fallthrough" in rendered
     assert "STATE_00000020:" not in rendered
 
 
@@ -3218,7 +3269,9 @@ def test_render_linearized_state_program_explicitly_emits_local_segments() -> No
     assert "goto STATE_00000020__blk_21;  // blk[20].fallthrough" in rendered
 
 
-def test_render_linearized_state_program_selectively_collapses_local_corridors() -> None:
+def test_render_linearized_state_program_selectively_collapses_local_corridors() -> (
+    None
+):
     source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
     target_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
     dag = LinearizedStateDag(
@@ -3409,36 +3462,36 @@ def test_render_linearized_state_program_inlines_one_boundary_level() -> None:
             ),
         ),
         edges=(
-                StateDagEdge(
-                    kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
-                    source_key=source_key,
-                    target_key=target_b_key,
-                    target_state=0x40,
-                    target_entry_anchor=40,
-                    target_label="0x00000040",
-                    source_anchor=StateRedirectAnchor(
-                        kind=RedirectSourceKind.CONDITIONAL_BRANCH,
-                        block_serial=21,
-                        branch_arm=1,
-                    ),
-                    ordered_path=(21, 40),
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_b_key,
+                target_state=0x40,
+                target_entry_anchor=40,
+                target_label="0x00000040",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=21,
+                    branch_arm=1,
                 ),
-                StateDagEdge(
-                    kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
-                    source_key=source_key,
-                    target_key=target_a_key,
-                    target_state=0x30,
-                    target_entry_anchor=30,
-                    target_label="0x00000030",
-                    source_anchor=StateRedirectAnchor(
-                        kind=RedirectSourceKind.CONDITIONAL_BRANCH,
-                        block_serial=21,
-                        branch_arm=0,
-                    ),
-                    ordered_path=(21, 30),
-                ),
+                ordered_path=(21, 40),
             ),
-        )
+            StateDagEdge(
+                kind=SemanticEdgeKind.CONDITIONAL_TRANSITION,
+                source_key=source_key,
+                target_key=target_a_key,
+                target_state=0x30,
+                target_entry_anchor=30,
+                target_label="0x00000030",
+                source_anchor=StateRedirectAnchor(
+                    kind=RedirectSourceKind.CONDITIONAL_BRANCH,
+                    block_serial=21,
+                    branch_arm=0,
+                ),
+                ordered_path=(21, 30),
+            ),
+        ),
+    )
 
     rendered = render_linearized_state_program(
         dag,
@@ -3452,7 +3505,9 @@ def test_render_linearized_state_program_inlines_one_boundary_level() -> None:
     assert "goto STATE_00000030;  // blk[21].fallthrough" in rendered
 
 
-def test_render_linearized_state_program_renders_block_payload_without_terminal_control() -> None:
+def test_render_linearized_state_program_renders_block_payload_without_terminal_control() -> (
+    None
+):
     source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
     target_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
     dag = LinearizedStateDag(
@@ -3543,7 +3598,9 @@ def test_render_linearized_state_program_renders_block_payload_without_terminal_
     assert "goto STATE_00000030;  // blk[20].fallthrough" in rendered
 
 
-def test_render_linearized_state_program_structures_simple_collapsed_sidechain() -> None:
+def test_render_linearized_state_program_structures_simple_collapsed_sidechain() -> (
+    None
+):
     source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
     target_a_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
     target_b_key = StateDagNodeKey(handler_serial=40, state_const=0x40)
@@ -3564,52 +3621,52 @@ def test_render_linearized_state_program_structures_simple_collapsed_sidechain()
                 owned_blocks=(20, 21, 22),
                 exclusive_blocks=(20, 21, 22),
                 shared_suffix_blocks=(),
-                    local_segments=(
-                        StateLocalSegment(
-                            segment_id="blk[20]",
-                            kind=LocalSegmentKind.BRANCH,
-                            blocks=(20,),
-                        ),
-                        StateLocalSegment(
-                            segment_id="blk[21]",
-                            kind=LocalSegmentKind.BRANCH,
-                            blocks=(21,),
-                        ),
-                        StateLocalSegment(
-                            segment_id="blk[22]",
-                            kind=LocalSegmentKind.BRANCH,
-                            blocks=(22,),
-                        ),
-                        StateLocalSegment(
-                            segment_id="blk[23]",
-                            kind=LocalSegmentKind.STRAIGHT_LINE,
-                            blocks=(23,),
-                        ),
+                local_segments=(
+                    StateLocalSegment(
+                        segment_id="blk[20]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(20,),
                     ),
-                    local_edges=(
-                        StateLocalEdge(
-                            source_segment_id="blk[20]",
-                            target_segment_id="blk[21]",
-                            kind=LocalEdgeKind.FALLTHROUGH,
-                            branch_arm=0,
-                        ),
-                        StateLocalEdge(
-                            source_segment_id="blk[21]",
-                            target_segment_id="blk[22]",
-                            kind=LocalEdgeKind.TAKEN,
-                            branch_arm=1,
-                        ),
-                        StateLocalEdge(
-                            source_segment_id="blk[21]",
-                            target_segment_id="blk[23]",
-                            kind=LocalEdgeKind.FALLTHROUGH,
-                            branch_arm=0,
-                        ),
-                        StateLocalEdge(
-                            source_segment_id="blk[23]",
-                            target_segment_id="blk[22]",
-                            kind=LocalEdgeKind.GOTO,
-                        ),
+                    StateLocalSegment(
+                        segment_id="blk[21]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(21,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[22]",
+                        kind=LocalSegmentKind.BRANCH,
+                        blocks=(22,),
+                    ),
+                    StateLocalSegment(
+                        segment_id="blk[23]",
+                        kind=LocalSegmentKind.STRAIGHT_LINE,
+                        blocks=(23,),
+                    ),
+                ),
+                local_edges=(
+                    StateLocalEdge(
+                        source_segment_id="blk[20]",
+                        target_segment_id="blk[21]",
+                        kind=LocalEdgeKind.FALLTHROUGH,
+                        branch_arm=0,
+                    ),
+                    StateLocalEdge(
+                        source_segment_id="blk[21]",
+                        target_segment_id="blk[22]",
+                        kind=LocalEdgeKind.TAKEN,
+                        branch_arm=1,
+                    ),
+                    StateLocalEdge(
+                        source_segment_id="blk[21]",
+                        target_segment_id="blk[23]",
+                        kind=LocalEdgeKind.FALLTHROUGH,
+                        branch_arm=0,
+                    ),
+                    StateLocalEdge(
+                        source_segment_id="blk[23]",
+                        target_segment_id="blk[22]",
+                        kind=LocalEdgeKind.GOTO,
+                    ),
                 ),
             ),
             StateDagNode(
@@ -3717,7 +3774,9 @@ def test_render_linearized_state_program_structures_simple_collapsed_sidechain()
     assert "if (v20 >=u 0x20) goto LABEL_22" not in rendered
 
 
-def test_render_linearized_state_program_preserves_entry_corridor_payload_before_resolved_target() -> None:
+def test_render_linearized_state_program_preserves_entry_corridor_payload_before_resolved_target() -> (
+    None
+):
     source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
     target_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
     dag = LinearizedStateDag(
@@ -3981,7 +4040,9 @@ def test_render_linearized_state_program_emits_semantic_edge_tail_payload() -> N
     assert "goto STATE_00000050;" in rendered
 
 
-def test_render_linearized_state_program_emits_two_way_merge_once_with_transition() -> None:
+def test_render_linearized_state_program_emits_two_way_merge_once_with_transition() -> (
+    None
+):
     """A 2-way branch whose arms converge on one merge block that writes the next
     state must render the merge body ONCE (at its own label), with both arms routing
     to that label and a single exit goto -- not duplicated per arm.
@@ -4122,9 +4183,7 @@ def test_render_linearized_state_program_emits_two_way_merge_once_with_transitio
     assert sum(1 for ln in lines if ln.strip() == "goto STATE_00000030;") == 1
     # No dangling gotos: every goto target is defined as a label somewhere.
     defined = {
-        m.group(1)
-        for ln in lines
-        if (m := re.match(r"^\s*([A-Za-z_]\w*)\s*:\s*$", ln))
+        m.group(1) for ln in lines if (m := re.match(r"^\s*([A-Za-z_]\w*)\s*:\s*$", ln))
     }
     goto_targets = {
         g for ln in lines for g in re.findall(r"\bgoto\s+([A-Za-z_]\w*)\s*;", ln)
@@ -4132,7 +4191,9 @@ def test_render_linearized_state_program_emits_two_way_merge_once_with_transitio
     assert goto_targets <= defined, f"dangling gotos: {sorted(goto_targets - defined)}"
 
 
-def test_render_linearized_state_program_minimal_comment_mode_hides_metadata_scaffolding() -> None:
+def test_render_linearized_state_program_minimal_comment_mode_hides_metadata_scaffolding() -> (
+    None
+):
     source_key = StateDagNodeKey(handler_serial=20, state_const=0x20)
     target_key = StateDagNodeKey(handler_serial=30, state_const=0x30)
     dag = LinearizedStateDag(
@@ -4461,7 +4522,10 @@ def test_terminal_sibling_paths_use_branch_anchors() -> None:
     assert terminal_edge.target_label == "RETURN"
 
     rendered = render_linearized_state_dag(dag)
-    assert "edge conditional_return src=blk[2].fallthrough -> RETURN path=[2, 3]" in rendered
+    assert (
+        "edge conditional_return src=blk[2].fallthrough -> RETURN path=[2, 3]"
+        in rendered
+    )
 
 
 def test_branch_anchored_inherited_state_paths_do_not_render_self_edges() -> None:
@@ -4533,11 +4597,7 @@ def test_branch_anchored_inherited_state_paths_do_not_render_self_edges() -> Non
         },
     )
 
-    outgoing = [
-        edge
-        for edge in dag.edges
-        if edge.source_key.handler_serial == 1
-    ]
+    outgoing = [edge for edge in dag.edges if edge.source_key.handler_serial == 1]
     assert any(
         edge.kind == SemanticEdgeKind.TRANSITION and edge.target_state == 0x30
         for edge in outgoing
@@ -4924,8 +4984,7 @@ def test_terminal_branch_handoff_preserves_local_goto_chain() -> None:
         for edge in acd_edges
     )
     assert not any(
-        edge.kind == SemanticEdgeKind.TRANSITION
-        and edge.target_state == 0x6465D165
+        edge.kind == SemanticEdgeKind.TRANSITION and edge.target_state == 0x6465D165
         for edge in acd_edges
     )
 
@@ -5445,7 +5504,9 @@ def test_live_builder_iterates_supplemental_fallback_aliases(
     assert 0x604AAEA6 in present_states
 
     nodes_by_state = {
-        node.key.state_const: node for node in dag.nodes if node.key.state_const is not None
+        node.key.state_const: node
+        for node in dag.nodes
+        if node.key.state_const is not None
     }
     assert nodes_by_state[0x24E2E77A].state_label == "0x2315233C_fallback"
     assert nodes_by_state[0x24E2E77A].entry_anchor == 211
@@ -5457,8 +5518,7 @@ def test_live_builder_iterates_supplemental_fallback_aliases(
     first_hop = next(
         edge
         for edge in dag.edges
-        if edge.source_key.state_const == 0x42267E66
-        and edge.target_state == 0x24E2E77A
+        if edge.source_key.state_const == 0x42267E66 and edge.target_state == 0x24E2E77A
     )
     assert first_hop.target_entry_anchor == 211
     assert first_hop.target_label == "0x2315233C_fallback"
@@ -5466,8 +5526,7 @@ def test_live_builder_iterates_supplemental_fallback_aliases(
     second_hop = next(
         edge
         for edge in dag.edges
-        if edge.source_key.state_const == 0x24E2E77A
-        and edge.target_state == 0x3E7EA8B8
+        if edge.source_key.state_const == 0x24E2E77A and edge.target_state == 0x3E7EA8B8
     )
     assert second_hop.target_entry_anchor == 106
     assert second_hop.target_label == "0x393685BA_fallback"
@@ -5475,8 +5534,7 @@ def test_live_builder_iterates_supplemental_fallback_aliases(
     third_hop = next(
         edge
         for edge in dag.edges
-        if edge.source_key.state_const == 0x3E7EA8B8
-        and edge.target_state == 0x604AAEA6
+        if edge.source_key.state_const == 0x3E7EA8B8 and edge.target_state == 0x604AAEA6
     )
     assert third_hop.target_entry_anchor == 78
     assert third_hop.target_label == "0x606DC166_fallback"
@@ -5764,7 +5822,9 @@ def test_live_builder_prefers_exact_cover_fallback_anchor_over_bridge_row(
     )
 
     nodes_by_state = {
-        node.key.state_const: node for node in dag.nodes if node.key.state_const is not None
+        node.key.state_const: node
+        for node in dag.nodes
+        if node.key.state_const is not None
     }
     assert nodes_by_state[0x24E2E77A].entry_anchor == 212
     assert nodes_by_state[0x24E2E77A].entry_anchor != 122
@@ -5772,8 +5832,7 @@ def test_live_builder_prefers_exact_cover_fallback_anchor_over_bridge_row(
     edge = next(
         edge
         for edge in dag.edges
-        if edge.source_key.state_const == 0x42267E66
-        and edge.target_state == 0x24E2E77A
+        if edge.source_key.state_const == 0x42267E66 and edge.target_state == 0x24E2E77A
     )
     assert edge.target_entry_anchor == 212
 
@@ -5968,9 +6027,7 @@ def test_live_builder_prefers_body_anchor_over_condition_chain_range_root(
         prefer_local_corridors=True,
     )
 
-    alias_node = next(
-        node for node in dag.nodes if node.key.state_const == 0x27EEEA11
-    )
+    alias_node = next(node for node in dag.nodes if node.key.state_const == 0x27EEEA11)
     assert alias_node.entry_anchor == 24
 
     alias_edge = next(
@@ -6161,9 +6218,9 @@ def test_live_builder_skips_terminal_condition_chain_supplemental_alias(
     monkeypatch.setattr(
         dag_mod,
         "resolve_exit_via_condition_chain_default_snapshot",
-        lambda flow_graph, dispatcher_root_serial, state_value: 24
-        if state_value == 0x27EEEA11
-        else None,
+        lambda flow_graph, dispatcher_root_serial, state_value: (
+            24 if state_value == 0x27EEEA11 else None
+        ),
     )
     monkeypatch.setattr(
         dag_mod,
@@ -6298,9 +6355,9 @@ def test_terminal_condition_chain_alias_requires_existing_terminal_edge_exit(
     monkeypatch.setattr(
         dag_mod,
         "resolve_exit_via_condition_chain_default_snapshot",
-        lambda flow_graph, dispatcher_root_serial, state_value: 30
-        if state_value == 0x2000
-        else None,
+        lambda flow_graph, dispatcher_root_serial, state_value: (
+            30 if state_value == 0x2000 else None
+        ),
     )
     monkeypatch.setattr(
         dag_mod,
@@ -6726,11 +6783,10 @@ def test_live_builder_rejects_self_handoff_candidate_anchor(
     assert handoff_node.entry_anchor == 22
 
     outgoing = next(
-        edge
-        for edge in dag.edges
-        if edge.source_key.state_const == 0x63F502FA
+        edge for edge in dag.edges if edge.source_key.state_const == 0x63F502FA
     )
     assert outgoing.target_state == 0x00C0C59F
+
 
 def test_alias_node_normalizes_to_direct_exact_prelude() -> None:
     flow_graph = FlowGraph(
@@ -7439,7 +7495,9 @@ def test_render_linearized_state_dag_dot_state_level() -> None:
     assert "digraph linearized_state_dag {" in dot
     assert "START [shape=point];" in dot
     assert "state_00000020_2" in dot
-    assert 'label="conditional_transition\\nsrc=blk[2].fallthrough\\npath=[2, 3]"' in dot
+    assert (
+        'label="conditional_transition\\nsrc=blk[2].fallthrough\\npath=[2, 3]"' in dot
+    )
     assert "state_00000020_2 -> state_00000030_3" in dot
 
 
@@ -7499,8 +7557,14 @@ def test_render_linearized_state_dag_dot_expanded() -> None:
     dot = render_linearized_state_dag_dot(dag, expanded=True)
     assert "subgraph cluster_state_00000020_2 {" in dot
     assert "state_00000020_2_blk_2" in dot
-    assert 'state_00000020_2 -> state_00000020_2_blk_2 [style=dotted, arrowhead=none];' in dot
-    assert 'state_00000020_2_blk_2 -> state_00000030_3 [label="conditional_transition\\nsrc=blk[2].fallthrough\\npath=[2, 3]"' in dot
+    assert (
+        "state_00000020_2 -> state_00000020_2_blk_2 [style=dotted, arrowhead=none];"
+        in dot
+    )
+    assert (
+        'state_00000020_2_blk_2 -> state_00000030_3 [label="conditional_transition\\nsrc=blk[2].fallthrough\\npath=[2, 3]"'
+        in dot
+    )
 
 
 def test_live_builder_prefers_exact_dispatcher_boundary_anchor_for_supplemental_state(
@@ -7677,8 +7741,7 @@ def test_live_builder_prefers_exact_dispatcher_boundary_anchor_for_supplemental_
     incoming = next(
         edge
         for edge in dag.edges
-        if edge.source_key.state_const == 0x296F2452
-        and edge.target_state == 0x1A9A9DD9
+        if edge.source_key.state_const == 0x296F2452 and edge.target_state == 0x1A9A9DD9
     )
     assert incoming.target_entry_anchor == 217
 
@@ -7825,8 +7888,7 @@ def test_terminal_alias_node_collapses_to_source_terminal_sibling() -> None:
     incoming = next(
         edge
         for edge in dag.edges
-        if edge.source_key.state_const == 0x11CD1DA3
-        and edge.target_state == 0x6E958F9A
+        if edge.source_key.state_const == 0x11CD1DA3 and edge.target_state == 0x6E958F9A
     )
     assert incoming.target_entry_anchor == 162
 
@@ -7953,17 +8015,12 @@ def test_resolve_target_node_reconnects_mid_interval_next_state() -> None:
     range_node = next(
         node
         for node in dag.nodes
-        if node.handler_serial == 52
-        and node.kind == StateNodeKind.RANGE_BACKED
+        if node.handler_serial == 52 and node.kind == StateNodeKind.RANGE_BACKED
     )
 
     # The mid-interval edge 10 -> 52 is reconnected (target_key resolves to the
     # RANGE_BACKED node, NOT dropped to None).
-    reconnect = next(
-        edge
-        for edge in dag.edges
-        if edge.target_state == 0x79F598F7
-    )
+    reconnect = next(edge for edge in dag.edges if edge.target_state == 0x79F598F7)
     assert reconnect.target_key is not None
     assert reconnect.target_key == range_node.key
     assert reconnect.target_key.handler_serial == 52

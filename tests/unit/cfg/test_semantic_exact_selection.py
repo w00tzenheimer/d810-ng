@@ -43,12 +43,8 @@ def test_parse_focus_edge_pairs_handles_hex_specs() -> None:
     assert parse_focus_edge_pairs(None) is None
     assert parse_focus_edge_pairs("") is None
     assert parse_focus_edge_pairs("   ") is None
-    assert parse_focus_edge_pairs("5d0aebd3,606dc166") == (
-        (0x5D0AEBD3, 0x606DC166),
-    )
-    assert parse_focus_edge_pairs(
-        "5d0aebd3,606dc166;606dc166,139f2922"
-    ) == (
+    assert parse_focus_edge_pairs("5d0aebd3,606dc166") == ((0x5D0AEBD3, 0x606DC166),)
+    assert parse_focus_edge_pairs("5d0aebd3,606dc166;606dc166,139f2922") == (
         (0x5D0AEBD3, 0x606DC166),
         (0x606DC166, 0x139F2922),
     )
@@ -68,7 +64,9 @@ def test_select_focused_semantic_exact_edges_preserves_focus_order() -> None:
     assert selected == [(second, (0x30, 0x40)), (first, (0x10, 0x20))]
 
 
-def test_select_windowed_semantic_exact_edges_skips_conditionals_and_duplicates() -> None:
+def test_select_windowed_semantic_exact_edges_skips_conditionals_and_duplicates() -> (
+    None
+):
     first = _plannable(_edge(0x10, 0x20))
     duplicate = _plannable(_edge(0x10, 0x20))
     conditional = _plannable(_edge(0x30, 0x40, kind="CONDITIONAL_TRANSITION"))

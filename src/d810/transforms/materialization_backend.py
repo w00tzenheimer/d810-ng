@@ -5,6 +5,7 @@ backend copies, NOPs, or rewrites live instructions.  This module defines the
 small contract a backend adapter can implement while Hex-Rays-specific
 ``mba_t``/``mblock_t``/``minsn_t`` mechanics remain outside cfg.
 """
+
 from __future__ import annotations
 
 from d810.transforms.materialization_payload import (

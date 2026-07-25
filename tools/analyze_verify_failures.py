@@ -79,7 +79,9 @@ import sys
 from collections import Counter, defaultdict
 from d810.core.typing import Any
 
-DEFAULT_ARTIFACT_DIR = pathlib.Path("~/.idapro/logs/d810_logs/verify_failures").expanduser()
+DEFAULT_ARTIFACT_DIR = pathlib.Path(
+    "~/.idapro/logs/d810_logs/verify_failures"
+).expanduser()
 
 
 def _load_artifact(path: pathlib.Path) -> dict[str, Any]:
@@ -242,7 +244,9 @@ def _infer_hypotheses(payload: dict[str, Any]) -> list[str]:
             "Deferred modification failed but artifact lacks explicit modification metadata; inspect recent_modifications chain."
         )
 
-    if "optimizing unflattenerfakejump" in context or context.endswith("after rewriting"):
+    if "optimizing unflattenerfakejump" in context or context.endswith(
+        "after rewriting"
+    ):
         hypotheses.append(
             "This may be a secondary verify failure after earlier corruption in the same pipeline."
         )

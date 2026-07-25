@@ -45,8 +45,12 @@ def _edge(
 ) -> StateDagEdge:
     return StateDagEdge(
         kind=kind,
-        source_key=StateDagNodeKey(handler_serial=source_block, state_const=source_state),
-        target_key=StateDagNodeKey(handler_serial=target_entry or -1, state_const=0x55) if target_entry is not None else None,
+        source_key=StateDagNodeKey(
+            handler_serial=source_block, state_const=source_state
+        ),
+        target_key=StateDagNodeKey(handler_serial=target_entry or -1, state_const=0x55)
+        if target_entry is not None
+        else None,
         target_state=0x55,
         target_entry_anchor=target_entry,
         target_label="0x55",
@@ -59,7 +63,9 @@ def _edge(
     )
 
 
-def _dag(*, nodes: tuple[StateDagNode, ...], edges: tuple[StateDagEdge, ...]) -> LinearizedStateDag:
+def _dag(
+    *, nodes: tuple[StateDagNode, ...], edges: tuple[StateDagEdge, ...]
+) -> LinearizedStateDag:
     return LinearizedStateDag(
         dispatcher_entry_serial=6,
         state_var_stkoff=60,

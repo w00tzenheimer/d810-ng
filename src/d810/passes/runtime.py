@@ -12,6 +12,7 @@ Stale-hint policy: the manager lifecycle coordinator calls
 in-memory fired guard **and** persisted raw results / analyzed hints so every
 decompilation pass starts from a clean slate.
 """
+
 from __future__ import annotations
 
 import json
@@ -55,6 +56,7 @@ class AnalysisOutcome:
         source: How the hints were obtained: ``"cached"``, ``"analyzed"``,
             or ``"unavailable"``.
     """
+
     func_ea: int
     hints: DeobfuscationHints | None
     apply_result: ApplyHintsResult | None
@@ -74,9 +76,7 @@ class DecompilationAnalysisRuntime:
         analysis: AnalysisPhase,
         store: PreanalysisStore,
         *,
-        validated_fact_view_provider: Callable[
-            [int, int | str], "ValidatedFactView"
-        ]
+        validated_fact_view_provider: Callable[[int, int | str], "ValidatedFactView"]
         | None = None,
     ) -> None:
         self._analysis = analysis
@@ -188,7 +188,8 @@ class DecompilationAnalysisRuntime:
         if summary.get("consumers"):
             logger.info(
                 "decompilation_finished: func=0x%x outcome_summary=%s",
-                func_ea, summary,
+                func_ea,
+                summary,
             )
 
     # ------------------------------------------------------------------
@@ -214,7 +215,8 @@ class DecompilationAnalysisRuntime:
         seen.add(dedup_key)
         logger.info(
             "outcome: func=0x%x consumer=%s artifacts=%s summary=%s verdict=%s",
-            report.func_ea, report.consumer_name,
+            report.func_ea,
+            report.consumer_name,
             report.source_artifacts_available,
             report.summary_available,
             report.consumer_verdict_applied,
@@ -257,7 +259,9 @@ class DecompilationAnalysisRuntime:
         gate_name: str = "flow_gate",
     ) -> None:
         """Convenience: build a :class:`FlowGateOutcomeAdapter` and record it."""
-        adapter = FlowGateOutcomeAdapter(decision=decision, func_ea=func_ea, gate_name=gate_name)
+        adapter = FlowGateOutcomeAdapter(
+            decision=decision, func_ea=func_ea, gate_name=gate_name
+        )
         self.record_outcome(adapter)
 
     def get_outcome_summary(self, func_ea: int) -> dict:
@@ -285,10 +289,13 @@ class DecompilationAnalysisRuntime:
             from d810.core.observability_events import (
                 FactConsumersForLatestSnapshot,
             )
-            emit(FactConsumersForLatestSnapshot(
-                func_ea=int(func_ea),
-                consumers=tuple(consumers),
-            ))
+
+            emit(
+                FactConsumersForLatestSnapshot(
+                    func_ea=int(func_ea),
+                    consumers=tuple(consumers),
+                )
+            )
             return len(consumers)
         except Exception:
             logger.exception(
@@ -310,23 +317,29 @@ class DecompilationAnalysisRuntime:
         if not results:
             return None
         hints = self._analysis.interpret(
-            func_ea=func_ea, results=results, store=self._store,
+            func_ea=func_ea,
+            results=results,
+            store=self._store,
         )
         writer.submit(lambda store, h=hints: store.save_hints(h))
         # Eagerly persist session summary alongside hints so it survives
         # interrupted decompilations (plugin stop, no hxe_structural).
         _n = len({r.collector_name for r in results})
-        writer.submit(lambda store, h=hints: store.save_session_summary(
-            func_ea=func_ea,
-            collectors_fired=_n,
-            classification=h.obfuscation_type or "",
-            confidence=h.confidence,
-            inferences=list(h.recommended_inferences),
-            suppress_rules=list(h.suppress_rules),
-        ))
+        writer.submit(
+            lambda store, h=hints: store.save_session_summary(
+                func_ea=func_ea,
+                collectors_fired=_n,
+                classification=h.obfuscation_type or "",
+                confidence=h.confidence,
+                inferences=list(h.recommended_inferences),
+                suppress_rules=list(h.suppress_rules),
+            )
+        )
         logger.info(
             "analyze: persisted hints for func=0x%x (type=%s, confidence=%.2f)",
-            func_ea, hints.obfuscation_type, hints.confidence,
+            func_ea,
+            hints.obfuscation_type,
+            hints.confidence,
         )
         return hints
 
@@ -365,7 +378,9 @@ class DecompilationAnalysisRuntime:
             logger.info(
                 "apply_to_rule_scope: func=0x%x using cached hints "
                 "(type=%s confidence=%.2f)",
-                func_ea, hints.obfuscation_type, hints.confidence,
+                func_ea,
+                hints.obfuscation_type,
+                hints.confidence,
             )
         else:
             hints = self.analyze(func_ea)

@@ -19,6 +19,7 @@ returns ``top`` (a visible recovery gap), never a wrong concrete value; ``widen`
 guarantees termination (the per-cell powerset is finite-height -- it caps to
 ``top`` past :attr:`StateValue.MAX_CONSTS`).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -200,9 +201,7 @@ class PowersetStore:
     def __repr__(self) -> str:
         if not self.cells:
             return "PowersetStore(bottom)"
-        body = ", ".join(
-            f"{cell!r}={_fmt_state(value)}" for cell, value in self.cells
-        )
+        body = ", ".join(f"{cell!r}={_fmt_state(value)}" for cell, value in self.cells)
         return f"PowersetStore({body})"
 
 

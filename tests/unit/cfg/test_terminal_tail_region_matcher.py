@@ -1,4 +1,5 @@
 """Tests for the terminal-tail region matcher."""
+
 from __future__ import annotations
 
 from d810.transforms.terminal_tail_region_matcher import (
@@ -73,7 +74,13 @@ class TestAggregateByteEmitTimeline:
 
     def test_seven_byte_emits_at_one_snapshot(self) -> None:
         obs = [
-            _obs(snap=5, maturity="MMAT_GLBOPT1", phase="pre_d810", block=100 + k, byte_index=k)
+            _obs(
+                snap=5,
+                maturity="MMAT_GLBOPT1",
+                phase="pre_d810",
+                block=100 + k,
+                byte_index=k,
+            )
             for k in range(7)
         ]
         report = aggregate_byte_emit_timeline(obs)
@@ -85,11 +92,23 @@ class TestAggregateByteEmitTimeline:
     def test_first_loss_detection(self) -> None:
         # 7 bytes at GLBOPT1 pre, only 0 + 1 at GLBOPT1 post.
         obs = [
-            _obs(snap=5, maturity="MMAT_GLBOPT1", phase="pre_d810", block=10 + k, byte_index=k)
+            _obs(
+                snap=5,
+                maturity="MMAT_GLBOPT1",
+                phase="pre_d810",
+                block=10 + k,
+                byte_index=k,
+            )
             for k in range(7)
         ]
         obs += [
-            _obs(snap=18, maturity="MMAT_GLBOPT1", phase="post_d810", block=20 + k, byte_index=k)
+            _obs(
+                snap=18,
+                maturity="MMAT_GLBOPT1",
+                phase="post_d810",
+                block=20 + k,
+                byte_index=k,
+            )
             for k in (0, 1)
         ]
         report = aggregate_byte_emit_timeline(obs)
@@ -107,7 +126,9 @@ class TestAggregateByteEmitTimeline:
 
     def test_ida_native_fold_inferred_when_phase_crosses_maturity(self) -> None:
         obs = [
-            _obs(snap=4, maturity="MMAT_CALLS", phase="post_d810", block=10, byte_index=2),
+            _obs(
+                snap=4, maturity="MMAT_CALLS", phase="post_d810", block=10, byte_index=2
+            ),
             # blank at GLBOPT1 pre — so the fold happened between CALLS-post
             # and GLBOPT1-pre, which is IDA-controlled.
         ]
@@ -120,10 +141,18 @@ class TestAggregateByteEmitTimeline:
 
     def test_ida_native_fold_when_we_observe_absence_at_next_maturity(self) -> None:
         obs = [
-            _obs(snap=4, maturity="MMAT_CALLS", phase="post_d810", block=10, byte_index=2),
+            _obs(
+                snap=4, maturity="MMAT_CALLS", phase="post_d810", block=10, byte_index=2
+            ),
             # No byte_index=2 in GLBOPT1 pre, but other bytes present so the
             # snapshot exists.
-            _obs(snap=5, maturity="MMAT_GLBOPT1", phase="pre_d810", block=20, byte_index=0),
+            _obs(
+                snap=5,
+                maturity="MMAT_GLBOPT1",
+                phase="pre_d810",
+                block=20,
+                byte_index=0,
+            ),
         ]
         report = aggregate_byte_emit_timeline(obs)
         fl2 = report.first_losses[2]
@@ -133,8 +162,20 @@ class TestAggregateByteEmitTimeline:
 
     def test_glbopt1_post_d810_entry_extracted(self) -> None:
         obs = [
-            _obs(snap=5, maturity="MMAT_GLBOPT1", phase="pre_d810", block=10, byte_index=0),
-            _obs(snap=18, maturity="MMAT_GLBOPT1", phase="post_d810", block=20, byte_index=0),
+            _obs(
+                snap=5,
+                maturity="MMAT_GLBOPT1",
+                phase="pre_d810",
+                block=10,
+                byte_index=0,
+            ),
+            _obs(
+                snap=18,
+                maturity="MMAT_GLBOPT1",
+                phase="post_d810",
+                block=20,
+                byte_index=0,
+            ),
         ]
         report = aggregate_byte_emit_timeline(obs)
         assert report.glbopt1_post_d810_entry is not None
@@ -144,8 +185,20 @@ class TestAggregateByteEmitTimeline:
         # Two observations for the same (snap_id, byte_index) but different
         # blocks. First-write-wins keeps the first observation.
         obs = [
-            _obs(snap=5, maturity="MMAT_GLBOPT1", phase="pre_d810", block=10, byte_index=0),
-            _obs(snap=5, maturity="MMAT_GLBOPT1", phase="pre_d810", block=99, byte_index=0),
+            _obs(
+                snap=5,
+                maturity="MMAT_GLBOPT1",
+                phase="pre_d810",
+                block=10,
+                byte_index=0,
+            ),
+            _obs(
+                snap=5,
+                maturity="MMAT_GLBOPT1",
+                phase="pre_d810",
+                block=99,
+                byte_index=0,
+            ),
         ]
         report = aggregate_byte_emit_timeline(obs)
         assert len(report.timeline) == 1
@@ -154,11 +207,23 @@ class TestAggregateByteEmitTimeline:
 
     def test_format_report_renders_markdown(self) -> None:
         obs = [
-            _obs(snap=5, maturity="MMAT_GLBOPT1", phase="pre_d810", block=10 + k, byte_index=k)
+            _obs(
+                snap=5,
+                maturity="MMAT_GLBOPT1",
+                phase="pre_d810",
+                block=10 + k,
+                byte_index=k,
+            )
             for k in range(7)
         ]
         obs += [
-            _obs(snap=18, maturity="MMAT_GLBOPT1", phase="post_d810", block=20 + k, byte_index=k)
+            _obs(
+                snap=18,
+                maturity="MMAT_GLBOPT1",
+                phase="post_d810",
+                block=20 + k,
+                byte_index=k,
+            )
             for k in (0, 1)
         ]
         text = format_report(aggregate_byte_emit_timeline(obs))
@@ -183,5 +248,7 @@ class TestRoleEnum:
 
 class TestSnapshotMetaKey:
     def test_key_returns_tuple(self) -> None:
-        m = SnapshotMeta(snapshot_id=5, maturity="MMAT_GLBOPT1", phase="pre_d810", label="x")
+        m = SnapshotMeta(
+            snapshot_id=5, maturity="MMAT_GLBOPT1", phase="pre_d810", label="x"
+        )
         assert m.key() == ("MMAT_GLBOPT1", "pre_d810")

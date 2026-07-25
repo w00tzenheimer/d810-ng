@@ -6,6 +6,7 @@ fine-grained analysis lifecycle our coarse ``PreservedAnalyses.all()/none()`` ca
 and ``run_before_structuring`` (the maturity-timing the lab proved load-bearing). Surfacing
 those three is the point — they are the deficiencies in the pass API we're constructing.
 """
+
 from __future__ import annotations
 
 from d810.transforms.deflatten_terminals_pass import (
@@ -46,8 +47,8 @@ def test_preserves_value_analysis_but_invalidates_cfg() -> None:
     # tail-dup changes the CFG (invalidate block-keyed analyses) but the state-VALUE
     # lattice is unchanged (preserved). Making this explicit is the deficiency surfaced.
     plan = plan_deflatten_terminals(_facts())
-    assert "BlockOwnership" in plan.invalidates        # CFG changed
-    assert "StateValueDomain" in plan.preserves         # values unchanged
+    assert "BlockOwnership" in plan.invalidates  # CFG changed
+    assert "StateValueDomain" in plan.preserves  # values unchanged
     assert "StateValueDomain" not in plan.invalidates
 
 
@@ -86,11 +87,19 @@ class TestFactExtractionFromAnalyses:
     def test_derives_convergence_and_terminals_from_owners(self) -> None:
         # byte-emits 1,2,3 -> shared_guard 5 -> return 99. Block 5 is owned by >1 handler.
         succ, pred = _topo({1: [5], 2: [5], 3: [5], 5: [99]})
-        owners = {1: frozenset({10}), 2: frozenset({20}), 3: frozenset({30}),
-                  5: frozenset({10, 20, 30}), 99: frozenset()}
+        owners = {
+            1: frozenset({10}),
+            2: frozenset({20}),
+            3: frozenset({30}),
+            5: frozenset({10, 20, 30}),
+            99: frozenset(),
+        }
         facts = deflatten_facts_from_analyses(
-            owners=owners, successors_of=succ, predecessors_of=pred,
-            return_block=99, staging_sites=((1, 0x1000),),
+            owners=owners,
+            successors_of=succ,
+            predecessors_of=pred,
+            return_block=99,
+            staging_sites=((1, 0x1000),),
         )
         assert facts is not None
         assert facts.convergence_block == 5
@@ -101,14 +110,26 @@ class TestFactExtractionFromAnalyses:
     def test_returns_none_when_no_shared_block_precedes_return(self) -> None:
         succ, pred = _topo({1: [99], 2: [99]})  # no shared fan-in block
         owners = {1: frozenset({10}), 2: frozenset({20}), 99: frozenset()}
-        assert deflatten_facts_from_analyses(
-            owners=owners, successors_of=succ, predecessors_of=pred, return_block=99,
-        ) is None
+        assert (
+            deflatten_facts_from_analyses(
+                owners=owners,
+                successors_of=succ,
+                predecessors_of=pred,
+                return_block=99,
+            )
+            is None
+        )
 
     def test_exclusive_blocks_are_not_convergence(self) -> None:
         # block 5 precedes return but is owned by ONE handler -> not a convergence.
         succ, pred = _topo({1: [5], 5: [99]})
         owners = {1: frozenset({10}), 5: frozenset({10}), 99: frozenset()}
-        assert deflatten_facts_from_analyses(
-            owners=owners, successors_of=succ, predecessors_of=pred, return_block=99,
-        ) is None
+        assert (
+            deflatten_facts_from_analyses(
+                owners=owners,
+                successors_of=succ,
+                predecessors_of=pred,
+                return_block=99,
+            )
+            is None
+        )

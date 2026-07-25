@@ -1,4 +1,5 @@
 """Shared helpers and engine strategy wrapper for fake-jump cleanup."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -264,9 +265,8 @@ def _is_cloneable_predecessor(pred_block: object | None, fake_block: int) -> boo
         return tuple(int(succ) for succ in getattr(pred_block, "succs", ())) == (
             int(fake_block),
         )
-    return (
-        int(getattr(pred_block, "nsucc", 0) or 0) == 2
-        and int(fake_block) in tuple(int(succ) for succ in getattr(pred_block, "succs", ()))
+    return int(getattr(pred_block, "nsucc", 0) or 0) == 2 and int(fake_block) in tuple(
+        int(succ) for succ in getattr(pred_block, "succs", ())
     )
 
 
@@ -402,19 +402,19 @@ def collect_payload_fake_jump_fixes(
             continue
 
         uncloneable_targets = {
-            int(target) for _pred, target, cloneable, _one_way in resolved if not cloneable
+            int(target)
+            for _pred, target, cloneable, _one_way in resolved
+            if not cloneable
         }
         if len(uncloneable_targets) > 1:
             continue
         if uncloneable_targets:
             original_target = next(iter(uncloneable_targets))
-        elif (
-            preferred_targets := {
-                int(target)
-                for _pred, target, _cloneable, one_way in resolved
-                if not one_way
-            }
-        ):
+        elif preferred_targets := {
+            int(target)
+            for _pred, target, _cloneable, one_way in resolved
+            if not one_way
+        }:
             if len(preferred_targets) > 1:
                 continue
             original_target = next(iter(preferred_targets))
@@ -602,9 +602,7 @@ def build_fake_jump_modifications(
     modifications: list[GraphModification] = []
     for fix in fixes:
         pred_block = (
-            flow_graph.blocks.get(fix.pred_block)
-            if flow_graph is not None
-            else None
+            flow_graph.blocks.get(fix.pred_block) if flow_graph is not None else None
         )
         if pred_block is not None and pred_block.nsucc == 2:
             modifications.append(

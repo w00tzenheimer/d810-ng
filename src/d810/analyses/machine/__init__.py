@@ -16,6 +16,7 @@ Re-exports the P1 contract (:class:`RecoveredMachine`) for convenience.
 
 Portable: no IDA imports.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.recovered_machine import (

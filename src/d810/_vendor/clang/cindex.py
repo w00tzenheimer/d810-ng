@@ -43,6 +43,7 @@ The major indexing objects are:
 Most object information is exposed using properties, when the underlying API
 call is efficient.
 """
+
 from __future__ import annotations
 
 import os
@@ -2653,7 +2654,7 @@ class Type(Structure):
                 if self.length is None:
                     self.length = conf.lib.clang_getNumArgTypes(self.parent)
 
-                return self.length # type: ignore [no-any-return]
+                return self.length  # type: ignore [no-any-return]
 
             def __getitem__(self, key: int) -> Type:
                 # FIXME Support slice objects.
@@ -3653,7 +3654,7 @@ class File(ClangObject):
         file = File(res)
 
         # Copy a reference to the TranslationUnit to prevent premature GC.
-        file._tu = arg._tu # type: ignore [attr-defined]
+        file._tu = arg._tu  # type: ignore [attr-defined]
         return file
 
 
@@ -3964,7 +3965,6 @@ class PrintingPolicyProperty(BaseEnumeration):
     ConstantsAsWritten = 23
     SuppressImplicitBase = 24
     FullyQualifiedName = 25
-
 
 
 # Now comes the plumbing to hook up the C library.

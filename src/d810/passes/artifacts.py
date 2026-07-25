@@ -1,4 +1,5 @@
 "Helpers for consuming preanalysis-store artifacts.\n\nThis module keeps generic preanalysis-store I/O separate from strategy-family\norchestration. Family adapters remain responsible for naming and selecting\nwhich artifacts to consume.\n"
+
 from __future__ import annotations
 
 import json
@@ -18,8 +19,11 @@ from d810.analyses.control_flow.return_frontier import (
     ReturnSite,
     return_frontier_audit_from_dict,
 )
-from d810.analyses.control_flow.terminal_return_audit import \
-    TerminalReturnSourceKind, TerminalReturnSiteAudit, TerminalReturnAuditReport
+from d810.analyses.control_flow.terminal_return_audit import (
+    TerminalReturnSourceKind,
+    TerminalReturnSiteAudit,
+    TerminalReturnAuditReport,
+)
 from d810.analyses.control_flow.handler_transitions import HandlerTransitionsCollector
 from d810.analyses.control_flow.return_frontier_collector import ReturnFrontierCollector
 from d810.analyses.control_flow.transition_report import (
@@ -65,8 +69,7 @@ class ReturnSiteProvider(Protocol):
     def collect_return_sites(
         self,
         report: DispatcherTransitionReport,
-    ) -> tuple[ReturnSite, ...]:
-        ...
+    ) -> tuple[ReturnSite, ...]: ...
 
 
 def analysis_db_path(log_dir: Path | str | None) -> Path:
@@ -114,7 +117,8 @@ def load_transition_report_from_store(
     except sqlite3.DatabaseError as exc:
         logger.warning(
             "preanalysis DB corrupt or unreadable (%s), deleting and returning None: %s",
-            db_path, exc,
+            db_path,
+            exc,
         )
         _delete_corrupt_db(db_path)
         return None
@@ -196,7 +200,8 @@ def load_return_frontier_audit_from_store(
     except sqlite3.DatabaseError as exc:
         logger.warning(
             "preanalysis DB corrupt or unreadable (%s), deleting and returning None: %s",
-            db_path, exc,
+            db_path,
+            exc,
         )
         _delete_corrupt_db(db_path)
         return None
@@ -225,7 +230,9 @@ def save_return_frontier_audit_to_store(
         func_ea=func_ea,
         provider_level=provider_level,
     )
-    get_preanalysis_writer(db_path).submit(lambda store: store.save_preanalysis_result(result))
+    get_preanalysis_writer(db_path).submit(
+        lambda store: store.save_preanalysis_result(result)
+    )
     return result
 
 
@@ -391,7 +398,8 @@ def load_terminal_return_audit_from_store(
     except sqlite3.DatabaseError as exc:
         logger.warning(
             "preanalysis DB corrupt or unreadable (%s), deleting and returning None: %s",
-            db_path, exc,
+            db_path,
+            exc,
         )
         _delete_corrupt_db(db_path)
         return None
@@ -421,11 +429,13 @@ def save_terminal_return_audit_to_store(
         func_ea=func_ea,
         provider_level=provider_level,
         timestamp=time.time(),
-        metrics=MappingProxyType({
-            "terminal_handlers": audit.terminal_handlers,
-            "total_handlers": audit.total_handlers,
-            "audit_report": report_dict,
-        }),
+        metrics=MappingProxyType(
+            {
+                "terminal_handlers": audit.terminal_handlers,
+                "total_handlers": audit.total_handlers,
+                "audit_report": report_dict,
+            }
+        ),
         candidates=(),
     )
     writer = get_preanalysis_writer(db_path)

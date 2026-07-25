@@ -1,4 +1,5 @@
 """Tests for AnalysisPhase.interpret() — core + supplementary collector signals."""
+
 from __future__ import annotations
 
 import tempfile
@@ -13,13 +14,18 @@ from d810.passes.analysis import (
     _FLOW_PROFILE_MIN_CONFIDENCE,
     _SUPPRESS_CONFIDENCE_THRESHOLD,
 )
-from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints, PreanalysisResult
+from d810.analyses.control_flow.models import (
+    CandidateFlag,
+    DeobfuscationHints,
+    PreanalysisResult,
+)
 from d810.passes.store import PreanalysisStore
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _preanalysis(
     collector_name: str,
@@ -43,34 +49,47 @@ def _base_flat_results() -> list[PreanalysisResult]:
     Two core signals: flattening_score >= 0.4 and max_in_degree >= 4.
     """
     return [
-        _preanalysis("CFGShapeCollector", {
-            "flattening_score": 0.5,
-            "max_in_degree": 5,
-        }),
-        _preanalysis("DispatchPatternCollector", {
-            "nway_block_count": 0,
-            "back_edge_count": 0,
-        }),
+        _preanalysis(
+            "CFGShapeCollector",
+            {
+                "flattening_score": 0.5,
+                "max_in_degree": 5,
+            },
+        ),
+        _preanalysis(
+            "DispatchPatternCollector",
+            {
+                "nway_block_count": 0,
+                "back_edge_count": 0,
+            },
+        ),
     ]
 
 
 def _base_minimal_results() -> list[PreanalysisResult]:
     """Return results that do NOT classify as ollvm_flat (only 1 signal)."""
     return [
-        _preanalysis("CFGShapeCollector", {
-            "flattening_score": 0.5,
-            "max_in_degree": 1,
-        }),
-        _preanalysis("DispatchPatternCollector", {
-            "nway_block_count": 0,
-            "back_edge_count": 0,
-        }),
+        _preanalysis(
+            "CFGShapeCollector",
+            {
+                "flattening_score": 0.5,
+                "max_in_degree": 1,
+            },
+        ),
+        _preanalysis(
+            "DispatchPatternCollector",
+            {
+                "nway_block_count": 0,
+                "back_edge_count": 0,
+            },
+        ),
     ]
 
 
 # ---------------------------------------------------------------------------
 # Core heuristic (backward compat)
 # ---------------------------------------------------------------------------
+
 
 class TestAnalysisPhaseCoreHeuristic:
     """Existing core scoring must be unchanged by supplementary signals."""
@@ -96,14 +115,20 @@ class TestAnalysisPhaseCoreHeuristic:
         """Without supplementary collectors, output is identical to original."""
         phase = AnalysisPhase()
         results = [
-            _preanalysis("CFGShapeCollector", {
-                "flattening_score": 0.5,
-                "max_in_degree": 5,
-            }),
-            _preanalysis("DispatchPatternCollector", {
-                "nway_block_count": 2,
-                "back_edge_count": 3,
-            }),
+            _preanalysis(
+                "CFGShapeCollector",
+                {
+                    "flattening_score": 0.5,
+                    "max_in_degree": 5,
+                },
+            ),
+            _preanalysis(
+                "DispatchPatternCollector",
+                {
+                    "nway_block_count": 2,
+                    "back_edge_count": 3,
+                },
+            ),
         ]
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type == "ollvm_flat"
@@ -114,6 +139,7 @@ class TestAnalysisPhaseCoreHeuristic:
 # ---------------------------------------------------------------------------
 # FixPredSignalsCollector boost
 # ---------------------------------------------------------------------------
+
 
 class TestFixPredSignalsBoost:
     def test_fixpred_high_fanin_adds_signal(self) -> None:
@@ -149,9 +175,7 @@ class TestFixPredSignalsBoost:
             )
         )
         hints_with = phase.interpret(func_ea=0x401000, results=results)
-        hints_base = phase.interpret(
-            func_ea=0x401000, results=_base_flat_results()
-        )
+        hints_base = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints_with.confidence == hints_base.confidence
 
     def test_fixpred_needs_candidate(self) -> None:
@@ -166,9 +190,7 @@ class TestFixPredSignalsBoost:
             )
         )
         hints_with = phase.interpret(func_ea=0x401000, results=results)
-        hints_base = phase.interpret(
-            func_ea=0x401000, results=_base_flat_results()
-        )
+        hints_base = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints_with.confidence == hints_base.confidence
 
 
@@ -176,51 +198,55 @@ class TestFixPredSignalsBoost:
 # CompareChainCollector boost
 # ---------------------------------------------------------------------------
 
+
 class TestCompareChainBoost:
     def test_compare_chain_adds_signal(self) -> None:
         phase = AnalysisPhase()
         results = _base_flat_results()
         results.append(
-            _preanalysis("compare_chain", {
-                "compare_chain_length": _COMPARE_CHAIN_MIN_LENGTH,
-                "unique_constants": _COMPARE_CHAIN_MIN_CONSTANTS,
-            })
+            _preanalysis(
+                "compare_chain",
+                {
+                    "compare_chain_length": _COMPARE_CHAIN_MIN_LENGTH,
+                    "unique_constants": _COMPARE_CHAIN_MIN_CONSTANTS,
+                },
+            )
         )
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type == "ollvm_flat"
-        hints_base = phase.interpret(
-            func_ea=0x401000, results=_base_flat_results()
-        )
+        hints_base = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints.confidence > hints_base.confidence
 
     def test_compare_chain_short_no_boost(self) -> None:
         phase = AnalysisPhase()
         results = _base_flat_results()
         results.append(
-            _preanalysis("compare_chain", {
-                "compare_chain_length": _COMPARE_CHAIN_MIN_LENGTH - 1,
-                "unique_constants": _COMPARE_CHAIN_MIN_CONSTANTS,
-            })
+            _preanalysis(
+                "compare_chain",
+                {
+                    "compare_chain_length": _COMPARE_CHAIN_MIN_LENGTH - 1,
+                    "unique_constants": _COMPARE_CHAIN_MIN_CONSTANTS,
+                },
+            )
         )
         hints_with = phase.interpret(func_ea=0x401000, results=results)
-        hints_base = phase.interpret(
-            func_ea=0x401000, results=_base_flat_results()
-        )
+        hints_base = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints_with.confidence == hints_base.confidence
 
     def test_compare_chain_few_constants_no_boost(self) -> None:
         phase = AnalysisPhase()
         results = _base_flat_results()
         results.append(
-            _preanalysis("compare_chain", {
-                "compare_chain_length": _COMPARE_CHAIN_MIN_LENGTH,
-                "unique_constants": _COMPARE_CHAIN_MIN_CONSTANTS - 1,
-            })
+            _preanalysis(
+                "compare_chain",
+                {
+                    "compare_chain_length": _COMPARE_CHAIN_MIN_LENGTH,
+                    "unique_constants": _COMPARE_CHAIN_MIN_CONSTANTS - 1,
+                },
+            )
         )
         hints_with = phase.interpret(func_ea=0x401000, results=results)
-        hints_base = phase.interpret(
-            func_ea=0x401000, results=_base_flat_results()
-        )
+        hints_base = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints_with.confidence == hints_base.confidence
 
 
@@ -228,34 +254,37 @@ class TestCompareChainBoost:
 # FlowProfileClassifierCollector boost
 # ---------------------------------------------------------------------------
 
+
 class TestFlowProfileBoost:
     def test_flow_profile_adds_signal(self) -> None:
         phase = AnalysisPhase()
         results = _base_flat_results()
         results.append(
-            _preanalysis("flow_profile_classifier", {
-                "classification_confidence": _FLOW_PROFILE_MIN_CONFIDENCE,
-            })
+            _preanalysis(
+                "flow_profile_classifier",
+                {
+                    "classification_confidence": _FLOW_PROFILE_MIN_CONFIDENCE,
+                },
+            )
         )
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type == "ollvm_flat"
-        hints_base = phase.interpret(
-            func_ea=0x401000, results=_base_flat_results()
-        )
+        hints_base = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints.confidence > hints_base.confidence
 
     def test_flow_profile_below_threshold_no_boost(self) -> None:
         phase = AnalysisPhase()
         results = _base_flat_results()
         results.append(
-            _preanalysis("flow_profile_classifier", {
-                "classification_confidence": _FLOW_PROFILE_MIN_CONFIDENCE - 0.01,
-            })
+            _preanalysis(
+                "flow_profile_classifier",
+                {
+                    "classification_confidence": _FLOW_PROFILE_MIN_CONFIDENCE - 0.01,
+                },
+            )
         )
         hints_with = phase.interpret(func_ea=0x401000, results=results)
-        hints_base = phase.interpret(
-            func_ea=0x401000, results=_base_flat_results()
-        )
+        hints_base = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints_with.confidence == hints_base.confidence
 
 
@@ -263,31 +292,40 @@ class TestFlowProfileBoost:
 # All 3 combined
 # ---------------------------------------------------------------------------
 
+
 class TestAllSupplementaryCombined:
     def test_all_three_produce_highest_confidence(self) -> None:
         phase = AnalysisPhase()
         results = _base_flat_results()
-        results.extend([
-            _preanalysis(
-                "FixPredSignalsCollector",
-                {"max_dispatcher_predecessors": 5},
-                candidates=(
-                    CandidateFlag(
-                        kind="fixpred_high_fanin_dispatcher",
-                        block_serial=5,
-                        confidence=0.9,
-                        detail="fan-in=5",
+        results.extend(
+            [
+                _preanalysis(
+                    "FixPredSignalsCollector",
+                    {"max_dispatcher_predecessors": 5},
+                    candidates=(
+                        CandidateFlag(
+                            kind="fixpred_high_fanin_dispatcher",
+                            block_serial=5,
+                            confidence=0.9,
+                            detail="fan-in=5",
+                        ),
                     ),
                 ),
-            ),
-            _preanalysis("compare_chain", {
-                "compare_chain_length": 5,
-                "unique_constants": 8,
-            }),
-            _preanalysis("flow_profile_classifier", {
-                "classification_confidence": 0.8,
-            }),
-        ])
+                _preanalysis(
+                    "compare_chain",
+                    {
+                        "compare_chain_length": 5,
+                        "unique_constants": 8,
+                    },
+                ),
+                _preanalysis(
+                    "flow_profile_classifier",
+                    {
+                        "classification_confidence": 0.8,
+                    },
+                ),
+            ]
+        )
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type == "ollvm_flat"
         # 2 core + 3 supplementary = 5 signals -> 0.5 + 5*0.15 = 1.25 -> 1.0
@@ -298,10 +336,13 @@ class TestAllSupplementaryCombined:
         phase = AnalysisPhase()
         results = _base_minimal_results()  # 1 core signal
         results.append(
-            _preanalysis("compare_chain", {
-                "compare_chain_length": 5,
-                "unique_constants": 10,
-            })
+            _preanalysis(
+                "compare_chain",
+                {
+                    "compare_chain_length": 5,
+                    "unique_constants": 10,
+                },
+            )
         )
         hints = phase.interpret(func_ea=0x401000, results=results)
         # 1 core + 1 supplementary = 2 signals -> 0.5 + 2*0.15 = 0.8
@@ -313,20 +354,29 @@ class TestAllSupplementaryCombined:
 # suppress_rules at high confidence
 # ---------------------------------------------------------------------------
 
+
 class TestSuppressRules:
     def test_suppress_constant_folding_at_high_confidence(self) -> None:
         phase = AnalysisPhase()
         results = _base_flat_results()
         # Add supplementary signals to push confidence above threshold
-        results.extend([
-            _preanalysis("compare_chain", {
-                "compare_chain_length": 5,
-                "unique_constants": 10,
-            }),
-            _preanalysis("flow_profile_classifier", {
-                "classification_confidence": 0.8,
-            }),
-        ])
+        results.extend(
+            [
+                _preanalysis(
+                    "compare_chain",
+                    {
+                        "compare_chain_length": 5,
+                        "unique_constants": 10,
+                    },
+                ),
+                _preanalysis(
+                    "flow_profile_classifier",
+                    {
+                        "classification_confidence": 0.8,
+                    },
+                ),
+            ]
+        )
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type == "ollvm_flat"
         assert hints.confidence >= _SUPPRESS_CONFIDENCE_THRESHOLD
@@ -336,18 +386,19 @@ class TestSuppressRules:
     def test_no_suppress_below_threshold(self) -> None:
         """At baseline confidence (2 signals), no rule suppression."""
         phase = AnalysisPhase()
-        hints = phase.interpret(
-            func_ea=0x401000, results=_base_flat_results()
-        )
+        hints = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints.obfuscation_type == "ollvm_flat"
         # 2 signals -> 0.5 + 2*0.15 = 0.8 >= 0.7, so it WILL suppress
         # Let's use a case that's barely above classify but below suppress
         results = _base_minimal_results()  # 1 core signal
         results.append(
-            _preanalysis("compare_chain", {
-                "compare_chain_length": 5,
-                "unique_constants": 10,
-            })
+            _preanalysis(
+                "compare_chain",
+                {
+                    "compare_chain_length": 5,
+                    "unique_constants": 10,
+                },
+            )
         )
         hints = phase.interpret(func_ea=0x401000, results=results)
         # 2 signals -> 0.5 + 2*0.15 = 0.8 -> still >= 0.7, suppress fires
@@ -362,14 +413,20 @@ class TestSuppressRules:
         """When not classified as ollvm_flat, no suppress_rules."""
         phase = AnalysisPhase()
         results = [
-            _preanalysis("CFGShapeCollector", {
-                "flattening_score": 0.1,
-                "max_in_degree": 1,
-            }),
-            _preanalysis("DispatchPatternCollector", {
-                "nway_block_count": 0,
-                "back_edge_count": 0,
-            }),
+            _preanalysis(
+                "CFGShapeCollector",
+                {
+                    "flattening_score": 0.1,
+                    "max_in_degree": 1,
+                },
+            ),
+            _preanalysis(
+                "DispatchPatternCollector",
+                {
+                    "nway_block_count": 0,
+                    "back_edge_count": 0,
+                },
+            ),
         ]
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type is None
@@ -401,9 +458,7 @@ class TestOpcodeDistributionSignal:
         )
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type == "ollvm_flat"
-        hints_base = phase.interpret(
-            func_ea=0x401000, results=_base_flat_results()
-        )
+        hints_base = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints.confidence > hints_base.confidence
 
     def test_low_ratio_no_signal(self) -> None:
@@ -424,9 +479,7 @@ class TestOpcodeDistributionSignal:
             )
         )
         hints_with = phase.interpret(func_ea=0x401000, results=results)
-        hints_base = phase.interpret(
-            func_ea=0x401000, results=_base_flat_results()
-        )
+        hints_base = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints_with.confidence == hints_base.confidence
 
     def test_no_candidate_no_signal(self) -> None:
@@ -440,9 +493,7 @@ class TestOpcodeDistributionSignal:
             )
         )
         hints_with = phase.interpret(func_ea=0x401000, results=results)
-        hints_base = phase.interpret(
-            func_ea=0x401000, results=_base_flat_results()
-        )
+        hints_base = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints_with.confidence == hints_base.confidence
 
 

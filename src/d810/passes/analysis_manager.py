@@ -11,6 +11,7 @@ compose over it. This realizes that for the portable ``FlowGraph``:
 
 Satisfies the driver's ``FactStore`` protocol (``view`` + ``invalidate_to``). Portable + additive.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Callable, Mapping
@@ -42,9 +43,7 @@ class AnalysisManager:
         self._live_fact_blocklist: set[str] = set()
         self._evidence: dict[str, list[object]] = {}
         self._live_evidence_visible = True
-        self._providers: dict[str, Callable[[object], object]] = dict(
-            providers or {}
-        )
+        self._providers: dict[str, Callable[[object], object]] = dict(providers or {})
 
     @property
     def graph(self) -> object:
@@ -53,7 +52,11 @@ class AnalysisManager:
     @property
     def active_observations(self):
         """Forward to the input fact view so ``facts_from_validated_view(am)`` works."""
-        return getattr(self._input_facts, "active_observations", ()) if self._input_facts else ()
+        return (
+            getattr(self._input_facts, "active_observations", ())
+            if self._input_facts
+            else ()
+        )
 
     def set_input_facts(self, input_facts: object | None) -> None:
         """Replace the live fact view for the next pipeline pass run."""
@@ -154,9 +157,7 @@ class AnalysisManager:
                 names.update(contract_evidence_tokens(observation))
         return tuple(sorted(names))
 
-    def register_provider(
-        self, name: str, compute: Callable[[object], object]
-    ) -> None:
+    def register_provider(self, name: str, compute: Callable[[object], object]) -> None:
         """Register a lazy analysis provider for ``name``."""
         self._providers[str(name)] = compute
 
@@ -183,7 +184,9 @@ class AnalysisManager:
 
     def available_analyses(self) -> tuple[str, ...]:
         """Return known analysis names without computing lazy providers."""
-        return tuple(sorted(set(self._derived) | set(self._cache) | set(self._providers)))
+        return tuple(
+            sorted(set(self._derived) | set(self._cache) | set(self._providers))
+        )
 
     def view(self) -> "AnalysisManager":
         """Return the read handle passed to passes as ``ctx.facts``."""

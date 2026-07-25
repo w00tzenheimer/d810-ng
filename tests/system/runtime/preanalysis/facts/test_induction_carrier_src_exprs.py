@@ -6,6 +6,7 @@ Covers:
 - Diag (legacy) branch: _iter_induction_carrier_insns with a plain diag-style object yields
   src_l_expr=None / src_r_expr=None (no canonical Instruction / input_exprs).
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -71,7 +72,9 @@ def test_src_l_expr_populated_from_input_exprs_slot0() -> None:
     assert len(instruction.input_exprs) >= 1
     assert isinstance(instruction.input_exprs[0], Mul)
 
-    view = _induction_insn_from_canonical(block_serial=1, index=0, instruction=instruction)
+    view = _induction_insn_from_canonical(
+        block_serial=1, index=0, instruction=instruction
+    )
 
     # src_l_expr must equal input_exprs[0]
     assert view.src_l_expr == instruction.input_exprs[0]
@@ -88,7 +91,9 @@ def test_src_r_expr_populated_from_input_exprs_slot1() -> None:
     insn_snap = _add_insn(l=mul_op, r=_num(8), d=_stk(0x30))
     instruction = project_instruction(insn_snap)
 
-    view = _induction_insn_from_canonical(block_serial=1, index=0, instruction=instruction)
+    view = _induction_insn_from_canonical(
+        block_serial=1, index=0, instruction=instruction
+    )
 
     assert view.src_r_expr == instruction.input_exprs[1]
     assert view.src_r_expr == Const(value=8)
@@ -112,7 +117,9 @@ def test_src_l_expr_is_add_node_when_left_operand_is_add_subinsn() -> None:
         d=_stk(0x40),
     )
     instruction = project_instruction(insn_snap)
-    view = _induction_insn_from_canonical(block_serial=2, index=0, instruction=instruction)
+    view = _induction_insn_from_canonical(
+        block_serial=2, index=0, instruction=instruction
+    )
 
     assert isinstance(view.src_l_expr, Add)
     assert view.src_l_expr == Add(
@@ -132,7 +139,9 @@ def test_flat_operands_produce_const_expr_not_none() -> None:
         d=_stk(0x50),
     )
     instruction = project_instruction(insn_snap)
-    view = _induction_insn_from_canonical(block_serial=3, index=0, instruction=instruction)
+    view = _induction_insn_from_canonical(
+        block_serial=3, index=0, instruction=instruction
+    )
 
     assert view.src_l_expr == Const(value=0x41)
     # No right operand for a MOV

@@ -156,7 +156,7 @@ def test_collect_admissible_region_lowering_sites_keeps_exact_target_entry():
                 label_text="STATE_4C77464F",
                 entry_anchor=66,
                 line_start=3,
-        line_end=4,
+                line_end=4,
             ),
         ),
         lines=(
@@ -953,7 +953,9 @@ def test_override_exit_sites_with_child_region_entries_prefers_child_region_entr
         source_anchor_block=163,
         target_entry_anchor=161,
         ordered_path=(161, 163, 165),
-        edge=SimpleNamespace(source_key=source_key, target_key=target_key, target_state=0x4E69F350),
+        edge=SimpleNamespace(
+            source_key=source_key, target_key=target_key, target_state=0x4E69F350
+        ),
         semantic_target_label=None,
         successor_state_value=0x4E69F350,
     )
@@ -2205,7 +2207,9 @@ def test_override_exit_sites_with_child_region_entries_prefers_exact_head_even_w
         source_anchor_block=163,
         target_entry_anchor=161,
         ordered_path=(161, 163, 165),
-        edge=SimpleNamespace(source_key=source_key, target_key=target_key, target_state=0x4E69F350),
+        edge=SimpleNamespace(
+            source_key=source_key, target_key=target_key, target_state=0x4E69F350
+        ),
         semantic_target_label="STATE_4E69F350",
         successor_state_value=0x4E69F350,
     )
@@ -2365,9 +2369,7 @@ def test_override_exit_sites_with_child_region_entries_prefers_dispatcher_exact_
         lines=(SimpleNamespace(line_no=1, target_label=None),),
     )
     dispatcher = SimpleNamespace(
-        _rows=(
-            SimpleNamespace(lo=0x4E69F350, hi=0x4E69F351, target=72),
-        )
+        _rows=(SimpleNamespace(lo=0x4E69F350, hi=0x4E69F351, target=72),)
     )
 
     overridden = override_exit_sites_with_child_region_entries(
@@ -3232,8 +3234,7 @@ def test_collect_admissible_region_lowering_sites_uses_region_contract_when_sema
     by_successor = {
         int(site.successor_state_value): site
         for site in sites
-        if site.source_state == 0x6107F8EC
-        and site.successor_state_value is not None
+        if site.source_state == 0x6107F8EC and site.successor_state_value is not None
     }
     assert by_successor[0x296F2452].target_entry_anchor == 202
     assert by_successor[0x296F2452].semantic_target_label == "STATE_296F2452"
@@ -3287,10 +3288,18 @@ def test_collect_admissible_region_lowering_sites_defers_descendant_internal_sit
     )
     dag = SimpleNamespace(edges=(root_edge, *descendant_edges))
     node_by_key = {
-        root_edge.source_key: SimpleNamespace(entry_anchor=158, exclusive_blocks=(158,)),
-        descendant_edges[0].source_key: SimpleNamespace(entry_anchor=72, exclusive_blocks=(72,)),
-        descendant_edges[1].source_key: SimpleNamespace(entry_anchor=177, exclusive_blocks=(177,)),
-        descendant_edges[2].source_key: SimpleNamespace(entry_anchor=214, exclusive_blocks=(214,)),
+        root_edge.source_key: SimpleNamespace(
+            entry_anchor=158, exclusive_blocks=(158,)
+        ),
+        descendant_edges[0].source_key: SimpleNamespace(
+            entry_anchor=72, exclusive_blocks=(72,)
+        ),
+        descendant_edges[1].source_key: SimpleNamespace(
+            entry_anchor=177, exclusive_blocks=(177,)
+        ),
+        descendant_edges[2].source_key: SimpleNamespace(
+            entry_anchor=214, exclusive_blocks=(214,)
+        ),
     }
     semantic_reference_program = SimpleNamespace(
         nodes=(
@@ -3794,10 +3803,7 @@ def test_collect_admissible_region_lowering_sites_remaps_mislabeled_internal_sit
         semantic_reference_program=semantic_reference_program,
     )
 
-    by_source = {
-        int(site.source_state) & 0xFFFFFFFF: site
-        for site in sites
-    }
+    by_source = {int(site.source_state) & 0xFFFFFFFF: site for site in sites}
     assert by_source[0x10743C4C].semantic_target_label == "STATE_6107F8EC"
     assert by_source[0x10743C4C].successor_state_value == 0x6107F8EC
     assert by_source[0x10743C4C].target_entry_anchor == 15

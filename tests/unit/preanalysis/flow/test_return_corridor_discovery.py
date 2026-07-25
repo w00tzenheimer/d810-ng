@@ -3,7 +3,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.analyses.control_flow.linearized_state_dag import SemanticEdgeKind
-from d810.analyses.control_flow.return_corridor_discovery import collect_common_return_corridor
+from d810.analyses.control_flow.return_corridor_discovery import (
+    collect_common_return_corridor,
+)
 
 
 class _DummyFlowGraph:
@@ -58,7 +60,9 @@ class TestReturnCorridorDiscovery:
 
         assert corridor == {25, 30, 35, 40}
 
-    def test_ignores_non_return_edges_and_condition_chain_dispatcher_preds(self) -> None:
+    def test_ignores_non_return_edges_and_condition_chain_dispatcher_preds(
+        self,
+    ) -> None:
         dag = SimpleNamespace(
             edges=(
                 _edge(SemanticEdgeKind.TRANSITION, (10, 20)),

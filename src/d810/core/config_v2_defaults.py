@@ -4,6 +4,7 @@ This module is deliberately about selection policy only. The config-v2 hook
 bridge still derives executable hook rules from an explicit runtime
 ``ProjectConfiguration``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -154,8 +155,7 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
     ConfigV2DefaultMapping(
         source_config="default_unflattening_tigress_engine_transition_facts.json",
         runtime_config=(
-            "default_unflattening_tigress_engine_transition_facts"
-            "_config_v2_canary.json"
+            "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json"
         ),
         expected_pass_ids=(
             "mba-simplify",

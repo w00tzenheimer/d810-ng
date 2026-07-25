@@ -22,6 +22,7 @@ The localizer is pure-algorithm and namespace-agnostic. Inputs are
 plain dictionaries keyed by snapshot_id; the CLI tool builds them
 from the diag DB.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -120,9 +121,7 @@ class ByteEmitSurvival:
         if not self.timeline:
             return None
         # Look for any earlier snapshot where the fact DID fire.
-        had_fact = any(
-            e.present and e.fact_detected for e in self.timeline[:-1]
-        )
+        had_fact = any(e.present and e.fact_detected for e in self.timeline[:-1])
         if not had_fact:
             return None
         last = self.timeline[-1]
@@ -282,13 +281,9 @@ def format_localization_report(report: LossLocalizationReport) -> str:
     for surv in report.survivals:
         last = surv.last_present
         loss = surv.first_loss
-        last_s = (
-            f"snap{last.snapshot_id} ({last.snapshot_label})" if last else "—"
-        )
+        last_s = f"snap{last.snapshot_id} ({last.snapshot_label})" if last else "—"
         loss_s = (
-            f"snap{loss.snapshot_id} ({loss.snapshot_label})"
-            if loss
-            else "(survives)"
+            f"snap{loss.snapshot_id} ({loss.snapshot_label})" if loss else "(survives)"
         )
         lines.append(
             f"| {surv.byte_index} | {last_s} | {loss_s} | {surv.inferred_cause} |"

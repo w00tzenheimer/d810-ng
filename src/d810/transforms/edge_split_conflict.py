@@ -8,6 +8,7 @@ Phase B, so this strategy currently emits an explicit diagnostic and no plan.
 This is a meta-strategy invoked by the plan-merger when it detects ownership
 conflicts between other strategies' plan fragments.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING

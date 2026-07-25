@@ -1,4 +1,5 @@
 """Tests for live cleanup evidence collectors."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -246,7 +247,14 @@ def test_fake_jump_abstains_when_any_backward_history_is_unresolved(
         def search_backward(self, *_args, **_kwargs) -> list[object]:
             resolved = SimpleNamespace(is_resolved=lambda: True)
             unresolved = SimpleNamespace(is_resolved=lambda: False)
-            return [resolved, unresolved, unresolved, unresolved, unresolved, unresolved]
+            return [
+                resolved,
+                unresolved,
+                unresolved,
+                unresolved,
+                unresolved,
+                unresolved,
+            ]
 
     monkeypatch.setattr(live_evidence_module.ida_hexrays, "mop_t", lambda mop: mop)
     monkeypatch.setattr(live_evidence_module, "MopTracker", _PartialTracker)
@@ -455,7 +463,9 @@ def test_copied_carrier_jz_self_loop_produces_entry_redirect() -> None:
         dest=state,
         prev=update_init,
     )
-    pred_tail = _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=6), prev=state_init)
+    pred_tail = _FakeInsn(
+        ida_hexrays.m_goto, dest=SimpleNamespace(b=6), prev=state_init
+    )
     entry_pred = _FakeBlock(4, (6,), (2,), pred_tail)
 
     non_entering_state = _FakeInsn(
@@ -521,7 +531,9 @@ def test_copied_carrier_single_iteration_rejects_extra_header_work() -> None:
         dest=state,
         prev=update_init,
     )
-    pred_tail = _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=6), prev=state_init)
+    pred_tail = _FakeInsn(
+        ida_hexrays.m_goto, dest=SimpleNamespace(b=6), prev=state_init
+    )
     entry_pred = _FakeBlock(4, (6,), (2,), pred_tail)
 
     _FakeMba(header, entry_pred)
@@ -601,7 +613,9 @@ def test_body_preserving_single_iteration_redirects_body_backedge() -> None:
         dest=state,
         prev=side_effect,
     )
-    body_tail = _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=6), prev=state_update)
+    body_tail = _FakeInsn(
+        ida_hexrays.m_goto, dest=SimpleNamespace(b=6), prev=state_update
+    )
     body = _FakeBlock(5, (6,), (6,), body_tail)
 
     entry_pred = _FakeBlock(
@@ -639,7 +653,9 @@ def test_body_preserving_single_iteration_rejects_header_work() -> None:
         left=_num(0xBAD3ACF7),
         dest=state,
     )
-    body_tail = _FakeInsn(ida_hexrays.m_goto, dest=SimpleNamespace(b=6), prev=state_update)
+    body_tail = _FakeInsn(
+        ida_hexrays.m_goto, dest=SimpleNamespace(b=6), prev=state_update
+    )
     body = _FakeBlock(5, (6,), (6,), body_tail)
     entry_pred = _FakeBlock(
         4,
@@ -694,6 +710,4 @@ def test_copied_comparison_self_loop_converts_when_entries_exit() -> None:
     assert collect_live_single_iteration_convert_fixes(
         mba,
         allowed_maturities=(ida_hexrays.MMAT_GLBOPT1,),
-    ) == (
-        SingleIterationConvertFix(loop_header=6, new_target=7),
-    )
+    ) == (SingleIterationConvertFix(loop_header=6, new_target=7),)

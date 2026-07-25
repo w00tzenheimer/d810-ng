@@ -29,6 +29,7 @@ Protocol stays portable; live operands (the block, the dispatcher, an insn
 anchor) are passed positionally as ``Any`` per the LSP-contravariance rationale
 documented in :mod:`d810.capabilities.use_def_safety`.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

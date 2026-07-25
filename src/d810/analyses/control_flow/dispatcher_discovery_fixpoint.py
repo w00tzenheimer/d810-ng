@@ -24,6 +24,7 @@ comparisons (:class:`StateArmComparison`).  Neither is a "shape": no recursion, 
 handler-chain assumption.  The result is portable-core (no IDA) and reuses the same
 :func:`d810.analyses.data_flow.run_fixpoint` engine as every other dataflow analysis.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

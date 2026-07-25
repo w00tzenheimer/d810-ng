@@ -249,7 +249,10 @@ def successor_set_matches_tail_semantics(
                     details={"succset": tuple(blk.succs)},
                 )
             )
-        if tail_kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP} and len(blk.succs) != 2:
+        if (
+            tail_kind in {InsnKind.COND_JUMP, InsnKind.EQUALITY_JUMP}
+            and len(blk.succs) != 2
+        ):
             violations.append(
                 _violation(
                     code="CFG_50860_SUCC_MISMATCH",

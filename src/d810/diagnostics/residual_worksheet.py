@@ -1,4 +1,5 @@
 "Build a residual dispatcher worksheet from persisted diagnostics.\n\nThe worksheet is intentionally read-only. It correlates:\n\n- post-pipeline microcode blocks from the diagnostic SQLite DB\n- semantic rendered-program spans from the same DB\n- optional DAG/modification snapshots from the diagnostic DB\n- optional transition/planner data from the preanalysis DB\n- optional residual-handoff log lines from a text dump or log file\n\nExposed as the ``residual-worksheet`` subcommand of\n``python -m d810.diagnostics``. Distinct from ``d810cli.py residuals``\n(which is a text-only grep over the AFTER pseudocode).\n"
+
 from __future__ import annotations
 
 import argparse
@@ -197,7 +198,11 @@ def find_latest_diag_db(
     """Find the latest diagnostic DB, optionally filtered by function EA."""
     candidates: list[Path] = []
     for root in search_roots:
-        pattern = f"{func_ea:016x}_*.diag.sqlite3" if func_ea is not None else "*.diag.sqlite3"
+        pattern = (
+            f"{func_ea:016x}_*.diag.sqlite3"
+            if func_ea is not None
+            else "*.diag.sqlite3"
+        )
         candidates.extend(root.glob(pattern))
     for path in _sorted_by_mtime(candidates):
         try:
@@ -237,7 +242,9 @@ def find_latest_log_file(
         name = path.name.lower()
         if token is not None and token not in name:
             try:
-                sample = path.read_text(encoding="utf-8", errors="ignore")[:65536].lower()
+                sample = path.read_text(encoding="utf-8", errors="ignore")[
+                    :65536
+                ].lower()
             except OSError:
                 continue
             if token not in sample:
@@ -403,13 +410,15 @@ def load_blocks(conn: sqlite3.Connection, snapshot_id: int) -> dict[int, BlockIn
     )
     instructions_by_block: dict[int, list[dict[str, object]]] = defaultdict(list)
     for row in insn_rows:
-        instructions_by_block[int(row["block_serial"])].append({
-            "insn_index": int(row["insn_index"]),
-            "opcode_name": row["opcode_name"],
-            "dest_stkoff": row["dest_stkoff"],
-            "src_l_value_hex": row["src_l_value_hex"],
-            "dstr": row["dstr"] or "",
-        })
+        instructions_by_block[int(row["block_serial"])].append(
+            {
+                "insn_index": int(row["insn_index"]),
+                "opcode_name": row["opcode_name"],
+                "dest_stkoff": row["dest_stkoff"],
+                "src_l_value_hex": row["src_l_value_hex"],
+                "dstr": row["dstr"] or "",
+            }
+        )
     for row in block_rows:
         succs = tuple(json.loads(row["succs"] or "[]"))
         preds = tuple(json.loads(row["preds"] or "[]"))
@@ -465,7 +474,11 @@ def _node_preview(lines: list[str]) -> str:
         and not line.strip().endswith(":")
     ]
     if not preview_lines:
-        preview_lines = [_collapse(line) for line in lines if line.strip() and not line.strip().endswith(":")]
+        preview_lines = [
+            _collapse(line)
+            for line in lines
+            if line.strip() and not line.strip().endswith(":")
+        ]
     return _truncate(" ".join(preview_lines[:2]), limit=100)
 
 
@@ -518,10 +531,14 @@ def load_rendered_nodes(
                 node_kind=str(row["node_kind"]),
                 state_label=row["state_label"],
                 handler_serial=(
-                    int(row["handler_serial"]) if row["handler_serial"] is not None else None
+                    int(row["handler_serial"])
+                    if row["handler_serial"] is not None
+                    else None
                 ),
                 entry_anchor=(
-                    int(row["entry_anchor"]) if row["entry_anchor"] is not None else None
+                    int(row["entry_anchor"])
+                    if row["entry_anchor"] is not None
+                    else None
                 ),
                 preview=_node_preview(lines_by_node.get(node_index, [])),
             )
@@ -556,10 +573,14 @@ def load_dag_edges(
             DagEdgeInfo(
                 edge_kind=str(row["edge_kind"]),
                 source_block=(
-                    int(row["source_block"]) if row["source_block"] is not None else None
+                    int(row["source_block"])
+                    if row["source_block"] is not None
+                    else None
                 ),
                 target_entry=(
-                    int(row["target_entry"]) if row["target_entry"] is not None else None
+                    int(row["target_entry"])
+                    if row["target_entry"] is not None
+                    else None
                 ),
                 source_state_hex=row["source_state_hex"],
                 target_state_hex=row["target_state_hex"],
@@ -604,7 +625,9 @@ def load_modifications(
     ]
 
 
-def load_transition_meta(analysis_db_path: Path | None, *, func_ea: int) -> TransitionMeta | None:
+def load_transition_meta(
+    analysis_db_path: Path | None, *, func_ea: int
+) -> TransitionMeta | None:
     """Load dispatcher metadata from the latest handler transition report."""
     if analysis_db_path is None or not analysis_db_path.exists():
         return None
@@ -891,7 +914,9 @@ def _bfs_reachable(blocks: dict[int, BlockInfo]) -> set[int]:
         if current in visited or current not in blocks:
             continue
         visited.add(current)
-        worklist.extend(int(succ) for succ in blocks[current].succs if succ not in visited)
+        worklist.extend(
+            int(succ) for succ in blocks[current].succs if succ not in visited
+        )
     return visited
 
 
@@ -909,17 +934,26 @@ def detect_feeder_blocks(
         return from_log
 
     reachable = {
-        serial for serial, flags in classification.items() if flags.get("is_reachable", False)
+        serial
+        for serial, flags in classification.items()
+        if flags.get("is_reachable", False)
     } or _bfs_reachable(blocks)
 
-    if transition_meta is not None and transition_meta.dispatcher_entry_serial is not None:
+    if (
+        transition_meta is not None
+        and transition_meta.dispatcher_entry_serial is not None
+    ):
         dispatcher = blocks.get(transition_meta.dispatcher_entry_serial)
         if dispatcher is not None:
-            condition_chain_blocks = set(int(v) for v in transition_meta.condition_chain_blocks)
+            condition_chain_blocks = set(
+                int(v) for v in transition_meta.condition_chain_blocks
+            )
             residual_preds = [
                 int(pred)
                 for pred in dispatcher.preds
-                if pred != dispatcher.serial and pred not in condition_chain_blocks and pred in reachable
+                if pred != dispatcher.serial
+                and pred not in condition_chain_blocks
+                and pred in reachable
             ]
             if residual_preds:
                 return sorted(residual_preds)
@@ -933,9 +967,7 @@ def detect_feeder_blocks(
         return claimed
 
     from_dag = sorted(
-        int(edge.source_block)
-        for edge in dag_edges
-        if edge.source_block is not None
+        int(edge.source_block) for edge in dag_edges if edge.source_block is not None
     )
     return _unique_ints(from_dag)
 
@@ -963,7 +995,9 @@ def summarize_microcode(
     parts: list[str] = []
     if state_var_stkoff is not None:
         for insn in block.instructions:
-            if insn.get("dest_stkoff") == state_var_stkoff and insn.get("src_l_value_hex"):
+            if insn.get("dest_stkoff") == state_var_stkoff and insn.get(
+                "src_l_value_hex"
+            ):
                 parts.append(f"write state={insn['src_l_value_hex']}")
                 break
 
@@ -973,7 +1007,11 @@ def summarize_microcode(
         if str(insn.get("dstr", "")).strip()
     ]
     for text in statement_texts[:2]:
-        if text.startswith("goto ") or text.startswith("if ") or text.startswith("return "):
+        if (
+            text.startswith("goto ")
+            or text.startswith("if ")
+            or text.startswith("return ")
+        ):
             continue
         parts.append(text)
 
@@ -995,7 +1033,9 @@ def summarize_microcode(
     return _truncate("; ".join(_unique_preserve_order(parts)))
 
 
-def _rendered_lookup(nodes: Sequence[RenderedNodeInfo]) -> tuple[dict[int, RenderedNodeInfo], dict[int, RenderedNodeInfo]]:
+def _rendered_lookup(
+    nodes: Sequence[RenderedNodeInfo],
+) -> tuple[dict[int, RenderedNodeInfo], dict[int, RenderedNodeInfo]]:
     by_entry: dict[int, RenderedNodeInfo] = {}
     by_handler: dict[int, RenderedNodeInfo] = {}
     for node in nodes:
@@ -1098,12 +1138,16 @@ def summarize_dag_note(
     """Choose the best provenance note for a row."""
     notes: list[str] = []
 
-    notes.extend(event.note for event in log_events if event.source_block == block_serial)
+    notes.extend(
+        event.note for event in log_events if event.source_block == block_serial
+    )
 
     matching_planner_rows = [
         row for row in planner_rows if block_serial in row.ownership_blocks
     ]
-    matching_planner_rows.sort(key=lambda row: (_planner_phase_rank(row.phase), row.strategy_name))
+    matching_planner_rows.sort(
+        key=lambda row: (_planner_phase_rank(row.phase), row.strategy_name)
+    )
     for row in matching_planner_rows[:1]:
         detail = _collapse(row.notes or row.reason)
         summary = f"planner {row.phase} {row.strategy_name}"
@@ -1128,7 +1172,9 @@ def summarize_dag_note(
         if edge.target_entry is not None:
             detail = f"{detail} -> {_blk(edge.target_entry)}"
         if len(edge.ordered_path) > 1:
-            detail = f"{detail} path=" + "->".join(_blk(v) for v in edge.ordered_path[:4])
+            detail = f"{detail} path=" + "->".join(
+                _blk(v) for v in edge.ordered_path[:4]
+            )
             if len(edge.ordered_path) > 4:
                 detail += "->..."
         notes.append(detail)
@@ -1166,7 +1212,9 @@ def build_residual_dispatcher_worksheet(
             variant_name=variant_name,
         )
         snapshot_meta = _snapshot_metadata(diag_conn, resolved_snapshot_id)
-        resolved_func_ea = int(func_ea if func_ea is not None else snapshot_meta["func_ea_i64"])
+        resolved_func_ea = int(
+            func_ea if func_ea is not None else snapshot_meta["func_ea_i64"]
+        )
 
         resolved_dag_snapshot_id = (
             dag_snapshot_id
@@ -1191,14 +1239,20 @@ def build_residual_dispatcher_worksheet(
         )
 
         blocks = load_blocks(diag_conn, resolved_snapshot_id)
-        classification = load_block_classification(diag_conn, resolved_reachability_snapshot_id)
-        rendered_nodes = load_rendered_nodes(diag_conn, resolved_snapshot_id, variant_name)
+        classification = load_block_classification(
+            diag_conn, resolved_reachability_snapshot_id
+        )
+        rendered_nodes = load_rendered_nodes(
+            diag_conn, resolved_snapshot_id, variant_name
+        )
         dag_edges = load_dag_edges(diag_conn, resolved_dag_snapshot_id)
         modifications = load_modifications(diag_conn, resolved_dag_snapshot_id)
 
         dag_snapshot_label: str | None = None
         if resolved_dag_snapshot_id is not None:
-            dag_snapshot_label = str(_snapshot_metadata(diag_conn, resolved_dag_snapshot_id)["label"])
+            dag_snapshot_label = str(
+                _snapshot_metadata(diag_conn, resolved_dag_snapshot_id)["label"]
+            )
 
     transition_meta = load_transition_meta(analysis_db_path, func_ea=resolved_func_ea)
     planner_rows = load_planner_ownership(analysis_db_path, func_ea=resolved_func_ea)
@@ -1226,7 +1280,9 @@ def build_residual_dispatcher_worksheet(
                 post_pipeline_microcode_meaning=summarize_microcode(
                     block,
                     state_var_stkoff=(
-                        transition_meta.state_var_stkoff if transition_meta is not None else None
+                        transition_meta.state_var_stkoff
+                        if transition_meta is not None
+                        else None
                     ),
                 ),
                 semantic_state_corridor=summarize_semantic_corridor(
@@ -1263,7 +1319,9 @@ def render_markdown(result: WorksheetResult) -> str:
         f"Snapshot: [{result.snapshot_id}] {result.snapshot_label}",
     ]
     if result.dag_snapshot_id is not None and result.dag_snapshot_label is not None:
-        lines.append(f"DAG snapshot: [{result.dag_snapshot_id}] {result.dag_snapshot_label}")
+        lines.append(
+            f"DAG snapshot: [{result.dag_snapshot_id}] {result.dag_snapshot_label}"
+        )
     lines.extend(
         [
             "",
@@ -1315,7 +1373,9 @@ def render_json(result: WorksheetResult) -> str:
         "snapshot_label": result.snapshot_label,
         "dag_snapshot_id": result.dag_snapshot_id,
         "dag_snapshot_label": result.dag_snapshot_label,
-        "analysis_db": str(result.analysis_db_path) if result.analysis_db_path is not None else None,
+        "analysis_db": str(result.analysis_db_path)
+        if result.analysis_db_path is not None
+        else None,
         "log_path": str(result.log_path) if result.log_path is not None else None,
         "rows": [
             {
@@ -1348,25 +1408,36 @@ def register_parser(sub) -> None:
     )
     p.add_argument("--diag-db", type=Path, default=None, help="Diagnostic SQLite DB")
     p.add_argument("--analysis-db", type=Path, default=None, help="Analysis SQLite DB")
-    p.add_argument("--log", type=Path, default=None, help="Optional text log/dump to parse")
     p.add_argument(
-        "--log-dir", type=Path, default=None,
+        "--log", type=Path, default=None, help="Optional text log/dump to parse"
+    )
+    p.add_argument(
+        "--log-dir",
+        type=Path,
+        default=None,
         help="Search root for auto-detected DBs/logs",
     )
     p.add_argument(
-        "--func-ea", type=parse_int, default=None,
+        "--func-ea",
+        type=parse_int,
+        default=None,
         help="Function EA (decimal or hex)",
     )
     p.add_argument(
-        "--func-token", default=None,
+        "--func-token",
+        default=None,
         help="Function token for log auto-detection, e.g. sub_7FFD",
     )
     p.add_argument(
-        "--snapshot-id", type=int, default=None,
+        "--snapshot-id",
+        type=int,
+        default=None,
         help="Primary worksheet snapshot ID",
     )
     p.add_argument(
-        "--dag-snapshot-id", type=int, default=None,
+        "--dag-snapshot-id",
+        type=int,
+        default=None,
         help="Auxiliary DAG snapshot ID",
     )
     p.add_argument(
@@ -1376,15 +1447,18 @@ def register_parser(sub) -> None:
         help="Auxiliary block-classification snapshot ID",
     )
     p.add_argument(
-        "--maturity", default=DEFAULT_MATURITY,
+        "--maturity",
+        default=DEFAULT_MATURITY,
         help="Preferred maturity, default GLBOPT1",
     )
     p.add_argument(
-        "--phase", default=DEFAULT_PHASE,
+        "--phase",
+        default=DEFAULT_PHASE,
         help="Preferred phase, default post_d810",
     )
     p.add_argument(
-        "--variant", default=DEFAULT_VARIANT,
+        "--variant",
+        default=DEFAULT_VARIANT,
         help="Rendered-program variant name",
     )
     p.add_argument(
@@ -1395,7 +1469,8 @@ def register_parser(sub) -> None:
     )
     add_output_argument(p)
     p.add_argument(
-        "--list-snapshots", action="store_true",
+        "--list-snapshots",
+        action="store_true",
         help="List snapshots and exit",
     )
 
@@ -1422,11 +1497,13 @@ def run(args: argparse.Namespace) -> int:
                 write_output(
                     get_output(args),
                     f"[{int(row['id']):>3}] {row['label']} "
-                    f"({row['maturity']} / {row['phase']} / {row['block_count']} blocks)"
+                    f"({row['maturity']} / {row['phase']} / {row['block_count']} blocks)",
                 )
         return 0
 
-    analysis_db_path = args.analysis_db or find_latest_analysis_db(search_roots=search_roots)
+    analysis_db_path = args.analysis_db or find_latest_analysis_db(
+        search_roots=search_roots
+    )
     log_path = args.log or find_latest_log_file(
         search_roots=search_roots,
         func_token=args.func_token,

@@ -8,6 +8,7 @@ transitions. The synthetic graphs mirror the real sub_7FFD3338C040 shapes the
 diag DB surfaced (shared-suffix fan-in, a forward-flowing range-backed node, an
 EXIT_ROUTINE convergence corridor).
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.linearized_state_dag import (
@@ -118,7 +119,9 @@ def test_conditional_transition_makes_two_way_branch():
         _edge(SemanticEdgeKind.CONDITIONAL_TRANSITION, 0xB, 0xC, 20, 30, [20]),
         _edge(SemanticEdgeKind.CONDITIONAL_TRANSITION, 0xB, 0xD, 20, 40, [20]),
     ]
-    cfg = build_state_transition_graph(_dag(nodes, edges, initial_state=0xB), base_successors={})
+    cfg = build_state_transition_graph(
+        _dag(nodes, edges, initial_state=0xB), base_successors={}
+    )
     assert set(cfg.successors(20)) == {30, 40}
     assert cfg.get_block(20).nsucc == 2
 
@@ -132,7 +135,9 @@ def test_exit_routine_wires_corridor_to_terminal_return():
         _edge(SemanticEdgeKind.EXIT_ROUTINE, 0xB, None, 20, None, [20, 224, 225]),
         _edge(SemanticEdgeKind.UNKNOWN, 0xB, 0xB, 20, 20, [20]),
     ]
-    cfg = build_state_transition_graph(_dag(nodes, edges, initial_state=0xB), base_successors={})
+    cfg = build_state_transition_graph(
+        _dag(nodes, edges, initial_state=0xB), base_successors={}
+    )
     assert cfg.successors(20) == (224,)
     assert cfg.successors(224) == (225,)
     assert cfg.successors(225) == ()  # corridor tail = terminal return
@@ -146,7 +151,9 @@ def test_exit_routine_tail_is_a_return_terminal():
         _edge(SemanticEdgeKind.EXIT_ROUTINE, 0xB, None, 20, None, [20, 224, 225]),
         _edge(SemanticEdgeKind.TRANSITION, 0xC, 0xB, 30, 20, [30]),
     ]
-    cfg = build_state_transition_graph(_dag(nodes, edges, initial_state=0xC), base_successors={})
+    cfg = build_state_transition_graph(
+        _dag(nodes, edges, initial_state=0xC), base_successors={}
+    )
     assert cfg.return_terminals == frozenset({225})
     assert cfg.successors(225) == ()
 
@@ -156,8 +163,12 @@ def test_self_loop_transition_is_dropped():
     # unresolved/spin artifact; dropping it keeps the node a terminal instead of
     # a while(1) that terminates the chain (the sub_7FFD 0x139F2922 / blk136 case).
     nodes = [_node(0x139F2922, 136, [136])]
-    edges = [_edge(SemanticEdgeKind.TRANSITION, 0x139F2922, 0x139F2922, 136, 136, [136])]
-    cfg = build_state_transition_graph(_dag(nodes, edges, initial_state=0x139F2922), base_successors={})
+    edges = [
+        _edge(SemanticEdgeKind.TRANSITION, 0x139F2922, 0x139F2922, 136, 136, [136])
+    ]
+    cfg = build_state_transition_graph(
+        _dag(nodes, edges, initial_state=0x139F2922), base_successors={}
+    )
     assert cfg.successors(136) == ()  # no self-loop
 
 
@@ -179,7 +190,9 @@ def test_block_level_self_edge_dropped_when_target_state_none():
         ),
         ordered_path=(8,),
     )
-    cfg = build_state_transition_graph(_dag(nodes, [edge], initial_state=0x610BB4D9), base_successors={})
+    cfg = build_state_transition_graph(
+        _dag(nodes, [edge], initial_state=0x610BB4D9), base_successors={}
+    )
     assert cfg.successors(8) == ()  # no 8->8 self-edge
 
 
@@ -197,11 +210,15 @@ def test_prefix_ordered_paths_build_internal_branch_chain():
     edges = [
         _edge(SemanticEdgeKind.TRANSITION, 0x606DC166, 0xAA, 140, 21, [14, 140]),
         _edge(SemanticEdgeKind.TRANSITION, 0x606DC166, 0xBB, 141, 211, [14, 140, 141]),
-        _edge(SemanticEdgeKind.TRANSITION, 0x606DC166, 0xCC, 142, 151, [14, 140, 141, 142]),
+        _edge(
+            SemanticEdgeKind.TRANSITION, 0x606DC166, 0xCC, 142, 151, [14, 140, 141, 142]
+        ),
     ]
-    cfg = build_state_transition_graph(_dag(nodes, edges, initial_state=0x606DC166), base_successors={})
+    cfg = build_state_transition_graph(
+        _dag(nodes, edges, initial_state=0x606DC166), base_successors={}
+    )
     assert cfg.successors(14) == (140,)
-    assert set(cfg.successors(140)) == {141, 21}   # continue or transition
+    assert set(cfg.successors(140)) == {141, 21}  # continue or transition
     assert set(cfg.successors(141)) == {142, 211}
     assert set(cfg.successors(142)) == {151}
 
@@ -215,10 +232,15 @@ def test_shared_suffix_fan_in_converges_on_single_return():
         _node(0x3, 30, [30, 224, 225]),
     ]
     base = {
-        10: (224,), 20: (224,), 30: (224,),
-        224: (225,), 225: (),
+        10: (224,),
+        20: (224,),
+        30: (224,),
+        224: (225,),
+        225: (),
     }
-    cfg = build_state_transition_graph(_dag(nodes, [], initial_state=0x1), base_successors=base)
+    cfg = build_state_transition_graph(
+        _dag(nodes, [], initial_state=0x1), base_successors=base
+    )
     # 224 and 225 appear once (deduped), 225 is the sole terminal.
     assert {10, 20, 30, 224, 225} <= set(cfg.blocks)
     assert set(cfg.predecessors(224)) == {10, 20, 30}
@@ -236,7 +258,9 @@ def test_range_backed_node_flows_forward_not_terminal():
         _node(0x298372CC, 206, [206, 24], kind=StateNodeKind.RANGE_BACKED),
         _node(0x6465D165, 23, [23]),
     ]
-    edges = [_edge(SemanticEdgeKind.TRANSITION, 0x298372CC, 0x6465D165, 24, 23, [206, 24])]
+    edges = [
+        _edge(SemanticEdgeKind.TRANSITION, 0x298372CC, 0x6465D165, 24, 23, [206, 24])
+    ]
     cfg = build_state_transition_graph(
         _dag(nodes, edges, initial_state=0x298372CC),
         base_successors={206: (24,), 24: (99,), 23: ()},
@@ -248,7 +272,9 @@ def test_range_backed_node_flows_forward_not_terminal():
 
 def test_default_entry_resolves_from_initial_state():
     nodes = [_node(0x5, 10, [10]), _node(0x7, 20, [20])]
-    cfg = build_state_transition_graph(_dag(nodes, [], initial_state=0x7), base_successors={})
+    cfg = build_state_transition_graph(
+        _dag(nodes, [], initial_state=0x7), base_successors={}
+    )
     assert cfg.entry_serial == 20
 
 
@@ -278,7 +304,9 @@ def test_adapter_feeds_structurer_goto_free_with_carrier_return():
         _edge(SemanticEdgeKind.TRANSITION, 0x298372CC, 0x6465D165, 24, 23, [206, 24]),
     ]
     base = {10: (206,), 206: (24,), 24: (99,), 23: (224,), 224: (225,), 225: ()}
-    cfg = build_state_transition_graph(_dag(nodes, edges, initial_state=0x1), base_successors=base)
+    cfg = build_state_transition_graph(
+        _dag(nodes, edges, initial_state=0x1), base_successors=base
+    )
 
     # Terminal 225 (the return slot) reaches only the entry-default leak site and
     # the state var is dead there -> deliver the real carrier.
@@ -420,7 +448,9 @@ def test_augment_drops_edge_to_unmaterialized_block():
     # connect-only augment drops 109 -> 194 rather than inventing a node from a
     # mis-attributed shared-temp OneOf.
     nodes = [_node(0xA, 109, [109]), _node(0xB, 39, [39]), _node(0xC, 90, [90])]
-    cfg = build_state_transition_graph(_dag(nodes, [], initial_state=0xA), base_successors={})
+    cfg = build_state_transition_graph(
+        _dag(nodes, [], initial_state=0xA), base_successors={}
+    )
     aug, added = augment_state_transition_graph(cfg, [(109, 194), (194, 39), (194, 90)])
     assert 194 not in aug.blocks
     assert added == ()
@@ -433,7 +463,9 @@ def test_prune_drops_only_the_infeasible_sibling_arm():
     # blk35 routes to 57; 56 is blk55's sibling arm (== 0x7D9C16EC). 35->56 is
     # dropped; 35->57 (the route) and 35->99 (an unrelated ordered-path successor,
     # NOT a sibling) are kept.
-    cfg = _cfg({78: (35,), 35: (56, 57, 99), 56: (), 57: (), 99: (), 120: (56,)}, entry=78)
+    cfg = _cfg(
+        {78: (35,), 35: (56, 57, 99), 56: (), 57: (), 99: (), 120: (56,)}, entry=78
+    )
     aug, pruned = prune_infeasible_sibling_arms(
         cfg,
         route_targets={35: {57}},

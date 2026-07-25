@@ -1,4 +1,5 @@
 """Hodur live microcode property normalization."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

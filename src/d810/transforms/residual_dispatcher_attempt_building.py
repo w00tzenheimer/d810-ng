@@ -87,20 +87,29 @@ def build_residual_prefix_attempt(
             old_target=int(context.old_target),
             ordered_path=tuple(int(node) for node in context.ordered_path),
             dispatcher_serial=int(context.dispatcher_serial),
-            condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
+            condition_chain_blocks=frozenset(
+                int(block) for block in context.condition_chain_blocks
+            ),
             target_reaches_branch=bool(context.target_reaches_branch),
         )
 
     peel_context = None
-    if context.dispatcher_serial is not None and context.via_pred_succ_count is not None:
+    if (
+        context.dispatcher_serial is not None
+        and context.via_pred_succ_count is not None
+    ):
         peel_context = ResidualPrefixPeelContext(
             peel_context=PredecessorPeelContext(
                 via_pred=int(context.via_pred),
                 via_pred_succs=tuple(int(succ) for succ in context.via_pred_succs),
-                source_block=int(context.source_block) if context.source_block is not None else 0,
+                source_block=int(context.source_block)
+                if context.source_block is not None
+                else 0,
                 target_entry=int(context.prefix_target),
                 dispatcher_serial=int(context.dispatcher_serial),
-                condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
+                condition_chain_blocks=frozenset(
+                    int(block) for block in context.condition_chain_blocks
+                ),
                 target_reaches_pred=bool(context.target_reaches_pred),
             ),
             already_emitted=bool(context.already_emitted),
@@ -144,7 +153,9 @@ def build_residual_pred_split_attempt(
             via_pred=int(context.via_pred),
             target_entry=int(context.target_entry),
             dispatcher_serial=int(context.dispatcher_serial),
-            condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
+            condition_chain_blocks=frozenset(
+                int(block) for block in context.condition_chain_blocks
+            ),
             valid_pair=bool(context.valid_pair),
             target_reaches_via_pred=bool(context.target_reaches_via_pred),
             already_emitted=bool(context.already_emitted),
@@ -162,9 +173,13 @@ def build_residual_goto_attempt(
             source_block=int(context.source_block),
             target_entry=int(context.target_entry),
             dispatcher_serial=int(context.dispatcher_serial),
-            condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
+            condition_chain_blocks=frozenset(
+                int(block) for block in context.condition_chain_blocks
+            ),
             allow_family_fallback_tail=bool(context.allow_family_fallback_tail),
-            is_shared_suffix_conditional_tail=bool(context.is_shared_suffix_conditional_tail),
+            is_shared_suffix_conditional_tail=bool(
+                context.is_shared_suffix_conditional_tail
+            ),
             has_prior_branch_cut=bool(context.has_prior_branch_cut),
             target_reaches_source=bool(context.target_reaches_source),
             already_emitted=bool(context.already_emitted),

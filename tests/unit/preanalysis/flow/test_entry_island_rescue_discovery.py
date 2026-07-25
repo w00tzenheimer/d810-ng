@@ -90,18 +90,24 @@ class TestCollectEntryIslandRescueSeeds:
             lambda **kwargs: 12,
         )
 
-        assert collect_entry_island_rescue_seeds(
-            dag,
-            reachable_blocks={80},
-            dispatcher_region={7},
-            claimed_targets=set(),
-        ) == ()
-        assert collect_entry_island_rescue_seeds(
-            dag,
-            reachable_blocks=set(),
-            dispatcher_region={7},
-            claimed_targets={80},
-        ) == ()
+        assert (
+            collect_entry_island_rescue_seeds(
+                dag,
+                reachable_blocks={80},
+                dispatcher_region={7},
+                claimed_targets=set(),
+            )
+            == ()
+        )
+        assert (
+            collect_entry_island_rescue_seeds(
+                dag,
+                reachable_blocks=set(),
+                dispatcher_region={7},
+                claimed_targets={80},
+            )
+            == ()
+        )
 
 
 class TestCollectLateEntryIslandRescueSeeds:

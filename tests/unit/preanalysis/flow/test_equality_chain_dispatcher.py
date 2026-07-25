@@ -1,4 +1,5 @@
 """Tests for equality-chain dispatcher row extraction."""
+
 from __future__ import annotations
 
 import inspect
@@ -104,7 +105,7 @@ def _mov(src, dst):
 
 
 def _eq_tail(*, predicate: PredicateKind, state_mop, const: int, jump_target: int):
-    "A real equality/inequality-jump ``InsnSnapshot`` tail.\n\n    ``kind=EQUALITY_JUMP`` + ``predicate_kind`` makes the canonical projection\n    populate ``control.predicate`` and ``control.target`` (from the ``d`` BLOCK\n    operand) the preanalysis extractor reads; the compared operands are the ``l``\n    state operand and the ``r`` numeric constant.\n    "
+    "A real equality/inequality-jump ``InsnSnapshot`` tail.\n\n    ``kind=EQUALITY_JUMP`` + ``predicate_kind`` makes the canonical projection\n    populate ``control.predicate`` and ``control.target`` (from the ``d`` BLOCK\n    operand) the preanalysis extractor reads; the compared operands are the ``l``\n    state operand and the ``r`` numeric constant.\n"
     return InsnSnapshot(
         opcode=-1,
         ea=0,
@@ -258,10 +259,7 @@ def test_backend_specific_numeric_names_belong_in_adapter_not_preanalysis() -> N
 
     assert "opcode_names" not in signature.parameters
     assert "mop_type_names" not in signature.parameters
-    assert (
-        extract_state_dispatcher_map_from_mba(mba, dispatcher_entry_block=2)
-        is None
-    )
+    assert extract_state_dispatcher_map_from_mba(mba, dispatcher_entry_block=2) is None
 
 
 def test_hexrays_numeric_constants_require_adapter_normalization() -> None:
@@ -284,10 +282,7 @@ def test_hexrays_numeric_constants_require_adapter_normalization() -> None:
         }
     )
 
-    assert (
-        extract_state_dispatcher_map_from_mba(mba, dispatcher_entry_block=2)
-        is None
-    )
+    assert extract_state_dispatcher_map_from_mba(mba, dispatcher_entry_block=2) is None
 
 
 def test_equality_chain_dispatcher_does_not_import_live_hexrays() -> None:
@@ -320,15 +315,16 @@ def test_extracts_jnz_exact_row_from_fallthrough() -> None:
 def test_rejects_mixed_state_variables() -> None:
     mba = _Mba(
         {
-            2: _block(2, state_mop=_mop_s(0x3C), const=0x10, jump_target=7, succs=(3, 7)),
-            3: _block(3, state_mop=_mop_s(0x44), const=0x20, jump_target=9, succs=(4, 9)),
+            2: _block(
+                2, state_mop=_mop_s(0x3C), const=0x10, jump_target=7, succs=(3, 7)
+            ),
+            3: _block(
+                3, state_mop=_mop_s(0x44), const=0x20, jump_target=9, succs=(4, 9)
+            ),
         }
     )
 
-    assert (
-        extract_state_dispatcher_map_from_mba(mba, dispatcher_entry_block=2)
-        is None
-    )
+    assert extract_state_dispatcher_map_from_mba(mba, dispatcher_entry_block=2) is None
 
 
 def test_rejects_conflicting_duplicate_constants() -> None:
@@ -339,10 +335,7 @@ def test_rejects_conflicting_duplicate_constants() -> None:
         }
     )
 
-    assert (
-        extract_state_dispatcher_map_from_mba(mba, dispatcher_entry_block=2)
-        is None
-    )
+    assert extract_state_dispatcher_map_from_mba(mba, dispatcher_entry_block=2) is None
 
 
 def test_supports_promoted_lvar_state() -> None:

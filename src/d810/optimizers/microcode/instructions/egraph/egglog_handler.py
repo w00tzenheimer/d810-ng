@@ -105,7 +105,7 @@ class EgglogOptimizer(InstructionOptimizer):
                 "[EgglogOptimizer] egglog not installed - optimizer disabled. "
                 "Install with: pip install egglog cloudpickle"
             )
-            
+
     @classmethod
     def _get_egraph(cls, max_iterations: int = 10) -> "MBAEGraph":
         """Get or create the cached MBAEGraph instance.

@@ -3,6 +3,7 @@
 Tests exercise VarKey, DefSite, meet semantics, and integration with the
 generic forward fixpoint engine. No IDA dependency required.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -187,9 +188,7 @@ class TestMeetLargeSetCollapsesToTop:
         # Create two sets whose union exceeds the threshold
         half = _MAX_DEF_SET_SIZE // 2 + 1
         defs_a = frozenset(DefSite(i, 0x1000 + i) for i in range(half))
-        defs_b = frozenset(
-            DefSite(i + half, 0x2000 + i) for i in range(half)
-        )
+        defs_b = frozenset(DefSite(i + half, 0x2000 + i) for i in range(half))
         # Sanity: union would exceed threshold
         assert len(defs_a | defs_b) > _MAX_DEF_SET_SIZE
 

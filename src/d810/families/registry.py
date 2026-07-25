@@ -19,6 +19,7 @@ Inert in production: the live maturity hook hardcodes ``HodurFamily()`` and neve
 ``select_family`` (only the unflatten driver / unit tests do); no golden config sets
 ``router_resolution``.
 """
+
 from __future__ import annotations
 
 # Importing the package runs its __init__, which eagerly imports every profile module so

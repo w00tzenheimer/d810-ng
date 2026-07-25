@@ -19,6 +19,7 @@ EXCLUDES test_state_cfg_migration.py (needs raw connect → inject legacy tables
 
     python tools/scripts/rename/diag_create_tables_to_peewee.py [--apply]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -84,7 +85,11 @@ def main() -> None:
             total += n
             rel = path.relative_to(REPO)
             remaining = len(re.findall(r"create_tables\(\w+\)", new))
-            note = f"  (still {remaining} create_tables(var) for manual review)" if remaining else ""
+            note = (
+                f"  (still {remaining} create_tables(var) for manual review)"
+                if remaining
+                else ""
+            )
             print(f"{rel}: {n} site(s){note}")
             if args.apply:
                 path.write_text(new)

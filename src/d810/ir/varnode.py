@@ -6,6 +6,7 @@ identity spaces preserve the existing ``mop_identity`` key prefixes exactly
 ``d810.ir.storage_identity.StorageIdentity``; these helpers remain the
 Varnode-level adapter spine and preserve persisted key compatibility.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -39,9 +40,7 @@ class Space(Enum):
     UNKNOWN = "?"
 
 
-_IDENTITY_SPACES = frozenset(
-    {Space.REGISTER, Space.STACK, Space.GLOBAL, Space.LVAR}
-)
+_IDENTITY_SPACES = frozenset({Space.REGISTER, Space.STACK, Space.GLOBAL, Space.LVAR})
 
 
 @dataclass(frozen=True, slots=True)

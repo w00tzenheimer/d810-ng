@@ -1,4 +1,5 @@
 """Worklist data structure for fixpoint iteration."""
+
 from __future__ import annotations
 
 from collections import deque

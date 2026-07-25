@@ -6,6 +6,7 @@ redirects that would introduce constant definitions into a known return-carrier
 materialization site. It never rediscovers return-carrier intent from live
 microcode when the fact view is absent.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -116,7 +117,9 @@ def _return_writer_sites_for_block(
     return tuple(sites)
 
 
-def _candidate_target_blocks(flow_graph: Any | None, target_block: int) -> tuple[int, ...]:
+def _candidate_target_blocks(
+    flow_graph: Any | None, target_block: int
+) -> tuple[int, ...]:
     candidates = [int(target_block)]
     if flow_graph is None:
         return tuple(candidates)

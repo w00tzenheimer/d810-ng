@@ -1,4 +1,5 @@
 """Runtime tests for the live switch-case transition adapter."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -10,8 +11,13 @@ from d810.backends.hexrays.evidence.dispatcher.switch_case_transitions import (
 )
 from d810.analyses.control_flow.branch_ownership import BranchOwnershipProofKind
 from d810.capabilities.dispatcher import RouterKind
-from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
-from d810.analyses.control_flow.switch_case_transition_analysis import SwitchCaseTransitionKind
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
+from d810.analyses.control_flow.switch_case_transition_analysis import (
+    SwitchCaseTransitionKind,
+)
 
 
 def _dispatch_map(states: tuple[int, ...]) -> StateDispatcherMap:
@@ -75,7 +81,9 @@ def test_collects_live_mba_case_writes_and_return_frontiers(monkeypatch) -> None
                 SimpleNamespace(final_state=13, exit_block=104, ordered_path=(104,)),
             )
         if entry_serial == 109:
-            return (SimpleNamespace(final_state=None, exit_block=109, ordered_path=(109,)),)
+            return (
+                SimpleNamespace(final_state=None, exit_block=109, ordered_path=(109,)),
+            )
         return (SimpleNamespace(final_state=4, exit_block=113, ordered_path=(113,)),)
 
     monkeypatch.setattr(

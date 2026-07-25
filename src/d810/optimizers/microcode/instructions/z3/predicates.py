@@ -34,14 +34,22 @@ class Z3setzRuleGeneric(Z3Rule):
 
         # Check if comparing expression against constant 0
         # This handles opaque predicates like setz((x * (x-1)) & 1, 0)
-        if x1_mop is not None and x1_mop.t == ida_hexrays.mop_n and x1_mop.nnn.value == 0:
+        if (
+            x1_mop is not None
+            and x1_mop.t == ida_hexrays.mop_n
+            and x1_mop.nnn.value == 0
+        ):
             # setz(expr, 0) - check if expr is always 0 or always nonzero
             # Pass block/instruction context for backward tracking of register definitions
-            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_zero(x0_mop):
+            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_zero(
+                x0_mop
+            ):
                 # expr is always 0, so setz(0, 0) = 1
                 candidate.add_constant_leaf("val_res", 1, res_size)
                 return True
-            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_nonzero(x0_mop):
+            if Z3MopProver(
+                blk=self._current_blk, ins=self._current_ins
+            ).is_always_nonzero(x0_mop):
                 # expr is always nonzero, so setz(nonzero, 0) = 0
                 candidate.add_constant_leaf("val_res", 0, res_size)
                 return True
@@ -78,14 +86,22 @@ class Z3setnzRuleGeneric(Z3Rule):
 
         # Check if comparing expression against constant 0
         # This handles opaque predicates like setnz((x * (x-1)) & 1, 0)
-        if x1_mop is not None and x1_mop.t == ida_hexrays.mop_n and x1_mop.nnn.value == 0:
+        if (
+            x1_mop is not None
+            and x1_mop.t == ida_hexrays.mop_n
+            and x1_mop.nnn.value == 0
+        ):
             # setnz(expr, 0) - check if expr is always 0 or always nonzero
             # Pass block/instruction context for backward tracking of register definitions
-            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_zero(x0_mop):
+            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_zero(
+                x0_mop
+            ):
                 # expr is always 0, so setnz(0, 0) = 0
                 candidate.add_constant_leaf("val_res", 0, res_size)
                 return True
-            if Z3MopProver(blk=self._current_blk, ins=self._current_ins).is_always_nonzero(x0_mop):
+            if Z3MopProver(
+                blk=self._current_blk, ins=self._current_ins
+            ).is_always_nonzero(x0_mop):
                 # expr is always nonzero, so setnz(nonzero, 0) = 1
                 candidate.add_constant_leaf("val_res", 1, res_size)
                 return True

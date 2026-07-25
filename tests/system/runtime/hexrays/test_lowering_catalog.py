@@ -5,6 +5,7 @@ the render equals the EXPECTED pseudocode -- the non-flattened ``lab_ref_*``
 sibling decompiled at baseline (oracle-equivalence). The thesis: ONE primitive
 (``DispatchDrain``) lowers many shapes; only the analysis front-end differs.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -69,7 +70,8 @@ class TestDispatchDrainLowersToOracle:
         assert sig_lowered == sig_oracle, (
             f"{flat_fn} did NOT lower to the {ref_fn} oracle (semantic signature "
             f"mismatch):\nlowered:  {sig_lowered}\noracle:   {sig_oracle}\n"
-            f"--- lowered render ---\n{lowered}\n--- oracle render ---\n{oracle}")
+            f"--- lowered render ---\n{lowered}\n--- oracle render ---\n{oracle}"
+        )
 
 
 class TestConditionalSynthesizeLowersToOracle:
@@ -87,7 +89,8 @@ class TestConditionalSynthesizeLowersToOracle:
         assert flat_ea != idaapi.BADADDR and ref_ea != idaapi.BADADDR
 
         lowered, applied, error = apply_lowering_and_render(
-            flat_ea, recover_branchless, lower_conditional_synthesize)
+            flat_ea, recover_branchless, lower_conditional_synthesize
+        )
         oracle = render_reference(ref_ea)
         sig_lowered = semantic_signature(lowered)
         sig_oracle = semantic_signature(oracle)
@@ -101,7 +104,8 @@ class TestConditionalSynthesizeLowersToOracle:
         assert sig_lowered == sig_oracle, (
             f"branchless did NOT lower to the lab_ref_cond oracle (semantic "
             f"signature mismatch):\nlowered:  {sig_lowered}\noracle:   {sig_oracle}\n"
-            f"--- lowered render ---\n{lowered}\n--- oracle render ---\n{oracle}")
+            f"--- lowered render ---\n{lowered}\n--- oracle render ---\n{oracle}"
+        )
 
 
 class TestRegionDeshareLowersToOracle:
@@ -128,9 +132,12 @@ class TestRegionDeshareLowersToOracle:
         print(f"--- signature lowered ---\n{sig_lowered}")
         print(f"--- signature oracle  ---\n{sig_oracle}")
         assert error is None, f"lowering error: {error}"
-        assert a0 >= 1 and a1 >= 1, f"deshare passes did not both fire (a0={a0} a1={a1})"
+        assert a0 >= 1 and a1 >= 1, (
+            f"deshare passes did not both fire (a0={a0} a1={a1})"
+        )
         assert sig_lowered == sig_oracle, (
             f"region de-share did NOT lower to the lab_ref_region_deshare oracle "
             f"(semantic signature mismatch):\nlowered:  {sig_lowered}\n"
             f"oracle:   {sig_oracle}\n--- lowered ---\n{lowered}\n"
-            f"--- oracle ---\n{oracle}")
+            f"--- oracle ---\n{oracle}"
+        )

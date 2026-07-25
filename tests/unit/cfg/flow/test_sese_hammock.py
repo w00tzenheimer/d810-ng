@@ -9,7 +9,9 @@ from d810.analyses.control_flow.sese_hammock import (
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 
 
-def _graph(blocks: dict[int, tuple[tuple[int, ...], tuple[int, ...]]], entry: int) -> FlowGraph:
+def _graph(
+    blocks: dict[int, tuple[tuple[int, ...], tuple[int, ...]]], entry: int
+) -> FlowGraph:
     return FlowGraph(
         blocks={
             serial: BlockSnapshot(

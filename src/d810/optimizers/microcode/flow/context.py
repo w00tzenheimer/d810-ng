@@ -72,12 +72,19 @@ def _flowgraph_from_live_mba(
             if tail.r and tail.r.t != 0:
                 val = None
                 if tail.r.t == 2:  # mop_n
-                    val = tail.r.nnn.value if hasattr(tail.r, "nnn") and tail.r.nnn else None
+                    val = (
+                        tail.r.nnn.value
+                        if hasattr(tail.r, "nnn") and tail.r.nnn
+                        else None
+                    )
                 r_snap = MopSnapshot(t=tail.r.t, size=tail.r.size, value=val)
             insns = (
                 InsnSnapshot(
-                    opcode=tail.opcode, ea=tail.ea, operands=(),
-                    l=l_snap, r=r_snap,
+                    opcode=tail.opcode,
+                    ea=tail.ea,
+                    operands=(),
+                    l=l_snap,
+                    r=r_snap,
                 ),
             )
 
@@ -91,7 +98,9 @@ def _flowgraph_from_live_mba(
             insn_snapshots=insns,
         )
 
-    return FlowGraph(blocks=blocks, entry_serial=0, func_ea=mba.entry_ea), side_effect_blocks
+    return FlowGraph(
+        blocks=blocks, entry_serial=0, func_ea=mba.entry_ea
+    ), side_effect_blocks
 
 
 @dataclass(frozen=True)
@@ -156,11 +165,12 @@ class FlowMaturityContext:
         return self._hint_summary
 
     def set_hint_summary(self, summary: FlowContextHintSummary) -> None:
-        "Attach an analyzed hint summary from the preanalysis lifecycle.\n\n        The summary is used as an *additional* signal in gate evaluation\n        methods. It does not replace existing dispatcher-analysis logic.\n\n        In the live path, ``BlockOptimizerManager._attach_hint_summary``\n        calls this automatically when a new ``FlowMaturityContext`` is\n        created (including after invalidation). The summary is derived\n        from persisted ``DeobfuscationHints`` via\n        :func:`derive_flow_context_summary`.\n        "
+        "Attach an analyzed hint summary from the preanalysis lifecycle.\n\n        The summary is used as an *additional* signal in gate evaluation\n        methods. It does not replace existing dispatcher-analysis logic.\n\n        In the live path, ``BlockOptimizerManager._attach_hint_summary``\n        calls this automatically when a new ``FlowMaturityContext`` is\n        created (including after invalidation). The summary is derived\n        from persisted ``DeobfuscationHints`` via\n        :func:`derive_flow_context_summary`.\n"
         self._hint_summary = summary
 
     def set_outcome_callback(
-        self, callback: Callable[[int, object, str], None] | None,
+        self,
+        callback: Callable[[int, object, str], None] | None,
     ) -> None:
         """Set a callback for recording consumer outcomes.
 
@@ -299,10 +309,12 @@ class FlowMaturityContext:
         requested_pass = pass_id if pass_id is not None else self._current_rule_name
         if requested_pass is None:
             raise ValueError("run_later requires an executing rule or explicit pass_id")
-        self._run_later_requests.append((
-            str(requested_pass),
-            RunLater(at=at, reason=reason),
-        ))
+        self._run_later_requests.append(
+            (
+                str(requested_pass),
+                RunLater(at=at, reason=reason),
+            )
+        )
 
     def drain_run_later_requests(
         self,
@@ -368,7 +380,12 @@ class FlowMaturityContext:
         if analysis is None or analysis.router_kind != RouterKind.CONDITION_CHAIN:
             return self._terminal_boundary_blocks
 
-        from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot, MopSnapshot
+        from d810.ir.flowgraph import (
+            BlockSnapshot,
+            FlowGraph,
+            InsnSnapshot,
+            MopSnapshot,
+        )
         from d810.analyses.control_flow.state_machine_analysis import (
             detect_terminal_state_families_snapshot,
         )
@@ -380,7 +397,9 @@ class FlowMaturityContext:
 
         sm_blocks = set(analysis.dispatchers)
         self._terminal_boundary_blocks = detect_terminal_state_families_snapshot(
-            flow_graph, sm_blocks, side_effect_blocks,
+            flow_graph,
+            sm_blocks,
+            side_effect_blocks,
         )
 
         logger.info(
@@ -422,7 +441,9 @@ class FlowMaturityContext:
         return blocks
 
     def _strong_dispatcher_count(self, analysis: DispatcherAnalysis) -> int:
-        return sum(1 for info in self._dispatcher_blocks(analysis) if info.is_strong_dispatcher)
+        return sum(
+            1 for info in self._dispatcher_blocks(analysis) if info.is_strong_dispatcher
+        )
 
     def _max_dispatcher_predecessors(self, analysis: DispatcherAnalysis) -> int:
         max_preds = 0
@@ -466,7 +487,7 @@ class FlowMaturityContext:
         return FlowGateDecision(False, "unknown dispatcher without strong signals")
 
     def evaluate_unflattening_gate(self) -> FlowGateDecision:
-        "Evaluate whether unflattening should proceed.\n\n        Gate operation mode\n        -------------------\n        - ``COLLECT_ONLY``: analysis still runs (for preanalysis), but the gate\n          always returns ``allowed=True``.\n        - ``GATE_ONLY`` / ``GATE_SELECT``: analysis runs and the result\n          is enforced (fail-closed).\n        "
+        "Evaluate whether unflattening should proceed.\n\n        Gate operation mode\n        -------------------\n        - ``COLLECT_ONLY``: analysis still runs (for preanalysis), but the gate\n          always returns ``allowed=True``.\n        - ``GATE_ONLY`` / ``GATE_SELECT``: analysis runs and the result\n          is enforced (fail-closed).\n"
         decision = self._evaluate_unflattening_gate_inner()
         if not decision.allowed and not self.gate_mode.enforces_gate:
             return FlowGateDecision(
@@ -489,8 +510,7 @@ class FlowMaturityContext:
             return FlowGateDecision(False, "dispatcher analysis unavailable")
         if (
             analysis.router_kind == RouterKind.TABLE
-            and getattr(analysis, "table_provenance", None)
-            is TableProvenance.SWITCH
+            and getattr(analysis, "table_provenance", None) is TableProvenance.SWITCH
         ):
             return FlowGateDecision(True, "switch-table dispatcher")
         if len(analysis.dispatchers) == 0:
@@ -502,12 +522,18 @@ class FlowMaturityContext:
             return FlowGateDecision(True, "conditional-chain dispatcher")
         if analysis.router_kind == RouterKind.UNKNOWN:
             if strong_dispatchers > 0:
-                return FlowGateDecision(True, "unknown dispatcher with strong candidates")
+                return FlowGateDecision(
+                    True, "unknown dispatcher with strong candidates"
+                )
             profile = self.get_profile_stats()
             if profile is None:
-                return FlowGateDecision(False, "unknown dispatcher without profile stats")
+                return FlowGateDecision(
+                    False, "unknown dispatcher without profile stats"
+                )
             if profile.has_nested_dispatch:
-                return FlowGateDecision(True, "unknown dispatcher with nested dispatch profile")
+                return FlowGateDecision(
+                    True, "unknown dispatcher with nested dispatch profile"
+                )
             if profile.dispatch_scc_n >= 2 and profile.flattening_score >= 0.35:
                 return FlowGateDecision(
                     True,
@@ -541,7 +567,7 @@ class FlowMaturityContext:
         return FlowGateDecision(False, f"router_kind={analysis.router_kind.name}")
 
     def evaluate_fix_predecessor_gate(self) -> FlowGateDecision:
-        "Evaluate whether fix-predecessor optimization should proceed.\n\n        Gate operation mode\n        -------------------\n        - ``COLLECT_ONLY``: analysis still runs (for preanalysis), but the gate\n          always returns ``allowed=True``.\n        - ``GATE_ONLY`` / ``GATE_SELECT``: analysis runs and the result\n          is enforced (fail-closed).\n        "
+        "Evaluate whether fix-predecessor optimization should proceed.\n\n        Gate operation mode\n        -------------------\n        - ``COLLECT_ONLY``: analysis still runs (for preanalysis), but the gate\n          always returns ``allowed=True``.\n        - ``GATE_ONLY`` / ``GATE_SELECT``: analysis runs and the result\n          is enforced (fail-closed).\n"
         decision = self._evaluate_fix_predecessor_gate_inner()
         if not decision.allowed and not self.gate_mode.enforces_gate:
             return FlowGateDecision(
@@ -557,8 +583,7 @@ class FlowMaturityContext:
             return FlowGateDecision(False, "dispatcher analysis unavailable")
         if (
             analysis.router_kind == RouterKind.TABLE
-            and getattr(analysis, "table_provenance", None)
-            is TableProvenance.SWITCH
+            and getattr(analysis, "table_provenance", None) is TableProvenance.SWITCH
         ):
             return FlowGateDecision(False, f"router_kind={analysis.router_kind.name}")
         if analysis.router_kind not in (
@@ -581,5 +606,7 @@ class FlowMaturityContext:
                 ),
             )
         if analysis.router_kind == RouterKind.CONDITION_CHAIN:
-            return FlowGateDecision(True, "conditional-chain dispatcher with strong signals")
+            return FlowGateDecision(
+                True, "conditional-chain dispatcher with strong signals"
+            )
         return FlowGateDecision(True, "unknown dispatcher with strong signals")

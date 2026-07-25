@@ -384,7 +384,9 @@ def _mop_to_str(mop: "ida_hexrays.mop_t | None") -> str:  # noqa: ANN001
             logger.error(
                 "[fold_const] [_mop_to_str] Error formatting mop, fall: %s", mop
             )
-            res = f"<mop_t t={getattr(mop,'t',None)} size={getattr(mop,'size',None)}>"
+            res = (
+                f"<mop_t t={getattr(mop, 't', None)} size={getattr(mop, 'size', None)}>"
+            )
             _MOP_STR_CACHE[key] = res
             return res
 
@@ -632,7 +634,9 @@ def _eval_subtree(
                     if def_ins.opcode == ida_hexrays.m_mov and def_ins.l is not None:
                         src_ast = mop_to_ast(def_ins.l)
                         if src_ast is not None:
-                            resolved = _eval_subtree(src_ast, bits, blk=blk, ins=def_ins)
+                            resolved = _eval_subtree(
+                                src_ast, bits, blk=blk, ins=def_ins
+                            )
                             if resolved is not None:
                                 return resolved
             except Exception as exc:

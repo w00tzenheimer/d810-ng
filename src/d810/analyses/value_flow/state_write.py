@@ -16,6 +16,7 @@ walker: ``_store_to_dest`` overwrites the stack/register maps even on an
 unresolved source, and an unresolved operand yields ``None`` (a wrong
 meet/init here silently wipes folded constants at control-flow merges).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

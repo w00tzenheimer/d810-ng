@@ -1,4 +1,5 @@
 """Reusable family orchestrator for detect -> snapshot -> plan -> execute."""
+
 from __future__ import annotations
 
 import abc
@@ -10,6 +11,7 @@ if TYPE_CHECKING:
     from d810.transforms.snapshot import (
         AnalysisSnapshot,
     )
+
     # Canonical home is the capabilities layer; engine.strategy and
     # families.state_machine_cff.protocols only re-export it.
     from d810.capabilities.unflattening_strategy import UnflatteningStrategy

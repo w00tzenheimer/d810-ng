@@ -13,6 +13,7 @@ D810 actually emitted it.
 
 Pure SQL + text emit; no IDA or Hex-Rays imports.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -25,7 +26,6 @@ from d810.core.diag import read_diag_db
 from d810.core.diag.models import Block, Instruction, Snapshot
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Iterable
-
 
 
 def _resolve_snapshot_id(
@@ -132,12 +132,12 @@ def render_snapshot(
     with read_diag_db(str(db_path)) as db:
         conn = db.connection()
         snap_id, snap_label = _resolve_snapshot_id(
-            conn, snapshot_id=snapshot_id, label=label,
+            conn,
+            snapshot_id=snapshot_id,
+            label=label,
         )
         meta = (
-            Snapshot.select(
-                Snapshot.block_count, Snapshot.maturity, Snapshot.phase
-            )
+            Snapshot.select(Snapshot.block_count, Snapshot.maturity, Snapshot.phase)
             .where(Snapshot.id == snap_id)
             .tuples()
             .first()
@@ -147,7 +147,9 @@ def render_snapshot(
             f"maturity={meta[1]} phase={meta[2]}",
         ]
         for serial, type_name, succs_json, preds_json, insn_count in _iter_block_rows(
-            conn, snap_id, only_serials=only_serials,
+            conn,
+            snap_id,
+            only_serials=only_serials,
         ):
             try:
                 succs = json.loads(succs_json or "[]")
@@ -159,7 +161,9 @@ def render_snapshot(
                 f" succs={succs} insns={insn_count} ---"
             )
             for insn_index, opcode, ea_hex, dstr in _iter_insn_rows(
-                conn, snap_id, serial,
+                conn,
+                snap_id,
+                serial,
             ):
                 if include_eas:
                     out.append(f"  [{insn_index}] {ea_hex} {opcode}  {dstr}")
@@ -231,7 +235,10 @@ def run(args: argparse.Namespace) -> int:
         try:
             only_serials = tuple(int(s) for s in args.serials.split(",") if s.strip())
         except ValueError:
-            write_output(get_output(args), f"error: --serials must be comma-separated integers: {args.serials!r}")
+            write_output(
+                get_output(args),
+                f"error: --serials must be comma-separated integers: {args.serials!r}",
+            )
             return 1
     try:
         rendered = render_snapshot(

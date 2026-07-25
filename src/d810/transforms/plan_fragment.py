@@ -14,6 +14,7 @@ downward, which is legal under the layered-architecture import contract.
 names for back-compat with existing import sites; new code should import from
 here.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

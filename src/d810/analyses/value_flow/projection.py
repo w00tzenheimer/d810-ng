@@ -7,6 +7,7 @@ blob: consumers must ask for the exact fact family their mutation requires.
 Fact rows remain serializable.  Live Hex-Rays objects are rehydrated and
 validated at the mutation boundary from the exact source identity stored here.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -16,7 +17,11 @@ from d810.analyses.value_flow.contract_evidence import (
     ContractEvidenceToken,
     contract_evidence_payload,
 )
-from d810.analyses.value_flow.observation import FactObservation, JsonMapping, canonical_json
+from d810.analyses.value_flow.observation import (
+    FactObservation,
+    JsonMapping,
+    canonical_json,
+)
 
 LIFECYCLE_PRODUCTION_PROVEN = "production_proven"
 
@@ -40,39 +45,44 @@ STATE_TRANSITION_FACT_TYPE = "StateTransitionFact"
 EFFECT_PATH_FACT_TYPE = "EffectPathFact"
 CALL_EFFECT_SUMMARY_FACT_TYPE = "CallEffectSummaryFact"
 
-VALUE_FLOW_FACT_TYPES = frozenset({
-    OBSERVABLE_MEMORY_DEF_FACT_TYPE,
-    SCALAR_PROMOTION_FACT_TYPE,
-    MUST_ALIAS_FACT_TYPE,
-    MAY_ALIAS_FACT_TYPE,
-    SCALAR_REPLACEMENT_FACT_TYPE,
-    SYMBOLIC_EXPRESSION_FACT_TYPE,
-    LOOP_PREDICATE_VALUE_FACT_TYPE,
-    CALL_RETURN_VALUE_FACT_TYPE,
-    INDUCTION_VARIABLE_FACT_TYPE,
-    MATERIALIZATION_POINT_FACT_TYPE,
-    OBSERVABLE_OUTPUT_FACT_TYPE,
-    MEMORY_USE_FACT_TYPE,
-    MEMORY_PHI_FACT_TYPE,
-    POINTS_TO_FACT_TYPE,
-    RETURN_VALUE_FACT_TYPE,
-    STATE_WRITE_FACT_TYPE,
-    STATE_TRANSITION_FACT_TYPE,
-    EFFECT_PATH_FACT_TYPE,
-    CALL_EFFECT_SUMMARY_FACT_TYPE,
-})
+VALUE_FLOW_FACT_TYPES = frozenset(
+    {
+        OBSERVABLE_MEMORY_DEF_FACT_TYPE,
+        SCALAR_PROMOTION_FACT_TYPE,
+        MUST_ALIAS_FACT_TYPE,
+        MAY_ALIAS_FACT_TYPE,
+        SCALAR_REPLACEMENT_FACT_TYPE,
+        SYMBOLIC_EXPRESSION_FACT_TYPE,
+        LOOP_PREDICATE_VALUE_FACT_TYPE,
+        CALL_RETURN_VALUE_FACT_TYPE,
+        INDUCTION_VARIABLE_FACT_TYPE,
+        MATERIALIZATION_POINT_FACT_TYPE,
+        OBSERVABLE_OUTPUT_FACT_TYPE,
+        MEMORY_USE_FACT_TYPE,
+        MEMORY_PHI_FACT_TYPE,
+        POINTS_TO_FACT_TYPE,
+        RETURN_VALUE_FACT_TYPE,
+        STATE_WRITE_FACT_TYPE,
+        STATE_TRANSITION_FACT_TYPE,
+        EFFECT_PATH_FACT_TYPE,
+        CALL_EFFECT_SUMMARY_FACT_TYPE,
+    }
+)
 
-_SOURCE_PROVEN_KINDS = frozenset({
-    "InductionCarrierFact",
-    "LoopCarrierFact",
-    "ReturnCarrierFact",
-    "ReturnFrontierFact",
-    "TerminalByteEmitterFact",
-    "ByteEmitCorridorFact",
-    "StateWriteAnchorFact",
-    "StateTransitionAnchorFact",
-    "CallAnchorFact",
-})
+_SOURCE_PROVEN_KINDS = frozenset(
+    {
+        "InductionCarrierFact",
+        "LoopCarrierFact",
+        "ReturnCarrierFact",
+        "ReturnFrontierFact",
+        "TerminalByteEmitterFact",
+        "ByteEmitCorridorFact",
+        "StateWriteAnchorFact",
+        "StateTransitionAnchorFact",
+        "CallAnchorFact",
+    }
+)
+
 
 def project_value_flow_facts(
     observations: Iterable[FactObservation],
@@ -132,23 +142,29 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
             payload,
             ("dest_stkoff", "base_stkoff", "source_stkoff"),
             default_kind="token",
-            default_identity=str(payload.get("dest_token") or payload.get("base_token") or "unknown"),
+            default_identity=str(
+                payload.get("dest_token") or payload.get("base_token") or "unknown"
+            ),
         )
-        return (_make_fact(
-            observation,
-            kind=INDUCTION_VARIABLE_FACT_TYPE,
-            semantic_key=f"induction:{storage_kind}:{storage_identity}",
-            storage_kind=storage_kind,
-            storage_identity=storage_identity,
-            expression_class="affine_recurrence" if payload.get("step") is not None else "direct_copy",
-            observable_effect="none",
-            producer_fact_ids=producer_ids,
-            source_identity=source_identity,
-            details={
-                "source_ontology": observation.kind,
-                "producer_carrier_kind": payload.get("carrier_kind"),
-            },
-        ),)
+        return (
+            _make_fact(
+                observation,
+                kind=INDUCTION_VARIABLE_FACT_TYPE,
+                semantic_key=f"induction:{storage_kind}:{storage_identity}",
+                storage_kind=storage_kind,
+                storage_identity=storage_identity,
+                expression_class="affine_recurrence"
+                if payload.get("step") is not None
+                else "direct_copy",
+                observable_effect="none",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "producer_carrier_kind": payload.get("carrier_kind"),
+                },
+            ),
+        )
 
     if observation.kind == "LoopCarrierFact":
         storage_kind, storage_identity = _storage_from_first_int(
@@ -157,21 +173,23 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
             default_kind="token",
             default_identity=str(payload.get("carrier_var_token") or "unknown"),
         )
-        return (_make_fact(
-            observation,
-            kind=LOOP_PREDICATE_VALUE_FACT_TYPE,
-            semantic_key=f"loop_predicate:{storage_kind}:{storage_identity}",
-            storage_kind=storage_kind,
-            storage_identity=storage_identity,
-            expression_class="loop_predicate_carrier",
-            observable_effect="none",
-            producer_fact_ids=producer_ids,
-            source_identity=source_identity,
-            details={
-                "source_ontology": observation.kind,
-                "classification": payload.get("classification"),
-            },
-        ),)
+        return (
+            _make_fact(
+                observation,
+                kind=LOOP_PREDICATE_VALUE_FACT_TYPE,
+                semantic_key=f"loop_predicate:{storage_kind}:{storage_identity}",
+                storage_kind=storage_kind,
+                storage_identity=storage_identity,
+                expression_class="loop_predicate_carrier",
+                observable_effect="none",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "classification": payload.get("classification"),
+                },
+            ),
+        )
 
     if observation.kind == "ReturnCarrierFact":
         storage_kind, storage_identity = _storage_from_first_int(
@@ -224,8 +242,12 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
                     "source_ontology": observation.kind,
                     "source_signature": payload.get("source_signature"),
                     "carrier_class": payload.get("carrier_class"),
-                    "upstream_writer_block_serial": payload.get("upstream_writer_block_serial"),
-                    "upstream_writer_insn_index": payload.get("upstream_writer_insn_index"),
+                    "upstream_writer_block_serial": payload.get(
+                        "upstream_writer_block_serial"
+                    ),
+                    "upstream_writer_insn_index": payload.get(
+                        "upstream_writer_insn_index"
+                    ),
                 },
             ),
         )
@@ -330,43 +352,50 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
             observation,
             extra_ids=_string_list(payload.get("member_fact_ids")),
         )
-        return (_make_fact(
-            observation,
-            kind=EFFECT_PATH_FACT_TYPE,
-            semantic_key=f"side_effect_corridor:{'|'.join(_string_list(payload.get('destinations'))) or 'unknown'}",
-            storage_kind="memory_expression",
-            storage_identity="|".join(_string_list(payload.get("destinations"))) or "unknown",
-            expression_class="byte_emit_corridor",
-            observable_effect="byte_store",
-            producer_fact_ids=producer_ids,
-            producer_kinds=(observation.kind, "TerminalByteEmitterFact"),
-            source_identity=_source_identity(observation, producer_ids=producer_ids),
-            details={
-                "source_ontology": observation.kind,
-                "byte_indexes": payload.get("byte_indexes"),
-            },
-        ),)
+        return (
+            _make_fact(
+                observation,
+                kind=EFFECT_PATH_FACT_TYPE,
+                semantic_key=f"side_effect_corridor:{'|'.join(_string_list(payload.get('destinations'))) or 'unknown'}",
+                storage_kind="memory_expression",
+                storage_identity="|".join(_string_list(payload.get("destinations")))
+                or "unknown",
+                expression_class="byte_emit_corridor",
+                observable_effect="byte_store",
+                producer_fact_ids=producer_ids,
+                producer_kinds=(observation.kind, "TerminalByteEmitterFact"),
+                source_identity=_source_identity(
+                    observation, producer_ids=producer_ids
+                ),
+                details={
+                    "source_ontology": observation.kind,
+                    "byte_indexes": payload.get("byte_indexes"),
+                },
+            ),
+        )
 
     if observation.kind == "StateWriteAnchorFact":
         storage_kind, storage_identity = _storage_from_first_int(
             payload,
             ("state_var_stkoff",),
         )
-        return (_make_fact(
-            observation,
-            kind=STATE_WRITE_FACT_TYPE,
-            semantic_key=f"state_write:{storage_kind}:{storage_identity}",
-            storage_kind=storage_kind,
-            storage_identity=storage_identity,
-            expression_class="direct_state_write",
-            observable_effect="state_write",
-            producer_fact_ids=producer_ids,
-            source_identity=source_identity,
-            details={
-                "source_ontology": observation.kind,
-                "state_const_hex": payload.get("state_const_hex"),
-            },
-        ),)
+        return (
+            _make_fact(
+                observation,
+                kind=STATE_WRITE_FACT_TYPE,
+                semantic_key=f"state_write:{storage_kind}:{storage_identity}",
+                storage_kind=storage_kind,
+                storage_identity=storage_identity,
+                expression_class="direct_state_write",
+                observable_effect="state_write",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "state_const_hex": payload.get("state_const_hex"),
+                },
+            ),
+        )
 
     if observation.kind == "StateTransitionAnchorFact":
         storage_identity = str(
@@ -375,39 +404,43 @@ def _project_source_fact(observation: FactObservation) -> tuple[FactObservation,
             or payload.get("state_var_stkoff")
             or "unknown"
         )
-        return (_make_fact(
-            observation,
-            kind=STATE_TRANSITION_FACT_TYPE,
-            semantic_key=f"state_transition:{storage_identity}",
-            storage_kind="state_variable_identity",
-            storage_identity=storage_identity,
-            expression_class="state_transition",
-            observable_effect="state_write",
-            producer_fact_ids=producer_ids,
-            source_identity=source_identity,
-            details={
-                "source_ontology": observation.kind,
-                "source_state_const_hex": payload.get("source_state_const_hex"),
-                "next_state_const_hex": payload.get("next_state_const_hex"),
-            },
-        ),)
+        return (
+            _make_fact(
+                observation,
+                kind=STATE_TRANSITION_FACT_TYPE,
+                semantic_key=f"state_transition:{storage_identity}",
+                storage_kind="state_variable_identity",
+                storage_identity=storage_identity,
+                expression_class="state_transition",
+                observable_effect="state_write",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "source_state_const_hex": payload.get("source_state_const_hex"),
+                    "next_state_const_hex": payload.get("next_state_const_hex"),
+                },
+            ),
+        )
 
     if observation.kind == "CallAnchorFact":
-        return (_make_fact(
-            observation,
-            kind=CALL_EFFECT_SUMMARY_FACT_TYPE,
-            semantic_key=f"call_anchor:{payload.get('call_target', 'unknown')}",
-            storage_kind="call_destination",
-            storage_identity=str(payload.get("call_target") or "unknown"),
-            expression_class="call_site",
-            observable_effect="call_side_effect",
-            producer_fact_ids=producer_ids,
-            source_identity=source_identity,
-            details={
-                "source_ontology": observation.kind,
-                "call_kind": payload.get("call_kind"),
-            },
-        ),)
+        return (
+            _make_fact(
+                observation,
+                kind=CALL_EFFECT_SUMMARY_FACT_TYPE,
+                semantic_key=f"call_anchor:{payload.get('call_target', 'unknown')}",
+                storage_kind="call_destination",
+                storage_identity=str(payload.get("call_target") or "unknown"),
+                expression_class="call_site",
+                observable_effect="call_side_effect",
+                producer_fact_ids=producer_ids,
+                source_identity=source_identity,
+                details={
+                    "source_ontology": observation.kind,
+                    "call_kind": payload.get("call_kind"),
+                },
+            ),
+        )
 
     return ()
 
@@ -460,16 +493,18 @@ def _make_fact(
     if storage_overlap_proof is not None:
         payload["storage_overlap_proof"] = dict(storage_overlap_proof)
     digest = hashlib.sha1(
-        canonical_json({
-            "kind": kind,
-            "semantic_key": semantic_key,
-            "storage_kind": storage_kind,
-            "storage_identity": storage_identity,
-            "source_block": source_block,
-            "source_ea": source_ea,
-            "instruction_index": instruction_index,
-            "producer_fact_ids": list(producer_fact_ids),
-        }).encode("utf-8")
+        canonical_json(
+            {
+                "kind": kind,
+                "semantic_key": semantic_key,
+                "storage_kind": storage_kind,
+                "storage_identity": storage_identity,
+                "source_block": source_block,
+                "source_ea": source_ea,
+                "instruction_index": instruction_index,
+                "producer_fact_ids": list(producer_fact_ids),
+            }
+        ).encode("utf-8")
     ).hexdigest()[:16]
     return FactObservation(
         fact_id=f"{semantic_key}:family={digest}",

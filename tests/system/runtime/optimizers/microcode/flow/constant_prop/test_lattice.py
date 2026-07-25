@@ -2,6 +2,7 @@
 
 TDD: these tests are written before the implementation.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -22,6 +23,7 @@ from d810.ir.lattice import (
 # ---------------------------------------------------------------------------
 # TestLatticeValue
 # ---------------------------------------------------------------------------
+
 
 class TestLatticeValue:
     def test_bottom_is_singleton(self):
@@ -74,6 +76,7 @@ class TestLatticeValue:
 # TestLatticeMeet
 # ---------------------------------------------------------------------------
 
+
 class TestLatticeMeet:
     # BOTTOM × anything
     def test_bottom_meet_bottom(self):
@@ -106,7 +109,7 @@ class TestLatticeMeet:
 
     # Const × Const
     def test_const_meet_const_same(self):
-        c = Const(0xdeadbeef, 4)
+        c = Const(0xDEADBEEF, 4)
         assert lattice_meet(c, c) == c
 
     def test_const_meet_const_same_value_same_size(self):
@@ -125,6 +128,7 @@ class TestLatticeMeet:
 # ---------------------------------------------------------------------------
 # TestEnvMeet
 # ---------------------------------------------------------------------------
+
 
 class TestEnvMeet:
     def test_both_empty(self):
@@ -183,6 +187,7 @@ class TestEnvMeet:
 # ---------------------------------------------------------------------------
 # TestLatticeMeetStrategy
 # ---------------------------------------------------------------------------
+
 
 class TestLatticeMeetStrategy:
     def setup_method(self):
@@ -250,6 +255,7 @@ class TestLatticeMeetStrategy:
 # TestEnvMeetDefaultMissing
 # ---------------------------------------------------------------------------
 
+
 class TestEnvMeetDefaultMissing:
     def test_env_meet_default_missing_top_kills_absent(self):
         """With default_missing=TOP, a key present in only one env is killed."""
@@ -283,6 +289,7 @@ class TestEnvMeetDefaultMissing:
 # ---------------------------------------------------------------------------
 # TestLatticeMeetConservativeAndAggressive
 # ---------------------------------------------------------------------------
+
 
 class TestLatticeMeetConservativeAndAggressive:
     def test_lattice_meet_conservative_kills_absent(self):

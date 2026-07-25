@@ -16,6 +16,7 @@ live.  The test therefore dumps, per maturity, exactly what SCCP proves, so we
 can decide whether plain SCCP suffices or a peel/trip-count layer is required.
 It asserts only that the mechanism runs end-to-end; the peel verdict is printed.
 """
+
 from __future__ import annotations
 
 import os
@@ -149,7 +150,7 @@ class TestSccpSingleTripLoop:
                 f"reachable_blocks={len(res.reachable_blocks)} "
                 f"const_keys={n_const} top_keys={n_top}"
             )
-            for (u, v) in sorted(back):
+            for u, v in sorted(back):
                 if (u, v) in dead_back:
                     verdict = "DEAD (peelable: SCCP proved back-edge unreachable)"
                 elif res.is_edge_executable(u, v):

@@ -3,6 +3,7 @@
 Tests the D810ActionHandler base class, Registrant integration, and
 the auto-discovery mechanism.
 """
+
 from __future__ import annotations
 
 from d810.core import typing
@@ -19,6 +20,7 @@ class TestD810ActionHandlerRegistry:
     def test_action_handler_is_registrant(self):
         """D810ActionHandler should inherit from Registrant."""
         from d810.core.registry import Registrant
+
         assert issubclass(D810ActionHandler, Registrant)
 
     def test_action_handler_has_registry(self):
@@ -99,6 +101,7 @@ class TestD810ActionHandlerAttributes:
 
     def test_supported_views_frozenset(self):
         """SUPPORTED_VIEWS should be a frozenset."""
+
         class MyAction(D810ActionHandler):
             ACTION_ID = "d810ng:my_action"
             ACTION_TEXT = "My Action"
@@ -114,6 +117,7 @@ class TestD810ActionHandlerAttributes:
 
     def test_menu_order_default(self):
         """MENU_ORDER should default to 100."""
+
         class MyAction(D810ActionHandler):
             ACTION_ID = "d810ng:my_action"
             ACTION_TEXT = "My Action"
@@ -127,6 +131,7 @@ class TestD810ActionHandlerAttributes:
 
     def test_menu_order_override(self):
         """MENU_ORDER can be overridden."""
+
         class MyAction(D810ActionHandler):
             ACTION_ID = "d810ng:my_action"
             ACTION_TEXT = "My Action"
@@ -141,6 +146,7 @@ class TestD810ActionHandlerAttributes:
 
     def test_requires_started_default(self):
         """REQUIRES_STARTED should default to False."""
+
         class MyAction(D810ActionHandler):
             ACTION_ID = "d810ng:my_action"
             ACTION_TEXT = "My Action"
@@ -154,6 +160,7 @@ class TestD810ActionHandlerAttributes:
 
     def test_shortcut_default(self):
         """SHORTCUT should default to None."""
+
         class MyAction(D810ActionHandler):
             ACTION_ID = "d810ng:my_action"
             ACTION_TEXT = "My Action"
@@ -171,6 +178,7 @@ class TestD810ActionHandlerDependencyInjection:
 
     def test_constructor_accepts_state(self):
         """Constructor should accept state parameter."""
+
         class MyAction(D810ActionHandler):
             ACTION_ID = "d810ng:my_action"
             ACTION_TEXT = "My Action"
@@ -186,6 +194,7 @@ class TestD810ActionHandlerDependencyInjection:
 
     def test_state_accessible_in_execute(self):
         """State should be accessible in execute method."""
+
         class MyAction(D810ActionHandler):
             ACTION_ID = "d810ng:my_action"
             ACTION_TEXT = "My Action"
@@ -211,6 +220,7 @@ class TestD810ActionHandlerExecution:
 
     def test_execute_is_abstract(self):
         """Execute method should be abstract in base class."""
+
         # Python's ABC won't let us instantiate a class without implementing
         # abstract methods, so we test that defining a class without execute
         # raises a TypeError when we try to instantiate it
@@ -229,6 +239,7 @@ class TestD810ActionHandlerExecution:
 
     def test_execute_returns_int(self):
         """Execute should return int (1 for success, 0 for failure)."""
+
         class MyAction(D810ActionHandler):
             ACTION_ID = "d810ng:my_action"
             ACTION_TEXT = "My Action"
@@ -246,6 +257,7 @@ class TestD810ActionHandlerExecution:
 
     def test_is_available_default(self):
         """is_available should default to True."""
+
         class MyAction(D810ActionHandler):
             ACTION_ID = "d810ng:my_action"
             ACTION_TEXT = "My Action"
@@ -261,6 +273,7 @@ class TestD810ActionHandlerExecution:
 
     def test_is_available_override(self):
         """is_available can be overridden for conditional availability."""
+
         class MyAction(D810ActionHandler):
             ACTION_ID = "d810ng:my_action"
             ACTION_TEXT = "My Action"
@@ -287,6 +300,7 @@ class TestD810ActionHandlerNamingConvention:
 
     def test_action_id_should_use_d810ng_prefix(self):
         """Action IDs should use d810ng: prefix, not d810:."""
+
         class GoodAction(D810ActionHandler):
             ACTION_ID = "d810ng:good_action"
             ACTION_TEXT = "Good Action"

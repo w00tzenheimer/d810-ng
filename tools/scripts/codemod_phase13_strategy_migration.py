@@ -13,6 +13,7 @@ This is the final phase that wires everything together.
 Default mode is dry-run. Use --apply to write changes.
 Run with `pyenv exec` to use the project interpreter.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -168,7 +169,9 @@ def main() -> int:
 
     # Step 1: Create strategies/__init__.py
     print("\nStep 1: Create strategies package")
-    strategies_init_path = root / "src/d810/optimizers/microcode/flow/flattening/strategies/__init__.py"
+    strategies_init_path = (
+        root / "src/d810/optimizers/microcode/flow/flattening/strategies/__init__.py"
+    )
     if not strategies_init_path.exists():
         create_file(strategies_init_path, STRATEGIES_INIT, dry_run)
     else:
@@ -177,7 +180,8 @@ def main() -> int:
     # Step 2: Create OLLVMLinearizationStrategy
     print("\nStep 2: Create OLLVMLinearizationStrategy")
     ollvm_strategy_path = (
-        root / "src/d810/optimizers/microcode/flow/flattening/strategies/ollvm_strategy.py"
+        root
+        / "src/d810/optimizers/microcode/flow/flattening/strategies/ollvm_strategy.py"
     )
     if not ollvm_strategy_path.exists():
         create_file(ollvm_strategy_path, OLLVM_STRATEGY, dry_run)
@@ -187,7 +191,8 @@ def main() -> int:
     # Step 3: Create CleanupStrategy
     print("\nStep 3: Create CleanupStrategy")
     cleanup_strategy_path = (
-        root / "src/d810/optimizers/microcode/flow/flattening/strategies/cleanup_strategy.py"
+        root
+        / "src/d810/optimizers/microcode/flow/flattening/strategies/cleanup_strategy.py"
     )
     if not cleanup_strategy_path.exists():
         create_file(cleanup_strategy_path, CLEANUP_STRATEGY, dry_run)

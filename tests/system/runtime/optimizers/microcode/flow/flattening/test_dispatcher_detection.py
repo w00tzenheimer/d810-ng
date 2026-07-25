@@ -27,6 +27,7 @@ class TestDispatcherDetectionWithRealMicrocode:
     def ida_setup(self, ida_database, configure_hexrays, setup_libobfuscated_funcs):
         """Setup IDA and Hex-Rays for real microcode tests."""
         import idaapi
+
         if not idaapi.init_hexrays_plugin():
             pytest.skip("Hex-Rays decompiler plugin not available")
         return ida_database
@@ -35,6 +36,7 @@ class TestDispatcherDetectionWithRealMicrocode:
         """Get function address by name, handling macOS underscore prefix."""
         import ida_name
         import idaapi
+
         ea = ida_name.get_name_ea(idaapi.BADADDR, name)
         if ea == idaapi.BADADDR:
             ea = ida_name.get_name_ea(idaapi.BADADDR, "_" + name)
@@ -77,10 +79,16 @@ class TestDispatcherDetectionWithRealMicrocode:
 
         # Function name -> expected dispatcher type
         test_functions = [
-            ("nested_while_hodur_pattern", RouterKind.CONDITION_CHAIN),  # 3-level nested while
-            ("_hodur_func", RouterKind.CONDITION_CHAIN),                 # Real Hodur malware
-            ("high_fan_in_pattern", RouterKind.TABLE),             # May produce jtbl
-            ("hardened_cond_chain_simple", RouterKind.CONDITION_CHAIN),  # Uses state values 0x1000-0x7000 (now detected)
+            (
+                "nested_while_hodur_pattern",
+                RouterKind.CONDITION_CHAIN,
+            ),  # 3-level nested while
+            ("_hodur_func", RouterKind.CONDITION_CHAIN),  # Real Hodur malware
+            ("high_fan_in_pattern", RouterKind.TABLE),  # May produce jtbl
+            (
+                "hardened_cond_chain_simple",
+                RouterKind.CONDITION_CHAIN,
+            ),  # Uses state values 0x1000-0x7000 (now detected)
         ]
 
         maturities_to_test = [
@@ -106,9 +114,11 @@ class TestDispatcherDetectionWithRealMicrocode:
                 DEFAULT_DISPATCHER_HISTORY_STORE.clear()
                 analysis = analyze_dispatcher_live(mba)
 
-                print(f"    Maturity {maturity}: type={analysis.router_kind}, "
-                      f"dispatchers={len(analysis.dispatchers)}, "
-                      f"is_conditional_chain={analysis.is_conditional_chain}")
+                print(
+                    f"    Maturity {maturity}: type={analysis.router_kind}, "
+                    f"dispatchers={len(analysis.dispatchers)}, "
+                    f"is_conditional_chain={analysis.is_conditional_chain}"
+                )
 
                 # Verify basic structure
                 assert analysis.func_ea == func_ea
@@ -120,24 +130,30 @@ class TestDispatcherDetectionWithRealMicrocode:
                 if expected_type is not None and analysis.router_kind == expected_type:
                     if expected_type == RouterKind.TABLE:
                         # TABLE/switch has empty dispatchers due to early return
-                        assert len(analysis.dispatchers) == 0, \
+                        assert len(analysis.dispatchers) == 0, (
                             "TABLE/switch should have empty dispatchers (early return)"
+                        )
                         print(f"      * TABLE/switch early-return as expected")
                     elif expected_type == RouterKind.CONDITION_CHAIN:
                         assert analysis.is_conditional_chain
-                        print(f"      * Detected CONDITION_CHAIN at maturity {maturity}")
+                        print(
+                            f"      * Detected CONDITION_CHAIN at maturity {maturity}"
+                        )
                     detected_at_any_maturity = True
                     break
 
                 # For functions with no expected type, just check if dispatchers were found
                 if expected_type is None and len(analysis.dispatchers) > 0:
-                    print(f"      * Found {len(analysis.dispatchers)} dispatcher(s) at maturity {maturity}")
+                    print(
+                        f"      * Found {len(analysis.dispatchers)} dispatcher(s) at maturity {maturity}"
+                    )
                     detected_at_any_maturity = True
                     break
 
             # Ensure we detected something at some maturity
-            assert detected_at_any_maturity, \
+            assert detected_at_any_maturity, (
                 f"{func_name} should be detected as dispatcher at some maturity level"
+            )
 
     def test_detect_conditional_chain_in_hodur_function(self, ida_setup):
         """Test CONDITION_CHAIN detection in Hodur-style dispatchers.
@@ -177,16 +193,21 @@ class TestDispatcherDetectionWithRealMicrocode:
             analysis = analyze_dispatcher_live(mba)
 
             # Verify CONDITION_CHAIN detection
-            assert analysis.is_conditional_chain, \
+            assert analysis.is_conditional_chain, (
                 f"{func_name} should be detected as CONDITION_CHAIN (no jtbl)"
-            assert analysis.router_kind == RouterKind.CONDITION_CHAIN, \
+            )
+            assert analysis.router_kind == RouterKind.CONDITION_CHAIN, (
                 f"router_kind should be CONDITION_CHAIN, got {analysis.router_kind}"
+            )
 
             # Verify we found dispatcher blocks
-            assert len(analysis.dispatchers) > 0, \
+            assert len(analysis.dispatchers) > 0, (
                 "Should detect at least one dispatcher block"
+            )
 
-            print(f"    * Detected as CONDITION_CHAIN with {len(analysis.dispatchers)} dispatcher(s)")
+            print(
+                f"    * Detected as CONDITION_CHAIN with {len(analysis.dispatchers)} dispatcher(s)"
+            )
 
     def test_detect_switch_table_in_ollvm_function(self, ida_setup):
         """Test TABLE/switch detection in O-LLVM style dispatchers.
@@ -202,7 +223,9 @@ class TestDispatcherDetectionWithRealMicrocode:
             analyze_dispatcher_live,
         )
 
-        func_name = "switch_case_ollvm_pattern"  # Correct name (not "simple_switch_dispatcher")
+        func_name = (
+            "switch_case_ollvm_pattern"  # Correct name (not "simple_switch_dispatcher")
+        )
         func_ea = self._get_func_ea(func_name)
         if func_ea == idaapi.BADADDR:
             pytest.skip(f"{func_name} not found in binary")
@@ -217,10 +240,12 @@ class TestDispatcherDetectionWithRealMicrocode:
         analysis = analyze_dispatcher_live(mba)
 
         # Verify TABLE/switch detection (has jtbl, not conditional chain)
-        assert not analysis.is_conditional_chain, \
+        assert not analysis.is_conditional_chain, (
             f"{func_name} should NOT be CONDITION_CHAIN (has jtbl/switch)"
-        assert analysis.router_kind == RouterKind.TABLE, \
+        )
+        assert analysis.router_kind == RouterKind.TABLE, (
             f"router_kind should be TABLE, got {analysis.router_kind}"
+        )
 
         print(f"    * Detected as TABLE/switch (O-LLVM style)")
 
@@ -272,8 +297,9 @@ class TestDispatcherDetectionWithRealMicrocode:
             # Test should_skip_dispatcher
             result = should_skip_dispatcher(mba, test_block)
 
-            assert result == expected_skip, \
+            assert result == expected_skip, (
                 f"{func_name}: should_skip_dispatcher returned {result}, expected {expected_skip}"
+            )
 
             print(f"    * should_skip_dispatcher={result} (correct)")
 

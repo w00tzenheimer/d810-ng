@@ -54,9 +54,7 @@ class InstructionDefUseCollector(ida_hexrays.mop_visitor_t):
 
     def __init__(self):
         super().__init__()
-        self.unresolved_ins_mops = (
-            []
-        )  # BorrowedMop list - valid only during current search
+        self.unresolved_ins_mops = []  # BorrowedMop list - valid only during current search
         self.memory_unresolved_ins_mops = []  # BorrowedMop list
         self.target_mops = []  # BorrowedMop list
 
@@ -1037,8 +1035,7 @@ def get_segment_register_indexes(
         if mop.t == ida_hexrays.mop_r:
             formatted_mop = format_mop_t(mop)
             if formatted_mop in _SEGMENT_REGISTER_NAMES or (
-                accept_debug_dstr
-                and _formatted_mop_is_segment_register(formatted_mop)
+                accept_debug_dstr and _formatted_mop_is_segment_register(formatted_mop)
             ):
                 segment_register_indexes.append(i)
     return segment_register_indexes
@@ -1065,7 +1062,11 @@ def remove_segment_registers(
     return new_mop_list
 
 
-def get_all_possibles_values(mop_histories: list[MopHistory], searched_mop_list: list[ida_hexrays.mop_t], verbose: bool = False) -> list[list[int | None]]:
+def get_all_possibles_values(
+    mop_histories: list[MopHistory],
+    searched_mop_list: list[ida_hexrays.mop_t],
+    verbose: bool = False,
+) -> list[list[int | None]]:
     ctx = nullcontext() if verbose else suppress_loggers(__name__, "ERROR")
     with ctx:
         return [

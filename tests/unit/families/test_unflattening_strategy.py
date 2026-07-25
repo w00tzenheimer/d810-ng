@@ -7,6 +7,7 @@ Re-export-compatibility tests live in the system/runtime suite under
 ``unit-tests-no-optimizers`` import-linter contract forbids unit tests
 from importing ``d810.optimizers.*``.
 """
+
 from __future__ import annotations
 
 from d810.capabilities.unflattening_strategy import UnflatteningStrategy
@@ -67,9 +68,7 @@ def test_unflattening_strategy_runtime_check_rejects_missing_members() -> None:
 def test_protocol_declares_expected_member_names() -> None:
     """Declared member names form the public Protocol contract; verify the surface."""
     expected = {"name", "family", "is_applicable", "plan"}
-    declared = {
-        name for name in dir(UnflatteningStrategy) if not name.startswith("_")
-    }
+    declared = {name for name in dir(UnflatteningStrategy) if not name.startswith("_")}
     missing = expected - declared
     assert not missing, f"UnflatteningStrategy missing declared members: {missing}"
 

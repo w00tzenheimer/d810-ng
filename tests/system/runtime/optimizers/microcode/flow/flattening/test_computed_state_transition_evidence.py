@@ -1,4 +1,5 @@
 """Runtime tests for read-only computed-state transition evidence."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace

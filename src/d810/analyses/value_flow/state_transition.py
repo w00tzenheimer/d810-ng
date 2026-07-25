@@ -8,6 +8,7 @@ This is the canonical serialized ``FactObservation.kind`` value. The
 diagnostic alias registry maps the historical ``StateTransitionCarrierFact``
 string to this family.
 """
+
 from __future__ import annotations
 
 STATE_TRANSITION_FACT_TYPE = "StateTransitionFact"

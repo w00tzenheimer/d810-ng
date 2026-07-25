@@ -8,6 +8,7 @@ This is the canonical serialized ``FactObservation.kind`` value. The
 diagnostic alias registry maps the historical ``SideEffectCorridorFact``
 string to this family.
 """
+
 from __future__ import annotations
 
 EFFECT_PATH_FACT_TYPE = "EffectPathFact"

@@ -6,6 +6,7 @@ Provides factories for creating ctree nodes (``make_num``,
 
 Ported from herast (herast/tree/utils.py).
 """
+
 from __future__ import annotations
 
 import idaapi
@@ -56,7 +57,9 @@ def get_cfunc(func_ea: int) -> typing.Any | None:
     return cfunc
 
 
-def get_following_instr(parent_block: typing.Any, item: typing.Any) -> typing.Any | None:
+def get_following_instr(
+    parent_block: typing.Any, item: typing.Any
+) -> typing.Any | None:
     """Return the instruction following *item* in *parent_block*."""
     container = parent_block.cinsn.cblock
     item_idx = container.index(item)

@@ -292,7 +292,9 @@ class EqualityConstraint(ConstraintExpr):
 
         left_name = self._get_name(self.left)
         if left_name not in candidate:
-            logger.debug(f"_check_bnot_constraint: {left_name} not in candidate keys {list(candidate.keys())}")
+            logger.debug(
+                f"_check_bnot_constraint: {left_name} not in candidate keys {list(candidate.keys())}"
+            )
             return False
 
         # Get the operand of the BNOT (e.g., "y" from ~y)
@@ -307,7 +309,9 @@ class EqualityConstraint(ConstraintExpr):
 
         operand_name = bnot_operand.name
         if operand_name not in candidate:
-            logger.debug(f"_check_bnot_constraint: {operand_name} not in candidate keys {list(candidate.keys())}")
+            logger.debug(
+                f"_check_bnot_constraint: {operand_name} not in candidate keys {list(candidate.keys())}"
+            )
             return False
 
         # Get the matched AstNodes

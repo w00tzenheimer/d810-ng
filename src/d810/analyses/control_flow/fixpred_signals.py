@@ -1,4 +1,5 @@
-"FixPredSignalsCollector - preanalysis signals for predecessor rewrite safety.\n\nProduces deterministic metrics used by AnalysisPhase to decide the dedicated\n``fixpred_gate`` contract independently from unflattening.\n\nFires at MMAT_CALLS (3) and MMAT_GLBOPT1 (14).\n\nMetrics produced:\n    - ``dispatcher_count``: number of detected dispatcher blocks\n    - ``strong_dispatcher_count``: dispatchers with >=3 predecessors and >=2 successors\n    - ``conditional_dispatcher_count``: BLT_2WAY dispatchers\n    - ``switch_dispatcher_count``: BLT_NWAY dispatchers\n    - ``unknown_dispatcher_count``: dispatchers of unrecognized type\n    - ``max_dispatcher_predecessors``: maximum predecessor count among dispatchers\n    - ``mean_dispatcher_predecessors``: mean predecessor count across dispatchers\n    - ``ambiguous_dispatcher_count``: dispatchers with unexpected successor counts\n    - ``ambiguous_dispatcher_ratio``: ratio of ambiguous to total dispatchers\n    - ``predecessor_sample_count``: total predecessor blocks sampled\n    - ``predecessor_1way_ratio``: fraction of sampled predecessors that are BLT_1WAY\n    - ``predecessor_2way_ratio``: fraction of sampled predecessors that are BLT_2WAY\n    - ``predecessor_nway_ratio``: fraction of sampled predecessors that are BLT_NWAY\n    - ``state_variable_present``: 1 if a state variable was detected, else 0\n    - ``dispatcher_state_constant_total``: unique state constants observed\n    - ``router_kind``: canonical router kind string\n\nCandidates:\n    - ``\"fixpred_high_fanin_dispatcher\"`` for each dispatcher when max fan-in >= 3\n"
+'FixPredSignalsCollector - preanalysis signals for predecessor rewrite safety.\n\nProduces deterministic metrics used by AnalysisPhase to decide the dedicated\n``fixpred_gate`` contract independently from unflattening.\n\nFires at MMAT_CALLS (3) and MMAT_GLBOPT1 (14).\n\nMetrics produced:\n    - ``dispatcher_count``: number of detected dispatcher blocks\n    - ``strong_dispatcher_count``: dispatchers with >=3 predecessors and >=2 successors\n    - ``conditional_dispatcher_count``: BLT_2WAY dispatchers\n    - ``switch_dispatcher_count``: BLT_NWAY dispatchers\n    - ``unknown_dispatcher_count``: dispatchers of unrecognized type\n    - ``max_dispatcher_predecessors``: maximum predecessor count among dispatchers\n    - ``mean_dispatcher_predecessors``: mean predecessor count across dispatchers\n    - ``ambiguous_dispatcher_count``: dispatchers with unexpected successor counts\n    - ``ambiguous_dispatcher_ratio``: ratio of ambiguous to total dispatchers\n    - ``predecessor_sample_count``: total predecessor blocks sampled\n    - ``predecessor_1way_ratio``: fraction of sampled predecessors that are BLT_1WAY\n    - ``predecessor_2way_ratio``: fraction of sampled predecessors that are BLT_2WAY\n    - ``predecessor_nway_ratio``: fraction of sampled predecessors that are BLT_NWAY\n    - ``state_variable_present``: 1 if a state variable was detected, else 0\n    - ``dispatcher_state_constant_total``: unique state constants observed\n    - ``router_kind``: canonical router kind string\n\nCandidates:\n    - ``"fixpred_high_fanin_dispatcher"`` for each dispatcher when max fan-in >= 3\n'
+
 from __future__ import annotations
 
 import time
@@ -191,10 +192,7 @@ def _portable_signals(
             kind="fixpred_high_fanin_dispatcher",
             block_serial=int(serial),
             confidence=min(1.0, 0.4 + 0.1 * max_dispatcher_predecessors),
-            detail=(
-                "dispatcher predecessor fan-in="
-                f"{max_dispatcher_predecessors}"
-            ),
+            detail=(f"dispatcher predecessor fan-in={max_dispatcher_predecessors}"),
         )
         for serial in dispatchers
         if max_dispatcher_predecessors >= 3
@@ -250,7 +248,7 @@ class FixPredSignalsCollector:
         func_ea: int | None = None,
         **legacy_fields: object,
     ) -> PreanalysisResult:
-        "Collect fixpred safety signals from a portable ``FlowGraph``.\n\n        :param target: Portable ``FlowGraph`` snapshot (after E4a, the\n            ``FLOWGRAPH_READY`` subscriber on ``D810`` is the only\n            invoker, and it always passes a ``FlowGraph``).  Passing a\n            live ``mba_t`` will raise via the architectural-pin\n            ``_live_signals`` stub.\n        :param func_ea: Function effective address.\n        :param maturity: Current maturity level.\n        :return: Frozen ``PreanalysisResult`` with fixpred metrics.\n        "
+        "Collect fixpred safety signals from a portable ``FlowGraph``.\n\n        :param target: Portable ``FlowGraph`` snapshot (after E4a, the\n            ``FLOWGRAPH_READY`` subscriber on ``D810`` is the only\n            invoker, and it always passes a ``FlowGraph``).  Passing a\n            live ``mba_t`` will raise via the architectural-pin\n            ``_live_signals`` stub.\n        :param func_ea: Function effective address.\n        :param maturity: Current maturity level.\n        :return: Frozen ``PreanalysisResult`` with fixpred metrics.\n"
         context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,

@@ -5,6 +5,7 @@ This loader discovers action modules from ``d810.ui.actions`` via
 ``D810ActionHandler`` implementations using the
 :class:`~d810.core.registry.Registrant` registry populated at import time.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Any
@@ -33,7 +34,9 @@ class ActionLoader:
         self._loaded_modules.clear()
         self._action_instances.clear()
 
-        Scanner.scan(actions.__path__, prefix=f"{actions.__name__}.", skip_packages=True)
+        Scanner.scan(
+            actions.__path__, prefix=f"{actions.__name__}.", skip_packages=True
+        )
 
         seen_action_ids: set[str] = set()
         for cls in D810ActionHandler.all():

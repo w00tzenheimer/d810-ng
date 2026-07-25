@@ -5,7 +5,6 @@ from d810.core.registry import SingletonMeta, singleton
 
 
 class TestSingleton(unittest.TestCase):
-
     def test_singleton_decorator(self):
         @singleton
         class MyClass:

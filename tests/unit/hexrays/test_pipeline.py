@@ -8,12 +8,17 @@ This module tests:
 - Verification failure handling
 - Re-lift behavior after modifications
 """
+
 from __future__ import annotations
 
 import pytest
 
 from d810.transforms._base import FlowGraphTransform
-from d810.transforms.graph_modification import ConvertToGoto, GraphModification, RedirectGoto
+from d810.transforms.graph_modification import (
+    ConvertToGoto,
+    GraphModification,
+    RedirectGoto,
+)
 from d810.passes.pipeline import FlowGraphTransformPipeline
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.plan import LoweringInput
@@ -86,7 +91,7 @@ class MutatingBackend(InMemoryBackend):
                 preds=(),
                 flags=0,
                 start_ea=0x2000 + (self.mutation_count * 0x10),
-                insn_snapshots=()
+                insn_snapshots=(),
             )
             self.blocks[new_serial] = new_block
         return count
@@ -99,6 +104,7 @@ class MutatingBackend(InMemoryBackend):
 
 class NoOpPass(FlowGraphTransform):
     """Pass that does nothing (returns empty modification list)."""
+
     name = "noop"
 
     def transform(self, cfg: FlowGraph) -> list[GraphModification]:
@@ -108,6 +114,7 @@ class NoOpPass(FlowGraphTransform):
 
 class SingleModPass(FlowGraphTransform):
     """Pass that returns one ConvertToGoto modification."""
+
     name = "single_mod"
 
     def transform(self, cfg: FlowGraph) -> list[GraphModification]:
@@ -117,6 +124,7 @@ class SingleModPass(FlowGraphTransform):
 
 class DoubleModPass(FlowGraphTransform):
     """Pass that returns two modifications."""
+
     name = "double_mod"
 
     def transform(self, cfg: FlowGraph) -> list[GraphModification]:
@@ -129,6 +137,7 @@ class DoubleModPass(FlowGraphTransform):
 
 class ConditionalPass(FlowGraphTransform):
     """Pass that only applies to CFGs with >2 blocks."""
+
     name = "conditional"
 
     def is_applicable(self, cfg: FlowGraph) -> bool:
@@ -142,6 +151,7 @@ class ConditionalPass(FlowGraphTransform):
 
 class CountingPass(FlowGraphTransform):
     """Pass that returns modifications equal to number of blocks in CFG."""
+
     name = "counting"
 
     def transform(self, cfg: FlowGraph) -> list[GraphModification]:
@@ -165,7 +175,7 @@ class TestPassPipeline:
         backend = InMemoryBackend()
         pipeline = FlowGraphTransformPipeline(backend, [])
 
-        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
+        total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert total == 0
         assert len(backend.applied_modifications) == 0
@@ -175,7 +185,7 @@ class TestPassPipeline:
         backend = InMemoryBackend()
         pipeline = FlowGraphTransformPipeline(backend, [NoOpPass()])
 
-        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
+        total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert total == 0
         assert len(backend.applied_modifications) == 0
@@ -185,7 +195,7 @@ class TestPassPipeline:
         backend = InMemoryBackend()
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
-        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
+        total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert total == 1
         assert len(backend.applied_modifications) == 1
@@ -196,9 +206,11 @@ class TestPassPipeline:
     def test_multiple_passes_accumulate(self):
         """Multiple transform should accumulate modification counts."""
         backend = InMemoryBackend()
-        pipeline = FlowGraphTransformPipeline(backend, [SingleModPass(), DoubleModPass()])
+        pipeline = FlowGraphTransformPipeline(
+            backend, [SingleModPass(), DoubleModPass()]
+        )
 
-        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
+        total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert total == 3  # 1 from SingleModPass + 2 from DoubleModPass
         assert len(backend.applied_modifications) == 3
@@ -207,19 +219,29 @@ class TestPassPipeline:
         """Pass with is_applicable=False should be skipped."""
         # Create small CFG (2 blocks)
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1}
 
         backend = InMemoryBackend(blocks)
         pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass()])
 
-        total = pipeline.run(blocks, mutation_gateway = MUTATION_GATEWAY)
+        total = pipeline.run(blocks, mutation_gateway=MUTATION_GATEWAY)
 
         # ConditionalPass requires >2 blocks, so should be skipped
         assert total == 0
@@ -229,23 +251,38 @@ class TestPassPipeline:
         """Pass with is_applicable=True should run."""
         # Create large CFG (3 blocks)
         blk0 = BlockSnapshot(
-            serial=0, block_type=4, succs=(1, 2), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=4,
+            succs=(1, 2),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1020, insn_snapshots=()
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1020,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1, 2: blk2}
 
         backend = InMemoryBackend(blocks)
         pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass()])
 
-        total = pipeline.run(blocks, mutation_gateway = MUTATION_GATEWAY)
+        total = pipeline.run(blocks, mutation_gateway=MUTATION_GATEWAY)
 
         # ConditionalPass requires >2 blocks, so should run
         assert total == 1
@@ -256,7 +293,7 @@ class TestPassPipeline:
         backend = ZeroLowerBackend()
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
-        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
+        total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         # Lower returned 0, so verify should not be called and total should be 0
         assert total == 0
@@ -268,7 +305,7 @@ class TestPassPipeline:
         backend = FailingVerificationBackend()
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
-        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
+        total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         # Verify failed, so modifications should not be counted
         assert total == 0
@@ -281,7 +318,7 @@ class TestPassPipeline:
         # Use CountingPass which returns mods based on block count
         pipeline = FlowGraphTransformPipeline(backend, [CountingPass(), CountingPass()])
 
-        total = pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
+        total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         # First pass: 0 blocks -> 0 mods
         # Second pass: should see mutated state from first pass if re-lift happened
@@ -293,12 +330,22 @@ class TestPassPipeline:
         """CFG should be re-lifted after successful modifications, subsequent transform see new state."""
         # Create initial CFG with 2 blocks
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1}
 
@@ -308,7 +355,7 @@ class TestPassPipeline:
         # Second pass should see 3 blocks (original 2 + 1 added)
         pipeline = FlowGraphTransformPipeline(backend, [CountingPass(), CountingPass()])
 
-        total = pipeline.run(blocks, mutation_gateway = MUTATION_GATEWAY)
+        total = pipeline.run(blocks, mutation_gateway=MUTATION_GATEWAY)
 
         # First pass: 2 blocks -> 2 mods -> backend adds 1 block
         # Second pass: 3 blocks -> 3 mods
@@ -346,12 +393,22 @@ class TestPassPipeline:
         """Pipeline with mix of applicable and non-applicable transform."""
         # Create 2-block CFG
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1}
 
@@ -359,9 +416,11 @@ class TestPassPipeline:
         # ConditionalPass requires >2 blocks (won't apply)
         # SingleModPass always applies
         # NoOpPass always applies but returns no mods
-        pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass(), SingleModPass(), NoOpPass()])
+        pipeline = FlowGraphTransformPipeline(
+            backend, [ConditionalPass(), SingleModPass(), NoOpPass()]
+        )
 
-        total = pipeline.run(blocks, mutation_gateway = MUTATION_GATEWAY)
+        total = pipeline.run(blocks, mutation_gateway=MUTATION_GATEWAY)
 
         # Only SingleModPass should contribute
         assert total == 1
@@ -377,7 +436,7 @@ class TestPassPipelineLogging:
         pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass()])
 
         with caplog.at_level("DEBUG"):
-            pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
+            pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert any("not applicable" in record.message for record in caplog.records)
 
@@ -387,9 +446,11 @@ class TestPassPipelineLogging:
         pipeline = FlowGraphTransformPipeline(backend, [NoOpPass()])
 
         with caplog.at_level("DEBUG"):
-            pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
+            pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
-        assert any("produced no modifications" in record.message for record in caplog.records)
+        assert any(
+            "produced no modifications" in record.message for record in caplog.records
+        )
 
     def test_logs_verify_failure(self, caplog):
         """Should log warning when verification fails."""
@@ -397,7 +458,7 @@ class TestPassPipelineLogging:
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
         with caplog.at_level("WARNING"):
-            pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
+            pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert any("failed verification" in record.message for record in caplog.records)
 
@@ -407,7 +468,9 @@ class TestPassPipelineLogging:
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
         with caplog.at_level("DEBUG"):
-            pipeline.run({}, mutation_gateway = MUTATION_GATEWAY)
+            pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
-        assert any("applied" in record.message and "modifications" in record.message
-                   for record in caplog.records)
+        assert any(
+            "applied" in record.message and "modifications" in record.message
+            for record in caplog.records
+        )

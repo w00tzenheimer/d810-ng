@@ -17,6 +17,7 @@ Run from anywhere (uses absolute paths to dodge the cwd-reset hook):
 It is read-only.  Exit code is always 0; the count is informational until the
 gate flips it to a hard failure (F-plan F2/F7).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,23 +31,37 @@ import sys
 # it also counts getattr(...) duck-typed reads the ast-grep rule does not flag, so
 # its site count is expected to exceed `sg scan` (it is an inventory, not the gate).
 PORTABLE_CORE = (
-    "ir", "analyses", "transforms", "capabilities", "support", "core",
-    "passes", "families",
+    "ir",
+    "analyses",
+    "transforms",
+    "capabilities",
+    "support",
+    "core",
+    "passes",
+    "families",
 )
 
 # Attribute names that only exist on a *live* Hex-Rays mba/mblock/minsn.
 # (Snapshot/portable equivalents use different shapes: BlockSnapshot.serial,
 #  .succs, .insn_snapshots, FlowGraph.nodes, etc.)
 LIVE_ATTRS = (
-    "maturity", "qty", "succset", "predset", "head", "tail",
-    "npred", "nsucc",
+    "maturity",
+    "qty",
+    "succset",
+    "predset",
+    "head",
+    "tail",
+    "npred",
+    "nsucc",
 )
 
 # Site patterns -> kind label.  Each is matched per physical line.
 PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("get_mblock", re.compile(r"\.get_mblock\s*\(")),
-    ("getattr_live", re.compile(
-        r'getattr\(\s*[^,]+,\s*"(' + "|".join(LIVE_ATTRS) + r')"')),
+    (
+        "getattr_live",
+        re.compile(r'getattr\(\s*[^,]+,\s*"(' + "|".join(LIVE_ATTRS) + r')"'),
+    ),
     ("attr_succset", re.compile(r"\.succset\b")),
     ("attr_predset", re.compile(r"\.predset\b")),
     ("call_npred", re.compile(r"\.npred\s*\(")),
@@ -84,7 +99,8 @@ def scan(root: pathlib.Path) -> dict[str, list[tuple[str, int, str, str]]]:
             for kind, rx in PATTERNS:
                 if rx.search(line):
                     by_file.setdefault(rel, []).append(
-                        (kind, n, line.strip()[:88], rel))
+                        (kind, n, line.strip()[:88], rel)
+                    )
     return by_file
 
 

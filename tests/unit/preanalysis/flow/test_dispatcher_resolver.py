@@ -5,6 +5,7 @@ Behavior-neutral: ``build_dispatch_map_any_kind`` now delegates to
 equality detectors are disjoint, and equality specificity (10) > switch (5)
 preserves the old equality-first precedence, so ranking changes no output.
 """
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import (
@@ -109,15 +110,17 @@ def _switch_flow_graph() -> FlowGraph:
         left=state_operand,
         right=switch_cases,
     )
-    return _flow_graph({
-        0: _block(0, succs=(2,)),
-        2: _block(2, preds=(0, 6), succs=(3, 9), tail=guard_tail),
-        3: _block(3, preds=(2, 6), succs=(4, 5), tail=table_tail),
-        4: _block(4),
-        5: _block(5),
-        6: _block(6, succs=(3,)),
-        9: _block(9),
-    })
+    return _flow_graph(
+        {
+            0: _block(0, succs=(2,)),
+            2: _block(2, preds=(0, 6), succs=(3, 9), tail=guard_tail),
+            3: _block(3, preds=(2, 6), succs=(4, 5), tail=table_tail),
+            4: _block(4),
+            5: _block(5),
+            6: _block(6, succs=(3,)),
+            9: _block(9),
+        }
+    )
 
 
 def test_resolve_dispatcher_on_switch_graph_returns_switch_resolution():
@@ -257,11 +260,13 @@ class _FakeIndirectResolver:
 
 def _indirect_flow_graph() -> FlowGraph:
     ijmp_tail = _insn(kind=InsnKind.INDIRECT_JUMP)
-    return _flow_graph({
-        0: _block(0, succs=(3,)),
-        3: _block(3, preds=(0,), tail=ijmp_tail),
-        4: _block(4, preds=(3,)),
-    })
+    return _flow_graph(
+        {
+            0: _block(0, succs=(3,)),
+            3: _block(3, preds=(0,), tail=ijmp_tail),
+            4: _block(4, preds=(3,)),
+        }
+    )
 
 
 def test_extra_resolver_recognized_by_front_end():
@@ -370,11 +375,15 @@ def _indirect_result(rows=1, missing=0) -> IndirectJumpTableResult:
 
 def _materialized_flow_graph() -> FlowGraph:
     """A materialized hub: direct flow, NO m_ijmp tail (post-materialization)."""
-    return _flow_graph({
-        0: _block(0, succs=(3,)),
-        3: _block(3, preds=(0,), succs=(4,)),  # plain goto tail, no TABLE/indirect_jump_table
-        4: _block(4, preds=(3,)),
-    })
+    return _flow_graph(
+        {
+            0: _block(0, succs=(3,)),
+            3: _block(
+                3, preds=(0,), succs=(4,)
+            ),  # plain goto tail, no TABLE/indirect_jump_table
+            4: _block(4, preds=(3,)),
+        }
+    )
 
 
 def test_portable_resolver_accepts_on_m_ijmp_graph():
@@ -402,6 +411,7 @@ def test_portable_resolver_recognizes_materialized_form():
     from d810.analyses.control_flow.indirect_jump_resolver import (
         _graph_has_indirect_jump,
     )
+
     assert not _graph_has_indirect_jump(graph)
 
     # ...yet accepts() still fires because the capability returns a non-empty map.

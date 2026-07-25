@@ -10,6 +10,7 @@ Synthetic ``FlowGraph`` metadata is used to seed candidate fixes
 because the live mba collector is intentionally a stub today (see
 :func:`collect_live_fix_predecessor_branch_arm_fixes` docstring).
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -148,17 +149,15 @@ def test_strategy_admits_arm_one_candidate_into_typed_primitive() -> None:
             pred_serial=7,
             pred_arm=1,
             goto_target=12,
-            reason=(
-                "pred 7 arm=1 always takes jump in block 10"
-            ),
+            reason=("pred 7 arm=1 always takes jump in block 10"),
         )
     ]
     # Ownership scope binds the source block + the pred->source edge.
     assert 10 in fragment.ownership.blocks
     assert (7, 10) in fragment.ownership.edges
-    assert fragment.metadata[
-        FIX_PREDECESSOR_BRANCH_ARM_FIXES_METADATA_KEY
-    ] == (arm_one_fix,)
+    assert fragment.metadata[FIX_PREDECESSOR_BRANCH_ARM_FIXES_METADATA_KEY] == (
+        arm_one_fix,
+    )
 
 
 def test_strategy_admits_arm_zero_candidate_into_typed_primitive() -> None:
@@ -283,9 +282,7 @@ def test_collect_live_fix_predecessor_branch_arm_fixes_is_stub() -> None:
     mba = SimpleNamespace(maturity=8, entry_ea=0x401000, qty=0)
     assert collect_live_fix_predecessor_branch_arm_fixes(mba) == ()
     assert (
-        collect_live_fix_predecessor_branch_arm_fixes(
-            mba, allowed_maturities=(8,)
-        )
+        collect_live_fix_predecessor_branch_arm_fixes(mba, allowed_maturities=(8,))
         == ()
     )
     # None mba should be ignored without raising.
@@ -311,9 +308,12 @@ def test_serialize_is_deterministically_sorted() -> None:
 
 
 def test_extract_returns_empty_tuple_when_metadata_absent() -> None:
-    assert extract_fix_predecessor_branch_arm_fixes(
-        FlowGraph(blocks={}, entry_serial=0, func_ea=0)
-    ) == ()
+    assert (
+        extract_fix_predecessor_branch_arm_fixes(
+            FlowGraph(blocks={}, entry_serial=0, func_ea=0)
+        )
+        == ()
+    )
 
 
 def test_build_modifications_returns_only_admittable_primitives() -> None:

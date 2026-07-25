@@ -9,7 +9,9 @@ from d810.ir.insn_projection import operand_kinds, operand_storages
 from d810.ir.varnode import Space, Varnode
 from d810.core import logging
 
-from d810.analyses.control_flow.exit_transition_discovery import resolve_state_var_stkoff
+from d810.analyses.control_flow.exit_transition_discovery import (
+    resolve_state_var_stkoff,
+)
 from d810.analyses.control_flow.linearized_state_dag import (
     LinearizedStateDag,
     LocalSegmentKind,

@@ -222,6 +222,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         # instruction-level mutations making the chain look dead.
         try:
             import os
+
             _fence_env = os.environ.get("D810_FENCE_INSN_OPT_AT_GLBOPT1", "")
             if _fence_env and blk is not None:
                 _maturity = int(blk.mba.maturity)
@@ -239,7 +240,8 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         except Exception as _exc:
             try:
                 optimizer_logger.warning(
-                    "FENCE_INSN_OPT_AT_GLBOPT1 check raised: %s", _exc,
+                    "FENCE_INSN_OPT_AT_GLBOPT1 check raised: %s",
+                    _exc,
                 )
             except Exception:
                 pass

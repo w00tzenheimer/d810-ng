@@ -19,6 +19,7 @@ The portable ``state_var`` operand snapshot carried on the state machine is now
 strongly typed ``MopSnapshot | None`` and its ``kind`` / ``stkoff`` fields are
 read directly (portable snapshot fields, not operand slots).
 """
+
 from __future__ import annotations
 
 import enum
@@ -273,8 +274,7 @@ def _is_exit_path_control_flow_insn(insn: InsnSnapshot) -> bool:
     return (
         kind is InsnKind.GOTO
         or (
-            kind is InsnKind.EQUALITY_JUMP
-            and insn.branch_predicate is PredicateKind.NE
+            kind is InsnKind.EQUALITY_JUMP and insn.branch_predicate is PredicateKind.NE
         )
         or kind is InsnKind.INDIRECT_JUMP
         or kind is InsnKind.TABLE_JUMP
@@ -446,7 +446,9 @@ def discover_shared_exit_path(
     if exit_path_tuple:
         entry_snap = flow_graph.get_block(exit_path_tuple[0])
         if entry_snap is not None:
-            entry_fan_in = len([pred for pred in entry_snap.preds if pred not in exit_path_set])
+            entry_fan_in = len(
+                [pred for pred in entry_snap.preds if pred not in exit_path_set]
+            )
 
     carrier_in_exit_path = False
     for blk_serial in exit_path_tuple:

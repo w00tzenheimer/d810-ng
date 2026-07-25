@@ -1,4 +1,5 @@
 """Hex-Rays instruction capture adapter for backend-owned block bodies."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -403,38 +404,55 @@ class HexRaysInstructionCaptureBackend:
             if depth > max_depth:
                 logger.info(
                     "HCC_DEF_PROBE depth-exceeded anchor=%d stkoff=0x%x size=%d depth=%d",
-                    int(region_anchor), int(stkoff), int(size), depth,
+                    int(region_anchor),
+                    int(stkoff),
+                    int(size),
+                    depth,
                 )
                 return False
             if len(capture_order) > max_total:
                 logger.info(
                     "HCC_DEF_PROBE max-total-exceeded anchor=%d stkoff=0x%x size=%d captured=%d",
-                    int(region_anchor), int(stkoff), int(size), len(capture_order),
+                    int(region_anchor),
+                    int(stkoff),
+                    int(size),
+                    len(capture_order),
                 )
                 return False
             in_progress.add(key)
             try:
                 probe_defs = find_reaching_defs_for_stkvar(
-                    mba, int(region_anchor), int(stkoff), int(size),
+                    mba,
+                    int(region_anchor),
+                    int(stkoff),
+                    int(size),
                 )
             except Exception as exc:
                 probe_defs = None
                 logger.info(
                     "HCC_DEF_PROBE chain-raised anchor=%d stkoff=0x%x size=%d exc=%s",
-                    int(region_anchor), int(stkoff), int(size), exc,
+                    int(region_anchor),
+                    int(stkoff),
+                    int(size),
+                    exc,
                 )
             if not probe_defs:
                 logger.info(
                     "HCC_DEF_PROBE no-defs-external anchor=%d stkoff=0x%x size=%d"
                     " (treated as external input, no capture needed)",
-                    int(region_anchor), int(stkoff), int(size),
+                    int(region_anchor),
+                    int(stkoff),
+                    int(size),
                 )
                 visited.add(key)
                 in_progress.discard(key)
                 return True
             logger.info(
                 "HCC_DEF_PROBE found anchor=%d stkoff=0x%x size=%d n_defs=%d sites=%s",
-                int(region_anchor), int(stkoff), int(size), len(probe_defs),
+                int(region_anchor),
+                int(stkoff),
+                int(size),
+                len(probe_defs),
                 [(int(d.block_serial), hex(int(d.ins_ea))) for d in probe_defs[:5]],
             )
             for def_site in probe_defs:
@@ -548,10 +566,7 @@ class HexRaysInstructionCaptureBackend:
     ) -> int | None:
         """Return the unique block that writes a constant to ``target_stkoff``."""
         state_var_stkoff = _state_variable_stkoff(state_variable)
-        if (
-            state_var_stkoff is not None
-            and int(target_stkoff) == int(state_var_stkoff)
-        ):
+        if state_var_stkoff is not None and int(target_stkoff) == int(state_var_stkoff):
             return None
         try:
             qty = int(getattr(mba, "qty", 0))
@@ -758,7 +773,10 @@ def _find_live_def_insn(
 ) -> object | None:
     try:
         defs = find_reaching_defs_for_stkvar(
-            mba, int(region_anchor), int(stkoff), int(size),
+            mba,
+            int(region_anchor),
+            int(stkoff),
+            int(size),
         )
     except Exception:
         return None

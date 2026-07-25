@@ -32,6 +32,7 @@ Portable: consumes a :class:`d810.ir.flowgraph.FlowGraph` snapshot and an
 IDA / Hex-Rays imports.  The MBA fold runs through the registered
 ``forward_eval_insn`` seam (same as the existing snapshot path eval).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -68,7 +69,13 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 )
 from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.capabilities.providers import get_condition_chain_walkers
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot, OperandKind
+from d810.ir.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    OperandKind,
+)
 from d810.ir.insn_projection import (
     operand_kinds,
     operand_stack_offsets,
@@ -124,6 +131,7 @@ def _storage_global_offset(storage: Varnode | WeakStackSlot | None) -> int | Non
     if not isinstance(storage, Varnode) or storage.space is not Space.GLOBAL:
         return None
     return int(storage.offset)
+
 
 # Default bound on the handler-local corridor scan.  Real OLLVM handler bodies
 # (entry -> work -> const-load -> shared MBA suffix -> dispatcher) are short; a
@@ -269,7 +277,8 @@ def _emulate_unresolved_state(
         if logger.info_on:
             logger.info(
                 "emu-consult: blk=%s store_cells=%d -> RAISED (abstain)",
-                getattr(live_block, "serial", "?"), len(getattr(seeded_store, "cells", {})),
+                getattr(live_block, "serial", "?"),
+                len(getattr(seeded_store, "cells", {})),
             )
         return None
     folded = fold_exact(
@@ -332,18 +341,18 @@ class StateWriteTransition:
     dispatcher is rewritten.
     """
 
-    write_block: int             # redirect source (the back-edge, or a predecessor
-                                 # of it when the back-edge is a per-predecessor split)
-    next_state: int | None       # folded state-var value entering the dispatcher
-    target_handler: int | None   # dispatcher route of next_state (None unresolved)
-    is_return: bool              # routes to exit/STOP/default, or unresolved
-    branch_arm: int | None       # succ index of the dispatcher edge (None => 1-way)
+    write_block: int  # redirect source (the back-edge, or a predecessor
+    # of it when the back-edge is a per-predecessor split)
+    next_state: int | None  # folded state-var value entering the dispatcher
+    target_handler: int | None  # dispatcher route of next_state (None unresolved)
+    is_return: bool  # routes to exit/STOP/default, or unresolved
+    branch_arm: int | None  # succ index of the dispatcher edge (None => 1-way)
     via_block: int | None = None  # when set, redirect ``write_block -> via_block``
-                                  # (bypass the shared back-edge) instead of
-                                  # ``write_block -> dispatcher``
+    # (bypass the shared back-edge) instead of
+    # ``write_block -> dispatcher``
     proof: "TransitionProof | None" = None  # typed provenance (d81-t9ok); the
-                                            # authoritative fixpoint emitter attaches
-                                            # it, None = unattributed (legacy fold)
+    # authoritative fixpoint emitter attaches
+    # it, None = unattributed (legacy fold)
 
 
 def _source_local_constant_register_write(
@@ -438,9 +447,8 @@ def resolve_materialized_indirect_transfer_targets(
                 int(route.source_block_serial),
                 state_var_reg,
             )
-            if (
-                state_write is None
-                or state_write != (int(route.state_constant) & 0xFFFFFFFF)
+            if state_write is None or state_write != (
+                int(route.state_constant) & 0xFFFFFFFF
             ):
                 continue
             target = flow_graph.get_block(int(route.target_handler_serial))
@@ -452,9 +460,7 @@ def resolve_materialized_indirect_transfer_targets(
                     )
                 )
         if len(source_local_terminal_routes) == 1:
-            terminal_state, terminal_target = next(
-                iter(source_local_terminal_routes)
-            )
+            terminal_state, terminal_target = next(iter(source_local_terminal_routes))
             resolved.append(
                 replace(
                     transition,
@@ -478,15 +484,12 @@ def resolve_materialized_indirect_transfer_targets(
                 if (
                     route.proof_kind != "terminal_state_route"
                     or int(route.source_block_serial) not in route_sources
-                    or (int(route.state_constant) & 0xFFFFFFFF)
-                    != normalized_state
+                    or (int(route.state_constant) & 0xFFFFFFFF) != normalized_state
                 ):
                     continue
                 target = flow_graph.get_block(int(route.target_handler_serial))
                 if target is not None and target.nsucc == 0:
-                    explicit_terminal_targets.add(
-                        int(route.target_handler_serial)
-                    )
+                    explicit_terminal_targets.add(int(route.target_handler_serial))
         if len(explicit_terminal_targets) == 1:
             resolved.append(
                 replace(
@@ -504,9 +507,7 @@ def resolve_materialized_indirect_transfer_targets(
             continue
         default = dispatcher.default_target
         routed = (
-            dispatcher.lookup(int(state) & 0xFFFFFFFF)
-            if state is not None
-            else None
+            dispatcher.lookup(int(state) & 0xFFFFFFFF) if state is not None else None
         )
         exact_equality_target = None
         dispatcher_has_exact_point = False
@@ -516,8 +517,7 @@ def resolve_materialized_indirect_transfer_targets(
             except AttributeError:
                 routed_row = None
             dispatcher_has_exact_point = bool(
-                routed_row is not None
-                and int(routed_row.hi) == int(routed_row.lo) + 1
+                routed_row is not None and int(routed_row.hi) == int(routed_row.lo) + 1
             )
             exact_equality_candidates = {
                 int(target)
@@ -1003,7 +1003,10 @@ def _resolve_back_edge_states(
             if block is None:
                 continue
             out_stk, out_reg = _transfer_snapshot_constant_block(
-                block, dict(in_stk), dict(in_reg), soff,
+                block,
+                dict(in_stk),
+                dict(in_reg),
+                soff,
                 state_var_gaddr=state_var_gaddr,
                 foldable_global_reads=foldable_global_reads,
             )
@@ -1112,7 +1115,9 @@ def recover_state_write_transitions(
                 ip_block = flow_graph.get_block(int(ipred))
                 ip_arm = (
                     [int(s) for s in ip_block.succs].index(pred)
-                    if ip_block is not None and ip_block.nsucc > 1 and pred in [int(s) for s in ip_block.succs]
+                    if ip_block is not None
+                    and ip_block.nsucc > 1
+                    and pred in [int(s) for s in ip_block.succs]
                     else None
                 )
                 out.append(
@@ -1481,7 +1486,9 @@ def _collect_alias_corridor(
     return tuple(reversed(path))
 
 
-def _alias_map_for_path(flow_graph: object, path_blocks: tuple[int, ...]) -> dict[int, int]:
+def _alias_map_for_path(
+    flow_graph: object, path_blocks: tuple[int, ...]
+) -> dict[int, int]:
     get_block = getattr(flow_graph, "get_block", None)
     aliases: dict[int, int] = {}
     if not callable(get_block):
@@ -1712,9 +1719,8 @@ def _terminal_guard_successor_for_state(
             return True
         return (int(value) & 0xFFFFFFFF) == (int(state) & 0xFFFFFFFF)
 
-    compares_state = (
-        (left_state and _matches_state(right_value))
-        or (right_state and _matches_state(left_value))
+    compares_state = (left_state and _matches_state(right_value)) or (
+        right_state and _matches_state(left_value)
     )
     if not compares_state:
         return None
@@ -1744,7 +1750,11 @@ def _provider_global_fold(ctx: _ResolverContext, pred, block, arm):
     target, is_ret = ctx.classify(state)
     return [
         StateWriteTransition(
-            pred, state, target, is_ret, arm,
+            pred,
+            state,
+            target,
+            is_ret,
+            arm,
             proof=TransitionProof(_FIXPOINT_ORACLE, "global_fold", not is_ret),
         )
     ]
@@ -1797,7 +1807,12 @@ def _provider_predecessor_partitioned(ctx, pred, block, arm, edge_states, ambigu
             ip_arm = ctx.arm_of(ctx.flow_graph.get_block(int(ip)), pred)
             out.append(
                 StateWriteTransition(
-                    int(ip), state, target, is_ret, ip_arm, via_block=pred,
+                    int(ip),
+                    state,
+                    target,
+                    is_ret,
+                    ip_arm,
+                    via_block=pred,
                     proof=TransitionProof(
                         _FIXPOINT_ORACLE, "predecessor_partitioned", not is_ret
                     ),
@@ -1809,7 +1824,11 @@ def _provider_predecessor_partitioned(ctx, pred, block, arm, edge_states, ambigu
         target, is_ret = ctx.classify(state)
         return [
             StateWriteTransition(
-                pred, state, target, is_ret, arm,
+                pred,
+                state,
+                target,
+                is_ret,
+                arm,
                 proof=TransitionProof(_FIXPOINT_ORACLE, "region_agreed", not is_ret),
             )
         ]
@@ -1837,7 +1856,13 @@ def _provider_emulation(ctx, pred, block, arm, ambiguous):
         return None
     out: list[StateWriteTransition] = []
     _emit_partition_transitions(
-        out, emu_states, pred, arm, ctx.flow_graph, ctx.classify, ctx.arm_of,
+        out,
+        emu_states,
+        pred,
+        arm,
+        ctx.flow_graph,
+        ctx.classify,
+        ctx.arm_of,
         oracle_kind=_EMULATION_ORACLE,
         single_kind=_KIND_BACK_EDGE_CONCRETE_FOLD,
         split_kind=_KIND_CONCRETE_FOLD_PARTITIONED,
@@ -1953,7 +1978,13 @@ def _provider_region_seeded(ctx, pred, block, arm):
     """
     out: list[StateWriteTransition] = []
     if _emit_seeded_back_edge(
-        out, ctx.seeded.get(pred, {}), pred, arm, ctx.flow_graph, ctx.classify, ctx.arm_of
+        out,
+        ctx.seeded.get(pred, {}),
+        pred,
+        arm,
+        ctx.flow_graph,
+        ctx.classify,
+        ctx.arm_of,
     ):
         return out
     return None
@@ -2029,7 +2060,11 @@ def _resolve_next_state(ctx: _ResolverContext, pred, block, arm):
     # else -> unresolved: route the back-edge to the shared return.
     return [
         StateWriteTransition(
-            pred, None, None, True, arm,
+            pred,
+            None,
+            None,
+            True,
+            arm,
             proof=TransitionProof(_FIXPOINT_ORACLE, "unresolved", False),
         )
     ]
@@ -2095,7 +2130,9 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     # fallbacks stay inert (they contribute nothing for the register path, which
     # is resolved by the reg-aware ``_provider_global_fold`` / abstract partition).
     if state_var_stkoff is not None:
-        effective_stkoff = _resolve_state_var_alias(flow_graph, disp, int(state_var_stkoff))
+        effective_stkoff = _resolve_state_var_alias(
+            flow_graph, disp, int(state_var_stkoff)
+        )
     else:
         effective_stkoff = -1
     # A handler can write its NEXT state through a global it reads (Approov:
@@ -2324,8 +2361,7 @@ def _recover_multi_entry_state_write_transitions(
         # their own iterations and retain their precise ``pred -> serial``
         # routes; abstain from this coarser corridor edge.
         routes = {
-            (int(edge.next_state), int(edge.target_handler))
-            for edge in resolved_edges
+            (int(edge.next_state), int(edge.target_handler)) for edge in resolved_edges
         }
         if len(routes) != 1:
             continue
@@ -2408,7 +2444,12 @@ def _recover_terminal_tail_transitions(
         arm = arm_of(block, old)
         extra.append(
             StateWriteTransition(
-                serial, state, target, False, arm, via_block=old,
+                serial,
+                state,
+                target,
+                False,
+                arm,
+                via_block=old,
                 proof=TransitionProof(_FIXPOINT_ORACLE, "terminal_tail", True),
             )
         )
@@ -2461,7 +2502,11 @@ def _emit_seeded_back_edge(
         target, is_ret = classify(state)
         out.append(
             StateWriteTransition(
-                pred, state, target, is_ret, arm,
+                pred,
+                state,
+                target,
+                is_ret,
+                arm,
                 proof=TransitionProof(_FIXPOINT_ORACLE, "region_seeded", not is_ret),
             )
         )
@@ -2476,7 +2521,12 @@ def _emit_seeded_back_edge(
             ip_arm = arm_of(ip_block, pred) if ip_block is not None else None
             out.append(
                 StateWriteTransition(
-                    int(ip), state, target, is_ret, ip_arm, via_block=pred,
+                    int(ip),
+                    state,
+                    target,
+                    is_ret,
+                    ip_arm,
+                    via_block=pred,
                     proof=TransitionProof(
                         _FIXPOINT_ORACLE, "region_seeded_partitioned", not is_ret
                     ),
@@ -2542,7 +2592,11 @@ def _emit_partition_transitions(
         target, is_ret = classify(state)
         out.append(
             StateWriteTransition(
-                pred, state, target, is_ret, arm,
+                pred,
+                state,
+                target,
+                is_ret,
+                arm,
                 proof=TransitionProof(oracle_kind, single_kind, not is_ret),
             )
         )
@@ -2553,7 +2607,12 @@ def _emit_partition_transitions(
         ip_arm = arm_of(ip_block, pred) if ip_block is not None else None
         out.append(
             StateWriteTransition(
-                int(ip), state, target, is_ret, ip_arm, via_block=pred,
+                int(ip),
+                state,
+                target,
+                is_ret,
+                ip_arm,
+                via_block=pred,
                 proof=TransitionProof(oracle_kind, split_kind, not is_ret),
             )
         )
@@ -2664,12 +2723,14 @@ class TransitionArm:
     ``branch_block``'s 2-way branch.
     """
 
-    next_state: int | None       # folded next-state value (None => no write found)
-    target_handler: int | None   # dispatcher route of next_state (None when unresolved)
-    is_return: bool              # routes to exit/STOP, or no next-state at all
-    branch_block: int | None     # the 2-way block that selected this arm (None => unconditional)
-    write_block: int | None      # block whose state-var write produced next_state
-    exit_block: int | None       # last block of the scanned path (the boundary)
+    next_state: int | None  # folded next-state value (None => no write found)
+    target_handler: int | None  # dispatcher route of next_state (None when unresolved)
+    is_return: bool  # routes to exit/STOP, or no next-state at all
+    branch_block: (
+        int | None
+    )  # the 2-way block that selected this arm (None => unconditional)
+    write_block: int | None  # block whose state-var write produced next_state
+    exit_block: int | None  # last block of the scanned path (the boundary)
     ordered_path: tuple[int, ...] = ()  # handler-local blocks visited (entry..exit)
     source_keyed_block: int | None = None  # exact route owner in this snapshot
 
@@ -2678,8 +2739,8 @@ class TransitionArm:
 class HandlerTransition:
     """All outgoing edges recovered for one handler block."""
 
-    handler: int                 # handler entry block serial
-    states: tuple[int, ...]      # representative states the dispatcher routes here
+    handler: int  # handler entry block serial
+    states: tuple[int, ...]  # representative states the dispatcher routes here
     arms: tuple[TransitionArm, ...]
 
     @property
@@ -2693,7 +2754,8 @@ def _handler_entries(dispatcher) -> set[int]:
     return {
         int(row.target)
         for row in getattr(dispatcher, "_rows", ())
-        if row.target is not None and int(row.target) != (int(default) if default is not None else None)
+        if row.target is not None
+        and int(row.target) != (int(default) if default is not None else None)
     }
 
 
@@ -2739,7 +2801,9 @@ def _scan_handler(
         return stk.get(effective_stkoff)
 
     # stack frames: (block, stk_map, reg_map, branch_block, visited, depth, path)
-    stack: list[tuple[int, dict, dict, int | None, frozenset[int], int, tuple[int, ...]]] = [
+    stack: list[
+        tuple[int, dict, dict, int | None, frozenset[int], int, tuple[int, ...]]
+    ] = [
         (
             int(entry),
             dict(initial_stk or {}),
@@ -2767,7 +2831,9 @@ def _scan_handler(
         succs = _concrete_successors(block, nstk, nreg)
 
         def _is_boundary_succ(s: int) -> bool:
-            if dispatcher_entry_serial is not None and s == int(dispatcher_entry_serial):
+            if dispatcher_entry_serial is not None and s == int(
+                dispatcher_entry_serial
+            ):
                 return True
             if s in dispatcher_region_serials:
                 return True
@@ -2776,17 +2842,10 @@ def _scan_handler(
             succ_block = flow_graph.get_block(s)
             return _is_stop_block(succ_block)
 
-        onward = [
-            s
-            for s in succs
-            if s not in visited and not _is_boundary_succ(s)
-        ]
+        onward = [s for s in succs if s not in visited and not _is_boundary_succ(s)]
 
         terminal = (
-            not succs
-            or _is_stop_block(block)
-            or not onward
-            or depth >= max_depth
+            not succs or _is_stop_block(block) or not onward or depth >= max_depth
         )
         if terminal:
             results.append((running_state, branch, path))
@@ -2944,8 +3003,7 @@ def recover_handler_transitions(
                     branch_index = -1
                 branch_successor = (
                     int(ordered_path[branch_index + 1])
-                    if branch_index >= 0
-                    and branch_index + 1 < len(ordered_path)
+                    if branch_index >= 0 and branch_index + 1 < len(ordered_path)
                     else None
                 )
                 key = (None, int(branch_block), branch_successor)
@@ -3027,15 +3085,12 @@ def resolve_materialized_handler_transition_targets(
             and (int(arm.next_state) & 0xFFFFFFFF) == state
             and int(route.source_block_serial) in arm.ordered_path
             and (
-                source_handler is None
-                or int(transition.handler) == int(source_handler)
+                source_handler is None or int(transition.handler) == int(source_handler)
             )
         ]
         if len(matches) == 1:
             destination = (
-                exact_owner_matches
-                if source_handler is not None
-                else fallback_matches
+                exact_owner_matches if source_handler is not None else fallback_matches
             )
             destination.setdefault(matches[0], set()).add(
                 (target, int(route.source_block_serial))
@@ -3061,10 +3116,7 @@ def resolve_materialized_handler_transition_targets(
                 arms.append(arm)
                 continue
             target, source = next(iter(facts))
-            if (
-                arm.target_handler is not None
-                and not arm.is_return
-            ):
+            if arm.target_handler is not None and not arm.is_return:
                 existing_target = int(arm.target_handler)
                 if (
                     existing_target != int(target)
@@ -3109,12 +3161,8 @@ def resolve_materialized_handler_exit_states(
     """
     if not routes or not handler_serials:
         return transitions
-    conditional_arm_candidates: dict[
-        tuple[int, int], set[tuple[int, int, int]]
-    ] = {}
-    terminal_candidates: dict[
-        tuple[int, int], set[tuple[int, int, int]]
-    ] = {}
+    conditional_arm_candidates: dict[tuple[int, int], set[tuple[int, int, int]]] = {}
+    terminal_candidates: dict[tuple[int, int], set[tuple[int, int, int]]] = {}
     owned_candidates: dict[tuple[int, int], set[tuple[int, int, int]]] = {}
     fallback_candidates: dict[tuple[int, int], set[tuple[int, int, int]]] = {}
     clone_targets_by_handler_state: dict[tuple[int, int], set[int]] = {}
@@ -3137,9 +3185,8 @@ def resolve_materialized_handler_exit_states(
         source_handler = route.source_handler_serial
         matches: list[tuple[int, int]] = []
         for transition_index, transition in enumerate(transitions):
-            if (
-                source_handler is not None
-                and int(transition.handler) != int(source_handler)
+            if source_handler is not None and int(transition.handler) != int(
+                source_handler
             ):
                 continue
             for arm_index, arm in enumerate(transition.arms):
@@ -3160,10 +3207,7 @@ def resolve_materialized_handler_exit_states(
                     and source in arm.ordered_path
                     and arm.next_state is not None
                     and (int(arm.next_state) & 0xFFFFFFFF)
-                    in {
-                        int(state) & 0xFFFFFFFF
-                        for state in transition.states
-                    }
+                    in {int(state) & 0xFFFFFFFF for state in transition.states}
                     and arm.target_handler is not None
                     and int(arm.target_handler) == int(transition.handler)
                     and not arm.is_return
@@ -3177,10 +3221,7 @@ def resolve_materialized_handler_exit_states(
                     and source in arm.ordered_path
                     and arm.next_state is not None
                     and (int(arm.next_state) & 0xFFFFFFFF)
-                    in {
-                        int(state) & 0xFFFFFFFF
-                        for state in transition.states
-                    }
+                    in {int(state) & 0xFFFFFFFF for state in transition.states}
                     and arm.target_handler is not None
                     and not arm.is_return
                 ):
@@ -3191,9 +3232,7 @@ def resolve_materialized_handler_exit_states(
                         ),
                         set(),
                     )
-                    clone_owned_self_loop = clone_targets == {
-                        int(arm.target_handler)
-                    }
+                    clone_owned_self_loop = clone_targets == {int(arm.target_handler)}
                 if (
                     missing_state_on_path
                     or exact_exit_owner

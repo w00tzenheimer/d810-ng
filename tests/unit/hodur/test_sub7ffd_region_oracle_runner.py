@@ -1,4 +1,5 @@
 """Tests for the sub7FFD Hodur oracle test-support runner."""
+
 from __future__ import annotations
 
 import json
@@ -17,9 +18,7 @@ _FUNC_EA_I64 = 0x180012DF0
 
 def _make_conn_with_snaps(snaps: list[tuple[int, str]]) -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:")
-    conn.execute(
-        "CREATE TABLE snapshots (id INTEGER PRIMARY KEY, label TEXT NOT NULL)"
-    )
+    conn.execute("CREATE TABLE snapshots (id INTEGER PRIMARY KEY, label TEXT NOT NULL)")
     conn.executemany("INSERT INTO snapshots (id, label) VALUES (?, ?)", snaps)
     conn.commit()
     return conn

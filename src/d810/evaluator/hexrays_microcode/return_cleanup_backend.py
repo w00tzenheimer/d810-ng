@@ -1,4 +1,5 @@
 """Hex-Rays return-path cleanup evidence collection."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -208,7 +209,11 @@ def _is_synthetic_return_feeder_insn(
         return False
 
     src = getattr(insn, "l", None)
-    if getattr(insn, "opcode", None) == ida_hexrays.m_mov and src is not None and src.t == ida_hexrays.mop_n:
+    if (
+        getattr(insn, "opcode", None) == ida_hexrays.m_mov
+        and src is not None
+        and src.t == ida_hexrays.mop_n
+    ):
         return True
 
     if getattr(insn, "opcode", None) not in (

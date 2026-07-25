@@ -52,7 +52,9 @@ def _case_list(cases: tuple[tuple[tuple[int, ...], int], ...]) -> MopSnapshot:
 
 
 def _mov(src: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
-    return InsnSnapshot(opcode=0x04, ea=0x1000, operands=(), kind=InsnKind.MOV, l=src, d=dst)
+    return InsnSnapshot(
+        opcode=0x04, ea=0x1000, operands=(), kind=InsnKind.MOV, l=src, d=dst
+    )
 
 
 def _add(lhs: MopSnapshot, rhs: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
@@ -117,7 +119,9 @@ def _call(
     )
 
 
-def _block(serial: int, succs: tuple[int, ...], insns: tuple[InsnSnapshot, ...]) -> BlockSnapshot:
+def _block(
+    serial: int, succs: tuple[int, ...], insns: tuple[InsnSnapshot, ...]
+) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
         block_type=0,
@@ -152,7 +156,9 @@ def test_identity_roundtrip_passes_for_simple_arithmetic_return():
     )
 
     lift = emit_flowgraph_to_llvm(flow, function_name="identity_arith")
-    parity = check_identity_roundtrip(flow, function_name="identity_arith", lift_result=lift)
+    parity = check_identity_roundtrip(
+        flow, function_name="identity_arith", lift_result=lift
+    )
 
     assert lift.supported
     assert lift.identity_manifest is not None
@@ -181,7 +187,9 @@ def test_identity_manifest_preserves_conditional_operand_multiplicity():
     )
 
     lift = emit_flowgraph_to_llvm(flow, function_name="identity_branch")
-    parity = check_identity_roundtrip(flow, function_name="identity_branch", lift_result=lift)
+    parity = check_identity_roundtrip(
+        flow, function_name="identity_branch", lift_result=lift
+    )
 
     assert lift.supported
     assert parity.passed
@@ -201,13 +209,18 @@ def test_identity_roundtrip_preserves_table_branch_payload():
     )
 
     lift = emit_flowgraph_to_llvm(flow, function_name="identity_switch")
-    parity = check_identity_roundtrip(flow, function_name="identity_switch", lift_result=lift)
+    parity = check_identity_roundtrip(
+        flow, function_name="identity_switch", lift_result=lift
+    )
 
     assert lift.supported
     assert parity.passed
     switch = lift.identity_manifest.blocks[0].instructions[0]
     assert switch.control is not None
-    assert tuple((case.values, case.target) for case in switch.control.switch_cases) == cases
+    assert (
+        tuple((case.values, case.target) for case in switch.control.switch_cases)
+        == cases
+    )
 
 
 def test_identity_roundtrip_preserves_opaque_call_payload_and_effect():
@@ -215,12 +228,17 @@ def test_identity_roundtrip_preserves_opaque_call_payload_and_effect():
         _block(
             0,
             (),
-            (_call(CallKind.INDIRECT, _reg(5, size=8), _reg(0), arg=_reg(5, size=8)), _ret()),
+            (
+                _call(CallKind.INDIRECT, _reg(5, size=8), _reg(0), arg=_reg(5, size=8)),
+                _ret(),
+            ),
         )
     )
 
     lift = emit_flowgraph_to_llvm(flow, function_name="identity_call")
-    parity = check_identity_roundtrip(flow, function_name="identity_call", lift_result=lift)
+    parity = check_identity_roundtrip(
+        flow, function_name="identity_call", lift_result=lift
+    )
 
     assert lift.supported
     assert parity.passed
@@ -240,7 +258,9 @@ def test_identity_manifest_records_direct_cell_load_store_contract(monkeypatch):
     store = Instruction(
         operation=ValueOpKind.STORE,
         inputs=(value, target),
-        effects=(InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),),
+        effects=(
+            InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),
+        ),
         memory=InstructionMemoryAccess(
             kind=InstructionMemoryAccessKind.DIRECT_CELL,
             target=target,
@@ -259,7 +279,9 @@ def test_identity_manifest_records_direct_cell_load_store_contract(monkeypatch):
         ),
     )
     flow = _graph(_block(0, (), (_ret(_reg(0)),)))
-    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (store, load)})
+    monkeypatch.setattr(
+        llvm_emitter, "_collect_instructions", lambda _flow: {0: (store, load)}
+    )
 
     lift = emit_flowgraph_to_llvm(flow, function_name="identity_memory")
 
@@ -277,10 +299,14 @@ def test_identity_manifest_records_direct_cell_load_store_contract(monkeypatch):
 
 
 def test_identity_roundtrip_is_unsupported_when_lift_is_unsupported():
-    flow = _graph(_block(0, (), (_add(_reg(0), _reg(1, size=8), _reg(2)), _ret(_reg(2)))))
+    flow = _graph(
+        _block(0, (), (_add(_reg(0), _reg(1, size=8), _reg(2)), _ret(_reg(2))))
+    )
 
     lift = emit_flowgraph_to_llvm(flow, function_name="identity_unsupported")
-    parity = check_identity_roundtrip(flow, function_name="identity_unsupported", lift_result=lift)
+    parity = check_identity_roundtrip(
+        flow, function_name="identity_unsupported", lift_result=lift
+    )
 
     assert not lift.supported
     assert lift.identity_manifest is None
@@ -297,7 +323,9 @@ def test_identity_manifest_corruption_fails_with_specific_mismatch():
     bad_block = replace(block, instructions=(bad_instruction, *block.instructions[1:]))
     bad_manifest = replace(lift.identity_manifest, blocks=(bad_block,))
 
-    parity = check_identity_manifest(flow, bad_manifest, function_name="identity_corrupt")
+    parity = check_identity_manifest(
+        flow, bad_manifest, function_name="identity_corrupt"
+    )
 
     assert parity.status is LlvmIdentityParityStatus.FAILED
     assert parity.mismatches
@@ -311,7 +339,9 @@ def test_build_identity_manifest_uses_emitter_instruction_map_not_source_snapsho
     store = Instruction(
         operation=ValueOpKind.STORE,
         inputs=(value, target),
-        effects=(InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),),
+        effects=(
+            InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),
+        ),
         memory=InstructionMemoryAccess(
             kind=InstructionMemoryAccessKind.DIRECT_CELL,
             target=target,

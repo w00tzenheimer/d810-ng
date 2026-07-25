@@ -13,6 +13,7 @@ canonical record, so their facts are canonical-faithful (real
 ``ValueOpKind.STORE``, recovered call/memory operands).  There is no meta-less
 fallback -- every production fact target is a canonical ``FlowGraph``.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -158,11 +159,18 @@ def _call_destination(insn: _ZeroBlobInsn) -> Varnode | None:
 
 def _zero_blob_kind(insn: _ZeroBlobInsn) -> str | None:
     if _is_store(insn) and insn.memory_value is not None:
-        if insn.memory_value.space is Space.CONST and int(insn.memory_value.offset) == 0:
+        if (
+            insn.memory_value.space is Space.CONST
+            and int(insn.memory_value.offset) == 0
+        ):
             return "zero_store"
         if insn.memory_value.space is Space.GLOBAL:
             return "blob_store"
-    if insn.call_kind is not None and _static_blob_arg(insn) is not None and _copy_size(insn):
+    if (
+        insn.call_kind is not None
+        and _static_blob_arg(insn) is not None
+        and _copy_size(insn)
+    ):
         return "blob_copy_call"
     return None
 

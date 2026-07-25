@@ -3,6 +3,7 @@
 Consumer-specific summary consumed by :class:`FlowMaturityContext` gates.
 Deliberately free of IDA imports so it can be unit-tested standalone.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,11 +15,13 @@ if TYPE_CHECKING:
     from d810.analyses.control_flow.models import DeobfuscationHints
 
 # Obfuscation type values that signal control-flow flattening.
-_FLATTENING_TYPES: frozenset[str] = frozenset({
-    "ollvm_flat",
-    "ollvm_flattening",
-    "mixed",
-})
+_FLATTENING_TYPES: frozenset[str] = frozenset(
+    {
+        "ollvm_flat",
+        "ollvm_flattening",
+        "mixed",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)

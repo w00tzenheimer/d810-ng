@@ -110,7 +110,9 @@ def _topology_flow_graph(succ_map: dict[int, tuple[int, ...]]) -> FlowGraph:
     return FlowGraph(blocks=blocks, entry_serial=entry, func_ea=0)
 
 
-def test_evaluate_handler_paths_uses_snapshot_state_for_condition_chain_exit(monkeypatch):
+def test_evaluate_handler_paths_uses_snapshot_state_for_condition_chain_exit(
+    monkeypatch,
+):
     mba = _topology_flow_graph(
         {
             1: (2,),

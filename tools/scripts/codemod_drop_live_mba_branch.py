@@ -20,6 +20,7 @@ project standardised on.  Read-only by default; pass ``--apply`` to write.
     python3 tools/scripts/codemod_drop_live_mba_branch.py            # dry-run
     python3 tools/scripts/codemod_drop_live_mba_branch.py --apply
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,9 +30,7 @@ import re
 
 import libcst as cst
 
-ROOT = pathlib.Path(
-    "/Users/mahmoud/src/idapro/d810/.worktrees/llvm-lisa-restructure"
-)
+ROOT = pathlib.Path("/Users/mahmoud/src/idapro/d810/.worktrees/llvm-lisa-restructure")
 
 # Per-file plan: dead helper functions to delete + docstring regex subs.
 PLAN: dict[str, dict] = {
@@ -90,7 +89,7 @@ PLAN: dict[str, dict] = {
 def _is_dual_path_guard(test: cst.BaseExpression) -> bool:
     """True iff ``test`` is the FlowGraph dual-path guard."""
     code = cst.Module(body=[]).code_for_node(test)
-    return 'hasattr' in code and '"blocks"' in code and '"entry_serial"' in code
+    return "hasattr" in code and '"blocks"' in code and '"entry_serial"' in code
 
 
 class DropLiveMbaBranch(cst.CSTTransformer):
@@ -110,9 +109,7 @@ class DropLiveMbaBranch(cst.CSTTransformer):
             return cst.FlattenSentinel(updated.body.body)
         return updated
 
-    def leave_FunctionDef(
-        self, original: cst.FunctionDef, updated: cst.FunctionDef
-    ):
+    def leave_FunctionDef(self, original: cst.FunctionDef, updated: cst.FunctionDef):
         if original.name.value in self.dead_funcs:
             self.deleted.append(original.name.value)
             return cst.RemoveFromParent()
@@ -139,7 +136,8 @@ def process(rel: str, plan: dict, apply: bool) -> bool:
         diff = difflib.unified_diff(
             src.splitlines(keepends=True),
             out.splitlines(keepends=True),
-            fromfile=rel, tofile=rel + " (new)",
+            fromfile=rel,
+            tofile=rel + " (new)",
         )
         print("".join(diff))
     if changed and apply:

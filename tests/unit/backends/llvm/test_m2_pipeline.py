@@ -37,9 +37,9 @@ def _fixture_ir() -> str:
 
 
 def _or_fixture_ir() -> str:
-    return Path(
-        "tools/llvm_m2_custom_pass/fixtures/mba_or_and_xor.ll"
-    ).read_text(encoding="utf-8")
+    return Path("tools/llvm_m2_custom_pass/fixtures/mba_or_and_xor.ll").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_m2_pipeline_runs_custom_then_stock_then_verify(tmp_path):

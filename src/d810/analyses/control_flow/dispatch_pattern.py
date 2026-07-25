@@ -14,6 +14,7 @@ Candidates:
     - ``"switch_dispatcher"`` for NWAY blocks with fan-out >= 3
     - ``"back_edge_hub"`` for blocks with back_edge_count >= 2
 """
+
 from __future__ import annotations
 
 import time
@@ -92,9 +93,7 @@ class DispatchPatternCollector:
         entry = getattr(target, "entry_serial", 0)
         block_iter = list(target.blocks.values())
         nodes = set(target.blocks.keys())
-        succs: dict[int, tuple[int, ...]] = {
-            b.serial: b.succs for b in block_iter
-        }
+        succs: dict[int, tuple[int, ...]] = {b.serial: b.succs for b in block_iter}
 
         nway_blocks: list[tuple[int, int]] = []  # (serial, fan_out)
         indirect_count = 0
@@ -114,36 +113,41 @@ class DispatchPatternCollector:
 
         # Longest 2WAY chain (simple: count 2WAY blocks - full chain analysis is expensive)
         tway_count = sum(
-            1 for blk in block_iter
-            if int(getattr(blk, "block_type", 0)) == _BLT_2WAY
+            1 for blk in block_iter if int(getattr(blk, "block_type", 0)) == _BLT_2WAY
         )
 
-        metrics = MappingProxyType({
-            "nway_block_count": len(nway_blocks),
-            "max_nway_fan_out": max_fan_out,
-            "tway_chain_max_len": tway_count,
-            "back_edge_count": back_total,
-            "indirect_jump_count": indirect_count,
-        })
+        metrics = MappingProxyType(
+            {
+                "nway_block_count": len(nway_blocks),
+                "max_nway_fan_out": max_fan_out,
+                "tway_chain_max_len": tway_count,
+                "back_edge_count": back_total,
+                "indirect_jump_count": indirect_count,
+            }
+        )
 
         candidates: list[CandidateFlag] = []
         for serial, fan_out in nway_blocks:
             if fan_out >= _SWITCH_FAN_OUT_MIN:
                 conf = min(1.0, 0.4 + (fan_out - _SWITCH_FAN_OUT_MIN) * 0.1)
-                candidates.append(CandidateFlag(
-                    kind="switch_dispatcher",
-                    block_serial=serial,
-                    confidence=conf,
-                    detail=f"NWAY block {serial} with {fan_out} successors",
-                ))
+                candidates.append(
+                    CandidateFlag(
+                        kind="switch_dispatcher",
+                        block_serial=serial,
+                        confidence=conf,
+                        detail=f"NWAY block {serial} with {fan_out} successors",
+                    )
+                )
         for target_serial, count in back_per_target.items():
             if count >= 2:
-                candidates.append(CandidateFlag(
-                    kind="back_edge_hub",
-                    block_serial=target_serial,
-                    confidence=min(1.0, 0.3 + count * 0.15),
-                    detail=f"block {target_serial} receives {count} back-edges",
-                ))
+                candidates.append(
+                    CandidateFlag(
+                        kind="back_edge_hub",
+                        block_serial=target_serial,
+                        confidence=min(1.0, 0.3 + count * 0.15),
+                        detail=f"block {target_serial} receives {count} back-edges",
+                    )
+                )
 
         return PreanalysisResult(
             collector_name=self.name,

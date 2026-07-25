@@ -31,7 +31,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 def get_func_ea(name: str) -> int:
@@ -92,9 +94,9 @@ class TestABCPatternCharacterization:
                 # Verify flattened pattern is present
                 has_switch = "switch" in actual_before
                 has_xor = "^" in actual_before
-                assert (
-                    has_switch or has_xor
-                ), "Should have switch or XOR pattern before d810"
+                assert has_switch or has_xor, (
+                    "Should have switch or XOR pattern before d810"
+                )
 
                 state.start_d810()
                 state.stats.reset()

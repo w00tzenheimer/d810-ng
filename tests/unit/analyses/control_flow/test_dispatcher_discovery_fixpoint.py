@@ -13,6 +13,7 @@ CFG (state var ``s``, K1<K2<K3):
     30 h3: (no write) -> 99              # terminal: K3 returns
     99 exit
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.state_transition_domain import (
@@ -27,7 +28,16 @@ from d810.analyses.control_flow.dispatcher_discovery_fixpoint import (
 
 K1, K2, K3 = 0x10000001, 0x10000002, 0x10000003
 
-_SUCC = {0: [1], 1: [10, 2], 2: [20, 3], 3: [30, 99], 10: [1], 20: [1], 30: [99], 99: []}
+_SUCC = {
+    0: [1],
+    1: [10, 2],
+    2: [20, 3],
+    3: [30, 99],
+    10: [1],
+    20: [1],
+    30: [99],
+    99: [],
+}
 _PRED: dict[int, list[int]] = {n: [] for n in _SUCC}
 for _p, _ss in _SUCC.items():
     for _s in _ss:
@@ -64,7 +74,9 @@ def test_assume_equal_arm_collapses_to_singleton():
 
 def test_assume_notequal_arm_excludes():
     cmp1 = _COMPARISONS[1]
-    assert assume_state(StateValue.of_many([K1, K2, K3]), cmp1, 2) == StateValue.of_many([K2, K3])
+    assert assume_state(
+        StateValue.of_many([K1, K2, K3]), cmp1, 2
+    ) == StateValue.of_many([K2, K3])
     assert assume_state(StateValue.top(), cmp1, 2).is_top  # ⊤ ∖ {K1} stays ⊤ (sound)
 
 

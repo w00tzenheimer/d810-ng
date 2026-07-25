@@ -1,4 +1,5 @@
 "Backend-neutral instruction semantic helpers for preanalysis collectors."
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -239,7 +240,10 @@ def split_const_storage_identity_from_branch(
         )
     const_value = next(iter(constants))
     if expected_identity is not None:
-        return const_value, expected_identity if expected_identity in identities else None
+        return (
+            const_value,
+            expected_identity if expected_identity in identities else None,
+        )
     if len(identities) == 1:
         return const_value, next(iter(identities))
     return const_value, None

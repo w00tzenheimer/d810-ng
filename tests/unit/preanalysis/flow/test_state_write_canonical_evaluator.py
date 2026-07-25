@@ -1,4 +1,5 @@
 """Canonical state-write evaluator tests."""
+
 from __future__ import annotations
 
 from d810.analyses.value_flow.state_write import (
@@ -80,7 +81,9 @@ def test_public_forward_eval_accepts_canonical_instruction_without_seams() -> No
     assert stk[_STATE_STKOFF] == 0xAAFFAAFF
 
 
-def test_public_forward_eval_accepts_lifted_instruction_snapshot_without_seams() -> None:
+def test_public_forward_eval_accepts_lifted_instruction_snapshot_without_seams() -> (
+    None
+):
     stk: dict[int, int] = {}
     reg = {1: 0xAA00AA00}
     snapshot = InsnSnapshot(

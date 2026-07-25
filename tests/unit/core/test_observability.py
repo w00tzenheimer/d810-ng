@@ -1,4 +1,5 @@
 """Unit tests for ``d810.core.observability`` (event bus + SnapshotRef)."""
+
 from __future__ import annotations
 
 import dataclasses

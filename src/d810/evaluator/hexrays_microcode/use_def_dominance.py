@@ -126,11 +126,7 @@ def _collect_stkvar_defs_in_block(
             cur = cur.next
             continue
         d = cur.d
-        if (
-            d is not None
-            and d.t == ida_hexrays.mop_S
-            and d.s is not None
-        ):
+        if d is not None and d.t == ida_hexrays.mop_S and d.s is not None:
             key = (int(d.s.off), int(d.size))
             if key not in seen:
                 seen.add(key)

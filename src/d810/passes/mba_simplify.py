@@ -1,4 +1,5 @@
 """Config-v2 adapter for D810 MBA instruction simplification."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -66,7 +67,9 @@ def build_mba_simplify_pass(config: PipelineConfig) -> MbaSimplifyPass:
         )
     excluded = config.rules.exclude
     selected = tuple(
-        rule_name for rule_name in config.rules.include_order if rule_name not in excluded
+        rule_name
+        for rule_name in config.rules.include_order
+        if rule_name not in excluded
     )
     unknown_options = tuple(
         sorted(set(config.rules.options) - set(config.rules.include))

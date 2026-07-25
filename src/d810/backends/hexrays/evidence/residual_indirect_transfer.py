@@ -1,4 +1,5 @@
 """Recognize complete local two-arm residual indirect-transfer snippets."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -250,7 +251,12 @@ def recognize_residual_indirect_transfer(
         successors = _successors(branch_block)
         taken = getattr(getattr(branch, "d", None), "b", None)
         branch_ea = getattr(branch, "ea", None)
-        if condition_code is None or branch_ea is None or len(successors) != 2 or taken is None:
+        if (
+            condition_code is None
+            or branch_ea is None
+            or len(successors) != 2
+            or taken is None
+        ):
             continue
         taken = int(taken)
         if taken not in successors:
@@ -264,7 +270,9 @@ def recognize_residual_indirect_transfer(
             selector_register = _register(getattr(branch, "l", None))
             if selector_register is None:
                 selector_register = _register(getattr(branch, "r", None))
-        if (selector_stack is None and selector_register is None) or fallthrough is None:
+        if (
+            selector_stack is None and selector_register is None
+        ) or fallthrough is None:
             continue
         selector_constant = _immediate(getattr(branch, "r", None))
         if selector_constant is None:
@@ -286,7 +294,11 @@ def recognize_residual_indirect_transfer(
             continue
         # Hex-Rays may put the taken arm directly on the merge/terminal block
         # (the real residual x86 shape), or introduce an empty one-way bridge.
-        merge_serial = int(taken) if int(taken) == int(fallthrough_merge) else _one_way_merge(mba, taken)
+        merge_serial = (
+            int(taken)
+            if int(taken) == int(fallthrough_merge)
+            else _one_way_merge(mba, taken)
+        )
         if false_pointer_cell is None or merge_serial != fallthrough_merge:
             continue
         true_pointer = _read_pointer_cell(true_pointer_cell)

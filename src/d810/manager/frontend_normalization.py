@@ -218,9 +218,7 @@ def run_frontend_normalization_pipeline(
         plan_authority,
         SessionFrontendNormalizationPlanAuthority,
     ):
-        raise TypeError(
-            "frontend normalization requires manager-owned plan authority"
-        )
+        raise TypeError("frontend normalization requires manager-owned plan authority")
     graph = getattr(source, "flow_graph", None)
     if not isinstance(graph, FlowGraph):
         raise TypeError("frontend normalization source requires a portable FlowGraph")
@@ -276,9 +274,7 @@ def run_frontend_normalization_pipeline(
     after_work_item_revision = (
         lifecycle_state.normalization_work_item_publication_revision
     )
-    work_item_published = (
-        after_work_item_revision == before_work_item_revision + 1
-    )
+    work_item_published = after_work_item_revision == before_work_item_revision + 1
     if after_work_item_revision not in {
         before_work_item_revision,
         before_work_item_revision + 1,
@@ -300,9 +296,7 @@ def run_frontend_normalization_pipeline(
             raise FrontendNormalizationPublicationError(
                 "receipt-backed normalization lacks complete portable plan intent"
             )
-        work_item_id = (
-            lifecycle_state.normalization_last_published_work_item_id
-        )
+        work_item_id = lifecycle_state.normalization_last_published_work_item_id
         if work_item_id is None:
             raise FrontendNormalizationPublicationError(
                 "receipt-backed normalization lacks its work-item identity"
@@ -342,9 +336,7 @@ def run_frontend_normalization_pipeline(
             ),
         )
     if work_item_published:
-        remaining = (
-            lifecycle_state.normalization_last_remaining_obligation_ids
-        )
+        remaining = lifecycle_state.normalization_last_remaining_obligation_ids
         if not remaining:
             raise FrontendNormalizationPublicationError(
                 "partial normalization receipt lacks remaining obligations"

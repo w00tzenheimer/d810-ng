@@ -9,15 +9,18 @@ The tests validate:
 - ``ValrangeResolutionStrategy`` protocol compliance (name, family, is_applicable)
 - Strategy integration: no regression on Hodur-targeted functions
 """
+
 from __future__ import annotations
 
 import pytest
+
 
 @pytest.fixture(scope="class")
 def mba_fixture(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     """Provide an mba_t from the first available function."""
     import idaapi
     import idc
+
     # Use an OLLVM-flattened function so the state variable has real valranges
     for name in ("_hodur_func", "hodur_func"):
         ea = idc.get_name_ea_simple(name)
@@ -29,6 +32,7 @@ def mba_fixture(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     if cfunc is None:
         pytest.skip("decompilation failed")
     return cfunc.mba
+
 
 from d810.evaluator.hexrays_microcode.valranges import resolve_state_via_valranges
 from d810.backends.hexrays.evidence.valrange_resolution import (

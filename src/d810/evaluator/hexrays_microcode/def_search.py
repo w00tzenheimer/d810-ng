@@ -11,6 +11,7 @@ Public API:
     resolve_memory_load_via_store -- resolve m_ldx to defining m_stx
     recursively_resolve_ast    -- recursive leaf resolution
 """
+
 from __future__ import annotations
 
 import os
@@ -34,7 +35,9 @@ logger = getLogger(__name__)
 
 # Feature flag: use native predecessor-walk def-search as primary resolution path.
 # Set D810_PATTERN_USE_NATIVE_DEF_SEARCH=0 to disable and fall back to MopTracker only.
-_USE_NATIVE_DEF_SEARCH = os.environ.get("D810_PATTERN_USE_NATIVE_DEF_SEARCH", "1") != "0"
+_USE_NATIVE_DEF_SEARCH = (
+    os.environ.get("D810_PATTERN_USE_NATIVE_DEF_SEARCH", "1") != "0"
+)
 
 # Crash-safety budgets (ticket llr-pydd): a prior matcher attempt segfaulted IDA
 # during PREOPT def-search via unbounded recursion / null deref. These hard caps
@@ -227,17 +230,19 @@ def resolve_memory_load_via_store(
                                 logger.debug(
                                     "resolve_memory_load_via_store: Resolved ldx to stx: %s -> %s",
                                     format_minsn_t(ldx_ins),
-                                    format_minsn_t(cur_ins)
+                                    format_minsn_t(cur_ins),
                                 )
                             return ast
                 except Exception as e:
-                    logger.debug("resolve_memory_load_via_store: Error comparing mops: %s", e)
+                    logger.debug(
+                        "resolve_memory_load_via_store: Error comparing mops: %s", e
+                    )
 
         cur_ins = cur_ins.prev
 
     logger.debug(
         "resolve_memory_load_via_store: No matching store found for %s",
-        format_minsn_t(ldx_ins)
+        format_minsn_t(ldx_ins),
     )
     return None
 
@@ -275,7 +280,9 @@ def find_def_in_block(
     # Walk backwards from before_ins (or from the tail if before_ins is None).
     cur_ins = before_ins.prev if before_ins is not None else blk.tail
     while cur_ins is not None:
-        def_ml = blk.build_def_list(cur_ins, ida_hexrays.MAY_ACCESS | ida_hexrays.FULL_XDSU)
+        def_ml = blk.build_def_list(
+            cur_ins, ida_hexrays.MAY_ACCESS | ida_hexrays.FULL_XDSU
+        )
         if ml.has_common(def_ml):
             return cur_ins
         cur_ins = cur_ins.prev
@@ -485,8 +492,7 @@ def resolve_mop_to_ast(
         return None
 
     if not histories:
-        logger.debug("resolve_mop_to_ast: No history found for %s",
-                     format_mop_t(mop))
+        logger.debug("resolve_mop_to_ast: No history found for %s", format_mop_t(mop))
         return None
 
     # Get the first (and only) history
@@ -511,7 +517,9 @@ def resolve_mop_to_ast(
                     if logger.debug_on:
                         logger.debug(
                             "resolve_mop_to_ast: Resolved %s to %s from %s",
-                            format_mop_t(mop), ast, format_minsn_t(def_ins)
+                            format_mop_t(mop),
+                            ast,
+                            format_minsn_t(def_ins),
                         )
                     return ast
                 # For stack variables, compare the stack offset
@@ -525,14 +533,17 @@ def resolve_mop_to_ast(
                             if logger.debug_on:
                                 logger.debug(
                                     "resolve_mop_to_ast: Resolved %s to %s from %s",
-                                    format_mop_t(mop), ast, format_minsn_t(def_ins)
+                                    format_mop_t(mop),
+                                    ast,
+                                    format_minsn_t(def_ins),
                                 )
                             return ast
                     except AttributeError:
                         pass
 
-    logger.debug("resolve_mop_to_ast: No defining instruction found for %s",
-                 format_mop_t(mop))
+    logger.debug(
+        "resolve_mop_to_ast: No defining instruction found for %s", format_mop_t(mop)
+    )
     return None
 
 
@@ -615,11 +626,13 @@ def recursively_resolve_ast(
                     # Update search context for children: search from the defining instruction
                     # This correctly handles register redefinitions within the same block.
                     new_ins = ins
-                    if hasattr(resolved, 'ins') and resolved.ins is not None:
+                    if hasattr(resolved, "ins") and resolved.ins is not None:
                         new_ins = resolved.ins
 
                     # Recursively resolve the new AST
-                    res = recursively_resolve_ast(resolved, blk, new_ins, depth + 1, max_depth, cache)
+                    res = recursively_resolve_ast(
+                        resolved, blk, new_ins, depth + 1, max_depth, cache
+                    )
                     cache[cache_key] = res
                     return res
                 cache[cache_key] = ast
@@ -628,8 +641,16 @@ def recursively_resolve_ast(
     # For non-leaf nodes, recursively resolve children
     ast_node = typing.cast(AstNode, ast)
 
-    new_left = recursively_resolve_ast(ast_node.left, blk, ins, depth, max_depth, cache) if ast_node.left else None
-    new_right = recursively_resolve_ast(ast_node.right, blk, ins, depth, max_depth, cache) if ast_node.right else None
+    new_left = (
+        recursively_resolve_ast(ast_node.left, blk, ins, depth, max_depth, cache)
+        if ast_node.left
+        else None
+    )
+    new_right = (
+        recursively_resolve_ast(ast_node.right, blk, ins, depth, max_depth, cache)
+        if ast_node.right
+        else None
+    )
 
     # If children changed, create new AST node
     if new_left is not ast_node.left or new_right is not ast_node.right:
@@ -644,8 +665,7 @@ def recursively_resolve_ast(
         new_ast.func_name = ast_node.func_name
         if logger.debug_on:
             logger.debug(
-                "recursively_resolve_ast: Rebuilt AST node: %s -> %s",
-                ast_node, new_ast
+                "recursively_resolve_ast: Rebuilt AST node: %s -> %s", ast_node, new_ast
             )
         return new_ast
 

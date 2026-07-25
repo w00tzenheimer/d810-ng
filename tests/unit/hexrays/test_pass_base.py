@@ -6,6 +6,7 @@ This module tests:
 - InMemoryBackend implementation for testing
 - Concrete pass examples (NoOpPass, CountBlocksPass)
 """
+
 from __future__ import annotations
 
 import pytest
@@ -24,6 +25,7 @@ from tests.unit.hexrays.conftest import InMemoryBackend
 
 class NoOpPass(FlowGraphTransform):
     """Pass that does nothing (returns empty modification list)."""
+
     name = "noop"
 
     def transform(self, cfg: FlowGraph) -> list[GraphModification]:
@@ -33,6 +35,7 @@ class NoOpPass(FlowGraphTransform):
 
 class CountBlocksPass(FlowGraphTransform):
     """Pass that returns ConvertToGoto for each block with nsucc==0."""
+
     name = "count_blocks"
     tags = frozenset({"test", "example"})
 
@@ -56,6 +59,7 @@ class CountBlocksPass(FlowGraphTransform):
 
 class ConditionalPass(FlowGraphTransform):
     """Pass that only applies to CFGs with >2 blocks."""
+
     name = "conditional"
 
     def is_applicable(self, cfg: FlowGraph) -> bool:
@@ -97,12 +101,22 @@ class TestInMemoryBackend:
         """Lift with blocks should return FlowGraph."""
         # Create synthetic blocks
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1}
 
@@ -123,7 +137,7 @@ class TestInMemoryBackend:
             ConvertToGoto(block_serial=3, goto_target=4),
         ]
 
-        count = backend.lower(mods, mutation_gateway = object())
+        count = backend.lower(mods, mutation_gateway=object())
 
         assert count == 2
         assert len(backend.applied_modifications) == 2
@@ -152,18 +166,35 @@ class TestCFGPass:
         """CountBlocksPass should return ConvertToGoto for terminal blocks."""
         # Create CFG: 0 -> 1, 2 (terminals)
         blk0 = BlockSnapshot(
-            serial=0, block_type=4, succs=(1, 2), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=4,
+            succs=(1, 2),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1020, insn_snapshots=()
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1020,
+            insn_snapshots=(),
         )
-        cfg = FlowGraph(blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000)
+        cfg = FlowGraph(
+            blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000
+        )
 
         pass_instance = CountBlocksPass()
         result = pass_instance.transform(cfg)
@@ -185,27 +216,46 @@ class TestCFGPass:
         """Custom is_applicable should be honored."""
         # Small CFG (2 blocks)
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         small_cfg = FlowGraph(blocks={0: blk0, 1: blk1}, entry_serial=0, func_ea=0x1000)
 
         # Large CFG (3 blocks)
         blk2 = BlockSnapshot(
-            serial=2, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1020, insn_snapshots=()
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1020,
+            insn_snapshots=(),
         )
         blk0_large = BlockSnapshot(
-            serial=0, block_type=4, succs=(1, 2), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=4,
+            succs=(1, 2),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         large_cfg = FlowGraph(
-            blocks={0: blk0_large, 1: blk1, 2: blk2},
-            entry_serial=0, func_ea=0x1000
+            blocks={0: blk0_large, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000
         )
 
         pass_instance = ConditionalPass()
@@ -219,6 +269,7 @@ class TestCFGPass:
     def test_missing_name_raises_typeerror(self):
         """Defining a pass without 'name' should raise TypeError."""
         with pytest.raises(TypeError, match="must define 'name' class attribute"):
+
             class MissingNamePass(FlowGraphTransform):
                 def transform(self, cfg: FlowGraph) -> list[GraphModification]:
                     return []
@@ -249,16 +300,31 @@ class TestIntegration:
         """Full cycle: lift CFG, run pass, lower modifications."""
         # Setup backend with 3 blocks
         blk0 = BlockSnapshot(
-            serial=0, block_type=4, succs=(1, 2), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=4,
+            succs=(1, 2),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x1020, insn_snapshots=()
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1020,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1, 2: blk2}
         backend = InMemoryBackend(blocks)
@@ -273,7 +339,7 @@ class TestIntegration:
         assert len(modifications) == 2  # 2 terminal blocks
 
         # Lower modifications
-        count = backend.lower(modifications, mutation_gateway = object())
+        count = backend.lower(modifications, mutation_gateway=object())
         assert count == 2
 
         # Verify

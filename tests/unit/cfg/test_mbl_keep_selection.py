@@ -1,4 +1,5 @@
 """Tests for pure MBL_KEEP target selection."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace

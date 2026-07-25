@@ -1,4 +1,5 @@
 "Immutable analysis snapshot types for the shared unflattening engine.\n\nTypes are narrowed via :pep:`563` postponed annotations (``from __future__ import\nannotations``) plus :data:`d810.core.typing.TYPE_CHECKING` \u2014 runtime imports\nstay engine-local so preanalysis types never leak into this module's runtime graph,\nwhile callers still get proper narrow types (``PreanalysisRoundDiscoveryContext``,\n``FlowGraph``, \u2026) for static analysis.\n\n``ReachabilityInfo`` captures reachability from the function entry block.\n``AnalysisSnapshot`` is the read-only context passed to every strategy's\n``plan()`` method, with Hodur as the current primary producer. The optional\n``discovery`` field carries the canonical per-round classification bundle \u2014\nlive DAG, corrected DAG, dispatcher region, shared-suffix blocks, structured\nregions, the reconstruction-discovery-indexes bundle, and the rendered\nlinearized program \u2014 built once per ``(func_ea, maturity, pass)`` and shared\nby every strategy. **Consumers MUST NOT mutate ``discovery`` or any of its\nfields.**\n"
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -178,17 +179,11 @@ class AnalysisSnapshot:
         object.__setattr__(self, "detector", detector)
         object.__setattr__(self, "dispatcher_analysis", dispatcher_analysis)
         object.__setattr__(self, "range_evidence", range_evidence)
-        object.__setattr__(
-            self, "dispatcher_root_serial", int(dispatcher_root_serial)
-        )
-        object.__setattr__(
-            self, "dispatcher_blocks", dispatcher_blocks or frozenset()
-        )
+        object.__setattr__(self, "dispatcher_root_serial", int(dispatcher_root_serial))
+        object.__setattr__(self, "dispatcher_blocks", dispatcher_blocks or frozenset())
         object.__setattr__(self, "handler_graph", handler_graph or {})
         object.__setattr__(self, "reachability", reachability)
-        object.__setattr__(
-            self, "state_write_provenance", state_write_provenance or {}
-        )
+        object.__setattr__(self, "state_write_provenance", state_write_provenance or {})
         object.__setattr__(self, "provider_level", int(provider_level))
         object.__setattr__(self, "maturity_envelope", maturity_envelope)
         object.__setattr__(self, "pass_number", int(pass_number))
@@ -204,12 +199,8 @@ class AnalysisSnapshot:
         object.__setattr__(self, "state_summary", state_summary)
         object.__setattr__(self, "discovery", discovery)
         object.__setattr__(self, "diagnostic_fact_view", diagnostic_fact_view)
-        object.__setattr__(
-            self, "cumulative_planner_view", cumulative_planner_view
-        )
-        object.__setattr__(
-            self, "round_context", round_context or RoundContext()
-        )
+        object.__setattr__(self, "cumulative_planner_view", cumulative_planner_view)
+        object.__setattr__(self, "round_context", round_context or RoundContext())
 
     @property
     def maturity(self) -> int:

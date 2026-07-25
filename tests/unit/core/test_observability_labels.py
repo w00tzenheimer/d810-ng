@@ -1,4 +1,5 @@
 """Tests for neutral diagnostic label helpers."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace

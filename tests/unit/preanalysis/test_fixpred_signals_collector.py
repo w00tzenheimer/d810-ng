@@ -3,6 +3,7 @@
 Uses SimpleNamespace mock FlowGraph objects - no IDA dependency.
 Tests the portable signal extraction path and collector protocol.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from d810.analyses.control_flow.fixpred_signals import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_block(
     serial: int,
@@ -50,8 +52,8 @@ def _make_target(
 # Collector protocol
 # ---------------------------------------------------------------------------
 
-class TestFixPredSignalsCollectorProtocol:
 
+class TestFixPredSignalsCollectorProtocol:
     def test_name(self) -> None:
         collector = FixPredSignalsCollector()
         assert collector.name == "FixPredSignalsCollector"
@@ -62,7 +64,7 @@ class TestFixPredSignalsCollectorProtocol:
 
     def test_maturities_include_calls_and_glbopt1(self) -> None:
         collector = FixPredSignalsCollector()
-        assert 3 in collector.maturities   # MMAT_CALLS
+        assert 3 in collector.maturities  # MMAT_CALLS
         assert 14 in collector.maturities  # MMAT_GLBOPT1
 
     def test_maturities_are_frozen(self) -> None:
@@ -74,8 +76,8 @@ class TestFixPredSignalsCollectorProtocol:
 # Helper functions
 # ---------------------------------------------------------------------------
 
-class TestHelpers:
 
+class TestHelpers:
     def test_ratio_normal(self) -> None:
         assert _ratio(3, 10) == pytest.approx(0.3)
 
@@ -105,8 +107,8 @@ class TestHelpers:
 # Portable signal extraction
 # ---------------------------------------------------------------------------
 
-class TestPortableSignals:
 
+class TestPortableSignals:
     def test_empty_blocks_returns_zero_metrics(self) -> None:
         target = _make_target(blocks={})
         collector = FixPredSignalsCollector()

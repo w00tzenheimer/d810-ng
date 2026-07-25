@@ -12,7 +12,9 @@ from d810.core.typing import Optional
 
 import pytest
 
-from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
+from d810.analyses.control_flow.condition_chain_model import (
+    ConditionChainAnalysisResult,
+)
 from d810.analyses.control_flow.transition_builder import (
     TransitionBuilder,
     TransitionResult,

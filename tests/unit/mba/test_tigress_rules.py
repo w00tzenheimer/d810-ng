@@ -32,7 +32,7 @@ _Z3_VERIFIABLE = [
     (T.TigressAddViaXorOrRule, 64),
     (T.TigressXorViaSubOrRule, 32),
     (T.TigressXorViaSubOrRule, 64),
-    (T.TigressNotEqualSignBitRule, 32),   # 32-bit pinned 0x1F shift
+    (T.TigressNotEqualSignBitRule, 32),  # 32-bit pinned 0x1F shift
     (T.TigressNotEqualSignBitRule64, 64),  # 64-bit pinned 0x3F shift
 ]
 
@@ -132,9 +132,7 @@ def test_multiply_bit_partition_samples():
     mask64 = (1 << 64) - 1
 
     def lhs_rhs_equal(a, b, mask):
-        lhs = (
-            ((a & (~b & mask)) * (~a & b & mask)) + ((a | b) * (a & b))
-        ) & mask
+        lhs = (((a & (~b & mask)) * (~a & b & mask)) + ((a | b) * (a & b))) & mask
         rhs = (a * b) & mask
         return lhs == rhs
 
@@ -175,9 +173,9 @@ def test_increment_pattern_shape():
     assert p.right.is_constant() and p.right.value == 1
     inner = p.left  # (x ^ c1) + ((2*x) | c2)
     assert _op(inner) == "add"
-    assert _op(inner.left) == "xor"          # x ^ c1
-    assert _op(inner.right) == "or"          # (2*x) | c2
-    assert _op(inner.right.left) == "mul"    # 2 * x
+    assert _op(inner.left) == "xor"  # x ^ c1
+    assert _op(inner.right) == "or"  # (2*x) | c2
+    assert _op(inner.right.left) == "mul"  # 2 * x
     r = T.TigressIncrementRule._dsl_replacement
     assert _op(r) == "add" and r.left.name == "x_0" and r.right.name == "k_res"
 
@@ -186,8 +184,8 @@ def test_xor_via_or_minus_and_pattern_shape():
     """PATTERN == (x | M) - (x & M) ; REPLACEMENT == x ^ M."""
     p = T.TigressXorViaOrMinusAndRule._dsl_pattern
     assert _op(p) == "sub"
-    assert _op(p.left) == "or"                    # x | M
-    assert _op(p.right) == "and"                  # x & M
+    assert _op(p.left) == "or"  # x | M
+    assert _op(p.right) == "and"  # x & M
     assert p.left.left.name == "x_0" and p.left.right.name == "x_1"
     assert p.right.left.name == "x_0" and p.right.right.name == "x_1"
     r = T.TigressXorViaOrMinusAndRule._dsl_replacement
@@ -199,8 +197,8 @@ def test_add_via_xor_or_pattern_shape():
     p = T.TigressAddViaXorOrRule._dsl_pattern
     assert _op(p) == "add" and p.right.is_constant() and p.right.value == 1
     inner = p.left
-    assert _op(inner.left) == "xor"               # x ^ c1
-    assert _op(inner.right) == "mul"              # 2 * (x | c2)
+    assert _op(inner.left) == "xor"  # x ^ c1
+    assert _op(inner.right) == "mul"  # 2 * (x | c2)
     assert _op(inner.right.right) == "or"
     r = T.TigressAddViaXorOrRule._dsl_replacement
     assert _op(r) == "add" and r.right.name == "c_2"
@@ -210,10 +208,10 @@ def test_xor_via_sub_or_pattern_shape():
     """PATTERN == (x - 2*(x | c1)) - c2 ; REPLACEMENT == x ^ k_res."""
     p = T.TigressXorViaSubOrRule._dsl_pattern
     assert _op(p) == "sub"
-    assert p.right.name == "c_2"                  # ... - c2
-    inner = p.left                                # x - 2*(x | c1)
+    assert p.right.name == "c_2"  # ... - c2
+    inner = p.left  # x - 2*(x | c1)
     assert _op(inner) == "sub"
-    assert _op(inner.right) == "mul"              # 2 * (x | c1)
+    assert _op(inner.right) == "mul"  # 2 * (x | c1)
     assert _op(inner.right.right) == "or"
     r = T.TigressXorViaSubOrRule._dsl_replacement
     assert _op(r) == "xor" and r.right.name == "k_res"
@@ -222,14 +220,14 @@ def test_xor_via_sub_or_pattern_shape():
 def test_signbit_pattern_shape():
     """PATTERN == ((sar(x-y, N) & 2*(x-y)) - (x-y)) >> N ; REPLACEMENT == (x!=y)."""
     p = T.TigressNotEqualSignBitRule._dsl_pattern
-    assert _op(p) == "shr"                        # outer logical shift
+    assert _op(p) == "shr"  # outer logical shift
     assert p.right.is_constant() and p.right.value == 0x1F
-    mid = p.left                                  # (sar & 2d) - d
+    mid = p.left  # (sar & 2d) - d
     assert _op(mid) == "sub"
     assert _op(mid.left) == "and"
-    assert _op(mid.left.left) == "sar"            # arithmetic inner shift
+    assert _op(mid.left.left) == "sar"  # arithmetic inner shift
     r = T.TigressNotEqualSignBitRule._dsl_replacement
-    assert _op(r) == "bool_to_int"                # comparison result, not arithmetic
+    assert _op(r) == "bool_to_int"  # comparison result, not arithmetic
     assert r.constraint.op_name == "ne"
 
     p64 = T.TigressNotEqualSignBitRule64._dsl_pattern
@@ -240,8 +238,8 @@ def test_multiply_pattern_shape():
     """PATTERN == (a & ~b)*(~a & b) + (a | b)*(a & b) ; REPLACEMENT == a * b."""
     p = T.TigressMultiplyBitPartitionRule._dsl_pattern
     assert _op(p) == "add"
-    assert _op(p.left) == "mul"                   # (a & ~b)*(~a & b)
-    assert _op(p.right) == "mul"                  # (a | b)*(a & b)
+    assert _op(p.left) == "mul"  # (a & ~b)*(~a & b)
+    assert _op(p.right) == "mul"  # (a | b)*(a & b)
     assert _op(p.right.left) == "or" and _op(p.right.right) == "and"
     r = T.TigressMultiplyBitPartitionRule._dsl_replacement
     assert _op(r) == "mul" and r.left.name == "x_0" and r.right.name == "x_1"

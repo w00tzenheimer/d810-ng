@@ -25,6 +25,7 @@ Sub7ffd-specific constants are duplicated here (per the existing producer
 pattern in ``d810.analyses.control_flow.missing_via_pred_discovery``). They must stay
 in sync with the values in ``reconstruction.py``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -110,9 +111,7 @@ def discover_force_edge_overrides(
     region_name: str,
     force_edge: tuple[int, int],
     structured_region_accepted_pairs: Mapping[str, set[tuple[int, int]]],
-    structured_region_candidates_by_pair: Mapping[
-        tuple[int, int], Sequence[object]
-    ],
+    structured_region_candidates_by_pair: Mapping[tuple[int, int], Sequence[object]],
     corrected_region_edges_by_pair: Mapping[tuple[int, int], Sequence[object]],
 ) -> ForceEdgeOverridePlan:
     """Classify one ``(region, force_edge)`` pair into a variant-tagged plan.

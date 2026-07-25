@@ -4,6 +4,7 @@ The classifier is diagnostic-only and built on top of
 ``plan_fix_predecessor_clone_as_goto`` — these tests exercise the bucket
 assignment for each shape called out by the next-slice plan.
 """
+
 from __future__ import annotations
 
 from d810.transforms.fix_predecessor_classification import (
@@ -357,9 +358,7 @@ def test_copied_side_effects_required_when_cond_has_body_side_effects() -> None:
         side_effect_blocks=frozenset({10}),
     )
 
-    assert classification.bucket is (
-        FixPredecessorBucket.COPIED_SIDE_EFFECTS_REQUIRED
-    )
+    assert classification.bucket is (FixPredecessorBucket.COPIED_SIDE_EFFECTS_REQUIRED)
     assert classification.conditional_has_body_side_effects is True
     assert classification.planner_rejection is (
         FixPredecessorRejectReason.SELF_LOOP_TARGET

@@ -1,4 +1,5 @@
 """Duplicate-arm conditional alias detection for exact-node lowering."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -92,7 +93,9 @@ def analyze_duplicate_alias_conditional_sites(
             key = _site_key(edge)
             if key is not None:
                 source_states.add(int(key[0]) & 0xFFFFFFFF)
-            ordered_path = tuple(int(node) for node in getattr(edge, "ordered_path", ()) or ())
+            ordered_path = tuple(
+                int(node) for node in getattr(edge, "ordered_path", ()) or ()
+            )
             target_entry_anchor = getattr(edge, "target_entry_anchor", None)
             if not ordered_path or target_entry_anchor is None:
                 representative_edge = None
@@ -107,7 +110,11 @@ def analyze_duplicate_alias_conditional_sites(
         source_state = (
             next(iter(source_states))
             if len(source_states) == 1
-            else int(getattr(getattr(representative_edge, "source_key", None), "state_const", 0))
+            else int(
+                getattr(
+                    getattr(representative_edge, "source_key", None), "state_const", 0
+                )
+            )
             & 0xFFFFFFFF
         )
         canonical_target_state = (

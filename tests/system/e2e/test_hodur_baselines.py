@@ -83,7 +83,14 @@ HODUR_BASELINES = [
         # {statements:39, returns:3, whiles:0, gotos:1, ifs:8} (no calls key).
         # ctree baseline (captured 2026-06-25):
         # statements:94, returns:3, whiles:0, gotos:1, ifs:11, calls:32
-        {"statements": 94, "returns": 3, "whiles": 0, "gotos": 1, "ifs": 11, "calls": 32},
+        {
+            "statements": 94,
+            "returns": 3,
+            "whiles": 0,
+            "gotos": 1,
+            "ifs": 11,
+            "calls": 32,
+        },
         id="hodur_func",
     ),
     pytest.param(
@@ -108,9 +115,7 @@ HODUR_BASELINES = [
     ),
 ]
 
-SUB_7FFD_KNOWN_IMPOSSIBLE_RETURN_CONSTANTS = (
-    "0xC5FB34A1D9A6E315",
-)
+SUB_7FFD_KNOWN_IMPOSSIBLE_RETURN_CONSTANTS = ("0xC5FB34A1D9A6E315",)
 SUB_7FFD_RETURN_ARTIFACT_EDGE_PROOFS = (
     ReturnFrontierArtifactEdgeProof(
         source_block=27,
@@ -127,9 +132,7 @@ SUB_7FFD_FUNCTION_PRIORS = FunctionAnalysisPriors(
     return_frontier_artifacts=(
         ReturnFrontierArtifactPriors.from_known_impossible_return_constants(
             SUB_7FFD_KNOWN_IMPOSSIBLE_RETURN_CONSTANTS
-        ).with_impossible_return_artifact_edges(
-            SUB_7FFD_RETURN_ARTIFACT_EDGE_PROOFS
-        )
+        ).with_impossible_return_artifact_edges(SUB_7FFD_RETURN_ARTIFACT_EDGE_PROOFS)
     ),
 )
 
@@ -149,7 +152,6 @@ def _sub7ffd_work_call_count(code: str) -> int:
     memory_calls = code.count("MEMORY[0x180000000]")
     image_base_calls = code.count("_ImageBase(")
     return memory_calls + image_base_calls
-
 
 
 @pytest.fixture(scope="class")
@@ -275,9 +277,7 @@ class TestHodurBaselines:
                     f"  {metric}: expected={exp} actual={act} delta={delta:+d}"
                 )
             diff_msg = "\n".join(diff_lines)
-            pytest.fail(
-                f"{func_name}: AST metric regression:\n{diff_msg}"
-            )
+            pytest.fail(f"{func_name}: AST metric regression:\n{diff_msg}")
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +297,14 @@ class TestHodurBaselines:
 # detector work (commit 36e3436d).  These are the user-named cascade
 # blocks that must be inside the protected side_effect_corridors set.
 SUB_7FFD_CASCADE_BLOCKS: tuple[int, ...] = (
-    101, 103, 111, 118, 132, 161, 163, 217,
+    101,
+    103,
+    111,
+    118,
+    132,
+    161,
+    163,
+    217,
 )
 
 
@@ -357,13 +364,9 @@ class TestSub7FFDCorridorPreservationRegression:
                 _configure_sub7ffd_function_priors(ctx, func_ea)
                 state.stats.reset()
                 state.start_d810()
-                cfunc = idaapi.decompile(
-                    func_ea, flags=idaapi.DECOMP_NO_CACHE
-                )
+                cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
                 if cfunc is None:
-                    pytest.fail(
-                        "sub_7FFD3338C040 decompile returned None"
-                    )
+                    pytest.fail("sub_7FFD3338C040 decompile returned None")
                 code_after = pseudocode_to_string(cfunc.get_pseudocode())
 
         # The bogus terminal pattern: a paired (v & 7) == 0 break check
@@ -371,9 +374,7 @@ class TestSub7FFDCorridorPreservationRegression:
         # Detect via co-occurrence of the two equality checks AND the
         # constant return shape that historically showed up.
         bogus_break = "(v & 7) == 0" in code_after or "& 7) == 0\n" in code_after
-        bogus_return_const = (
-            "(v & 7) == 1" in code_after or "& 7) == 1\n" in code_after
-        )
+        bogus_return_const = "(v & 7) == 1" in code_after or "& 7) == 1\n" in code_after
         # Be conservative: only fail when BOTH pieces of the bogus pair
         # are present.  A single occurrence of "& 7) ==" can be
         # legitimate cascade discrimination.

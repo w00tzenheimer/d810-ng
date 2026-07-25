@@ -4,6 +4,7 @@ Portable scheduling should use :mod:`d810.ir.maturity`.  This module is only
 for boundary compatibility: parsing, ranking, and formatting persisted/provider
 ``MMAT_*`` spellings without importing Hex-Rays or IDA.
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -74,29 +75,17 @@ _NAMES_BY_NUMBERING: Mapping[MaturityNumbering, tuple[str, ...]] = MappingProxyT
 _VALUE_BY_NAME: Mapping[MaturityNumbering, Mapping[str, int]] = MappingProxyType(
     {
         numbering: MappingProxyType(
-            {
-                name: index
-                for index, name in enumerate(names)
-            }
-            | {
-                name.removeprefix("MMAT_"): index
-                for index, name in enumerate(names)
-            }
+            {name: index for index, name in enumerate(names)}
+            | {name.removeprefix("MMAT_"): index for index, name in enumerate(names)}
         )
         for numbering, names in _NAMES_BY_NUMBERING.items()
     }
 )
 IDA_MATURITY_VALUES: Mapping[str, int] = MappingProxyType(
-    {
-        name: index
-        for index, name in enumerate(IDA_MATURITY_NAMES)
-    }
+    {name: index for index, name in enumerate(IDA_MATURITY_NAMES)}
 )
 WITH_ZERO_MATURITY_VALUES: Mapping[str, int] = MappingProxyType(
-    {
-        name: index
-        for index, name in enumerate(WITH_ZERO_MATURITY_NAMES)
-    }
+    {name: index for index, name in enumerate(WITH_ZERO_MATURITY_NAMES)}
 )
 _TIMELINE_PHASE_RANKS: Mapping[tuple[str, str], int] = MappingProxyType(
     {
@@ -237,9 +226,10 @@ def maturity_phase_rank(maturity: Any, phase: Any, *, default: int = 99) -> int:
 
 def is_glbopt1_post_d810(maturity: Any, phase: Any) -> bool:
     """Return true for the GLBOPT1 post-D810 diagnostic snapshot boundary."""
-    return maturity_phase_rank(maturity, phase) == _TIMELINE_PHASE_RANKS[
-        ("MMAT_GLBOPT1", "post_d810")
-    ]
+    return (
+        maturity_phase_rank(maturity, phase)
+        == _TIMELINE_PHASE_RANKS[("MMAT_GLBOPT1", "post_d810")]
+    )
 
 
 __all__ = [

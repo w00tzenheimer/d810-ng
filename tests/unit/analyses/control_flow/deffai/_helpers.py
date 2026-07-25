@@ -7,6 +7,7 @@ registry-backed (IDA-dependent) scalar fold.  The evaluator reproduces the
 ``_transfer_snapshot_constant_block`` closely enough that the singleton fast-path
 parity test is meaningful.
 """
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import (
@@ -94,9 +95,7 @@ def jtbl(cases: tuple, ea: int = 0x1000) -> InsnSnapshot:
     op = MopSnapshot(
         t=10, size=0, switch_cases=tuple(cases), kind=OperandKind.CASE_LIST
     )
-    return InsnSnapshot(
-        opcode=0x99, ea=ea, operands=(), l=op, kind=InsnKind.TABLE_JUMP
-    )
+    return InsnSnapshot(opcode=0x99, ea=ea, operands=(), l=op, kind=InsnKind.TABLE_JUMP)
 
 
 def ret(ea: int = 0x1000) -> InsnSnapshot:

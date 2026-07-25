@@ -4,6 +4,7 @@ recover_state_write_transitions_via_fixpoint reuses the production emission shel
 the next state from the fixpoint's out_states; diff_back_edge_transitions buckets the result
 against the production fold (MATCH / case2_opaque residual / mismatch).
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.minimal_state_recovery import (
@@ -42,13 +43,16 @@ class _Disp:
 
 
 def test_via_fixpoint_routes_singleton_and_returns_on_top() -> None:
-    fg = _FG([
-        _Blk(1, preds=[2, 3, 4]),   # dispatcher entry
-        _Blk(2, succs=[1]),         # 1-way back-edge -> arm None
-        _Blk(3, succs=[5, 1]),      # 2-way back-edge -> arm index of 1 == 1
-        _Blk(4, succs=[1]),         # unresolved (fixpoint state ⊤)
-        _Blk(50), _Blk(60),         # handler targets (kind None -> not STOP)
-    ])
+    fg = _FG(
+        [
+            _Blk(1, preds=[2, 3, 4]),  # dispatcher entry
+            _Blk(2, succs=[1]),  # 1-way back-edge -> arm None
+            _Blk(3, succs=[5, 1]),  # 2-way back-edge -> arm index of 1 == 1
+            _Blk(4, succs=[1]),  # unresolved (fixpoint state ⊤)
+            _Blk(50),
+            _Blk(60),  # handler targets (kind None -> not STOP)
+        ]
+    )
     disp = _Disp({0x100: 50, 0x200: 60})
     out_states = {2: StateValue.of(0x100), 3: StateValue.of(0x200), 4: StateValue.top()}
 
@@ -67,8 +71,8 @@ def test_via_fixpoint_routes_singleton_and_returns_on_top() -> None:
 def test_diff_buckets_match_case2_residual_and_mismatch() -> None:
     swt = StateWriteTransition
     production = (
-        swt(2, 0x100, 50, False, None),               # fixpoint agrees -> matched
-        swt(5, 0x500, 80, False, None),               # fixpoint unresolved -> mismatch
+        swt(2, 0x100, 50, False, None),  # fixpoint agrees -> matched
+        swt(5, 0x500, 80, False, None),  # fixpoint unresolved -> mismatch
         swt(9, 0x300, 70, False, None, via_block=8),  # Case-2 opaque split -> residual
     )
     fixpoint = (
@@ -78,16 +82,16 @@ def test_diff_buckets_match_case2_residual_and_mismatch() -> None:
     d = diff_back_edge_transitions(production, fixpoint)
     assert d["prod_edges"] == 3 and d["fixpoint_edges"] == 2
     assert d["matched"] == 1
-    assert d["case2_opaque"] == 1            # the via_block split, expected residual
+    assert d["case2_opaque"] == 1  # the via_block split, expected residual
     assert len(d["mismatch"]) == 1
-    assert d["mismatch"][0][0] == 5          # write_block 5 is the mismatch
+    assert d["mismatch"][0][0] == 5  # write_block 5 is the mismatch
 
 
 def test_partitioned_diff_matches_reproduced_via_block_split() -> None:
     """B2 diff: a via_block split reproduced by the partitioned shadow counts matched."""
     swt = StateWriteTransition
     production = (
-        swt(2, 0x100, 50, False, None),               # plain row -> matched
+        swt(2, 0x100, 50, False, None),  # plain row -> matched
         swt(9, 0x300, 70, False, None, via_block=8),  # split, reproduced -> matched
         swt(9, 0x400, 80, False, None, via_block=8),  # split, NOT reproduced -> case2
     )
@@ -96,6 +100,6 @@ def test_partitioned_diff_matches_reproduced_via_block_split() -> None:
         swt(9, 0x300, 70, False, None, via_block=8),  # only the first split agrees
     )
     d = diff_back_edge_transitions_partitioned(production, fixpoint)
-    assert d["matched"] == 2                 # plain row + the reproduced split
-    assert d["case2_opaque"] == 1            # the unreproduced split stays residual
+    assert d["matched"] == 2  # plain row + the reproduced split
+    assert d["case2_opaque"] == 1  # the unreproduced split stays residual
     assert len(d["mismatch"]) == 0

@@ -10,6 +10,7 @@ invocations. The emitter side (``d810.transforms.reconstruction_missing_via_pred
 consumes the plan produced here and runs the actual ``plan_direct_reconstruction_modifications``
 + ``plan_passthrough_reconstruction_modifications`` pair.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -126,9 +127,7 @@ def discover_missing_via_pred_direct_overrides(
         region_name == _SUB7FFD_DOWNSTREAM_REGION_NAME
         and force_edge == _SUB7FFD_DOWNSTREAM_HEAD_FORCE_EDGE
     ):
-        corrected_disabled_reason = (
-            "corrected direct-source override disabled; leaving head edge to bridge/postprocess"
-        )
+        corrected_disabled_reason = "corrected direct-source override disabled; leaving head edge to bridge/postprocess"
 
     corrected_matching_edges = tuple(corrected_region_edges_by_pair.get(force_edge, ()))
 

@@ -10,7 +10,10 @@ from d810.analyses.control_flow.dispatcher_discovery_facts import (
     STATE_VARIABLE_IDENTITY_FACT_TYPE,
     collect_state_dispatcher_discovery_fact_observations,
 )
-from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     collect_predecessor_dispatcher_target_facts,
     resolve_predecessor_dispatcher_target,
@@ -87,7 +90,9 @@ def test_collects_generic_state_dispatcher_discovery_observations() -> None:
     assert artifact.payload["target_block_serial"] == 2
 
 
-def test_dispatcher_topology_without_handler_targets_has_no_branch_target_token() -> None:
+def test_dispatcher_topology_without_handler_targets_has_no_branch_target_token() -> (
+    None
+):
     dispatch_map = StateDispatcherMap(
         rows=(
             StateDispatcherRow(
@@ -250,7 +255,9 @@ def test_rejected_transition_resolutions_do_not_resurrect_dispatcher_evidence() 
     assert facts == ()
 
 
-def test_predecessor_dispatcher_target_without_predicate_proof_only_proves_target() -> None:
+def test_predecessor_dispatcher_target_without_predicate_proof_only_proves_target() -> (
+    None
+):
     predecessor_fact = resolve_predecessor_dispatcher_target(
         predecessor_block_serial=9,
         dispatcher_entry_serial=2,

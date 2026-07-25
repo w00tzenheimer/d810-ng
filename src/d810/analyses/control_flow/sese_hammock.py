@@ -1,4 +1,5 @@
 """SESE / hammock helpers for exact-node lowering heuristics."""
+
 from __future__ import annotations
 
 from collections import deque
@@ -64,7 +65,9 @@ def conditional_distance_to_return(flow_graph: object) -> dict[int, int]:
         current_block = flow_graph.get_block(current)
         if current_block is None:
             continue
-        for pred_serial in tuple(int(pred) for pred in getattr(current_block, "preds", ())):
+        for pred_serial in tuple(
+            int(pred) for pred in getattr(current_block, "preds", ())
+        ):
             pred_block = flow_graph.get_block(pred_serial)
             if pred_block is None:
                 continue
@@ -122,7 +125,9 @@ def classify_exact_conditional_shape(
         return None
 
     succs = tuple(int(succ) for succ in getattr(source_snapshot, "succs", ()))
-    ordered_path = tuple(int(node) for node in getattr(transition_edge, "ordered_path", ()) or ())
+    ordered_path = tuple(
+        int(node) for node in getattr(transition_edge, "ordered_path", ()) or ()
+    )
     if len(ordered_path) < 2:
         return None
 

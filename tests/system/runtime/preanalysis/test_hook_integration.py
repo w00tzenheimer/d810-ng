@@ -4,10 +4,12 @@ These tests use source-level inspection (ast.parse / inspect.getsource) to
 verify the structural wiring without importing IDA-dependent modules.
 No IDA imports, no mocking of IDA modules.
 """
+
 from __future__ import annotations
 import ast
 import inspect
 import pathlib
+
 
 def _find_src_root() -> pathlib.Path:
     p = pathlib.Path(__file__).resolve()

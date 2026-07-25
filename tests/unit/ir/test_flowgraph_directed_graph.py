@@ -5,6 +5,7 @@ portable ``DirectedGraph`` surface (``node_ids``/``successors``) and the
 cycle/acyclic-view ops, delegating to ``d810.ir.directed_graph``. Purely
 additive -- no change to existing FlowGraph behavior.
 """
+
 from __future__ import annotations
 
 from d810.ir.directed_graph import AcyclicView, DirectedGraph

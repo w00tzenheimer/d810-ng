@@ -12,13 +12,17 @@ The selector is intentionally generic and consumes only projected CFG facts
 plus corridor ownership hints.  Callers in Hodur provide those facts from
 ``d810.passes`` outputs.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from d810.core import logging
 from d810.core.typing import Protocol
-from d810.transforms.lowering_scope import derive_edge_predecessor, requires_pred_scoped_lowering
+from d810.transforms.lowering_scope import (
+    derive_edge_predecessor,
+    requires_pred_scoped_lowering,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -466,7 +470,9 @@ def plan_shared_group_duplication(
     """
     ordered_candidates = tuple(sorted(context.candidates, key=lambda c: c.via_pred))
     old_target = int(context.old_target)
-    if all(int(candidate.target_entry) == old_target for candidate in ordered_candidates):
+    if all(
+        int(candidate.target_entry) == old_target for candidate in ordered_candidates
+    ):
         return SharedGroupDuplicationPlan(
             accepted=False,
             rejection_reason="noop_or_missing_old_target",

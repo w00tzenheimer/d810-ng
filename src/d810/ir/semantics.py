@@ -79,21 +79,19 @@ class PredicateKind(str, Enum):
     TRUTHY = "truthy"
 
 
-_INVERTED_PREDICATE_KINDS: Mapping[PredicateKind, PredicateKind] = (
-    MappingProxyType(
-        {
-            PredicateKind.EQ: PredicateKind.NE,
-            PredicateKind.NE: PredicateKind.EQ,
-            PredicateKind.UGE: PredicateKind.ULT,
-            PredicateKind.UGT: PredicateKind.ULE,
-            PredicateKind.ULE: PredicateKind.UGT,
-            PredicateKind.ULT: PredicateKind.UGE,
-            PredicateKind.SGE: PredicateKind.SLT,
-            PredicateKind.SGT: PredicateKind.SLE,
-            PredicateKind.SLE: PredicateKind.SGT,
-            PredicateKind.SLT: PredicateKind.SGE,
-        }
-    )
+_INVERTED_PREDICATE_KINDS: Mapping[PredicateKind, PredicateKind] = MappingProxyType(
+    {
+        PredicateKind.EQ: PredicateKind.NE,
+        PredicateKind.NE: PredicateKind.EQ,
+        PredicateKind.UGE: PredicateKind.ULT,
+        PredicateKind.UGT: PredicateKind.ULE,
+        PredicateKind.ULE: PredicateKind.UGT,
+        PredicateKind.ULT: PredicateKind.UGE,
+        PredicateKind.SGE: PredicateKind.SLT,
+        PredicateKind.SGT: PredicateKind.SLE,
+        PredicateKind.SLE: PredicateKind.SGT,
+        PredicateKind.SLT: PredicateKind.SGE,
+    }
 )
 
 

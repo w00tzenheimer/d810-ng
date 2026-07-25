@@ -1,4 +1,5 @@
 """Thin engine-rule shell for the simple non-Hodur cleanup family."""
+
 from __future__ import annotations
 
 from dataclasses import asdict
@@ -38,9 +39,7 @@ __all__ = ["SimpleFlatteningCleanupUnflattener"]
 class SimpleFlatteningCleanupUnflattener(ComposedUnflatteningRule):
     """Planner-visible shell for generic cleanup PlanFragment strategies."""
 
-    DESCRIPTION = (
-        "Shared engine adapter for non-Hodur simple flattening cleanup"
-    )
+    DESCRIPTION = "Shared engine adapter for non-Hodur simple flattening cleanup"
     HAS_OWN_DISPATCHER_COLLECTOR = True
     DEFAULT_UNFLATTENING_MATURITIES = [
         ida_hexrays.MMAT_GLBOPT1,
@@ -79,7 +78,10 @@ class SimpleFlatteningCleanupUnflattener(ComposedUnflatteningRule):
     def get_last_observation(self) -> dict[str, object]:
         detection = self._last_detection
         metadata: SimpleFlatteningCleanupMetadata | None = None
-        if self._last_snapshot is not None and self._last_snapshot.flow_graph is not None:
+        if (
+            self._last_snapshot is not None
+            and self._last_snapshot.flow_graph is not None
+        ):
             candidate = self._last_snapshot.flow_graph.metadata.get(
                 CLEANUP_FAMILY_METADATA_KEY
             )
@@ -88,29 +90,34 @@ class SimpleFlatteningCleanupUnflattener(ComposedUnflatteningRule):
         return {
             "detection": {
                 "detected": detection.detected if detection is not None else False,
-                "description": detection.description if detection is not None else "none",
+                "description": detection.description
+                if detection is not None
+                else "none",
                 "fake_jump_fixes": (
                     len(detection.fake_jump_fixes) if detection is not None else 0
                 ),
                 "single_iteration_fixes": (
                     len(detection.single_iteration_fixes)
-                    if detection is not None else 0
+                    if detection is not None
+                    else 0
                 ),
                 "bad_while_loop_edits": (
-                    len(detection.bad_while_loop_edits)
-                    if detection is not None else 0
+                    len(detection.bad_while_loop_edits) if detection is not None else 0
                 ),
                 "bad_while_loop_deferred_edits": (
                     len(detection.bad_while_loop_deferred_edits)
-                    if detection is not None else 0
+                    if detection is not None
+                    else 0
                 ),
                 "bad_while_loop_follow_up": (
                     len(detection.bad_while_loop_follow_up)
-                    if detection is not None else 0
+                    if detection is not None
+                    else 0
                 ),
                 "bad_while_loop_dependency_diagnostics": (
                     len(detection.bad_while_loop_dependency_diagnostics)
-                    if detection is not None else 0
+                    if detection is not None
+                    else 0
                 ),
                 "tail_goto_merges": (
                     len(detection.tail_goto_merges) if detection is not None else 0

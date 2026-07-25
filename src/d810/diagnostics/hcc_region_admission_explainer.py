@@ -32,6 +32,7 @@ The explainer never imports ``ida_hexrays``, runs entirely from the
 diag SQLite + ``d810.log`` produced by an earlier dump, and is fully
 unit-testable.
 """
+
 from __future__ import annotations
 
 import json
@@ -58,19 +59,23 @@ MIN_ADMISSIBLE_CHAIN_LEN = 3
 
 # `first_dropped_stage` strings that map to bucket 2/3.
 _CALL_BARRIER_STAGE = "call_barrier_collision"
-_PAYLOAD_OR_INTERMEDIATE_STAGES = frozenset({
-    "payload_intermediate_filter",
-    "corridor_filter",
-    "carrier_filter",
-    "region_filter",
-})
+_PAYLOAD_OR_INTERMEDIATE_STAGES = frozenset(
+    {
+        "payload_intermediate_filter",
+        "corridor_filter",
+        "carrier_filter",
+        "region_filter",
+    }
+)
 # `accepted_stage` strings that mean "HCC fixed it up via a fallback".
-_FALLBACK_ACCEPTED_STAGES = frozenset({
-    "postprocess",
-    "fallback_execution",
-    "frontier_overrides",
-    "late_shared_fallback",
-})
+_FALLBACK_ACCEPTED_STAGES = frozenset(
+    {
+        "postprocess",
+        "fallback_execution",
+        "frontier_overrides",
+        "late_shared_fallback",
+    }
+)
 
 # Bucket -> first responsible HCC stage label, used in the report.
 _BUCKET_TO_STAGE: dict[str, str] = {
@@ -170,9 +175,7 @@ class AdmissionExplanation:
                 "dag_succ_count": self.evidence.dag_succ_count,
                 "chain_size": self.evidence.chain_size,
                 "neighbors_admitted": self.evidence.neighbors_admitted,
-                "neighbor_state_hexes": list(
-                    self.evidence.neighbor_state_hexes
-                ),
+                "neighbor_state_hexes": list(self.evidence.neighbor_state_hexes),
             },
         }
 
@@ -375,7 +378,9 @@ def gather_evidence(
             neighbor_state_hexes=(),
         )
     state_hex = _resolve_state_hex_for_block(
-        conn, snap_id, row.block_serial,
+        conn,
+        snap_id,
+        row.block_serial,
     )
     if state_hex is None:
         return AdmissionEvidence(
@@ -427,15 +432,9 @@ def classify(
         bucket = "call_barrier_collision"
     elif dropped in _PAYLOAD_OR_INTERMEDIATE_STAGES:
         bucket = "payload_or_intermediate_filter"
-    elif (
-        accepted in _FALLBACK_ACCEPTED_STAGES
-        and not row.raw_candidate
-    ):
+    elif accepted in _FALLBACK_ACCEPTED_STAGES and not row.raw_candidate:
         bucket = "region_table_merge_loss"
-    elif (
-        evidence.dag_pred_count == 0
-        and evidence.dag_succ_count == 0
-    ):
+    elif evidence.dag_pred_count == 0 and evidence.dag_succ_count == 0:
         bucket = "not_in_chain"
     elif evidence.chain_size < MIN_ADMISSIBLE_CHAIN_LEN:
         bucket = "chain_too_short"
@@ -476,7 +475,8 @@ def select_target_rows(
         wanted = {int(b) for b in explicit_bytes}
         return [r for r in rows if r.byte in wanted]
     return [
-        r for r in rows
+        r
+        for r in rows
         if r.final_status_refined == "region_detection_gap"
         or r.final_status == "region_detection_gap"
     ]
@@ -495,10 +495,7 @@ def explain(
     if not db_path.exists():
         # No DB -- evidence will be empty; classifier still runs on trace
         # fields and will likely return ``not_in_chain`` for every row.
-        return [
-            classify(r, gather_evidence_no_db(r))
-            for r in targets
-        ]
+        return [classify(r, gather_evidence_no_db(r)) for r in targets]
     with read_diag_db(str(db_path)) as db:
         conn = db.connection()
         return [classify(r, gather_evidence(conn, r)) for r in targets]
@@ -553,22 +550,24 @@ def format_report(
         ev = ex.evidence
         lines.append(
             "| "
-            + " | ".join([
-                str(ex.byte),
-                ex.block_ea,
-                ex.bucket,
-                ex.first_responsible_stage,
-                "1" if ex.in_dag else "0",
-                "1" if ex.in_corrected_dag else "0",
-                "1" if ex.in_region_table else "0",
-                str(ev.dag_pred_count),
-                str(ev.dag_succ_count),
-                str(ev.chain_size),
-                str(ev.neighbors_admitted),
-                ex.candidate_rejection or "-",
-                ex.accepted_stage or "-",
-                ex.first_dropped_stage or "-",
-            ])
+            + " | ".join(
+                [
+                    str(ex.byte),
+                    ex.block_ea,
+                    ex.bucket,
+                    ex.first_responsible_stage,
+                    "1" if ex.in_dag else "0",
+                    "1" if ex.in_corrected_dag else "0",
+                    "1" if ex.in_region_table else "0",
+                    str(ev.dag_pred_count),
+                    str(ev.dag_succ_count),
+                    str(ev.chain_size),
+                    str(ev.neighbors_admitted),
+                    ex.candidate_rejection or "-",
+                    ex.accepted_stage or "-",
+                    ex.first_dropped_stage or "-",
+                ]
+            )
             + " |"
         )
     lines.extend(["", "### Verdict per byte", ""])
@@ -580,9 +579,7 @@ def format_report(
             f" `{ex.first_responsible_stage}`"
         )
         if ex.candidate_rejection and ex.candidate_rejection != "-":
-            lines.append(
-                f"  - candidate_rejection: `{ex.candidate_rejection}`"
-            )
+            lines.append(f"  - candidate_rejection: `{ex.candidate_rejection}`")
         if ev.state_hex:
             lines.append(
                 f"  - state_hex: `{ev.state_hex}` (snapshot"

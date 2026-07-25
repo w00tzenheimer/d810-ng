@@ -23,6 +23,7 @@ DIAG-TABLE-NAME POLICY (P0 decision, per handoff §5 P0 recommendation):
   *views* over the existing tables rather than an in-place rename, so old DBs
   keep loading.  This script flags the tables so the policy stays visible.
 """
+
 from __future__ import annotations
 
 import re
@@ -59,9 +60,7 @@ def _rg(pattern: str, *paths: Path) -> list[str]:
 def dag_named_files() -> list[Path]:
     out: list[Path] = []
     for root in (SRC, TESTS):
-        out.extend(
-            p for p in root.rglob("*.py") if "dag" in p.name.lower()
-        )
+        out.extend(p for p in root.rglob("*.py") if "dag" in p.name.lower())
     return sorted(out)
 
 

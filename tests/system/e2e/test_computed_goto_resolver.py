@@ -13,6 +13,7 @@ fully-unflattened original sequence, using only d810's own machinery:
 Runs via idalib (``idapro``) like the other headless e2e checks; skipped when
 idalib or the lab fixture DLL is unavailable.
 """
+
 from __future__ import annotations
 
 import os
@@ -32,7 +33,10 @@ def _clear_ida_sidecars() -> None:
     """Force a fresh analysis: idalib reloads a stale unpacked db (``<name>.dll.id0``
     …) if present, which would mask the source bytes."""
     for suffix in _SIDECAR_SUFFIXES:
-        for stale in (_FIXTURE.with_suffix(suffix), pathlib.Path(str(_FIXTURE) + suffix)):
+        for stale in (
+            _FIXTURE.with_suffix(suffix),
+            pathlib.Path(str(_FIXTURE) + suffix),
+        ):
             stale.unlink(missing_ok=True)
 
 
@@ -88,7 +92,9 @@ def test_computed_goto_dispatcher_unflattens(monkeypatch) -> None:
         finally:
             headless.stop()
     finally:
-        idapro.close_database(False)  # NEVER True: idalib writes patches through to the DLL
+        idapro.close_database(
+            False
+        )  # NEVER True: idalib writes patches through to the DLL
 
     # the flattened dispatcher is gone and each handler's side effect survives, in order
     assert "__asm" not in recovered and "jmp" not in recovered.lower(), (

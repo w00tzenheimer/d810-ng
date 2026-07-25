@@ -26,6 +26,7 @@ models:
   ``Instruction`` STORE memory access whose target is a register
   (was ``opcode_name == "m_stx"`` text + ``insn.d.reg``).
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.branch_witness import (
@@ -189,7 +190,10 @@ def _insn_references_stack(insn: InsnSnapshot, stkoff: int) -> bool:
     ``insn.d`` operand slots.
     """
     target = int(stkoff)
-    if any(named is not None and int(named) == target for named in operand_stack_offsets(insn)):
+    if any(
+        named is not None and int(named) == target
+        for named in operand_stack_offsets(insn)
+    ):
         return True
     return any(target in refs for refs in operand_stack_refs(insn))
 
@@ -326,9 +330,7 @@ def indirect_state_store_branch_witness(
     if branch_witness_map is not None:
         row = branch_witness_map.row_for_state_compare(compare_u, int(block_serial))
     if row is None:
-        row = _local_compare_witness_row(
-            block, int(block_serial), compare_u, compare_u
-        )
+        row = _local_compare_witness_row(block, int(block_serial), compare_u, compare_u)
         if row is None:
             return None
     witness = static_witness_for_state(

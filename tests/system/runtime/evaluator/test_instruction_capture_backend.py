@@ -124,10 +124,12 @@ def test_classify_trivial_tail_state_write_cleanup_returns_nop_request() -> None
         ),
     )
 
-    request = HexRaysInstructionCaptureBackend().classify_trivial_tail_state_write_cleanup(
-        block,
-        state_variable=0x30,
-        expected_state=0x55,
+    request = (
+        HexRaysInstructionCaptureBackend().classify_trivial_tail_state_write_cleanup(
+            block,
+            state_variable=0x30,
+            expected_state=0x55,
+        )
     )
 
     assert request is not None
@@ -191,11 +193,14 @@ def test_find_unique_const_writer_for_stkoff_returns_only_unique_writer() -> Non
     )
     backend = HexRaysInstructionCaptureBackend()
 
-    assert backend.find_unique_const_writer_for_stkoff(
-        _Mba({2: _Block(writer), 4: _Block(other)}),
-        0x50,
-        state_variable=0x30,
-    ) == 2
+    assert (
+        backend.find_unique_const_writer_for_stkoff(
+            _Mba({2: _Block(writer), 4: _Block(other)}),
+            0x50,
+            state_variable=0x30,
+        )
+        == 2
+    )
 
 
 def test_find_unique_const_writer_for_stkoff_uses_live_mop_fallback_fields() -> None:
@@ -206,11 +211,14 @@ def test_find_unique_const_writer_for_stkoff_uses_live_mop_fallback_fields() -> 
     )
     backend = HexRaysInstructionCaptureBackend()
 
-    assert backend.find_unique_const_writer_for_stkoff(
-        _Mba({2: _Block(writer)}),
-        0x50,
-        state_variable=0x30,
-    ) == 2
+    assert (
+        backend.find_unique_const_writer_for_stkoff(
+            _Mba({2: _Block(writer)}),
+            0x50,
+            state_variable=0x30,
+        )
+        == 2
+    )
 
 
 def test_find_unique_const_writer_for_stkoff_rejects_multiple_writers() -> None:
@@ -226,11 +234,14 @@ def test_find_unique_const_writer_for_stkoff_rejects_multiple_writers() -> None:
     )
     backend = HexRaysInstructionCaptureBackend()
 
-    assert backend.find_unique_const_writer_for_stkoff(
-        _Mba({2: _Block(writer_a), 4: _Block(writer_b)}),
-        0x50,
-        state_variable=0x30,
-    ) is None
+    assert (
+        backend.find_unique_const_writer_for_stkoff(
+            _Mba({2: _Block(writer_a), 4: _Block(writer_b)}),
+            0x50,
+            state_variable=0x30,
+        )
+        is None
+    )
 
 
 def test_block_contains_call_detects_call_opcode() -> None:

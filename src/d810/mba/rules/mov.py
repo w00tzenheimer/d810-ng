@@ -41,6 +41,7 @@ class GetIdentRule1(VerifiableRule):
     Note: In modular arithmetic (y + ~y) != 1, but in Boolean algebra
     where we're masking bits, this identity holds.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) + (x & bnot_y)
@@ -64,6 +65,7 @@ class GetIdentRule2(VerifiableRule):
                             = x & 1         [y ^ ~y = 1]
                             = x             [identity]
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) ^ (x & bnot_y)
@@ -87,6 +89,7 @@ class GetIdentRule3(VerifiableRule):
 
     This is one of the fundamental absorption laws.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = x & (x | y)

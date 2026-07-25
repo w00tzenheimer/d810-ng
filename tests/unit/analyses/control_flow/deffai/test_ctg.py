@@ -5,6 +5,7 @@ sliding once full; a forked next-state set producing multiple successor contexts
 an unroutable next-state marking the context ``unresolved`` (no fabricated edge);
 a ``top`` next-state marking ``unresolved``; finiteness.  No IDA.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -81,7 +82,9 @@ def _forking_handler_graph():
     #   3: state=30 -> 0     (back-edge, next-state 30)
     #   4: ret
     cond = stk(0x20)
-    b0 = block(0, (jcc(stk(STATE_OFF), num(10), taken=1, pred=PredicateKind.EQ),), (1, 4))
+    b0 = block(
+        0, (jcc(stk(STATE_OFF), num(10), taken=1, pred=PredicateKind.EQ),), (1, 4)
+    )
     b1 = block(1, (jcc(cond, num(0), taken=2, pred=PredicateKind.EQ),), (2, 3))
     b2 = block(2, (mov(num(20), stk(STATE_OFF)), goto(0)), (0,))
     b3 = block(3, (mov(num(30), stk(STATE_OFF)), goto(0)), (0,))
@@ -121,7 +124,9 @@ def test_ctg_unroutable_next_state_marks_unresolved():
         return None if s == 30 else 0  # 30 is unroutable
 
     result, ctg = _ctg(graph, k=2, initial=10, route=route)
-    assert ctg.unresolved, "a context with the unroutable next-state 30 should be unresolved"
+    assert ctg.unresolved, (
+        "a context with the unroutable next-state 30 should be unresolved"
+    )
     # No successor context carries 30 as its last case.
     for succs in ctg.successors.values():
         assert all(sc.last != 30 for sc in succs)
@@ -131,7 +136,9 @@ def test_ctg_top_next_state_marks_unresolved():
     # Handler writes an unknown (register) next-state -> top -> unresolved.
     from tests.unit.analyses.control_flow.deffai._helpers import reg
 
-    b0 = block(0, (jcc(stk(STATE_OFF), num(10), taken=1, pred=PredicateKind.EQ),), (1, 2))
+    b0 = block(
+        0, (jcc(stk(STATE_OFF), num(10), taken=1, pred=PredicateKind.EQ),), (1, 2)
+    )
     b1 = block(1, (mov(reg(9), stk(STATE_OFF)), goto(0)), (0,))  # unknown next-state
     b2 = block(2, (ret(),), ())
     graph = make_graph([b0, b1, b2])

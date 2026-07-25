@@ -6,6 +6,7 @@ TODO:
 - Longer-term, replace this synthetic in-memory backend with tests that run
   against a real IDA database/microcode context.
 """
+
 from __future__ import annotations
 
 from d810.transforms.graph_modification import GraphModification

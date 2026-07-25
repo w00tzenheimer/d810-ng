@@ -187,12 +187,14 @@ def test_overlay_provider_filters_enabled_and_disabled_rules():
     )
 
     svc.set_overlay_provider(
-        lambda ea: FunctionRuleOverlay(
-            enabled_rules=frozenset({"RuleA"}),
-            disabled_rules=frozenset({"RuleB"}),
+        lambda ea: (
+            FunctionRuleOverlay(
+                enabled_rules=frozenset({"RuleA"}),
+                disabled_rules=frozenset({"RuleB"}),
+            )
+            if ea == 0x1337
+            else None
         )
-        if ea == 0x1337
-        else None
     )
 
     filtered = svc.get_active_rules(
@@ -278,9 +280,11 @@ def test_overlay_precedence_over_project_config():
     assert tuple(rule.name for rule in baseline) == ("RuleA", "RuleB")
 
     svc.set_overlay_provider(
-        lambda ea: FunctionRuleOverlay(enabled_rules=frozenset({"RuleB"}))
-        if ea == 0x3000
-        else None
+        lambda ea: (
+            FunctionRuleOverlay(enabled_rules=frozenset({"RuleB"}))
+            if ea == 0x3000
+            else None
+        )
     )
     svc.invalidate(
         RuleScopeInvalidation(
@@ -349,9 +353,11 @@ def test_selector_consumes_function_tags_from_overlay():
         ctree_rules=(),
     )
     svc.set_overlay_provider(
-        lambda ea: FunctionRuleOverlay(function_tags=frozenset({"flattened"}))
-        if ea == 0x5555
-        else None
+        lambda ea: (
+            FunctionRuleOverlay(function_tags=frozenset({"flattened"}))
+            if ea == 0x5555
+            else None
+        )
     )
 
     tagged_active = svc.get_active_rules(

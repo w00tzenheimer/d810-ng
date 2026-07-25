@@ -31,6 +31,7 @@ Notes::
     program variants are stored rendered linearized-program views, such as
     semantic_reference_like.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -110,7 +111,6 @@ from d810.diagnostics.lifecycle_timeline import (
     render_mutation_batch,
     render_timeline,
 )
-
 
 
 def _normalize_maturity_name(maturity: str | None) -> str | None:
@@ -202,7 +202,9 @@ def _metadata_lineage_ea(meta: dict | None) -> str | int | None:
     return None
 
 
-def _block_identity_lookup(conn: sqlite3.Connection, snapshot_id: int) -> dict[int, str]:
+def _block_identity_lookup(
+    conn: sqlite3.Connection, snapshot_id: int
+) -> dict[int, str]:
     _reset_row_factory(conn)
     rows = (
         Block.select(Block.serial, Block.start_ea_hex, Block.meta)
@@ -256,10 +258,16 @@ def _block_id_from_row(row: dict, serial_key: str = "serial") -> str:
 
 
 def _format_block_list(serials: list[int], lookup: dict[int, str]) -> str:
-    return "[" + ", ".join(_block_id_from_lookup(serial, lookup) for serial in serials) + "]"
+    return (
+        "["
+        + ", ".join(_block_id_from_lookup(serial, lookup) for serial in serials)
+        + "]"
+    )
 
 
-def _format_chain(results: list[dict], block_lookup: dict[int, str] | None = None) -> str:
+def _format_chain(
+    results: list[dict], block_lookup: dict[int, str] | None = None
+) -> str:
     """Format chain query output as compact per-block summary."""
     lookup = block_lookup or {}
     lines: list[str] = []
@@ -297,7 +305,9 @@ def _format_var_writes(writes: list[dict]) -> str:
         stkoff = w.get("dest_stkoff")
         stkoff_str = f"stkoff=0x{stkoff:X}" if stkoff is not None else "stkoff=None"
         src_stkoff = w.get("src_l_stkoff")
-        src_str = f"src_stkoff=0x{src_stkoff:X}" if src_stkoff is not None else "src=None"
+        src_str = (
+            f"src_stkoff=0x{src_stkoff:X}" if src_stkoff is not None else "src=None"
+        )
         lines.append(f"{blk}.{idx}  {dstr:<40s} {stkoff_str} {src_str}")
     return "\n".join(lines)
 
@@ -352,7 +362,9 @@ def _format_return_paths(
             serial = hop["serial"]
             flag = "*" if hop.get("has_return_slot_write") else " "
             opcode = hop.get("write_opcode") or ""
-            lines.append(f"    [{flag}] {_block_id_from_lookup(serial, lookup)} {opcode}")
+            lines.append(
+                f"    [{flag}] {_block_id_from_lookup(serial, lookup)} {opcode}"
+            )
     return "\n".join(lines)
 
 
@@ -375,7 +387,9 @@ def _format_rendered_program_nodes(
         if node.get("state_label"):
             parts.append(f"state={node['state_label']}")
         if node.get("handler_serial") is not None:
-            parts.append(f"handler={_block_id_from_lookup(node['handler_serial'], lookup)}")
+            parts.append(
+                f"handler={_block_id_from_lookup(node['handler_serial'], lookup)}"
+            )
         if node.get("entry_anchor") is not None:
             parts.append(f"entry={_block_id_from_lookup(node['entry_anchor'], lookup)}")
         lines.append(" ".join(parts))
@@ -506,24 +520,44 @@ def _format_watch_transitions(
         f"SELECT apply_session_id, mod_index, mod_type, phase, block_serial, "
         f"prev_type_name, prev_succs, prev_preds, "
         f"now_type_name, now_succs, now_preds "
-        f"FROM watch_block_transitions {where} ORDER BY id"
-    , params).fetchall()
+        f"FROM watch_block_transitions {where} ORDER BY id",
+        params,
+    ).fetchall()
     if not rows:
         return "(no watch_block_transitions rows match the filter)"
 
     out: list[str] = []
     current_session: str | None = None
     for (
-        sid, mod_idx, mod_type, ph, blk,
-        p_type, p_succs, p_preds, n_type, n_succs, n_preds,
+        sid,
+        mod_idx,
+        mod_type,
+        ph,
+        blk,
+        p_type,
+        p_succs,
+        p_preds,
+        n_type,
+        n_succs,
+        n_preds,
     ) in rows:
         prev_tuple = (
-            None if p_type is None
-            else (p_type, tuple(json.loads(p_succs or "[]")), tuple(json.loads(p_preds or "[]")))
+            None
+            if p_type is None
+            else (
+                p_type,
+                tuple(json.loads(p_succs or "[]")),
+                tuple(json.loads(p_preds or "[]")),
+            )
         )
         now_tuple = (
-            None if n_type is None
-            else (n_type, tuple(json.loads(n_succs or "[]")), tuple(json.loads(n_preds or "[]")))
+            None
+            if n_type is None
+            else (
+                n_type,
+                tuple(json.loads(n_succs or "[]")),
+                tuple(json.loads(n_preds or "[]")),
+            )
         )
         if changed_only and prev_tuple == now_tuple:
             continue
@@ -552,11 +586,7 @@ _MERGE_CAUSALITY_TO_DEFAULT = "maturity_MMAT_GLBOPT1_post_d810"
 def _resolve_snapshot_by_label(conn: sqlite3.Connection, label: str) -> int:
     """Resolve the newest snapshot whose label matches exactly."""
     _reset_row_factory(conn)
-    value = (
-        Snapshot.select(fn.MAX(Snapshot.id))
-        .where(Snapshot.label == label)
-        .scalar()
-    )
+    value = Snapshot.select(fn.MAX(Snapshot.id)).where(Snapshot.label == label).scalar()
     if value is None:
         print(
             f"ERROR: no snapshot with label={label!r}. "
@@ -604,9 +634,11 @@ def _format_merge_causality(result: dict, *, limit: int | None) -> str:
         cross[key] = cross.get(key, 0) + 1
 
     lines.append("cross-tab  content_class × disposition")
-    header = f"  {'content_class':<14}" + "".join(
-        f" {d:>16}" for d in _DISPOSITIONS
-    ) + f" {'TOTAL':>8}"
+    header = (
+        f"  {'content_class':<14}"
+        + "".join(f" {d:>16}" for d in _DISPOSITIONS)
+        + f" {'TOTAL':>8}"
+    )
     lines.append(header)
     lines.append("  " + "-" * (len(header) - 2))
     for cls in _CONTENT_CLASSES:
@@ -621,16 +653,12 @@ def _format_merge_causality(result: dict, *, limit: int | None) -> str:
     ]
     grand = sum(col_totals)
     lines.append(
-        f"  {'TOTAL':<14}"
-        + "".join(f" {c:>16}" for c in col_totals)
-        + f" {grand:>8}"
+        f"  {'TOTAL':<14}" + "".join(f" {c:>16}" for c in col_totals) + f" {grand:>8}"
     )
     lines.append("")
 
     if limit is None:
-        lines.append(
-            "(detail rows suppressed — pass --limit N for per-block entries)"
-        )
+        lines.append("(detail rows suppressed — pass --limit N for per-block entries)")
         return "\n".join(lines)
 
     for row in vanished[:limit]:
@@ -642,9 +670,7 @@ def _format_merge_causality(result: dict, *, limit: int | None) -> str:
         disp = row["disposition"]
         preds = row["preds"]
         succs = row["succs"]
-        lines.append(
-            f"blk[{serial}] {tn} insn={ic} tail={tail} [{cc}/{disp}]"
-        )
+        lines.append(f"blk[{serial}] {tn} insn={ic} tail={tail} [{cc}/{disp}]")
         lines.append(f"  preds={preds} -> succs={succs}")
         abs_ = row["absorber"]
         if abs_ is None:
@@ -664,10 +690,13 @@ def _format_merge_causality(result: dict, *, limit: int | None) -> str:
         lines.append(f"... {len(vanished) - limit} more rows suppressed")
     return "\n".join(lines)
 
+
 _RAW_BLOCK_ID_RE = re.compile(r"\bblk\[(\d+)\](?!@)")
 
 
-def _format_rendered_program_text(text: str | None, block_lookup: dict[int, str]) -> str:
+def _format_rendered_program_text(
+    text: str | None, block_lookup: dict[int, str]
+) -> str:
     """Format stored rendered program text with EA-qualified block IDs."""
     if text is None:
         return "(rendered program not found)"
@@ -700,34 +729,38 @@ def _format_fact_trace(result: dict[str, list[dict]]) -> str:
     """Format one semantic-key fact trace."""
     lines: list[str] = []
     lines.append("observations:")
-    lines.append(_format_fact_rows(
-        result["observations"],
-        [
-            "snapshot_id",
-            "fact_id",
-            "kind",
-            "semantic_key",
-            "maturity",
-            "phase",
-            "source_block",
-        ],
-    ))
+    lines.append(
+        _format_fact_rows(
+            result["observations"],
+            [
+                "snapshot_id",
+                "fact_id",
+                "kind",
+                "semantic_key",
+                "maturity",
+                "phase",
+                "source_block",
+            ],
+        )
+    )
     lines.append("")
     lines.append("mappings:")
-    lines.append(_format_fact_rows(
-        result["mappings"],
-        [
-            "snapshot_id",
-            "source_fact_id",
-            "source_maturity",
-            "target_maturity",
-            "status",
-            "confidence",
-            "source_block",
-            "target_block",
-            "reason",
-        ],
-    ))
+    lines.append(
+        _format_fact_rows(
+            result["mappings"],
+            [
+                "snapshot_id",
+                "source_fact_id",
+                "source_maturity",
+                "target_maturity",
+                "status",
+                "confidence",
+                "source_block",
+                "target_block",
+                "reason",
+            ],
+        )
+    )
     return "\n".join(lines)
 
 
@@ -770,9 +803,7 @@ def _ea_trace(conn: sqlite3.Connection, ea_values: list[int], exact: bool) -> st
             # Also find ALL snapshot IDs so we can report "(not found)".
             all_snap_ids = [
                 r[0]
-                for r in Snapshot.select(Snapshot.id)
-                .order_by(Snapshot.id)
-                .tuples()
+                for r in Snapshot.select(Snapshot.id).order_by(Snapshot.id).tuples()
             ]
             # Build a lookup from snap_id to its rows.
             snap_rows: dict[int, list] = {}
@@ -911,9 +942,7 @@ def _format_lineage_row(row: dict) -> str:
 
 def _format_provenance_row(row: dict) -> str:
     target = (
-        f"blk[{row['target_serial']}]"
-        if row.get("target_serial") is not None
-        else "-"
+        f"blk[{row['target_serial']}]" if row.get("target_serial") is not None else "-"
     )
     reason = row.get("reason") or ""
     return (
@@ -1018,10 +1047,7 @@ def _state_write_rewrites(
     # serial') filter, returned verbatim as dicts; json_extract is an
     # explicit §3 carve-out (complex-SQL policy).
     conn.row_factory = _dict_factory_for_state_writes  # type: ignore[assignment]
-    base_sql = (
-        "SELECT * FROM fact_mappings "
-        "WHERE status='STATE_CONST_REWRITTEN'"
-    )
+    base_sql = "SELECT * FROM fact_mappings WHERE status='STATE_CONST_REWRITTEN'"
     params: list[Any] = []
     if block is not None:
         base_sql += " AND json_extract(payload, '$.block_serial')=?"
@@ -1049,11 +1075,7 @@ def _format_state_write_trace(result: dict[str, Any]) -> str:
             payload = json.loads(row.get("payload") or "{}")
         except json.JSONDecodeError:
             payload = {}
-        ea_hex = (
-            payload.get("instruction_ea_hex")
-            or row.get("source_ea_hex")
-            or "?"
-        )
+        ea_hex = payload.get("instruction_ea_hex") or row.get("source_ea_hex") or "?"
         const_hex = payload.get("state_const_hex") or "?"
         stkoff_hex = payload.get("state_var_stkoff_hex") or "?"
         dest_var = payload.get("dest_var_signature") or ""
@@ -1084,10 +1106,7 @@ def _format_state_write_trace(result: dict[str, Any]) -> str:
                     f"reason={row.get('reason')}"
                 )
             else:
-                lines.append(
-                    f"  [{transition}] {status} "
-                    f"reason={row.get('reason')}"
-                )
+                lines.append(f"  [{transition}] {status} reason={row.get('reason')}")
     else:
         lines.append("mappings: (none)")
     return "\n".join(lines)
@@ -1105,15 +1124,17 @@ def _format_state_write_rewrites(rows: list[dict[str, Any]]) -> str:
         except json.JSONDecodeError:
             payload = {}
         lines.append(
-            "\t".join((
-                str(payload.get("block_serial", "?")),
-                str(payload.get("original_state_const_hex", "?")),
-                str(payload.get("rewritten_state_const_hex", "?")),
-                str(row.get("source_maturity") or "?"),
-                str(row.get("target_maturity") or "?"),
-                str(payload.get("instruction_ea_hex", "?")),
-                str(payload.get("state_var_stkoff_hex", "?")),
-            ))
+            "\t".join(
+                (
+                    str(payload.get("block_serial", "?")),
+                    str(payload.get("original_state_const_hex", "?")),
+                    str(payload.get("rewritten_state_const_hex", "?")),
+                    str(row.get("source_maturity") or "?"),
+                    str(row.get("target_maturity") or "?"),
+                    str(payload.get("instruction_ea_hex", "?")),
+                    str(payload.get("state_var_stkoff_hex", "?")),
+                )
+            )
         )
     return "\n".join(lines)
 
@@ -1123,11 +1144,14 @@ def main(argv: list[str] | None = None) -> int:
     # Common args shared by all subcommands via parents= mechanism.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
-        "--db", default=".tmp/diag.sqlite3",
+        "--db",
+        default=".tmp/diag.sqlite3",
         help="Path to SQLite diagnostic database (default: .tmp/diag.sqlite3)",
     )
     common.add_argument(
-        "--snapshot", type=int, default=-1,
+        "--snapshot",
+        type=int,
+        default=-1,
         help="Snapshot ID (-1 = latest). Ignored when --maturity/--phase are supplied.",
     )
     common.add_argument(
@@ -1147,50 +1171,57 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command")
 
     p_timeline = sub.add_parser(
-        "timeline", parents=[common],
+        "timeline",
+        parents=[common],
         help="Show the event-native lifecycle timeline",
     )
     p_timeline.add_argument("--session", help="Restrict to one diagnostic session")
     p_timeline.add_argument(
-        "--func", type=lambda value: int(value, 0),
+        "--func",
+        type=lambda value: int(value, 0),
         help="Restrict to one function EA",
     )
 
     p_mutation_batch = sub.add_parser(
-        "mutation-batch", parents=[common],
+        "mutation-batch",
+        parents=[common],
         help="Correlate a mutation plan, its items, and its receipt",
     )
     p_mutation_batch.add_argument("batch_id")
 
     p_evidence_lineage = sub.add_parser(
-        "evidence-lineage", parents=[common],
+        "evidence-lineage",
+        parents=[common],
         help="Show evidence-generation and identity-rebinding lineage",
     )
     p_evidence_lineage.add_argument(
         "--session", help="Restrict to one diagnostic session"
     )
     p_evidence_lineage.add_argument(
-        "--func", type=lambda value: int(value, 0),
+        "--func",
+        type=lambda value: int(value, 0),
         help="Restrict to one function EA",
     )
 
     p_chain = sub.add_parser("chain", parents=[common], help="Trace a block chain")
     p_chain.add_argument("serials", nargs="+", type=int)
 
-    p_var = sub.add_parser("var-writes", parents=[common],
-                           help="Find writes to a stack variable")
+    p_var = sub.add_parser(
+        "var-writes", parents=[common], help="Find writes to a stack variable"
+    )
     p_var.add_argument("stkoff", type=lambda x: int(x, 0))
 
     p_blk = sub.add_parser("block", parents=[common], help="Show block detail")
     p_blk.add_argument("serial", type=int)
     p_blk.add_argument("--insns", action="store_true", help="Include instructions")
 
-    sub.add_parser("return-paths", parents=[common],
-                   help="Show return path hop status")
+    sub.add_parser("return-paths", parents=[common], help="Show return path hop status")
 
     from d810.diagnostics.state_route import add_arguments as _route_add_args
+
     p_route = sub.add_parser(
-        "route", parents=[common],
+        "route",
+        parents=[common],
         help="condition-chain route provenance for one dispatcher state (state -> handler blk/ea)",
     )
     _route_add_args(p_route)
@@ -1261,13 +1292,21 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     p_ea = sub.add_parser(
-        "ea-trace", parents=[common],
+        "ea-trace",
+        parents=[common],
         help="Trace an EA across all snapshots (block lineage)",
     )
-    p_ea.add_argument("eas", nargs="+", type=lambda x: int(x, 0),
-                      help="EA values in hex (e.g. 0x1800134A5)")
-    p_ea.add_argument("--exact", action="store_true",
-                      help="Match start_ea exactly (default: range containment)")
+    p_ea.add_argument(
+        "eas",
+        nargs="+",
+        type=lambda x: int(x, 0),
+        help="EA values in hex (e.g. 0x1800134A5)",
+    )
+    p_ea.add_argument(
+        "--exact",
+        action="store_true",
+        help="Match start_ea exactly (default: range containment)",
+    )
 
     p_merge = sub.add_parser(
         "merge-causality",
@@ -1328,24 +1367,31 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p_watch.add_argument(
-        "--block", type=int, default=None,
+        "--block",
+        type=int,
+        default=None,
         help="Filter to a single block serial (default: all watched blocks)",
     )
     p_watch.add_argument(
-        "--session", default=None,
+        "--session",
+        default=None,
         help="Filter to a single apply_session_id (default: all sessions)",
     )
     p_watch.add_argument(
-        "--transition-phase", dest="transition_phase", default=None,
+        "--transition-phase",
+        dest="transition_phase",
+        default=None,
         help="Filter by transition phase (init, per_mod, post_loop, "
         "post_post_apply_hook, post_optimize_local, ...)",
     )
     p_watch.add_argument(
-        "--changed-only", action="store_true",
+        "--changed-only",
+        action="store_true",
         help="Only show transitions where prev != now (mutations)",
     )
     p_watch.add_argument(
-        "--sessions-only", action="store_true",
+        "--sessions-only",
+        action="store_true",
         help="List distinct apply_session_ids and row counts, no transition detail",
     )
 
@@ -1657,7 +1703,7 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=None,
         help="Snapshot id to correlate (default: every snapshot with "
-             "COLLAPSED_TO_REWRITTEN_TARGET diagnostics)",
+        "COLLAPSED_TO_REWRITTEN_TARGET diagnostics)",
     )
     p_alt_corr.add_argument(
         "--collapsed-edge",
@@ -1692,7 +1738,7 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=None,
         help="Snapshot id to select for (default: every snapshot with "
-             "state_cfg_edge_alternate_correlations rows)",
+        "state_cfg_edge_alternate_correlations rows)",
     )
     p_alt_sel.add_argument(
         "--collapsed-edge",
@@ -1759,7 +1805,9 @@ def main(argv: list[str] | None = None) -> int:
     p_term_dce.add_argument("--func-ea", required=True)
     p_term_dce.add_argument("--byte-index", type=int, default=None)
     p_term_dce.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
     )
 
     p_hcc_trace = sub.add_parser(
@@ -1782,7 +1830,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional function label rendered in the report title",
     )
     p_hcc_trace.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
     )
 
     p_compose = sub.add_parser(
@@ -1815,11 +1865,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p_compose.add_argument(
-        "--func-label", default=None,
+        "--func-label",
+        default=None,
         help="Optional function label rendered in the report title",
     )
     p_compose.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
     )
 
     p_uek = sub.add_parser(
@@ -1849,11 +1902,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p_uek.add_argument(
-        "--func-label", default=None,
+        "--func-label",
+        default=None,
         help="Optional function label rendered in the report title",
     )
     p_uek.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
     )
 
     p_admission = sub.add_parser(
@@ -1881,11 +1937,14 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p_admission.add_argument(
-        "--func-label", default=None,
+        "--func-label",
+        default=None,
         help="Optional function label rendered in the report title",
     )
     p_admission.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
     )
 
     p_tt_audit = sub.add_parser(
@@ -1898,15 +1957,19 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p_tt_audit.add_argument(
-        "--show-edges", action="store_true",
+        "--show-edges",
+        action="store_true",
         help="Print every observation with snap / maturity / phase / role / src_form",
     )
     p_tt_audit.add_argument(
-        "--localize", action="store_true",
+        "--localize",
+        action="store_true",
         help="Run intermediate-snapshot loss localization (GLBOPT1 only)",
     )
     p_tt_audit.add_argument(
-        "--initial-snap-id", type=int, default=5,
+        "--initial-snap-id",
+        type=int,
+        default=5,
         help="Snapshot id of the initial pre-D810 state (default: 5)",
     )
 
@@ -1922,22 +1985,30 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p_reconcile.add_argument(
-        "--log", required=True, help="Path to d810.log",
+        "--log",
+        required=True,
+        help="Path to d810.log",
     )
     p_reconcile.add_argument(
-        "--snap-id", type=int, required=True,
+        "--snap-id",
+        type=int,
+        required=True,
         help="Snapshot ID to reconcile (e.g. MMAT_GLBOPT1 pre_d810)",
     )
     p_reconcile.add_argument(
-        "--state-var-stkoff", default="0x3C",
+        "--state-var-stkoff",
+        default="0x3C",
         help="State variable stack offset (hex). Default 0x3C for sub_7FFD.",
     )
     p_reconcile.add_argument(
-        "--min-dispatcher-preds", type=int, default=5,
+        "--min-dispatcher-preds",
+        type=int,
+        default=5,
         help="Minimum in-degree to count a block as dispatcher region.",
     )
     p_reconcile.add_argument(
-        "--show-edges", action="store_true",
+        "--show-edges",
+        action="store_true",
         help="Print every edge with bucket and evidence.",
     )
 
@@ -1952,11 +2023,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p_egress.add_argument(
-        "--fact-snapshot-id", type=int, default=None,
+        "--fact-snapshot-id",
+        type=int,
+        default=None,
         help="Snapshot containing TerminalByteEmitterFact rows (default: auto)",
     )
     p_egress.add_argument(
-        "--target-snapshot-id", type=int, default=None,
+        "--target-snapshot-id",
+        type=int,
+        default=None,
         help="CFG snapshot to evaluate, usually post_bundle_stabilize (default: auto)",
     )
 
@@ -1970,22 +2045,29 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     p_return_ledger.add_argument(
-        "--dump", type=Path, default=None,
+        "--dump",
+        type=Path,
+        default=None,
         help="Optional Hodur dump file (OUTPUT.txt) for AFTER-return correlation.",
     )
     p_return_ledger.add_argument(
-        "--snapshot-id", type=int, default=None,
+        "--snapshot-id",
+        type=int,
+        default=None,
         help=(
             "Snapshot id to use; default = last pre-gut_and_wire post_apply"
             " with > 200 blocks."
         ),
     )
     p_return_ledger.add_argument(
-        "--list-snapshots", action="store_true",
+        "--list-snapshots",
+        action="store_true",
         help="List every snapshot in the DB and exit.",
     )
     p_return_ledger.add_argument(
-        "--json", action="store_true", dest="json_output",
+        "--json",
+        action="store_true",
+        dest="json_output",
     )
 
     p_gate_audit = sub.add_parser(
@@ -2143,11 +2225,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "timeline":
         write_output(
             get_output(args),
-            render_timeline(lifecycle_timeline(
-                conn,
-                session_id=args.session,
-                func_ea=args.func,
-            )),
+            render_timeline(
+                lifecycle_timeline(
+                    conn,
+                    session_id=args.session,
+                    func_ea=args.func,
+                )
+            ),
         )
     elif args.command == "mutation-batch":
         write_output(
@@ -2157,71 +2241,90 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "evidence-lineage":
         write_output(
             get_output(args),
-            render_evidence_lineage(evidence_lineage(
-                conn,
-                session_id=args.session,
-                func_ea=args.func,
-            )),
+            render_evidence_lineage(
+                evidence_lineage(
+                    conn,
+                    session_id=args.session,
+                    func_ea=args.func,
+                )
+            ),
         )
     elif args.command == "chain":
         write_output(get_output(args), _snapshot_header(conn, snap_id))
         result = chain(conn, snap_id, args.serials)
-        write_output(get_output(args), _format_chain(result, _block_identity_lookup(conn, snap_id)))
+        write_output(
+            get_output(args),
+            _format_chain(result, _block_identity_lookup(conn, snap_id)),
+        )
     elif args.command == "var-writes":
         result = var_writes(conn, snap_id, args.stkoff)
         write_output(get_output(args), _format_var_writes(result))
     elif args.command == "block":
         write_output(get_output(args), _snapshot_header(conn, snap_id))
         result = block_detail(conn, snap_id, args.serial)
-        write_output(get_output(args), _format_block(
-            result,
-            show_insns=args.insns,
-            block_lookup=_block_identity_lookup(conn, snap_id),
-        ))
+        write_output(
+            get_output(args),
+            _format_block(
+                result,
+                show_insns=args.insns,
+                block_lookup=_block_identity_lookup(conn, snap_id),
+            ),
+        )
     elif args.command == "return-paths":
         result = return_paths(conn, snap_id)
-        write_output(get_output(args), _format_return_paths(result, _block_identity_lookup(conn, snap_id)))
+        write_output(
+            get_output(args),
+            _format_return_paths(result, _block_identity_lookup(conn, snap_id)),
+        )
     elif args.command == "program":
         write_output(get_output(args), _snapshot_header(conn, snap_id))
         if args.nodes:
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 _format_rendered_program_nodes(
                     rendered_program_nodes(conn, snap_id, args.variant),
                     _block_identity_lookup(conn, snap_id),
-                )
+                ),
             )
         else:
             result = rendered_program_text(conn, snap_id, args.variant)
-            write_output(get_output(args), _format_rendered_program_text(
-                result,
-                _block_identity_lookup(conn, snap_id),
-            ))
+            write_output(
+                get_output(args),
+                _format_rendered_program_text(
+                    result,
+                    _block_identity_lookup(conn, snap_id),
+                ),
+            )
     elif args.command == "program-variants":
         write_output(get_output(args), _snapshot_header(conn, snap_id))
-        write_output(get_output(args),
-            _format_rendered_program_variants(
-                rendered_program_variants(conn, snap_id)
-            )
+        write_output(
+            get_output(args),
+            _format_rendered_program_variants(rendered_program_variants(conn, snap_id)),
         )
     elif args.command == "state-local":
         write_output(get_output(args), _snapshot_header(conn, snap_id))
-        write_output(get_output(args),
+        write_output(
+            get_output(args),
             _format_state_local(
                 state_local(conn, snap_id, args.state),
                 state=args.state,
-            )
+            ),
         )
     elif args.command == "block-trace":
         if args.ea is not None:
-            write_output(get_output(args), _format_block_trace(block_trace_by_ea(conn, args.ea)))
+            write_output(
+                get_output(args), _format_block_trace(block_trace_by_ea(conn, args.ea))
+            )
         else:
-            write_output(get_output(args),
-                _format_block_trace(
-                    block_trace_by_serial(conn, snap_id, args.serial)
-                )
+            write_output(
+                get_output(args),
+                _format_block_trace(block_trace_by_serial(conn, snap_id, args.serial)),
             )
     elif args.command == "block-lineage":
-        write_output(get_output(args), _format_block_lineage(block_lineage(conn, snap_id, args.serial)))
+        write_output(
+            get_output(args),
+            _format_block_lineage(block_lineage(conn, snap_id, args.serial)),
+        )
     elif args.command == "ea-trace":
         write_output(get_output(args), _ea_trace(conn, args.eas, args.exact))
     elif args.command == "merge-causality":
@@ -2231,26 +2334,29 @@ def main(argv: list[str] | None = None) -> int:
         filtered = list(result["vanished"])
         if args.only_content_class:
             filtered = [
-                r for r in filtered
-                if r["content_class"] == args.only_content_class
+                r for r in filtered if r["content_class"] == args.only_content_class
             ]
         if args.only_disposition:
             filtered = [
-                r for r in filtered
-                if r["disposition"] == args.only_disposition
+                r for r in filtered if r["disposition"] == args.only_disposition
             ]
         result = dict(result)
         result["vanished"] = filtered
-        write_output(get_output(args), _format_merge_causality(result, limit=args.limit))
+        write_output(
+            get_output(args), _format_merge_causality(result, limit=args.limit)
+        )
     elif args.command == "watch-transitions":
-        write_output(get_output(args), _format_watch_transitions(
-            conn,
-            block=args.block,
-            session=args.session,
-            phase=args.transition_phase,
-            changed_only=args.changed_only,
-            sessions_only=args.sessions_only,
-        ))
+        write_output(
+            get_output(args),
+            _format_watch_transitions(
+                conn,
+                block=args.block,
+                session=args.session,
+                phase=args.transition_phase,
+                changed_only=args.changed_only,
+                sessions_only=args.sessions_only,
+            ),
+        )
     elif args.command == "fact-observations":
         fact_snapshot_id = None if args.all_snapshots else snap_id
         rows = fact_observations(
@@ -2265,7 +2371,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_output:
             write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
         else:
-            write_output(get_output(args), "all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
+            write_output(
+                get_output(args),
+                "all snapshots"
+                if args.all_snapshots
+                else _snapshot_header(conn, snap_id),
+            )
             columns = [
                 "fact_id",
                 "kind",
@@ -2277,10 +2388,13 @@ def main(argv: list[str] | None = None) -> int:
             ]
             if args.all_snapshots:
                 columns.insert(0, "snapshot_id")
-            write_output(get_output(args), _format_fact_rows(
-                rows,
-                columns,
-            ))
+            write_output(
+                get_output(args),
+                _format_fact_rows(
+                    rows,
+                    columns,
+                ),
+            )
     elif args.command == "fact-mappings":
         fact_snapshot_id = None if args.all_snapshots else snap_id
         rows = fact_mappings(
@@ -2295,7 +2409,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_output:
             write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
         else:
-            write_output(get_output(args), "all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
+            write_output(
+                get_output(args),
+                "all snapshots"
+                if args.all_snapshots
+                else _snapshot_header(conn, snap_id),
+            )
             columns = [
                 "source_fact_id",
                 "target_fact_id",
@@ -2307,10 +2426,13 @@ def main(argv: list[str] | None = None) -> int:
             ]
             if args.all_snapshots:
                 columns.insert(0, "snapshot_id")
-            write_output(get_output(args), _format_fact_rows(
-                rows,
-                columns,
-            ))
+            write_output(
+                get_output(args),
+                _format_fact_rows(
+                    rows,
+                    columns,
+                ),
+            )
     elif args.command == "fact-consumers":
         fact_snapshot_id = None if args.all_snapshots else snap_id
         rows = fact_consumers(
@@ -2325,14 +2447,29 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_output:
             write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
         else:
-            write_output(get_output(args), "all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
-            columns = ["consumer", "strategy", "fact_id", "maturity", "decision", "reason"]
+            write_output(
+                get_output(args),
+                "all snapshots"
+                if args.all_snapshots
+                else _snapshot_header(conn, snap_id),
+            )
+            columns = [
+                "consumer",
+                "strategy",
+                "fact_id",
+                "maturity",
+                "decision",
+                "reason",
+            ]
             if args.all_snapshots:
                 columns.insert(0, "snapshot_id")
-            write_output(get_output(args), _format_fact_rows(
-                rows,
-                columns,
-            ))
+            write_output(
+                get_output(args),
+                _format_fact_rows(
+                    rows,
+                    columns,
+                ),
+            )
     elif args.command == "fact-conflicts":
         fact_snapshot_id = None if args.all_snapshots else snap_id
         rows = fact_conflicts(
@@ -2346,7 +2483,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.json_output:
             write_output(get_output(args), json.dumps(rows, indent=2, sort_keys=True))
         else:
-            write_output(get_output(args), "all snapshots" if args.all_snapshots else _snapshot_header(conn, snap_id))
+            write_output(
+                get_output(args),
+                "all snapshots"
+                if args.all_snapshots
+                else _snapshot_header(conn, snap_id),
+            )
             columns = [
                 "conflict_id",
                 "fact_id",
@@ -2357,10 +2499,13 @@ def main(argv: list[str] | None = None) -> int:
             ]
             if args.all_snapshots:
                 columns.insert(0, "snapshot_id")
-            write_output(get_output(args), _format_fact_rows(
-                rows,
-                columns,
-            ))
+            write_output(
+                get_output(args),
+                _format_fact_rows(
+                    rows,
+                    columns,
+                ),
+            )
     elif args.command == "fact-trace":
         result = fact_trace(conn, semantic_key=args.semantic_key, kind=args.kind)
         if args.json_output:
@@ -2423,12 +2568,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.kind == "terminal_tail":
             filtered = [d for d in filtered if d.is_terminal_tail]
         if args.classification:
-            filtered = [
-                d for d in filtered
-                if d.classification == args.classification
-            ]
+            filtered = [d for d in filtered if d.classification == args.classification]
         if args.json_output:
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 json.dumps(
                     [
                         {
@@ -2448,7 +2591,7 @@ def main(argv: list[str] | None = None) -> int:
                     ],
                     indent=2,
                     sort_keys=True,
-                )
+                ),
             )
         else:
             header = (
@@ -2457,7 +2600,8 @@ def main(argv: list[str] | None = None) -> int:
             )
             write_output(get_output(args), header)
             for d in filtered:
-                write_output(get_output(args),
+                write_output(
+                    get_output(args),
                     "\t".join(
                         (
                             str(d.snapshot_id),
@@ -2471,18 +2615,21 @@ def main(argv: list[str] | None = None) -> int:
                             d.rewritten_state_const or "-",
                             d.reason,
                         )
-                    )
+                    ),
                 )
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 f"\n# {len(filtered)} edge(s) shown "
                 f"(persisted={args.persist}, filter={args.kind}/"
-                f"{args.classification or 'any'})"
+                f"{args.classification or 'any'})",
             )
     elif args.command == "state-transition-condition-chain-resolutions":
         intervals = load_latest_condition_chain_intervals_from_db(conn)
         if not intervals and args.condition_chain_log:
             try:
-                intervals = parse_latest_condition_chain_intervals_from_log(args.condition_chain_log)
+                intervals = parse_latest_condition_chain_intervals_from_log(
+                    args.condition_chain_log
+                )
             except FileNotFoundError:
                 intervals = ()
         if args.snap_id is not None:
@@ -2496,9 +2643,9 @@ def main(argv: list[str] | None = None) -> int:
                 "ORDER BY id LIMIT 1"
             ).fetchone()
             if row is None:
-                write_output(get_output(args),
-                    "no MMAT_LOCOPT pre_d810 snapshot found; "
-                    "pass --snap-id explicitly"
+                write_output(
+                    get_output(args),
+                    "no MMAT_LOCOPT pre_d810 snapshot found; pass --snap-id explicitly",
                 )
                 conn.close()
                 return 1
@@ -2512,12 +2659,10 @@ def main(argv: list[str] | None = None) -> int:
             persist_condition_chain_resolutions(conn, resolutions)
         filtered = list(resolutions)
         if args.block is not None:
-            filtered = [
-                r for r in filtered
-                if r.source_block_serial == int(args.block)
-            ]
+            filtered = [r for r in filtered if r.source_block_serial == int(args.block)]
         if args.json_output:
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 json.dumps(
                     [
                         {
@@ -2525,29 +2670,27 @@ def main(argv: list[str] | None = None) -> int:
                             "fact_id": r.fact_id,
                             "source_block_serial": r.source_block_serial,
                             "source_state_const_hex": r.source_state_const_hex,
-                            "condition_chain_resolved_next_block_serial":
-                                r.condition_chain_resolved_next_block_serial,
-                            "condition_chain_resolved_next_state_const_hex":
-                                r.condition_chain_resolved_next_state_const_hex,
-                            "condition_chain_resolved_next_state_const_u64":
-                                r.condition_chain_resolved_next_state_const_u64,
+                            "condition_chain_resolved_next_block_serial": r.condition_chain_resolved_next_block_serial,
+                            "condition_chain_resolved_next_state_const_hex": r.condition_chain_resolved_next_state_const_hex,
+                            "condition_chain_resolved_next_state_const_u64": r.condition_chain_resolved_next_state_const_u64,
                             "condition_chain_resolution_reason": r.condition_chain_resolution_reason,
-                            "condition_chain_resolution_maturity":
-                                r.condition_chain_resolution_maturity,
+                            "condition_chain_resolution_maturity": r.condition_chain_resolution_maturity,
                         }
                         for r in filtered
                     ],
                     indent=2,
                     sort_keys=True,
-                )
+                ),
             )
         else:
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 "snap\tsource_blk\tsource_const\t"
-                "next_blk\tnext_const\treason\tmaturity"
+                "next_blk\tnext_const\treason\tmaturity",
             )
             for r in filtered:
-                write_output(get_output(args),
+                write_output(
+                    get_output(args),
                     "\t".join(
                         (
                             str(r.snapshot_id),
@@ -2556,18 +2699,20 @@ def main(argv: list[str] | None = None) -> int:
                             (
                                 str(r.condition_chain_resolved_next_block_serial)
                                 if r.condition_chain_resolved_next_block_serial
-                                is not None else "-"
+                                is not None
+                                else "-"
                             ),
                             r.condition_chain_resolved_next_state_const_hex or "-",
                             r.condition_chain_resolution_reason,
                             r.condition_chain_resolution_maturity,
                         )
-                    )
+                    ),
                 )
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 f"\n# {len(filtered)} resolution(s) shown "
                 f"(persisted={args.persist}, "
-                f"intervals={len(intervals)})"
+                f"intervals={len(intervals)})",
             )
     elif args.command == "state-transition-dispatch-resolutions":
         dispatch_map = load_latest_state_dispatcher_map_from_db(
@@ -2585,9 +2730,9 @@ def main(argv: list[str] | None = None) -> int:
                 "ORDER BY id LIMIT 1"
             ).fetchone()
             if row is None:
-                write_output(get_output(args),
-                    "no MMAT_LOCOPT pre_d810 snapshot found; "
-                    "pass --snap-id explicitly"
+                write_output(
+                    get_output(args),
+                    "no MMAT_LOCOPT pre_d810 snapshot found; pass --snap-id explicitly",
                 )
                 conn.close()
                 return 1
@@ -2601,26 +2746,20 @@ def main(argv: list[str] | None = None) -> int:
             persist_state_dispatch_resolutions(conn, resolutions)
         filtered = list(resolutions)
         if args.block is not None:
-            filtered = [
-                r for r in filtered
-                if r.source_block_serial == int(args.block)
-            ]
+            filtered = [r for r in filtered if r.source_block_serial == int(args.block)]
         if args.json_output:
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 json.dumps(
                     [
                         {
                             "snapshot_id": r.snapshot_id,
                             "fact_id": r.fact_id,
                             "source_block_serial": r.source_block_serial,
-                            "source_state_const_hex":
-                                r.source_state_const_hex,
-                            "resolved_next_block_serial":
-                                r.resolved_next_block_serial,
-                            "resolved_next_state_const_hex":
-                                r.resolved_next_state_const_hex,
-                            "resolved_next_state_const_u64":
-                                r.resolved_next_state_const_u64,
+                            "source_state_const_hex": r.source_state_const_hex,
+                            "resolved_next_block_serial": r.resolved_next_block_serial,
+                            "resolved_next_state_const_hex": r.resolved_next_state_const_hex,
+                            "resolved_next_state_const_u64": r.resolved_next_state_const_u64,
                             "resolution_kind": r.resolution_kind,
                             "resolution_reason": r.resolution_reason,
                             "resolution_maturity": r.resolution_maturity,
@@ -2629,15 +2768,17 @@ def main(argv: list[str] | None = None) -> int:
                     ],
                     indent=2,
                     sort_keys=True,
-                )
+                ),
             )
         else:
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 "snap\tsource_blk\tsource_const\t"
-                "next_blk\tnext_const\tkind\treason\tmaturity"
+                "next_blk\tnext_const\tkind\treason\tmaturity",
             )
             for r in filtered:
-                write_output(get_output(args),
+                write_output(
+                    get_output(args),
                     "\t".join(
                         (
                             str(r.snapshot_id),
@@ -2645,20 +2786,21 @@ def main(argv: list[str] | None = None) -> int:
                             r.source_state_const_hex,
                             (
                                 str(r.resolved_next_block_serial)
-                                if r.resolved_next_block_serial
-                                is not None else "-"
+                                if r.resolved_next_block_serial is not None
+                                else "-"
                             ),
                             r.resolved_next_state_const_hex or "-",
                             r.resolution_kind,
                             r.resolution_reason,
                             r.resolution_maturity,
                         )
-                    )
+                    ),
                 )
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 f"\n# {len(filtered)} resolution(s) shown "
                 f"(persisted={args.persist}, "
-                f"rows={len(dispatch_map.rows) if dispatch_map else 0})"
+                f"rows={len(dispatch_map.rows) if dispatch_map else 0})",
             )
     elif args.command == "dag-edge-alternate-correlations":
         if args.snap_id is not None:
@@ -2666,9 +2808,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             snap_ids = [
                 int(r[0])
-                for r in StateCfgEdgeDiagnostic.select(
-                    StateCfgEdgeDiagnostic.snapshot
-                )
+                for r in StateCfgEdgeDiagnostic.select(StateCfgEdgeDiagnostic.snapshot)
                 .where(
                     StateCfgEdgeDiagnostic.classification
                     == "COLLAPSED_TO_REWRITTEN_TARGET"
@@ -2685,64 +2825,58 @@ def main(argv: list[str] | None = None) -> int:
         filtered = list(all_correlations)
         if args.collapsed_edge is not None:
             filtered = [
-                c for c in filtered
-                if c.collapsed_edge_id == int(args.collapsed_edge)
+                c for c in filtered if c.collapsed_edge_id == int(args.collapsed_edge)
             ]
         if args.json_output:
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 json.dumps(
                     [
                         {
                             "snapshot_id": c.snapshot_id,
                             "collapsed_edge_id": c.collapsed_edge_id,
                             "alternate_edge_id": c.alternate_edge_id,
-                            "collapsed_source_state":
-                                c.collapsed_source_state,
-                            "collapsed_target_state":
-                                c.collapsed_target_state,
-                            "alternate_source_state":
-                                c.alternate_source_state,
-                            "alternate_target_state":
-                                c.alternate_target_state,
-                            "alternate_ordered_path":
-                                c.alternate_ordered_path,
+                            "collapsed_source_state": c.collapsed_source_state,
+                            "collapsed_target_state": c.collapsed_target_state,
+                            "alternate_source_state": c.alternate_source_state,
+                            "alternate_target_state": c.alternate_target_state,
+                            "alternate_ordered_path": c.alternate_ordered_path,
                             "overlap_blocks": list(c.overlap_blocks),
-                            "alternate_classification":
-                                c.alternate_classification,
+                            "alternate_classification": c.alternate_classification,
                             "reason": c.reason,
                         }
                         for c in filtered
                     ],
                     indent=2,
                     sort_keys=True,
-                )
+                ),
             )
         else:
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 "snap\tcollapsed_edge\talt_edge\t"
                 "collapsed_src->collapsed_tgt\t"
-                "alt_src->alt_tgt\tpath\toverlap\treason"
+                "alt_src->alt_tgt\tpath\toverlap\treason",
             )
             for c in filtered:
-                write_output(get_output(args),
+                write_output(
+                    get_output(args),
                     "\t".join(
                         (
                             str(c.snapshot_id),
                             str(c.collapsed_edge_id),
                             str(c.alternate_edge_id),
-                            f"{c.collapsed_source_state}->"
-                            f"{c.collapsed_target_state}",
-                            f"{c.alternate_source_state}->"
-                            f"{c.alternate_target_state}",
+                            f"{c.collapsed_source_state}->{c.collapsed_target_state}",
+                            f"{c.alternate_source_state}->{c.alternate_target_state}",
                             c.alternate_ordered_path,
                             ",".join(str(b) for b in c.overlap_blocks),
                             c.reason,
                         )
-                    )
+                    ),
                 )
-            write_output(get_output(args),
-                f"\n# {len(filtered)} correlation(s) shown "
-                f"(persisted={args.persist})"
+            write_output(
+                get_output(args),
+                f"\n# {len(filtered)} correlation(s) shown (persisted={args.persist})",
             )
     elif args.command == "dag-edge-alternate-selections":
         if args.snap_id is not None:
@@ -2760,20 +2894,18 @@ def main(argv: list[str] | None = None) -> int:
         all_selections: list[AlternateSelection] = []
         for snap in snap_ids:
             all_selections.extend(
-                select_alternate_edges(
-                    conn, snap, max_depth=int(args.max_depth)
-                )
+                select_alternate_edges(conn, snap, max_depth=int(args.max_depth))
             )
         if args.persist:
             persist_alternate_selections(conn, all_selections)
         filtered = list(all_selections)
         if args.collapsed_edge is not None:
             filtered = [
-                s for s in filtered
-                if s.collapsed_edge_id == int(args.collapsed_edge)
+                s for s in filtered if s.collapsed_edge_id == int(args.collapsed_edge)
             ]
         if args.json_output:
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 json.dumps(
                     [
                         {
@@ -2791,15 +2923,16 @@ def main(argv: list[str] | None = None) -> int:
                     ],
                     indent=2,
                     sort_keys=True,
-                )
+                ),
             )
         else:
-            write_output(get_output(args),
-                "snap\tcollapsed\talt\tsel\tsrc_bi\treached_bi\t"
-                "reached_state\treason"
+            write_output(
+                get_output(args),
+                "snap\tcollapsed\talt\tsel\tsrc_bi\treached_bi\treached_state\treason",
             )
             for s in filtered:
-                write_output(get_output(args),
+                write_output(
+                    get_output(args),
                     "\t".join(
                         (
                             str(s.snapshot_id),
@@ -2808,39 +2941,39 @@ def main(argv: list[str] | None = None) -> int:
                             "T" if s.selected else "-",
                             (
                                 str(s.source_byte_index)
-                                if s.source_byte_index is not None else "-"
+                                if s.source_byte_index is not None
+                                else "-"
                             ),
                             (
                                 str(s.reached_byte_index)
-                                if s.reached_byte_index is not None else "-"
+                                if s.reached_byte_index is not None
+                                else "-"
                             ),
                             s.reached_state_hex or "-",
                             s.reason,
                         )
-                    )
+                    ),
                 )
             sel_count = sum(1 for s in filtered if s.selected)
             rej_count = len(filtered) - sel_count
-            write_output(get_output(args),
+            write_output(
+                get_output(args),
                 f"\n# {sel_count} selected / {rej_count} rejected "
-                f"(persisted={args.persist}, max_depth={args.max_depth})"
+                f"(persisted={args.persist}, max_depth={args.max_depth})",
             )
     elif args.command == "region-shape":
         # Layer-safe: only normalizes the func_ea string locally; no cfg import.
         func_ea = args.func_ea.strip().lower()
         if not func_ea.startswith("0x"):
             func_ea = "0x" + func_ea
-        rsf_query = (
-            RegionShapeFeature.select(
-                RegionShapeFeature.source,
-                RegionShapeFeature.snapshot_id,
-                RegionShapeFeature.region,
-                RegionShapeFeature.feature,
-                RegionShapeFeature.value_text,
-                RegionShapeFeature.evidence_json,
-            )
-            .where(RegionShapeFeature.func_ea_hex == func_ea)
-        )
+        rsf_query = RegionShapeFeature.select(
+            RegionShapeFeature.source,
+            RegionShapeFeature.snapshot_id,
+            RegionShapeFeature.region,
+            RegionShapeFeature.feature,
+            RegionShapeFeature.value_text,
+            RegionShapeFeature.evidence_json,
+        ).where(RegionShapeFeature.func_ea_hex == func_ea)
         if args.source:
             rsf_query = rsf_query.where(RegionShapeFeature.source == args.source)
         if args.snapshot_id is not None:
@@ -2868,28 +3001,29 @@ def main(argv: list[str] | None = None) -> int:
             ]
             write_output(get_output(args), json.dumps(out, indent=2, sort_keys=True))
         else:
-            write_output(get_output(args), "source\tsnapshot_id\tregion\tfeature\tvalue")
+            write_output(
+                get_output(args), "source\tsnapshot_id\tregion\tfeature\tvalue"
+            )
             for r in rows:
-                write_output(get_output(args), f"{r[0]}\t{r[1]!s}\t{r[2]}\t{r[3]}\t{r[4]}")
+                write_output(
+                    get_output(args), f"{r[0]}\t{r[1]!s}\t{r[2]}\t{r[3]}\t{r[4]}"
+                )
             write_output(get_output(args), f"\n# {len(rows)} row(s) shown")
     elif args.command == "terminal-tail-dce":
         func_ea = args.func_ea.strip().lower()
         if not func_ea.startswith("0x"):
             func_ea = "0x" + func_ea
-        ttc_query = (
-            TerminalTailDceCause.select(
-                TerminalTailDceCause.byte_index,
-                TerminalTailDceCause.last_present_snapshot_id,
-                TerminalTailDceCause.first_missing_snapshot_id,
-                TerminalTailDceCause.last_block_serial,
-                TerminalTailDceCause.last_ea_hex,
-                TerminalTailDceCause.cause,
-                TerminalTailDceCause.recommended_action,
-                TerminalTailDceCause.rationale,
-                TerminalTailDceCause.evidence_json,
-            )
-            .where(TerminalTailDceCause.func_ea_hex == func_ea)
-        )
+        ttc_query = TerminalTailDceCause.select(
+            TerminalTailDceCause.byte_index,
+            TerminalTailDceCause.last_present_snapshot_id,
+            TerminalTailDceCause.first_missing_snapshot_id,
+            TerminalTailDceCause.last_block_serial,
+            TerminalTailDceCause.last_ea_hex,
+            TerminalTailDceCause.cause,
+            TerminalTailDceCause.recommended_action,
+            TerminalTailDceCause.rationale,
+            TerminalTailDceCause.evidence_json,
+        ).where(TerminalTailDceCause.func_ea_hex == func_ea)
         if args.byte_index is not None:
             ttc_query = ttc_query.where(
                 TerminalTailDceCause.byte_index == int(args.byte_index)
@@ -2913,9 +3047,14 @@ def main(argv: list[str] | None = None) -> int:
             ]
             write_output(get_output(args), json.dumps(out, indent=2, sort_keys=True))
         else:
-            write_output(get_output(args), "byte_index\tcause\trecommended_action\tlast_pres -> first_miss")
+            write_output(
+                get_output(args),
+                "byte_index\tcause\trecommended_action\tlast_pres -> first_miss",
+            )
             for r in rows:
-                write_output(get_output(args), f"{r[0]}\t{r[5]}\t{r[6]}\t{r[1]} -> {r[2]}")
+                write_output(
+                    get_output(args), f"{r[0]}\t{r[5]}\t{r[6]}\t{r[1]} -> {r[2]}"
+                )
             write_output(get_output(args), f"\n# {len(rows)} cause(s) shown")
     elif args.command == "hcc-byte-cascade-trace":
         from d810.diagnostics.hcc_byte_cascade_trace import (
@@ -2938,7 +3077,9 @@ def main(argv: list[str] | None = None) -> int:
         if getattr(args, "json_output", False):
             write_output(get_output(args), format_report_json(rows))
         else:
-            write_output(get_output(args), format_report(rows, func_label=args.func_label))
+            write_output(
+                get_output(args), format_report(rows, func_label=args.func_label)
+            )
         conn.close()
         return 0
 
@@ -2951,9 +3092,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.bytes:
             try:
                 bytes_filter = [
-                    int(b.strip(), 0)
-                    for b in args.bytes.split(",")
-                    if b.strip()
+                    int(b.strip(), 0) for b in args.bytes.split(",") if b.strip()
                 ]
             except ValueError as exc:
                 print(f"error: bad --bytes value: {exc}", file=sys.stderr)
@@ -2979,9 +3118,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.bytes:
             try:
                 bytes_filter = [
-                    int(b.strip(), 0)
-                    for b in args.bytes.split(",")
-                    if b.strip()
+                    int(b.strip(), 0) for b in args.bytes.split(",") if b.strip()
                 ]
             except ValueError as exc:
                 print(f"error: bad --bytes value: {exc}", file=sys.stderr)
@@ -3005,9 +3142,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.bytes:
             try:
                 bytes_filter = [
-                    int(b.strip(), 0)
-                    for b in args.bytes.split(",")
-                    if b.strip()
+                    int(b.strip(), 0) for b in args.bytes.split(",") if b.strip()
                 ]
             except ValueError as exc:
                 print(f"error: bad --bytes value: {exc}", file=sys.stderr)

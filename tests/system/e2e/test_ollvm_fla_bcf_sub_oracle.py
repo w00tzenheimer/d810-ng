@@ -1,4 +1,5 @@
 """Semantic oracle gate for ``test_function_ollvm_fla_bcf_sub``."""
+
 from __future__ import annotations
 
 import os

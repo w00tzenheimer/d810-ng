@@ -1,4 +1,5 @@
 """Live Hex-Rays post-D810 capture and diagnostic subscribers."""
+
 from __future__ import annotations
 
 import json
@@ -161,7 +162,9 @@ class HexRaysPostD810Runtime:
                 state_var_stkoff: int | None = None
                 try:
                     state_machine = getattr(rule, "state_machine", None)
-                    state_var_stkoff = rule._get_effective_state_var_stkoff(state_machine)
+                    state_var_stkoff = rule._get_effective_state_var_stkoff(
+                        state_machine
+                    )
                 except Exception:
                     state_var_stkoff = None
                 return dispatcher_serial, state_var_stkoff
@@ -171,7 +174,8 @@ class HexRaysPostD810Runtime:
             rule
             for rule in candidates
             if getattr(rule, "_current_tracked_maturity", None) is None
-            or int(getattr(rule, "_current_tracked_maturity", 0)) == int(target_maturity)
+            or int(getattr(rule, "_current_tracked_maturity", 0))
+            == int(target_maturity)
         ]
         dispatcher_serial, state_var_stkoff = _try_rules(exact_maturity)
         if dispatcher_serial is not None:
@@ -262,6 +266,7 @@ class HexRaysPostD810Runtime:
             return
         try:
             import ida_hexrays as _hx
+
             if int(maturity) != int(_hx.MMAT_LOCOPT):
                 return
         except Exception:

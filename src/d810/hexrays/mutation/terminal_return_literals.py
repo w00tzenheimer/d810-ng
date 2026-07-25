@@ -1,4 +1,5 @@
 """In-memory terminal return literals observed during Hex-Rays materialization."""
+
 from __future__ import annotations
 
 from d810.core.typing import Any

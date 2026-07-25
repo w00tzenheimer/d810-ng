@@ -15,6 +15,7 @@ def _get_default_cython_enabled() -> bool:
         return False
     try:
         import cython  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -147,6 +148,7 @@ class CythonImporter:
             raise ImportError(f"CythonMode disabled, skipping {module_name}")
 
         import importlib
+
         return importlib.import_module(module_name)
 
     def import_attr(self, module_name: str, attr_name: str):

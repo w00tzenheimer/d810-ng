@@ -15,6 +15,7 @@ modifications + analysis planner + LFG DAG log parsing) now lives in
 ``src/d810/diagnostics/residual_worksheet.py`` with unit tests under
 ``tests/unit/diagnostics/test_residual_worksheet.py``.
 """
+
 from __future__ import annotations
 
 import os

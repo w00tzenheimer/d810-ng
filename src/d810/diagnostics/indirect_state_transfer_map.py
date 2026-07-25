@@ -15,6 +15,7 @@ The command is intentionally read-only. It reconstructs the finite state domain
 from ``state_dispatcher_rows`` and walks snapshot CFG paths to the dispatcher
 entry, collecting full-width constant writes to the configured state stack slot.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -32,7 +33,6 @@ from d810.core.diag.models import (
 )
 from d810.diagnostics.output import add_output_argument, get_output, write_output
 from d810.core.typing import Any
-
 
 
 @dataclass(frozen=True)
@@ -59,10 +59,14 @@ def _parse_json_list(value: object) -> tuple[int, ...]:
     return tuple(int(item) for item in raw)
 
 
-def _overlaps(left_start: int, left_size: int, right_start: int, right_size: int) -> bool:
+def _overlaps(
+    left_start: int, left_size: int, right_start: int, right_size: int
+) -> bool:
     if left_size <= 0 or right_size <= 0:
         return False
-    return left_start < right_start + right_size and right_start < left_start + left_size
+    return (
+        left_start < right_start + right_size and right_start < left_start + left_size
+    )
 
 
 def choose_snapshot(conn: sqlite3.Connection) -> SnapshotChoice:
@@ -98,9 +102,7 @@ def choose_snapshot(conn: sqlite3.Connection) -> SnapshotChoice:
         """
     ).fetchall()
     if not rows:
-        raise SystemExit(
-            "no TABLE/indirect_jump_table state_dispatcher_rows found"
-        )
+        raise SystemExit("no TABLE/indirect_jump_table state_dispatcher_rows found")
     row = rows[0]
     return SnapshotChoice(
         snapshot_id=int(row[0]),
@@ -114,7 +116,9 @@ def choose_snapshot(conn: sqlite3.Connection) -> SnapshotChoice:
     )
 
 
-def load_blocks(conn: sqlite3.Connection, snapshot_id: int) -> dict[int, dict[str, Any]]:
+def load_blocks(
+    conn: sqlite3.Connection, snapshot_id: int
+) -> dict[int, dict[str, Any]]:
     blocks: dict[int, dict[str, Any]] = {}
     for row in (
         Block.select(
@@ -441,7 +445,9 @@ def _walk_transfer_paths(
                     "path": list(path),
                     "writes": list(writes),
                     "reason": (
-                        "constant_state_write" if last_state is not None else "no_state_write"
+                        "constant_state_write"
+                        if last_state is not None
+                        else "no_state_write"
                     ),
                 }
             )
@@ -548,7 +554,9 @@ def check_table_invariance(
             dest_size = insn.get("dest_size")
             if dest_stkoff is None or dest_size is None:
                 continue
-            if not _overlaps(int(dest_stkoff), int(dest_size), table_stkoff, table_size):
+            if not _overlaps(
+                int(dest_stkoff), int(dest_size), table_stkoff, table_size
+            ):
                 continue
             explicit_writes.append(
                 {
@@ -648,8 +656,7 @@ def extract_transfer_map(
             ).fetchone()
             if row is None:
                 raise SystemExit(
-                    f"snapshot {snapshot_id} has no TABLE/"
-                    "indirect_jump_table rows"
+                    f"snapshot {snapshot_id} has no TABLE/indirect_jump_table rows"
                 )
             choice = SnapshotChoice(
                 snapshot_id=int(row[0]),
@@ -868,7 +875,9 @@ def render_text(report: dict[str, Any]) -> str:
 
 def _add_arguments(parser: argparse.ArgumentParser, *, include_db: bool) -> None:
     if include_db:
-        parser.add_argument("--db", required=True, type=Path, help="Diagnostic SQLite DB")
+        parser.add_argument(
+            "--db", required=True, type=Path, help="Diagnostic SQLite DB"
+        )
     parser.add_argument("--snapshot-id", type=int, default=None)
     parser.add_argument(
         "--state-var-stkoff",

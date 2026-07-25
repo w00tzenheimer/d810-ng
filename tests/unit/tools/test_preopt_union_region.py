@@ -91,8 +91,6 @@ def test_missing_union_region_keeps_only_seed_closures_absent_from_live_mba() ->
 
     assert missing.seed_eas == (0x702000,)
     assert missing.primary_seed_ea == 0x702000
-    assert missing.seed_native_ranges == (
-        (0x702000, ((0x702000, 0x702030),)),
-    )
+    assert missing.seed_native_ranges == ((0x702000, ((0x702000, 0x702030),)),)
     assert missing.native_ranges == ((0x702000, 0x702030),)
     assert missing.abstentions == ()

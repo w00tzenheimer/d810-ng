@@ -41,20 +41,24 @@ from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 logger = getLogger(__name__)
 
 # Common read-only section names across platforms.
-_CONST_SECTION_NAMES: frozenset[str] = frozenset({
-    "__const",
-    ".rodata",
-    ".rdata",
-    "__DATA_CONST",
-    "__cstring",
-    "__cfstring",
-})
+_CONST_SECTION_NAMES: frozenset[str] = frozenset(
+    {
+        "__const",
+        ".rodata",
+        ".rdata",
+        "__DATA_CONST",
+        "__cstring",
+        "__cfstring",
+    }
+)
 
 # Writable sections where we still allow inlining if no write xrefs exist.
-_DATA_SECTION_NAMES: frozenset[str] = frozenset({
-    "__data",
-    ".data",
-})
+_DATA_SECTION_NAMES: frozenset[str] = frozenset(
+    {
+        "__data",
+        ".data",
+    }
+)
 
 # Maximum operand size (in bytes) that we are willing to inline.
 _MAX_INLINE_SIZE: int = 8
@@ -279,7 +283,9 @@ class _PointerHeuristicHandler:
     - ``None``: no decision, continue with next handler
     """
 
-    def __init__(self, next_handler: Optional["_PointerHeuristicHandler"] = None) -> None:
+    def __init__(
+        self, next_handler: Optional["_PointerHeuristicHandler"] = None
+    ) -> None:
         self._next = next_handler
 
     def handle(self, ctx: _PointerHeuristicContext) -> bool:
@@ -422,9 +428,7 @@ def _looks_like_pointer(value: int, size: int) -> bool:
     return _POINTER_HEURISTIC_CHAIN.handle(ctx)
 
 
-def _replace_with_immediate(
-    insn: ida_hexrays.minsn_t, value: int, size: int
-) -> None:
+def _replace_with_immediate(insn: ida_hexrays.minsn_t, value: int, size: int) -> None:
     """Rewrite *insn* as ``m_mov dst, #value``.
 
     For ``m_ldx`` instructions the segment (``l``) and address (``r``)

@@ -1,4 +1,5 @@
 """PassRegistry conformance for PipelineConfig v2."""
+
 from __future__ import annotations
 
 import pytest
@@ -60,9 +61,7 @@ def test_state_machine_pass_ids_resolve_to_pass_specs():
     registry = state_machine_pass_registry()
     original_specs = standard_state_machine_passes()
 
-    rebuilt_specs = tuple(
-        registry.build_spec(spec.config) for spec in original_specs
-    )
+    rebuilt_specs = tuple(registry.build_spec(spec.config) for spec in original_specs)
 
     assert [spec.pass_id for spec in rebuilt_specs] == [
         "recover_dispatcher",

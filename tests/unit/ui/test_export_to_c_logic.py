@@ -2,6 +2,7 @@
 
 These tests verify the pure Python logic without requiring IDA Pro.
 """
+
 from __future__ import annotations
 
 from d810.ui.actions.export_to_c_logic import (
@@ -29,7 +30,7 @@ class TestSanitizeFilename:
         """Test removal of invalid filename characters."""
         assert sanitize_filename("my::func<int>") == "my__func_int_"
         assert sanitize_filename("operator<<") == "operator__"
-        assert sanitize_filename('bad/path\\chars') == "bad_path_chars"
+        assert sanitize_filename("bad/path\\chars") == "bad_path_chars"
 
     def test_replaces_spaces(self):
         """Test spaces are replaced with underscores."""
@@ -294,7 +295,7 @@ class TestFormatCOutput:
             pseudocode_lines=[
                 "__int64 __fastcall collapsed_locals(__int64 a1)",
                 "{",
-                "    // [COLLAPSED LOCAL DECLARATIONS. PRESS NUMPAD \"+\" TO EXPAND]",
+                '    // [COLLAPSED LOCAL DECLARATIONS. PRESS NUMPAD "+" TO EXPAND]',
                 "",
                 "    v4 = a1 + 1;",
                 "    return v4;",
@@ -515,7 +516,10 @@ class TestFormatSampleCompatibleC:
             ],
         )
         assert "extern BOOL (__stdcall *IsThreadAFiber)(void);" in output
-        assert "extern void (__stdcall *RtlAcquireSRWLockExclusive)(void *SRWLock);" in output
+        assert (
+            "extern void (__stdcall *RtlAcquireSRWLockExclusive)(void *SRWLock);"
+            in output
+        )
         assert "extern LPVOID (__stdcall *TlsGetValue)(DWORD dwTlsIndex);" in output
 
     def test_global_already_volatile(self):
@@ -616,7 +620,7 @@ class TestFormatSampleCompatibleC:
             pseudocode_lines=[
                 "__int64 __fastcall collapsed_locals(__int64 a1, __int64 a2)",
                 "{",
-                "    // [COLLAPSED LOCAL DECLARATIONS. PRESS NUMPAD \"+\" TO EXPAND]",
+                '    // [COLLAPSED LOCAL DECLARATIONS. PRESS NUMPAD "+" TO EXPAND]',
                 "",
                 "    v2 = a1 + a2;",
                 "    return v2;",
@@ -679,8 +683,8 @@ class TestFormatSampleCompatibleC:
                 "}",
             ],
             global_declarations=[
-                "static volatile const _OWORD xmmword_7FFB2084A716 = D810_XMMWORD(\"90708D8A9D04E7A19D273081BA1B2423\");",
-                "static volatile const _OWORD xmmword_7FFB2084A726 = D810_XMMWORD(\"33E919F4343E7A0985500402EEC8F9F4\");",
+                'static volatile const _OWORD xmmword_7FFB2084A716 = D810_XMMWORD("90708D8A9D04E7A19D273081BA1B2423");',
+                'static volatile const _OWORD xmmword_7FFB2084A726 = D810_XMMWORD("33E919F4343E7A0985500402EEC8F9F4");',
             ],
         )
         assert "STORE_OWORD_N(Value, 0, &xmmword_7FFB2084A716);" in output
@@ -712,7 +716,7 @@ class TestFormatSampleCompatibleC:
                 "}",
             ],
             global_declarations=[
-                "static volatile const _OWORD xmmword_7FFB2084A736 = D810_XMMWORD(\"9A5BC3C2D1CDC6822CCC81A6D1D635D1\");",
+                'static volatile const _OWORD xmmword_7FFB2084A736 = D810_XMMWORD("9A5BC3C2D1CDC6822CCC81A6D1D635D1");',
             ],
         )
         assert "STORE_OWORD_N(Value, 3, &xmmword_7FFB2084A736);" in output
@@ -820,7 +824,9 @@ class TestCompileSafetyRewrites:
             "  sub_7FFB207233E0(0x23, 0x26, Value, 0xAA, 0xA);",
         ]
         out = apply_compile_safety_rewrites(lines)
-        assert out[0] == "  sub_7FFB20835490((_QWORD)(&Context), (_QWORD)(a1[1]), 0x4D0);"
+        assert (
+            out[0] == "  sub_7FFB20835490((_QWORD)(&Context), (_QWORD)(a1[1]), 0x4D0);"
+        )
         assert "(_QWORD)(Value)" in out[1]
 
     def test_multiline_subcall_third_arg_gets_casted(self):

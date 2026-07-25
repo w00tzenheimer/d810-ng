@@ -1,4 +1,5 @@
 """Backend-neutral exact semantic edge selection helpers."""
+
 from __future__ import annotations
 
 from collections.abc import Iterable

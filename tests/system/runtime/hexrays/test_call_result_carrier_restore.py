@@ -1505,12 +1505,14 @@ def test_hexrays_hooks_own_the_preopt_generation_guard() -> None:
             ("begin", function_ea)
         ),
         mark_preopt_ready_emitted=(
-            lambda *, function_ea, microcode_modified, callback_pointer_refresh_required: lifecycle_calls.append(
-                (
-                    "preopt",
-                    function_ea,
-                    microcode_modified,
-                    callback_pointer_refresh_required,
+            lambda *, function_ea, microcode_modified, callback_pointer_refresh_required: (
+                lifecycle_calls.append(
+                    (
+                        "preopt",
+                        function_ea,
+                        microcode_modified,
+                        callback_pointer_refresh_required,
+                    )
                 )
             )
         ),

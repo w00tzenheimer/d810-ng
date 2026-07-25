@@ -1,4 +1,5 @@
 """Textual LLVM IR emitter for the M1a portable-IR supported subset."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,7 +13,12 @@ from d810.ir.instructions import (
     InstructionEffectKind,
     InstructionMemoryAccessKind,
 )
-from d810.ir.semantics import CallKind, ControlTransferKind, OperationKind, PredicateKind
+from d810.ir.semantics import (
+    CallKind,
+    ControlTransferKind,
+    OperationKind,
+    PredicateKind,
+)
 from d810.ir.varnode import Space, Varnode
 from d810.backends.llvm.identity_lowering import (
     LlvmIdentityManifest,
@@ -205,7 +211,9 @@ def emit_flowgraph_to_llvm(
         sanitize_llvm_function_name(function_name),
         boundary,
     )
-    return LlvmLiftResult(ir_text=emitter.emit(), identity_manifest=emitter.identity_manifest())
+    return LlvmLiftResult(
+        ir_text=emitter.emit(), identity_manifest=emitter.identity_manifest()
+    )
 
 
 def _sanitize_function_name(name: str) -> str:
@@ -458,7 +466,9 @@ class _Classifier:
                 )
             return
         if isinstance(instruction.operation, PredicateKind):
-            self._check_predicate_materialization(block_serial, instruction_index, instruction)
+            self._check_predicate_materialization(
+                block_serial, instruction_index, instruction
+            )
             return
         if "unsupported_nested_sub_kind" in instruction.attrs:
             nested_kind = instruction.attrs.get("unsupported_nested_sub_kind")
@@ -631,7 +641,9 @@ class _Classifier:
                     UnsupportedLiftKind.VALUE_RESULT_CONST,
                     "LOAD result cannot be const",
                 )
-            self._check_varnode(block_serial, instruction_index, instruction, instruction.result)
+            self._check_varnode(
+                block_serial, instruction_index, instruction, instruction.result
+            )
             self._check_memory_width(
                 block_serial,
                 instruction_index,
@@ -723,7 +735,9 @@ class _Classifier:
                 UnsupportedLiftKind.CALL_PAYLOAD_UNSUPPORTED,
                 "call requires exactly one canonical call effect",
             )
-        call_target = instruction.control.call_target if instruction.control is not None else None
+        call_target = (
+            instruction.control.call_target if instruction.control is not None else None
+        )
         if call_target is None:
             self._add(
                 block_serial,
@@ -733,7 +747,9 @@ class _Classifier:
                 "call requires a portable call target",
             )
         else:
-            self._check_varnode(block_serial, instruction_index, instruction, call_target)
+            self._check_varnode(
+                block_serial, instruction_index, instruction, call_target
+            )
         if instruction.result is not None and instruction.result.space is Space.CONST:
             self._add(
                 block_serial,
@@ -856,7 +872,10 @@ class _Classifier:
                     "control-transfer instruction must be block tail",
                 )
         tail = instructions[-1] if instructions else None
-        if tail is not None and tail.operation is ControlTransferKind.CONDITIONAL_BRANCH:
+        if (
+            tail is not None
+            and tail.operation is ControlTransferKind.CONDITIONAL_BRANCH
+        ):
             if len(block.succs) != 2:
                 self._add(
                     block_serial,
@@ -883,7 +902,9 @@ class _Classifier:
                 )
             else:
                 self._check_matching_widths(block_serial, len(instructions) - 1, tail)
-            self._check_conditional_branch_targets(block_serial, len(instructions) - 1, tail)
+            self._check_conditional_branch_targets(
+                block_serial, len(instructions) - 1, tail
+            )
             return
         if tail is not None and tail.operation is ControlTransferKind.TABLE_BRANCH:
             if len(tail.inputs) != 1:
@@ -1082,7 +1103,9 @@ class _Emitter:
             "entry:",
         ]
         for vn in self.varnodes:
-            body_lines.append(f"  %{_varnode_name(vn)} = alloca {_llvm_type(vn)}, align {vn.size}")
+            body_lines.append(
+                f"  %{_varnode_name(vn)} = alloca {_llvm_type(vn)}, align {vn.size}"
+            )
         for boundary_input in self.boundary.inputs:
             body_lines.extend(self._emit_boundary_input(boundary_input))
         body_lines.append(f"  br label %bb{self.flow_graph.entry_serial}")
@@ -1114,7 +1137,9 @@ class _Emitter:
 
     def _ordered_blocks(self) -> tuple[int, ...]:
         entry = int(self.flow_graph.entry_serial)
-        rest = tuple(serial for serial in sorted(self.flow_graph.blocks) if serial != entry)
+        rest = tuple(
+            serial for serial in sorted(self.flow_graph.blocks) if serial != entry
+        )
         return (entry, *rest)
 
     def _collect_varnodes(self) -> tuple[Varnode, ...]:
@@ -1165,7 +1190,9 @@ class _Emitter:
                             continue
                         found.add(vn)
                         ordered.append(vn)
-        return tuple(sorted(ordered, key=lambda vn: (vn.space.value, vn.offset, vn.size)))
+        return tuple(
+            sorted(ordered, key=lambda vn: (vn.space.value, vn.offset, vn.size))
+        )
 
     def _emit_boundary_input(self, boundary_input: LlvmLiftBoundaryInput) -> list[str]:
         lines: list[str] = []
@@ -1178,7 +1205,11 @@ class _Emitter:
             value = source
             if target_ty != source_ty:
                 value = self._tmp()
-                op = "trunc" if int(target.size) < int(boundary_input.cell.size) else "zext"
+                op = (
+                    "trunc"
+                    if int(target.size) < int(boundary_input.cell.size)
+                    else "zext"
+                )
                 lines.append(f"  {value} = {op} {source_ty} {source} to {target_ty}")
             lines.append(
                 f"  store {target_ty} {value}, ptr %{_varnode_name(target)}, "
@@ -1226,7 +1257,9 @@ class _Emitter:
         return self._emit_value_instruction(instruction)
 
     def _call_arguments(self, instruction: Instruction) -> tuple[Varnode, ...]:
-        target = instruction.control.call_target if instruction.control is not None else None
+        target = (
+            instruction.control.call_target if instruction.control is not None else None
+        )
         if target is None:
             return instruction.inputs
         if instruction.inputs and instruction.inputs[0] == target:
@@ -1236,13 +1269,17 @@ class _Emitter:
     def _call_declaration_name(self, ret_ty: str, arg_tys: tuple[str, ...]) -> str:
         sig = "_".join((ret_ty, *arg_tys)).replace("*", "ptr").replace(" ", "_")
         name = f"__d810_opaque_call_{sig}"
-        self.declarations.setdefault(name, f"declare {ret_ty} @{name}({', '.join(arg_tys)})")
+        self.declarations.setdefault(
+            name, f"declare {ret_ty} @{name}({', '.join(arg_tys)})"
+        )
         return name
 
     def _overflow_intrinsic_name(self, operation: ValueOpKind, ty: str) -> str:
         suffix = "sadd" if operation is ValueOpKind.OVERFLOW_ADD else "ssub"
         name = f"llvm.{suffix}.with.overflow.{ty}"
-        self.declarations.setdefault(name, f"declare {{ {ty}, i1 }} @{name}({ty}, {ty})")
+        self.declarations.setdefault(
+            name, f"declare {{ {ty}, i1 }} @{name}({ty}, {ty})"
+        )
         return name
 
     def _emit_call_instruction(self, instruction: Instruction) -> list[str]:
@@ -1253,7 +1290,9 @@ class _Emitter:
             ty, value = self._emit_value(vn, lines)
             arg_tys.append(ty)
             args.append(f"{ty} {value}")
-        ret_ty = _llvm_type(instruction.result) if instruction.result is not None else "void"
+        ret_ty = (
+            _llvm_type(instruction.result) if instruction.result is not None else "void"
+        )
         assert ret_ty is not None
         callee = self._call_declaration_name(ret_ty, tuple(arg_tys))
         if instruction.result is None:
@@ -1380,10 +1419,15 @@ class _Emitter:
             )
         return lines
 
-    def _emit_terminator(self, serial: int, instructions: tuple[Instruction, ...]) -> list[str]:
+    def _emit_terminator(
+        self, serial: int, instructions: tuple[Instruction, ...]
+    ) -> list[str]:
         block = self.flow_graph.blocks[serial]
         tail = instructions[-1] if instructions else None
-        if tail is not None and tail.operation is ControlTransferKind.CONDITIONAL_BRANCH:
+        if (
+            tail is not None
+            and tail.operation is ControlTransferKind.CONDITIONAL_BRANCH
+        ):
             return self._emit_conditional_branch(block.succs, tail)
         if tail is not None and tail.operation is ControlTransferKind.TABLE_BRANCH:
             return self._emit_table_branch(tail)
@@ -1419,7 +1463,9 @@ class _Emitter:
     def _emit_table_branch(self, instruction: Instruction) -> list[str]:
         lines: list[str] = []
         selector_ty, selector = self._emit_value(instruction.inputs[0], lines)
-        cases = instruction.control.switch_cases if instruction.control is not None else ()
+        cases = (
+            instruction.control.switch_cases if instruction.control is not None else ()
+        )
         default_target = next(case.target for case in cases if not case.values)
         lines.append(f"  switch {selector_ty} {selector}, label %bb{default_target} [")
         for case in cases:
@@ -1446,7 +1492,8 @@ class _Emitter:
         else:
             return_value = (
                 instruction.control.return_value
-                if instruction.control is not None and instruction.control.return_value is not None
+                if instruction.control is not None
+                and instruction.control.return_value is not None
                 else self.boundary.return_cell
             )
         assert return_value is not None

@@ -1,4 +1,5 @@
 "Terminal-tail region audit -- post-hoc diag DB consumer.\n\nReads ``TerminalByteEmitterFact`` rows from a captured diag SQLite and\nproduces the byte_emit[k] timeline + first-loss report from\n:mod:`d810.transforms.terminal_tail_region_matcher` and\n:mod:`d810.transforms.terminal_tail_loss_localizer`.\n\nThis module is the **post-hoc** side of the byte-cascade observability\nstack: the preanalysis collector writes ``TerminalByteEmitterFact`` rows during\ndecompile, and this module reads + summarises them after the fact. The\ncore report logic lives in ``d810.cfg.*`` because it is also consumed\nduring the in-flight reconstruction path; this module is the thin SQL\nlayer that feeds those report functions.\n"
+
 from __future__ import annotations
 
 import json
@@ -74,9 +75,7 @@ def iter_observations(conn: sqlite3.Connection) -> list[ByteEmitObservation]:
                 corridor_role=str(payload.get("corridor_role", "")),
                 counter_carrier=payload.get("counter_carrier"),
                 source_form=source_form,
-                destination_present=bool(
-                    payload.get("destination_buffer_expression")
-                ),
+                destination_present=bool(payload.get("destination_buffer_expression")),
                 counter_update_present=bool(payload.get("counter_carrier")),
                 block_ea_hex=payload.get("block_ea_hex"),
             )
@@ -85,7 +84,8 @@ def iter_observations(conn: sqlite3.Connection) -> list[ByteEmitObservation]:
 
 
 def build_initial_states_at_snap(
-    conn: sqlite3.Connection, snap_id: int,
+    conn: sqlite3.Connection,
+    snap_id: int,
 ) -> list[ByteEmitInitialState]:
     """Read ``TerminalByteEmitterFact`` at *snap_id* and pair each byte
     index with the block's ``start_ea_hex``.
@@ -118,9 +118,7 @@ def build_initial_states_at_snap(
             continue
         block = (
             Block.select(Block.start_ea_hex)
-            .where(
-                (Block.snapshot == snap_id) & (Block.serial == block_serial)
-            )
+            .where((Block.snapshot == snap_id) & (Block.serial == block_serial))
             .tuples()
             .first()
         )
@@ -136,7 +134,8 @@ def build_initial_states_at_snap(
 
 
 def build_block_lookup(
-    conn: sqlite3.Connection, snap_ids: Iterable[int],
+    conn: sqlite3.Connection,
+    snap_ids: Iterable[int],
 ) -> dict[tuple[int, str], tuple[int, int, int, int]]:
     """``(snapshot_id, start_ea_hex) -> (serial, npred, nsucc, insn_count)``.
 
@@ -163,7 +162,10 @@ def build_block_lookup(
         if start_ea is None:
             continue
         out[(int(snap_id), start_ea)] = (
-            int(serial), int(npred or 0), int(nsucc or 0), int(insn_count or 0),
+            int(serial),
+            int(npred or 0),
+            int(nsucc or 0),
+            int(insn_count or 0),
         )
     return out
 
@@ -198,7 +200,8 @@ def glbopt1_snapshots(
 
 
 def build_fact_lookup(
-    conn: sqlite3.Connection, snap_ids: Iterable[int],
+    conn: sqlite3.Connection,
+    snap_ids: Iterable[int],
 ) -> dict[tuple[int, int], bool]:
     """Which ``(snapshot_id, byte_index)`` pairs have a fact captured.
 
@@ -210,9 +213,7 @@ def build_fact_lookup(
         return {}
     out: dict[tuple[int, int], bool] = {}
     for snap_id, payload_json in (
-        FactObservation.select(
-            FactObservation.snapshot, FactObservation.payload
-        )
+        FactObservation.select(FactObservation.snapshot, FactObservation.payload)
         .where(
             (FactObservation.kind == "TerminalByteEmitterFact")
             & FactObservation.snapshot.in_(ids)
@@ -268,7 +269,10 @@ def run_audit(
             block_lookup = build_block_lookup(conn, snap_ids)
             fact_lookup = build_fact_lookup(conn, snap_ids)
             loc_report = localize_byte_emit_loss(
-                initial_states, snapshots, block_lookup, fact_lookup,
+                initial_states,
+                snapshots,
+                block_lookup,
+                fact_lookup,
             )
             pieces.append("")
             pieces.append(format_localization_report(loc_report))

@@ -9,6 +9,7 @@ state, and the real states are never compared directly).
 IDA-free: the walk core is portable; only the live oracles (seed + MicroCodeInterpreter) are
 IDA-bound, and those are covered by system tests.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.emulated_state_walk import (
@@ -25,10 +26,10 @@ _INITIAL = 0x123456EF
 # Synthetic handler block serials, one per switch case label (selector value).
 _H_ENTRY, _H_ADD, _H_MUL, _H_COND, _H_EXIT_A, _H_EXIT_B = 10, 11, 12, 13, 14, 15
 _HANDLER_BY_SELECTOR = {
-    0x00: _H_ENTRY,   # result = input;        state ^= 0x11111111
-    0x11: _H_ADD,     # result += 42;          state ^= 0x22222222
-    0x33: _H_MUL,     # result *= 2;           state ^= 0x44444444
-    0x77: _H_COND,    # if result>100: ^0x88888888 else ^0x99999999
+    0x00: _H_ENTRY,  # result = input;        state ^= 0x11111111
+    0x11: _H_ADD,  # result += 42;          state ^= 0x22222222
+    0x33: _H_MUL,  # result *= 2;           state ^= 0x44444444
+    0x77: _H_COND,  # if result>100: ^0x88888888 else ^0x99999999
     0xFF: _H_EXIT_A,  # return result
     0xEE: _H_EXIT_B,  # return -result
 }

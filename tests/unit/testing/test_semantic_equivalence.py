@@ -7,6 +7,7 @@ d81-c733: an OLLVM conditional dispatcher that d810 folded to
 ``return 3 * (a1 - 5) / 2`` (the whole ``if`` dropped) while still passing
 ``must_change``.  The oracle must reject exactly that.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -121,9 +122,13 @@ def test_oracle_reports_missing_reference_as_failure_not_skip():
 
 
 def test_oracle_signals_unavailable_when_no_compiler():
-    ok, detail = check_semantic_equivalence(
-        _CORRECT_AFTER, "high_fan_in_pattern", _REFERENCE_SOURCE, compiler=None
-    ) if find_c_compiler() is None else (None, "skipped: compiler present")
+    ok, detail = (
+        check_semantic_equivalence(
+            _CORRECT_AFTER, "high_fan_in_pattern", _REFERENCE_SOURCE, compiler=None
+        )
+        if find_c_compiler() is None
+        else (None, "skipped: compiler present")
+    )
     if find_c_compiler() is None:
         assert ok is None
         assert "no C compiler" in detail

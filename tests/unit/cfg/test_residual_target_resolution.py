@@ -81,7 +81,9 @@ def test_collect_owned_exact_sources_includes_straight_line_source_block() -> No
     assert owned == {14, 28}
 
 
-def test_is_structured_conditional_path_feeder_detects_immediate_conditional_feeder() -> None:
+def test_is_structured_conditional_path_feeder_detects_immediate_conditional_feeder() -> (
+    None
+):
     dag = SimpleNamespace(
         edges=(
             SimpleNamespace(
@@ -129,19 +131,24 @@ def test_is_supplemental_feeder_bypass_requires_semantic_or_return_support() -> 
     )
 
 
-def test_walk_condition_chain_dispatcher_follows_goto_to_non_condition_chain_target() -> None:
+def test_walk_condition_chain_dispatcher_follows_goto_to_non_condition_chain_target() -> (
+    None
+):
     tails = {
         2: ConditionChainGotoTail(target=3),
         3: ConditionChainGotoTail(target=20),
     }
 
-    assert walk_condition_chain_dispatcher(
-        root=2,
-        condition_chain_blocks={2, 3},
-        state_value=0x42,
-        tail_for_block_fn=tails.get,
-        is_conditional_taken_fn=lambda *_args: None,
-    ) == 20
+    assert (
+        walk_condition_chain_dispatcher(
+            root=2,
+            condition_chain_blocks={2, 3},
+            state_value=0x42,
+            tail_for_block_fn=tails.get,
+            is_conditional_taken_fn=lambda *_args: None,
+        )
+        == 20
+    )
 
 
 def test_walk_condition_chain_dispatcher_follows_taken_conditional_target() -> None:
@@ -156,18 +163,23 @@ def test_walk_condition_chain_dispatcher_follows_taken_conditional_target() -> N
         7: ConditionChainGotoTail(target=30),
     }
 
-    assert walk_condition_chain_dispatcher(
-        root=2,
-        condition_chain_blocks={2, 7},
-        state_value=0x10,
-        tail_for_block_fn=tails.get,
-        is_conditional_taken_fn=lambda opcode, state, rhs, size: (
-            opcode == 100 and state == rhs and size == 4
-        ),
-    ) == 30
+    assert (
+        walk_condition_chain_dispatcher(
+            root=2,
+            condition_chain_blocks={2, 7},
+            state_value=0x10,
+            tail_for_block_fn=tails.get,
+            is_conditional_taken_fn=lambda opcode, state, rhs, size: (
+                opcode == 100 and state == rhs and size == 4
+            ),
+        )
+        == 30
+    )
 
 
-def test_walk_condition_chain_dispatcher_prefers_structural_fallthrough_successor() -> None:
+def test_walk_condition_chain_dispatcher_prefers_structural_fallthrough_successor() -> (
+    None
+):
     tails = {
         2: ConditionChainConditionalTail(
             opcode=100,
@@ -179,13 +191,16 @@ def test_walk_condition_chain_dispatcher_prefers_structural_fallthrough_successo
         3: ConditionChainGotoTail(target=40),
     }
 
-    assert walk_condition_chain_dispatcher(
-        root=2,
-        condition_chain_blocks={2, 3},
-        state_value=0x11,
-        tail_for_block_fn=tails.get,
-        is_conditional_taken_fn=lambda *_args: False,
-    ) == 40
+    assert (
+        walk_condition_chain_dispatcher(
+            root=2,
+            condition_chain_blocks={2, 3},
+            state_value=0x11,
+            tail_for_block_fn=tails.get,
+            is_conditional_taken_fn=lambda *_args: False,
+        )
+        == 40
+    )
 
 
 def test_walk_condition_chain_dispatcher_returns_none_on_cycle() -> None:
@@ -194,16 +209,21 @@ def test_walk_condition_chain_dispatcher_returns_none_on_cycle() -> None:
         3: ConditionChainGotoTail(target=2),
     }
 
-    assert walk_condition_chain_dispatcher(
-        root=2,
-        condition_chain_blocks={2, 3},
-        state_value=0x42,
-        tail_for_block_fn=tails.get,
-        is_conditional_taken_fn=lambda *_args: None,
-    ) is None
+    assert (
+        walk_condition_chain_dispatcher(
+            root=2,
+            condition_chain_blocks={2, 3},
+            state_value=0x42,
+            tail_for_block_fn=tails.get,
+            is_conditional_taken_fn=lambda *_args: None,
+        )
+        is None
+    )
 
 
-def test_walk_condition_chain_dispatcher_returns_none_when_conditional_unknown() -> None:
+def test_walk_condition_chain_dispatcher_returns_none_when_conditional_unknown() -> (
+    None
+):
     tails = {
         2: ConditionChainConditionalTail(
             opcode=100,
@@ -214,16 +234,21 @@ def test_walk_condition_chain_dispatcher_returns_none_when_conditional_unknown()
         ),
     }
 
-    assert walk_condition_chain_dispatcher(
-        root=2,
-        condition_chain_blocks={2},
-        state_value=0x10,
-        tail_for_block_fn=tails.get,
-        is_conditional_taken_fn=lambda *_args: None,
-    ) is None
+    assert (
+        walk_condition_chain_dispatcher(
+            root=2,
+            condition_chain_blocks={2},
+            state_value=0x10,
+            tail_for_block_fn=tails.get,
+            is_conditional_taken_fn=lambda *_args: None,
+        )
+        is None
+    )
 
 
-def test_resolve_dispatcher_trampoline_skip_candidate_accepts_condition_chain_resolved_target() -> None:
+def test_resolve_dispatcher_trampoline_skip_candidate_accepts_condition_chain_resolved_target() -> (
+    None
+):
     decision = resolve_dispatcher_trampoline_skip_candidate(
         source_block=10,
         dispatcher_root=2,
@@ -245,7 +270,9 @@ def test_resolve_dispatcher_trampoline_skip_candidate_accepts_condition_chain_re
     assert decision.rejection_reason is None
 
 
-def test_resolve_dispatcher_trampoline_skip_candidate_rejects_direct_veto_before_callbacks() -> None:
+def test_resolve_dispatcher_trampoline_skip_candidate_rejects_direct_veto_before_callbacks() -> (
+    None
+):
     callback_calls: list[str] = []
 
     decision = resolve_dispatcher_trampoline_skip_candidate(
@@ -266,7 +293,9 @@ def test_resolve_dispatcher_trampoline_skip_candidate_rejects_direct_veto_before
     assert callback_calls == []
 
 
-def test_resolve_dispatcher_trampoline_skip_candidate_requires_one_way_goto_to_condition_chain() -> None:
+def test_resolve_dispatcher_trampoline_skip_candidate_requires_one_way_goto_to_condition_chain() -> (
+    None
+):
     decision = resolve_dispatcher_trampoline_skip_candidate(
         source_block=10,
         dispatcher_root=2,

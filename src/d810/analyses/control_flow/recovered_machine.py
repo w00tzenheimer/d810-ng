@@ -12,6 +12,7 @@ LEAF module: imports only the pure-data row/map types + enums. It must NOT impor
 ``dispatcher_resolver`` / ``dispatcher_recovery`` (those import the engine layer
 that imports *this*), keeping the contract cycle-free under ``check-cycles``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -207,14 +208,12 @@ class RecoveredMachine:
                 table_provenance=r.table_provenance,
                 confidence=r.confidence,
                 row_kind=r.row_kind,
-                context=(),                # k=1 raw state
+                context=(),  # k=1 raw state
                 payload=dict(r.payload),
             )
             for r in dmap.rows
         )
-        initial = (
-            (int(dmap.initial_state),) if dmap.initial_state is not None else ()
-        )
+        initial = (int(dmap.initial_state),) if dmap.initial_state is not None else ()
         return cls(
             rows=rows,
             transitions=(),
@@ -257,9 +256,7 @@ class RecoveredMachine:
             )
             for r in self.rows
         )
-        initial_state = (
-            int(self.initial_states[0]) if self.initial_states else None
-        )
+        initial_state = int(self.initial_states[0]) if self.initial_states else None
         return StateDispatcherMap(
             rows=rows,
             dispatcher_entry_block=int(self.dispatcher_entry_block)

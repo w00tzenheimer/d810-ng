@@ -82,7 +82,9 @@ def plan_residual_branch_anchor_emission(
                         old_target=int(old_target),
                         ordered_path=tuple(int(node) for node in ordered_path),
                         dispatcher_serial=int(dispatcher_serial),
-                        condition_chain_blocks=frozenset(int(block) for block in condition_chain_blocks),
+                        condition_chain_blocks=frozenset(
+                            int(block) for block in condition_chain_blocks
+                        ),
                         target_reaches_branch=bool(target_reaches_branch),
                     ),
                 ),

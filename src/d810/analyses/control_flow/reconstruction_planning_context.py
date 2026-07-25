@@ -8,6 +8,7 @@ them without importing the transforms-bound planner.  The concrete planner
 ``plan_reconstruction_candidate`` (which CONSTRUCTS these and lives in the
 transforms layer) is injected at call time.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -15,6 +15,7 @@ the portable resolver's lenient ``accepts()`` -- which consults this capability
 after materialization removes the ``m_ijmp`` -- recovers the dispatcher rows
 end-to-end.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

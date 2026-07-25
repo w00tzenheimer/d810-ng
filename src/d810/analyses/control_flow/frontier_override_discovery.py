@@ -15,6 +15,7 @@ by ``reconstruction._build_late_rewrite_semantic_indexes``:
 No IDA runtime calls. Flow-graph is used only for structural ``get_block``
 queries.
 """
+
 from __future__ import annotations
 
 from d810.ir.state_edge_pair import state_edge_pair, format_state_pair
@@ -67,10 +68,6 @@ class FrontierOverridePlan:
     state_pair_label: str
 
 
-
-
-
-
 def _bridge_exit_block_for_edge(
     edge,
     *,
@@ -113,7 +110,8 @@ def _late_rewrite_memberships(
             for src, dst in region.internal_state_edges
         }
         region_exit_states = {
-            int(state) & 0xFFFFFFFF for state in getattr(region, "exit_state_values", ())
+            int(state) & 0xFFFFFFFF
+            for state in getattr(region, "exit_state_values", ())
         }
         candidate_pairs = set(structured_region_candidate_pairs.get(region_name, ()))
         accepted_pairs = set(structured_region_accepted_pairs.get(region_name, ()))
@@ -243,7 +241,7 @@ def discover_frontier_overrides(
                 exit_block,
                 target_entry,
                 format_state_pair(pair),
-                sorted({membership['role'] for membership in memberships}),
+                sorted({membership["role"] for membership in memberships}),
             )
             continue
         if target_entry in condition_chain_set:
@@ -279,7 +277,10 @@ def discover_frontier_overrides(
         old_target_value: int | None = None
         if block.nsucc == 1:
             candidate_old_target = int(block.succs[0])
-            if candidate_old_target != dispatcher_serial and candidate_old_target not in condition_chain_set:
+            if (
+                candidate_old_target != dispatcher_serial
+                and candidate_old_target not in condition_chain_set
+            ):
                 continue
             old_target_value = candidate_old_target
         elif block.nsucc == 2:

@@ -194,9 +194,7 @@ def _decode_missing_flow_block(
         if is_call:
             next_flags = ida_bytes.get_full_flags(next_ea)
             has_continuation = can_decode_native_call_continuation(
-                function_contains=bool(
-                    ida_funcs.func_contains(function, next_ea)
-                ),
+                function_contains=bool(ida_funcs.func_contains(function, next_ea)),
                 ida_marks_flow=bool(ida_bytes.is_flow(next_flags)),
                 is_direct_call=direct_target_ea is not None,
                 is_code=bool(ida_bytes.is_code(next_flags)),
@@ -210,9 +208,8 @@ def _decode_missing_flow_block(
                     terminal_instruction_ea=current_ea,
                     force_stop=True,
                 )
-            successors = (
-                (() if direct_target_ea is None else (direct_target_ea,))
-                + (next_ea,)
+            successors = (() if direct_target_ea is None else (direct_target_ea,)) + (
+                next_ea,
             )
             return NativeFlowBlockFact(
                 start_ea=start_ea,

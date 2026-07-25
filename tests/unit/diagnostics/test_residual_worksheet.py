@@ -1,4 +1,5 @@
 "Unit tests for ``python -m d810.diagnostics residual-worksheet``.\n\nCovers:\n\n- pure helpers (``parse_int``, ``_normalize_maturity_name``, ``_collapse``,\n  ``_truncate``, ``_unique_preserve_order``, ``parse_residual_log_events``)\n- feeder-block selection (``detect_feeder_blocks``, ``_bfs_reachable``)\n- end-to-end ``build_residual_dispatcher_worksheet`` on a synthetic\n  SQLite fixture (no preanalysis DB, no log) and the rendered Markdown / JSON\n  output\n- the CLI: ``--list-snapshots``, missing diag DB, end-to-end Markdown\n"
+
 from __future__ import annotations
 
 import json
@@ -106,8 +107,7 @@ PRED_SPLIT_LINE = (
     " -> blk[201] (state 0x5FE86821)"
 )
 GOTO_LINE = (
-    "[TRACE] LFG DAG: residual dispatcher handoff blk[7] -> blk[8]"
-    " (state 0xDEADBEEF)"
+    "[TRACE] LFG DAG: residual dispatcher handoff blk[7] -> blk[8] (state 0xDEADBEEF)"
 )
 CYCLE_LINE = (
     "[TRACE] LFG DAG: residual handoff blk[12] -> blk[34]"
@@ -160,12 +160,14 @@ def test_parse_residual_log_events_extracts_unresolved_predecessors():
 
 
 def test_parse_residual_log_events_skips_unrelated_lines():
-    text = "\n".join([
-        "INFO: starting pipeline",
-        "DEBUG: some stat = 17",
-        PRED_SPLIT_LINE,
-        "INFO: done",
-    ])
+    text = "\n".join(
+        [
+            "INFO: starting pipeline",
+            "DEBUG: some stat = 17",
+            PRED_SPLIT_LINE,
+            "INFO: done",
+        ]
+    )
     events = parse_residual_log_events(text)
     assert len(events) == 1
     assert events[0].source_block == 123
@@ -253,16 +255,28 @@ def test_detect_feeder_blocks_uses_dispatcher_residual_preds():
 def test_detect_feeder_blocks_falls_back_to_dag_edges():
     edges = [
         DagEdgeInfo(
-            edge_kind="K", source_block=99, target_entry=None,
-            source_state_hex=None, target_state_hex=None, ordered_path=(),
+            edge_kind="K",
+            source_block=99,
+            target_entry=None,
+            source_state_hex=None,
+            target_state_hex=None,
+            ordered_path=(),
         ),
         DagEdgeInfo(
-            edge_kind="K", source_block=99, target_entry=None,
-            source_state_hex=None, target_state_hex=None, ordered_path=(),
+            edge_kind="K",
+            source_block=99,
+            target_entry=None,
+            source_state_hex=None,
+            target_state_hex=None,
+            ordered_path=(),
         ),  # dup
         DagEdgeInfo(
-            edge_kind="K", source_block=42, target_entry=None,
-            source_state_hex=None, target_state_hex=None, ordered_path=(),
+            edge_kind="K",
+            source_block=42,
+            target_entry=None,
+            source_state_hex=None,
+            target_state_hex=None,
+            ordered_path=(),
         ),
     ]
     out = detect_feeder_blocks(
@@ -297,39 +311,108 @@ def _make_diag_db(tmp_path: Path) -> Path:
             block_count=3,
             timestamp=0.0,
         )
-        Block.insert_many([
-            dict(snapshot=snap.id, serial=0, block_type=1, type_name="BLT_NWAY",
-                 nsucc=1, npred=0, succs=json.dumps([100]), preds=json.dumps([]),
-                 insn_count=0, meta="{}"),
-            dict(snapshot=snap.id, serial=100, block_type=1, type_name="BLT_NWAY",
-                 nsucc=1, npred=3, succs=json.dumps([200]), preds=json.dumps([0, 6, 7]),
-                 insn_count=0, meta="{}"),
-            dict(snapshot=snap.id, serial=6, block_type=1, type_name="BLT_NWAY",
-                 nsucc=1, npred=0, succs=json.dumps([100]), preds=json.dumps([]),
-                 insn_count=2, meta="{}"),
-            dict(snapshot=snap.id, serial=7, block_type=1, type_name="BLT_NWAY",
-                 nsucc=1, npred=0, succs=json.dumps([100]), preds=json.dumps([]),
-                 insn_count=1, meta="{}"),
-            dict(snapshot=snap.id, serial=200, block_type=4, type_name="BLT_STOP",
-                 nsucc=0, npred=1, succs=json.dumps([]), preds=json.dumps([100]),
-                 insn_count=0, meta="{}"),
-        ]).execute()
-        Instruction.insert_many([
-            dict(snapshot=snap.id, block_serial=6, insn_index=0,
-                 ea_hex="0x0000000000001000", ea_i64=0x1000,
-                 opcode=4, opcode_name="m_mov",
-                 dest_stkoff=0x3C, src_l_value_hex="0x5FE86821",
-                 dstr="i = 0x5FE86821"),
-            dict(snapshot=snap.id, block_serial=6, insn_index=1,
-                 ea_hex="0x0000000000001001", ea_i64=0x1001,
-                 opcode=7, opcode_name="m_goto",
-                 dstr="goto blk[100]"),
-            dict(snapshot=snap.id, block_serial=7, insn_index=0,
-                 ea_hex="0x0000000000001002", ea_i64=0x1002,
-                 opcode=4, opcode_name="m_mov",
-                 dest_stkoff=0x3C, src_l_value_hex="0xDEADBEEF",
-                 dstr="i = 0xDEADBEEF"),
-        ]).execute()
+        Block.insert_many(
+            [
+                dict(
+                    snapshot=snap.id,
+                    serial=0,
+                    block_type=1,
+                    type_name="BLT_NWAY",
+                    nsucc=1,
+                    npred=0,
+                    succs=json.dumps([100]),
+                    preds=json.dumps([]),
+                    insn_count=0,
+                    meta="{}",
+                ),
+                dict(
+                    snapshot=snap.id,
+                    serial=100,
+                    block_type=1,
+                    type_name="BLT_NWAY",
+                    nsucc=1,
+                    npred=3,
+                    succs=json.dumps([200]),
+                    preds=json.dumps([0, 6, 7]),
+                    insn_count=0,
+                    meta="{}",
+                ),
+                dict(
+                    snapshot=snap.id,
+                    serial=6,
+                    block_type=1,
+                    type_name="BLT_NWAY",
+                    nsucc=1,
+                    npred=0,
+                    succs=json.dumps([100]),
+                    preds=json.dumps([]),
+                    insn_count=2,
+                    meta="{}",
+                ),
+                dict(
+                    snapshot=snap.id,
+                    serial=7,
+                    block_type=1,
+                    type_name="BLT_NWAY",
+                    nsucc=1,
+                    npred=0,
+                    succs=json.dumps([100]),
+                    preds=json.dumps([]),
+                    insn_count=1,
+                    meta="{}",
+                ),
+                dict(
+                    snapshot=snap.id,
+                    serial=200,
+                    block_type=4,
+                    type_name="BLT_STOP",
+                    nsucc=0,
+                    npred=1,
+                    succs=json.dumps([]),
+                    preds=json.dumps([100]),
+                    insn_count=0,
+                    meta="{}",
+                ),
+            ]
+        ).execute()
+        Instruction.insert_many(
+            [
+                dict(
+                    snapshot=snap.id,
+                    block_serial=6,
+                    insn_index=0,
+                    ea_hex="0x0000000000001000",
+                    ea_i64=0x1000,
+                    opcode=4,
+                    opcode_name="m_mov",
+                    dest_stkoff=0x3C,
+                    src_l_value_hex="0x5FE86821",
+                    dstr="i = 0x5FE86821",
+                ),
+                dict(
+                    snapshot=snap.id,
+                    block_serial=6,
+                    insn_index=1,
+                    ea_hex="0x0000000000001001",
+                    ea_i64=0x1001,
+                    opcode=7,
+                    opcode_name="m_goto",
+                    dstr="goto blk[100]",
+                ),
+                dict(
+                    snapshot=snap.id,
+                    block_serial=7,
+                    insn_index=0,
+                    ea_hex="0x0000000000001002",
+                    ea_i64=0x1002,
+                    opcode=4,
+                    opcode_name="m_mov",
+                    dest_stkoff=0x3C,
+                    src_l_value_hex="0xDEADBEEF",
+                    dstr="i = 0xDEADBEEF",
+                ),
+            ]
+        ).execute()
         RenderedProgramNode.insert(
             snapshot_id=snap.id,
             variant_name="semantic_reference_like",
@@ -351,18 +434,50 @@ def _make_diag_db(tmp_path: Path) -> Path:
             line_kind="label",
             text="STATE_5FE86821:",
         ).execute()
-        BlockClassification.insert_many([
-            dict(snapshot=snap.id, serial=0, is_condition_chain=0, is_reachable=1,
-                 is_gutted=0, in_claimed=0),
-            dict(snapshot=snap.id, serial=100, is_condition_chain=1, is_reachable=1,
-                 is_gutted=0, in_claimed=0),
-            dict(snapshot=snap.id, serial=6, is_condition_chain=0, is_reachable=1,
-                 is_gutted=0, in_claimed=1),
-            dict(snapshot=snap.id, serial=7, is_condition_chain=0, is_reachable=1,
-                 is_gutted=0, in_claimed=1),
-            dict(snapshot=snap.id, serial=200, is_condition_chain=0, is_reachable=1,
-                 is_gutted=0, in_claimed=0),
-        ]).execute()
+        BlockClassification.insert_many(
+            [
+                dict(
+                    snapshot=snap.id,
+                    serial=0,
+                    is_condition_chain=0,
+                    is_reachable=1,
+                    is_gutted=0,
+                    in_claimed=0,
+                ),
+                dict(
+                    snapshot=snap.id,
+                    serial=100,
+                    is_condition_chain=1,
+                    is_reachable=1,
+                    is_gutted=0,
+                    in_claimed=0,
+                ),
+                dict(
+                    snapshot=snap.id,
+                    serial=6,
+                    is_condition_chain=0,
+                    is_reachable=1,
+                    is_gutted=0,
+                    in_claimed=1,
+                ),
+                dict(
+                    snapshot=snap.id,
+                    serial=7,
+                    is_condition_chain=0,
+                    is_reachable=1,
+                    is_gutted=0,
+                    in_claimed=1,
+                ),
+                dict(
+                    snapshot=snap.id,
+                    serial=200,
+                    is_condition_chain=0,
+                    is_reachable=1,
+                    is_gutted=0,
+                    in_claimed=0,
+                ),
+            ]
+        ).execute()
     db.close()
     return db_path
 
@@ -501,10 +616,14 @@ def test_cli_returns_one_when_no_diag_db_can_be_found(tmp_path: Path):
 def test_cli_renders_markdown_against_synthetic_db(tmp_path: Path):
     db = _make_diag_db(tmp_path)
     result = _run_cli(
-        "--diag-db", str(db),
-        "--snapshot-id", "5",
-        "--func-ea", "0x180012DF0",
-        "--format", "markdown",
+        "--diag-db",
+        str(db),
+        "--snapshot-id",
+        "5",
+        "--func-ea",
+        "0x180012DF0",
+        "--format",
+        "markdown",
         cwd=tmp_path,
     )
     assert result.returncode == 0, result.stderr

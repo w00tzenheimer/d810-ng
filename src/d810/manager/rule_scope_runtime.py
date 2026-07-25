@@ -278,7 +278,9 @@ class RuleScopeRuntime:
         )
         self._active_rule_inference = inference
         self._rule_scope_service.set_active_inference(inference)
-        if self.storage is not None and hasattr(self.storage, "set_active_rule_inference"):
+        if self.storage is not None and hasattr(
+            self.storage, "set_active_rule_inference"
+        ):
             self.storage.set_active_rule_inference(
                 ActiveRuleInferenceConfig(
                     name=inference.name,

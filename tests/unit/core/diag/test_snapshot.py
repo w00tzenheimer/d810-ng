@@ -1,4 +1,5 @@
 """Tests for MBA diagnostic snapshot writers."""
+
 from __future__ import annotations
 from d810.core.diag import create_diag_database
 
@@ -62,7 +63,13 @@ from d810.analyses.control_flow.linearized_state_dag import (
     StateLocalSegment,
     StateNodeKind,
 )
-from d810.analyses.value_flow.facts import FactConflict, FactConsumerRecord, FactMapping, FactObservation, FactStatus
+from d810.analyses.value_flow.facts import (
+    FactConflict,
+    FactConsumerRecord,
+    FactMapping,
+    FactObservation,
+    FactStatus,
+)
 
 
 def _make_insn(
@@ -486,7 +493,9 @@ def mock_mba_3_blocks() -> list[BlockSnapshot]:
     return [
         _make_block(0, succs=[1], preds=[], npred=0),
         _make_block(1, succs=[2], preds=[0]),
-        _make_block(2, block_type=0, type_name="BLT_STOP", nsucc=0, succs=[], preds=[1]),
+        _make_block(
+            2, block_type=0, type_name="BLT_STOP", nsucc=0, succs=[], preds=[1]
+        ),
     ]
 
 
@@ -496,9 +505,7 @@ def mock_mba_3_blocks() -> list[BlockSnapshot]:
 class TestSnapshotMba:
     def test_writes_blocks(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
         conn = create_diag_database(":memory:").connection()
-        snap_id = snapshot_mba(
-            conn, mock_mba_3_blocks, label="test", func_ea=0x1000
-        )
+        snap_id = snapshot_mba(conn, mock_mba_3_blocks, label="test", func_ea=0x1000)
         assert snap_id == 1
         rows = conn.execute(
             "SELECT serial, nsucc, npred FROM blocks WHERE snapshot_id=1"
@@ -657,20 +664,22 @@ class TestSnapshotMba:
             preds=[31],
             instructions=[_make_insn(0, ea=0x180013274, opcode=4)],
         )
-        buffer_block_lineage([
-            BlockLineageEntry(
-                serial=220,
-                origin_snapshot_id=7,
-                origin_serial=32,
-                origin_start_ea_hex="0x180013274",
-                origin_body_fingerprint="fp=[0x180013274:op4]",
-                creation_kind="edge_split_trampoline",
-                creation_reason="patch_plan:edge_split_trampoline",
-                planner_block_id="edge_split:0",
-                source_mod_type="EdgeRedirectViaPredSplit",
-                extra_json='{"origin_label":"blk[32]@0x180013274"}',
-            )
-        ])
+        buffer_block_lineage(
+            [
+                BlockLineageEntry(
+                    serial=220,
+                    origin_snapshot_id=7,
+                    origin_serial=32,
+                    origin_start_ea_hex="0x180013274",
+                    origin_body_fingerprint="fp=[0x180013274:op4]",
+                    creation_kind="edge_split_trampoline",
+                    creation_reason="patch_plan:edge_split_trampoline",
+                    planner_block_id="edge_split:0",
+                    source_mod_type="EdgeRedirectViaPredSplit",
+                    extra_json='{"origin_label":"blk[32]@0x180013274"}',
+                )
+            ]
+        )
         try:
             snap_id = snapshot_mba(
                 conn,
@@ -697,7 +706,9 @@ class TestSnapshotMba:
         finally:
             reset_pending_block_lineage()
 
-    def test_snapshot_id_increments(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
+    def test_snapshot_id_increments(
+        self, mock_mba_3_blocks: list[BlockSnapshot]
+    ) -> None:
         conn = create_diag_database(":memory:").connection()
         id1 = snapshot_mba(conn, mock_mba_3_blocks, label="first", func_ea=0x1000)
         id2 = snapshot_mba(conn, mock_mba_3_blocks, label="second", func_ea=0x1000)
@@ -723,9 +734,7 @@ class TestSnapshotMba:
             func_ea=0x1000,
             maturity="MMAT_GLBOPT1",
         )
-        row = conn.execute(
-            "SELECT maturity FROM snapshots WHERE id=1"
-        ).fetchone()
+        row = conn.execute("SELECT maturity FROM snapshots WHERE id=1").fetchone()
         assert row[0] == "MMAT_GLBOPT1"
 
     def test_maturity_json_persisted(
@@ -771,12 +780,12 @@ class TestSnapshotMba:
             func_ea=0x1000,
             phase="post_apply",
         )
-        row = conn.execute(
-            "SELECT phase FROM snapshots WHERE id=1"
-        ).fetchone()
+        row = conn.execute("SELECT phase FROM snapshots WHERE id=1").fetchone()
         assert row[0] == "post_apply"
 
-    def test_phase_post_d810_stored(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
+    def test_phase_post_d810_stored(
+        self, mock_mba_3_blocks: list[BlockSnapshot]
+    ) -> None:
         conn = create_diag_database(":memory:").connection()
         snapshot_mba(
             conn,
@@ -785,19 +794,15 @@ class TestSnapshotMba:
             func_ea=0x1000,
             phase="post_d810",
         )
-        row = conn.execute(
-            "SELECT phase FROM snapshots WHERE id=1"
-        ).fetchone()
+        row = conn.execute("SELECT phase FROM snapshots WHERE id=1").fetchone()
         assert row[0] == "post_d810"
 
-    def test_phase_defaults_to_unknown(self, mock_mba_3_blocks: list[BlockSnapshot]) -> None:
+    def test_phase_defaults_to_unknown(
+        self, mock_mba_3_blocks: list[BlockSnapshot]
+    ) -> None:
         conn = create_diag_database(":memory:").connection()
-        snapshot_mba(
-            conn, mock_mba_3_blocks, label="test", func_ea=0x1000
-        )
-        row = conn.execute(
-            "SELECT phase FROM snapshots WHERE id=1"
-        ).fetchone()
+        snapshot_mba(conn, mock_mba_3_blocks, label="test", func_ea=0x1000)
+        row = conn.execute("SELECT phase FROM snapshots WHERE id=1").fetchone()
         assert row[0] == "unknown"
 
 
@@ -889,8 +894,13 @@ class TestSnapshotFacts:
         assert json.loads(obs[1]) == {"stkoff": 0x680}
         assert json.loads(obs[2]) == ["write dominates loop"]
         assert obs[3] == "0x0000000180013000"
-        assert conn.execute("SELECT status FROM fact_mappings").fetchone()[0] == "REMAPPED"
-        assert conn.execute("SELECT decision FROM fact_consumers").fetchone()[0] == "observed"
+        assert (
+            conn.execute("SELECT status FROM fact_mappings").fetchone()[0] == "REMAPPED"
+        )
+        assert (
+            conn.execute("SELECT decision FROM fact_consumers").fetchone()[0]
+            == "observed"
+        )
         assert (
             conn.execute("SELECT conflict_kind FROM fact_conflicts").fetchone()[0]
             == "different_counter"
@@ -1102,18 +1112,43 @@ class TestSnapshotDag:
             DagNode(0x432DC789, "0x432DC789", 62, "EXIT"),
         ]
         edges = [
-            DagEdge(0, 0x0ACD0BD5, 0x258ED455, "CONDITIONAL_TRANSITION",
-                    source_block=174, source_arm=1, target_entry=199,
-                    ordered_path="[131,174,176,199]"),
-            DagEdge(1, 0x0ACD0BD5, None, "CONDITIONAL_RETURN",
-                    source_block=174, source_arm=0,
-                    ordered_path="[131,174,175,218,219]"),
-            DagEdge(2, 0x258ED455, 0x6465D165, "TRANSITION",
-                    source_block=199, target_entry=23,
-                    ordered_path="[199]"),
-            DagEdge(3, 0x6465D165, 0x432DC789, "TRANSITION",
-                    source_block=23, target_entry=62,
-                    ordered_path="[23,24,32]"),
+            DagEdge(
+                0,
+                0x0ACD0BD5,
+                0x258ED455,
+                "CONDITIONAL_TRANSITION",
+                source_block=174,
+                source_arm=1,
+                target_entry=199,
+                ordered_path="[131,174,176,199]",
+            ),
+            DagEdge(
+                1,
+                0x0ACD0BD5,
+                None,
+                "CONDITIONAL_RETURN",
+                source_block=174,
+                source_arm=0,
+                ordered_path="[131,174,175,218,219]",
+            ),
+            DagEdge(
+                2,
+                0x258ED455,
+                0x6465D165,
+                "TRANSITION",
+                source_block=199,
+                target_entry=23,
+                ordered_path="[199]",
+            ),
+            DagEdge(
+                3,
+                0x6465D165,
+                0x432DC789,
+                "TRANSITION",
+                source_block=23,
+                target_entry=62,
+                ordered_path="[23,24,32]",
+            ),
         ]
 
         snapshot_dag(conn, 1, nodes, edges)
@@ -1149,7 +1184,10 @@ class TestSnapshotDag:
         )
 
         edge = DagEdge(
-            0, 0xABC, 0xDEF, "TRANSITION",
+            0,
+            0xABC,
+            0xDEF,
+            "TRANSITION",
             ordered_path=json.dumps([131, 174, 176]),
         )
         snapshot_dag(conn, 1, [], [edge])
@@ -1411,7 +1449,9 @@ class TestSnapshotReachability:
         claimed = {0, 1}
 
         snapshot_reachability(
-            conn, 1, all_serials,
+            conn,
+            1,
+            all_serials,
             reachable=reachable,
             condition_chain_serials=condition_chain_serials,
             gutted=gutted,
@@ -1474,11 +1514,15 @@ class TestSnapshotRenderedProgram:
                 ),
             ),
             lines=(
-                RenderedProgramLine(1, "=== LINEARIZED STATE PROGRAM ===", None, 0, "statement"),
+                RenderedProgramLine(
+                    1, "=== LINEARIZED STATE PROGRAM ===", None, 0, "statement"
+                ),
                 RenderedProgramLine(2, "", None, 0, "blank"),
                 RenderedProgramLine(3, "STATE_DEADBEEF:", 0, 0, "label"),
                 RenderedProgramLine(4, "    x = 1", 0, 1, "statement"),
-                RenderedProgramLine(5, "    goto STATE_FEEDC0DE;", 0, 1, "goto", "STATE_FEEDC0DE"),
+                RenderedProgramLine(
+                    5, "    goto STATE_FEEDC0DE;", 0, 1, "goto", "STATE_FEEDC0DE"
+                ),
             ),
         )
 
@@ -1518,7 +1562,9 @@ class TestSnapshotRenderedProgram:
             nodes=(RenderedProgramNode(0, "STATE_A", "state_family", 1, 2),),
             lines=(
                 RenderedProgramLine(1, "STATE_A:", 0, 0, "label"),
-                RenderedProgramLine(2, "    goto EXIT_ROUTINE;", 0, 1, "goto", "EXIT_ROUTINE"),
+                RenderedProgramLine(
+                    2, "    goto EXIT_ROUTINE;", 0, 1, "goto", "EXIT_ROUTINE"
+                ),
             ),
         )
         program_b = RenderedProgramSnapshot(
@@ -1571,7 +1617,13 @@ class TestDual:
 
     def test_hex_sorting_matches_numeric_sorting(self) -> None:
         """Verify that lexicographic sort of hex strings matches unsigned numeric sort."""
-        values = [0x0, 0x100, 0x7FFFFFFFFFFFFFFF, 0x8000000000000000, 0xFFFFFFFFFFFFFFFF]
+        values = [
+            0x0,
+            0x100,
+            0x7FFFFFFFFFFFFFFF,
+            0x8000000000000000,
+            0xFFFFFFFFFFFFFFFF,
+        ]
         hex_strs = [_dual(v)[0] for v in values]
         # Already in ascending order; sort by hex string should preserve order
         assert hex_strs == sorted(hex_strs)

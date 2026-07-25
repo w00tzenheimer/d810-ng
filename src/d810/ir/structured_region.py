@@ -12,6 +12,7 @@ already-rendered statement lines (the backend lift fills them); the structure
 itself is what the structurer recovers. :func:`render_region` is the canonical
 goto-free serializer (no ``goto`` node exists, so the output cannot contain one).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -152,7 +153,9 @@ def _render(region: "Region", level: int, out: list[str]) -> None:
     elif isinstance(region, ContinueRegion):
         out.append(f"{pad}continue;")
     elif isinstance(region, ReturnRegion):
-        out.append(f"{pad}return;" if region.value is None else f"{pad}return {region.value};")
+        out.append(
+            f"{pad}return;" if region.value is None else f"{pad}return {region.value};"
+        )
     else:  # pragma: no cover - exhaustive over the Region union
         raise TypeError(f"render_region: unknown region type {type(region)!r}")
 

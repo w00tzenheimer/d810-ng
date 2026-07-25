@@ -1,4 +1,5 @@
 """Postdominator tree computation for control-flow graphs."""
+
 from __future__ import annotations
 
 from d810.core import logging

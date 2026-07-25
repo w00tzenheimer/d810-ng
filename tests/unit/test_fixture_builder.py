@@ -4,6 +4,7 @@ No IDA imports — everything here is testable without an IDA runtime. The
 IDA-bound extract/resolve worker is covered by
 ``tests/system/e2e/test_fixture_idb_worker.py``.
 """
+
 from pathlib import Path
 
 from d810.testing.fixture_builder import CallSiteFold, detect_indirect_call_folds
@@ -14,12 +15,15 @@ SUB = (REPO / "samples/src/masm/sub_1815C8C30.asm").read_text()
 
 def test_detects_slot_const_and_reg_from_committed_asm():
     folds = detect_indirect_call_folds(SUB)
-    assert CallSiteFold(
-        slot_symbol="off_18210A360",
-        const=0x64E2C558D421136,
-        call_reg="rax",
-        materialized=None,  # committed slot is a reloc expr, not a raw dq
-    ) in folds
+    assert (
+        CallSiteFold(
+            slot_symbol="off_18210A360",
+            const=0x64E2C558D421136,
+            call_reg="rax",
+            materialized=None,  # committed slot is a reloc expr, not a raw dq
+        )
+        in folds
+    )
 
 
 def test_reads_materialized_value_on_fresh_extract():
@@ -45,8 +49,12 @@ def test_reads_materialized_value_on_fresh_extract():
 # Task 2: retarget planner + rewriter + stub renderer
 # --------------------------------------------------------------------------- #
 from d810.testing.fixture_builder import (  # noqa: E402
-    ResolvedTarget, RetargetAction, RetargetPlan,
-    plan_retargets, apply_retargets, render_stub,
+    ResolvedTarget,
+    RetargetAction,
+    RetargetPlan,
+    plan_retargets,
+    apply_retargets,
+    render_stub,
 )
 
 
@@ -57,7 +65,9 @@ def test_plan_retargets_keeps_leaf_import_skips_sub():
     ]
     resolved = {
         0x110: ResolvedTarget(0x110, "rand", is_import=True, retargetable=True),
-        0x220: ResolvedTarget(0x220, "sub_1815DF1C0", is_import=False, retargetable=False),
+        0x220: ResolvedTarget(
+            0x220, "sub_1815DF1C0", is_import=False, retargetable=False
+        ),
     }
     plan = plan_retargets(folds, resolved, image_symbols=set())
     assert plan.actions == (RetargetAction("off_A", 0x10, "rand"),)
@@ -92,7 +102,8 @@ def test_render_stub_is_dependency_free_leaf():
 # Task 3: DSL case emitter + idempotent upsert
 # --------------------------------------------------------------------------- #
 from d810.testing.fixture_builder import (  # noqa: E402
-    emit_fixture_case, upsert_case_in_list,
+    emit_fixture_case,
+    upsert_case_in_list,
 )
 
 
@@ -110,7 +121,7 @@ def test_emit_case_is_minimal_no_auto_semantics():
 
 
 def test_upsert_appends_new_case():
-    lst = "DAC_MASM_CASES = [\n    DeobfuscationCase(\n        function=\"old\",\n    ),\n]\n"
+    lst = 'DAC_MASM_CASES = [\n    DeobfuscationCase(\n        function="old",\n    ),\n]\n'
     out = upsert_case_in_list(lst, "sub_NEW", emit_fixture_case("sub_NEW", "p.json"))
     assert 'function="old"' in out
     assert 'function="sub_NEW"' in out
@@ -119,7 +130,8 @@ def test_upsert_appends_new_case():
 
 def test_upsert_replaces_existing_case_no_duplicate():
     base = upsert_case_in_list(
-        "DAC_MASM_CASES = [\n]\n", "sub_X", emit_fixture_case("sub_X", "p.json"))
+        "DAC_MASM_CASES = [\n]\n", "sub_X", emit_fixture_case("sub_X", "p.json")
+    )
     again = upsert_case_in_list(base, "sub_X", emit_fixture_case("sub_X", "q.json"))
     assert again.count('function="sub_X"') == 1
     assert 'project="q.json"' in again
@@ -131,7 +143,8 @@ def test_upsert_replaces_existing_case_no_duplicate():
 import subprocess as _sp  # noqa: E402
 
 from d810.testing.fixture_builder import (  # noqa: E402
-    build_fixture_dll, verify_fixture_case,
+    build_fixture_dll,
+    verify_fixture_case,
 )
 
 

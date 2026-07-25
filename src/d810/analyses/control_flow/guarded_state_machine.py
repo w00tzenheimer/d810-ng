@@ -13,6 +13,7 @@ operand, for the operand-identity unit pins) through the shared
 size-bearing ``(label, offset, size)`` identity (both distinct from the 64-bit /
 size-agnostic shared readers), so behaviour is byte-identical.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -239,7 +240,11 @@ def _find_low_tail(
     if len(next_serials) != 1:
         return None
     copy_block = cfg.get_block(next_serials[0])
-    if copy_block is None or copy_block.nsucc != 2 or int(header) not in copy_block.succs:
+    if (
+        copy_block is None
+        or copy_block.nsucc != 2
+        or int(header) not in copy_block.succs
+    ):
         return None
     copy_assignment = _var_assignment(copy_block, dest_key=state_key)
     if copy_assignment is None:
@@ -249,7 +254,11 @@ def _find_low_tail(
     if len(assign_serials) != 1:
         return None
     choice_block = cfg.get_block(assign_serials[0])
-    if choice_block is None or choice_block.nsucc != 1 or int(choice_block.succs[0]) != int(header):
+    if (
+        choice_block is None
+        or choice_block.nsucc != 1
+        or int(choice_block.succs[0]) != int(header)
+    ):
         return None
     choice_assignment = _var_assignment(choice_block, dest_key=state_key)
     if choice_assignment is None:
@@ -264,12 +273,16 @@ def _invalid_and_success_targets(
     zero_way = tuple(
         int(succ)
         for succ in final_check.succs
-        if (cfg.get_block(int(succ)) is not None and cfg.get_block(int(succ)).nsucc == 0)
+        if (
+            cfg.get_block(int(succ)) is not None and cfg.get_block(int(succ)).nsucc == 0
+        )
     )
     non_zero = tuple(
         int(succ)
         for succ in final_check.succs
-        if (cfg.get_block(int(succ)) is not None and cfg.get_block(int(succ)).nsucc != 0)
+        if (
+            cfg.get_block(int(succ)) is not None and cfg.get_block(int(succ)).nsucc != 0
+        )
     )
     if len(zero_way) != 1 or len(non_zero) != 1:
         return None
@@ -303,7 +316,9 @@ def _find_high_exit(
             eq_ok_consts.update(value for _serial, value in assignments)
             continue
         for assign_serial, success_const in assignments:
-            final_serials = tuple(int(s) for s in block.succs if int(s) != int(assign_serial))
+            final_serials = tuple(
+                int(s) for s in block.succs if int(s) != int(assign_serial)
+            )
             if len(final_serials) != 1:
                 continue
             final_check = cfg.get_block(final_serials[0])
@@ -388,15 +403,13 @@ def _find_pre_guard(
     if int(outer_arm.serial) not in outer_guard.succs:
         return None
 
-    if (
-        int(outer_guard_value) != int(choice_one_success)
-        and int(outer_arm_value) == int(choice_one_success)
-    ):
+    if int(outer_guard_value) != int(choice_one_success) and int(
+        outer_arm_value
+    ) == int(choice_one_success):
         outer_guard_old_target = int(inner_guard.serial)
-    elif (
-        int(outer_guard_value) == int(choice_one_success)
-        and int(outer_arm_value) != int(choice_one_success)
-    ):
+    elif int(outer_guard_value) == int(choice_one_success) and int(
+        outer_arm_value
+    ) != int(choice_one_success):
         outer_guard_old_target = int(outer_arm.serial)
     else:
         return None
@@ -565,9 +578,8 @@ def _is_valid_fix(cfg: FlowGraph, fix: GuardedStateMachineFix) -> bool:
         return False
     if inner_guard.nsucc != 2 or fix.inner_guard_old_target not in inner_guard.succs:
         return False
-    if (
-        inner_override.nsucc != 1
-        or int(inner_override.succs[0]) != int(fix.inner_override_old_target)
+    if inner_override.nsucc != 1 or int(inner_override.succs[0]) != int(
+        fix.inner_override_old_target
     ):
         return False
     return fix in collect_guarded_state_machine_fixes(cfg)

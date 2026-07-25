@@ -39,6 +39,7 @@ class Sub_HackersDelightRule_1(VerifiableRule):
         ~y + 1 = -y  [two's complement]
         x + (~y + 1) = x + (-y) = x - y
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = x + (~y + ONE)
@@ -57,6 +58,7 @@ class Sub_HackersDelightRule_2(VerifiableRule):
         x - y = (x ^ y) - 2*(~x & y)  [Hacker's Delight 2-19]
         This is an MBA obfuscation of simple subtraction.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x ^ y) - TWO * (~x & y)
@@ -76,6 +78,7 @@ class Sub_HackersDelightRule_3(VerifiableRule):
         (~x & y) gives bits only in y
         Difference gives x - y
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & bnot_y) - (bnot_x & y)
@@ -98,6 +101,7 @@ class Sub_HackersDelightRule_4(VerifiableRule):
     Proof:
         x - y = 2*(x & ~y) - (x ^ y)  [Hacker's Delight variant]
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = TWO * (x & bnot_y) - (x ^ y)
@@ -123,6 +127,7 @@ class Sub1_FactorRule_1(VerifiableRule):
         -x - 1 = ~x  [two's complement]
         (~x) - (-2 * x) = ~x + 2*x = x - 1  [algebraic simplification]
     """
+
     maturities = _ALL_MATURITIES
 
     c_minus_2 = Const("c_minus_2")
@@ -143,6 +148,7 @@ class Sub1_FactorRule_2(VerifiableRule):
         2*x + ~x = 2*x - x - 1 = x - 1
         Using ~x = -x - 1
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = TWO * x + ~x
@@ -159,8 +165,8 @@ class Sub1Add_HackersDelightRule_1(VerifiableRule):
 
     Proof: Complex MBA obfuscation that reduces to (x + y) - 1.
     """
-    maturities = _ALL_MATURITIES
 
+    maturities = _ALL_MATURITIES
 
     PATTERN = TWO * (x | y) + (x ^ bnot_y)
     REPLACEMENT = (x + y) - ONE
@@ -181,8 +187,8 @@ class Sub1And_HackersDelightRule_1(VerifiableRule):
                      = x + (all 1s)
                      = (x & y) - 1  [algebraic simplification]
     """
-    maturities = _ALL_MATURITIES
 
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x | bnot_y) + y
     REPLACEMENT = (x & y) - ONE
@@ -203,8 +209,8 @@ class Sub1Or_MbaRule_1(VerifiableRule):
         (x + y) + ~(x & y) = (x + y) - (x & y) - 1
                             = (x | y) - 1  [OR identity]
     """
-    maturities = _ALL_MATURITIES
 
+    maturities = _ALL_MATURITIES
 
     PATTERN = (x + y) + ~(x & y)
     REPLACEMENT = (x | y) - ONE
@@ -223,8 +229,8 @@ class Sub1And1_MbaRule_1(VerifiableRule):
                      = -1 + x + 1 [but only LSB matters]
                      = (x & 1) - 1
     """
-    maturities = _ALL_MATURITIES
 
+    maturities = _ALL_MATURITIES
 
     PATTERN = (~x | ONE) + x
     REPLACEMENT = (x & ONE) - ONE

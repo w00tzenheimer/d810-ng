@@ -235,10 +235,8 @@ def _stable_identity_ranges_contain(
 ) -> bool:
     return all(
         any(
-            int(owner_interval.start_ea)
-            <= int(candidate_interval.start_ea)
-            and int(candidate_interval.end_ea)
-            <= int(owner_interval.end_ea)
+            int(owner_interval.start_ea) <= int(candidate_interval.start_ea)
+            and int(candidate_interval.end_ea) <= int(owner_interval.end_ea)
             for owner_interval in owner.native_ranges.intervals
         )
         for candidate_interval in candidate.native_ranges.intervals
@@ -292,9 +290,7 @@ class CurrentMbaBlockIdentityBinding:
     def __post_init__(self) -> None:
         if not isinstance(self.stable_identity, StableBlockIdentity):
             raise TypeError("current-MBA block binding requires stable identity")
-        live_instruction_eas = frozenset(
-            int(ea) for ea in self.live_instruction_eas
-        )
+        live_instruction_eas = frozenset(int(ea) for ea in self.live_instruction_eas)
         if not live_instruction_eas or any(
             ea <= 0 or ea >= _BADADDR for ea in live_instruction_eas
         ):
@@ -351,9 +347,7 @@ class CurrentMbaIdentityBindingSnapshot:
             raise ValueError(
                 "current-MBA identity snapshot contains duplicate block bindings"
             )
-        native_keys = {
-            binding.stable_identity.native_key for binding in block_bindings
-        }
+        native_keys = {binding.stable_identity.native_key for binding in block_bindings}
         if len(native_keys) > 1:
             raise ValueError(
                 "current-MBA identity snapshot spans multiple native identities"
@@ -416,9 +410,7 @@ def stable_block_identity_from_snapshot(
         native_ea
         for insn in block.insn_snapshots
         for native_ea in (
-            int(insn.ea)
-            if insn.native_ea is None
-            else int(insn.native_ea),
+            int(insn.ea) if insn.native_ea is None else int(insn.native_ea),
         )
         if 0 <= native_ea < _BADADDR
     )

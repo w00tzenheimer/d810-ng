@@ -14,6 +14,7 @@ framing):
 
 Pure / IDA-free.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

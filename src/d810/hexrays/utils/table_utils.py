@@ -8,6 +8,7 @@ XOR-with-globals patterns.
 The algorithms are ported from the copycat project C++ plugin's
 ``indirect_branch.cpp`` and ``indirect_call.cpp`` handlers.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -70,10 +71,10 @@ class TableEncoding(enum.IntEnum):
     Mirrors the ``table_encoding_t`` enum from the copycat project's deobf_types.h.
     """
 
-    DIRECT = 0       # raw addresses
-    OFFSET = 1       # table[i] + base
-    XOR = 2          # table[i] ^ key
-    OFFSET_XOR = 3   # (table[i] ^ key) + base
+    DIRECT = 0  # raw addresses
+    OFFSET = 1  # table[i] + base
+    XOR = 2  # table[i] ^ key
+    OFFSET_XOR = 3  # (table[i] ^ key) + base
 
 
 # ---------------------------------------------------------------------------
@@ -87,10 +88,10 @@ class XorKeyInfo:
     combining an immediate value with a global variable is detected.
     """
 
-    xor_key: int           # The XOR key value (immediate ^ global_value)
-    is_negated: bool       # True if offset is negated (m_neg applied)
-    source_ea: int         # EA of the global containing the key
-    reg: int               # Register involved in the XOR
+    xor_key: int  # The XOR key value (immediate ^ global_value)
+    is_negated: bool  # True if offset is negated (m_neg applied)
+    source_ea: int  # EA of the global containing the key
+    reg: int  # Register involved in the XOR
 
 
 # ---------------------------------------------------------------------------
@@ -124,9 +125,7 @@ def read_global_value(ea: int, size: int) -> Optional[int]:
 # ---------------------------------------------------------------------------
 # 4. read_table_entries
 # ---------------------------------------------------------------------------
-def read_table_entries(
-    base_ea: int, count: int, entry_size: int = 8
-) -> List[int]:
+def read_table_entries(base_ea: int, count: int, entry_size: int = 8) -> List[int]:
     """Read *count* table entries starting at *base_ea*.
 
     Parameters
@@ -257,8 +256,8 @@ def find_xor_with_globals(blk: "mblock_t") -> List[XorKeyInfo]:
     results: List[XorKeyInfo] = []
 
     # Data-flow tracking maps: register -> value
-    reg_immediates: Dict[int, int] = {}   # reg -> immediate value
-    reg_globals: Dict[int, int] = {}      # reg -> global EA
+    reg_immediates: Dict[int, int] = {}  # reg -> immediate value
+    reg_globals: Dict[int, int] = {}  # reg -> global EA
 
     ins = blk.head
     while ins is not None:
@@ -333,7 +332,10 @@ def find_xor_with_globals(blk: "mblock_t") -> List[XorKeyInfo]:
                     )
                     logger.debug(
                         "XOR: 0x%x ^ [0x%x]=0x%x -> 0x%x",
-                        immediate, global_addr, gval, xor_key,
+                        immediate,
+                        global_addr,
+                        gval,
+                        xor_key,
                     )
 
             # Invalidate the destination register tracking
@@ -349,7 +351,8 @@ def find_xor_with_globals(blk: "mblock_t") -> List[XorKeyInfo]:
                     info.xor_key = (-info.xor_key) & 0xFFFFFFFFFFFFFFFF
                     info.reg = ins.d.r
                     logger.debug(
-                        "  -> Negated to 0x%x", info.xor_key,
+                        "  -> Negated to 0x%x",
+                        info.xor_key,
                     )
 
         # -- Invalidate register tracking on other writes ---------------
@@ -410,9 +413,7 @@ def analyze_table_encoding(
                 xor_key = ins.r.nnn.value
             elif ins.l.t == ida_hexrays.mop_v or ins.r.t == ida_hexrays.mop_v:
                 # XOR with global -- try to read the value
-                gaddr = (
-                    ins.l.g if ins.l.t == ida_hexrays.mop_v else ins.r.g
-                )
+                gaddr = ins.l.g if ins.l.t == ida_hexrays.mop_v else ins.r.g
                 gval = read_global_value(gaddr, 4)
                 if gval is not None:
                     has_xor = True

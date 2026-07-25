@@ -10,6 +10,7 @@ shapes are byte-identical to the pre-extraction helper. The emitter returns
 ``bool``: ``True`` iff either variant (or the DOWNSTREAM_HEAD_RESCUE bypass)
 emitted a successful direct override.
 """
+
 from __future__ import annotations
 
 from collections import Counter
@@ -98,7 +99,9 @@ def _try_edge_set(
         )
         return False, None, None, None
 
-    ordered_path = tuple(int(serial) for serial in (matching_edges[0].ordered_path or ()))
+    ordered_path = tuple(
+        int(serial) for serial in (matching_edges[0].ordered_path or ())
+    )
     if not ordered_path:
         ordered_path = (int(source_block),)
     direct_plan = plan_direct_reconstruction_modifications(
@@ -160,7 +163,9 @@ def _try_edge_set(
             for edge in raw_matching_edges
             if getattr(edge, "target_entry_anchor", None) is not None
         }
-        if raw_target_entries == set(downstream_head_rescue.raw_target_entries_requirement):
+        if raw_target_entries == set(
+            downstream_head_rescue.raw_target_entries_requirement
+        ):
             rescue_mod = builder.edge_redirect(
                 source_block=downstream_head_rescue.rescue_source,
                 target_block=downstream_head_rescue.rescue_target,

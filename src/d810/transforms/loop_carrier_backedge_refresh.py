@@ -8,17 +8,23 @@ only a subset of predicate operands.
 The pass is intentionally dormant unless explicitly enabled by
 ``D810_LOOP_CARRIER_BACKEDGE_REFRESH=1``.
 """
+
 from __future__ import annotations
 
 import os
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind
-from d810.transforms.graph_modification import GraphModification, RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    GraphModification,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.transforms._base import FlowGraphTransform
 from d810.core.logging import getLogger
 from d810.core.typing import Callable
 
 logger = getLogger(__name__)
+
 
 def _as_int(value: object) -> int | None:
     try:
@@ -179,7 +185,9 @@ class LoopCarrierBackedgeRefreshPass(FlowGraphTransform):
         self._fact_view_provider = fact_view_provider
 
     def is_applicable(self, cfg: FlowGraph) -> bool:
-        return _env_enabled() and self._fact_view_provider is not None and bool(cfg.blocks)
+        return (
+            _env_enabled() and self._fact_view_provider is not None and bool(cfg.blocks)
+        )
 
     def _view_for(self, cfg: FlowGraph) -> object | None:
         if self._fact_view_provider is None:
@@ -223,7 +231,9 @@ class LoopCarrierBackedgeRefreshPass(FlowGraphTransform):
                 if carrier_stkoff is None:
                     continue
                 reader_blocks = _as_int_set(payload.get("carrier_reader_blocks"))
-                writer_blocks = _as_int_set(payload.get("carrier_writer_blocks_outside_loop"))
+                writer_blocks = _as_int_set(
+                    payload.get("carrier_writer_blocks_outside_loop")
+                )
                 loop_scc = _as_int_set(payload.get("loop_scc_blocks"))
                 if not reader_blocks or not writer_blocks or not loop_scc:
                     continue
@@ -399,7 +409,8 @@ class LoopCarrierBackedgeRefreshPass(FlowGraphTransform):
                 if reader_blk is None or len(reader_blk.succs) != 1:
                     continue
                 carrier_stkoffs = {
-                    stkoff for stkoff in written_stkoffs
+                    stkoff
+                    for stkoff in written_stkoffs
                     if _insn_reads_stkoff(reader_blk, stkoff)
                 }
                 if len(carrier_stkoffs) != 1:

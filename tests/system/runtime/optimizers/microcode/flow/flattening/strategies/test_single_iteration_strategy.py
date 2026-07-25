@@ -1,4 +1,5 @@
 """Runtime tests for the shared single-iteration engine strategy."""
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
@@ -67,9 +68,12 @@ def test_single_iteration_strategy_is_metadata_driven() -> None:
         metadata={SINGLE_ITERATION_FIXES_METADATA_KEY: {2: {1: 3, 3: 4}}},
     )
 
-    assert strategy.is_applicable(
-        AnalysisSnapshot(mba=object(), flow_graph=cfg),
-    ) is True
+    assert (
+        strategy.is_applicable(
+            AnalysisSnapshot(mba=object(), flow_graph=cfg),
+        )
+        is True
+    )
 
 
 def test_extract_single_iteration_fixes_keeps_per_predecessor_decisions() -> None:
@@ -188,9 +192,12 @@ def test_single_iteration_strategy_drops_self_loop_redirects() -> None:
     )
 
     assert extract_single_iteration_fixes(cfg) == ()
-    assert SingleIterationStrategy().plan(
-        AnalysisSnapshot(mba=object(), flow_graph=cfg),
-    ) is None
+    assert (
+        SingleIterationStrategy().plan(
+            AnalysisSnapshot(mba=object(), flow_graph=cfg),
+        )
+        is None
+    )
 
 
 def test_build_single_iteration_modifications_emits_legacy_redirect_shape() -> None:
@@ -239,9 +246,7 @@ def test_serialize_single_iteration_fixes_round_trips() -> None:
         entry_serial=0,
         func_ea=0x1000,
         metadata={
-            SINGLE_ITERATION_FIXES_METADATA_KEY: serialize_single_iteration_fixes(
-                fixes
-            )
+            SINGLE_ITERATION_FIXES_METADATA_KEY: serialize_single_iteration_fixes(fixes)
         },
     )
 

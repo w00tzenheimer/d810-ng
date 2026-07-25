@@ -19,7 +19,9 @@ from d810.transforms.semantic_conditional_lowering import (
 )
 
 
-def _graph(blocks: dict[int, tuple[tuple[int, ...], tuple[int, ...]]], entry: int) -> FlowGraph:
+def _graph(
+    blocks: dict[int, tuple[tuple[int, ...], tuple[int, ...]]], entry: int
+) -> FlowGraph:
     return FlowGraph(
         blocks={
             serial: BlockSnapshot(
@@ -146,12 +148,14 @@ def test_collect_conditional_fork_scope_uses_transition_arms_only() -> None:
         target_entry_anchor=50,
         ordered_path=(99, 100),
     )
-    dag = _round_summary([
-        transition_a,
-        transition_b,
-        return_edge,
-        unrelated_transition,
-    ]).dag
+    dag = _round_summary(
+        [
+            transition_a,
+            transition_b,
+            return_edge,
+            unrelated_transition,
+        ]
+    ).dag
 
     blocks, edges = collect_conditional_fork_scope(dag, source_block=10)
 
@@ -169,7 +173,9 @@ def test_collect_conditional_fork_scope_uses_transition_arms_only() -> None:
         ((), 7, None),
     ],
 )
-def test_ordered_path_first_hop(path: tuple[int, ...], source: int, expected: int | None) -> None:
+def test_ordered_path_first_hop(
+    path: tuple[int, ...], source: int, expected: int | None
+) -> None:
     assert ordered_path_first_hop(path, source_block=source) == expected
 
 
@@ -330,7 +336,9 @@ def test_analyze_exact_conditional_sites_accepts_alias_duplicated_multi_transiti
     assert any(site.source_block == source_block for site in sites)
 
 
-def test_analyze_exact_conditional_sites_accepts_mixed_shape_multi_transition_site() -> None:
+def test_analyze_exact_conditional_sites_accepts_mixed_shape_multi_transition_site() -> (
+    None
+):
     source_block = 163
     taken_successor = 164
     fallback_successor = 170
@@ -418,19 +426,27 @@ def test_conditional_fork_path_from_source_requires_source_and_first_hop() -> No
         first_hop=11,
         ordered_path=(9, 10, 11, 20),
     ) == (10, 11, 20)
-    assert conditional_fork_path_from_source(
-        source_block=10,
-        first_hop=12,
-        ordered_path=(9, 10, 11, 20),
-    ) is None
-    assert conditional_fork_path_from_source(
-        source_block=99,
-        first_hop=11,
-        ordered_path=(9, 10, 11, 20),
-    ) is None
+    assert (
+        conditional_fork_path_from_source(
+            source_block=10,
+            first_hop=12,
+            ordered_path=(9, 10, 11, 20),
+        )
+        is None
+    )
+    assert (
+        conditional_fork_path_from_source(
+            source_block=99,
+            first_hop=11,
+            ordered_path=(9, 10, 11, 20),
+        )
+        is None
+    )
 
 
-def test_normalize_clean_conditional_fork_arms_accepts_independent_single_pred_arms() -> None:
+def test_normalize_clean_conditional_fork_arms_accepts_independent_single_pred_arms() -> (
+    None
+):
     flow_graph = _graph(
         {
             10: ((11, 12), ()),
@@ -448,15 +464,20 @@ def test_normalize_clean_conditional_fork_arms_accepts_independent_single_pred_a
         _fork_arm(first_hop=12, tail=31, ordered_path=(10, 12, 22, 31)),
     )
 
-    assert normalize_clean_conditional_fork_arms(
-        flow_graph,
-        source_block=10,
-        arms=arms,
-        dispatcher_region=set(),
-    ) == arms
+    assert (
+        normalize_clean_conditional_fork_arms(
+            flow_graph,
+            source_block=10,
+            arms=arms,
+            dispatcher_region=set(),
+        )
+        == arms
+    )
 
 
-def test_normalize_clean_conditional_fork_arms_rewrites_empty_shared_join_tails() -> None:
+def test_normalize_clean_conditional_fork_arms_rewrites_empty_shared_join_tails() -> (
+    None
+):
     flow_graph = _graph(
         {
             10: ((11, 12), ()),
@@ -503,9 +524,12 @@ def test_normalize_clean_conditional_fork_arms_rejects_join_to_dispatcher() -> N
         _fork_arm(first_hop=12, tail=40, ordered_path=(10, 12, 22, 40)),
     )
 
-    assert normalize_clean_conditional_fork_arms(
-        flow_graph,
-        source_block=10,
-        arms=arms,
-        dispatcher_region={2},
-    ) is None
+    assert (
+        normalize_clean_conditional_fork_arms(
+            flow_graph,
+            source_block=10,
+            arms=arms,
+            dispatcher_region={2},
+        )
+        is None
+    )

@@ -11,6 +11,7 @@ authoritative). A genuinely-folding live block is covered by the unflatten Docke
 probe (the ``emu-consult: ... folded=True`` log line); here we pin the abstain
 shape so a regression to a *wrong* ExactResult is caught cheaply.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -5,6 +5,7 @@ and the ``ASTPatch`` class which encapsulates deferred patching.
 
 Ported from herast (herast/tree/ast_patch.py).
 """
+
 from __future__ import annotations
 
 import idaapi
@@ -150,9 +151,7 @@ def replace_instr(item: typing.Any, new_item: typing.Any, ctx: ASTContext) -> bo
     return rv
 
 
-def replace_expr(
-    expr: typing.Any, new_expr: typing.Any, ctx: ASTContext
-) -> bool:
+def replace_expr(expr: typing.Any, new_expr: typing.Any, ctx: ASTContext) -> bool:
     """Replace an expression in the ctree."""
     if idaapi is None:
         return False

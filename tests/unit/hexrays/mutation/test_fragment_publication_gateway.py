@@ -805,9 +805,7 @@ def test_gateway_records_canonical_plan_ready_before_semantic_staging() -> None:
         normalization_validated_generation=1,
         normalization_published_postvalidated_generation=1,
     )
-    lifecycle.event_observer = lambda transition: timeline.append(
-        transition.operation
-    )
+    lifecycle.event_observer = lambda transition: timeline.append(transition.operation)
     gateway, _committed, _aborted = _gateway(
         plan,
         lifecycle_authority=lifecycle,
@@ -892,17 +890,13 @@ def test_gateway_advances_only_normalization_for_normalization_plan() -> None:
     assert lifecycle.normalization_staged_generation == 1
     assert lifecycle.normalization_validated_generation == 1
     assert lifecycle.normalization_published_postvalidated_generation == 1
-    assert lifecycle.normalization_last_unreachable_obligation_ids == (
-        "dead-route",
-    )
+    assert lifecycle.normalization_last_unreachable_obligation_ids == ("dead-route",)
     assert lifecycle.canonical_semantic_plan_generation is None
     assert lifecycle.semantic_fragment_staged_generation is None
     assert lifecycle.receipt_committed_generation is None
 
 
-def test_partial_normalization_receipt_does_not_advance_generation_authority() -> (
-    None
-):
+def test_partial_normalization_receipt_does_not_advance_generation_authority() -> None:
     plan = replace(
         _plan(),
         publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
@@ -932,12 +926,8 @@ def test_partial_normalization_receipt_does_not_advance_generation_authority() -
         lifecycle.normalization_last_published_work_item_id
         == "gateway-fragment:root@0x401000"
     )
-    assert lifecycle.normalization_last_selected_obligation_ids == (
-        "route@0x401000",
-    )
-    assert lifecycle.normalization_last_remaining_obligation_ids == (
-        "route@0x402000",
-    )
+    assert lifecycle.normalization_last_selected_obligation_ids == ("route@0x401000",)
+    assert lifecycle.normalization_last_remaining_obligation_ids == ("route@0x402000",)
     assert lifecycle.normalization_last_unreachable_obligation_ids == (
         "route@0x403000",
     )
@@ -1003,9 +993,7 @@ def test_receipt_event_precedes_committed_semantic_lifecycle_authority() -> None
     plan = _plan()
     timeline: list[str] = []
     lifecycle = _semantic_lifecycle()
-    lifecycle.event_observer = lambda transition: timeline.append(
-        transition.operation
-    )
+    lifecycle.event_observer = lambda transition: timeline.append(transition.operation)
     gateway, _committed, _aborted = _gateway(
         plan,
         lifecycle_authority=lifecycle,

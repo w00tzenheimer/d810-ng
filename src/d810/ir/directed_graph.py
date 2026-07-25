@@ -25,6 +25,7 @@ implemented here rather than imported from ``d810.analyses.control_flow``
 consolidation is for those (in the higher layer) to delegate *down* to this
 canonical home.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -162,7 +163,9 @@ def back_edges(graph: DirectedGraph) -> frozenset[Edge]:
     def dfs(start: NodeId) -> None:
         # Iterative DFS to avoid recursion limits on large CFGs. Each stack
         # frame is (node, iterator over its successors).
-        work: list[tuple[NodeId, Iterable[NodeId]]] = [(start, iter(adj.get(start, ())))]
+        work: list[tuple[NodeId, Iterable[NodeId]]] = [
+            (start, iter(adj.get(start, ())))
+        ]
         visited.add(start)
         on_stack.add(start)
         while work:

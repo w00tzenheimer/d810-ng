@@ -12,6 +12,7 @@ a non-induction or non-const operand is rejected.  These synthetic
 ``_FoldedGuardInsn``s are the register-path proof: the Tigress binary's counter
 is stack-resident, so the register guard path is NOT exercised live yet.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -32,7 +33,7 @@ from d810.ir.semantics import PredicateKind
 
 
 _STK = 0x1E0  # microcode stkoff of a stack-resident counter
-_REG = 0x18   # mreg_t of a register-resident counter
+_REG = 0x18  # mreg_t of a register-resident counter
 _BOUND = 0x64  # numeric trip-count bound (100)
 
 _OPERATION_ALIASES = {
@@ -341,8 +342,7 @@ def test_reg_counter_not_matched_by_stack_operand() -> None:
         dest_stkoff=0x200,
     )
     assert (
-        FoldedLoopGuardFactCollector._guard_counter([guard], (_reg_counter(),))
-        is None
+        FoldedLoopGuardFactCollector._guard_counter([guard], (_reg_counter(),)) is None
     )
 
 
@@ -374,7 +374,9 @@ def _num_mop(value: int, size: int = 4) -> MopSnapshot:
     return MopSnapshot(size=size, value=value, kind=OperandKind.NUMBER)
 
 
-def _subinsn_mop(kind: InsnKind, left: MopSnapshot, right: MopSnapshot, size: int = 4) -> MopSnapshot:
+def _subinsn_mop(
+    kind: InsnKind, left: MopSnapshot, right: MopSnapshot, size: int = 4
+) -> MopSnapshot:
     """A ``mop_d`` (SUBINSN) operand wrapping a binary sub-operation."""
     return MopSnapshot(
         size=size,

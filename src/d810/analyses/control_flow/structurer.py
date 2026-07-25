@@ -20,6 +20,7 @@ Block bodies and branch conditions come from injected renderers so this stays
 portable and unit-testable; the Hex-Rays backend supplies the real statement
 text. ``terminal_return`` is the Layer-1 -> Layer-2 seam (carrier delivery).
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Callable, Iterable, Mapping, Optional
@@ -65,16 +66,12 @@ def build_region_tree(
 
     blocks = flow_graph.blocks
     succ_map = {
-        int(serial): tuple(int(s) for s in blk.succs)
-        for serial, blk in blocks.items()
+        int(serial): tuple(int(s) for s in blk.succs) for serial, blk in blocks.items()
     }
     entry = int(flow_graph.entry_serial)
     dom = compute_dom_tree(succ_map, entry)
     back_edges = {
-        (u, v)
-        for u, succs in succ_map.items()
-        for v in succs
-        if dom.dominates(v, u)
+        (u, v) for u, succs in succ_map.items() for v in succs if dom.dominates(v, u)
     }
     pred_map: dict[int, set] = {}
     for u, succs in succ_map.items():
@@ -116,7 +113,9 @@ def build_region_tree(
         if len(forward) == 2 and exit_block is not None and exit_block in forward:
             in_loop = forward[0] if forward[1] == exit_block else forward[1]
             body = _region_from(in_loop, exit_block, seen | {header}, active)
-            return LoopRegion(body=body, kind="while", condition=condition_of(header_block))
+            return LoopRegion(
+                body=body, kind="while", condition=condition_of(header_block)
+            )
 
         # do_while: a single latch carries the loop condition at the bottom.
         if len(latches) == 1:
@@ -151,9 +150,7 @@ def build_region_tree(
                 exits = _loop_exits(loop)
                 if len(exits) <= 1:
                     exit_block = next(iter(exits)) if exits else None
-                    parts.append(
-                        _structure_loop(cur, exit_block, seen, active | {cur})
-                    )
+                    parts.append(_structure_loop(cur, exit_block, seen, active | {cur}))
                     cur = exit_block if exit_block in blocks else None
                     continue
                 # multi-exit / irreducible: fall through to acyclic handling.

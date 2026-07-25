@@ -32,6 +32,7 @@ Selector resolution priority (each grounded in existing code):
 IDA-dependent (reads live ``mba`` + ``ida_hexrays`` opcode/mop constants) -> lives
 in the Hex-Rays backend; the contract it emits is portable.
 """
+
 from __future__ import annotations
 
 import ida_hexrays

@@ -1,4 +1,5 @@
 """Tests for supported config-v2 default routing policy."""
+
 from __future__ import annotations
 
 import json

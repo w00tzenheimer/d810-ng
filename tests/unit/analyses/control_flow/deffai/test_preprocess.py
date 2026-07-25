@@ -5,6 +5,7 @@ condvar defs / branches / merges, contracts edges), the condvar-cell discovery,
 prune-block insertion giving each multi-pred handler a single-pred entry, the
 original->synthesized serial map, and idempotence of both passes.  No IDA.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -126,9 +127,7 @@ def _dispatcher_graph():
 def test_insert_prune_blocks_gives_single_pred_entry():
     graph = _dispatcher_graph()
     assert graph.blocks[1].npred == 2  # dispatcher + back-edge
-    pruned = insert_prune_blocks(
-        graph, dispatcher_entry=0, handler_entries=[1, 2]
-    )
+    pruned = insert_prune_blocks(graph, dispatcher_entry=0, handler_entries=[1, 2])
     # The dispatcher no longer points directly at handler 1/2.
     assert 1 not in pruned.blocks[0].succs
     assert 2 not in pruned.blocks[0].succs
@@ -144,9 +143,7 @@ def test_insert_prune_blocks_gives_single_pred_entry():
 
 def test_insert_prune_blocks_serial_map_round_trips():
     graph = _dispatcher_graph()
-    pruned = insert_prune_blocks(
-        graph, dispatcher_entry=0, handler_entries=[1, 2]
-    )
+    pruned = insert_prune_blocks(graph, dispatcher_entry=0, handler_entries=[1, 2])
     origin = dict(pruned.metadata[PRUNE_BLOCK_META_KEY])
     # Every synthesized serial maps back to its original handler, and the handler
     # is reachable from the prune block.
@@ -161,9 +158,7 @@ def test_insert_prune_blocks_idempotent_on_single_pred():
     b1 = block(1, (ret(),), ())  # npred=1 (only dispatcher)
     b2 = block(2, (ret(),), ())  # npred=1
     graph = make_graph([b0, b1, b2])
-    pruned = insert_prune_blocks(
-        graph, dispatcher_entry=0, handler_entries=[1, 2]
-    )
+    pruned = insert_prune_blocks(graph, dispatcher_entry=0, handler_entries=[1, 2])
     # No prune blocks inserted (handlers already single-pred).
     assert not pruned.metadata.get(PRUNE_BLOCK_META_KEY)
     assert set(pruned.blocks) == set(graph.blocks)
@@ -186,7 +181,5 @@ def test_insert_prune_blocks_rerun_is_noop():
 
 def test_insert_prune_blocks_no_dispatcher_is_safe():
     graph = _dispatcher_graph()
-    pruned = insert_prune_blocks(
-        graph, dispatcher_entry=999, handler_entries=[1, 2]
-    )
+    pruned = insert_prune_blocks(graph, dispatcher_entry=999, handler_entries=[1, 2])
     assert set(pruned.blocks) == set(graph.blocks)  # no-op rebuild

@@ -23,6 +23,7 @@ migrated onto ``FlowDomain`` in a later slice (Landing Sequence step 5).
 ``FixpointResult`` and ``FixpointDidNotConverge`` are re-exported from
 that module for back-compat.
 """
+
 from __future__ import annotations
 
 from d810.analyses.data_flow.abstract_value import (

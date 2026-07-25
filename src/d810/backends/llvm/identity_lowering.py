@@ -5,6 +5,7 @@ microcode.  It records the portable instruction signature accepted by the
 LLVM emitter and checks that the emitted manifest can reconstruct the original
 portable ``FlowGraph`` shape for the currently supported M1 subset.
 """
+
 from __future__ import annotations
 
 import re
@@ -336,7 +337,9 @@ def _manifest_control(
         predicate=_operation_name(control.predicate),
         target=control.target,
         fallthrough=control.fallthrough,
-        switch_cases=tuple(_manifest_switch_case(case) for case in control.switch_cases),
+        switch_cases=tuple(
+            _manifest_switch_case(case) for case in control.switch_cases
+        ),
         indirect_target=_manifest_varnode(control.indirect_target),
         call_kind=_operation_name(control.call_kind),
         call_target=_manifest_varnode(control.call_target),
@@ -434,9 +437,23 @@ def _compare_manifest(
     actual: LlvmIdentityManifest,
 ) -> list[LlvmIdentityMismatch]:
     mismatches: list[LlvmIdentityMismatch] = []
-    _compare_value(mismatches, "function_name", "function_name", expected.function_name, actual.function_name)
-    _compare_value(mismatches, "entry", "entry_serial", expected.entry_serial, actual.entry_serial)
-    _compare_value(mismatches, "block_count", "block_count", expected.block_count, actual.block_count)
+    _compare_value(
+        mismatches,
+        "function_name",
+        "function_name",
+        expected.function_name,
+        actual.function_name,
+    )
+    _compare_value(
+        mismatches, "entry", "entry_serial", expected.entry_serial, actual.entry_serial
+    )
+    _compare_value(
+        mismatches,
+        "block_count",
+        "block_count",
+        expected.block_count,
+        actual.block_count,
+    )
     _compare_value(
         mismatches,
         "instruction_count",
@@ -446,9 +463,13 @@ def _compare_manifest(
     )
     _compare_value(mismatches, "allocas", "allocas", expected.allocas, actual.allocas)
     if len(expected.blocks) != len(actual.blocks):
-        _compare_value(mismatches, "blocks", "blocks", len(expected.blocks), len(actual.blocks))
+        _compare_value(
+            mismatches, "blocks", "blocks", len(expected.blocks), len(actual.blocks)
+        )
         return mismatches
-    for block_index, (expected_block, actual_block) in enumerate(zip(expected.blocks, actual.blocks)):
+    for block_index, (expected_block, actual_block) in enumerate(
+        zip(expected.blocks, actual.blocks)
+    ):
         path = f"blocks[{block_index}]"
         _compare_value(
             mismatches,
@@ -498,12 +519,28 @@ def _compare_instruction(
     expected: LlvmIdentityManifestInstruction,
     actual: LlvmIdentityManifestInstruction,
 ) -> None:
-    _compare_value(mismatches, "operation", f"{path}.operation", expected.operation, actual.operation)
-    _compare_value(mismatches, "inputs", f"{path}.inputs", expected.inputs, actual.inputs)
-    _compare_value(mismatches, "result", f"{path}.result", expected.result, actual.result)
-    _compare_value(mismatches, "effects", f"{path}.effects", expected.effects, actual.effects)
-    _compare_value(mismatches, "control", f"{path}.control", expected.control, actual.control)
-    _compare_value(mismatches, "memory", f"{path}.memory", expected.memory, actual.memory)
+    _compare_value(
+        mismatches,
+        "operation",
+        f"{path}.operation",
+        expected.operation,
+        actual.operation,
+    )
+    _compare_value(
+        mismatches, "inputs", f"{path}.inputs", expected.inputs, actual.inputs
+    )
+    _compare_value(
+        mismatches, "result", f"{path}.result", expected.result, actual.result
+    )
+    _compare_value(
+        mismatches, "effects", f"{path}.effects", expected.effects, actual.effects
+    )
+    _compare_value(
+        mismatches, "control", f"{path}.control", expected.control, actual.control
+    )
+    _compare_value(
+        mismatches, "memory", f"{path}.memory", expected.memory, actual.memory
+    )
 
 
 def _compare_value(

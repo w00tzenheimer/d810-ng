@@ -9,6 +9,7 @@ reusing the canonical types.  It is the portable replacement for the live
 This first increment pins the node projection; local segment/edge structure and
 outer transition edges land next.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.block_ownership_domain import analyze_block_ownership
@@ -124,7 +125,10 @@ def test_outer_transition_edge_from_transition_result():
         transitions=[StateTransition(from_state=K1, to_state=K2, from_block=10)]
     )
     dag = read_dag_from(
-        view=_view(), owner_result=_owner_result(), transitions=tr, dispatcher_entry_serial=1
+        view=_view(),
+        owner_result=_owner_result(),
+        transitions=tr,
+        dispatcher_entry_serial=1,
     )
     assert len(dag.edges) == 1
     edge = dag.edges[0]
@@ -235,10 +239,20 @@ def test_conditional_arms_from_same_branch_get_distinct_branch_arms():
     )
     tr = TransitionResult(
         transitions=[
-            StateTransition(from_state=K1, to_state=K2, from_block=10,
-                            condition_block=10, is_conditional=True),
-            StateTransition(from_state=K1, to_state=K4, from_block=10,
-                            condition_block=10, is_conditional=True),
+            StateTransition(
+                from_state=K1,
+                to_state=K2,
+                from_block=10,
+                condition_block=10,
+                is_conditional=True,
+            ),
+            StateTransition(
+                from_state=K1,
+                to_state=K4,
+                from_block=10,
+                condition_block=10,
+                is_conditional=True,
+            ),
         ]
     )
     dag = read_dag_from(view=view, owner_result=owner_result, transitions=tr)

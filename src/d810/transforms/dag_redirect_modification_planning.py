@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.transforms.graph_modification import GraphModification, RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    GraphModification,
+    RedirectBranch,
+    RedirectGoto,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,9 +117,7 @@ def plan_dag_redirect_fallback(
         target_entry=int(context.target_entry),
         nsucc=int(context.nsucc),
         old_target=(
-            int(context.old_target)
-            if context.old_target is not None
-            else None
+            int(context.old_target) if context.old_target is not None else None
         ),
         source_succs=tuple(int(succ) for succ in context.source_succs),
         edge_is_transition=bool(context.edge_is_transition),
@@ -197,7 +199,9 @@ def plan_dag_redirect_fallback_emission(
             accepted=False,
             rejection_reason="live_oneway_noop",
         )
-    if claimed_1way_target is not None and int(claimed_1way_target) != int(target_entry):
+    if claimed_1way_target is not None and int(claimed_1way_target) != int(
+        target_entry
+    ):
         return DagRedirectEmissionPlan(
             accepted=False,
             rejection_reason="oneway_conflict",
@@ -245,12 +249,17 @@ def apply_dag_redirect_emission_plan(
     if emission_plan.modification is None:
         raise ValueError("dag redirect emission plan has no modification")
     if emission_plan.source_block is None or emission_plan.target_entry is None:
-        raise ValueError("dag redirect emission plan is missing source block or target entry")
+        raise ValueError(
+            "dag redirect emission plan is missing source block or target entry"
+        )
 
     source_block = int(emission_plan.source_block)
     target_entry = int(emission_plan.target_entry)
     modifications.append(emission_plan.modification)
-    if emission_plan.claim_2way_key is not None and emission_plan.claim_2way_target is not None:
+    if (
+        emission_plan.claim_2way_key is not None
+        and emission_plan.claim_2way_target is not None
+    ):
         claimed_2way[
             (int(emission_plan.claim_2way_key[0]), int(emission_plan.claim_2way_key[1]))
         ] = int(emission_plan.claim_2way_target)

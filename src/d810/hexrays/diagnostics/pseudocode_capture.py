@@ -1,4 +1,5 @@
 """Live IDA/Hex-Rays pseudocode capture helpers."""
+
 from __future__ import annotations
 
 import json
@@ -70,8 +71,10 @@ def get_func_ea(name_or_ea: str) -> int:
     if ea == idaapi.BADADDR:
         ea = idc.get_name_ea_simple("_" + name_or_ea)
 
-    if ea == idaapi.BADADDR and isinstance(name_or_ea, str) and name_or_ea.startswith(
-        "0x"
+    if (
+        ea == idaapi.BADADDR
+        and isinstance(name_or_ea, str)
+        and name_or_ea.startswith("0x")
     ):
         try:
             cand = int(name_or_ea, 16)

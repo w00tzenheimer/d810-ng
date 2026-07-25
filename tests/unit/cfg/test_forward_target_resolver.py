@@ -1,4 +1,5 @@
 """Tests for the forward-target resolver."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.dispatcher_aware_classifier import (
@@ -62,7 +63,9 @@ class TestDispatcherRoundTrip:
 
         c = _mk_classification(DispatcherAwareEdgeClass.DISPATCHER_ROUND_TRIP)
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_3C": 0x42}, condition_chain_resolver=condition_chain
+            c,
+            src_reaching_const={"%var_3C": 0x42},
+            condition_chain_resolver=condition_chain,
         )
         assert result is not None
         assert result.new_target == 7
@@ -79,7 +82,9 @@ class TestDispatcherRoundTrip:
     def test_no_condition_chain_resolver_returns_none(self) -> None:
         c = _mk_classification(DispatcherAwareEdgeClass.DISPATCHER_ROUND_TRIP)
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_3C": 0x42}, condition_chain_resolver=None,
+            c,
+            src_reaching_const={"%var_3C": 0x42},
+            condition_chain_resolver=None,
         )
         assert result is None
 
@@ -100,7 +105,9 @@ class TestDispatcherRoundTrip:
 
         c = _mk_classification(DispatcherAwareEdgeClass.DISPATCHER_ROUND_TRIP)
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_3C": 0x42}, condition_chain_resolver=boom,
+            c,
+            src_reaching_const={"%var_3C": 0x42},
+            condition_chain_resolver=boom,
         )
         assert result is None
 
@@ -113,8 +120,8 @@ class TestDispatcherRoundTrip:
         result = resolve_forward_target(
             c,
             src_reaching_const={
-                "%var_178": 0x12345678,    # not a state value
-                "%var_3C": 0x6B588048,     # the state value
+                "%var_178": 0x12345678,  # not a state value
+                "%var_3C": 0x6B588048,  # the state value
             },
             condition_chain_resolver=condition_chain,
         )
@@ -126,8 +133,11 @@ class TestPredicateEdge:
     def test_jge_taken_branch(self) -> None:
         c = _mk_classification(DispatcherAwareEdgeClass.SPURIOUS, src=18, tgt=2)
         pred = PredicateInfo(
-            opcode="jge", read_var="%var_1C8", test_const=0x80,
-            taken_succ=19, fallthrough_succ=3,
+            opcode="jge",
+            read_var="%var_1C8",
+            test_const=0x80,
+            taken_succ=19,
+            fallthrough_succ=3,
         )
         result = resolve_forward_target(
             c,
@@ -141,8 +151,11 @@ class TestPredicateEdge:
     def test_jge_fallthrough_branch(self) -> None:
         c = _mk_classification(DispatcherAwareEdgeClass.SPURIOUS, src=18, tgt=2)
         pred = PredicateInfo(
-            opcode="jge", read_var="%var_1C8", test_const=0x80,
-            taken_succ=19, fallthrough_succ=3,
+            opcode="jge",
+            read_var="%var_1C8",
+            test_const=0x80,
+            taken_succ=19,
+            fallthrough_succ=3,
         )
         result = resolve_forward_target(
             c,
@@ -155,44 +168,64 @@ class TestPredicateEdge:
     def test_jz_equal_branches_to_taken(self) -> None:
         c = _mk_classification(DispatcherAwareEdgeClass.SPURIOUS)
         pred = PredicateInfo(
-            opcode="jz", read_var="%var_X", test_const=0,
-            taken_succ=10, fallthrough_succ=20,
+            opcode="jz",
+            read_var="%var_X",
+            test_const=0,
+            taken_succ=10,
+            fallthrough_succ=20,
         )
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_X": 0}, target_predicate=pred,
+            c,
+            src_reaching_const={"%var_X": 0},
+            target_predicate=pred,
         )
         assert result is not None and result.new_target == 10
 
     def test_jz_unequal_branches_to_fallthrough(self) -> None:
         c = _mk_classification(DispatcherAwareEdgeClass.SPURIOUS)
         pred = PredicateInfo(
-            opcode="jz", read_var="%var_X", test_const=0,
-            taken_succ=10, fallthrough_succ=20,
+            opcode="jz",
+            read_var="%var_X",
+            test_const=0,
+            taken_succ=10,
+            fallthrough_succ=20,
         )
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_X": 5}, target_predicate=pred,
+            c,
+            src_reaching_const={"%var_X": 5},
+            target_predicate=pred,
         )
         assert result is not None and result.new_target == 20
 
     def test_jcnd_zero_falls_through(self) -> None:
         c = _mk_classification(DispatcherAwareEdgeClass.SPURIOUS)
         pred = PredicateInfo(
-            opcode="jcnd", read_var="%var_X", test_const=None,
-            taken_succ=10, fallthrough_succ=20,
+            opcode="jcnd",
+            read_var="%var_X",
+            test_const=None,
+            taken_succ=10,
+            fallthrough_succ=20,
         )
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_X": 0}, target_predicate=pred,
+            c,
+            src_reaching_const={"%var_X": 0},
+            target_predicate=pred,
         )
         assert result is not None and result.new_target == 20
 
     def test_jcnd_nonzero_takes_branch(self) -> None:
         c = _mk_classification(DispatcherAwareEdgeClass.SPURIOUS)
         pred = PredicateInfo(
-            opcode="jcnd", read_var="%var_X", test_const=None,
-            taken_succ=10, fallthrough_succ=20,
+            opcode="jcnd",
+            read_var="%var_X",
+            test_const=None,
+            taken_succ=10,
+            fallthrough_succ=20,
         )
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_X": 0x42}, target_predicate=pred,
+            c,
+            src_reaching_const={"%var_X": 0x42},
+            target_predicate=pred,
         )
         assert result is not None and result.new_target == 10
 
@@ -200,42 +233,64 @@ class TestPredicateEdge:
         # ja is unsigned: -1 (0xFFF...FF) > 0.  jg is signed: -1 < 0.
         c = _mk_classification(DispatcherAwareEdgeClass.SPURIOUS)
         ja = PredicateInfo(
-            opcode="ja", read_var="%var_X", test_const=0,
-            taken_succ=1, fallthrough_succ=2,
+            opcode="ja",
+            read_var="%var_X",
+            test_const=0,
+            taken_succ=1,
+            fallthrough_succ=2,
         )
         jg = PredicateInfo(
-            opcode="jg", read_var="%var_X", test_const=0,
-            taken_succ=1, fallthrough_succ=2,
+            opcode="jg",
+            read_var="%var_X",
+            test_const=0,
+            taken_succ=1,
+            fallthrough_succ=2,
         )
         ja_result = resolve_forward_target(
-            c, src_reaching_const={"%var_X": -1}, target_predicate=ja,
+            c,
+            src_reaching_const={"%var_X": -1},
+            target_predicate=ja,
         )
         jg_result = resolve_forward_target(
-            c, src_reaching_const={"%var_X": -1}, target_predicate=jg,
+            c,
+            src_reaching_const={"%var_X": -1},
+            target_predicate=jg,
         )
-        assert ja_result is not None and ja_result.new_target == 1   # unsigned: taken
-        assert jg_result is not None and jg_result.new_target == 2   # signed: fallthrough
+        assert ja_result is not None and ja_result.new_target == 1  # unsigned: taken
+        assert (
+            jg_result is not None and jg_result.new_target == 2
+        )  # signed: fallthrough
 
     def test_ambiguous_predicate_input_returns_none(self) -> None:
         c = _mk_classification(DispatcherAwareEdgeClass.SPURIOUS)
         pred = PredicateInfo(
-            opcode="jge", read_var="%var_X", test_const=10,
-            taken_succ=1, fallthrough_succ=2,
+            opcode="jge",
+            read_var="%var_X",
+            test_const=10,
+            taken_succ=1,
+            fallthrough_succ=2,
         )
         # Reaching def for %var_X is non-constant.
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_X": None}, target_predicate=pred,
+            c,
+            src_reaching_const={"%var_X": None},
+            target_predicate=pred,
         )
         assert result is None
 
     def test_unknown_opcode_returns_none(self) -> None:
         c = _mk_classification(DispatcherAwareEdgeClass.SPURIOUS)
         pred = PredicateInfo(
-            opcode="jweird", read_var="%var_X", test_const=10,
-            taken_succ=1, fallthrough_succ=2,
+            opcode="jweird",
+            read_var="%var_X",
+            test_const=10,
+            taken_succ=1,
+            fallthrough_succ=2,
         )
         result = resolve_forward_target(
-            c, src_reaching_const={"%var_X": 5}, target_predicate=pred,
+            c,
+            src_reaching_const={"%var_X": 5},
+            target_predicate=pred,
         )
         assert result is None
 
@@ -255,8 +310,11 @@ class TestRefuseToRewriteRealLoops:
         # rewrite a back-edge classified as REAL_LOOP.
         c = _mk_classification(DispatcherAwareEdgeClass.REAL_LOOP)
         pred = PredicateInfo(
-            opcode="jge", read_var="%var_178", test_const=10,
-            taken_succ=1, fallthrough_succ=2,
+            opcode="jge",
+            read_var="%var_178",
+            test_const=10,
+            taken_succ=1,
+            fallthrough_succ=2,
         )
         result = resolve_forward_target(
             c,

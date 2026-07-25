@@ -14,6 +14,7 @@ canonical record, so a call anchor is authorized by recovered call semantics,
 not an opcode guess.  There is no meta-less fallback -- every production fact
 target is a canonical ``FlowGraph``.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping

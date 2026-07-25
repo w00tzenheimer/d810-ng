@@ -1,4 +1,5 @@
 """Pure CFG planning for dispatcher-predecessor rewrites."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

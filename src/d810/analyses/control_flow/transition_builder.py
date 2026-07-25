@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 from d810.core import getLogger
 from d810.core.typing import Dict, List, Optional, Protocol
 
-from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
+from d810.analyses.control_flow.condition_chain_model import (
+    ConditionChainAnalysisResult,
+)
 from d810.capabilities.providers import get_condition_chain_walkers
 from d810.ir.flowgraph import MopSnapshot
 from d810.ir.varnode import Space, varnode_from_mop_snapshot
@@ -138,11 +140,9 @@ class TransitionBuilderStrategy(Protocol):
     """Protocol for pluggable transition-building strategies."""
 
     @property
-    def name(self) -> str:
-        ...
+    def name(self) -> str: ...
 
-    def build(self, mba, detector) -> Optional[TransitionResult]:
-        ...
+    def build(self, mba, detector) -> Optional[TransitionResult]: ...
 
 
 def _get_state_var_stkoff(detector) -> Optional[int]:
@@ -199,6 +199,7 @@ def _convert_condition_chain_to_result(
     # rows are catch-all / default blocks and are excluded.
     if condition_chain.dispatcher is not None:
         from collections import Counter as _Counter
+
         _target_freq: dict[int, int] = _Counter(
             r.target for r in condition_chain.dispatcher._rows
         )
@@ -305,7 +306,9 @@ def _convert_condition_chain_to_result(
 class TransitionBuilder:
     """Try provided strategies in order; return best resolved result."""
 
-    def __init__(self, strategies: Optional[List[TransitionBuilderStrategy]] = None) -> None:
+    def __init__(
+        self, strategies: Optional[List[TransitionBuilderStrategy]] = None
+    ) -> None:
         self.strategies: List[TransitionBuilderStrategy] = list(strategies or [])
 
     def build(self, mba, detector) -> Optional[TransitionResult]:

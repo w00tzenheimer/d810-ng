@@ -1,4 +1,5 @@
 """IDA-free DTOs for M2 live coverage and collapse census rows."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -70,7 +71,8 @@ class LlvmM2CensusRow:
                 - self.before_metrics.instruction_count
             ),
             load_delta=self.after_metrics.load_count - self.before_metrics.load_count,
-            store_delta=self.after_metrics.store_count - self.before_metrics.store_count,
+            store_delta=self.after_metrics.store_count
+            - self.before_metrics.store_count,
             alloca_delta=(
                 self.after_metrics.alloca_count - self.before_metrics.alloca_count
             ),
@@ -99,12 +101,16 @@ class LlvmM2CensusSummary:
 
     @property
     def skipped_count(self) -> int:
-        return sum(1 for row in self.rows if row.status is LlvmM2CensusRowStatus.SKIPPED)
+        return sum(
+            1 for row in self.rows if row.status is LlvmM2CensusRowStatus.SKIPPED
+        )
 
     @property
     def lift_unsupported_count(self) -> int:
         return sum(
-            1 for row in self.rows if row.status is LlvmM2CensusRowStatus.LIFT_UNSUPPORTED
+            1
+            for row in self.rows
+            if row.status is LlvmM2CensusRowStatus.LIFT_UNSUPPORTED
         )
 
     @property

@@ -50,7 +50,7 @@ def create_test_database(db_path: str) -> None:
             "lineno": 45,
             "message": "Analyzing block 3 for fake jump pattern",
             "extra": json.dumps({"block_serial": 3, "function": "abc_f6_or_dispatch"}),
-            "test_id": "test_abc_f6_or_dispatch"
+            "test_id": "test_abc_f6_or_dispatch",
         },
         # MopTracker starting
         {
@@ -62,7 +62,7 @@ def create_test_database(db_path: str) -> None:
             "lineno": 520,
             "message": "Starting backward search for state variable from block 3",
             "extra": json.dumps({"start_block": 3, "mop": "var_18"}),
-            "test_id": "test_abc_f6_or_dispatch"
+            "test_id": "test_abc_f6_or_dispatch",
         },
         # History 0 - resolved
         {
@@ -73,8 +73,15 @@ def create_test_database(db_path: str) -> None:
             "function": "search_backward",
             "lineno": 650,
             "message": "History 0: resolved=True, value=0xF6951",
-            "extra": json.dumps({"history_index": 0, "resolved": True, "value": 0xF6951, "path": [0, 1, 2]}),
-            "test_id": "test_abc_f6_or_dispatch"
+            "extra": json.dumps(
+                {
+                    "history_index": 0,
+                    "resolved": True,
+                    "value": 0xF6951,
+                    "path": [0, 1, 2],
+                }
+            ),
+            "test_id": "test_abc_f6_or_dispatch",
         },
         # History 1 - unresolved (back-edge)
         {
@@ -85,8 +92,15 @@ def create_test_database(db_path: str) -> None:
             "function": "search_backward",
             "lineno": 650,
             "message": "History 1: resolved=False (loop back to dispatcher)",
-            "extra": json.dumps({"history_index": 1, "resolved": False, "reason": "loop_detected", "path": [2, 1, 2]}),
-            "test_id": "test_abc_f6_or_dispatch"
+            "extra": json.dumps(
+                {
+                    "history_index": 1,
+                    "resolved": False,
+                    "reason": "loop_detected",
+                    "path": [2, 1, 2],
+                }
+            ),
+            "test_id": "test_abc_f6_or_dispatch",
         },
         # History 2 - unresolved (back-edge)
         {
@@ -97,8 +111,15 @@ def create_test_database(db_path: str) -> None:
             "function": "search_backward",
             "lineno": 650,
             "message": "History 2: resolved=False (loop back to dispatcher)",
-            "extra": json.dumps({"history_index": 2, "resolved": False, "reason": "loop_detected", "path": [3, 1, 2]}),
-            "test_id": "test_abc_f6_or_dispatch"
+            "extra": json.dumps(
+                {
+                    "history_index": 2,
+                    "resolved": False,
+                    "reason": "loop_detected",
+                    "path": [3, 1, 2],
+                }
+            ),
+            "test_id": "test_abc_f6_or_dispatch",
         },
         # History 3 - resolved
         {
@@ -109,8 +130,15 @@ def create_test_database(db_path: str) -> None:
             "function": "search_backward",
             "lineno": 650,
             "message": "History 3: resolved=True, value=0xF6951",
-            "extra": json.dumps({"history_index": 3, "resolved": True, "value": 0xF6951, "path": [0, 1, 3, 1, 2]}),
-            "test_id": "test_abc_f6_or_dispatch"
+            "extra": json.dumps(
+                {
+                    "history_index": 3,
+                    "resolved": True,
+                    "value": 0xF6951,
+                    "path": [0, 1, 3, 1, 2],
+                }
+            ),
+            "test_id": "test_abc_f6_or_dispatch",
         },
         # History 4 - resolved but DIFFERENT value (spurious path!)
         {
@@ -121,8 +149,15 @@ def create_test_database(db_path: str) -> None:
             "function": "search_backward",
             "lineno": 650,
             "message": "History 4: resolved=True, value=0xF6953",
-            "extra": json.dumps({"history_index": 4, "resolved": True, "value": 0xF6953, "path": [0, 1, 4, 1, 2]}),
-            "test_id": "test_abc_f6_or_dispatch"
+            "extra": json.dumps(
+                {
+                    "history_index": 4,
+                    "resolved": True,
+                    "value": 0xF6953,
+                    "path": [0, 1, 4, 1, 2],
+                }
+            ),
+            "test_id": "test_abc_f6_or_dispatch",
         },
         # Summary from fake-jump strategy
         {
@@ -133,13 +168,15 @@ def create_test_database(db_path: str) -> None:
             "function": "analyze_blk",
             "lineno": 75,
             "message": "Found 5 histories: 3 resolved, 2 unresolved",
-            "extra": json.dumps({
-                "total_histories": 5,
-                "resolved_count": 3,
-                "unresolved_count": 2,
-                "resolved_values": [0xF6951, 0xF6951, 0xF6953]
-            }),
-            "test_id": "test_abc_f6_or_dispatch"
+            "extra": json.dumps(
+                {
+                    "total_histories": 5,
+                    "resolved_count": 3,
+                    "unresolved_count": 2,
+                    "resolved_values": [0xF6951, 0xF6951, 0xF6953],
+                }
+            ),
+            "test_id": "test_abc_f6_or_dispatch",
         },
         # Warning about inconsistency
         {
@@ -150,27 +187,32 @@ def create_test_database(db_path: str) -> None:
             "function": "analyze_blk",
             "lineno": 82,
             "message": "Resolved values are INCONSISTENT: [0xF6951, 0xF6951, 0xF6953]",
-            "extra": json.dumps({"values": [0xF6951, 0xF6951, 0xF6953], "unique_count": 2}),
-            "test_id": "test_abc_f6_or_dispatch"
+            "extra": json.dumps(
+                {"values": [0xF6951, 0xF6951, 0xF6953], "unique_count": 2}
+            ),
+            "test_id": "test_abc_f6_or_dispatch",
         },
     ]
 
     for log in test_logs:
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO logs (timestamp, logger, level, levelno, function, lineno, pathname, message, extra, test_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            log["timestamp"],
-            log["logger"],
-            log["level"],
-            log["levelno"],
-            log["function"],
-            log["lineno"],
-            log.get("pathname"),
-            log["message"],
-            log["extra"],
-            log["test_id"]
-        ))
+        """,
+            (
+                log["timestamp"],
+                log["logger"],
+                log["level"],
+                log["levelno"],
+                log["function"],
+                log["lineno"],
+                log.get("pathname"),
+                log["message"],
+                log["extra"],
+                log["test_id"],
+            ),
+        )
 
     conn.commit()
     conn.close()
@@ -251,7 +293,9 @@ class TestLogAnalystIntegration:
         conn.close()
 
         # Should find 2 unique values (inconsistent!)
-        assert len(unique_values) == 2, f"Expected 2 unique values, got {len(unique_values)}"
+        assert len(unique_values) == 2, (
+            f"Expected 2 unique values, got {len(unique_values)}"
+        )
 
     def test_find_warnings(self, test_db):
         """Verify we can find warning messages."""
@@ -276,7 +320,6 @@ LOG_ANALYST_QUERIES = {
         GROUP BY logger
         ORDER BY count DESC
     """,
-
     "find_history_values": """
         SELECT
             json_extract(extra, '$.history_index') as history_idx,
@@ -289,7 +332,6 @@ LOG_ANALYST_QUERIES = {
         AND message LIKE 'History%'
         ORDER BY id
     """,
-
     "check_consistency": """
         SELECT
             COUNT(DISTINCT json_extract(extra, '$.value')) as unique_values,
@@ -299,13 +341,12 @@ LOG_ANALYST_QUERIES = {
         AND test_id = ?
         AND json_extract(extra, '$.resolved') = 1
     """,
-
     "get_timeline": """
         SELECT timestamp, logger, level, substr(message, 1, 60) as msg
         FROM logs
         WHERE test_id = ?
         ORDER BY id
-    """
+    """,
 }
 
 

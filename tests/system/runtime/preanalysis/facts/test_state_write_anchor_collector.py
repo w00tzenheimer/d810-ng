@@ -1,4 +1,5 @@
 """Tests for StateWriteAnchorFactCollector."""
+
 from __future__ import annotations
 
 import json
@@ -153,7 +154,7 @@ def test_collects_state_const_write_basic() -> None:
                 succs=(101,),
             ),
         ),
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )
@@ -258,7 +259,7 @@ def test_ignores_non_const_writes() -> None:
                 ),
             ),
         ),
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )
@@ -279,7 +280,7 @@ def test_ignores_non_stkvar_destination() -> None:
                 ),
             ),
         ),
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )
@@ -295,7 +296,7 @@ def test_collects_multiple_writes_across_blocks() -> None:
                 _insn(
                     index=0,
                     src_l_value=0x432DC789,
-                    ea=0x180012abc,
+                    ea=0x180012ABC,
                     dstr="mov #0x432DC789.4, %var_7BC.4",
                 ),
                 succs=(55,),
@@ -314,13 +315,13 @@ def test_collects_multiple_writes_across_blocks() -> None:
                 _insn(
                     index=0,
                     src_l_value=0x149AED27,
-                    ea=0x180015abc,
+                    ea=0x180015ABC,
                     dstr="mov #0x149AED27.4, %var_7BC.4",
                 ),
                 succs=(162,),
             ),
         ),
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )
@@ -336,7 +337,7 @@ def test_dedupe_by_block_insn_ea_stkoff() -> None:
     insn = _insn(index=0, src_l_value=0xDEAD, ea=0x180014155)
     facts = collector.collect(
         _target(_block(100, insn, succs=(101,))),
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )
@@ -354,7 +355,7 @@ def test_synthetic_ea_fallback_when_zero() -> None:
                 succs=(43,),
             ),
         ),
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )
@@ -457,9 +458,7 @@ def _meta_mov(
         src_r_value=None,
         dstr=f"mov #0x{state_const:08X}.4, %var_7BC.4",
     )
-    insn.meta = json.dumps(
-        {"l": _meta_const(state_const), "d": _meta_stack(stkoff)}
-    )
+    insn.meta = json.dumps({"l": _meta_const(state_const), "d": _meta_stack(stkoff)})
     return insn
 
 
@@ -477,7 +476,7 @@ def test_collects_state_const_write_from_meta_rich_diag_row() -> None:
                 succs=(101,),
             ),
         ),
-        func_ea=0x180012cf0,
+        func_ea=0x180012CF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )

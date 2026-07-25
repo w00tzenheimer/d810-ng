@@ -1,4 +1,5 @@
 """Unit tests for switch-table analysis pure-logic helpers."""
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import (
@@ -84,13 +85,15 @@ def test_find_switch_loop_guard_blocks_finds_while_guard():
         left=_mop(kind=OperandKind.STACK, stkoff=0x10, stack_refs=(0x10,)),
         right=_mop(kind=OperandKind.NUMBER, value=0xFF),
     )
-    flow_graph = _flow_graph({
-        0: _block(0, succs=(2,)),
-        2: _block(2, preds=(0, 6), succs=(3, 9), tail=guard_tail),
-        3: _block(3, preds=(2, 6), succs=(4, 5)),
-        6: _block(6, succs=(3,)),
-        9: _block(9),
-    })
+    flow_graph = _flow_graph(
+        {
+            0: _block(0, succs=(2,)),
+            2: _block(2, preds=(0, 6), succs=(3, 9), tail=guard_tail),
+            3: _block(3, preds=(2, 6), succs=(4, 5)),
+            6: _block(6, succs=(3,)),
+            9: _block(9),
+        }
+    )
 
     assert find_switch_loop_guard_blocks(
         flow_graph,
@@ -106,20 +109,25 @@ def test_find_switch_loop_guard_blocks_rejects_unrelated_branch():
         left=_mop(kind=OperandKind.STACK, stkoff=0x20, stack_refs=(0x20,)),
         right=_mop(kind=OperandKind.NUMBER, value=0xFF),
     )
-    flow_graph = _flow_graph({
-        0: _block(0, succs=(2,)),
-        2: _block(2, preds=(0, 6), succs=(3, 9), tail=branch_tail),
-        3: _block(3, preds=(2, 6), succs=(4, 5)),
-        6: _block(6, succs=(3,)),
-        9: _block(9),
-    })
+    flow_graph = _flow_graph(
+        {
+            0: _block(0, succs=(2,)),
+            2: _block(2, preds=(0, 6), succs=(3, 9), tail=branch_tail),
+            3: _block(3, preds=(2, 6), succs=(4, 5)),
+            6: _block(6, succs=(3,)),
+            9: _block(9),
+        }
+    )
 
-    assert find_switch_loop_guard_blocks(
-        flow_graph,
-        3,
-        state_var_stkoff=0x10,
-        case_values=frozenset({0, 1, 2, 3, 4, 5, 6, 7}),
-    ) == frozenset()
+    assert (
+        find_switch_loop_guard_blocks(
+            flow_graph,
+            3,
+            state_var_stkoff=0x10,
+            case_values=frozenset({0, 1, 2, 3, 4, 5, 6, 7}),
+        )
+        == frozenset()
+    )
 
 
 def test_analyze_switch_table_flow_graph_extracts_cases_and_guard_block():
@@ -145,15 +153,17 @@ def test_analyze_switch_table_flow_graph_extracts_cases_and_guard_block():
         left=state_operand,
         right=switch_cases,
     )
-    flow_graph = _flow_graph({
-        0: _block(0, succs=(2,)),
-        2: _block(2, preds=(0, 6), succs=(3, 9), tail=guard_tail),
-        3: _block(3, preds=(2, 6), succs=(4, 5), tail=table_tail),
-        4: _block(4),
-        5: _block(5),
-        6: _block(6, succs=(3,)),
-        9: _block(9),
-    })
+    flow_graph = _flow_graph(
+        {
+            0: _block(0, succs=(2,)),
+            2: _block(2, preds=(0, 6), succs=(3, 9), tail=guard_tail),
+            3: _block(3, preds=(2, 6), succs=(4, 5), tail=table_tail),
+            4: _block(4),
+            5: _block(5),
+            6: _block(6, succs=(3,)),
+            9: _block(9),
+        }
+    )
 
     result = analyze_switch_table_flow_graph(flow_graph)
 

@@ -7,6 +7,7 @@ lowering (RedirectGoto).
 These live in ``d810.transforms`` (not ``d810.optimizers``) so unit tests can
 import them without violating the layered architecture contract.
 """
+
 from __future__ import annotations
 
 

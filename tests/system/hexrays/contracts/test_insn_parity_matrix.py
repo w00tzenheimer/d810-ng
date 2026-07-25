@@ -6,6 +6,7 @@ Asserts:
 - No codes are missing a valid disposition.
 - Summary counts are printed for each disposition category.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,8 +16,12 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-_MATRIX_PATH = _REPO_ROOT / "src" / "d810" / "hexrays" / "contracts" / "insn_parity_matrix.json"
-_INVARIANTS_PATH = _REPO_ROOT / "src" / "d810" / "hexrays" / "contracts" / "insn_invariants.py"
+_MATRIX_PATH = (
+    _REPO_ROOT / "src" / "d810" / "hexrays" / "contracts" / "insn_parity_matrix.json"
+)
+_INVARIANTS_PATH = (
+    _REPO_ROOT / "src" / "d810" / "hexrays" / "contracts" / "insn_invariants.py"
+)
 
 _VALID_DISPOSITIONS = {
     "planned",
@@ -33,7 +38,7 @@ def _load_matrix() -> dict:
 def _extract_minsn_constants() -> set[str]:
     """Return all MINSN_XXXXX_ constants found in insn_invariants.py source text."""
     source = _INVARIANTS_PATH.read_text(encoding="utf-8")
-    return set(re.findall(r'MINSN_\d+[x_]\w+', source))
+    return set(re.findall(r"MINSN_\d+[x_]\w+", source))
 
 
 @pytest.fixture(scope="module")
@@ -51,7 +56,9 @@ def test_matrix_file_exists():
 
 
 def test_invariants_file_exists():
-    assert _INVARIANTS_PATH.exists(), f"insn_invariants.py not found at {_INVARIANTS_PATH}"
+    assert _INVARIANTS_PATH.exists(), (
+        f"insn_invariants.py not found at {_INVARIANTS_PATH}"
+    )
 
 
 def test_matrix_has_required_fields(matrix):
@@ -130,9 +137,7 @@ def test_matrix_scope_is_insn_level(matrix):
 
 def test_planned_count_is_zero(matrix):
     """All planned codes have been promoted to mapped or blocked_by_api."""
-    planned = sum(
-        1 for e in matrix["codes"] if e.get("disposition") == "planned"
-    )
+    planned = sum(1 for e in matrix["codes"] if e.get("disposition") == "planned")
     assert planned == 0, (
         f"{planned} codes still have disposition=planned; "
         "all planned codes should be promoted to mapped or blocked_by_api"
@@ -147,9 +152,7 @@ def test_mapped_codes_have_owner_and_constant(matrix):
         code = entry["code"]
         owner = entry.get("owner")
         notes = entry.get("notes", "")
-        assert owner, (
-            f"Code {code} is mapped but has no owner"
-        )
+        assert owner, f"Code {code} is mapped but has no owner"
         assert "MINSN_" in notes, (
             f"Code {code} is mapped but notes do not reference a MINSN_ constant: {notes!r}"
         )
@@ -162,8 +165,9 @@ def test_mapped_count_matches_implemented_constants(matrix):
     This is a loose lower-bound: at least as many mapped codes as distinct MINSN_* constants.
     """
     import re
+
     source = _INVARIANTS_PATH.read_text(encoding="utf-8")
-    minsn_constants = set(re.findall(r'MINSN_\d+[x_]\w+', source))
+    minsn_constants = set(re.findall(r"MINSN_\d+[x_]\w+", source))
     mapped = sum(1 for e in matrix["codes"] if e.get("disposition") == "mapped")
     assert mapped >= len(minsn_constants), (
         f"mapped={mapped} < len(MINSN_* constants)={len(minsn_constants)}; "

@@ -13,6 +13,7 @@ Example:
     ...         # Analyze cfg, find dead blocks, return removal intents
     ...         return [RemoveBlock(serial=5)]
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -54,7 +55,7 @@ class FlowGraphTransform(ABC):
     def __init_subclass__(cls, **kwargs):
         """Enforce that subclasses define 'name' class attribute."""
         super().__init_subclass__(**kwargs)
-        if not hasattr(cls, 'name') or cls.name is NotImplemented:
+        if not hasattr(cls, "name") or cls.name is NotImplemented:
             raise TypeError(f"{cls.__name__} must define 'name' class attribute")
 
     @abstractmethod

@@ -18,6 +18,7 @@ LiSA-shaped lattice (``it.unive.lisa.analysis.Lattice`` / ``BaseLattice``):
 
 Portable: pure integer masks, no IDA, no float.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -37,7 +38,7 @@ class KnownBits:
 
     width: int
     zero: int = 0  # bits proven to be 0
-    one: int = 0   # bits proven to be 1
+    one: int = 0  # bits proven to be 1
 
     @property
     def _mask(self) -> int:
@@ -102,8 +103,7 @@ class KnownBits:
             return False
         # every bit other proves, self proves identically
         return (
-            self.zero & other.zero == other.zero
-            and self.one & other.one == other.one
+            self.zero & other.zero == other.zero and self.one & other.one == other.one
         )
 
     def join(self, other: "KnownBits") -> "KnownBits":

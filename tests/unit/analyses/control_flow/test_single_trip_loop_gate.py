@@ -6,6 +6,7 @@ path AGREES with the legacy ``loop_prover.prove_single_iteration`` (single
 source of truth for that case).  The general soundness/discrimination proof is
 in ``test_single_trip_peel_soundness.py``.
 """
+
 from __future__ import annotations
 
 import pytest

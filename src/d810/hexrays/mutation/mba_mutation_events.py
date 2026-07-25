@@ -107,9 +107,7 @@ class MbaMutationRootPublicationGroup:
         publication_succeeded = bool(self.publication_succeeded)
         rollback_attempted = bool(self.rollback_attempted)
         rollback_succeeded = (
-            None
-            if self.rollback_succeeded is None
-            else bool(self.rollback_succeeded)
+            None if self.rollback_succeeded is None else bool(self.rollback_succeeded)
         )
         if publication_succeeded and not publication_attempted:
             raise ValueError("root publication cannot succeed before its attempt")
@@ -173,7 +171,9 @@ class MbaMutationReceipt:
         if pre_generation < 0 or post_generation != pre_generation + 1:
             raise ValueError("a mutation receipt must advance exactly one generation")
         if evidence_generation < 0:
-            raise ValueError("a mutation receipt requires a non-negative evidence generation")
+            raise ValueError(
+                "a mutation receipt requires a non-negative evidence generation"
+            )
         if int(self.operation_count) < 0:
             raise ValueError("a mutation receipt cannot have negative operations")
         if not str(self.mutation_batch_id):
@@ -198,13 +198,11 @@ class MbaMutationReceipt:
         fragment_atomic_group_id = str(self.fragment_atomic_group_id)
         root_publication_groups = tuple(self.root_publication_groups)
         current_mba_identity_binding = self.current_mba_identity_binding
-        if (
-            any(
-                not isinstance(group, MbaMutationRootPublicationGroup)
-                for group in root_publication_groups
-            )
-            or len({group.group_id for group in root_publication_groups})
-            != len(root_publication_groups)
+        if any(
+            not isinstance(group, MbaMutationRootPublicationGroup)
+            for group in root_publication_groups
+        ) or len({group.group_id for group in root_publication_groups}) != len(
+            root_publication_groups
         ):
             raise TypeError("fragment receipt contains invalid root groups")
         has_fragment = bool(fragment_plan_id)
@@ -414,23 +412,23 @@ class MbaMutationGateway:
     _active_root_publication_succeeded: bool = field(default=False, init=False)
     _active_rollback_attempted: bool = field(default=False, init=False)
     _active_rollback_succeeded: bool | None = field(default=None, init=False)
-    _active_root_publication_groups: dict[
-        str, MbaMutationRootPublicationGroup
-    ] = field(default_factory=dict, init=False, repr=False)
-    _active_fragment_effect_requirements: dict[
-        tuple[str, str], MbaMutationPlanItem
-    ] = field(default_factory=dict, init=False, repr=False)
+    _active_root_publication_groups: dict[str, MbaMutationRootPublicationGroup] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _active_fragment_effect_requirements: dict[tuple[str, str], MbaMutationPlanItem] = (
+        field(default_factory=dict, init=False, repr=False)
+    )
     _applied_fragment_effects: set[tuple[str, str]] = field(
         default_factory=set,
         init=False,
         repr=False,
     )
-    _active_current_mba_identity_binding: (
-        CurrentMbaIdentityBindingSnapshot | None
-    ) = field(
-        default=None,
-        init=False,
-        repr=False,
+    _active_current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = (
+        field(
+            default=None,
+            init=False,
+            repr=False,
+        )
     )
     _active_current_mba_identity_binding_recorded: bool = field(
         default=False,
@@ -464,9 +462,8 @@ class MbaMutationGateway:
                 raise TypeError(
                     "mutation gateway lifecycle authority has an invalid port"
                 )
-            if (
-                int(authority.evidence_generation)
-                != int(self.identity_index.evidence_generation)
+            if int(authority.evidence_generation) != int(
+                self.identity_index.evidence_generation
             ):
                 raise ValueError(
                     "mutation gateway and lifecycle evidence generations differ"
@@ -545,12 +542,10 @@ class MbaMutationGateway:
         if planned_operation_count < 0:
             raise ValueError("planned operation count must be non-negative")
         plan_items = tuple(plan_items)
-        fragment_root_publication_groups = tuple(
-            fragment_root_publication_groups
-        )
-        if (
-            kind is StructuralMutationKind.FRAGMENT_PUBLICATION
-        ) != isinstance(fragment_plan, FragmentPlan):
+        fragment_root_publication_groups = tuple(fragment_root_publication_groups)
+        if (kind is StructuralMutationKind.FRAGMENT_PUBLICATION) != isinstance(
+            fragment_plan, FragmentPlan
+        ):
             raise ValueError(
                 "fragment-publication batch requires exactly one FragmentPlan"
             )
@@ -575,9 +570,7 @@ class MbaMutationGateway:
             raise ValueError(
                 "non-fragment mutation cannot carry root publication groups"
             )
-        serial_quantity = (
-            None if serial_quantity is None else int(serial_quantity)
-        )
+        serial_quantity = None if serial_quantity is None else int(serial_quantity)
         batch_id = uuid.uuid4().hex
         self.identity_index.begin_transaction(batch_id, serial_quantity)
 
@@ -588,8 +581,7 @@ class MbaMutationGateway:
         self._active_batch_id = batch_id
         self._planned_operation_count = planned_operation_count
         self._active_root_publication_groups.update(
-            (group.group_id, group)
-            for group in fragment_root_publication_groups
+            (group.group_id, group) for group in fragment_root_publication_groups
         )
         self._affected_identities.clear()
         self._operation_count = 0
@@ -669,9 +661,7 @@ class MbaMutationGateway:
                 items.append(
                     MbaMutationPlanItem(
                         item_index=len(items),
-                        mutation_kind=(
-                            "semantic_fragment_replacement_materialization"
-                        ),
+                        mutation_kind=("semantic_fragment_replacement_materialization"),
                         source_anchor_ea=int(original.semantic_anchor_ea),
                         source_identity=original.stable_identity,
                         target_anchor_ea=int(block.semantic_anchor_ea),
@@ -688,19 +678,14 @@ class MbaMutationGateway:
                         reason=f"synthetic:{block.block_id}",
                     )
                 )
-            elif (
-                block.materialization
-                is FragmentBlockMaterialization.IMPORT_NATIVE
-            ):
+            elif block.materialization is FragmentBlockMaterialization.IMPORT_NATIVE:
                 items.append(
                     MbaMutationPlanItem(
                         item_index=len(items),
                         mutation_kind="semantic_fragment_native_body_materialization",
                         target_anchor_ea=int(block.semantic_anchor_ea),
                         target_identity=block.stable_identity,
-                        reason=(
-                            f"native-body:{block.native_body_id}:{block.block_id}"
-                        ),
+                        reason=(f"native-body:{block.native_body_id}:{block.block_id}"),
                     )
                 )
         for carrier in plan.return_carriers:
@@ -708,9 +693,7 @@ class MbaMutationGateway:
             items.append(
                 MbaMutationPlanItem(
                     item_index=len(items),
-                    mutation_kind=(
-                        "semantic_fragment_return_carrier_materialization"
-                    ),
+                    mutation_kind=("semantic_fragment_return_carrier_materialization"),
                     source_anchor_ea=int(carrier.state_write_ea),
                     source_identity=block.stable_identity,
                     target_anchor_ea=int(carrier.carrier_ea),
@@ -723,9 +706,7 @@ class MbaMutationGateway:
             items.append(
                 MbaMutationPlanItem(
                     item_index=len(items),
-                    mutation_kind=(
-                        "semantic_fragment_terminal_return_materialization"
-                    ),
+                    mutation_kind=("semantic_fragment_terminal_return_materialization"),
                     source_anchor_ea=int(terminal_return.instruction_ea),
                     source_identity=block.stable_identity,
                     reason=f"terminal-return:{terminal_return.return_id}",
@@ -785,9 +766,7 @@ class MbaMutationGateway:
             items.append(
                 MbaMutationPlanItem(
                     item_index=len(items),
-                    mutation_kind=(
-                        f"semantic_fragment_root_{root_edge.role.value}"
-                    ),
+                    mutation_kind=(f"semantic_fragment_root_{root_edge.role.value}"),
                     source_anchor_ea=int(predecessor.semantic_anchor_ea),
                     source_identity=predecessor.stable_identity,
                     target_anchor_ea=int(replacement.semantic_anchor_ea),
@@ -816,15 +795,10 @@ class MbaMutationGateway:
                     group_id=inventory_group.group_id,
                     predecessor_block_id=inventory_group.predecessor_block_id,
                     predecessor_anchor_ea=int(predecessor.semantic_anchor_ea),
-                    edge_ids=tuple(
-                        item.edge_id for item in inventory_group.items
-                    ),
-                    edge_roles=tuple(
-                        item.role for item in inventory_group.items
-                    ),
+                    edge_ids=tuple(item.edge_id for item in inventory_group.items),
+                    edge_roles=tuple(item.role for item in inventory_group.items),
                     original_block_ids=tuple(
-                        item.original_block_id
-                        for item in inventory_group.items
+                        item.original_block_id for item in inventory_group.items
                     ),
                     replacement_block_ids=tuple(
                         item.root_block_id for item in inventory_group.items
@@ -868,9 +842,7 @@ class MbaMutationGateway:
             for item in items
             if item.mutation_kind in effect_kinds
         }
-        if len(requirements) != len(plan.return_carriers) + len(
-            plan.terminal_returns
-        ):
+        if len(requirements) != len(plan.return_carriers) + len(plan.terminal_returns):
             raise ValueError("semantic-fragment effect inventory is ambiguous")
         self._active_fragment_effect_requirements.update(requirements)
 
@@ -880,9 +852,7 @@ class MbaMutationGateway:
             self._active_kind is not StructuralMutationKind.FRAGMENT_PUBLICATION
             or self._active_fragment_plan is not plan
         ):
-            raise RuntimeError(
-                "semantic-fragment transaction does not own this plan"
-            )
+            raise RuntimeError("semantic-fragment transaction does not own this plan")
 
     def _record_fragment_staged(self, plan: FragmentPlan) -> None:
         self._require_active_fragment(plan)
@@ -916,9 +886,7 @@ class MbaMutationGateway:
                 "current-MBA identity binding was recorded more than once"
             )
         if not isinstance(binding, CurrentMbaIdentityBindingSnapshot):
-            raise TypeError(
-                "current-MBA identity binding must be a portable snapshot"
-            )
+            raise TypeError("current-MBA identity binding must be a portable snapshot")
         self._active_current_mba_identity_binding = binding
         self._active_current_mba_identity_binding_recorded = True
 
@@ -1051,9 +1019,13 @@ class MbaMutationGateway:
             for group in self._active_root_publication_groups.values()
             if group.publication_attempted
         )
-        if bool(succeeded) and self._active_root_publication_attempted and any(
-            not group.rollback_attempted or not group.rollback_succeeded
-            for group in attempted_groups
+        if (
+            bool(succeeded)
+            and self._active_root_publication_attempted
+            and any(
+                not group.rollback_attempted or not group.rollback_succeeded
+                for group in attempted_groups
+            )
         ):
             raise RuntimeError(
                 "aggregate rollback outcome disagrees with root-group recovery"
@@ -1682,9 +1654,7 @@ class MbaMutationGateway:
                     ),
                     rollback_attempted=self._active_rollback_attempted,
                     rollback_succeeded=self._active_rollback_succeeded,
-                    prepublication_validation=(
-                        self._active_prepublication_validation
-                    ),
+                    prepublication_validation=(self._active_prepublication_validation),
                     postpublication_validation=(
                         self._active_postpublication_validation
                     ),

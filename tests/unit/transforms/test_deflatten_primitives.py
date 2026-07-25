@@ -10,6 +10,7 @@ two clean transforms; this module is the missing semantic layer that composes th
 Pure fact->plan logic, no IDA: a primitive takes structural facts and returns a list of
 existing ``graph_modification`` ops.
 """
+
 from __future__ import annotations
 
 from d810.transforms.deflatten_primitives import (
@@ -31,9 +32,10 @@ class TestTailDuplicate:
         assert all(m.source_block == 5 and m.target_block == 9 for m in mods)
 
     def test_empty_predecessors_yields_empty_plan(self) -> None:
-        assert plan_tail_duplicate(
-            convergence_block=5, predecessors=[], return_target=9
-        ) == []
+        assert (
+            plan_tail_duplicate(convergence_block=5, predecessors=[], return_target=9)
+            == []
+        )
 
     def test_deconverges_shared_guard(self) -> None:
         # The lab's shared_convergence: N byte-emits -> 1 shared_guard -> return.

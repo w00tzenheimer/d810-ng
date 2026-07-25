@@ -1,4 +1,5 @@
 """Backend-neutral dispatcher state-variable identity."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -92,8 +92,7 @@ def test_preserves_distinct_same_state_source_ports():
     )
 
     assert tuple(
-        (row.source_block_ea, row.source_instruction_ea)
-        for row in result.direct
+        (row.source_block_ea, row.source_instruction_ea) for row in result.direct
     ) == ((0x1000, 0x1008), (0x1100, 0x1108))
 
 
@@ -114,10 +113,7 @@ def test_classifies_imported_and_live_port_endpoints():
         live_native_eas=frozenset({0x3000, 0x3008, 0x4000}),
     )
 
-    assert tuple(
-        (row.source_owner, row.target_owner)
-        for row in result.direct
-    ) == (
+    assert tuple((row.source_owner, row.target_owner) for row in result.direct) == (
         (owner.IMPORTED, owner.IMPORTED),
         (owner.IMPORTED, owner.LIVE),
         (owner.LIVE, owner.IMPORTED),
@@ -352,10 +348,8 @@ def test_coalesces_semantically_identical_conditional_proofs():
         resolver_kind="preopt_pruned_conditional_state_choice",
     )
 
-    conditional, abstentions = (
-        ports.coalesce_preopt_conditional_boundary_ports(
-            (resolver_port, state_path_port)
-        )
+    conditional, abstentions = ports.coalesce_preopt_conditional_boundary_ports(
+        (resolver_port, state_path_port)
     )
 
     assert conditional == (resolver_port,)
@@ -365,19 +359,17 @@ def test_coalesces_semantically_identical_conditional_proofs():
 def test_conflicting_conditional_proofs_abstain_for_the_whole_source():
     ports = _load_planner()
 
-    conditional, abstentions = (
-        ports.coalesce_preopt_conditional_boundary_ports(
-            (
-                _planned_conditional_port(
-                    ports,
-                    resolver_kind="conditional_handler_bridge",
-                ),
-                _planned_conditional_port(
-                    ports,
-                    resolver_kind="preopt_pruned_conditional_state_choice",
-                    taken=0x6000,
-                ),
-            )
+    conditional, abstentions = ports.coalesce_preopt_conditional_boundary_ports(
+        (
+            _planned_conditional_port(
+                ports,
+                resolver_kind="conditional_handler_bridge",
+            ),
+            _planned_conditional_port(
+                ports,
+                resolver_kind="preopt_pruned_conditional_state_choice",
+                taken=0x6000,
+            ),
         )
     )
 
@@ -560,14 +552,17 @@ def test_derives_retained_arm_target_from_source_and_one_distinct_override():
 def test_fixed_source_arm_derivation_abstains_without_one_override():
     ports = _load_planner()
 
-    assert ports.derive_preopt_fixed_source_arm_routes(
-        (_routing_topology(ports),),
-        source_sensitive_targets_by_source_ea={
-            0x1000: (0x3000,),
-            0x1100: (0x2000,),
-            0x1200: (0x2100,),
-        },
-    ) == ()
+    assert (
+        ports.derive_preopt_fixed_source_arm_routes(
+            (_routing_topology(ports),),
+            source_sensitive_targets_by_source_ea={
+                0x1000: (0x3000,),
+                0x1100: (0x2000,),
+                0x1200: (0x2100,),
+            },
+        )
+        == ()
+    )
 
 
 def test_stronger_plan_excludes_same_predicate_after_block_entry_moves():
@@ -587,10 +582,13 @@ def test_stronger_plan_excludes_same_predicate_after_block_entry_moves():
         resolver_kind="conditional_state_choice",
     )
 
-    assert ports.exclude_preopt_conditional_topology_with_planned_predicates(
-        (topology,),
-        (planned,),
-    ) == ()
+    assert (
+        ports.exclude_preopt_conditional_topology_with_planned_predicates(
+            (topology,),
+            (planned,),
+        )
+        == ()
+    )
 
 
 def _terminal_return_request(

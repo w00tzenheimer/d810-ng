@@ -50,8 +50,7 @@ def make_unsigned_magic_mod_rule(spec: UnsignedMagicModSpec):
     shift = spec.shift_const
     rule_name = f"UnsignedMagicModulo{spec.divisor}Rule"
     pattern = x - (
-        divisor
-        * (High(Zext(x, spec.zext_bits) * magic, spec.high_bits) >> shift)
+        divisor * (High(Zext(x, spec.zext_bits) * magic, spec.high_bits) >> shift)
     )
 
     def check_candidate(self, candidate) -> bool:

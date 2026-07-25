@@ -167,7 +167,8 @@ def _edge(
         source_key=SimpleNamespace(state_const=source_state),
         target_key=(
             SimpleNamespace(state_const=target_state)
-            if target_state is not None else None
+            if target_state is not None
+            else None
         ),
         target_entry_anchor=target_entry,
         source_anchor=(
@@ -193,10 +194,13 @@ def _chain(*insns: object) -> object | None:
 
 
 def test_opcode_name_uses_injected_resolver_for_numeric_opcode():
-    assert _opcode_name(
-        SimpleNamespace(opcode=object()),
-        lambda _insn: "jz",
-    ) == "jz"
+    assert (
+        _opcode_name(
+            SimpleNamespace(opcode=object()),
+            lambda _insn: "jz",
+        )
+        == "jz"
+    )
 
 
 def test_opcode_name_normalizes_known_conditional_opcode_without_live_ida():
@@ -215,7 +219,8 @@ def test_branch_ownership_oracle_has_no_lazy_import_or_seam():
     # No import (lazy or top-level) of any upper-layer engine module.  Docstrings
     # may *name* the backend adapter, so check import statements specifically.
     import_lines = [
-        line for line in source.splitlines()
+        line
+        for line in source.splitlines()
         if line.lstrip().startswith(("import ", "from "))
     ]
     for forbidden in ("d810.evaluator", "d810.backends", "d810.hexrays"):
@@ -320,9 +325,7 @@ def _proofs_for_z3(
     left: MopSnapshot | None = None,
     right: MopSnapshot | None = None,
 ):
-    discarded_insns = (
-        (_store_insn(ea=0x800),) if discarded_store else ()
-    )
+    discarded_insns = (_store_insn(ea=0x800),) if discarded_store else ()
     flow_graph = _flow_graph(
         _block(
             serial=5,
@@ -347,18 +350,19 @@ def _proofs_for_z3(
         ),
     )
     return collect_branch_ownership_proofs(
-        dag=SimpleNamespace(edges=(
-            _edge(branch_arm=0, target_state=0x20, target_entry=8),
-            _edge(branch_arm=1, target_state=0x30, target_entry=9),
-        )),
+        dag=SimpleNamespace(
+            edges=(
+                _edge(branch_arm=0, target_state=0x20, target_entry=8),
+                _edge(branch_arm=1, target_state=0x30, target_entry=9),
+            )
+        ),
         proof_refiner=oracle.refine,
     )
 
 
 def _proof_by_arm(proofs, arm: int) -> BranchOwnershipProof:
     matches = [
-        proof for proof in proofs
-        if proof.source_block == 5 and proof.branch_arm == arm
+        proof for proof in proofs if proof.source_block == 5 and proof.branch_arm == arm
     ]
     assert len(matches) == 1
     return matches[0]
@@ -491,26 +495,22 @@ def test_terminal_selector_backedge_adds_separate_residue_proof_for_selected_arm
     )
 
     selected = [
-        proof for proof in proofs
+        proof
+        for proof in proofs
         if (
             proof.source_state == selector_state
             and proof.target_state == payload_state
             and proof.branch_arm == 1
         )
     ]
-    assert [
-        proof.proof_kind for proof in selected
-    ] == [
+    assert [proof.proof_kind for proof in selected] == [
         BranchOwnershipProofKind.OPAQUE_ALWAYS_TRUE,
         BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
     ]
     assert selected[0].authorizes_nonsemantic_branch_rewrite is False
     assert selected[1].authorizes_nonsemantic_branch_rewrite is True
     assert selected[1].reason == "opaque_selected_terminal_selector_backedge_residue"
-    assert (
-        selected[1].evidence["opaque_selected_proof_id"]
-        == selected[0].proof_id
-    )
+    assert selected[1].evidence["opaque_selected_proof_id"] == selected[0].proof_id
 
 
 def test_terminal_selector_backedge_requires_payload_private_to_selector():
@@ -564,7 +564,8 @@ def test_terminal_selector_backedge_requires_payload_private_to_selector():
     )
 
     selected = [
-        proof for proof in proofs
+        proof
+        for proof in proofs
         if (
             proof.source_state == selector_state
             and proof.target_state == payload_state
@@ -643,7 +644,8 @@ def test_terminal_selector_backedge_accepts_nonsemantic_external_incoming_edge()
     )
 
     selected = [
-        proof for proof in proofs
+        proof
+        for proof in proofs
         if (
             proof.source_state == selector_state
             and proof.target_state == payload_state
@@ -651,7 +653,8 @@ def test_terminal_selector_backedge_accepts_nonsemantic_external_incoming_edge()
         )
     ]
     external = [
-        proof for proof in proofs
+        proof
+        for proof in proofs
         if (
             proof.source_state == external_state
             and proof.target_state == payload_state
@@ -769,7 +772,8 @@ def test_terminal_selector_backedge_rejects_semantic_external_edge_identity():
         proof_refiner=_refine,
     )
     selected = [
-        proof for proof in proofs
+        proof
+        for proof in proofs
         if (
             proof.source_state == selector_state
             and proof.target_state == payload_state
@@ -777,7 +781,8 @@ def test_terminal_selector_backedge_rejects_semantic_external_edge_identity():
         )
     ]
     semantic_external = [
-        proof for proof in proofs
+        proof
+        for proof in proofs
         if (
             proof.source_state == external_state
             and proof.target_state == payload_state
@@ -868,7 +873,8 @@ def test_terminal_selector_backedge_rejects_unanchored_external_residue_identity
         proof_refiner=_refine,
     )
     selected = [
-        proof for proof in proofs
+        proof
+        for proof in proofs
         if (
             proof.source_state == selector_state
             and proof.target_state == payload_state
@@ -962,7 +968,8 @@ def test_terminal_selector_backedge_reports_side_effect_materialization_gap():
         proof_refiner=_refine,
     )
     selected = [
-        proof for proof in proofs
+        proof
+        for proof in proofs
         if (
             proof.source_state == selector_state
             and proof.target_state == payload_state
@@ -970,7 +977,8 @@ def test_terminal_selector_backedge_reports_side_effect_materialization_gap():
         )
     ]
     external_veto = [
-        proof for proof in proofs
+        proof
+        for proof in proofs
         if (
             proof.source_state == external_state
             and proof.target_state == payload_state
@@ -1023,15 +1031,17 @@ def test_ollvm_carrier_oracle_marks_password_compare_predicate_semantic():
         opcode="jnz",
         text="jnz    %var_18.4, #0.4, @9",
     )
-    mba = _FakeMba({
-        5: _FakeBlock(
-            tail,
-            head=_chain(
-                _insn("call", text=compare),
-                _insn("m_or", text=derive),
+    mba = _FakeMba(
+        {
+            5: _FakeBlock(
+                tail,
+                head=_chain(
+                    _insn("call", text=compare),
+                    _insn("m_or", text=derive),
+                ),
             ),
-        ),
-    })
+        }
+    )
     oracle = OllvmCarrierBranchOwnershipOracle(
         mba=mba,
         carrier_facts=(
@@ -1045,10 +1055,12 @@ def test_ollvm_carrier_oracle_marks_password_compare_predicate_semantic():
     )
 
     proofs = collect_branch_ownership_proofs(
-        dag=SimpleNamespace(edges=(
-            _edge(branch_arm=0, target_state=0x20),
-            _edge(branch_arm=1, target_state=0x30),
-        )),
+        dag=SimpleNamespace(
+            edges=(
+                _edge(branch_arm=0, target_state=0x20),
+                _edge(branch_arm=1, target_state=0x30),
+            )
+        ),
         proof_refiner=oracle.refine,
     )
 
@@ -1075,15 +1087,17 @@ def test_ollvm_carrier_oracle_ignores_raw_profile_evidence():
         opcode="jnz",
         text="jnz    %var_18.4, #0.4, @9",
     )
-    mba = _FakeMba({
-        5: _FakeBlock(
-            tail,
-            head=_chain(
-                _insn("call", text=compare),
-                _insn("m_or", text=derive),
+    mba = _FakeMba(
+        {
+            5: _FakeBlock(
+                tail,
+                head=_chain(
+                    _insn("call", text=compare),
+                    _insn("m_or", text=derive),
+                ),
             ),
-        ),
-    })
+        }
+    )
     oracle = OllvmCarrierBranchOwnershipOracle(
         mba=mba,
         carrier_facts=(
@@ -1111,12 +1125,14 @@ def test_ollvm_carrier_oracle_marks_loop_index_predicate_semantic():
         opcode="jz",
         text="jz     %var_3A1.1, #0.1, @9",
     )
-    mba = _FakeMba({
-        5: _FakeBlock(
-            tail,
-            head=_chain(_insn("m_setb", text=bound)),
-        ),
-    })
+    mba = _FakeMba(
+        {
+            5: _FakeBlock(
+                tail,
+                head=_chain(_insn("m_setb", text=bound)),
+            ),
+        }
+    )
     oracle = OllvmCarrierBranchOwnershipOracle(
         mba=mba,
         carrier_facts=(
@@ -1130,10 +1146,12 @@ def test_ollvm_carrier_oracle_marks_loop_index_predicate_semantic():
     )
 
     proofs = collect_branch_ownership_proofs(
-        dag=SimpleNamespace(edges=(
-            _edge(branch_arm=0, target_state=0x20),
-            _edge(branch_arm=1, target_state=0x30),
-        )),
+        dag=SimpleNamespace(
+            edges=(
+                _edge(branch_arm=0, target_state=0x20),
+                _edge(branch_arm=1, target_state=0x30),
+            )
+        ),
         proof_refiner=oracle.refine,
     )
 
@@ -1153,12 +1171,14 @@ def test_ollvm_carrier_oracle_preserves_semantic_branch_to_return_frontier():
         opcode="jz",
         text="jz     %var_3A1.1, #0.1, @9",
     )
-    mba = _FakeMba({
-        5: _FakeBlock(
-            tail,
-            head=_chain(_insn("m_setb", text=bound)),
-        ),
-    })
+    mba = _FakeMba(
+        {
+            5: _FakeBlock(
+                tail,
+                head=_chain(_insn("m_setb", text=bound)),
+            ),
+        }
+    )
     oracle = OllvmCarrierBranchOwnershipOracle(
         mba=mba,
         carrier_facts=(
@@ -1172,17 +1192,19 @@ def test_ollvm_carrier_oracle_preserves_semantic_branch_to_return_frontier():
     )
 
     proofs = collect_branch_ownership_proofs(
-        dag=SimpleNamespace(edges=(
-            _edge(branch_arm=0, target_state=0x20),
-            _edge(
-                source_state=0x20,
-                target_state=None,
-                kind="CONDITIONAL_RETURN",
-                source_block=7,
-                branch_arm=0,
-                target_entry=None,
-            ),
-        )),
+        dag=SimpleNamespace(
+            edges=(
+                _edge(branch_arm=0, target_state=0x20),
+                _edge(
+                    source_state=0x20,
+                    target_state=None,
+                    kind="CONDITIONAL_RETURN",
+                    source_block=7,
+                    branch_arm=0,
+                    target_entry=None,
+                ),
+            )
+        ),
         proof_refiner=oracle.refine,
     )
 
@@ -1198,17 +1220,19 @@ def test_ollvm_carrier_oracle_leaves_unrelated_predicate_unresolved():
         opcode="jz",
         text="jz     %var_DEAD.1, #0.1, @9",
     )
-    mba = _FakeMba({
-        5: _FakeBlock(
-            tail,
-            head=_chain(
-                _insn(
-                    "m_setb",
-                    text="setb   [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1",
-                )
+    mba = _FakeMba(
+        {
+            5: _FakeBlock(
+                tail,
+                head=_chain(
+                    _insn(
+                        "m_setb",
+                        text="setb   [ds.2:%var_398.8].4, #0x64.4, %var_3A1.1",
+                    )
+                ),
             ),
-        ),
-    })
+        }
+    )
     oracle = OllvmCarrierBranchOwnershipOracle(
         mba=mba,
         carrier_facts=(

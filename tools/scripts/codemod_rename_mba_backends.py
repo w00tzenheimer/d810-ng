@@ -23,8 +23,12 @@ class RenameMbaBackendsTransformer(cst.CSTTransformer):
             return updated_node
         module_code = cst.Module([]).code_for_node(module)
         if module_code.startswith("d810.mba_backends"):
-            new_module_code = module_code.replace("d810.mba_backends", "d810.backends", 1)
-            return updated_node.with_changes(module=cst.parse_expression(new_module_code))
+            new_module_code = module_code.replace(
+                "d810.mba_backends", "d810.backends", 1
+            )
+            return updated_node.with_changes(
+                module=cst.parse_expression(new_module_code)
+            )
         return updated_node
 
     def leave_ImportAlias(

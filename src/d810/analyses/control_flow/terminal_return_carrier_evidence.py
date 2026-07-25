@@ -196,16 +196,11 @@ class TerminalReturnCarrierEvidence:
             raise TerminalReturnCarrierEvidenceRejected(
                 "terminal state write and carrier require distinct anchors"
             )
-        if not self.terminal_identity.native_ranges.contains(
-            terminal_return_ea
-        ):
+        if not self.terminal_identity.native_ranges.contains(terminal_return_ea):
             raise TerminalReturnCarrierEvidenceRejected(
                 "terminal return instruction is outside its terminal identity"
             )
-        if (
-            terminal_return_ea
-            not in self.terminal_identity.exact_instruction_eas
-        ):
+        if terminal_return_ea not in self.terminal_identity.exact_instruction_eas:
             raise TerminalReturnCarrierEvidenceRejected(
                 "terminal return instruction is not an exact instruction "
                 "in its terminal identity"

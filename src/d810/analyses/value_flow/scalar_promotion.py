@@ -7,6 +7,7 @@ This is the canonical serialized ``FactObservation.kind`` value. The
 diagnostic alias registry maps the historical ``CarrierStorePromotionFact``
 string to this family.
 """
+
 from __future__ import annotations
 
 SCALAR_PROMOTION_FACT_TYPE = "ScalarPromotionFact"

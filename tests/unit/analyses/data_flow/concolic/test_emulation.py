@@ -1,4 +1,5 @@
 """ReferenceEmulator + EmulationCapability outcome ADTs (ticket llr-iqm3, S3)."""
+
 from __future__ import annotations
 
 from d810.analyses.data_flow.concolic.emulation import (
@@ -34,8 +35,18 @@ def test_operand_read_from_store() -> None:
 
 
 def test_unary_not_and_neg() -> None:
-    assert EMU.eval_insn(InsnRef("not", DEST, (0x0F,), W), ConcreteStore.of({})).value_for(DEST) == 0xF0
-    assert EMU.eval_insn(InsnRef("neg", DEST, (1,), W), ConcreteStore.of({})).value_for(DEST) == 0xFF
+    assert (
+        EMU.eval_insn(InsnRef("not", DEST, (0x0F,), W), ConcreteStore.of({})).value_for(
+            DEST
+        )
+        == 0xF0
+    )
+    assert (
+        EMU.eval_insn(InsnRef("neg", DEST, (1,), W), ConcreteStore.of({})).value_for(
+            DEST
+        )
+        == 0xFF
+    )
 
 
 def test_unresolved_operand_abstains() -> None:

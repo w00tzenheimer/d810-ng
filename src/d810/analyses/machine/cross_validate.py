@@ -13,6 +13,7 @@ bounded to ``[0, 1]``.
 
 Portable: no IDA.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace

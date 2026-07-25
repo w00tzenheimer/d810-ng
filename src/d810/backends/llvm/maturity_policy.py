@@ -1,4 +1,5 @@
 """LLVM M1 front-lift maturity policy over portable FlowGraph metadata."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -51,7 +51,7 @@ class TestFunctionFingerprint:
             size=100,
             bytes_hash="abc123",
             block_count=5,
-            instruction_count=50
+            instruction_count=50,
         )
 
         assert fp.address == 0x401000
@@ -77,7 +77,7 @@ class TestSQLiteOptimizationStorage:
             size=100,
             bytes_hash="test_hash_123",
             block_count=5,
-            instruction_count=50
+            instruction_count=50,
         )
 
         patches = [
@@ -91,7 +91,7 @@ class TestSQLiteOptimizationStorage:
             fingerprint=fingerprint,
             provider_phase=provider_phase(),
             changes=42,
-            patches=patches
+            patches=patches,
         )
 
         # Load result
@@ -117,7 +117,7 @@ class TestSQLiteOptimizationStorage:
             size=100,
             bytes_hash="valid_hash",
             block_count=5,
-            instruction_count=50
+            instruction_count=50,
         )
 
         # Save fingerprint
@@ -138,7 +138,7 @@ class TestSQLiteOptimizationStorage:
             function_addr=0x401000,
             enabled_rules={"Rule1", "Rule2"},
             disabled_rules={"SlowRule"},
-            notes="Testing rule config"
+            notes="Testing rule config",
         )
 
         config = storage.get_function_rules(0x401000)
@@ -207,8 +207,7 @@ class TestSQLiteOptimizationStorage:
     def test_should_run_rule_with_enabled_list(self, storage):
         """Test should_run_rule with enabled rules list."""
         storage.set_function_rules(
-            function_addr=0x401000,
-            enabled_rules={"AllowedRule"}
+            function_addr=0x401000, enabled_rules={"AllowedRule"}
         )
 
         assert storage.should_run_rule(0x401000, "AllowedRule") is True
@@ -217,8 +216,7 @@ class TestSQLiteOptimizationStorage:
     def test_should_run_rule_with_disabled_list(self, storage):
         """Test should_run_rule with disabled rules list."""
         storage.set_function_rules(
-            function_addr=0x401000,
-            disabled_rules={"BannedRule"}
+            function_addr=0x401000, disabled_rules={"BannedRule"}
         )
 
         assert storage.should_run_rule(0x401000, "BannedRule") is False
@@ -231,7 +229,7 @@ class TestSQLiteOptimizationStorage:
             size=100,
             bytes_hash="test_hash",
             block_count=5,
-            instruction_count=50
+            instruction_count=50,
         )
 
         # Save data
@@ -240,7 +238,7 @@ class TestSQLiteOptimizationStorage:
             fingerprint=fingerprint,
             provider_phase=provider_phase(),
             changes=10,
-            patches=[]
+            patches=[],
         )
 
         # Verify it exists
@@ -260,7 +258,7 @@ class TestSQLiteOptimizationStorage:
             size=100,
             bytes_hash="test_hash",
             block_count=5,
-            instruction_count=50
+            instruction_count=50,
         )
 
         storage.save_result(
@@ -268,17 +266,17 @@ class TestSQLiteOptimizationStorage:
             fingerprint=fingerprint,
             provider_phase=provider_phase(),
             changes=10,
-            patches=[{"type": "test"}]
+            patches=[{"type": "test"}],
         )
 
         storage.set_function_rules(0x401000, disabled_rules={"TestRule"})
 
         stats = storage.get_statistics()
 
-        assert stats['functions_cached'] == 1
-        assert stats['results_cached'] == 1
-        assert stats['patches_stored'] == 1
-        assert stats['functions_with_custom_rules'] == 1
+        assert stats["functions_cached"] == 1
+        assert stats["results_cached"] == 1
+        assert stats["patches_stored"] == 1
+        assert stats["functions_with_custom_rules"] == 1
 
     def test_migrates_legacy_phase_schema(self, temp_db):
         """Test migrating cache rows from the pre-provider phase schema."""
@@ -381,7 +379,7 @@ class TestSQLiteOptimizationStorage:
                 size=100,
                 bytes_hash="test",
                 block_count=1,
-                instruction_count=10
+                instruction_count=10,
             )
             storage.save_fingerprint(fingerprint)
 
@@ -395,7 +393,7 @@ class TestSQLiteOptimizationStorage:
             size=100,
             bytes_hash="test_hash",
             block_count=5,
-            instruction_count=50
+            instruction_count=50,
         )
 
         # Save results for different provider levels
@@ -428,7 +426,7 @@ class TestSQLiteOptimizationStorage:
             size=100,
             bytes_hash="test_hash",
             block_count=5,
-            instruction_count=50
+            instruction_count=50,
         )
 
         # Save initial result
@@ -437,7 +435,7 @@ class TestSQLiteOptimizationStorage:
             fingerprint=fingerprint,
             provider_phase=provider_phase(),
             changes=10,
-            patches=[{"type": "old"}]
+            patches=[{"type": "old"}],
         )
 
         # Update with new result
@@ -446,7 +444,7 @@ class TestSQLiteOptimizationStorage:
             fingerprint=fingerprint,
             provider_phase=provider_phase(),
             changes=20,
-            patches=[{"type": "new1"}, {"type": "new2"}]
+            patches=[{"type": "new1"}, {"type": "new2"}],
         )
 
         # Load and verify updated

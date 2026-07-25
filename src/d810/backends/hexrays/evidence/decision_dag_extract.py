@@ -13,6 +13,7 @@ successors, const from ``.l`` or ``.r``) but, unlike ``condition_chain_analysis`
 single-state ``_walk``, materialises the WHOLE tree so the caller gets
 ``route`` / ``resolve_paths`` / ``sibling_arms``.
 """
+
 from __future__ import annotations
 
 import ida_hexrays
@@ -162,7 +163,13 @@ def _parse_state_comparison(
 
 
 def _descend_to_root(
-    mba, entry, op_map, state_var_stkoff, state_var_lvar_idx, mask, max_hops=8,
+    mba,
+    entry,
+    op_map,
+    state_var_stkoff,
+    state_var_lvar_idx,
+    mask,
+    max_hops=8,
     state_var_reg=None,
 ):
     """Follow single-successor blocks from *entry* to the first state-var comparison.
@@ -181,7 +188,11 @@ def _descend_to_root(
             return cur
         if (
             _parse_state_comparison(
-                blk, op_map, state_var_stkoff, state_var_lvar_idx, mask,
+                blk,
+                op_map,
+                state_var_stkoff,
+                state_var_lvar_idx,
+                mask,
                 state_var_reg,
             )
             is not None
@@ -233,8 +244,13 @@ def extract_decision_dag(
             mba, int(dispatcher_entry_serial), int(state_var_stkoff)
         )
     root = _descend_to_root(
-        mba, int(dispatcher_entry_serial), op_map, state_var_stkoff,
-        state_var_lvar_idx, mask, state_var_reg=state_var_reg,
+        mba,
+        int(dispatcher_entry_serial),
+        op_map,
+        state_var_stkoff,
+        state_var_lvar_idx,
+        mask,
+        state_var_reg=state_var_reg,
     )
     nodes: dict[int, RouteComparison] = {}
     visited: set[int] = set()
@@ -251,15 +267,17 @@ def extract_decision_dag(
         if blk is None:
             continue
         parsed = _parse_state_comparison(
-            blk, op_map, state_var_stkoff, state_var_lvar_idx, mask,
+            blk,
+            op_map,
+            state_var_stkoff,
+            state_var_lvar_idx,
+            mask,
             state_var_reg,
         )
         if parsed is None:
             continue  # leaf / handler -- not a state-var comparison node
         op, const, true_target = parsed
-        false_target = next(
-            (s for s in _block_succs(blk) if s != true_target), None
-        )
+        false_target = next((s for s in _block_succs(blk) if s != true_target), None)
         if false_target is None:
             continue
         nodes[serial] = RouteComparison(

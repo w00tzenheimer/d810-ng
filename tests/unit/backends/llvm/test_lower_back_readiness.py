@@ -52,7 +52,13 @@ def test_tiny_phi_fixture_parses_and_plans_edge_moves():
     assert readiness.plan_result.status is LlvmLowerBackStatus.PLANNED
     assert readiness.plan_result.plan is not None
     assert tuple(
-        (move.predecessor, move.successor, move.insertion_block, move.target.name, move.value.name)
+        (
+            move.predecessor,
+            move.successor,
+            move.insertion_block,
+            move.target.name,
+            move.value.name,
+        )
         for move in readiness.plan_result.plan.edge_moves
     ) == (
         ("then", "merge", "then", "x", "a"),
@@ -61,9 +67,7 @@ def test_tiny_phi_fixture_parses_and_plans_edge_moves():
 
 
 def test_ret_only_optimized_function_parses_and_plans():
-    readiness = assess_lower_back_readiness(
-        "define i32 @collapsed() { ret i32 0 }\n"
-    )
+    readiness = assess_lower_back_readiness("define i32 @collapsed() { ret i32 0 }\n")
 
     assert readiness.status is LlvmLowerBackReadinessStatus.PLANNED
     assert readiness.parse_result.function is not None

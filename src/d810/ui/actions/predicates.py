@@ -3,6 +3,7 @@
 This module provides helpers to determine widget types so the context menu
 can show only relevant actions.
 """
+
 from __future__ import annotations
 
 from d810.core import typing

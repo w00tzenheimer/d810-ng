@@ -5,7 +5,9 @@ from types import SimpleNamespace
 from d810.backends.hexrays import condition_chain_runtime
 
 
-def test_condition_chain_runtime_falls_back_when_idaapi_is_unavailable(monkeypatch) -> None:
+def test_condition_chain_runtime_falls_back_when_idaapi_is_unavailable(
+    monkeypatch,
+) -> None:
     def missing_idaapi():
         raise ImportError("idaapi unavailable")
 

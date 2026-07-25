@@ -22,6 +22,7 @@ imports the protocol downward -- exactly the split the
 ``EmulationCapability`` docstring anticipates.  Not portable (touches the live
 ``mba`` / ``minsn_t``); that is why it sits in the vendor backend.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

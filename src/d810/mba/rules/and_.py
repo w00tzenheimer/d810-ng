@@ -36,6 +36,7 @@ class And_HackersDelightRule_1(VerifiableRule):
     Example:
         (~a | b) - ~a => a & b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (~x | y) - ~x
@@ -57,6 +58,7 @@ class And_HackersDelightRule_3(VerifiableRule):
     Example:
         (a + b) - (a | b) => a & b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x + y) - (x | y)
@@ -76,6 +78,7 @@ class And_HackersDelightRule_4(VerifiableRule):
     Example:
         (a | b) - (a ^ b) => a & b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x | y) - (x ^ y)
@@ -96,6 +99,7 @@ class And_OllvmRule_1(VerifiableRule):
     Example:
         (a | b) & ~(a ^ b) => a & b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x | y) & ~(x ^ y)
@@ -118,6 +122,7 @@ class And_OllvmRule_3(VerifiableRule):
     Example:
         (a & b) & ~(a ^ b) => a & b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & y) & ~(x ^ y)
@@ -140,6 +145,7 @@ class And_FactorRule_2(VerifiableRule):
     Example:
         a & ~(a ^ b) => a & b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = x & ~(x ^ y)
@@ -161,6 +167,7 @@ class AndBnot_HackersDelightRule_1(VerifiableRule):
     Example:
         (a | b) - b => a & ~b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x | y) - y
@@ -180,6 +187,7 @@ class AndBnot_HackersDelightRule_2(VerifiableRule):
     Example:
         a - (a & b) => a & ~b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = x - (x & y)
@@ -200,6 +208,7 @@ class AndBnot_FactorRule_1(VerifiableRule):
     Example:
         a ^ (a & b) => a & ~b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = x ^ (x & y)
@@ -222,6 +231,7 @@ class AndBnot_FactorRule_2(VerifiableRule):
     Example:
         a & (a ^ b) => a & ~b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = x & (x ^ y)
@@ -242,6 +252,7 @@ class AndBnot_FactorRule_3(VerifiableRule):
     Example:
         (a | b) ^ b => a & ~b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x | y) ^ y
@@ -262,6 +273,7 @@ class AndOr_FactorRule_1(VerifiableRule):
     Example:
         (a & c) | (b & c) => (a | b) & c
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & z) | (y & z)
@@ -282,6 +294,7 @@ class AndXor_FactorRule_1(VerifiableRule):
     Example:
         (a & c) ^ (b & c) => (a ^ b) & c
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & z) ^ (y & z)
@@ -305,6 +318,7 @@ class And_HackersDelightRule_2(VerifiableRule):
         (~x | y) + (x + 1) = (~x | y) + x + 1
                            = (x & y) [algebraic simplification]
     """
+
     maturities = _ALL_MATURITIES
 
     bnot_x = Var("bnot_x_0")
@@ -327,6 +341,7 @@ class And_OllvmRule_2(VerifiableRule):
         (x | y) & (x ^ ~y) = (x | y) & (~(x ^ y)) [De Morgan-ish]
                            = x & y [Boolean algebra]
     """
+
     maturities = _ALL_MATURITIES
 
     bnot_y = Var("bnot_x_1")
@@ -349,6 +364,7 @@ class And_FactorRule_1(VerifiableRule):
         (x ^ ~y) & y = (x XOR (NOT y)) AND y
                      = x & y [XOR-NOT cancellation]
     """
+
     maturities = _ALL_MATURITIES
 
     bnot_y = Var("bnot_x_1")
@@ -372,6 +388,7 @@ class AndBnot_FactorRule_4(VerifiableRule):
                              = (y ^ x) & (~x | y)
                              = y & ~x [Boolean algebra]
     """
+
     maturities = _ALL_MATURITIES
 
     bnot_y = Var("bnot_x_1")
@@ -399,6 +416,7 @@ class And1_MbaRule_1(VerifiableRule):
 
     In practice, (x * x) & 3 simplifies to x & 1 for bit extraction.
     """
+
     maturities = _ALL_MATURITIES
 
     THREE = Const("3", 3)
@@ -431,6 +449,7 @@ class AndGetUpperBits_FactorRule_1(VerifiableRule):
     NOTE: This rule is marked as KNOWN_INCORRECT because it is only true
     under very specific (and unlikely) conditions.
     """
+
     maturities = _ALL_MATURITIES
 
     KNOWN_INCORRECT = True  # Only valid under very specific conditions
@@ -444,7 +463,7 @@ class AndGetUpperBits_FactorRule_1(VerifiableRule):
     CONSTRAINTS = [
         c_res == ((-c1) & c3),  # Result mask: (-c1) AND c3
         # Check that c1 is a power of 2 and equals 2^c2
-        lambda ctx: (2 ** ctx["c_2"].value) == ctx["c_1"].value
+        lambda ctx: (2 ** ctx["c_2"].value) == ctx["c_1"].value,
     ]
 
     DESCRIPTION = "Simplify shift-mask-multiply to direct mask"

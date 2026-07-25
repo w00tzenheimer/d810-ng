@@ -4,6 +4,7 @@ The manager decides when the analysis pipeline is enabled and when project
 profiles may extend it. This module owns the portable default collector
 inventory and constructs the two responsibility-specific runtimes.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -156,13 +157,9 @@ def build_analysis_runtime_bundle(
         analysis_runtime = DecompilationAnalysisRuntime(
             analysis_phase or AnalysisPhase(),
             store,
-            validated_fact_view_provider=(
-                preanalysis_runtime._validated_fact_view
-            ),
+            validated_fact_view_provider=(preanalysis_runtime._validated_fact_view),
         )
-        fact_count = register_default_preanalysis_fact_collectors(
-            preanalysis_runtime
-        )
+        fact_count = register_default_preanalysis_fact_collectors(preanalysis_runtime)
         logger.info(
             "PreanalysisRuntime enabled: %d graph collectors, db=%s",
             phase.collector_count,

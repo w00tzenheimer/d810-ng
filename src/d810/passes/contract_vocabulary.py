@@ -1,4 +1,5 @@
 """Canonical native pass-contract vocabulary and legacy aliases."""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -220,9 +221,7 @@ _ENTRIES: tuple[ContractVocabularyEntry, ...] = (
     ),
 )
 
-_BY_NAME: dict[str, ContractVocabularyEntry] = {
-    entry.name: entry for entry in _ENTRIES
-}
+_BY_NAME: dict[str, ContractVocabularyEntry] = {entry.name: entry for entry in _ENTRIES}
 _ALIASES: dict[str, str] = {
     alias: entry.name for entry in _ENTRIES for alias in entry.legacy_aliases
 }
@@ -277,8 +276,7 @@ def contract_name_in(name: str, candidates: Iterable[str]) -> bool:
     """Return whether ``candidates`` contains ``name`` or one of its aliases."""
     canonical = resolve_contract_name(str(name))
     return any(
-        resolve_contract_name(str(candidate)) == canonical
-        for candidate in candidates
+        resolve_contract_name(str(candidate)) == canonical for candidate in candidates
     )
 
 

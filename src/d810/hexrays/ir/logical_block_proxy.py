@@ -152,9 +152,7 @@ class LogicalBlockProxy:
         self._retirements: dict[str, int] = {}
         self._retired: list[LogicalBlockVersion] = []
         self._aborted: list[LogicalBlockVersion] = []
-        self._lineage: list[
-            tuple[LogicalBlockVersionId, LogicalBlockVersionId]
-        ] = []
+        self._lineage: list[tuple[LogicalBlockVersionId, LogicalBlockVersionId]] = []
         self._states: dict[LogicalBlockVersionId, LogicalBlockVersionState] = {}
         if published is not None:
             self._states[published.version_id] = LogicalBlockVersionState.PUBLISHED
@@ -287,7 +285,9 @@ class LogicalBlockProxy:
         if handle.session_id != self._session_id:
             raise ValueError("logical block session cannot drift between versions")
         if handle.stable_identity != self._stable_identity:
-            raise ValueError("logical block stable identity cannot drift between versions")
+            raise ValueError(
+                "logical block stable identity cannot drift between versions"
+            )
         if handle.provenance is not self._provenance:
             raise ValueError("logical block provenance cannot drift between versions")
         staged = LogicalBlockVersion(
@@ -312,7 +312,9 @@ class LogicalBlockProxy:
         if not transaction_id:
             raise ValueError("logical block retirement requires a transaction id")
         if self._published is None:
-            raise LogicalBlockStageConflict("cannot retire an unpublished logical block")
+            raise LogicalBlockStageConflict(
+                "cannot retire an unpublished logical block"
+            )
         if transaction_id in self._staged or transaction_id in self._retirements:
             raise LogicalBlockStageConflict(
                 f"transaction {transaction_id!r} already staged this logical block"
@@ -349,9 +351,7 @@ class LogicalBlockProxy:
                 f"transaction {transaction_id!r} has no staged logical block"
             ) from exc
         published = self._published
-        published_version_id = (
-            None if published is None else published.version_id
-        )
+        published_version_id = None if published is None else published.version_id
         if staged.predecessor_version_id != published_version_id:
             raise LogicalBlockStageConflict(
                 "staged logical block no longer has the published predecessor"

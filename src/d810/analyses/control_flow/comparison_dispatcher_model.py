@@ -24,6 +24,7 @@ import that Protocol — ``analyses`` is below ``transforms``).  STANDING RULE:
 :class:`Block` route results carry the block EA alongside the serial when an
 ``block_ea`` map is supplied.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -63,7 +64,9 @@ _U64_MASK = 0xFFFFFFFFFFFFFFFF
 _STATE_WIDTH = 32
 
 
-def build_partition_from_dispatcher(dispatcher: object | None) -> "dict[int, IntervalSet]":
+def build_partition_from_dispatcher(
+    dispatcher: object | None,
+) -> "dict[int, IntervalSet]":
     """Complete per-handler :class:`IntervalSet` partition from an ``IntervalDispatcher``.
 
     Sources the FULL interval rows from the :class:`IntervalDispatcher` (which
@@ -128,9 +131,7 @@ def _build_target_intervals(range_evidence: object | None) -> "dict[int, Interva
     return build_partition_from_dispatcher(getattr(range_evidence, "dispatcher", None))
 
 
-def _range_to_intervals(
-    lo: Optional[int], hi: Optional[int]
-) -> "list[Interval]":
+def _range_to_intervals(lo: Optional[int], hi: Optional[int]) -> "list[Interval]":
     """Lower one ``(lo, hi)`` handler-range row to closed :class:`Interval`s.
 
     Preserves the exact semantics of the retired ``route_comparison_target``
@@ -192,9 +193,13 @@ def build_partition(
     )
     partition: dict[int, IntervalSet] = {}
     for state, handler in state_to_handler.items():
-        singleton = IntervalSet(_STATE_WIDTH, [Interval(int(state) & mask, int(state) & mask)])
+        singleton = IntervalSet(
+            _STATE_WIDTH, [Interval(int(state) & mask, int(state) & mask)]
+        )
         h = int(handler)
-        partition[h] = partition.get(h, IntervalSet.empty(_STATE_WIDTH)).union(singleton)
+        partition[h] = partition.get(h, IntervalSet.empty(_STATE_WIDTH)).union(
+            singleton
+        )
     exact_handlers = {int(h) for h in state_to_handler.values()}
     for handler, iset in (range_intervals or {}).items():
         h = int(handler)

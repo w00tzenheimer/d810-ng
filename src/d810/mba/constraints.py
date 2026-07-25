@@ -5,6 +5,7 @@ Relocated below the ``analyses`` layer alongside the expression DSL (see
 ``EqualityConstraint`` was sealed during the move via the injected
 ``d810.ir.expr.mop_ops`` provider.
 """
+
 from d810.ir.expr.constraints import (  # noqa: F401  (re-export)
     AndConstraint,
     AndConstraintProtocol,

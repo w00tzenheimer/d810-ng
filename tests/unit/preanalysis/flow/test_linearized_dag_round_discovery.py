@@ -96,7 +96,9 @@ class _FakeDagNode:
         )
 
 
-def test_build_linearized_dag_round_summary_collects_exit_and_terminal_facts(monkeypatch):
+def test_build_linearized_dag_round_summary_collects_exit_and_terminal_facts(
+    monkeypatch,
+):
     transition_edge = _FakeEdge(
         kind=SemanticEdgeKind.TRANSITION,
         handler_serial=10,
@@ -180,7 +182,9 @@ def test_build_linearized_dag_round_summary_collects_exit_and_terminal_facts(mon
     assert result.plannable_edges[0].requires_safe_target_resolution
 
 
-def test_build_linearized_dag_round_summary_uses_non_inlining_semantic_program(monkeypatch):
+def test_build_linearized_dag_round_summary_uses_non_inlining_semantic_program(
+    monkeypatch,
+):
     captured: dict[str, object] = {}
     dag = SimpleNamespace(edges=(), nodes=())
 
@@ -332,8 +336,7 @@ def test_discover_structured_regions_accepts_branch_region_from_semantic_target_
     )
 
     assert any(
-        region.region_name == "sub7ffd_10743c4c_branch_region"
-        for region in regions
+        region.region_name == "sub7ffd_10743c4c_branch_region" for region in regions
     )
 
 
@@ -432,8 +435,7 @@ def test_discover_structured_regions_accepts_branch_region_from_live_dag_states(
     )
 
     assert any(
-        region.region_name == "sub7ffd_10743c4c_branch_region"
-        for region in regions
+        region.region_name == "sub7ffd_10743c4c_branch_region" for region in regions
     )
 
 
@@ -815,15 +817,11 @@ def test_discover_structured_regions_skips_zero_state_child_regions():
 def test_discover_structured_regions_falls_back_to_declared_region_order_when_semantic_edges_are_missing():
     dag = SimpleNamespace(
         initial_state=0x5D0AEBD3,
-        nodes=(
-            SimpleNamespace(key=_FakeStateKey(0x4E69F350)),
-        ),
+        nodes=(SimpleNamespace(key=_FakeStateKey(0x4E69F350)),),
         edges=(),
     )
     semantic_reference_program = SimpleNamespace(
-        nodes=(
-            _FakeProgramNode("STATE_4E69F350"),
-        ),
+        nodes=(_FakeProgramNode("STATE_4E69F350"),),
         lines=(),
     )
 

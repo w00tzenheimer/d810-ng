@@ -148,22 +148,22 @@ class TestBuildTerminalFamilySplitProposals:
                 lineage_eas=(0x3000,),
             ),
         )
-        flow_graph = _DummyFlowGraph({
-            20: (30,),
-            21: (30,),
-            22: (30,),
-            30: (40,),
-            40: (),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                20: (30,),
+                21: (30,),
+                22: (30,),
+                30: (40,),
+                40: (),
+            }
+        )
 
         proposals = build_terminal_family_split_proposals(
             candidates,
             projected_flow_graph=flow_graph,
         )
 
-        assert proposals == (
-            build_expected := proposals[0],
-        )
+        assert proposals == (build_expected := proposals[0],)
         assert build_expected.suffix_serials == (30, 40)
         assert build_expected.selected_candidate_indexes == (1,)
         assert build_expected.selected_anchors == (21,)
@@ -188,12 +188,14 @@ class TestBuildTerminalFamilySplitProposals:
                 lineage_eas=(0x2000,),
             ),
         )
-        flow_graph = _DummyFlowGraph({
-            20: (30,),
-            21: (30,),
-            30: (40,),
-            40: (),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                20: (30,),
+                21: (30,),
+                30: (40,),
+                40: (),
+            }
+        )
 
         proposals = build_terminal_family_split_proposals(
             candidates,
@@ -233,11 +235,13 @@ class TestBuildTerminalFamilySplitCandidates:
 
 class TestBuildTerminalFamilySplitModification:
     def test_rejects_non_terminal_suffix_in_projected_graph(self):
-        flow_graph = _DummyFlowGraph({
-            30: (40,),
-            40: (50,),
-            50: (),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                30: (40,),
+                40: (50,),
+                50: (),
+            }
+        )
 
         modification = build_terminal_family_split_modification(
             builder=_DummyBuilder(),
@@ -339,12 +343,14 @@ class TestSelectTerminalFamilySplit:
                 lineage_eas=(0x2000,),
             ),
         )
-        base_flow_graph = _DummyFlowGraph({
-            20: (30,),
-            21: (30,),
-            30: (40,),
-            40: (),
-        })
+        base_flow_graph = _DummyFlowGraph(
+            {
+                20: (30,),
+                21: (30,),
+                30: (40,),
+                40: (),
+            }
+        )
         projected_flow_graph = base_flow_graph
 
         original_compile = split_mod.compile_patch_plan
@@ -391,12 +397,14 @@ class TestPlanTerminalFamilySplits:
                 lineage_eas=(0x2000,),
             ),
         )
-        base_flow_graph = _DummyFlowGraph({
-            20: (30,),
-            21: (30,),
-            30: (40,),
-            40: (),
-        })
+        base_flow_graph = _DummyFlowGraph(
+            {
+                20: (30,),
+                21: (30,),
+                30: (40,),
+                40: (),
+            }
+        )
         projected_flow_graph = base_flow_graph
         modifications = []
         call_count = {"value": 0}
@@ -467,12 +475,14 @@ class TestPlanTerminalFamilySplits:
                 lineage_eas=(0x2000,),
             ),
         )
-        base_flow_graph = _DummyFlowGraph({
-            20: (30,),
-            21: (30,),
-            30: (40,),
-            40: (),
-        })
+        base_flow_graph = _DummyFlowGraph(
+            {
+                20: (30,),
+                21: (30,),
+                30: (40,),
+                40: (),
+            }
+        )
         projected_flow_graph = base_flow_graph
         modifications = []
         call_count = {"value": 0}
@@ -540,12 +550,14 @@ class TestPlanTerminalFamilySplits:
                 lineage_eas=(0x2000,),
             ),
         )
-        base_flow_graph = _DummyFlowGraph({
-            20: (30,),
-            21: (30,),
-            30: (40,),
-            40: (),
-        })
+        base_flow_graph = _DummyFlowGraph(
+            {
+                20: (30,),
+                21: (30,),
+                30: (40,),
+                40: (),
+            }
+        )
         projected_flow_graph = base_flow_graph
         modifications = []
         call_count = {"value": 0}

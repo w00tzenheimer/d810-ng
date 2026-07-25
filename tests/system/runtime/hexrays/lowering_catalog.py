@@ -15,6 +15,7 @@ Separation of concerns (mirrors the three-tier invariant):
   - LOWERING (this catalog): ``lower_*``   (IR plan -> DeferredGraphModifier emits)
   - MUTATION              : ``DeferredGraphModifier.apply`` (the vendor backend)
 """
+
 from __future__ import annotations
 
 import re
@@ -34,7 +35,8 @@ STATE_TERM = 0x1A2B3C4D
 STATE_RT = 0x7D4E1F3A
 STATE_KENTRY = 0xDEADBEEF
 LAB_STATE_CONSTS = frozenset(
-    {STATE_KENTRY, STATE_K0, STATE_K1, STATE_K2, STATE_RT, STATE_TERM})
+    {STATE_KENTRY, STATE_K0, STATE_K1, STATE_K2, STATE_RT, STATE_TERM}
+)
 
 
 # =====================================================================
@@ -62,12 +64,16 @@ def _state_slot(mba, consts=LAB_STATE_CONSTS):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                    and ins.l.t == ida_hexrays.mop_n
-                    and (int(ins.l.nnn.value) & 0xFFFFFFFF) in consts
-                    and ins.d is not None):
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and (int(ins.l.nnn.value) & 0xFFFFFFFF) in consts
+                and ins.d is not None
+            ):
                 writes.setdefault(ins.d.dstr(), []).append(
-                    int(ins.l.nnn.value) & 0xFFFFFFFF)
+                    int(ins.l.nnn.value) & 0xFFFFFFFF
+                )
             ins = ins.next
     if not writes:
         return None
@@ -82,9 +88,13 @@ def _state_writers(mba, slot, consts=LAB_STATE_CONSTS):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                    and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                    and ins.d.dstr() == slot):
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and ins.d is not None
+                and ins.d.dstr() == slot
+            ):
                 v = int(ins.l.nnn.value) & 0xFFFFFFFF
                 if v in consts:
                     writers.setdefault(v, []).append(blk.serial)
@@ -99,7 +109,10 @@ def _jz_routing(mba, consts=LAB_STATE_CONSTS):
         if blk is None or blk.type != ida_hexrays.BLT_2WAY:
             continue
         tail = blk.tail
-        if tail is None or int(tail.opcode) not in (ida_hexrays.m_jz, ida_hexrays.m_jnz):
+        if tail is None or int(tail.opcode) not in (
+            ida_hexrays.m_jz,
+            ida_hexrays.m_jnz,
+        ):
             continue
         imm = None
         for op in (tail.l, tail.r):
@@ -109,18 +122,28 @@ def _jz_routing(mba, consts=LAB_STATE_CONSTS):
                     imm = v
         if imm is None:
             continue
-        tgt = int(tail.d.b) if (tail.d is not None and tail.d.t == ida_hexrays.mop_b) else None
+        tgt = (
+            int(tail.d.b)
+            if (tail.d is not None and tail.d.t == ida_hexrays.mop_b)
+            else None
+        )
         succs = [int(s) for s in blk.succset]
         other = [s for s in succs if s != tgt]
-        handler = tgt if int(tail.opcode) == ida_hexrays.m_jz else (other[0] if other else None)
+        handler = (
+            tgt
+            if int(tail.opcode) == ida_hexrays.m_jz
+            else (other[0] if other else None)
+        )
         if handler is not None:
             routing[imm] = handler
     return routing
 
 
 def _terminal(mba):
-    stop = next((i for i in range(mba.qty)
-                 if mba.get_mblock(i).type == ida_hexrays.BLT_STOP), mba.qty - 1)
+    stop = next(
+        (i for i in range(mba.qty) if mba.get_mblock(i).type == ida_hexrays.BLT_STOP),
+        mba.qty - 1,
+    )
     for i in range(mba.qty):
         blk = mba.get_mblock(i)
         if blk.type != ida_hexrays.BLT_STOP and stop in [int(s) for s in blk.succset]:
@@ -171,8 +194,12 @@ def _find_jtbl(mba):
     for i in range(mba.qty):
         blk = mba.get_mblock(i)
         tail = blk.tail if blk else None
-        if (tail is not None and int(tail.opcode) == ida_hexrays.m_jtbl
-                and tail.r is not None and tail.r.t == ida_hexrays.mop_c):
+        if (
+            tail is not None
+            and int(tail.opcode) == ida_hexrays.m_jtbl
+            and tail.r is not None
+            and tail.r.t == ida_hexrays.mop_c
+        ):
             return blk.serial, tail.r.c
     return -1, None
 
@@ -203,11 +230,16 @@ def recover_dispatch_jtbl(mba):
         blk = mba.get_mblock(i)
         ins = blk.head if blk else None
         while ins is not None:
-            if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                    and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                    and re.sub(r"\{[^}]*\}", "", ins.d.dstr()) == slot):
+            if (
+                int(ins.opcode) == ida_hexrays.m_mov
+                and ins.l is not None
+                and ins.l.t == ida_hexrays.mop_n
+                and ins.d is not None
+                and re.sub(r"\{[^}]*\}", "", ins.d.dstr()) == slot
+            ):
                 writers.setdefault(int(ins.l.nnn.value) & 0xFFFFFFFF, []).append(
-                    blk.serial)
+                    blk.serial
+                )
             ins = ins.next
     redirects = []
     for val, wblocks in writers.items():
@@ -262,9 +294,12 @@ def _find_low_bit_predicate(mop):
         return None
     if int(getattr(mop, "t", -1)) == ida_hexrays.mop_d and mop.d is not None:
         ins = mop.d
-        if (int(ins.opcode) == ida_hexrays.m_and and ins.r is not None
-                and ins.r.t == ida_hexrays.mop_n
-                and (int(ins.r.nnn.value) & 0xFFFFFFFF) == 1):
+        if (
+            int(ins.opcode) == ida_hexrays.m_and
+            and ins.r is not None
+            and ins.r.t == ida_hexrays.mop_n
+            and (int(ins.r.nnn.value) & 0xFFFFFFFF) == 1
+        ):
             cloned = ida_hexrays.mop_t()
             cloned.assign(mop)
             return cloned
@@ -286,8 +321,13 @@ def recover_branchless(mba, consts=LAB_STATE_CONSTS):
     writers = _state_writers(mba, slot, consts)
     routing = _jz_routing(mba, consts)
     term = _terminal(mba)
-    if not (STATE_K0 in routing and STATE_K1 in routing and STATE_K2 in routing
-            and term >= 0 and STATE_K0 in writers):
+    if not (
+        STATE_K0 in routing
+        and STATE_K1 in routing
+        and STATE_K2 in routing
+        and term >= 0
+        and STATE_K0 in writers
+    ):
         return None
     h0, h1, h2 = routing[STATE_K0], routing[STATE_K1], routing[STATE_K2]
     entry = writers[STATE_K0][0]
@@ -298,8 +338,11 @@ def recover_branchless(mba, consts=LAB_STATE_CONSTS):
     or_ea, cond = None, None
     ins = h0blk.head
     while ins is not None:
-        if (int(ins.opcode) == ida_hexrays.m_or and ins.d is not None
-                and re.sub(r"\{[^}]*\}", "", ins.d.dstr()) == slot):
+        if (
+            int(ins.opcode) == ida_hexrays.m_or
+            and ins.d is not None
+            and re.sub(r"\{[^}]*\}", "", ins.d.dstr()) == slot
+        ):
             or_ea = int(ins.ea)
             for sub in (ins.l, ins.r):
                 cond = cond or _find_low_bit_predicate(sub)
@@ -310,8 +353,9 @@ def recover_branchless(mba, consts=LAB_STATE_CONSTS):
     return ConditionalSynthPlan(h0, disp, or_ea, cond, h1, h2, drain)
 
 
-def lower_conditional_synthesize(mod: DeferredGraphModifier,
-                                 plan: ConditionalSynthPlan) -> int:
+def lower_conditional_synthesize(
+    mod: DeferredGraphModifier, plan: ConditionalSynthPlan
+) -> int:
     """LOWERING PRIMITIVE. Build the 2-way from the recovered predicate
     (``queue_lower_conditional_state_transition`` -> ``m_jnz cond,0 -> true``),
     and drain the rest of the dispatcher. Composes synthesize + DispatchDrain."""
@@ -352,7 +396,7 @@ def _copy_propagate(body: str) -> str:
             break
         if re.search(r"\b" + re.escape(var) + r"\b", expr):
             break
-        body = body[:m.start()] + body[m.end():]
+        body = body[: m.start()] + body[m.end() :]
         body = re.sub(r"\b" + re.escape(var) + r"\b", expr, body)
     return body
 
@@ -365,7 +409,7 @@ def normalize_pseudocode(text: str) -> str:
     robust to variable numbering / store-forwarding / DSE while preserving the
     operations and control structure (so a wrong handler op still fails)."""
     lo, hi = text.find("{"), text.rfind("}")
-    body = text[lo + 1:hi] if (lo >= 0 and hi > lo) else text
+    body = text[lo + 1 : hi] if (lo >= 0 and hi > lo) else text
     body = _COMMENT_RE.sub("", body)
     # Drop local declaration lines ("int v2;") -- numbering is incidental.
     kept = []
@@ -373,7 +417,10 @@ def normalize_pseudocode(text: str) -> str:
         s = line.strip()
         if re.fullmatch(
             r"(unsigned\s+)?(int|__int\d+|char|short|long|_BOOL|bool|_DWORD|_QWORD)\s+"
-            + _TEMP + r";", s):
+            + _TEMP
+            + r";",
+            s,
+        ):
             continue
         kept.append(line)
     body = "\n".join(kept)
@@ -385,23 +432,23 @@ def normalize_pseudocode(text: str) -> str:
     while prev != body:
         prev = body
         body = re.sub(
-            re.escape(_SINK) + r" = [^;]*;\s*(?=" + re.escape(_SINK) + r" = )",
-            "", body)
+            re.escape(_SINK) + r" = [^;]*;\s*(?=" + re.escape(_SINK) + r" = )", "", body
+        )
     # Store-to-load forward on the sink: Hex-Rays sometimes renders `return
     # g_hexrays_lab_sink;` (reading back the global it just wrote) instead of
     # `return <expr>;`. Forward the written value into the read-back.
     body = re.sub(
-        r"(" + re.escape(_SINK) + r" = )([^;]*)(;\s*return )"
-        + re.escape(_SINK) + r";",
+        r"(" + re.escape(_SINK) + r" = )([^;]*)(;\s*return )" + re.escape(_SINK) + r";",
         lambda m: m.group(1) + m.group(2) + m.group(3) + m.group(2) + ";",
-        body)
+        body,
+    )
     body = _LOCAL_RE.sub("V", body)
     body = _WS_RE.sub(" ", body).strip()
     return body
 
 
 def _norm_cond(c: str) -> str:
-    c = re.sub(r"(!=|==)\s*0\b", "", c)          # strip `!= 0` / `== 0` truthiness
+    c = re.sub(r"(!=|==)\s*0\b", "", c)  # strip `!= 0` / `== 0` truthiness
     c = _LOCAL_RE.sub("V", c)
     c = re.sub(r"[()\s]", "", c)
     return c.lower()
@@ -420,8 +467,11 @@ def _skeleton(body: str) -> str:
     while i < n:
         m = None
         for kw in kws:
-            if (body[i:i + len(kw)] == kw and (i == 0 or not isw(body[i - 1]))
-                    and (i + len(kw) >= n or not isw(body[i + len(kw)]))):
+            if (
+                body[i : i + len(kw)] == kw
+                and (i == 0 or not isw(body[i - 1]))
+                and (i + len(kw) >= n or not isw(body[i + len(kw)]))
+            ):
                 m = kw
                 break
         if m in ("if", "while", "for"):
@@ -435,7 +485,7 @@ def _skeleton(body: str) -> str:
                     if depth == 0:
                         break
                 k += 1
-            out.append(m.upper() + "(" + _norm_cond(body[j + 1:k]) + ")")
+            out.append(m.upper() + "(" + _norm_cond(body[j + 1 : k]) + ")")
             i = k + 1
         elif m in ("else", "do"):
             out.append(m.upper())
@@ -464,7 +514,7 @@ def semantic_signature(text: str):
     robust to Hex-Rays' store placement / DSE / hoisting / temp naming, while
     still failing on a wrong control structure or a wrong/missing handler op."""
     lo, hi = text.find("{"), text.rfind("}")
-    body = text[lo + 1:hi] if (lo >= 0 and hi > lo) else text
+    body = text[lo + 1 : hi] if (lo >= 0 and hi > lo) else text
     body = _COMMENT_RE.sub("", body)
     skel = _skeleton(body)
     # DSE: drop dead intermediate sink stores (a sink store is dead if a later
@@ -476,8 +526,13 @@ def semantic_signature(text: str):
     while prev != dse:
         prev = dse
         dse = re.sub(
-            re.escape(_SINK) + r" = [^;]*;\s*(?=(?:[av]\d+ = [^;]*;\s*)*"
-            + re.escape(_SINK) + r" = )", "", dse)
+            re.escape(_SINK)
+            + r" = [^;]*;\s*(?=(?:[av]\d+ = [^;]*;\s*)*"
+            + re.escape(_SINK)
+            + r" = )",
+            "",
+            dse,
+        )
     return (skel, _ops(dse))
 
 
@@ -497,8 +552,11 @@ def apply_lowering_and_render(flat_ea, recover_fn, lower_fn=lower_dispatch_drain
         def func(self, blk):
             try:
                 mba = blk.mba
-                if (box["done"] or mba is None
-                        or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)):
+                if (
+                    box["done"]
+                    or mba is None
+                    or int(mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)
+                ):
                     return 0
                 plan = recover_fn(mba)
                 if plan is None:
@@ -533,12 +591,22 @@ def apply_lowering_and_render(flat_ea, recover_fn, lower_fn=lower_dispatch_drain
 # now-multi-pred tail), so it has its own driver rather than the single-pass
 # recover/lower split. P3 (single-block de-share) is the degenerate case.
 # =====================================================================
-_CONTROL_OPS = frozenset({
-    ida_hexrays.m_goto, ida_hexrays.m_jcnd,
-    ida_hexrays.m_jnz, ida_hexrays.m_jz,
-    ida_hexrays.m_jae, ida_hexrays.m_jb, ida_hexrays.m_ja, ida_hexrays.m_jbe,
-    ida_hexrays.m_jg, ida_hexrays.m_jge, ida_hexrays.m_jl, ida_hexrays.m_jle,
-})
+_CONTROL_OPS = frozenset(
+    {
+        ida_hexrays.m_goto,
+        ida_hexrays.m_jcnd,
+        ida_hexrays.m_jnz,
+        ida_hexrays.m_jz,
+        ida_hexrays.m_jae,
+        ida_hexrays.m_jb,
+        ida_hexrays.m_ja,
+        ida_hexrays.m_jbe,
+        ida_hexrays.m_jg,
+        ida_hexrays.m_jge,
+        ida_hexrays.m_jl,
+        ida_hexrays.m_jle,
+    }
+)
 
 
 def _capture_state_free(blk):
@@ -548,9 +616,12 @@ def _capture_state_free(blk):
     ins = blk.head
     while ins is not None:
         op = int(ins.opcode)
-        is_state_write = (op == ida_hexrays.m_mov and ins.l is not None
-                          and ins.l.t == ida_hexrays.mop_n
-                          and (int(ins.l.nnn.value) & 0xFFFFFFFF) in LAB_STATE_CONSTS)
+        is_state_write = (
+            op == ida_hexrays.m_mov
+            and ins.l is not None
+            and ins.l.t == ida_hexrays.mop_n
+            and (int(ins.l.nnn.value) & 0xFFFFFFFF) in LAB_STATE_CONSTS
+        )
         if not is_state_write and op not in _CONTROL_OPS:
             insns.append(ins)
         ins = ins.next
@@ -561,10 +632,14 @@ def _block_writes_value(mba, serial, value, slot):
     blk = mba.get_mblock(serial)
     ins = blk.head if blk else None
     while ins is not None:
-        if (int(ins.opcode) == ida_hexrays.m_mov and ins.l is not None
-                and ins.l.t == ida_hexrays.mop_n and ins.d is not None
-                and ins.d.dstr() == slot
-                and (int(ins.l.nnn.value) & 0xFFFFFFFF) == value):
+        if (
+            int(ins.opcode) == ida_hexrays.m_mov
+            and ins.l is not None
+            and ins.l.t == ida_hexrays.mop_n
+            and ins.d is not None
+            and ins.d.dstr() == slot
+            and (int(ins.l.nnn.value) & 0xFFFFFFFF) == value
+        ):
             return True
         ins = ins.next
     return False
@@ -601,8 +676,14 @@ def apply_region_deshare_and_render(flat_ea):
                     if hblk.type != ida_hexrays.BLT_2WAY or hblk.tail is None:
                         return 0
                     disp = _mode_dispatcher(mba, writers)
-                    taken = int(hblk.tail.d.b) if (hblk.tail.d is not None
-                              and hblk.tail.d.t == ida_hexrays.mop_b) else -1
+                    taken = (
+                        int(hblk.tail.d.b)
+                        if (
+                            hblk.tail.d is not None
+                            and hblk.tail.d.t == ida_hexrays.mop_b
+                        )
+                        else -1
+                    )
                     taken_to_tail = _block_writes_value(mba, taken, STATE_RT, slot)
                     cond_t, ft = (tail, term) if taken_to_tail else (term, tail)
                     tb = mba.get_mblock(tail)
@@ -622,13 +703,16 @@ def apply_region_deshare_and_render(flat_ea):
                         for w in writers.get(k, []):
                             if disp in [int(s) for s in mba.get_mblock(w).succset]:
                                 mod.queue_create_and_redirect(
-                                    w, tgt, [], old_target_serial=disp)
+                                    w, tgt, [], old_target_serial=disp
+                                )
                     for P in paths[:2]:
                         mod.queue_create_conditional_redirect(
-                            source_blk_serial=P, ref_blk_serial=head,
+                            source_blk_serial=P,
+                            ref_blk_serial=head,
                             conditional_target_serial=cond_t,
                             fallthrough_target_serial=ft,
-                            old_target_serial=disp)
+                            old_target_serial=disp,
+                        )
                     mod.coalesce()
                     box["a0"] = mod.apply(run_optimize_local=True)
                     return box["a0"]
@@ -657,7 +741,8 @@ def apply_region_deshare_and_render(flat_ea):
                     )
                     for P in preds:
                         mod.queue_create_and_redirect(
-                            P, term, list(payload), old_target_serial=best)
+                            P, term, list(payload), old_target_serial=best
+                        )
                     mod.coalesce()
                     box["a1"] = mod.apply(run_optimize_local=True)
                     return box["a1"]

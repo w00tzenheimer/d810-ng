@@ -1,4 +1,5 @@
 "Env-gated equivalence probe for the PreanalysisRoundDiscoveryContext rollout.\n\nRuns a fresh rebuild of the DAG / indexes alongside the canonical\n``PreanalysisRoundDiscoveryContext`` and emits a single INFO log line per pass\ncomparing them. Dormant unless ``D810_RECON_ROUND_CTX_PROBE=1``.\n\nThe probe is strictly observational \u2014 it reads both sides and logs. It never\nmutates the context or the rebuild. Use during Phase B strategy opt-in to\nvalidate the canonical context matches the per-strategy setup recipes the\nrollout is replacing.\n\nLayer: ``d810.analyses.control_flow`` (read-only classification). No ``ModificationBuilder``\ncalls, no ``modifications`` lists.\n"
+
 from __future__ import annotations
 
 import os
@@ -10,7 +11,9 @@ if TYPE_CHECKING:
     from d810.analyses.control_flow.reconstruction_discovery_indexes import (
         ReconstructionDiscoveryIndexes,
     )
-    from d810.analyses.control_flow.round_discovery_context import PreanalysisRoundDiscoveryContext
+    from d810.analyses.control_flow.round_discovery_context import (
+        PreanalysisRoundDiscoveryContext,
+    )
 
 
 logger = logging.getLogger(
@@ -65,12 +68,12 @@ def compare_round_context_to_rebuild(
     if ctx_edges != rebuild_edges:
         only_ctx = len(ctx_edges - rebuild_edges)
         only_rebuild = len(rebuild_edges - ctx_edges)
-        mismatches.append(
-            f"edges(ctx_only={only_ctx},rebuild_only={only_rebuild})"
-        )
+        mismatches.append(f"edges(ctx_only={only_ctx},rebuild_only={only_rebuild})")
 
     # 2. condition_chain_blocks equivalence
-    ctx_condition_chain = frozenset(int(s) for s in getattr(ctx.dag, "condition_chain_blocks", ()))
+    ctx_condition_chain = frozenset(
+        int(s) for s in getattr(ctx.dag, "condition_chain_blocks", ())
+    )
     rebuild_condition_chain = frozenset(
         int(s) for s in getattr(rebuild_dag, "condition_chain_blocks", ())
     )
@@ -89,9 +92,7 @@ def compare_round_context_to_rebuild(
 
     # 4. structured_region_edge_pairs (from indexes bundle)
     ctx_pairs = set(getattr(ctx.indexes, "structured_region_edge_pairs", set()))
-    rebuild_pairs = set(
-        getattr(rebuild_indexes, "structured_region_edge_pairs", set())
-    )
+    rebuild_pairs = set(getattr(rebuild_indexes, "structured_region_edge_pairs", set()))
     if ctx_pairs != rebuild_pairs:
         mismatches.append(
             f"structured_region_edge_pairs(ctx={len(ctx_pairs)},rebuild={len(rebuild_pairs)})"
@@ -111,9 +112,7 @@ def compare_round_context_to_rebuild(
     ctx_nk = len(ctx.node_by_key)
     rebuild_nk = len(getattr(rebuild_indexes, "node_by_key", {}))
     if ctx_nk != rebuild_nk:
-        mismatches.append(
-            f"node_by_key_count(ctx={ctx_nk},rebuild={rebuild_nk})"
-        )
+        mismatches.append(f"node_by_key_count(ctx={ctx_nk},rebuild={rebuild_nk})")
 
     # 7. corrected_dag edge equivalence
     ctx_corr_edges = {_edge_key(e) for e in getattr(ctx.corrected_dag, "edges", ())}

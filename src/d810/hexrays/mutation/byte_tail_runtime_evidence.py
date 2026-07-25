@@ -1,4 +1,5 @@
 """In-memory evidence interfaces for byte-tail mutation runtime hooks."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -32,10 +33,11 @@ class ByteTailRuntimeEvidence:
 
 
 class ByteTailRuntimeEvidenceProvider(Protocol):
-    "Provider for current-function byte-tail evidence.\n\n    Implementations should be backed by process-local preanalysis/runtime evidence,\n    not by diagnostic SQLite rows.\n    "
+    "Provider for current-function byte-tail evidence.\n\n    Implementations should be backed by process-local preanalysis/runtime evidence,\n    not by diagnostic SQLite rows.\n"
 
-    def byte_tail_runtime_evidence(self, mba: Any) -> ByteTailRuntimeEvidence | None:
-        ...
+    def byte_tail_runtime_evidence(
+        self, mba: Any
+    ) -> ByteTailRuntimeEvidence | None: ...
 
 
 @dataclass(frozen=True, slots=True)

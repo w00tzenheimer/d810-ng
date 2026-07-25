@@ -1,4 +1,5 @@
 """Tests for the two-layer state-graph types: NodeKind + SCC condensation."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.state_graph_layers import (
@@ -28,7 +29,9 @@ def _cfg(succ_map, entry):
 
 
 def test_classify_node_kinds():
-    cfg = _cfg({78: (2,), 2: (55,), 55: (57, 56), 57: (186,), 56: (), 186: ()}, entry=78)
+    cfg = _cfg(
+        {78: (2,), 2: (55,), 55: (57, 56), 57: (186,), 56: (), 186: ()}, entry=78
+    )
     kinds = classify_nodes(
         cfg, comparison_blocks={2, 55}, state_write_blocks={57}, entry=78
     )

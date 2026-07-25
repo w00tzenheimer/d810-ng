@@ -17,6 +17,7 @@ is NO indirect detector in the front-end chain yet, so ``build_dispatch_map_any_
 returns ``TABLE/indirect_jump_table`` live; the indirect / jump-table analysis is slice 2 (``llr-890r``).
 The ``TABLE/indirect_jump_table`` branch of ``pipeline_for`` is therefore structural until that lands.
 """
+
 from __future__ import annotations
 
 from d810.passes.pass_pipeline import (
@@ -56,10 +57,12 @@ emulation = CapabilityPolicy(required=frozenset({"live_mba", "emulation"}))
 
 # The dispatcher kinds THIS profile owns. Tigress emits switch-table and computed
 # indirect-jump CFF; equality-chain (CONDITION_CHAIN) belongs to HodurFamily.
-_TIGRESS_TABLE_PROVENANCES = frozenset({
-    TableProvenance.SWITCH,
-    TableProvenance.INDIRECT_JUMP_TABLE,
-})
+_TIGRESS_TABLE_PROVENANCES = frozenset(
+    {
+        TableProvenance.SWITCH,
+        TableProvenance.INDIRECT_JUMP_TABLE,
+    }
+)
 
 
 class TigressFamily(StateMachineCffFamily):
