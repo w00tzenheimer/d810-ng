@@ -4019,7 +4019,11 @@ class DeferredGraphModifier:
                 ):
                     stop.predset.push_back(int(predecessor.serial))
                 predecessor.mark_lists_dirty()
-                stop.mark_lists_dirty()
+                # The BLT_STOP block is instructionless, so restoring its
+                # predecessor metadata does not invalidate block-local
+                # use/def lists.  Once callinfo is built Hex-Rays requires
+                # those refine_return_type lists to remain ready (verify.cpp
+                # INTERR 51328), and mark_lists_dirty() would destroy them.
             restore_failures = []
             for original_serial, label in temporary_protections:
                 # Every survivor was protected and every staged block was

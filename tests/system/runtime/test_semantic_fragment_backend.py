@@ -2858,6 +2858,36 @@ def test_staged_block_discard_restores_published_tail_fallthrough_to_stop(
     assert mba.verify_calls == 1
 
 
+def test_staged_block_discard_preserves_calls_built_stop_use_def_lists(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    published_tail = _Block(
+        1,
+        start=0x401010,
+        block_type=ida_hexrays.BLT_1WAY,
+    )
+    staged = _Block(2, start=0xF10000, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(3, start=0x401020, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, published_tail)
+    published_tail.head = _Instruction(ida_hexrays.m_mov, published_tail.start)
+    published_tail.tail = published_tail.head
+    mba = _Mba((entry, published_tail, staged, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+
+    def reject_dirty_calls_built_stop() -> None:
+        raise RuntimeError("INTERR: 51328")
+
+    monkeypatch.setattr(stop, "mark_lists_dirty", reject_dirty_calls_built_stop)
+
+    modifier._discard_semantic_fragment_blocks((staged,))
+
+    assert tuple(published_tail.succset) == (stop.serial,)
+    assert tuple(stop.predset) == (published_tail.serial,)
+    assert mba.verify_calls == 1
+
+
 def test_staged_block_discard_restores_shifted_stop_fallthrough_after_sweep(
     monkeypatch,
 ) -> None:
