@@ -1247,8 +1247,7 @@ def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
         configured_scope=selection,
         available_evidence=candidate,
         current_identity_by_serial={
-            serial: _identity(block.start_ea)
-            for serial, block in graph.blocks.items()
+            serial: _identity(block.start_ea) for serial, block in graph.blocks.items()
         },
         normalization_authority=normalization_authority,
         prohibited_dispatcher_serials=(30,),
