@@ -5410,3 +5410,53 @@ next authorized implementation slice is immutable transaction preflight plus
 the production participant implementing project/preflight/bind/realize/observe.
 No Rhad route may enter live gateway staging or root publication before that
 participant is executable and proven.
+
+**2026-07-25T21:24:30Z — immutable preflight and production participant checkpoint**
+
+Rhad composition remains paused at the exact C2/C3 boundary and no donor
+commit was merged or cherry-picked. Functional commit `d93a62752` ports the
+immutable semantic-fragment transaction slice; formatting-only commit
+`87d9a4fbc` contains the requested repository-wide Ruff formatting result.
+
+The live production path now snapshots the full current CFG, identity lineage,
+root inventory, native-body facts, return-carrier construction, flag evidence,
+data flow, and value ranges while the gateway is idle. It validates both the
+portable semantic projection and the full `CfgProjection` before opening a
+batch. `PreparedSemanticFragmentAuthority` binds the exact plan object,
+session, generation, snapshot token, root inventory, four-part attempt ID,
+semantic projection, and CFG projection. Realization rejects foreign, stale,
+same-ID-but-distinct, forged, malformed-payload, and reused authority before
+the first SDK write.
+
+`SemanticFragmentTransactionParticipant` is the production
+`project -> preflight -> bind -> realize -> observe` implementation. Binding
+preserves plan-local future identities and rebinds reused blocks through the
+current `MbaBlockIdentityIndex`. Realization receives the exact immutable
+authority object; staged observation independently re-reads live semantic
+state, validates it, and compares it with immutable preflight. Preflight
+failures leave MBA quantity, generation, roots, receipts, and gateway activity
+unchanged. No direct-stage compatibility fallback was retained.
+
+Verification at `87d9a4fbc`:
+
+- exact authority and zero-write adversarial selection: 11 passed;
+- full concrete semantic-fragment backend: 108 passed;
+- portable transaction, validation, gateway, and policy selection: 133 passed;
+- detached import plus manager native-preanalysis runtime selection: 196 passed;
+- real Rhad fragment-publication E2E harness: 1 passed;
+- post-format focused gateway/backend gate: 134 passed;
+- executable parity ledger: PASS;
+- Ruff check and repository-wide format check: clean;
+- ast-grep: clean;
+- import-linter: all 14 contracts kept;
+- compileall and diff checks: clean;
+- graphify refresh: complete with only the pre-existing skill-version warning.
+
+The ledger deliberately keeps immutable snapshot, zero-write preflight,
+single-use authority, payload-shape authority, and the production participant
+at `partial`: their runtime guarantees are executable, but normalized
+transaction-phase persistence and the shared typed PatchPlan coordinator are
+not yet integrated. The next authorized slice is generation poisoning at the
+first SDK write, the shared poison latch, lifecycle-controlled bounded restart,
+and monotonic transaction-authority diagnostics. Rhad must remain paused until
+that slice is green and committed.
