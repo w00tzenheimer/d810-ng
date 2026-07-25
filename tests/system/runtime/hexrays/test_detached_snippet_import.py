@@ -15,10 +15,12 @@ from d810.hexrays.mutation import cfg_verify
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 from d810.hexrays.mutation.semantic_fragment_preparation import (
-    PreparedNativeBlockFact,
-    PreparedNativeBodyFact,
     PreparedNativeBodyPayload,
     PreparedNativeBodyPreparation,
+)
+from d810.transforms.prepared_native_body import (
+    PreparedNativeBlockFact,
+    PreparedNativeBodyFact,
     PreparedNativeEdgeFact,
     PreparedNativeInstructionFact,
 )
