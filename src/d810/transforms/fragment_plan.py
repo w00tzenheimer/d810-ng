@@ -16,6 +16,11 @@ import json
 
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.semantic_route_oracle import (
+    ReferenceRouteRewrite,
+    RouteOracleRun,
+    SemanticTransferKind,
+)
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -669,6 +674,7 @@ class FragmentDirectTransferRewrite:
     rewrite_anchor_ea: int
     proof_corridor_instruction_eas: tuple[int, ...]
     superseded_instruction_eas: tuple[int, ...]
+    reference_route: ReferenceRouteRewrite | None = None
 
     def __post_init__(self) -> None:
         route_proof_id = _require_identifier(
@@ -724,6 +730,25 @@ class FragmentDirectTransferRewrite:
             "superseded_instruction_eas",
             superseded_instruction_eas,
         )
+        reference_route = self.reference_route
+        if reference_route is not None:
+            if not isinstance(reference_route, ReferenceRouteRewrite):
+                raise TypeError("direct transfer reference route has the wrong type")
+            if (
+                reference_route.final_transfer_kind is not SemanticTransferKind.DIRECT
+                or int(reference_route.rewrite_anchor_ea) != rewrite_anchor_ea
+                or any(
+                    not any(
+                        start_ea <= ea < end_ea
+                        for start_ea, end_ea in reference_route.corridor
+                    )
+                    for ea in proof_corridor_instruction_eas
+                )
+            ):
+                raise FragmentPlanRejected(
+                    "direct transfer rewrite does not match its reference route"
+                )
+        object.__setattr__(self, "reference_route", reference_route)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1317,6 +1342,7 @@ class FragmentPlan:
     flag_corridors: tuple[FragmentFlagCorridor, ...] = ()
     value_range_assumptions: tuple[FragmentRangeAssumption, ...] = ()
     boundary_ports: tuple[FragmentBoundaryPort, ...] = ()
+    reference_oracle_run: RouteOracleRun | None = None
 
     def __post_init__(self) -> None:
         plan_id = _require_identifier(self.plan_id, "fragment plan id")
@@ -1538,6 +1564,7 @@ class FragmentPlan:
             "fragment operation source",
         )
         semantic_envelope_owner_by_ea: dict[int, str] = {}
+        reference_routes: list[ReferenceRouteRewrite] = []
         for operation in operations:
             source = block_by_id.get(operation.source_block_id)
             if source is None:
@@ -1597,6 +1624,25 @@ class FragmentPlan:
                         f"fragment operation {operation.operation_id!r} direct "
                         "transfer anchor is outside its imported source"
                     )
+                reference_route = direct_rewrite.reference_route
+                if reference_route is not None:
+                    target = block_by_id[operation.edges[0].target_block_id]
+                    if (
+                        source.stable_identity is None
+                        or not source.stable_identity.native_ranges.contains(
+                            reference_route.owner_ea
+                        )
+                        or target.stable_identity is None
+                        or reference_route.direct_target_ea is None
+                        or not target.stable_identity.native_ranges.contains(
+                            reference_route.direct_target_ea
+                        )
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} does not "
+                            "bind its reference route owner and target"
+                        )
+                    reference_routes.append(reference_route)
 
             semantic_envelope_eas = (
                 direct_rewrite.superseded_instruction_eas
@@ -2155,6 +2201,41 @@ class FragmentPlan:
                     "describe a declared data-flow site"
                 )
 
+        reference_oracle_run = self.reference_oracle_run
+        direct_rewrite_count = sum(
+            operation.direct_transfer_rewrite is not None for operation in operations
+        )
+        if reference_oracle_run is None:
+            if reference_routes:
+                raise FragmentPlanRejected(
+                    "reference-owned fragment routes require one oracle run"
+                )
+        else:
+            if not isinstance(reference_oracle_run, RouteOracleRun):
+                raise TypeError("fragment reference oracle run has the wrong type")
+            expected_input_identity = (
+                f"sha256:{reference_oracle_run.candidate_binary_sha256.lower()}"
+            )
+            if (
+                self.publication_purpose
+                is not FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+                or self.native_key.input_identity.lower() != expected_input_identity
+                or int(reference_oracle_run.function_ea)
+                < int(self.native_key.function_rva)
+                or len(reference_routes) != direct_rewrite_count
+                or any(
+                    int(route.function_ea) != int(reference_oracle_run.function_ea)
+                    for route in reference_routes
+                )
+                or len({route.route_id for route in reference_routes})
+                != len(reference_routes)
+                or len({route.reference_ledger_identity for route in reference_routes})
+                != len(reference_routes)
+            ):
+                raise FragmentPlanRejected(
+                    "fragment reference oracle authority is incomplete or mismatched"
+                )
+
         object.__setattr__(self, "plan_id", plan_id)
         object.__setattr__(self, "atomic_group_id", atomic_group_id)
         object.__setattr__(self, "blocks", blocks)
@@ -2183,6 +2264,7 @@ class FragmentPlan:
             value_range_assumptions,
         )
         object.__setattr__(self, "boundary_ports", boundary_ports)
+        object.__setattr__(self, "reference_oracle_run", reference_oracle_run)
 
     @staticmethod
     def _normalize_block_ids(

@@ -35,7 +35,7 @@ from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
 )
-from d810.ir.flowgraph import BlockKind
+from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.manager.fragment_publication_lifecycle import (
     SessionFragmentPublicationLifecycleAuthority,
@@ -462,6 +462,8 @@ class _FragmentBackend:
                     predecessors=(),
                     physical_position=0,
                     adjacent_fallthrough_target_id=None,
+                    terminator_ea=None,
+                    terminator_kind=InsnKind.UNKNOWN,
                 ),
                 ProjectedFragmentBlock(
                     block_id="replacement",
@@ -470,6 +472,8 @@ class _FragmentBackend:
                     predecessors=replacement_predecessors,
                     physical_position=1,
                     adjacent_fallthrough_target_id=None,
+                    terminator_ea=None,
+                    terminator_kind=InsnKind.UNKNOWN,
                 ),
                 ProjectedFragmentBlock(
                     block_id="target",
@@ -478,6 +482,8 @@ class _FragmentBackend:
                     predecessors=("replacement",),
                     physical_position=2,
                     adjacent_fallthrough_target_id=None,
+                    terminator_ea=None,
+                    terminator_kind=InsnKind.UNKNOWN,
                 ),
                 ProjectedFragmentBlock(
                     block_id="original",
@@ -486,6 +492,8 @@ class _FragmentBackend:
                     predecessors=original_predecessors,
                     physical_position=3,
                     adjacent_fallthrough_target_id=None,
+                    terminator_ea=None,
+                    terminator_kind=InsnKind.UNKNOWN,
                 ),
                 ProjectedFragmentBlock(
                     block_id="dispatcher",
@@ -494,6 +502,8 @@ class _FragmentBackend:
                     predecessors=(),
                     physical_position=4,
                     adjacent_fallthrough_target_id=None,
+                    terminator_ea=None,
+                    terminator_kind=InsnKind.UNKNOWN,
                 ),
             ),
             identity_bindings=(

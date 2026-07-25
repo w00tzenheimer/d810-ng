@@ -45,7 +45,7 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
 )
 from d810.ir.block_identity import BlockHandleProvenance
 from d810.ir.expressions import ValueOpKind
-from d810.ir.flowgraph import BlockKind, InsnSnapshot
+from d810.ir.flowgraph import BlockKind, InsnKind, InsnSnapshot
 from d810.ir.predicate_expressions import exact_branch_predicate_kind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind, inverted_predicate_kind
@@ -1286,6 +1286,36 @@ def _instruction_eas(
     return tuple(result)
 
 
+def _projected_terminator(
+    block,
+    instruction_origins: dict[int, int] | None = None,
+) -> tuple[int | None, InsnKind]:
+    """Project the closing live instruction into native, serial-free semantics."""
+    tail = getattr(block, "tail", None)
+    if tail is None:
+        return None, InsnKind.UNKNOWN
+    instruction_origins = instruction_origins or {}
+    live_ea = int(getattr(tail, "ea", -1) or -1)
+    native_ea = int(instruction_origins.get(live_ea, live_ea))
+    if not 0 <= native_ea < _BADADDR:
+        return None, InsnKind.UNKNOWN
+    opcode = int(getattr(tail, "opcode", -1))
+    kind = InsnKind.UNKNOWN
+    if opcode == int(ida_hexrays.m_goto):
+        kind = InsnKind.GOTO
+    elif ida_hexrays.is_mcode_jcond(opcode):
+        kind = InsnKind.COND_JUMP
+    elif opcode == int(ida_hexrays.m_ijmp):
+        kind = InsnKind.INDIRECT_JUMP
+    elif opcode == int(ida_hexrays.m_jtbl):
+        kind = InsnKind.TABLE_JUMP
+    elif opcode in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}:
+        kind = InsnKind.CALL
+    elif opcode == int(ida_hexrays.m_ret):
+        kind = InsnKind.RET
+    return native_ea, kind
+
+
 _RETURN_CARRIER_OPCODES = {
     ValueOpKind.MOVE: int(ida_hexrays.m_mov),
     ValueOpKind.ZEXT: int(ida_hexrays.m_xdu),
@@ -2518,6 +2548,8 @@ def _project_fragment(
     physical_positions: dict[str, int] = {}
     adjacent_fallthrough_target_ids: dict[str, str | None] = {}
     instruction_eas: dict[str, tuple[int, ...]] = {}
+    terminator_eas: dict[str, int | None] = {}
+    terminator_kinds: dict[str, InsnKind] = {}
     for block_id, block in live_by_id.items():
         successors[block_id] = [
             ids_by_serial.get(
@@ -2546,6 +2578,13 @@ def _project_fragment(
             )
         )
         instruction_eas[block_id] = _instruction_eas(
+            block,
+            state.instruction_origins_by_block_id.get(block_id),
+        )
+        (
+            terminator_eas[block_id],
+            terminator_kinds[block_id],
+        ) = _projected_terminator(
             block,
             state.instruction_origins_by_block_id.get(block_id),
         )
@@ -2592,6 +2631,8 @@ def _project_fragment(
                     physical_positions[helper_id] = insertion_position
                     adjacent_fallthrough_target_ids[helper_id] = None
                     instruction_eas[helper_id] = ()
+                    terminator_eas[helper_id] = None
+                    terminator_kinds[helper_id] = InsnKind.UNKNOWN
                     flag_write_eas[helper_id] = frozenset()
                     successors[helper_id] = [root_id]
                     predecessors[helper_id] = [predecessor_id]
@@ -2622,6 +2663,8 @@ def _project_fragment(
             predecessors=tuple(predecessors[block_id]),
             physical_position=physical_positions[block_id],
             adjacent_fallthrough_target_id=(adjacent_fallthrough_target_ids[block_id]),
+            terminator_ea=terminator_eas[block_id],
+            terminator_kind=terminator_kinds[block_id],
             instruction_eas=instruction_eas[block_id],
             flag_write_eas=flag_write_eas[block_id],
         )

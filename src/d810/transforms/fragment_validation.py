@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from d810.ir.block_identity import StableBlockIdentity
-from d810.ir.flowgraph import BlockKind
+from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.fragment_plan import (
     FragmentBlockRole,
@@ -96,6 +96,8 @@ class ProjectedFragmentBlock:
     predecessors: tuple[str, ...]
     physical_position: int
     adjacent_fallthrough_target_id: str | None
+    terminator_ea: int | None
+    terminator_kind: InsnKind
     instruction_eas: tuple[int, ...] = ()
     flag_write_eas: frozenset[int] = frozenset()
 
@@ -130,6 +132,19 @@ class ProjectedFragmentBlock:
         )
         if not flag_write_eas.issubset(instruction_eas):
             raise ValueError("projected flag writes must be projected instructions")
+        terminator_ea = (
+            None
+            if self.terminator_ea is None
+            else _native_ea(self.terminator_ea, "projected terminator")
+        )
+        if not isinstance(self.terminator_kind, InsnKind):
+            raise TypeError("projected terminator requires an InsnKind")
+        if terminator_ea is not None and (
+            not instruction_eas or terminator_ea != instruction_eas[-1]
+        ):
+            raise ValueError(
+                "projected terminator must be the final projected instruction"
+            )
         object.__setattr__(self, "block_id", block_id)
         object.__setattr__(self, "successors", successors)
         object.__setattr__(self, "predecessors", predecessors)
@@ -141,6 +156,7 @@ class ProjectedFragmentBlock:
         )
         object.__setattr__(self, "instruction_eas", instruction_eas)
         object.__setattr__(self, "flag_write_eas", flag_write_eas)
+        object.__setattr__(self, "terminator_ea", terminator_ea)
 
 
 @dataclass(frozen=True, slots=True)
