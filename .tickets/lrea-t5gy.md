@@ -5460,3 +5460,59 @@ not yet integrated. The next authorized slice is generation poisoning at the
 first SDK write, the shared poison latch, lifecycle-controlled bounded restart,
 and monotonic transaction-authority diagnostics. Rhad must remain paused until
 that slice is green and committed.
+
+**2026-07-25T15:06:49-0700 — divergent-generation poison and restart authority**
+
+Rhad composition remains paused at the exact C2/C3 boundary, and no donor
+commit was merged or cherry-picked. Functional commit `ab366f4da` ports the
+post-write failure authority as one coupled runtime slice; formatting-only
+commit `7eb3b6213` contains the separately requested repository-wide Ruff
+formatting result.
+
+The gateway now crosses an explicit irreversible boundary immediately before
+the first SDK write. Any later failure poisons the shared live-MBA identity
+generation, preserves the first typed failure and optional INTERR, emits the
+monotonic `poisoned_restart_required` terminal phase, invalidates planned
+creation witnesses, and performs only transaction-local logical abort. It does
+not attempt physical graph rollback, cleanup, live lookup, or reuse after
+divergence. Every sibling gateway over the same identity index rejects the
+poisoned generation.
+
+The session lifecycle now owns one bounded poisoned-generation recovery retry,
+including the case where an ordinary evidence redo was already consumed. The
+flowchart hook consumes that authority as exactly one `MERR_REDO`; a second
+distinct same-epoch poison becomes terminal exhaustion and the decompile
+controller refuses the poisoned output. Only genuinely changed portable facts
+open a fresh evidence epoch. PREOPT dispatch and frontend normalization
+propagate typed poison instead of swallowing it or claiming success.
+
+Transaction diagnostics now persist the complete ordered
+`planned -> projected -> preflighted -> bound -> realizing -> observed ->
+committed` success timeline or one typed clean/poison terminal failure. The
+first failure obligation, phase, reason, INTERR, mutation-start flag, and
+invalidated creation refs survive SQLite close and reopen and cannot be
+overwritten by later cleanup failures.
+
+Verification at `7eb3b6213`:
+
+- focused gateway, identity, lifecycle, diagnostic, semantic-backend, and
+  ledger gate: 381 passed;
+- semantic-fragment backend alone: 108 passed;
+- executable parity ledger: PASS with zero errors;
+- strict parity gate: intentionally INCOMPLETE with 26 guarantees pending;
+- Ruff lint and repository-wide formatting: clean;
+- ast-grep: clean;
+- import-linter: all 14 contracts kept;
+- compile and diff checks: clean;
+- graphify refresh: complete with only the pre-existing skill-version warning.
+
+The ledger now accepts partial-write poisoning, the shared generation latch,
+lifecycle poison restart, retry exhaustion, changed-facts epoch reset, ordered
+transaction phase events, file-backed attempt persistence, and monotonic first
+failure. The next authorized slice is typed `FragmentPlan -> PatchPlan`
+lowering, final boundary binding, planned helper identities with creation
+witnesses, and one shared coordinator as the sole production mutation entrypoint.
+Alternative and serial-shaped execution paths must be deleted with no
+compatibility layer. Rhad remains paused until the remaining non-semantic donor
+rows, the focused transaction gate, and one reconstructible creation-witness C5
+transaction are accepted together at a clean SHA.
