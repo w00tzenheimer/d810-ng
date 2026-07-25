@@ -346,9 +346,7 @@ def test_every_plan_created_block_requires_a_plan_ref_creation_witness() -> None
     block_id_annotation = typing.get_type_hints(PatchBlockSpec)["block_id"]
     assert block_id_annotation is PlanBlockRef
 
-    source = (SRC_ROOT / "hexrays/ir/mba_identity_index.py").read_text(
-        encoding="utf-8"
-    )
+    source = (SRC_ROOT / "hexrays/ir/mba_identity_index.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     index_class = next(
         node
@@ -411,9 +409,7 @@ def test_semantic_sdk_creation_sites_are_exhaustive_and_receipt_backed() -> None
         if isinstance(node, ast.ClassDef) and node.name == "DeferredGraphModifier"
     )
     methods = {
-        node.name: node
-        for node in modifier.body
-        if isinstance(node, ast.FunctionDef)
+        node.name: node for node in modifier.body if isinstance(node, ast.FunctionDef)
     }
     sdk_names = {"copy_block_keep", "create_standalone_block"}
     creation_sites: set[tuple[str, str]] = set()
@@ -460,9 +456,7 @@ def test_semantic_sdk_creation_sites_are_exhaustive_and_receipt_backed() -> None
     assert "bind_reserved_plan_block" in called_methods(
         "_build_fallthrough_goto_helper"
     )
-    assert "reserve_plan_block" in called_methods(
-        "_stage_semantic_fallthrough_helper"
-    )
+    assert "reserve_plan_block" in called_methods("_stage_semantic_fallthrough_helper")
 
 
 def test_synthetic_identity_is_nominal_not_derived_from_live_coordinates() -> None:
