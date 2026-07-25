@@ -631,6 +631,46 @@ def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() 
     }
 
 
+def test_canonical_candidate_preserves_call_backed_transfer_authority() -> None:
+    route = PortableStateWriteRouteEvidence(
+        write_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40B469, 0x40B46A),),
+            native_key=NATIVE_KEY,
+        ),
+        delivery_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40B4BA, 0x40B4BB),),
+            native_key=NATIVE_KEY,
+        ),
+        source_write_ea=0x40B469,
+        delivery_ea=0x40B4BA,
+        delivery_region_start_ea=0x40B4BA,
+        delivery_region_end_ea=0x40B4C5,
+        corridor_instruction_eas=(0x40B469, 0x40B49E, 0x40B4BA),
+        state_var_reg=20,
+        state_constant=0xBD9A2C2A,
+        target_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40C592, 0x40C593),),
+            native_key=NATIVE_KEY,
+        ),
+        target_ea=0x40C592,
+        authority_transfer_ea=0x40B4C3,
+        preserved_call_instruction_eas=(0x40B49E,),
+        proof_kind=StateWriteRouteProofKind.STATE_ASSIGNMENT,
+        delivery_kind=StateWriteRouteDeliveryKind.DIRECT_TARGET,
+    )
+    state = NativePreanalysisSessionState()
+    assert state.merge_state_write_routes(NATIVE_KEY, (route,))
+
+    evidence = state.canonical_semantic_candidate_evidence_for(NATIVE_KEY)
+
+    assert evidence is not None
+    (proof,) = evidence.route_proofs
+    assert proof.source_identity == route.delivery_identity
+    assert proof.state_write is not None
+    assert proof.state_write.authority_transfer_ea == 0x40B4C3
+    assert proof.state_write.preserved_call_instruction_eas == (0x40B49E,)
+
+
 def test_canonical_semantic_evidence_groups_terminal_carrier_with_its_route() -> None:
     capture_identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x40C7E5, 0x40C7F4),),
