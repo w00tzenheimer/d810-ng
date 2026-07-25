@@ -2683,3 +2683,38 @@ payload. Fix snapshot-scoped fact-consumer deduplication, rerun the exact
 canary, and continue from the first generation-2 native-EA-anchored rejection
 stored in the DB. Do not infer it from the false-loop text, broaden the work
 item, or claim C6.
+
+**2026-07-25T02:40:23Z**
+
+Commits `b40861d9f` and `149abd1f6` make late-bound fact-consumer deduplication
+snapshot-scoped and isolate Ruff's reflow. Exact duplicate observations still
+collapse within one snapshot, while the same fact tuple at a later maturity
+snapshot retains its newer reason and payload. The focused diagnostic/runtime
+suite is 106/106 green; pre-commit architecture and import gates pass.
+
+The mandatory cache-disabled A560 canary returned normally in 31.39 seconds
+with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-contextual-redo-v5.txt`; primary DB:
+`.tmp/rhad-a560-v33-contextual-redo-v5/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-contextual-redo-v5/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains one false `while ( 1 )`; this is not A560 acceptance.
+
+The highest completed level remains C5 through generation-2 receipt event
+287. The first post-C5 obligation is now explicit at snapshot 11 /
+`MMAT_CALLS`: `canonical_route:0x40B6C0` is declined for
+`published_imported_boundary_topology_unresolved`. Its generation-2 payload
+names imported boundary
+`native[0x40B6C0-0x40B6CA;exact=0x40B6C0,0x40B6C2,0x40B6C8]`, unique live
+owner `blk63@0x40A560`, and receipt-backed operation
+`native-contextual-indirect-transfer@0x40B6C8:0x40B6D4`. This is distinct from
+the generation-1 unresolved `native-body-edge@0x40B6C0` row at snapshot 3.
+
+Continue with a narrow receipt-authority rule: a uniquely rebound published
+boundary may close canonical target traversal only when its exact nonterminal
+operation was selected by the current normalization work-item receipt and is
+already a complete semantic direct or conditional rewrite. Keep rejecting an
+unselected native-body edge, partial conditional, ambiguous owner, or stale
+generation. Prove this red/green in the canonical transform before another
+canary; do not reimport the whole successor closure or broaden toward 91
+routes.
