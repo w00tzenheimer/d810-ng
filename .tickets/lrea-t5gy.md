@@ -5136,3 +5136,30 @@ projected fragment or detached MBA, prove the resulting `m_goto` and target
 against the pinned reference oracle, and only then select the smallest
 entry-connectable closed fragment. Do not widen to the 91-route set or expose a
 live root first.
+
+**2026-07-25T17:49:31Z — portable-CFG integration baseline**
+
+The amended execution plan continues this ticket from the committed C3
+checkpoint in the isolated worktree
+`/Users/mahmoud/src/idapro/d810/.worktrees/lrea-portable-cfg-integration` on
+branch `diff/lrea-portable-cfg-integration`. The target is clean at
+`d07b8dc9db20692f67464909c88beda6a03449be`; the read-only architectural donor
+`/Users/mahmoud/src/idapro/d810/.worktrees/portable-cfg-transactions` is clean
+at `ab769f182942f83191d883151d74b78fecac43cb`. Neither existing worktree was
+modified, and the donor will be adapted component by component rather than
+merged, rebased, or cherry-picked wholesale.
+
+Docker 29.6.2 is responsive, and the pinned image
+`d810-idapro-9.3-test-runtime:py313-v1` resolves to
+`sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a`.
+The required lifecycle baseline is 105/105 green across canonical fragment,
+detached-route oracle, canonical-lowering, and frontend-normalization tests.
+
+The latest authority DB remains the read-only v21 artifact at
+`/Users/mahmoud/src/idapro/d810/.worktrees/lifecycle-resolver-evidence-authority/.tmp/rhad-a560-v33-detached-c3-v21/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+Highest accepted A560 level remains C3, and the first failed C4 obligation is
+`canonical_detached_direct_route_projection_missing` at stable rewrite anchor
+`0x40BB63`. The next implementation phase is the plan-neutral portable
+transaction/projection foundation; C4 must remain mutation-free with respect
+to the live MBA, and `DetachedDirectRoutePlan` remains publication-ineligible
+C3 authority.
