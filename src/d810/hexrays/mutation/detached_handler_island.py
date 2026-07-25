@@ -1550,7 +1550,10 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         delivery_region = rewrite.delivery_region
         checks = (
             ("source_split_validated", split_plan.cut_index >= 0),
-            ("imported_envelope_owned", len(join_matches) == 1),
+            (
+                "imported_envelope_owned",
+                not relocated_eas or len(join_matches) == 1,
+            ),
             ("relocated_size_exact", raw_tail_size == relocated_size),
             (
                 "relocated_inventory_complete",

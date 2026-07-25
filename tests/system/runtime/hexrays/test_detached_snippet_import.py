@@ -1977,6 +1977,94 @@ def test_preopt_direct_transfer_rejects_corridor_outside_native_body() -> None:
 
 
 @pytest.mark.parametrize(
+    ("normalization_start_ea", "relocated_instruction_eas", "expected_failure"),
+    (
+        (0x3610, (), None),
+        (0x360C, (0x3614,), "imported_envelope_owned"),
+    ),
+    ids=("zero-length-tail", "unowned-relocated-tail"),
+)
+def test_preopt_split_direct_requires_join_identity_only_for_relocated_tail(
+    monkeypatch,
+    normalization_start_ea,
+    relocated_instruction_eas,
+    expected_failure,
+) -> None:
+    normalization = FragmentComputedBranchNormalization(
+        predicate_kind=PredicateKind.SLT,
+        normalization_start_ea=normalization_start_ea,
+        condition_producer_ea=0x3608,
+        unresolved_transfer_ea=0x3618,
+        relocated_instruction_eas=relocated_instruction_eas,
+    )
+    rewrite = FragmentDirectTransferRewrite(
+        route_proof_id="proof:normalized-direct",
+        owner_identity=_direct_rewrite_owner_identity(0x3604, 0x3610),
+        owner_anchor_ea=0x3604,
+        rewrite_anchor_ea=0x3610,
+        delivery_region=NativeEaInterval(normalization_start_ea, 0x3619),
+        proof_corridor_instruction_eas=(0x3604, 0x3608, 0x3610),
+        superseded_instruction_eas=(0x3610,),
+        source_computed_branch_normalization=normalization,
+        source_predicate_anchor_ea=0x3610,
+    )
+    native_body, operation, matched = _direct_transfer_preflight_case(
+        rewrite=rewrite,
+        instructions=(
+            _Instruction(ida_hexrays.m_mov, 0x3604),
+            _Instruction(ida_hexrays.m_sets, 0x3608),
+            _Instruction(ida_hexrays.m_jcnd, 0x3610),
+        ),
+    )
+    template_block = matched[operation.source_block_id]
+    template = SimpleNamespace(blocks=(template_block,))
+    source_proof = detached_handler_island._computed_branch_source_proof(operation)
+    assert source_proof is not None
+    monkeypatch.setattr(
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer,
+        "_preflight_split_conditional_select_normalization",
+        staticmethod(
+            lambda _template, _template_block, _native_body, _source_proof: (
+                SimpleNamespace(cut_index=2)
+            )
+        ),
+    )
+    materializer = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=object(),
+        function_ea=0xB000,
+    )
+
+    if expected_failure is not None:
+        with pytest.raises(
+            detached_handler_island.SemanticFragmentBackendRejected,
+            match=expected_failure,
+        ):
+            materializer._preflight_split_normalized_direct_transfer_rewrite(
+                template=template,
+                native_body=native_body,
+                block_id=operation.source_block_id,
+                template_block=template_block,
+                source_proof=source_proof,
+                operation=operation,
+                rewrite=rewrite,
+            )
+        return
+
+    plan = materializer._preflight_split_normalized_direct_transfer_rewrite(
+        template=template,
+        native_body=native_body,
+        block_id=operation.source_block_id,
+        template_block=template_block,
+        source_proof=source_proof,
+        operation=operation,
+        rewrite=rewrite,
+    )
+
+    assert plan.cut_index == 2
+    assert plan.relocated_instructions == ()
+
+
+@pytest.mark.parametrize(
     ("semantic_predicate", "expected_branch_opcode"),
     (
         (PredicateKind.EQ, ida_hexrays.m_jnz),
