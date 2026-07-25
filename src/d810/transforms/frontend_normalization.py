@@ -1089,6 +1089,8 @@ def _projected_route_corridor_serials(
 def plan_frontend_computed_branch_normalization(
     graph: FlowGraph,
     evidence: FrontendNormalizationEvidence,
+    *,
+    detached_import_request: DetachedSemanticClosureImportRequest | None = None,
 ) -> FragmentPlan | None:
     """Build one closed, atomic normalization plan or abstain without mutation."""
     if not isinstance(graph, FlowGraph):
@@ -1098,7 +1100,21 @@ def plan_frontend_computed_branch_normalization(
             "frontend branch normalization requires portable normalization evidence"
         )
 
-    import_request = plan_detached_semantic_closure_import(graph, evidence)
+    import_request = detached_import_request
+    if import_request is None:
+        import_request = plan_detached_semantic_closure_import(graph, evidence)
+    elif not isinstance(import_request, DetachedSemanticClosureImportRequest):
+        raise TypeError("frontend normalization import request is not portable")
+    elif (
+        import_request.native_key != evidence.native_key
+        or int(import_request.generation) != int(evidence.generation)
+        or import_request.atomic_group_id != evidence.atomic_group_id
+        or import_request.semantic_closure != evidence.semantic_closure
+        or import_request.native_cfg != evidence.native_cfg
+    ):
+        raise FrontendNormalizationEvidenceRejected(
+            "frontend normalization import request authority drifted"
+        )
     live_bindings: list[_BoundTransferProof] = []
     imported_bindings: list[_ImportedTransferProof] = []
     for proof in evidence.transfer_proofs:
@@ -1713,6 +1729,12 @@ def plan_frontend_computed_branch_normalization(
             for imported_block_id in (imported_id_for_anchor(int(seed.entry_ea)),)
             if imported_block_id is not None
         )
+        semantic_entry_block_ids.update(
+            imported_block_id
+            for required_entry_ea in import_request.required_entry_eas
+            for imported_block_id in (imported_id_for_anchor(required_entry_ea),)
+            if imported_block_id is not None
+        )
         entry_block_ids = tuple(
             imported_ids[entry_ea]
             for entry_ea in sorted(imported_native_blocks)
@@ -2101,18 +2123,30 @@ def _select_frontend_root_component(
 def plan_next_frontend_normalization_work_item(
     graph: FlowGraph,
     evidence: FrontendNormalizationEvidence,
+    *,
+    detached_import_request: DetachedSemanticClosureImportRequest | None = None,
 ) -> FragmentPlan | None:
     """Plan one connected normalization publication without claiming its siblings."""
-    generation_plan = plan_frontend_normalization_generation(graph, evidence)
+    generation_plan = plan_frontend_normalization_generation(
+        graph,
+        evidence,
+        detached_import_request=detached_import_request,
+    )
     return None if generation_plan is None else generation_plan.work_item_plan
 
 
 def plan_frontend_normalization_generation(
     graph: FlowGraph,
     evidence: FrontendNormalizationEvidence,
+    *,
+    detached_import_request: DetachedSemanticClosureImportRequest | None = None,
 ) -> FrontendNormalizationGenerationPlan | None:
     """Retain complete intent while selecting one connected publication."""
-    complete_plan = plan_frontend_computed_branch_normalization(graph, evidence)
+    complete_plan = plan_frontend_computed_branch_normalization(
+        graph,
+        evidence,
+        detached_import_request=detached_import_request,
+    )
     if complete_plan is None:
         return None
     return FrontendNormalizationGenerationPlan(

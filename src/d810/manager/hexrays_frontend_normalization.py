@@ -120,6 +120,11 @@ def run_live_frontend_normalization(
         mutation_gateway=mutation_gateway,
         semantic_native_body_materializer=(semantic_native_body_materializer),
     )
+    from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+        resolver_session_state,
+    )
+
+    resolver_state = resolver_session_state(session)
     try:
         result = run_frontend_normalization_pipeline(
             source=source,
@@ -132,6 +137,9 @@ def run_live_frontend_normalization(
             plan_authority=(session.frontend_normalization_plan_authority),
             lifecycle_state=session.native_preanalysis,
             native_key=session.native_key,
+            reference_oracle_provider=(
+                resolver_state.semantic_route_reference_oracle_provider
+            ),
         )
     except (FrontendNormalizationEvidenceRejected, FragmentPlanRejected) as exc:
         reason = str(exc)

@@ -14,6 +14,9 @@ from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
 )
 from d810.capabilities.resolver import CapabilitySet
+from d810.capabilities.semantic_routes import (
+    SemanticRouteReferenceOracleCapability,
+)
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.flowgraph import FlowGraph
@@ -206,6 +209,7 @@ def run_frontend_normalization_pipeline(
     plan_authority: SessionFrontendNormalizationPlanAuthority,
     lifecycle_state: NativePreanalysisSessionState,
     native_key: NativePreanalysisKey,
+    reference_oracle_provider: SemanticRouteReferenceOracleCapability | None = None,
     project_config: object | None = None,
     pass_manager: FunctionPassManager | None = None,
 ) -> FrontendNormalizationRunResult:
@@ -255,16 +259,22 @@ def run_frontend_normalization_pipeline(
 
     manager = pass_manager if pass_manager is not None else FunctionPassManager()
     manager.reset_func(function_ea)
+    capabilities = CapabilitySet().with_capability(
+        FrontendNormalizationEvidenceCapability,
+        _FixedEvidenceProvider(current_evidence),
+    )
+    if reference_oracle_provider is not None:
+        capabilities = capabilities.with_capability(
+            SemanticRouteReferenceOracleCapability,
+            reference_oracle_provider,
+        )
     final_graph = manager.run(
         source=source,
         family=None,
         backend=backend,
         project_config=project_config,
         maturity=IRMaturity.CANONICAL,
-        capabilities=CapabilitySet().with_capability(
-            FrontendNormalizationEvidenceCapability,
-            _FixedEvidenceProvider(current_evidence),
-        ),
+        capabilities=capabilities,
         pipeline_v2_specs=standard_frontend_normalization_passes(),
     )
     if not isinstance(final_graph, FlowGraph):

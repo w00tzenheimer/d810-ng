@@ -31,6 +31,15 @@ from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
 )
 from d810.capabilities.resolver import CapabilitySet
+from d810.capabilities.semantic_routes import (
+    SemanticRouteReferenceOracleCapability,
+)
+from d810.core.semantic_route_oracle import (
+    ReferenceRouteOracleSelection,
+    ReferenceRouteRewrite,
+    RouteOracleRun,
+    SemanticTransferKind,
+)
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import (
@@ -246,6 +255,50 @@ def _evidence(
         transfer_proofs=(_conditional_proof(provenance=provenance),),
         semantic_closure=closure,
         native_cfg=native_cfg,
+    )
+
+
+def _reference_direct_route() -> ReferenceRouteRewrite:
+    return ReferenceRouteRewrite(
+        route_id="test:0x1000:flow_route:0x1418",
+        function_ea=0x1000,
+        owner_ea=0x1410,
+        rewrite_anchor_ea=0x1418,
+        corridor=((0x1400, 0x1420),),
+        reference_phase="flow_route",
+        original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        final_transfer_kind=SemanticTransferKind.DIRECT,
+        direct_target_ea=0x1600,
+        reference_ledger_identity="flow_route:0x1418",
+    )
+
+
+def _reference_route_closure() -> tuple[NativeSemanticClosure, NativeCfg]:
+    return (
+        NativeSemanticClosure(
+            included_block_eas=(0x1400, 0x1600),
+            native_ranges=(
+                NativeRange(0x1400, 0x1420),
+                NativeRange(0x1600, 0x1610),
+            ),
+            proven_internal_edges=(),
+            abstentions=(),
+            seed_provenance=(),
+        ),
+        NativeCfg(
+            {
+                0x1400: NativeBlock(
+                    start_ea=0x1400,
+                    end_ea=0x1420,
+                    terminal=NativeTerminalKind.RETURN,
+                ),
+                0x1600: NativeBlock(
+                    start_ea=0x1600,
+                    end_ea=0x1610,
+                    terminal=NativeTerminalKind.RETURN,
+                ),
+            }
+        ),
     )
 
 
@@ -665,6 +718,21 @@ def test_import_request_names_missing_source_and_destination_roots() -> None:
     assert request is not None
     assert request.required_entry_eas == (0x1100, 0x1300)
     assert request.proof_ids == ("conditional@0x1101",)
+
+
+def test_import_request_adds_reference_corridor_and_target_roots() -> None:
+    closure, native_cfg = _reference_route_closure()
+    route = _reference_direct_route()
+
+    request = plan_detached_semantic_closure_import(
+        _graph(faithful=True),
+        _evidence(closure=closure, native_cfg=native_cfg),
+        reference_routes=(route,),
+    )
+
+    assert request is not None
+    assert request.required_entry_eas == (0x1400, 0x1600)
+    assert request.proof_ids == (route.route_id,)
 
 
 def test_next_work_item_selects_one_connected_missing_body_component() -> None:
@@ -2575,6 +2643,91 @@ def test_resolve_pass_publishes_typed_portable_evidence_only() -> None:
     assert result.evidence_outputs == {
         NATIVE_INDIRECT_TRANSFER_EVIDENCE: evidence,
     }
+
+
+def test_import_pass_consumes_exact_reference_route_scope() -> None:
+    graph = _graph(faithful=True)
+    closure, native_cfg = _reference_route_closure()
+    evidence = _evidence(closure=closure, native_cfg=native_cfg)
+    facts = AnalysisManager(graph)
+    facts.put_analysis(FRONTEND_NORMALIZATION_EVIDENCE, evidence)
+    route = _reference_direct_route()
+    selection = ReferenceRouteOracleSelection(
+        run=RouteOracleRun(
+            run_id="test-reference-detached-import",
+            function_ea=graph.func_ea,
+            fixture_sha256="a" * 64,
+            reference_binary_sha256="b" * 64,
+            candidate_binary_sha256="a" * 64,
+            reference_commit="deadbeef",
+            runtime_image="test-image",
+            runtime_image_id="sha256:" + "c" * 64,
+            cache_disabled=True,
+        ),
+        publication_root_ea=route.owner_ea,
+        routes=(route,),
+    )
+
+    class _ReferenceOracleProvider:
+        def reference_oracle_scope_for(self, function_ea: int, native_key):
+            if int(function_ea) == graph.func_ea and native_key == NATIVE_KEY:
+                return selection
+            return None
+
+        def reference_oracle_for(
+            self,
+            function_ea: int,
+            native_key,
+            rewrite_anchor_eas: tuple[int, ...],
+        ):
+            return None
+
+    result = ImportDetachedSemanticClosure().run(
+        _context(
+            graph,
+            facts=facts,
+            capabilities=CapabilitySet().with_capability(
+                SemanticRouteReferenceOracleCapability,
+                _ReferenceOracleProvider(),
+            ),
+        )
+    )
+
+    request = result.analysis_outputs[DETACHED_SEMANTIC_CLOSURE_IMPORT]
+    assert request.required_entry_eas == (0x1400, 0x1600)
+    assert request.proof_ids == (route.route_id,)
+
+
+def test_normalize_pass_retains_reference_roots_only_in_complete_intent() -> None:
+    graph = _graph(faithful=False)
+    closure, native_cfg = _reference_route_closure()
+    evidence = _evidence(closure=closure, native_cfg=native_cfg)
+    route = _reference_direct_route()
+    request = plan_detached_semantic_closure_import(
+        graph,
+        evidence,
+        reference_routes=(route,),
+    )
+    assert request is not None
+    facts = AnalysisManager(graph)
+    facts.put_analysis(FRONTEND_NORMALIZATION_EVIDENCE, evidence)
+    facts.put_analysis(DETACHED_SEMANTIC_CLOSURE_IMPORT, request)
+
+    result = NormalizeComputedBranch().run(_context(graph, facts=facts))
+
+    work_item = result.fragment_plan
+    assert work_item is not None
+    assert not work_item.native_bodies
+    complete_plan = result.analysis_outputs[FRONTEND_NORMALIZATION_PLAN_INTENT]
+    imported = tuple(
+        block
+        for block in complete_plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+    )
+    assert tuple(block.semantic_anchor_ea for block in imported) == (0x1400, 0x1600)
+    (native_body,) = complete_plan.native_bodies
+    assert native_body.entry_block_ids == tuple(block.block_id for block in imported)
+    assert native_body.proof_ids == (route.route_id,)
 
 
 def test_import_and_normalize_passes_consume_the_resolved_analysis() -> None:

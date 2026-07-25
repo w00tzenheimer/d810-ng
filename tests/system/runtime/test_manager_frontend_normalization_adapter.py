@@ -59,6 +59,10 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
     monkeypatch,
 ) -> None:
     session = _session()
+    reference_oracle_provider = object()
+    resolver_session_state(
+        session
+    ).semantic_route_reference_oracle_provider = reference_oracle_provider
     session.native_preanalysis.evidence_generation = 3
     session.native_preanalysis.portable_evidence_ready_generation = 3
     mba = SimpleNamespace(
@@ -126,6 +130,7 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
     assert pipeline_args["backend"] is backend
     assert pipeline_args["lifecycle_state"] is session.native_preanalysis
     assert pipeline_args["native_key"] == NATIVE_KEY
+    assert pipeline_args["reference_oracle_provider"] is reference_oracle_provider
     assert (
         pipeline_args["plan_authority"] is session.frontend_normalization_plan_authority
     )
