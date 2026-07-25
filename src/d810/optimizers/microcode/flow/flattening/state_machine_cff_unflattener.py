@@ -1326,24 +1326,78 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if rejection.anchor_ea is not None
             else int(getattr(mba, "entry_ea", 0) or 0)
         )
+        rejection_payload = dict(rejection.payload)
+        raw_attempts = rejection_payload.pop("composition_attempts", ())
+        attempts = (
+            tuple(raw_attempts)
+            if isinstance(raw_attempts, (tuple, list))
+            else ()
+        )
+        maturity = maturity_to_string(int(getattr(mba, "maturity", 0)))
+        records: list[FactConsumerRecord] = []
+        for attempt_index, raw_attempt in enumerate(attempts):
+            if not isinstance(raw_attempt, ABCMapping):
+                continue
+            attempt = dict(raw_attempt)
+            kind = str(attempt.get("kind", "")).strip()
+            outcome = str(attempt.get("outcome", "")).strip()
+            if not kind or outcome not in {"accepted", "rejected"}:
+                continue
+            route_proof_ids = attempt.get("route_proof_ids")
+            boundary_anchor = attempt.get("boundary_anchor_ea")
+            rejection_anchor = attempt.get("rejection_anchor_ea")
+            if (
+                isinstance(route_proof_ids, (tuple, list))
+                and route_proof_ids
+                and isinstance(route_proof_ids[0], str)
+                and route_proof_ids[0]
+            ):
+                attempt_identity = route_proof_ids[0]
+            elif isinstance(boundary_anchor, str) and boundary_anchor:
+                attempt_identity = boundary_anchor
+            elif isinstance(rejection_anchor, str) and rejection_anchor:
+                attempt_identity = rejection_anchor
+            else:
+                attempt_identity = f"index-{attempt_index}"
+            reason_code = attempt.get("reason_code")
+            reason = (
+                str(reason_code)
+                if outcome == "rejected"
+                and isinstance(reason_code, str)
+                and reason_code
+                else "composition_plan_available"
+            )
+            records.append(
+                FactConsumerRecord(
+                    consumer="state_machine_cff_unflattener",
+                    strategy="canonical_semantic_composition_attempt",
+                    fact_id=(
+                        f"canonical_composition_attempt:{kind}:"
+                        f"{attempt_identity}"
+                    ),
+                    maturity=maturity,
+                    decision=outcome,
+                    reason=reason,
+                    payload={"attempt_index": attempt_index, **attempt},
+                )
+            )
         payload = {
             "anchor_ea": f"0x{anchor_ea:X}",
             "detail": str(rejection),
-            **dict(rejection.payload),
+            **rejection_payload,
         }
-        report(
-            (
-                FactConsumerRecord(
-                    consumer="state_machine_cff_unflattener",
-                    strategy="canonical_semantic_composition",
-                    fact_id=f"canonical_route:0x{anchor_ea:X}",
-                    maturity=maturity_to_string(int(getattr(mba, "maturity", 0))),
-                    decision="declined",
-                    reason=rejection.reason_code,
-                    payload=payload,
-                ),
+        records.append(
+            FactConsumerRecord(
+                consumer="state_machine_cff_unflattener",
+                strategy="canonical_semantic_composition",
+                fact_id=f"canonical_route:0x{anchor_ea:X}",
+                maturity=maturity,
+                decision="declined",
+                reason=rejection.reason_code,
+                payload=payload,
             )
         )
+        report(tuple(records))
 
     def _promote_contextual_plan_after_canonical_rejection(
         self,

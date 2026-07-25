@@ -733,6 +733,56 @@ def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_orac
         ),
         "plan_id": expected_plan.plan_id,
         "route_proof_ids": ("state-assignment@0x1100",),
+        "composition_attempts": (
+            {
+                "kind": "route",
+                "outcome": "rejected",
+                "route_proof_ids": ("state-assignment@0x1100",),
+                "route_source_anchor_eas": ("0x1100",),
+                "reason_code": "published_imported_boundary_topology_unresolved",
+                "rejection_anchor_ea": "0x1200",
+                "detail": (
+                    "published imported boundary retains unresolved semantic "
+                    "topology"
+                ),
+                "rejection_payload": {
+                    "boundary_block_id": "native[0x1200-0x1201]",
+                    "incoming_operation_id": "route:state-assignment@0x1100",
+                    "incoming_source_anchor_ea": "0x1100",
+                    "incoming_source_block_id": "native[0x1100-0x1101]",
+                },
+            },
+            {
+                "boundary_anchor_ea": "0x1200",
+                "kind": "boundary",
+                "outcome": "rejected",
+                "reason_code": "published_boundary_predecessor_missing",
+                "rejection_anchor_ea": "0x1200",
+                "detail": (
+                    "published canonical boundary has no entry-connectable "
+                    "predecessor"
+                ),
+                "rejection_payload": {
+                    "incoming_predecessors": (
+                        {
+                            "block": "blk30@0x1400",
+                            "prohibited": True,
+                        },
+                    ),
+                },
+            },
+            {
+                "atomic_group_id": expected_plan.atomic_group_id,
+                "block_count": len(expected_plan.blocks),
+                "boundary_anchor_ea": "0x1100",
+                "kind": "semantic_predecessor_boundary",
+                "native_body_count": len(expected_plan.native_bodies),
+                "operation_count": len(expected_plan.operations),
+                "outcome": "accepted",
+                "plan_id": expected_plan.plan_id,
+                "root_block_ids": expected_plan.roots,
+            },
+        ),
     }
     assert len(boundary_calls) == 2
     assert boundary_calls[0][0] == (graph, normalization_plan)
