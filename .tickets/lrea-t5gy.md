@@ -3741,3 +3741,65 @@ obligation remains `canonical_boundary_detached_oracle_required@0x40AE3E`.
 Next, prove one complete one-route C5 fragment using the exact audited reference
 transaction and schema-8 comparison/receipt path; only then wire the bounded
 six-route A560 selection. Do not broaden to the 91-route publication.
+
+**2026-07-25T08:03:34Z**
+
+The required one-route C5 vertical is complete and committed without broad
+publication. Commit `3cb07358d` stamps a zero-way semantic replacement's new
+`m_goto` with its exact rewrite anchor and makes staged rollback restore
+temporary survivor protection through the sweep's proven compaction inventory,
+rather than rebinding content identity after the normalizing sweep. This
+eliminates the earlier projection mismatch and turns the missing-authority
+rejection into a clean rollback with no `INTERR 52719`; the SDK mapping for
+`52719` is the `mba_t::get_mblock` assertion `n < qty`. Commit `0b4bc7f1b` is
+the requested separate Ruff-only formatting follow-up.
+
+Commit `356bbb8f4` binds the exact cache-disabled reference transaction
+`flow_route:0x40C7F6` to the real terminal fragment
+`0x40C7F6 -> 0x40C898`. The pinned run uses fixture/candidate SHA-256
+`2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c`,
+reference binary SHA-256
+`6358957fe74360725b125bdc41b16df9952d95b338792fd3521249e5030ddd8c`,
+reference commit `21b0d4783703bc4fb6910cfae51d92cd683d2c65`, and runtime image ID
+`sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a`.
+The real Docker C5 canary is green. Log:
+`.tmp/rhad-real-fragment-c5-reference-green-v2.txt`; authoritative schema-8
+DB: `.tmp/rhad-real-fragment-c5-reference-green-v2.diag.sqlite3`.
+
+The DB records exactly one matched `DETACHED_PREPUBLICATION` comparison for
+owner `0x40C7E5`, rewrite anchor `0x40C7F6`, and ledger identity
+`flow_route:0x40C7F6`. Transaction ordering is `plan_recorded`,
+`detached_route_oracle:passed`, `fragment_staged`, prevalidation, root-group
+publication, root publication, postvalidation, and finally
+`receipt:committed`. The receipt is 7/7, both validation phases pass, root
+publication succeeds, and rollback is not attempted. This satisfies one
+complete C5 vertical fragment; it does not establish production A560 C5 or C6.
+
+Verification is green for the 90-test semantic-fragment backend file, the
+41-test portable fragment-validation file, the two focused anchor/rollback
+regressions, the exact real C5 canary, and the 54-test catalog/oracle/diagnostic/
+gateway/manager gate. Ruff is clean for the C5 test, `graphify update .`
+completed, and every commit's ast-grep, portable-shape, import-cycle, and all
+14 import-linter gates passed. The broader legacy `test_deferred_modifier.py`
+file still has 79 unrelated fake-MBA failures because those doubles lack
+`map_fict_ea`; its changed exact-anchor regression is green and this baseline
+debt was not treated as evidence for or against C5.
+
+The mandatory post-C5 cache-disabled A560 canary completed normally in 15.96
+seconds inside pytest with no worker crash or reported numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-after-one-route-c5-diag-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-after-one-route-c5-diag-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-after-one-route-c5-diag-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+The pseudocode remains the same eight-line false `while ( 1 )` stub, so this is
+not A560 acceptance.
+
+The post-C5 DB remains authoritative: frontend normalization commits 260/260,
+the production semantic comparison table has zero rows, and fact consumer
+`snapshot=3, consumer_index=2` still declines the 13-block, 10-operation,
+one-native-body, six-route boundary plan with
+`canonical_boundary_detached_oracle_required@0x40AE3E`. Production A560
+therefore remains at C3, with that C4 authority binding as the first failed
+obligation. Continue by selecting and binding exactly the audited six ledger
+routes to this bounded plan, then rerun the diagnostic canary. Do not broaden
+to the 91-route publication.
