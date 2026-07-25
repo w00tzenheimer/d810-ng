@@ -346,6 +346,51 @@ def _current_identity_inventory_for_boundary(
     return tuple(inventory)
 
 
+def _normalization_incoming_operation_inventory(
+    plan: FragmentPlan,
+    boundary_block_id: str,
+) -> tuple[dict[str, object], ...]:
+    """Describe complete plan operations that enter one unpublished block."""
+    inventory: list[dict[str, object]] = []
+    for operation in plan.operations:
+        if not any(
+            edge.target_block_id == boundary_block_id for edge in operation.edges
+        ):
+            continue
+        source = plan.block(operation.source_block_id)
+        inventory.append(
+            {
+                "operation_id": operation.operation_id,
+                "source_block_id": source.block_id,
+                "source_anchor_ea": f"0x{int(source.semantic_anchor_ea):X}",
+                "source_identity": (
+                    None
+                    if source.stable_identity is None
+                    else source.stable_identity.diagnostic_label()
+                ),
+                "edges": tuple(
+                    {
+                        "role": edge.role.value,
+                        "target_block_id": edge.target_block_id,
+                        "target_anchor_ea": (
+                            f"0x{int(plan.block(edge.target_block_id).semantic_anchor_ea):X}"
+                        ),
+                        "target_identity": (
+                            None
+                            if plan.block(edge.target_block_id).stable_identity is None
+                            else plan.block(
+                                edge.target_block_id
+                            ).stable_identity.diagnostic_label()
+                        ),
+                        "enters_boundary": edge.target_block_id == boundary_block_id,
+                    }
+                    for edge in operation.edges
+                ),
+            }
+        )
+    return tuple(inventory)
+
+
 def _portable_dispatcher_scc_witnesses(
     graph: FlowGraph,
     prohibited_serials: tuple[int, ...],
@@ -2196,6 +2241,12 @@ def compose_canonical_semantic_boundary_fragment_plan(
                         target_identity,
                         boundary_anchor_ea,
                         current_identity_by_serial=current_identity_by_serial,
+                    )
+                ),
+                "normalization_incoming_operations": (
+                    _normalization_incoming_operation_inventory(
+                        normalization_plan,
+                        target.block_id,
                     )
                 ),
             },
