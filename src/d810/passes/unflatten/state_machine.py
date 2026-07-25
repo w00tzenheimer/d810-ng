@@ -796,13 +796,14 @@ def _semantic_predecessor_boundary_anchor(
         and state_write.corridor_instruction_eas
         and int(state_write.corridor_instruction_eas[0]) == source_anchor_ea
         and int(state_write.corridor_instruction_eas[-1]) == int(proof.source_anchor_ea)
+        and int(proof.source_anchor_ea) in proof.source_identity.exact_instruction_eas
     )
     source_identity_owns_entry = bool(
-        proof.source_identity.native_ranges.contains(source_anchor_ea)
-        and (
-            source_anchor_ea in proof.source_identity.exact_instruction_eas
-            or source_is_state_write_entry
+        (
+            proof.source_identity.native_ranges.contains(source_anchor_ea)
+            and source_anchor_ea in proof.source_identity.exact_instruction_eas
         )
+        or source_is_state_write_entry
     )
     if not source_identity_owns_entry or not any(
         destination.target_identity.native_ranges.contains(boundary_anchor_ea)

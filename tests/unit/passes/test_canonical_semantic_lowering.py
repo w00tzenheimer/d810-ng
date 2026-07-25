@@ -451,15 +451,10 @@ def test_semantic_predecessor_uses_proved_state_write_block_entry() -> None:
     candidate = bound.evidence
     (proof,) = candidate.route_proofs
     delivery_ea = 0x1110
-    source_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x1100, delivery_ea + 1),),
-        native_key=NATIVE_KEY,
-        exact_instruction_eas=(delivery_ea,),
-    )
     proof = replace(
         proof,
         proof_id=f"state-assignment@0x{delivery_ea:X}",
-        source_identity=source_identity,
+        source_identity=_identity(delivery_ea),
         source_anchor_ea=delivery_ea,
         state_write=replace(
             proof.state_write,
