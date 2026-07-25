@@ -124,15 +124,9 @@ def _emit_receipted_complete_plan_intent(
                 "operation_count": len(plan.operations),
                 "imported_block_count": len(imported_blocks),
                 "native_body_count": len(plan.native_bodies),
-                "published_operation_ids": list(
-                    authority.published_operation_ids
-                ),
-                "selected_obligation_ids": list(
-                    authority.selected_obligation_ids
-                ),
-                "remaining_obligation_ids": list(
-                    authority.remaining_obligation_ids
-                ),
+                "published_operation_ids": list(authority.published_operation_ids),
+                "selected_obligation_ids": list(authority.selected_obligation_ids),
+                "remaining_obligation_ids": list(authority.remaining_obligation_ids),
                 "unreachable_obligation_ids": list(
                     authority.unreachable_obligation_ids
                 ),
