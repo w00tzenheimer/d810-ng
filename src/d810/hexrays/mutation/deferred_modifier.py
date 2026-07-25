@@ -3307,6 +3307,115 @@ class DeferredGraphModifier:
                     pending.append(operand.d)
         return calls[0] if len(calls) == 1 else None
 
+    def _semantic_edge_close_owned_call_before_continuation(
+        self,
+        *,
+        source_binding: object,
+        source: object,
+        target_binding: object,
+    ) -> bool:
+        """Split one CALLS-built staged clone at its exact analyzed call."""
+        gateway = self._mutation_gateway
+        proxy = (
+            None
+            if gateway is None
+            else gateway.identity_index.logical_proxy_for_handle(
+                source_binding.handle
+            )
+        )
+        source_version = (
+            None
+            if proxy is None
+            else proxy.resolve(transaction_id=self._semantic_fragment_transaction_id())
+        )
+        tail = getattr(source, "tail", None)
+        if (
+            source_version is None
+            or source_version.handle != source_binding.handle
+            or source_version.predecessor_version_id is None
+            or int(source.nsucc()) != 0
+            or int(getattr(source, "type", -1)) != int(ida_hexrays.BLT_1WAY)
+            or tail is None
+            or int(getattr(tail, "opcode", -1)) != int(ida_hexrays.m_goto)
+        ):
+            return False
+
+        instructions = self._block_instructions(source)
+        call_owners = tuple(
+            (index, instruction, owned_call)
+            for index, instruction in enumerate(instructions)
+            if (owned_call := self._semantic_edge_owned_call(instruction)) is not None
+        )
+        if not call_owners:
+            return False
+        if len(call_owners) != 1:
+            raise SemanticEdgeOperationRejected(
+                "CALLS-built fallthrough source has ambiguous analyzed call ownership"
+            )
+        call_index, _call_owner, call = call_owners[0]
+        call_destination = getattr(call, "d", None)
+        if call_destination is None or int(getattr(call_destination, "t", -1)) != int(
+            ida_hexrays.mop_f
+        ):
+            raise SemanticEdgeOperationRejected(
+                "CALLS-built fallthrough source call lacks analyzed authority"
+            )
+
+        source_identity = source_binding.handle.stable_identity
+        target_identity = target_binding.handle.stable_identity
+        if source_identity is None or target_identity is None:
+            raise SemanticEdgeOperationRejected(
+                "CALLS-built fallthrough split lacks portable identity authority"
+            )
+        call_native_ea = int(self.mba.map_fict_ea(int(call.ea)))
+        if call_native_ea not in source_identity.exact_instruction_eas:
+            raise SemanticEdgeOperationRejected(
+                "CALLS-built fallthrough call is not exactly owned by its source; "
+                f"call=0x{call_native_ea:X}"
+            )
+
+        suffix = instructions[call_index + 1 :]
+        if (
+            not suffix
+            or getattr(suffix[-1], "next", None) is not None
+            or int(getattr(suffix[-1], "opcode", -1))
+            != int(ida_hexrays.m_goto)
+        ):
+            raise SemanticEdgeOperationRejected(
+                "CALLS-built fallthrough source lacks one final stale goto suffix"
+            )
+        for index, instruction in enumerate(suffix):
+            opcode = int(instruction.opcode)
+            if index == len(suffix) - 1:
+                continue
+            native_ea = int(self.mba.map_fict_ea(int(instruction.ea)))
+            if (
+                not target_identity.native_ranges.contains(native_ea)
+                or ida_hexrays.is_mcode_jcond(opcode)
+                or opcode
+                in {
+                    int(ida_hexrays.m_goto),
+                    int(ida_hexrays.m_ijmp),
+                    int(ida_hexrays.m_call),
+                    int(ida_hexrays.m_icall),
+                    int(ida_hexrays.m_ret),
+                }
+                or self._semantic_edge_owned_call(instruction) is not None
+            ):
+                raise SemanticEdgeOperationRejected(
+                    "CALLS-built fallthrough suffix is not wholly owned by its "
+                    f"continuation; instruction=0x{native_ea:X} opcode={opcode}"
+                )
+
+        for instruction in suffix:
+            source.make_nop(instruction)
+            source.remove_from_block(instruction)
+        source.type = int(ida_hexrays.BLT_0WAY)
+        source.flags &= ~int(ida_hexrays.MBL_GOTO)
+        source.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+        return self._semantic_edge_owned_call(source.tail) is not None
+
     def _semantic_edge_live_binding(self, proxy):
         gateway = self._mutation_gateway
         if gateway is None or not gateway.active:
@@ -3457,6 +3566,13 @@ class DeferredGraphModifier:
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         target_binding, target = self._semantic_edge_live_binding(edge.target)
         tail = source.tail
+        if int(source.nsucc()) == 0 and self._semantic_edge_owned_call(tail) is None:
+            self._semantic_edge_close_owned_call_before_continuation(
+                source_binding=source_binding,
+                source=source,
+                target_binding=target_binding,
+            )
+            tail = source.tail
         if int(source.nsucc()) != 0 or self._semantic_edge_owned_call(tail) is None:
             raise SemanticEdgeOperationRejected(
                 "call fallthrough requires a zero-way block-closing call; "
