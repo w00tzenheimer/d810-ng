@@ -2758,3 +2758,37 @@ fragment reaches this sibling boundary, establish its reference/native route
 meaning at C1-C3, and either provide one complete semantic route proof or
 correct an over-broad component traversal. Do not bless the raw native-body
 edge, broaden publication, or reopen the now-proven `0x40B6C0` rule.
+
+**2026-07-25T02:58:59Z**
+
+Commit `4fcec4537` separates provisional component discovery from strict final
+closure. The first pass may stop at one uniquely rebound published boundary
+only long enough to discover nested state-route proof sources; after those
+routes are projected, the second pass still rejects every unresolved raw
+boundary. The upgraded nested-route regression reproduces a live imported
+dispatcher boundary, while the existing strict rejection remains green. The
+canonical transform suite is 28/28 green, Ruff has no delta, and pre-commit
+architecture/import gates pass.
+
+The mandatory cache-disabled A560 canary returned normally in 33.07 seconds
+with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-projection-boundary-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-projection-boundary-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-projection-boundary-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains one false `while ( 1 )`; this is not A560 acceptance.
+
+The production hypothesis is rejected: no available nested state-route proof
+removed the edge to `0x40A607`, so strict post-projection validation records
+the same snapshot 11 / `MMAT_CALLS` first obligation. Highest completed level
+remains C5 at generation-2 receipt event 287; the failed boundary remains
+`native[0x40A607-0x40A615;exact=0x40A607]`, uniquely rebound as
+`blk8@0x40A560`, with `native-body-edge@0x40A607`. Event 406 still reports zero
+contextual patch-plan candidates.
+
+Continue at C1, not with another boundary exception. Identify the exact
+reference routes for the semantic consumer's selected handler exits, compare
+them with the available state-write inventory, and explain why the selected
+component reaches the `0x40A607` dispatcher router after nested projection.
+Add or repair one portable semantic proof only after that parity result is
+explicit in the diagnostic DB.
