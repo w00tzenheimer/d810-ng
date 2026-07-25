@@ -874,6 +874,113 @@ def test_bounded_candidate_plan_binds_exact_reference_oracle_capability() -> Non
     assert result == bind_fragment_reference_oracle(plan, selection)
 
 
+def test_configured_reference_root_selects_exact_direct_delivery_corridor() -> None:
+    graph, bound = _graph_and_bound_evidence()
+    (direct_proof,) = bound.evidence.route_proofs
+    direct_proof = replace(
+        direct_proof,
+        state_write=replace(
+            direct_proof.state_write,
+            identity=_identity(0x1000),
+            instruction_ea=0x1000,
+            corridor_instruction_eas=(0x1000, 0x1100),
+        ),
+    )
+    candidate = replace(bound.evidence, route_proofs=(direct_proof,))
+    selection = ReferenceRouteOracleSelection(
+        run=RouteOracleRun(
+            run_id="test-distinct-owner-direct-route",
+            function_ea=graph.func_ea,
+            fixture_sha256="a" * 64,
+            reference_binary_sha256="b" * 64,
+            candidate_binary_sha256="a" * 64,
+            reference_commit="deadbeef",
+            runtime_image="test-image",
+            runtime_image_id="sha256:" + "c" * 64,
+            cache_disabled=True,
+        ),
+        publication_root_ea=0x1080,
+        routes=(
+            ReferenceRouteRewrite(
+                route_id="test:0x1000:flow_route:0x1100",
+                function_ea=graph.func_ea,
+                owner_ea=0x1080,
+                rewrite_anchor_ea=0x1100,
+                corridor=((0x1000, 0x1101),),
+                reference_phase="flow_route",
+                original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+                final_transfer_kind=SemanticTransferKind.DIRECT,
+                direct_target_ea=0x1200,
+                reference_ledger_identity="flow_route:0x1100",
+            ),
+        ),
+    )
+
+    result = state_machine_module._configured_reference_root_candidate(
+        selection,
+        candidate,
+    )
+
+    assert result is candidate
+
+
+def test_configured_reference_root_rejects_direct_delivery_corridor_drift() -> None:
+    graph, bound = _graph_and_bound_evidence()
+    (direct_proof,) = bound.evidence.route_proofs
+    direct_proof = replace(
+        direct_proof,
+        state_write=replace(
+            direct_proof.state_write,
+            identity=_identity(0x1000),
+            instruction_ea=0x1000,
+            corridor_instruction_eas=(0x1000, 0x1100),
+        ),
+    )
+    candidate = replace(bound.evidence, route_proofs=(direct_proof,))
+    selection = ReferenceRouteOracleSelection(
+        run=RouteOracleRun(
+            run_id="test-drifted-owner-direct-route",
+            function_ea=graph.func_ea,
+            fixture_sha256="a" * 64,
+            reference_binary_sha256="b" * 64,
+            candidate_binary_sha256="a" * 64,
+            reference_commit="deadbeef",
+            runtime_image="test-image",
+            runtime_image_id="sha256:" + "c" * 64,
+            cache_disabled=True,
+        ),
+        publication_root_ea=0x1080,
+        routes=(
+            ReferenceRouteRewrite(
+                route_id="test:0x1000:flow_route:0x1100",
+                function_ea=graph.func_ea,
+                owner_ea=0x1080,
+                rewrite_anchor_ea=0x1100,
+                corridor=((0x1001, 0x1101),),
+                reference_phase="flow_route",
+                original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+                final_transfer_kind=SemanticTransferKind.DIRECT,
+                direct_target_ea=0x1200,
+                reference_ledger_identity="flow_route:0x1100",
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        CanonicalSemanticFragmentRejected,
+        match="lacks one exact candidate route",
+    ) as exc_info:
+        state_machine_module._configured_reference_root_candidate(
+            selection,
+            candidate,
+        )
+
+    assert (
+        exc_info.value.reason_code
+        == "canonical_configured_reference_root_candidate_mismatch"
+    )
+
+
 def test_configured_reference_scope_drives_live_route_composition_before_boundary(
     monkeypatch,
 ) -> None:

@@ -59,6 +59,7 @@ from d810.analyses.control_flow.router_resolver import (
 from d810.analyses.control_flow.semantic_transition import resolve_state_transitions
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
+    SemanticRouteShape,
     bind_canonical_semantic_evidence,
     semantic_route_proof_reaches_consumer,
 )
@@ -1086,8 +1087,16 @@ def _configured_reference_root_candidate(
         route_index
         for route_index, proof in enumerate(evidence.route_proofs)
         if (
-            proof.state_write is not None
-            and int(proof.state_write.instruction_ea) == publication_root_ea
+            proof.shape is SemanticRouteShape.DIRECT
+            and proof.state_write is not None
+            and proof.delivery_region is not None
+            and tuple(root_route.corridor)
+            == (
+                (
+                    int(proof.state_write.corridor_instruction_eas[0]),
+                    int(proof.delivery_region.end_ea),
+                ),
+            )
             and int(proof.source_anchor_ea) == int(root_route.rewrite_anchor_ea)
             and len(proof.destinations) == 1
             and root_route.direct_target_ea is not None
