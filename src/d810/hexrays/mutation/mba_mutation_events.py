@@ -33,6 +33,9 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
 from d810.hexrays.mutation.semantic_fragment_failure import (
     MbaSemanticFragmentFailure,
 )
+from d810.hexrays.mutation.semantic_fragment_preparation import (
+    PreparedSemanticFragment,
+)
 from d810.ir.block_identity import (
     CurrentMbaIdentityBindingSnapshot,
     MbaBlockHandle,
@@ -540,6 +543,16 @@ class MbaMutationGateway:
     _active_root_publication_groups: dict[str, MbaMutationRootPublicationGroup] = field(
         default_factory=dict, init=False, repr=False
     )
+    _active_fragment_root_inventory_signature: tuple[
+        tuple[str, str, str, str, str, bool],
+        ...,
+    ] = field(default=(), init=False, repr=False)
+    _active_fragment_snapshot_id: str = field(default="", init=False, repr=False)
+    _active_prepared_semantic_fragment: PreparedSemanticFragment | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _active_fragment_effect_requirements: dict[tuple[str, str], MbaMutationPlanItem] = (
         field(default_factory=dict, init=False, repr=False)
     )
@@ -704,6 +717,9 @@ class MbaMutationGateway:
         self._active_rollback_attempted = False
         self._active_rollback_succeeded = None
         self._active_root_publication_groups.clear()
+        self._active_fragment_root_inventory_signature = ()
+        self._active_fragment_snapshot_id = ""
+        self._active_prepared_semantic_fragment = None
         self._active_fragment_effect_requirements.clear()
         self._applied_fragment_effects.clear()
         self._active_current_mba_identity_binding = None
@@ -1056,10 +1072,23 @@ class MbaMutationGateway:
         backend: object,
         plan: FragmentPlan,
         root_inventory: SemanticFragmentRootInventory,
+        transaction_attempt: TransactionAttemptId,
+        snapshot_id: str,
+        prepared_fragment: PreparedSemanticFragment,
     ) -> None:
         mba = getattr(backend, "mba", None)
         if mba is None:
             raise TypeError("semantic-fragment backend requires a live MBA")
+        if (
+            not isinstance(prepared_fragment, PreparedSemanticFragment)
+            or prepared_fragment.authority.attempt_id is not transaction_attempt
+            or prepared_fragment.authority.snapshot_id != str(snapshot_id)
+            or prepared_fragment.authority.plan_id != plan.plan_id
+            or prepared_fragment.authority.root_inventory is not root_inventory
+        ):
+            raise ValueError(
+                "prepared semantic-fragment authority differs from batch scope"
+            )
         items = self._fragment_plan_items(plan, root_inventory)
         root_publication_groups = self._fragment_root_publication_groups(
             plan,
@@ -1076,7 +1105,21 @@ class MbaMutationGateway:
             plan_items=items,
             fragment_plan=plan,
             fragment_root_publication_groups=root_publication_groups,
+            transaction_attempt=transaction_attempt,
         )
+        self._active_fragment_root_inventory_signature = tuple(
+            (
+                item.edge_id,
+                item.root_block_id,
+                item.original_block_id,
+                item.predecessor_block_id,
+                item.role.value,
+                item.requires_helper,
+            )
+            for item in root_inventory.items
+        )
+        self._active_fragment_snapshot_id = str(snapshot_id)
+        self._active_prepared_semantic_fragment = prepared_fragment
         effect_kinds = {
             "semantic_fragment_return_carrier_materialization",
             "semantic_fragment_terminal_return_materialization",

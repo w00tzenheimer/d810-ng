@@ -32,6 +32,7 @@ from d810.transforms.cfg_invariants import (
 )
 from d810.transforms.report import InvariantViolation
 from d810.ir.flowgraph import FlowGraph
+from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
 from d810.transforms.plan import PatchPlan
 
 ContractScope = str
@@ -170,6 +171,43 @@ class CfgContract:
         for op in getattr(plan, "ops", ()):
             self._collect_serials_from_object(serials, op)
         return sorted(serials)
+
+    def verify_projection(
+        self,
+        projection: CfgProjection,
+        *,
+        scope: ContractScope = "focused",
+    ) -> tuple[InvariantViolation, ...]:
+        """Verify an already-projected portable graph without applying a plan."""
+        violations = tuple(self.check_projection(projection, scope=scope))
+        if violations:
+            raise CfgContractViolationError(
+                phase="projected",
+                violations=violations,
+            )
+        return violations
+
+    def check_projection(
+        self,
+        projection: CfgProjection,
+        *,
+        scope: ContractScope = "focused",
+    ) -> list[InvariantViolation]:
+        if not isinstance(projection, CfgProjection):
+            raise TypeError("portable CFG contract requires a CfgProjection")
+        focus = (
+            None
+            if scope == "full"
+            or any(
+                isinstance(ref, PlanBlockRef) for ref in projection.focus_refs
+            )
+            else None
+        )
+        return self._check_projected(
+            projection.graph,
+            phase="projected",
+            focus_serials=focus,
+        )
 
     def verify_projected(
         self,

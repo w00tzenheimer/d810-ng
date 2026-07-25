@@ -8,6 +8,7 @@ portable validation phases succeed.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import re
 
 from d810.hexrays.mutation.fragment_publication_lifecycle import (
@@ -16,12 +17,36 @@ from d810.hexrays.mutation.fragment_publication_lifecycle import (
 from d810.hexrays.mutation.semantic_fragment_failure import (
     MbaSemanticFragmentFailure,
 )
-from d810.transforms.fragment_plan import FragmentPlan
+from d810.hexrays.mutation.semantic_fragment_preparation import (
+    PreparedSemanticFragment,
+    PreparedSemanticFragmentAuthority,
+    SemanticFragmentSnapshotPreparation,
+)
+from d810.transforms.cfg_transaction import (
+    BoundCfgTransaction,
+    CfgProjection,
+    PlanBlockRef,
+    PreparedCfgTransaction,
+    TransactionAttemptId,
+)
+from d810.transforms.contract import CfgContract, CfgContractViolationError
+from d810.transforms.fragment_plan import (
+    FragmentBlockMaterialization,
+    FragmentPlan,
+)
+from d810.transforms.fragment_projection import (
+    FragmentProjectionFailure,
+    fragment_cfg_projection,
+    project_fragment,
+)
 from d810.transforms.detached_route_oracle import (
     DetachedRouteOracleRejected,
     compare_detached_route_oracle,
 )
 from d810.transforms.fragment_validation import (
+    compare_fragment_projection_obligations,
+    FragmentValidationOutcome,
+    FragmentValidationPostcondition,
     FragmentValidationResult,
     ProjectedFragment,
     PublishedFragmentObservation,
@@ -35,7 +60,9 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
 
 _BACKEND_PORT = (
     "_plan_semantic_fragment_root_publication_inventory",
+    "_snapshot_semantic_fragment_inputs",
     "_stage_semantic_fragment",
+    "_observe_staged_semantic_fragment",
     "_semantic_fragment_current_mba_identity_binding",
     "_discard_staged_semantic_fragment",
     "_prepare_semantic_fragment_root_publication",
@@ -45,6 +72,337 @@ _BACKEND_PORT = (
     "_rollback_semantic_fragment_roots",
     "_complete_semantic_fragment_publication",
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticFragmentCfgProjection(CfgProjection):
+    """Portable CFG projection carrying exact backend preflight inputs."""
+
+    plan: FragmentPlan | None = field(default=None, repr=False, compare=False)
+    snapshot_preparation: SemanticFragmentSnapshotPreparation | None = field(
+        default=None,
+        repr=False,
+    )
+    root_inventory: SemanticFragmentRootInventory | None = None
+    semantic_projection: ProjectedFragment | None = None
+
+    def __post_init__(self) -> None:
+        CfgProjection.__post_init__(self)
+        if not isinstance(self.plan, FragmentPlan):
+            raise TypeError("semantic CFG projection requires an exact plan")
+        if not isinstance(
+            self.snapshot_preparation,
+            SemanticFragmentSnapshotPreparation,
+        ):
+            raise TypeError("semantic CFG projection requires snapshot authority")
+        if not isinstance(self.root_inventory, SemanticFragmentRootInventory):
+            raise TypeError("semantic CFG projection requires root inventory")
+        if not isinstance(self.semantic_projection, ProjectedFragment):
+            raise TypeError("semantic CFG projection requires semantic projection")
+        if (
+            self.plan.plan_id != self.plan_id
+            or self.snapshot_preparation.authority.plan_id != self.plan_id
+            or self.snapshot_preparation.authority.projection_input.snapshot_id
+            != self.snapshot_id
+            or self.root_inventory.plan_id != self.plan_id
+        ):
+            raise ValueError("semantic CFG projection authority is inconsistent")
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedSemanticCfgTransaction(PreparedCfgTransaction):
+    """Portable preflight token paired with exact semantic realization authority."""
+
+    plan: FragmentPlan | None = field(default=None, repr=False, compare=False)
+    fragment: PreparedSemanticFragment | None = field(default=None, repr=False)
+    validation: FragmentValidationResult | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        PreparedCfgTransaction.__post_init__(self)
+        if not isinstance(self.plan, FragmentPlan):
+            raise TypeError("prepared semantic transaction requires an exact plan")
+        if not isinstance(self.fragment, PreparedSemanticFragment):
+            raise TypeError("prepared semantic transaction requires fragment authority")
+        if not isinstance(self.validation, FragmentValidationResult):
+            raise TypeError("prepared semantic transaction requires validation")
+        if (
+            self.fragment.authority.attempt_id is not self.attempt_id
+            or self.fragment.authority.plan_id != self.plan.plan_id
+            or self.fragment.authority.cfg_projection.plan_id
+            != self.projection.plan_id
+            or self.fragment.authority.cfg_projection.snapshot_id
+            != self.projection.snapshot_id
+            or self.fragment.authority.cfg_projection.graph != self.projection.graph
+            or self.fragment.authority.cfg_projection.focus_refs
+            != self.projection.focus_refs
+            or not self.validation.passed
+        ):
+            raise ValueError("prepared semantic transaction authority is inconsistent")
+
+
+@dataclass(frozen=True, slots=True)
+class BoundSemanticCfgTransaction(BoundCfgTransaction):
+    """Exact identity-generation binding for one prepared semantic attempt."""
+
+    plan: FragmentPlan | None = field(default=None, repr=False, compare=False)
+    fragment: PreparedSemanticFragment | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        BoundCfgTransaction.__post_init__(self)
+        if not isinstance(self.prepared, PreparedSemanticCfgTransaction):
+            raise TypeError("bound semantic transaction requires semantic preflight")
+        if self.plan is not self.prepared.plan:
+            raise ValueError("bound semantic transaction changed exact plan authority")
+        if self.fragment is not self.prepared.fragment:
+            raise ValueError(
+                "bound semantic transaction changed exact fragment authority"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticFragmentTransactionParticipant:
+    """Production participant for immutable semantic-fragment transactions."""
+
+    gateway: object
+    backend: object
+
+    def project(self, plan: object, snapshot: object) -> CfgProjection:
+        if not isinstance(plan, FragmentPlan):
+            raise TypeError("semantic participant requires a FragmentPlan")
+        if snapshot is not None:
+            raise ValueError("semantic participant owns its immutable snapshot")
+        if bool(getattr(self.gateway, "active", False)):
+            raise RuntimeError("semantic projection requires an idle gateway")
+        root_inventory = (
+            self.backend._plan_semantic_fragment_root_publication_inventory(plan)
+        )
+        if not isinstance(root_inventory, SemanticFragmentRootInventory):
+            raise TypeError(
+                "semantic-fragment backend returned an invalid root inventory"
+            )
+        snapshot_preparation = self.backend._snapshot_semantic_fragment_inputs(plan)
+        if not isinstance(
+            snapshot_preparation,
+            SemanticFragmentSnapshotPreparation,
+        ):
+            raise TypeError(
+                "semantic-fragment backend returned invalid snapshot evidence"
+            )
+        snapshot_input = snapshot_preparation.authority.projection_input
+        semantic_projection = project_fragment(
+            plan,
+            snapshot_input,
+            root_inventory,
+        )
+        cfg_projection = fragment_cfg_projection(
+            plan,
+            snapshot_input,
+            semantic_projection,
+        )
+        return SemanticFragmentCfgProjection(
+            plan_id=cfg_projection.plan_id,
+            snapshot_id=cfg_projection.snapshot_id,
+            graph=cfg_projection.graph,
+            focus_refs=cfg_projection.focus_refs,
+            plan=plan,
+            snapshot_preparation=snapshot_preparation,
+            root_inventory=root_inventory,
+            semantic_projection=semantic_projection,
+        )
+
+    def preflight(self, projection: CfgProjection) -> PreparedCfgTransaction:
+        if not isinstance(projection, SemanticFragmentCfgProjection):
+            raise TypeError("semantic participant requires its projected authority")
+        if bool(getattr(self.gateway, "active", False)):
+            raise RuntimeError("semantic preflight requires an idle gateway")
+        plan = projection.plan
+        assert plan is not None
+        semantic_projection = projection.semantic_projection
+        assert semantic_projection is not None
+        validation = validate_fragment_projection(plan, semantic_projection)
+        if not validation.passed:
+            raise SemanticFragmentPublicationRejected(
+                "prepublication",
+                validation,
+            )
+        try:
+            CfgContract().verify_projection(projection, scope="full")
+        except CfgContractViolationError as error:
+            rejection = FragmentValidationResult(
+                plan_id=plan.plan_id,
+                atomic_group_id=plan.atomic_group_id,
+                outcomes=(
+                    FragmentValidationOutcome(
+                        postcondition=(
+                            FragmentValidationPostcondition.BLOCK_TOPOLOGY
+                        ),
+                        subject_id="cfg-projection",
+                        passed=False,
+                        reason=f"projected CFG contract failed: {error.summary}",
+                    ),
+                ),
+            )
+            raise SemanticFragmentPublicationRejected(
+                "cfg_preflight",
+                rejection,
+            ) from error
+        snapshot_preparation = projection.snapshot_preparation
+        root_inventory = projection.root_inventory
+        assert snapshot_preparation is not None
+        assert root_inventory is not None
+        attempt = TransactionAttemptId.new(
+            plan.plan_id,
+            str(self.gateway.session_id),
+            int(self.gateway.generation),
+        )
+        fragment = PreparedSemanticFragment(
+            authority=PreparedSemanticFragmentAuthority(
+                plan_id=plan.plan_id,
+                atomic_group_id=plan.atomic_group_id,
+                session_id=snapshot_preparation.authority.session_id,
+                generation=snapshot_preparation.authority.generation,
+                snapshot_id=projection.snapshot_id,
+                attempt_id=attempt,
+                root_inventory=root_inventory,
+                snapshot=snapshot_preparation.authority,
+                projection=semantic_projection,
+                cfg_projection=CfgProjection(
+                    plan_id=projection.plan_id,
+                    snapshot_id=projection.snapshot_id,
+                    graph=projection.graph,
+                    focus_refs=projection.focus_refs,
+                ),
+            ),
+            payload=snapshot_preparation.payload,
+        )
+        obligation_ids = tuple(
+            f"{outcome.postcondition.value}:{outcome.subject_id}"
+            for outcome in validation.outcomes
+        )
+        return PreparedSemanticCfgTransaction(
+            attempt_id=attempt,
+            projection=projection,
+            obligation_ids=obligation_ids,
+            plan=plan,
+            fragment=fragment,
+            validation=validation,
+        )
+
+    def bind(
+        self,
+        prepared: PreparedCfgTransaction,
+        identity_index: object,
+    ) -> BoundCfgTransaction:
+        if not isinstance(prepared, PreparedSemanticCfgTransaction):
+            raise TypeError("semantic participant requires semantic preflight")
+        if identity_index is not self.gateway.identity_index:
+            raise ValueError("semantic participant received a foreign identity index")
+        if bool(getattr(self.gateway, "active", False)):
+            raise RuntimeError("semantic binding requires an idle gateway")
+        plan = prepared.plan
+        assert plan is not None
+        bindings: list[tuple[PlanBlockRef, object]] = []
+        for ref in prepared.projection.focus_refs:
+            if not isinstance(ref, PlanBlockRef):
+                raise TypeError("semantic projection focus must be plan-local")
+            try:
+                block = plan.block(ref.local_block_id)
+            except KeyError:
+                bindings.append((ref, ref))
+                continue
+            if (
+                block.materialization
+                is not FragmentBlockMaterialization.REUSE_PUBLISHED
+            ):
+                bindings.append((ref, ref))
+                continue
+            rebound = identity_index.rebind_identity(block.stable_identity)
+            if rebound.block is None:
+                raise ValueError(
+                    f"semantic binding cannot rebind {ref.local_block_id!r}"
+                )
+            bindings.append((ref, rebound.block.handle))
+        return BoundSemanticCfgTransaction(
+            prepared=prepared,
+            session_id=prepared.attempt_id.session_id,
+            generation=prepared.attempt_id.generation,
+            bindings=tuple(bindings),
+            plan=plan,
+            fragment=prepared.fragment,
+        )
+
+    def realize(self, bound: BoundCfgTransaction, gateway: object) -> object:
+        if not isinstance(bound, BoundSemanticCfgTransaction):
+            raise TypeError("semantic participant requires exact bound authority")
+        if gateway is not self.gateway or gateway.identity_index is not (
+            self.gateway.identity_index
+        ):
+            raise ValueError("semantic participant received a foreign gateway")
+        if bool(getattr(gateway, "active", False)):
+            raise RuntimeError("semantic realization requires an idle gateway")
+        plan = bound.plan
+        fragment = bound.fragment
+        assert plan is not None
+        assert fragment is not None
+        gateway._begin_semantic_fragment_batch(
+            self.backend,
+            plan,
+            fragment.authority.root_inventory,
+            fragment.authority.attempt_id,
+            fragment.authority.snapshot_id,
+            fragment,
+        )
+        return self.backend._stage_semantic_fragment(plan, fragment)
+
+    def observe(self, receipt: object, live_graph: object) -> object:
+        if not isinstance(receipt, ProjectedFragment):
+            raise TypeError("semantic participant requires a realized projection")
+        if live_graph is not getattr(self.backend, "mba", None):
+            raise ValueError("semantic participant received a foreign live graph")
+        if not bool(getattr(self.gateway, "active", False)):
+            raise RuntimeError("semantic observation requires an active realization")
+        plan = self.gateway._active_fragment_plan
+        if not isinstance(plan, FragmentPlan):
+            raise RuntimeError("semantic observation lacks exact plan authority")
+        realized_validation = validate_fragment_projection(plan, receipt)
+        if not realized_validation.passed:
+            raise SemanticFragmentPublicationRejected(
+                "staged_observation",
+                realized_validation,
+            )
+        prepared = self.gateway._active_prepared_semantic_fragment
+        if not isinstance(prepared, PreparedSemanticFragment):
+            raise RuntimeError(
+                "semantic observation lacks immutable preflight authority"
+            )
+        realized_divergence = compare_fragment_projection_obligations(
+            prepared.authority.projection,
+            receipt,
+        )
+        if realized_divergence:
+            raise RuntimeError(
+                "realized semantic fragment diverged from immutable preflight: "
+                + ", ".join(realized_divergence)
+            )
+        observed = self.backend._observe_staged_semantic_fragment(plan)
+        if not isinstance(observed, ProjectedFragment):
+            raise TypeError("semantic backend returned an invalid live observation")
+        validation = validate_fragment_projection(plan, observed)
+        if not validation.passed:
+            raise SemanticFragmentPublicationRejected(
+                "staged_observation",
+                validation,
+            )
+        divergence = compare_fragment_projection_obligations(
+            prepared.authority.projection,
+            observed,
+        )
+        if divergence:
+            raise RuntimeError(
+                "staged semantic fragment diverged from immutable preflight: "
+                + ", ".join(divergence)
+            )
+        return observed
 
 
 class SemanticFragmentPublicationRejected(RuntimeError):
@@ -262,11 +620,39 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
     _require_backend_port(backend)
     lifecycle_authority = _require_lifecycle_authority(gateway)
     _mark_lifecycle_plan_ready(lifecycle_authority, plan)
-
-    root_inventory = backend._plan_semantic_fragment_root_publication_inventory(plan)
-    if not isinstance(root_inventory, SemanticFragmentRootInventory):
-        raise TypeError("semantic-fragment backend returned an invalid root inventory")
-    gateway._begin_semantic_fragment_batch(backend, plan, root_inventory)
+    participant = SemanticFragmentTransactionParticipant(gateway, backend)
+    try:
+        projected_transaction = participant.project(plan, None)
+        prepared_transaction = participant.preflight(projected_transaction)
+        bound_transaction = participant.bind(
+            prepared_transaction,
+            gateway.identity_index,
+        )
+    except FragmentProjectionFailure as error:
+        rejection = FragmentValidationResult(
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            outcomes=(
+                FragmentValidationOutcome(
+                    postcondition=error.postcondition,
+                    subject_id=error.subject_id,
+                    passed=False,
+                    reason=error.reason,
+                ),
+            ),
+        )
+        raise SemanticFragmentPublicationRejected(
+            "preflight_projection",
+            rejection,
+        ) from error
+    if not isinstance(prepared_transaction, PreparedSemanticCfgTransaction):
+        raise TypeError("semantic participant returned invalid preflight authority")
+    prepared_fragment = prepared_transaction.fragment
+    assert prepared_fragment is not None
+    root_inventory = prepared_fragment.authority.root_inventory
+    preflight_projection = prepared_fragment.authority.projection
+    prepublication = prepared_transaction.validation
+    assert prepublication is not None
     stage_attempted = False
     lifecycle_staged = False
     root_attempted = False
@@ -275,9 +661,10 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
     failure_phase = "stage"
     try:
         stage_attempted = True
-        projection = backend._stage_semantic_fragment(plan)
+        projection = participant.realize(bound_transaction, gateway)
         if not isinstance(projection, ProjectedFragment):
             raise TypeError("semantic-fragment backend returned an invalid projection")
+        projection = participant.observe(projection, backend.mba)
         gateway._record_fragment_staged(plan)
         _mark_lifecycle_staged(
             lifecycle_authority,
@@ -290,7 +677,21 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             backend._semantic_fragment_current_mba_identity_binding(plan),
         )
         failure_phase = "prepublication_validation"
-        prepublication = validate_fragment_projection(plan, projection)
+        staged_validation = validate_fragment_projection(plan, projection)
+        if not staged_validation.passed:
+            raise SemanticFragmentPublicationRejected(
+                "staged_observation",
+                staged_validation,
+            )
+        divergence = compare_fragment_projection_obligations(
+            preflight_projection,
+            projection,
+        )
+        if divergence:
+            raise RuntimeError(
+                "staged semantic fragment diverged from immutable preflight: "
+                + ", ".join(divergence)
+            )
         gateway._record_fragment_validation(
             plan=plan,
             phase="prepublication",
@@ -448,7 +849,11 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
 
 
 __all__ = [
+    "BoundSemanticCfgTransaction",
+    "PreparedSemanticCfgTransaction",
+    "SemanticFragmentCfgProjection",
     "SemanticFragmentPublicationRejected",
     "SemanticFragmentRollbackFailed",
+    "SemanticFragmentTransactionParticipant",
     "publish_semantic_fragment",
 ]

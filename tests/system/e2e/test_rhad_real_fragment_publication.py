@@ -742,8 +742,11 @@ def _run_worker(
                         f"ranges={range_rows!r}"
                     ) from exc
 
-            def _stage_semantic_fragment(self, fragment_plan):
-                projection = super()._stage_semantic_fragment(fragment_plan)
+            def _stage_semantic_fragment(self, fragment_plan, prepared_fragment):
+                projection = super()._stage_semantic_fragment(
+                    fragment_plan,
+                    prepared_fragment,
+                )
                 self._verify_phase("fragment staging")
                 return projection
 
