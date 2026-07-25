@@ -446,6 +446,173 @@ def test_candidate_normalization_rejects_missing_receipted_plan_intent() -> None
     }
 
 
+def test_candidate_composition_selects_boundary_plan_but_requires_oracle(
+    monkeypatch,
+) -> None:
+    graph, bound = _graph_and_bound_evidence()
+    candidate = bound.evidence
+    expected_plan = build_canonical_semantic_fragment_plan(
+        graph,
+        bound,
+        prohibited_dispatcher_serials=(30,),
+    )
+    normalization_plan = replace(
+        expected_plan,
+        plan_id="frontend-normalization:0x1000:g7",
+        atomic_group_id="frontend-normalization:g7",
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="frontend-normalization:0x1000:g7:complete",
+            selected_obligation_ids=("native-transfer@0x1100",),
+            remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
+        ),
+        operations=tuple(
+            replace(operation, direct_transfer_rewrite=None)
+            for operation in expected_plan.operations
+        ),
+    )
+    normalization_scope = normalization_plan.work_item_scope
+    assert normalization_scope is not None
+    normalization_authority = NormalizationWorkItemAuthority(
+        evidence_generation=candidate.generation,
+        publication_revision=1,
+        source_plan_id=normalization_plan.plan_id,
+        source_atomic_group_id=normalization_plan.atomic_group_id,
+        work_item_id=normalization_scope.work_item_id,
+        selected_obligation_ids=normalization_scope.selected_obligation_ids,
+        remaining_obligation_ids=normalization_scope.remaining_obligation_ids,
+        unreachable_obligation_ids=normalization_scope.unreachable_obligation_ids,
+    )
+    frontend_evidence = FrontendNormalizationEvidence(
+        native_key=NATIVE_KEY,
+        generation=candidate.generation,
+        atomic_group_id=normalization_plan.atomic_group_id,
+        transfer_proofs=(
+            NativeIndirectTransferProof(
+                proof_id="native-transfer@0x1100",
+                atomic_group_id=normalization_plan.atomic_group_id,
+                shape=NativeTransferShape.DIRECT,
+                source_identity=_identity(0x1100),
+                source_anchor_ea=0x1100,
+                source_transfer_ea=0x1100,
+                endpoints=(
+                    NativeTransferEndpoint(
+                        role=SemanticEdgeRole.DIRECT,
+                        identity=_identity(0x1200),
+                        anchor_ea=0x1200,
+                    ),
+                ),
+            ),
+        ),
+    )
+    boundary_calls = []
+
+    def reject_root_composition(*_args, **_kwargs):
+        raise CanonicalSemanticFragmentRejected(
+            "published imported boundary retains unresolved semantic topology",
+            reason_code="published_imported_boundary_topology_unresolved",
+            anchor_ea=0x1200,
+            payload={
+                "boundary_block_id": "native[0x1200-0x1201]",
+                "incoming_operation_id": "route:state-assignment@0x1100",
+            },
+        )
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "compose_canonical_semantic_fragment_plan",
+        reject_root_composition,
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "compose_canonical_semantic_boundary_fragment_plan",
+        lambda *args, **kwargs: boundary_calls.append((args, kwargs)) or expected_plan,
+        raising=False,
+    )
+
+    class _CandidateProvider:
+        def candidate_evidence_for(self, function_ea: int):
+            return candidate if int(function_ea) == graph.func_ea else None
+
+    class _FrontendProvider:
+        def evidence_for(self, function_ea: int):
+            return frontend_evidence if int(function_ea) == graph.func_ea else None
+
+    class _PlanProvider:
+        def plan_for(self, function_ea: int, evidence_generation: int):
+            if (
+                int(function_ea) == graph.func_ea
+                and int(evidence_generation) == candidate.generation
+            ):
+                return normalization_plan, normalization_authority
+            return None
+
+    current_identity_by_serial = {
+        int(serial): _identity(int(block.start_ea))
+        for serial, block in graph.blocks.items()
+    }
+    analyses = AnalysisManager(graph)
+    analyses.put_analysis(
+        "current_block_identity_index",
+        SimpleNamespace(identity_for_serial=current_identity_by_serial.get),
+    )
+    capabilities = (
+        CapabilitySet()
+        .with_capability(
+            CanonicalSemanticCandidateEvidenceCapability,
+            _CandidateProvider(),
+        )
+        .with_capability(
+            FrontendNormalizationEvidenceCapability,
+            _FrontendProvider(),
+        )
+        .with_capability(
+            FrontendNormalizationPlanCapability,
+            _PlanProvider(),
+        )
+    )
+    context = FunctionPipelineContext(
+        source=None,
+        graph=graph,
+        maturity=None,
+        project_config=None,
+        facts=analyses.view(),
+        capabilities=capabilities,
+    )
+
+    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
+        state_machine_module._compose_candidate_semantic_fragment(
+            context,
+            prohibited_dispatcher_serials=(30,),
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == "canonical_boundary_detached_oracle_required"
+    assert rejection.anchor_ea == 0x1200
+    assert rejection.payload == {
+        "atomic_group_id": expected_plan.atomic_group_id,
+        "block_count": len(expected_plan.blocks),
+        "boundary_anchor_ea": "0x1200",
+        "native_body_count": len(expected_plan.native_bodies),
+        "operation_count": len(expected_plan.operations),
+        "operation_ids": tuple(
+            operation.operation_id for operation in expected_plan.operations
+        ),
+        "plan_id": expected_plan.plan_id,
+        "route_proof_ids": ("state-assignment@0x1100",),
+    }
+    assert len(boundary_calls) == 1
+    assert boundary_calls[0][0] == (graph, normalization_plan)
+    assert boundary_calls[0][1] == {
+        "available_evidence": candidate,
+        "boundary_anchor_ea": 0x1200,
+        "current_identity_by_serial": current_identity_by_serial,
+        "normalization_authority": normalization_authority,
+        "prohibited_dispatcher_serials": (30,),
+    }
+
+
 def test_semantic_evidence_spine_declares_fragment_publication_authority() -> None:
     specs = semantic_evidence_state_machine_passes()
 
