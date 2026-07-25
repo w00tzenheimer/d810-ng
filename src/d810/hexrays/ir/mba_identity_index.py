@@ -228,7 +228,9 @@ class MbaBlockIdentityIndex:
     def poison_generation(self, failure: CfgTransactionFailure) -> None:
         """Latch the first post-write failure for this live MBA generation."""
         if not isinstance(failure, CfgTransactionFailure):
-            raise TypeError("MBA generation poison requires transaction failure evidence")
+            raise TypeError(
+                "MBA generation poison requires transaction failure evidence"
+            )
         if failure.phase is not CfgTransactionPhase.POISONED_RESTART_REQUIRED:
             raise ValueError("MBA generation poison requires a poisoned failure phase")
         if self._poisoned_failure is None:

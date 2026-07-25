@@ -937,12 +937,9 @@ class DecompilationLifecycleCoordinator:
             # its borrowed activation. The manager releases the reservation
             # before the public top-level decompile can finish this owner.
             return None
-        if (
-            activation.owns_session
-            and (
-                activation.session.native_preanalysis.has_pending_generated_restart
-                or activation.session.native_preanalysis.has_exhausted_poison_restart
-            )
+        if activation.owns_session and (
+            activation.session.native_preanalysis.has_pending_generated_restart
+            or activation.session.native_preanalysis.has_exhausted_poison_restart
         ):
             # Retain the evidence owner until the manager drives the staged
             # MERR_REDO or refuses a terminally exhausted poisoned result.

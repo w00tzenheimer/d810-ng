@@ -649,9 +649,7 @@ class D810Manager:
             # the live decompile that follows this preparation round.
             invalidate_cached_cfunc()
             result = decompile()
-            if self.decompilation_lifecycle.has_exhausted_poison_restart(
-                function_ea
-            ):
+            if self.decompilation_lifecycle.has_exhausted_poison_restart(function_ea):
                 raise RuntimeError(
                     "native preanalysis poison restart exhausted for "
                     f"0x{function_ea:X}; refusing poisoned output"

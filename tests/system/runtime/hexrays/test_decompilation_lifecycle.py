@@ -83,13 +83,16 @@ def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo(
         == ida_hexrays.MERR_REDO
     )
     decision["request_redo"] = False
-    assert HexraysDecompilationHook.flowchart(
-        hook,
-        object(),
-        mba,
-        object(),
-        0,
-    ) == 0
+    assert (
+        HexraysDecompilationHook.flowchart(
+            hook,
+            object(),
+            mba,
+            object(),
+            0,
+        )
+        == 0
+    )
     assert not state.has_pending_generated_restart
 
 
