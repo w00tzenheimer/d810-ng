@@ -42,6 +42,7 @@ from d810.transforms import canonical_semantic_fragment as canonical_fragment
 from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
     build_canonical_semantic_fragment_plan,
+    compose_canonical_semantic_boundary_fragment_plan,
     compose_canonical_semantic_fragment_plan,
 )
 from d810.transforms.fragment_plan import (
@@ -1064,6 +1065,186 @@ def test_nested_imported_state_assignments_reach_fixpoint() -> None:
         plan.block(edge.target_block_id).semantic_anchor_ea != 0x1300
         for operation in plan.operations
         for edge in operation.edges
+    )
+
+
+def test_published_boundary_root_closes_one_nested_semantic_route() -> None:
+    graph, normalization_plan, root_evidence = _live_source_detached_target_case()
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x1000, succs=(30,), preds=()),
+            30: _block(30, 0x1200, succs=(90,), preds=(10, 90)),
+            90: _block(90, 0x1400, succs=(30,), preds=(30,)),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    (native_body,) = normalization_plan.native_bodies
+    route_source = FragmentBlock(
+        block_id="boundary-route-source",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1210,
+        stable_identity=_identity(0x1210),
+        native_body_id=native_body.body_id,
+    )
+    raw_dispatcher = FragmentBlock(
+        block_id="boundary-raw-dispatcher",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1300,
+        stable_identity=_identity(0x1300),
+        native_body_id=native_body.body_id,
+    )
+    raw_terminal = FragmentBlock(
+        block_id="boundary-raw-terminal",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1310,
+        stable_identity=_identity(0x1310),
+        native_body_id=native_body.body_id,
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *normalization_plan.blocks,
+            route_source,
+            raw_dispatcher,
+            raw_terminal,
+        ),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="boundary-call-fallthrough@0x1200",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                        target_block_id=route_source.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="native-body-edge@0x1210",
+                source_block_id=route_source.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=raw_dispatcher.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="native-body-edge@0x1300",
+                source_block_id=raw_dispatcher.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=raw_terminal.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    route_source.block_id,
+                    raw_dispatcher.block_id,
+                    raw_terminal.block_id,
+                ),
+                terminal_block_ids=(raw_terminal.block_id,),
+                native_ranges=(
+                    NativeEaInterval(0x1200, 0x1201),
+                    NativeEaInterval(0x1210, 0x1211),
+                    NativeEaInterval(0x1300, 0x1301),
+                    NativeEaInterval(0x1310, 0x1311),
+                ),
+                proof_ids=(
+                    *native_body.proof_ids,
+                    "boundary-call-fallthrough@0x1200",
+                    "native-body-edge@0x1210",
+                    "native-body-edge@0x1300",
+                ),
+            ),
+        ),
+    )
+    nested_proof = SemanticRouteProof(
+        proof_id="state-assignment@0x1210",
+        atomic_group_id=root_evidence.atomic_group_id,
+        proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=_identity(0x1210),
+        source_anchor_ea=0x1210,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.DIRECT,
+                state_constant=0x44,
+                target_identity=_identity(0x1200),
+                target_anchor_ea=0x1200,
+            ),
+        ),
+        state_write=SemanticStateWriteProof(
+            identity=_identity(0x1210),
+            instruction_ea=0x1210,
+            state_variable=StorageIdentity(
+                StorageIdentityKind.REGISTER,
+                20,
+            ),
+            width=4,
+            state_constant=0x44,
+            corridor_instruction_eas=(0x1210,),
+        ),
+    )
+    available_evidence = replace(
+        root_evidence,
+        route_proofs=(nested_proof,),
+    )
+
+    plan = compose_canonical_semantic_boundary_fragment_plan(
+        graph,
+        normalization_plan,
+        boundary_anchor_ea=0x1200,
+        available_evidence=available_evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            available_evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    (root_id,) = plan.roots
+    root = plan.block(root_id)
+    assert root.role is FragmentBlockRole.REPLACEMENT
+    assert root.semantic_anchor_ea == 0x1200
+    assert plan.block(str(root.replaces_block_id)).role is FragmentBlockRole.ORIGINAL
+    operations = {operation.operation_id: operation for operation in plan.operations}
+    root_operation = operations["boundary-call-fallthrough@0x1200"]
+    assert root_operation.source_block_id == root_id
+    assert tuple(edge.role for edge in root_operation.edges) == (
+        SemanticEdgeRole.CALL_FALLTHROUGH,
+    )
+    route_operation = operations[f"route:{nested_proof.proof_id}"]
+    assert route_operation.direct_transfer_rewrite is not None
+    assert tuple(
+        plan.block(edge.target_block_id).semantic_anchor_ea
+        for edge in route_operation.edges
+    ) == (0x1200,)
+    (planned_body,) = plan.native_bodies
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea for block_id in planned_body.block_ids
+    ) == (0x1210,)
+    assert planned_body.entry_block_ids == (route_source.block_id,)
+    assert all(
+        block.semantic_anchor_ea not in {0x1300, 0x1310}
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+    )
+    assert any(
+        block.role is FragmentBlockRole.EXTERNAL and block.semantic_anchor_ea == 0x1000
+        for block in plan.blocks
     )
 
 
