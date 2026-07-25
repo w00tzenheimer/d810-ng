@@ -87,7 +87,12 @@ from d810.capabilities.frontend_normalization import (
     FrontendNormalizationPlanCapability,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
-from d810.core.semantic_route_oracle import ReferenceRouteOracleSelection
+from d810.core.semantic_route_oracle import (
+    ReferenceRouteOracleSelection,
+    ReferenceRouteRewrite,
+)
+from d810.ir.block_identity import StableBlockIdentity
+from d810.ir.flowgraph import FlowGraph
 from d810.capabilities.branch_witness import BranchWitnessCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
@@ -1031,6 +1036,187 @@ def _with_canonical_composition_attempts(
     )
 
 
+def _configured_reference_predecessor_route(
+    selection: ReferenceRouteOracleSelection,
+) -> ReferenceRouteRewrite | None:
+    """Return the sole selected reference route entering the publication root."""
+    publication_root_ea = int(selection.publication_root_ea)
+    incoming = tuple(
+        route
+        for route in selection.routes
+        if publication_root_ea
+        in {
+            target_ea
+            for target_ea in (
+                route.direct_target_ea,
+                route.true_target_ea,
+                route.false_target_ea,
+            )
+            if target_ea is not None
+        }
+    )
+    return incoming[0] if len(incoming) == 1 else None
+
+
+def _compose_configured_reference_scope_plan(
+    *,
+    graph: FlowGraph,
+    normalization_plan: FragmentPlan,
+    configured_scope: ReferenceRouteOracleSelection,
+    available_evidence: CanonicalSemanticEvidence,
+    current_identity_by_serial: dict[int, StableBlockIdentity],
+    normalization_authority: NormalizationWorkItemAuthority,
+    prohibited_dispatcher_serials: tuple[int, ...],
+    composition_attempts: list[dict[str, object]],
+) -> FragmentPlan:
+    """Compose one exact configured root without losing its temporary entry port."""
+    publication_root_ea = int(configured_scope.publication_root_ea)
+
+    def compose_boundary(
+        boundary_anchor_ea: int,
+        *,
+        kind: str,
+        retirement_obligation_id: str | None = None,
+    ) -> FragmentPlan:
+        kwargs = {}
+        if retirement_obligation_id is not None:
+            kwargs["temporary_dispatcher_entry_port_obligation_id"] = (
+                retirement_obligation_id
+            )
+        try:
+            plan = compose_canonical_semantic_boundary_fragment_plan(
+                graph,
+                normalization_plan,
+                boundary_anchor_ea=int(boundary_anchor_ea),
+                available_evidence=available_evidence,
+                current_identity_by_serial=current_identity_by_serial,
+                normalization_authority=normalization_authority,
+                prohibited_dispatcher_serials=prohibited_dispatcher_serials,
+                **kwargs,
+            )
+        except CanonicalSemanticFragmentRejected as exc:
+            composition_attempts.append(
+                _rejected_canonical_composition_attempt(
+                    kind=kind,
+                    rejection=exc,
+                    boundary_anchor_ea=int(boundary_anchor_ea),
+                )
+            )
+            raise
+        composition_attempts.append(
+            _accepted_canonical_composition_attempt(
+                kind=kind,
+                plan=plan,
+                boundary_anchor_ea=int(boundary_anchor_ea),
+            )
+        )
+        return plan
+
+    try:
+        configured_plan = compose_boundary(
+            publication_root_ea,
+            kind="configured_reference_scope",
+        )
+    except CanonicalSemanticFragmentRejected as root_rejection:
+        if root_rejection.reason_code != "published_boundary_predecessor_missing":
+            raise _with_canonical_composition_attempts(
+                root_rejection,
+                tuple(composition_attempts),
+            ) from root_rejection
+        predecessor_route = _configured_reference_predecessor_route(configured_scope)
+        if predecessor_route is None:
+            rejection = CanonicalSemanticFragmentRejected(
+                "configured reference scope requires one selected semantic "
+                "predecessor for its unpublished entry",
+                reason_code="canonical_configured_reference_predecessor_missing",
+                anchor_ea=publication_root_ea,
+                payload={
+                    "reference_route_ids": tuple(
+                        route.route_id for route in configured_scope.routes
+                    ),
+                    "reference_run_id": configured_scope.run.run_id,
+                },
+            )
+            raise _with_canonical_composition_attempts(
+                rejection,
+                tuple(composition_attempts),
+            ) from root_rejection
+        predecessor_anchor_ea = int(predecessor_route.owner_ea)
+        try:
+            predecessor_plan = compose_boundary(
+                predecessor_anchor_ea,
+                kind="configured_reference_semantic_predecessor",
+            )
+        except CanonicalSemanticFragmentRejected as predecessor_rejection:
+            retirement_obligation_id = _temporary_boundary_port_retirement_obligation(
+                boundary_anchor_ea=publication_root_ea,
+                source_anchor_ea=predecessor_anchor_ea,
+                upstream_rejection=predecessor_rejection,
+            )
+            if retirement_obligation_id is None:
+                raise _with_canonical_composition_attempts(
+                    predecessor_rejection,
+                    tuple(composition_attempts),
+                ) from predecessor_rejection
+            try:
+                configured_plan = compose_boundary(
+                    publication_root_ea,
+                    kind="configured_reference_temporary_port",
+                    retirement_obligation_id=retirement_obligation_id,
+                )
+            except CanonicalSemanticFragmentRejected as port_rejection:
+                raise _with_canonical_composition_attempts(
+                    port_rejection,
+                    tuple(composition_attempts),
+                ) from port_rejection
+        else:
+            rejection = CanonicalSemanticFragmentRejected(
+                "configured reference publication root has a live semantic "
+                "predecessor",
+                reason_code="canonical_configured_reference_root_stale",
+                anchor_ea=publication_root_ea,
+                payload={
+                    "predecessor_anchor_ea": f"0x{predecessor_anchor_ea:X}",
+                    "predecessor_plan_id": predecessor_plan.plan_id,
+                    "reference_route_id": predecessor_route.route_id,
+                    "reference_run_id": configured_scope.run.run_id,
+                },
+            )
+            raise _with_canonical_composition_attempts(
+                rejection,
+                tuple(composition_attempts),
+            )
+
+    try:
+        return bind_fragment_reference_oracle(
+            configured_plan,
+            configured_scope,
+        )
+    except (DetachedRouteOracleRejected, TypeError) as exc:
+        required = _boundary_reference_oracle_rejection(
+            boundary_anchor_ea=publication_root_ea,
+            boundary_plan=configured_plan,
+        )
+        rejection = CanonicalSemanticFragmentRejected(
+            "configured reference-oracle scope does not match its bounded "
+            "canonical plan",
+            reason_code="canonical_configured_reference_scope_invalid",
+            anchor_ea=publication_root_ea,
+            payload={
+                **required.payload,
+                "cause_detail": str(exc),
+                "reference_run_id": configured_scope.run.run_id,
+                "reference_route_ids": tuple(
+                    route.route_id for route in configured_scope.routes
+                ),
+            },
+        )
+        raise _with_canonical_composition_attempts(
+            rejection,
+            tuple(composition_attempts),
+        ) from exc
+
+
 def _compose_candidate_semantic_fragment(
     context: FunctionPipelineContext,
     *,
@@ -1134,67 +1320,19 @@ def _compose_candidate_semantic_fragment(
             raise TypeError(
                 "semantic route reference oracle returned an invalid fragment scope"
             )
-        publication_root_ea = int(configured_scope.publication_root_ea)
-        try:
-            configured_plan = compose_canonical_semantic_boundary_fragment_plan(
-                context.graph,
-                normalization_plan,
-                boundary_anchor_ea=publication_root_ea,
+        return (
+            _compose_configured_reference_scope_plan(
+                graph=context.graph,
+                normalization_plan=normalization_plan,
+                configured_scope=configured_scope,
                 available_evidence=candidate,
                 current_identity_by_serial=current_identity_by_serial,
                 normalization_authority=normalization_authority,
                 prohibited_dispatcher_serials=prohibited_dispatcher_serials,
-            )
-        except CanonicalSemanticFragmentRejected as exc:
-            composition_attempts.append(
-                _rejected_canonical_composition_attempt(
-                    kind="configured_reference_scope",
-                    rejection=exc,
-                    boundary_anchor_ea=publication_root_ea,
-                )
-            )
-            raise _with_canonical_composition_attempts(
-                exc,
-                tuple(composition_attempts),
-            ) from exc
-        composition_attempts.append(
-            _accepted_canonical_composition_attempt(
-                kind="configured_reference_scope",
-                plan=configured_plan,
-                boundary_anchor_ea=publication_root_ea,
-            )
+                composition_attempts=composition_attempts,
+            ),
+            int(candidate.generation),
         )
-        try:
-            return (
-                bind_fragment_reference_oracle(
-                    configured_plan,
-                    configured_scope,
-                ),
-                int(candidate.generation),
-            )
-        except (DetachedRouteOracleRejected, TypeError) as exc:
-            required = _boundary_reference_oracle_rejection(
-                boundary_anchor_ea=publication_root_ea,
-                boundary_plan=configured_plan,
-            )
-            rejection = CanonicalSemanticFragmentRejected(
-                "configured reference-oracle scope does not match its bounded "
-                "canonical plan",
-                reason_code="canonical_configured_reference_scope_invalid",
-                anchor_ea=publication_root_ea,
-                payload={
-                    **required.payload,
-                    "cause_detail": str(exc),
-                    "reference_run_id": configured_scope.run.run_id,
-                    "reference_route_ids": tuple(
-                        route.route_id for route in configured_scope.routes
-                    ),
-                },
-            )
-            raise _with_canonical_composition_attempts(
-                rejection,
-                tuple(composition_attempts),
-            ) from exc
     unresolved_boundary_anchors: list[int] = []
     unresolved_boundary_rejection_by_anchor: dict[
         int,
