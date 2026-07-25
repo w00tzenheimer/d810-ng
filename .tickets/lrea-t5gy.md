@@ -3618,3 +3618,39 @@ Continue by structuring this return-carrier rejection with the block ID, role,
 stable identity, corridor anchors, exact-instruction inventory, and missing
 anchors. Do not widen an identity or relax exact ownership until the DB
 identifies the precise mismatch.
+
+**2026-07-25T06:30:24Z**
+
+Commit `f9cf7325b` structures the return-carrier exact-anchor invariant without
+weakening it. The diagnostic now names the carrier block, role, semantic
+anchor, stable identity, state-write and carrier EAs, complete corridor,
+exact-instruction inventory, and missing subset. The existing terminal-plan
+test proves the reason and payload. The combined canonical, resolver,
+fragment-plan, fragment-validation, and semantic-backend gate is 450/450
+green; Ruff, ast-grep, `graphify update .`, and all 14 import contracts pass.
+
+The mandatory cache-disabled A560 canary completed normally in 19.90 seconds
+wall time (18.20 seconds inside pytest) with no process crash or numeric
+`INTERR`. Log:
+`.tmp/rhad-a560-v33-terminal-carrier-anchor-inventory-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-terminal-carrier-anchor-inventory-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-terminal-carrier-anchor-inventory-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red as the same eight-line infinite-loop stub; this is
+not A560 acceptance.
+
+The DB proves the exact first C3 mismatch. Imported block
+`native[0x40C7E5-0x40C7FC;exact=0x40C7E5]:imported` owns the carrier's full
+native range and exact state-write EA `0x40C7E5`, but its exact-instruction set
+does not include carrier EA `0x40C7EA`. That is the sole missing anchor for
+`return-carrier:terminal_return@0x40C7F6:0x19A7218A`, and the rejection is now
+`fragment_return_carrier_exact_anchor_missing@0x40C7EA`. The only committed
+transaction remains the 260/260 frontend-normalization publication; there are
+zero semantic-oracle runs or comparisons. The highest completed semantic level
+remains C2.
+
+Continue by defining a coherent proof-owned identity refinement for terminal
+carrier anchors: update the staged block identity, its token-derived block ID,
+and every plan reference together, only after proving the carrier corridor is
+inside the native range and owned by the selected terminal proof. Do not leave
+a stale tokenized block ID or relax exact-anchor validation.
