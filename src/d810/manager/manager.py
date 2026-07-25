@@ -1550,8 +1550,109 @@ class D810Manager:
             )
         )
 
+    @staticmethod
+    def _on_cfg_transaction_authority(event) -> None:
+        """Translate typed Hex-Rays authority into core diagnostic records."""
+        from d810.core.observability import emit as emit_diagnostic
+        from d810.core.observability_events import (
+            CfgCreationWitnessObserved,
+            CfgTransactionAttemptObserved,
+        )
+
+        reservations = {item.plan_ref: item for item in event.reservations}
+        receipts = {item.plan_ref: item for item in event.creation_receipts}
+        quantities_by_ref = {
+            plan_ref: (before, after)
+            for plan_ref, before, after in event.creation_quantities
+        }
+        witnesses = []
+        for plan_ref in event.plan_refs:
+            reservation = reservations.get(plan_ref)
+            receipt = receipts.get(plan_ref)
+            logical_version = (
+                receipt.logical_version
+                if receipt is not None
+                else (
+                    None if reservation is None else reservation.logical_version
+                )
+            )
+            quantities = quantities_by_ref.get(plan_ref)
+            state = "planned"
+            if reservation is not None:
+                state = "reserved"
+            if receipt is not None:
+                state = (
+                    "committed" if event.phase.value == "committed" else "bound"
+                )
+            witnesses.append(
+                CfgCreationWitnessObserved(
+                    local_block_id=plan_ref.local_block_id,
+                    provenance=(
+                        None
+                        if logical_version is None
+                        else logical_version.handle.provenance.value
+                    ),
+                    reserved_handle_token=(
+                        None if logical_version is None else logical_version.handle.token
+                    ),
+                    logical_proxy_token=(
+                        None
+                        if logical_version is None
+                        else logical_version.version_id.proxy_token
+                    ),
+                    logical_version=(
+                        None
+                        if logical_version is None
+                        else int(logical_version.version_id.version)
+                    ),
+                    logical_generation=(
+                        None
+                        if logical_version is None
+                        else int(logical_version.generation)
+                    ),
+                    insertion_quantity_before=(
+                        None if quantities is None else int(quantities[0])
+                    ),
+                    insertion_quantity_after=(
+                        None if quantities is None else int(quantities[1])
+                    ),
+                    requested_insertion_serial=(
+                        None if receipt is None else int(receipt.insertion_serial)
+                    ),
+                    returned_serial=(
+                        None if receipt is None else int(receipt.returned_serial)
+                    ),
+                    state=state,
+                )
+            )
+        failure = event.failure
+        emit_diagnostic(
+            CfgTransactionAttemptObserved(
+                session_id=event.session_id,
+                func_ea=int(event.function_ea),
+                plan_id=event.attempt_id.plan_id,
+                attempt_id=event.attempt_id.attempt_id,
+                phase=event.phase.value,
+                phase_index=int(event.phase_index),
+                mba_generation=int(event.mba_generation),
+                evidence_generation=int(event.evidence_generation),
+                mutation_started=bool(event.mutation_started),
+                poisoned=bool(event.poisoned),
+                first_failure_obligation=(
+                    None if failure is None else failure.first_failed_obligation
+                ),
+                first_failure_phase=(
+                    None if failure is None else failure.failure_phase
+                ),
+                first_failure_reason=(None if failure is None else failure.reason),
+                interr_code=None if failure is None else failure.interr_code,
+                creation_witnesses=tuple(witnesses),
+            )
+        )
+
     def _install_hooks(self):
         from d810.hexrays.mutation.mba_mutation_events import (
+            MbaCfgTransactionAuthorityObserved,
             MbaMutationAborted,
             MbaMutationCommitted,
             MbaMutationPlanned,
@@ -1561,6 +1662,10 @@ class D810Manager:
         self.event_emitter.on(MbaMutationPlanned, self._on_mutation_planned)
         self.event_emitter.on(MbaMutationCommitted, self._on_mutation_committed)
         self.event_emitter.on(MbaMutationAborted, self._on_mutation_aborted)
+        self.event_emitter.on(
+            MbaCfgTransactionAuthorityObserved,
+            self._on_cfg_transaction_authority,
+        )
         self.event_emitter.on(
             MbaSemanticFragmentRouteOracleCompared,
             self._on_semantic_fragment_route_oracle_compared,

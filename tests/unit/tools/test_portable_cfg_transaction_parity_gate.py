@@ -50,5 +50,5 @@ def test_strict_gate_refuses_to_call_partial_runtime_integration_complete() -> N
     assert report.errors == ()
     assert report.pending_ids
     assert report.passed is False
-    assert "synthetic_reservation_prewrite" in report.pending_ids
+    assert "production_fragment_participant" in report.pending_ids
     assert "creation_witness_c5_canary" in report.pending_ids

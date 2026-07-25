@@ -540,7 +540,7 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
             discarded_versions=(
                 LogicalBlockVersion(
                     version_id=LogicalBlockVersionId("logical-terminal", 1),
-                    handle=MbaBlockHandle.synthetic(
+                    handle=MbaBlockHandle.observed_ephemeral(
                         session_id="terminal-fragment-session",
                         token="physical-terminal-v1",
                     ),
@@ -630,7 +630,7 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
     assert transition.version == 1
     assert transition.physical_handle_token == "physical-terminal-v1"
     assert transition.generation == 8
-    assert transition.provenance == "synthetic"
+    assert transition.provenance == "observed_ephemeral"
     assert transition.stable_identity_json is None
     assert transition.anchor_ea is None
     assert transition.predecessor_version == 0

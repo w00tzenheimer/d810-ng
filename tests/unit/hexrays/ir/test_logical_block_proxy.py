@@ -249,12 +249,12 @@ def test_new_logical_block_is_unpublished_until_owning_transaction_commits() -> 
         proxy_token="logical:new-tail",
         session_id="proxy-session",
         stable_identity=None,
-        provenance=BlockHandleProvenance.SYNTHETIC,
+        provenance=BlockHandleProvenance.OBSERVED_EPHEMERAL,
         generation=3,
     )
     staged = proxy.stage(
         transaction_id="tx-insert",
-        handle=MbaBlockHandle.synthetic(
+        handle=MbaBlockHandle.observed_ephemeral(
             session_id="proxy-session",
             token="physical:new-tail",
         ),

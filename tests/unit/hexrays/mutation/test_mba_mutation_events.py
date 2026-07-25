@@ -17,6 +17,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
     StructuralMutationKind,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
 from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key()
@@ -87,7 +88,7 @@ def test_gateway_shifts_live_bindings_before_emitting_its_commit_receipt() -> No
     )
 
     gateway.begin_batch(StructuralMutationKind.BLOCK_INSERT, serial_quantity=10)
-    created = gateway.record_insert(insertion_serial=4, returned_serial=4)
+    created = gateway.record_observed_insert(insertion_serial=4, returned_serial=4)
 
     assert index.rebind_identity(source).block.serial == 5
     assert index.rebind_identity(target).block.serial == 9
@@ -254,7 +255,7 @@ def test_gateway_creates_independent_transactions_over_the_same_live_index() -> 
 
     transaction = gateway.new_transaction()
     transaction.begin_batch(StructuralMutationKind.BLOCK_INSERT, serial_quantity=6)
-    transaction.record_insert(insertion_serial=3, returned_serial=3)
+    transaction.record_observed_insert(insertion_serial=3, returned_serial=3)
     transaction.commit()
 
     assert transaction is not gateway
@@ -281,7 +282,7 @@ def test_new_transaction_rebases_planned_coordinates_to_current_serials() -> Non
     )
 
     gateway.begin_batch(StructuralMutationKind.BLOCK_INSERT, serial_quantity=6)
-    gateway.record_insert(insertion_serial=3, returned_serial=3)
+    gateway.record_observed_insert(insertion_serial=3, returned_serial=3)
     gateway.commit()
 
     transaction = gateway.new_transaction()
@@ -314,7 +315,7 @@ def test_inactive_transaction_treats_serials_as_current_live_coordinates() -> No
     )
 
     gateway.begin_batch(StructuralMutationKind.BLOCK_INSERT, serial_quantity=6)
-    gateway.record_insert(insertion_serial=3, returned_serial=3)
+    gateway.record_observed_insert(insertion_serial=3, returned_serial=3)
     gateway.commit()
 
     transaction = gateway.new_transaction()
@@ -337,7 +338,7 @@ def test_index_keeps_clone_and_split_handles_transaction_local() -> None:
     original = index.handle_for_serial(8)
     assert original is not None
     retained = index.create_native_handle(identity)
-    split_tail = index.create_synthetic_handle()
+    split_tail = index.create_observed_ephemeral_handle()
 
     index.begin_transaction("split-clone", 9)
     index.record_split(
@@ -461,7 +462,7 @@ def test_gateway_is_the_receipted_path_for_split_and_clone_bindings() -> None:
     }
 
 
-def test_unknown_sdk_effect_refreshes_before_commit_and_stales_synthetic_handles() -> (
+def test_unknown_sdk_effect_refreshes_before_commit_and_stales_ephemeral_handles() -> (
     None
 ):
     @dataclass
@@ -487,7 +488,7 @@ def test_unknown_sdk_effect_refreshes_before_commit_and_stales_synthetic_handles
     original = index.handle_for_serial(5)
     assert original is not None
     index.begin_transaction("uncommitted-insert", 6)
-    synthetic = index.create_synthetic_handle()
+    synthetic = index.create_observed_ephemeral_handle()
     index.record_insert(
         transaction_id="uncommitted-insert",
         insertion_serial=6,
@@ -507,6 +508,10 @@ def test_unknown_sdk_effect_refreshes_before_commit_and_stales_synthetic_handles
         @staticmethod
         def get_mblock(serial):
             return blocks.get(int(serial))
+
+        @staticmethod
+        def map_fict_ea(ea):
+            return int(ea)
 
     observed_serials: list[int] = []
     emitter = EventEmitter()
@@ -749,7 +754,7 @@ def test_gateway_insert_is_transaction_local_and_abort_restores_bindings() -> No
         StructuralMutationKind.BLOCK_INSERT,
         serial_quantity=5,
     )
-    created = gateway.record_insert(insertion_serial=3, returned_serial=3)
+    created = gateway.record_observed_insert(insertion_serial=3, returned_serial=3)
 
     assert index.resolve(original).serial == 4
     assert gateway.resolve_block(original).serial == 5
@@ -785,7 +790,7 @@ def test_gateway_insert_commit_publishes_new_proxy_and_shifted_bindings() -> Non
         StructuralMutationKind.BLOCK_INSERT,
         serial_quantity=5,
     )
-    created = gateway.record_insert(insertion_serial=3, returned_serial=3)
+    created = gateway.record_observed_insert(insertion_serial=3, returned_serial=3)
 
     receipt = gateway.commit()
 
@@ -854,3 +859,51 @@ def test_gateway_remove_commit_retires_proxy_without_promoting_version() -> None
         transition.retired_version is not None and transition.promoted_version is None
         for transition in receipt.version_transitions
     )
+
+
+def test_gateway_reserves_before_sdk_creation_and_binds_exact_returned_block() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=((identity, 2),),
+        native_key=NATIVE_KEY,
+    )
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+    attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="attempt-create",
+    )
+    plan_ref = PlanBlockRef("plan-a", "helper")
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_INSERT,
+        serial_quantity=3,
+        transaction_attempt=attempt,
+        patch_plan_refs=(plan_ref,),
+    )
+
+    reservation = gateway.reserve_plan_block(attempt, plan_ref)
+    assert gateway.plan_creation_receipts == ()
+
+    sdk_returned_serial = 2
+    receipt = gateway.bind_reserved_plan_block(
+        attempt,
+        plan_ref,
+        insertion_serial=1,
+        returned_serial=sdk_returned_serial,
+    )
+
+    assert receipt.logical_version is reservation.logical_version
+    assert receipt.insertion_serial == 1
+    assert receipt.returned_serial == sdk_returned_serial
+    assert receipt.block.serial == sdk_returned_serial
+    assert gateway.plan_creation_receipts == (receipt,)

@@ -18,7 +18,7 @@ from d810.ir.semantic_edge import SemanticEdgeRole
 def _proxy(token: str) -> LogicalBlockProxy:
     return LogicalBlockProxy.with_published(
         proxy_token=f"logical:{token}",
-        handle=MbaBlockHandle.synthetic(
+        handle=MbaBlockHandle.observed_ephemeral(
             session_id="semantic-edge-session",
             token=f"physical:{token}",
         ),

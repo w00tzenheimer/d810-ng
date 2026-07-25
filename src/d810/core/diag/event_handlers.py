@@ -37,6 +37,7 @@ from d810.core import logging as _d810_logging
 from d810.core.diag import active_diag_db, diag_models_on, get_diag_conn
 from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
 from d810.core.diag.lifecycle import (
+    persist_cfg_transaction_attempt,
     persist_diagnostic_session_transition,
     persist_evidence_generation,
     persist_identity_decision,
@@ -79,6 +80,7 @@ from d810.core.observability_events import (
     BranchWitnessDecisionsObserved,
     ConditionChainIntervalDispatcherObserved,
     CaptureMbaSnapshotRequested,
+    CfgTransactionAttemptObserved,
     CfgProvenanceForLatestSnapshot,
     CfgProvenanceObserved,
     ExitPathShortcutDecisionsObserved,
@@ -281,6 +283,16 @@ def _handle_mutation_receipt(ev: MutationReceiptObserved) -> None:
     if conn is not None:
         with conn:
             persist_mutation_receipt(conn, ev)
+
+
+def _handle_cfg_transaction_attempt(ev: CfgTransactionAttemptObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is not None:
+        with conn:
+            persist_cfg_transaction_attempt(conn, ev)
 
 
 def _handle_semantic_fragment_route_oracle(
@@ -878,6 +890,7 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (IdentityDecisionObserved, _handle_identity_decision),
     (MutationPlanObserved, _handle_mutation_plan),
     (MutationReceiptObserved, _handle_mutation_receipt),
+    (CfgTransactionAttemptObserved, _handle_cfg_transaction_attempt),
     (
         SemanticFragmentRouteOracleComparedObserved,
         _handle_semantic_fragment_route_oracle,

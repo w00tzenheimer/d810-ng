@@ -5,13 +5,15 @@ from unittest.mock import patch
 
 import pytest
 
-from d810.core.diag import create_diag_database
+from d810.core.diag import create_diag_database, open_diag_database
 from d810.core.diag.event_handlers import (
     install_diag_event_handlers,
     uninstall_diag_event_handlers,
 )
 from d810.core.observability import emit, reset_diagnostic_bus
 from d810.core.observability_events import (
+    CfgCreationWitnessObserved,
+    CfgTransactionAttemptObserved,
     DiagnosticSessionObserved,
     FragmentRootPublicationGroupObserved,
     FragmentValidationOutcomeObserved,
@@ -171,6 +173,144 @@ def test_plan_and_receipt_are_correlated_by_gateway_batch(diag_conn) -> None:
         (2, "mutation_plan", "batch-1"),
         (3, "mutation_receipt", "batch-1"),
     ]
+
+
+def test_cfg_transaction_authority_and_creation_witness_survive_restart(
+    diag_conn,
+) -> None:
+    phases = ("planned", "bound", "committed")
+    for phase_index, phase in enumerate(phases):
+        emit(
+            CfgTransactionAttemptObserved(
+                session_id="s1",
+                func_ea=0x40C8B0,
+                plan_id="portable-plan",
+                attempt_id="attempt-1",
+                phase=phase,
+                phase_index=phase_index,
+                mba_generation=8,
+                evidence_generation=3,
+                mutation_started=phase != "planned",
+                poisoned=False,
+                creation_witnesses=(
+                    CfgCreationWitnessObserved(
+                        local_block_id="created",
+                        provenance="created_synthetic",
+                        reserved_handle_token="handle-created",
+                        logical_proxy_token="proxy-created",
+                        logical_version=1,
+                        logical_generation=8,
+                        insertion_quantity_before=(
+                            12 if phase != "planned" else None
+                        ),
+                        insertion_quantity_after=(
+                            13 if phase != "planned" else None
+                        ),
+                        requested_insertion_serial=(
+                            7 if phase != "planned" else None
+                        ),
+                        returned_serial=(8 if phase != "planned" else None),
+                        state=("committed" if phase == "committed" else phase),
+                    ),
+                ),
+            )
+        )
+
+    assert diag_conn.execute(
+        "SELECT current_phase,mutation_started,poisoned "
+        "FROM cfg_transaction_attempts WHERE plan_id=? AND attempt_id=?",
+        ("portable-plan", "attempt-1"),
+    ).fetchone() == ("committed", 1, 0)
+    assert diag_conn.execute(
+        "SELECT phase FROM cfg_transaction_phase_events WHERE plan_id=? "
+        "AND attempt_id=? ORDER BY phase_index",
+        ("portable-plan", "attempt-1"),
+    ).fetchall() == [(phase,) for phase in phases]
+    assert diag_conn.execute(
+        "SELECT local_block_id,provenance,reserved_handle_token,"
+        "logical_proxy_token,logical_version,insertion_quantity_before,"
+        "insertion_quantity_after,requested_insertion_serial,returned_serial,state "
+        "FROM cfg_creation_witnesses WHERE plan_id=? AND attempt_id=?",
+        ("portable-plan", "attempt-1"),
+    ).fetchone() == (
+        "created",
+        "created_synthetic",
+        "handle-created",
+        "proxy-created",
+        1,
+        12,
+        13,
+        7,
+        8,
+        "committed",
+    )
+
+
+def test_committed_cfg_creation_mapping_is_queryable_after_database_restart(
+    tmp_path,
+) -> None:
+    path = tmp_path / "cfg-creation-witness.sqlite3"
+    db = create_diag_database(str(path))
+    conn = db.connection()
+    from d810.core.diag.lifecycle import (
+        persist_cfg_transaction_attempt,
+        persist_diagnostic_session,
+    )
+
+    persist_diagnostic_session(
+        conn,
+        DiagnosticSessionObserved("restart-session", 0x40C8B0, 1, "{}", "active"),
+    )
+    persist_cfg_transaction_attempt(
+        conn,
+        CfgTransactionAttemptObserved(
+            session_id="restart-session",
+            func_ea=0x40C8B0,
+            plan_id="restart-plan",
+            attempt_id="restart-attempt",
+            phase="committed",
+            phase_index=0,
+            mba_generation=9,
+            evidence_generation=4,
+            mutation_started=True,
+            poisoned=False,
+            creation_witnesses=(
+                CfgCreationWitnessObserved(
+                    local_block_id="created",
+                    provenance="created_synthetic",
+                    reserved_handle_token="restart-handle",
+                    logical_proxy_token="restart-proxy",
+                    logical_version=3,
+                    logical_generation=8,
+                    insertion_quantity_before=12,
+                    insertion_quantity_after=13,
+                    requested_insertion_serial=7,
+                    returned_serial=8,
+                    state="committed",
+                ),
+            ),
+        ),
+    )
+    conn.commit()
+    db.close()
+
+    reopened = open_diag_database(str(path))
+    try:
+        assert reopened.connection().execute(
+            "SELECT reserved_handle_token,logical_proxy_token,logical_version,"
+            "requested_insertion_serial,returned_serial,state "
+            "FROM cfg_creation_witnesses WHERE plan_id=? AND attempt_id=?",
+            ("restart-plan", "restart-attempt"),
+        ).fetchone() == (
+            "restart-handle",
+            "restart-proxy",
+            3,
+            7,
+            8,
+            "committed",
+        )
+    finally:
+        reopened.close()
 
 
 def test_terminal_effect_plan_and_aborted_receipt_preserve_applied_work(

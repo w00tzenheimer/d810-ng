@@ -113,8 +113,8 @@
       "id": "synthetic_reservation_prewrite",
       "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::def reserve_plan_block(",
       "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_reserved_synthetic_proxy_binds_only_when_insertion_is_realized",
-      "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::class MbaBlockIdentityIndex:",
-      "current_status": "missing",
+      "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::def reserve_plan_block(",
+      "current_status": "accepted",
       "required_port": "Reserve a PlanBlockRef, attempt-local handle, and logical version before the first SDK creation call.",
       "diagnostic_proof": {
         "tables": ["cfg_creation_witnesses", "cfg_transaction_phase_events"],
@@ -123,15 +123,15 @@
       },
       "acceptance_test": {
         "donor": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_reserved_synthetic_proxy_binds_only_when_insertion_is_realized",
-        "current": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_reserved_synthetic_proxy_binds_only_when_insertion_is_realized"
+        "current": "tests/system/runtime/test_cfg_creation_witness_runtime.py::def test_gateway_creation_witness_reaches_diagnostic_database"
       }
     },
     {
       "id": "exact_sdk_return_binding",
       "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::def bind_reserved_plan_block(",
       "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_plan_block_receipt_preserves_requested_and_returned_coordinates",
-      "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::class MbaBlockIdentityIndex:",
-      "current_status": "missing",
+      "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::def bind_reserved_plan_block(",
+      "current_status": "accepted",
       "required_port": "Bind the exact SDK-returned block after creation while shifting transaction coordinates at the requested insertion boundary.",
       "diagnostic_proof": {
         "tables": ["cfg_creation_witnesses"],
@@ -148,7 +148,7 @@
       "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::class PlanBlockCreationReceipt:",
       "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_generic_insert_cannot_consume_a_typed_plan_reservation",
       "current_production_seam": "src/d810/hexrays/mutation/mba_mutation_events.py::class MbaMutationGateway:",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Make typed reserve-and-bind the only path that can claim CREATED_SYNTHETIC ownership and produce a creation receipt.",
       "diagnostic_proof": {
         "tables": ["cfg_creation_witnesses"],
@@ -164,8 +164,8 @@
       "id": "abort_replay_identity",
       "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::class PlanBlockReservation:",
       "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_plan_block_replay_allocates_new_attempt_local_realization",
-      "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::class MbaBlockIdentityIndex:",
-      "current_status": "missing",
+      "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::def abort_proxy_transaction(",
+      "current_status": "partial",
       "required_port": "Discard aborted reservations and provisional receipts, and allocate a fresh handle/version when the same PlanBlockRef is replayed.",
       "diagnostic_proof": {
         "tables": ["cfg_creation_witnesses"],
@@ -182,7 +182,7 @@
       "donor_source": "src/d810/ir/block_identity.py::OBSERVED_EPHEMERAL",
       "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_serial_space_imports_are_observed_not_created",
       "current_production_seam": "src/d810/ir/block_identity.py::class BlockHandleProvenance",
-      "current_status": "missing",
+      "current_status": "partial",
       "required_port": "Separate anonymously observed SDK blocks from D810-owned created blocks and forbid inferred PlanBlockRef ownership.",
       "diagnostic_proof": {
         "tables": ["cfg_creation_witnesses"],
@@ -368,8 +368,8 @@
       "id": "transaction_phase_events",
       "donor_source": "src/d810/core/observability_events.py::class CfgTransactionAttemptObserved:",
       "donor_test": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart",
-      "current_production_seam": "src/d810/core/observability_events.py::class MutationPlanObserved:",
-      "current_status": "missing",
+      "current_production_seam": "src/d810/core/observability_events.py::class CfgTransactionAttemptObserved:",
+      "current_status": "partial",
       "required_port": "Emit portable planned, projected, preflighted, bound, realizing, observed, committed, rejected-clean, and poisoned observations at actual boundaries.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_phase_events"],
@@ -385,8 +385,8 @@
       "id": "cfg_transaction_attempt_persistence",
       "donor_source": "src/d810/core/diag/models.py::class CfgTransactionAttemptRecord(BaseModel):",
       "donor_test": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart",
-      "current_production_seam": "src/d810/core/diag/models.py::class SemanticFragmentTransaction(BaseModel):",
-      "current_status": "missing",
+      "current_production_seam": "src/d810/core/diag/models.py::class CfgTransactionAttemptRecord(BaseModel):",
+      "current_status": "partial",
       "required_port": "Persist one normalized attempt row keyed by plan_id and attempt_id with generation, current phase, mutation-start, poison, and failure authority.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts"],
@@ -402,8 +402,8 @@
       "id": "cfg_creation_witness_persistence",
       "donor_source": "src/d810/core/diag/models.py::class CfgCreationWitnessRecord(BaseModel):",
       "donor_test": "tests/unit/core/diag/test_mutation_timeline.py::def test_committed_cfg_creation_mapping_is_queryable_after_database_restart",
-      "current_production_seam": "src/d810/core/diag/models.py::class MutationReceiptIdentity(BaseModel):",
-      "current_status": "missing",
+      "current_production_seam": "src/d810/core/diag/models.py::class CfgCreationWitnessRecord(BaseModel):",
+      "current_status": "accepted",
       "required_port": "Persist cfg_creation_witnesses with provenance, handle, logical version, requested/returned coordinates, quantities, state, and invalidation.",
       "diagnostic_proof": {
         "tables": ["cfg_creation_witnesses"],

@@ -13,7 +13,11 @@ from d810.core.events import EventEmitter
 from d810.core.logging import getLogger
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.typing import Iterable
-from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.hexrays.ir.mba_identity_index import (
+    MbaBlockIdentityIndex,
+    PlanBlockCreationReceipt,
+    PlanBlockReservation,
+)
 from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockVersion,
     LogicalBlockVersionTransition,
@@ -42,6 +46,12 @@ from d810.transforms.fragment_plan import (
 )
 from d810.transforms.detached_route_oracle import DetachedRouteOracleResult
 from d810.transforms.fragment_validation import FragmentValidationResult
+from d810.transforms.cfg_transaction import (
+    CfgTransactionFailure,
+    CfgTransactionPhase,
+    PlanBlockRef,
+    TransactionAttemptId,
+)
 
 
 logger = getLogger(__name__)
@@ -427,6 +437,52 @@ class MbaMutationObservationFailure:
     error_message: str
 
 
+@dataclass(frozen=True, slots=True)
+class MbaCfgTransactionAuthorityObserved:
+    """Typed runtime authority for one portable transaction phase."""
+
+    session_id: str
+    function_ea: int
+    maturity: int
+    attempt_id: TransactionAttemptId
+    phase: CfgTransactionPhase
+    phase_index: int
+    mba_generation: int
+    evidence_generation: int
+    mutation_started: bool
+    poisoned: bool
+    plan_refs: tuple[PlanBlockRef, ...] = ()
+    reservations: tuple[PlanBlockReservation, ...] = ()
+    creation_receipts: tuple[PlanBlockCreationReceipt, ...] = ()
+    creation_quantities: tuple[tuple[PlanBlockRef, int, int], ...] = ()
+    failure: CfgTransactionFailure | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.attempt_id, TransactionAttemptId):
+            raise TypeError("CFG transaction observation requires typed authority")
+        if self.session_id != self.attempt_id.session_id:
+            raise ValueError("CFG transaction observation session authority differs")
+        if not isinstance(self.phase, CfgTransactionPhase):
+            raise TypeError("CFG transaction observation requires a typed phase")
+        if bool(self.poisoned) != (
+            self.phase is CfgTransactionPhase.POISONED_RESTART_REQUIRED
+        ):
+            raise ValueError("CFG transaction poison flag differs from its phase")
+        if self.failure is not None and self.failure.attempt_id != self.attempt_id:
+            raise ValueError("CFG transaction failure authority differs")
+        if any(ref.plan_id != self.attempt_id.plan_id for ref in self.plan_refs):
+            raise ValueError("CFG transaction plan reference authority differs")
+        if len(set(self.plan_refs)) != len(self.plan_refs):
+            raise ValueError("CFG transaction plan references are not unique")
+        declared = set(self.plan_refs)
+        if any(item.plan_ref not in declared for item in self.reservations):
+            raise ValueError("CFG transaction reservation is not declared")
+        if any(item.plan_ref not in declared for item in self.creation_receipts):
+            raise ValueError("CFG transaction creation receipt is not declared")
+        if any(item[0] not in declared for item in self.creation_quantities):
+            raise ValueError("CFG transaction creation quantity is not declared")
+
+
 @dataclass(slots=True)
 class MbaMutationGateway:
     """The sole control plane for serial shifts in a modifier transaction.
@@ -514,6 +570,33 @@ class MbaMutationGateway:
         init=False,
         repr=False,
     )
+    _current_transaction_attempt: TransactionAttemptId | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _cfg_phase_index: int = field(default=0, init=False, repr=False)
+    _cfg_plan_refs: tuple[PlanBlockRef, ...] = field(
+        default=(),
+        init=False,
+        repr=False,
+    )
+    _cfg_reservations: dict[PlanBlockRef, PlanBlockReservation] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _cfg_creation_receipts: dict[PlanBlockRef, PlanBlockCreationReceipt] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _cfg_creation_quantities: dict[PlanBlockRef, tuple[int, int]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _cfg_mutation_started: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.generation = int(self.generation)
@@ -558,6 +641,54 @@ class MbaMutationGateway:
     @property
     def active_batch_id(self) -> str | None:
         return self._active_batch_id
+
+    @property
+    def current_transaction_attempt(self) -> TransactionAttemptId | None:
+        return self._current_transaction_attempt
+
+    @property
+    def plan_creation_receipts(self) -> tuple[PlanBlockCreationReceipt, ...]:
+        """Return exact plan-to-live creation proofs for the active attempt."""
+        return tuple(self._cfg_creation_receipts.values())
+
+    def _reset_cfg_context(self) -> None:
+        self._current_transaction_attempt = None
+        self._cfg_phase_index = 0
+        self._cfg_plan_refs = ()
+        self._cfg_reservations.clear()
+        self._cfg_creation_receipts.clear()
+        self._cfg_creation_quantities.clear()
+        self._cfg_mutation_started = False
+
+    def _emit_cfg_transaction_phase(self, phase: CfgTransactionPhase) -> None:
+        attempt = self._current_transaction_attempt
+        if attempt is None:
+            raise RuntimeError("CFG transaction phase has no attempt authority")
+        self._emit_observation(
+            phase=phase.value,
+            event_type=MbaCfgTransactionAuthorityObserved,
+            payload=MbaCfgTransactionAuthorityObserved(
+                session_id=self.session_id,
+                function_ea=int(self.function_ea),
+                maturity=int(self.maturity),
+                attempt_id=attempt,
+                phase=phase,
+                phase_index=int(self._cfg_phase_index),
+                mba_generation=int(attempt.generation),
+                evidence_generation=int(self.identity_index.evidence_generation),
+                mutation_started=bool(self._cfg_mutation_started),
+                poisoned=False,
+                plan_refs=self._cfg_plan_refs,
+                reservations=tuple(self._cfg_reservations.values()),
+                creation_receipts=tuple(self._cfg_creation_receipts.values()),
+                creation_quantities=tuple(
+                    (plan_ref, before, after)
+                    for plan_ref, (before, after) in self._cfg_creation_quantities.items()
+                ),
+            ),
+            mutation_batch_id=attempt.attempt_id,
+        )
+        self._cfg_phase_index += 1
 
     def _reset_fragment_context(self) -> None:
         self._active_fragment_plan = None
@@ -608,6 +739,8 @@ class MbaMutationGateway:
         fragment_root_publication_groups: Iterable[
             MbaMutationRootPublicationGroup
         ] = (),
+        transaction_attempt: TransactionAttemptId | None = None,
+        patch_plan_refs: Iterable[PlanBlockRef] = (),
     ) -> None:
         if self.active:
             raise RuntimeError("a structural mutation batch is already active")
@@ -618,6 +751,7 @@ class MbaMutationGateway:
             raise ValueError("planned operation count must be non-negative")
         plan_items = tuple(plan_items)
         fragment_root_publication_groups = tuple(fragment_root_publication_groups)
+        patch_plan_refs = tuple(patch_plan_refs)
         if (kind is StructuralMutationKind.FRAGMENT_PUBLICATION) != isinstance(
             fragment_plan, FragmentPlan
         ):
@@ -645,11 +779,41 @@ class MbaMutationGateway:
             raise ValueError(
                 "non-fragment mutation cannot carry root publication groups"
             )
+        if transaction_attempt is not None:
+            if not isinstance(transaction_attempt, TransactionAttemptId):
+                raise TypeError("transaction attempt requires typed authority")
+            if transaction_attempt.session_id != self.session_id:
+                raise ValueError("transaction attempt belongs to another session")
+            if transaction_attempt.generation != self.identity_index.generation:
+                raise ValueError("transaction attempt belongs to another generation")
+            if fragment_plan is not None and (
+                transaction_attempt.plan_id != fragment_plan.plan_id
+            ):
+                raise ValueError("transaction attempt does not match fragment plan")
+            if any(
+                ref.plan_id != transaction_attempt.plan_id for ref in patch_plan_refs
+            ):
+                raise ValueError("patch plan reference authority differs")
+            if len(set(patch_plan_refs)) != len(patch_plan_refs):
+                raise ValueError("patch plan references are not unique")
+        elif patch_plan_refs:
+            raise ValueError("patch plan references require transaction authority")
         serial_quantity = None if serial_quantity is None else int(serial_quantity)
-        batch_id = uuid.uuid4().hex
-        self.identity_index.begin_transaction(batch_id, serial_quantity)
+        batch_id = (
+            uuid.uuid4().hex
+            if transaction_attempt is None
+            else transaction_attempt.attempt_id
+        )
+        self.identity_index.begin_transaction(
+            transaction_attempt if transaction_attempt is not None else batch_id,
+            serial_quantity,
+        )
 
         self._reset_fragment_context()
+        self._reset_cfg_context()
+        if transaction_attempt is not None:
+            self._current_transaction_attempt = transaction_attempt
+            self._cfg_plan_refs = patch_plan_refs
         self._active_fragment_plan = fragment_plan
         self._active_kind = kind
         self._active_description = str(description)
@@ -689,6 +853,8 @@ class MbaMutationGateway:
             ),
             mutation_batch_id=batch_id,
         )
+        if transaction_attempt is not None:
+            self._emit_cfg_transaction_phase(CfgTransactionPhase.PLANNED)
 
     def _emit_observation(
         self,
@@ -1444,15 +1610,69 @@ class MbaMutationGateway:
         self._record_handle(handle)
         return staged
 
+    def reserve_plan_block(
+        self,
+        attempt: TransactionAttemptId,
+        plan_ref: PlanBlockRef,
+        *,
+        handle: MbaBlockHandle | None = None,
+        replaces: MbaBlockHandle | None = None,
+    ) -> PlanBlockReservation:
+        """Reserve D810-owned plan identity before invoking the SDK."""
+        self._require_active()
+        if attempt != self._current_transaction_attempt:
+            raise ValueError("plan reservation attempt is not the active batch")
+        if plan_ref not in self._cfg_plan_refs:
+            raise ValueError("plan reservation is not declared by the active plan")
+        reservation = self.identity_index.reserve_plan_block(
+            attempt,
+            plan_ref,
+            handle=handle,
+            replaces=replaces,
+        )
+        self._cfg_reservations[plan_ref] = reservation
+        self._record_handle(reservation.logical_version.handle)
+        if set(self._cfg_reservations) == set(self._cfg_plan_refs):
+            self._emit_cfg_transaction_phase(CfgTransactionPhase.BOUND)
+        return reservation
+
+    def bind_reserved_plan_block(
+        self,
+        attempt: TransactionAttemptId,
+        plan_ref: PlanBlockRef,
+        *,
+        insertion_serial: int,
+        returned_serial: int,
+    ) -> PlanBlockCreationReceipt:
+        """Bind a planned insertion to the exact block returned by the SDK."""
+        self._require_active()
+        if attempt != self._current_transaction_attempt:
+            raise ValueError("plan binding attempt is not the active batch")
+        before = self.identity_index.transaction_quantity(str(self._active_batch_id))
+        receipt = self.identity_index.bind_reserved_plan_block(
+            attempt,
+            plan_ref,
+            insertion_serial=int(insertion_serial),
+            returned_serial=int(returned_serial),
+        )
+        after = self.identity_index.transaction_quantity(str(self._active_batch_id))
+        self._cfg_creation_receipts[plan_ref] = receipt
+        self._cfg_creation_quantities[plan_ref] = (before, after)
+        self._cfg_mutation_started = True
+        self._record_handle(receipt.logical_version.handle)
+        self._operation_count += 1
+        if set(self._cfg_creation_receipts) == set(self._cfg_plan_refs):
+            self._emit_cfg_transaction_phase(CfgTransactionPhase.OBSERVED)
+        return receipt
+
     def record_insert(
         self,
         *,
         insertion_serial: int,
         returned_serial: int,
-        created: MbaBlockHandle | None = None,
+        created: MbaBlockHandle,
     ) -> MbaBlockHandle:
         self._require_active()
-        created = created or self.identity_index.create_synthetic_handle()
         self.identity_index.record_insert(
             transaction_id=str(self._active_batch_id),
             insertion_serial=int(insertion_serial),
@@ -1462,6 +1682,20 @@ class MbaMutationGateway:
         self._record_handle(created)
         self._operation_count += 1
         return created
+
+    def record_observed_insert(
+        self,
+        *,
+        insertion_serial: int,
+        returned_serial: int,
+    ) -> MbaBlockHandle:
+        """Record an SDK-created block that has no portable plan owner."""
+        created = self.identity_index.create_observed_ephemeral_handle()
+        return self.record_insert(
+            insertion_serial=insertion_serial,
+            returned_serial=returned_serial,
+            created=created,
+        )
 
     def discard_reserved_insert(self, handle: MbaBlockHandle) -> None:
         """Synchronize rollback after removing a reserved physical insertion."""
@@ -1598,7 +1832,7 @@ class MbaMutationGateway:
         """Record one SDK clone and return its transaction-local handle."""
         self._require_active()
         created = created or (
-            self.identity_index.create_synthetic_handle()
+            self.identity_index.create_observed_ephemeral_handle()
             if source.stable_identity is None
             else self.identity_index.create_native_handle(
                 source.stable_identity,
@@ -1727,6 +1961,8 @@ class MbaMutationGateway:
         )
         self.generation = post_generation
         self._receipts.append(receipt)
+        if self._current_transaction_attempt is not None:
+            self._emit_cfg_transaction_phase(CfgTransactionPhase.COMMITTED)
         committed_batch_id = str(self._active_batch_id)
         self._active_kind = None
         self._active_description = ""
@@ -1750,6 +1986,7 @@ class MbaMutationGateway:
             payload=committed,
             mutation_batch_id=committed_batch_id,
         )
+        self._reset_cfg_context()
         return receipt
 
     def abort(self, *, reason: str = "aborted") -> None:
@@ -1814,6 +2051,7 @@ class MbaMutationGateway:
         self._affected_identities.clear()
         self._operation_count = 0
         self._reset_fragment_context()
+        self._reset_cfg_context()
 
     def record(
         self,
@@ -1834,6 +2072,7 @@ class MbaMutationGateway:
 
 
 __all__ = [
+    "MbaCfgTransactionAuthorityObserved",
     "MbaMutationCommitted",
     "MbaMutationAborted",
     "MbaMutationGateway",

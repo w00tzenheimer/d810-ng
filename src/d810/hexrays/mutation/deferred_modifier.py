@@ -2912,8 +2912,10 @@ class DeferredGraphModifier:
                         provenance=original_handle.provenance,
                     )
             if retained_handle is None or tail_handle is None:
-                retained_handle = gateway.identity_index.create_synthetic_handle()
-                tail_handle = gateway.identity_index.create_synthetic_handle()
+                retained_handle = (
+                    gateway.identity_index.create_observed_ephemeral_handle()
+                )
+                tail_handle = gateway.identity_index.create_observed_ephemeral_handle()
             gateway.record_split(
                 original=original_handle,
                 retained=retained_handle,
@@ -4233,7 +4235,7 @@ class DeferredGraphModifier:
                 "semantic fragment materialization has no gateway"
             )
         reference = self._resolve_semantic_fragment_version(reference_version)
-        created_handle = gateway.identity_index.create_synthetic_handle()
+        created_handle = gateway.identity_index.create_observed_ephemeral_handle()
         created = create_standalone_block(
             ref_blk=reference,
             blk_ins=[],
@@ -4446,7 +4448,7 @@ class DeferredGraphModifier:
             raise SemanticEdgeOperationRejected(
                 "semantic fallthrough helper materialization has no gateway"
             )
-        created_handle = gateway.identity_index.create_synthetic_handle()
+        created_handle = gateway.identity_index.create_observed_ephemeral_handle()
         expected_serial = int(source.serial) + 1
         old_qty = int(self.mba.qty)
         try:
@@ -10041,11 +10043,17 @@ class DeferredGraphModifier:
         gateway = self._mutation_gateway
         if gateway is None:
             raise RuntimeError("serial insertion could not start mutation gateway")
-        gateway.record_insert(
-            insertion_serial=int(insertion_serial),
-            returned_serial=int(insertion_serial),
-            created=created,
-        )
+        if created is None:
+            gateway.record_observed_insert(
+                insertion_serial=int(insertion_serial),
+                returned_serial=int(insertion_serial),
+            )
+        else:
+            gateway.record_insert(
+                insertion_serial=int(insertion_serial),
+                returned_serial=int(insertion_serial),
+                created=created,
+            )
         if started_batch:
             gateway.commit()
 

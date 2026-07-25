@@ -400,6 +400,89 @@ class MutationReceiptIdentity(BaseModel):
         primary_key = CompositeKey("event", "identity_index")
 
 
+class CfgTransactionAttemptRecord(BaseModel):
+    plan_id = TextField()
+    attempt_id = TextField()
+    session = ForeignKeyField(
+        DiagnosticSession,
+        field="session_id",
+        column_name="session_id",
+        index=False,
+        null=False,
+    )
+    func_ea_hex = TextField()
+    func_ea_i64 = IntegerField()
+    current_phase = TextField()
+    mba_generation = IntegerField()
+    evidence_generation = IntegerField()
+    mutation_started = IntegerField(constraints=[Check("mutation_started IN (0,1)")])
+    poisoned = IntegerField(constraints=[Check("poisoned IN (0,1)")])
+    first_failure_obligation = TextField(null=True)
+    first_failure_phase = TextField(null=True)
+    first_failure_reason = TextField(null=True)
+    interr_code = IntegerField(null=True)
+
+    class Meta:
+        table_name = "cfg_transaction_attempts"
+        primary_key = CompositeKey("plan_id", "attempt_id")
+        indexes = ((('session', 'current_phase'), False),)
+
+
+class CfgTransactionPhaseEventRecord(BaseModel):
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        index=False,
+        null=False,
+    )
+    plan_id = TextField()
+    attempt_id = TextField()
+    phase_index = IntegerField()
+    phase = TextField()
+    mutation_started = IntegerField(constraints=[Check("mutation_started IN (0,1)")])
+    poisoned = IntegerField(constraints=[Check("poisoned IN (0,1)")])
+    failure_obligation = TextField(null=True)
+    failure_phase = TextField(null=True)
+    failure_reason = TextField(null=True)
+    interr_code = IntegerField(null=True)
+
+    class Meta:
+        table_name = "cfg_transaction_phase_events"
+        primary_key = CompositeKey("plan_id", "attempt_id", "phase_index")
+        indexes = ((('event',), False),)
+
+
+class CfgCreationWitnessRecord(BaseModel):
+    plan_id = TextField()
+    attempt_id = TextField()
+    local_block_id = TextField()
+    provenance = TextField(
+        null=True,
+        constraints=[
+            Check(
+                "provenance IN ('native','imported_native',"
+                "'created_synthetic','observed_ephemeral')"
+            )
+        ],
+    )
+    reserved_handle_token = TextField(null=True)
+    logical_proxy_token = TextField(null=True)
+    logical_version = IntegerField(null=True)
+    logical_generation = IntegerField(null=True)
+    insertion_quantity_before = IntegerField(null=True)
+    insertion_quantity_after = IntegerField(null=True)
+    requested_insertion_serial = IntegerField(null=True)
+    returned_serial = IntegerField(null=True)
+    invalidated = IntegerField(constraints=[Check("invalidated IN (0,1)")])
+    state = TextField()
+
+    class Meta:
+        table_name = "cfg_creation_witnesses"
+        primary_key = CompositeKey("plan_id", "attempt_id", "local_block_id")
+        indexes = ((('reserved_handle_token',), False),)
+
+
 class SemanticFragmentTransaction(BaseModel):
     mutation_batch_id = TextField(primary_key=True)
     plan_event = ForeignKeyField(
@@ -572,7 +655,12 @@ class LogicalBlockVersionTransitionRecord(BaseModel):
     physical_handle_token = TextField()
     generation = IntegerField()
     provenance = TextField(
-        constraints=[Check("provenance IN ('native','imported_native','synthetic')")]
+        constraints=[
+            Check(
+                "provenance IN ('native','imported_native',"
+                "'created_synthetic','observed_ephemeral')"
+            )
+        ]
     )
     stable_identity_json = TextField(null=True)
     anchor_ea_hex = TextField(null=True)
@@ -1427,6 +1515,9 @@ MODELS = (
     MutationPlanItem,
     MutationReceipt,
     MutationReceiptIdentity,
+    CfgTransactionAttemptRecord,
+    CfgTransactionPhaseEventRecord,
+    CfgCreationWitnessRecord,
     SemanticFragmentTransaction,
     SemanticFragmentRootPublicationGroupRecord,
     SemanticFragmentValidationOutcome,

@@ -204,9 +204,14 @@ class LogicalBlockVersionTransitionObserved:
             ("staged", "aborted"),
         }:
             raise ValueError("logical-version transition is not authoritative")
-        if self.provenance not in {"native", "imported_native", "synthetic"}:
+        synthetic_provenance = {"created_synthetic", "observed_ephemeral"}
+        if self.provenance not in {
+            "native",
+            "imported_native",
+            *synthetic_provenance,
+        }:
             raise ValueError("logical-version provenance is invalid")
-        if self.provenance == "synthetic":
+        if self.provenance in synthetic_provenance:
             if self.stable_identity_json is not None or anchor_ea is not None:
                 raise ValueError(
                     "synthetic logical version cannot claim native identity"
@@ -334,6 +339,125 @@ class FragmentRootPublicationGroupObserved:
         )
         object.__setattr__(self, "rollback_attempted", rollback_attempted)
         object.__setattr__(self, "rollback_succeeded", rollback_succeeded)
+
+
+@dataclass(frozen=True)
+class CfgCreationWitnessObserved:
+    """Portable ownership and coordinate evidence for one plan-local block."""
+
+    local_block_id: str
+    provenance: str | None
+    reserved_handle_token: str | None = None
+    logical_proxy_token: str | None = None
+    logical_version: int | None = None
+    logical_generation: int | None = None
+    insertion_quantity_before: int | None = None
+    insertion_quantity_after: int | None = None
+    requested_insertion_serial: int | None = None
+    returned_serial: int | None = None
+    invalidated: bool = False
+    state: str = "planned"
+
+    def __post_init__(self) -> None:
+        if not str(self.local_block_id):
+            raise ValueError("creation witness requires a plan-local block id")
+        if self.provenance is not None and self.provenance not in {
+            "native",
+            "imported_native",
+            "created_synthetic",
+            "observed_ephemeral",
+        }:
+            raise ValueError("creation witness provenance is invalid")
+        if self.state not in {
+            "planned",
+            "reserved",
+            "bound",
+            "observed",
+            "committed",
+            "invalidated",
+        }:
+            raise ValueError("creation witness state is invalid")
+        numeric = (
+            self.logical_version,
+            self.logical_generation,
+            self.insertion_quantity_before,
+            self.insertion_quantity_after,
+            self.requested_insertion_serial,
+            self.returned_serial,
+        )
+        if any(value is not None and int(value) < 0 for value in numeric):
+            raise ValueError("creation witness coordinates must be non-negative")
+        requires_coordinates = self.state == "bound" or (
+            self.state == "committed"
+            and self.provenance in {"created_synthetic", "imported_native"}
+        )
+        if requires_coordinates and (
+            self.requested_insertion_serial is None or self.returned_serial is None
+        ):
+            raise ValueError("bound creation witness requires both coordinates")
+
+
+@dataclass(frozen=True)
+class CfgTransactionAttemptObserved:
+    """One ordered portable CFG transaction phase and its current witnesses."""
+
+    session_id: str
+    func_ea: int
+    plan_id: str
+    attempt_id: str
+    phase: str
+    phase_index: int
+    mba_generation: int
+    evidence_generation: int
+    mutation_started: bool
+    poisoned: bool
+    first_failure_obligation: str | None = None
+    first_failure_phase: str | None = None
+    first_failure_reason: str | None = None
+    interr_code: int | None = None
+    creation_witnesses: tuple[CfgCreationWitnessObserved, ...] = ()
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        phases = {
+            "planned",
+            "projected",
+            "preflighted",
+            "bound",
+            "realizing",
+            "observed",
+            "committed",
+            "rejected_clean",
+            "poisoned_restart_required",
+        }
+        if self.phase not in phases:
+            raise ValueError("CFG transaction phase is invalid")
+        if not self.session_id or not self.plan_id or not self.attempt_id:
+            raise ValueError("CFG transaction authority is incomplete")
+        if min(
+            int(self.phase_index),
+            int(self.mba_generation),
+            int(self.evidence_generation),
+        ) < 0:
+            raise ValueError("CFG transaction counters must be non-negative")
+        if bool(self.poisoned) != (self.phase == "poisoned_restart_required"):
+            raise ValueError("CFG transaction poison flag is invalid")
+        failure_fields = (
+            self.first_failure_obligation,
+            self.first_failure_phase,
+            self.first_failure_reason,
+        )
+        if any(failure_fields) and not self.first_failure_reason:
+            raise ValueError("CFG transaction failure requires a reason")
+        if any(
+            not isinstance(witness, CfgCreationWitnessObserved)
+            for witness in self.creation_witnesses
+        ):
+            raise TypeError("CFG transaction contains an invalid creation witness")
+        if len({w.local_block_id for w in self.creation_witnesses}) != len(
+            self.creation_witnesses
+        ):
+            raise ValueError("CFG transaction witnesses must be unique")
 
 
 @dataclass(frozen=True)

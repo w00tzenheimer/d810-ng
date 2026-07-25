@@ -7,6 +7,7 @@ import sqlite3
 import time
 
 from d810.core.observability_events import (
+    CfgTransactionAttemptObserved,
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
     IdentityDecisionObserved,
@@ -123,7 +124,145 @@ def persist_lifecycle_event(
     return int(cursor.lastrowid)
 
 
+def persist_cfg_transaction_attempt(
+    conn: sqlite3.Connection,
+    event: CfgTransactionAttemptObserved,
+) -> int:
+    """Persist one ordered attempt phase and upsert its normalized authority."""
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="cfg_transaction_phase",
+            phase=event.phase,
+            evidence_generation=event.evidence_generation,
+            mba_generation_before=event.mba_generation,
+            mba_generation_after=event.mba_generation,
+            correlation_id=f"{event.plan_id}:{event.attempt_id}",
+            summary=f"CFG transaction {event.phase}",
+            payload={"plan_id": event.plan_id, "attempt_id": event.attempt_id},
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+    existing = conn.execute(
+        "SELECT first_failure_obligation,first_failure_phase,"
+        "first_failure_reason,interr_code FROM cfg_transaction_attempts "
+        "WHERE plan_id=? AND attempt_id=?",
+        (event.plan_id, event.attempt_id),
+    ).fetchone()
+    first_failure = (
+        existing
+        if existing is not None and existing[2] is not None
+        else (
+            event.first_failure_obligation,
+            event.first_failure_phase,
+            event.first_failure_reason,
+            event.interr_code,
+        )
+    )
+    conn.execute(
+        "INSERT INTO cfg_transaction_attempts "
+        "(plan_id,attempt_id,session_id,func_ea_hex,func_ea_i64,current_phase,"
+        "mba_generation,evidence_generation,mutation_started,poisoned,"
+        "first_failure_obligation,first_failure_phase,first_failure_reason,"
+        "interr_code) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(plan_id,attempt_id) DO UPDATE SET "
+        "current_phase=excluded.current_phase,"
+        "mba_generation=excluded.mba_generation,"
+        "evidence_generation=excluded.evidence_generation,"
+        "mutation_started=MAX(cfg_transaction_attempts.mutation_started,"
+        "excluded.mutation_started),"
+        "poisoned=MAX(cfg_transaction_attempts.poisoned,excluded.poisoned),"
+        "first_failure_obligation=excluded.first_failure_obligation,"
+        "first_failure_phase=excluded.first_failure_phase,"
+        "first_failure_reason=excluded.first_failure_reason,"
+        "interr_code=excluded.interr_code",
+        (
+            event.plan_id,
+            event.attempt_id,
+            event.session_id,
+            _func_hex(event.func_ea),
+            int(event.func_ea),
+            event.phase,
+            int(event.mba_generation),
+            int(event.evidence_generation),
+            int(event.mutation_started),
+            int(event.poisoned),
+            *first_failure,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO cfg_transaction_phase_events "
+        "(event_id,plan_id,attempt_id,phase_index,phase,mutation_started,"
+        "poisoned,failure_obligation,failure_phase,failure_reason,interr_code) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            event.plan_id,
+            event.attempt_id,
+            int(event.phase_index),
+            event.phase,
+            int(event.mutation_started),
+            int(event.poisoned),
+            event.first_failure_obligation,
+            event.first_failure_phase,
+            event.first_failure_reason,
+            event.interr_code,
+        ),
+    )
+    for witness in event.creation_witnesses:
+        conn.execute(
+            "INSERT INTO cfg_creation_witnesses "
+            "(plan_id,attempt_id,local_block_id,provenance,"
+            "reserved_handle_token,logical_proxy_token,logical_version,"
+            "logical_generation,insertion_quantity_before,"
+            "insertion_quantity_after,requested_insertion_serial,"
+            "returned_serial,invalidated,state) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(plan_id,attempt_id,local_block_id) DO UPDATE SET "
+            "provenance=COALESCE(excluded.provenance,"
+            "cfg_creation_witnesses.provenance),"
+            "reserved_handle_token=COALESCE(excluded.reserved_handle_token,"
+            "cfg_creation_witnesses.reserved_handle_token),"
+            "logical_proxy_token=COALESCE(excluded.logical_proxy_token,"
+            "cfg_creation_witnesses.logical_proxy_token),"
+            "logical_version=COALESCE(excluded.logical_version,"
+            "cfg_creation_witnesses.logical_version),"
+            "logical_generation=COALESCE(excluded.logical_generation,"
+            "cfg_creation_witnesses.logical_generation),"
+            "insertion_quantity_before=COALESCE(excluded.insertion_quantity_before,"
+            "cfg_creation_witnesses.insertion_quantity_before),"
+            "insertion_quantity_after=COALESCE(excluded.insertion_quantity_after,"
+            "cfg_creation_witnesses.insertion_quantity_after),"
+            "requested_insertion_serial=COALESCE(excluded.requested_insertion_serial,"
+            "cfg_creation_witnesses.requested_insertion_serial),"
+            "returned_serial=COALESCE(excluded.returned_serial,"
+            "cfg_creation_witnesses.returned_serial),"
+            "invalidated=MAX(cfg_creation_witnesses.invalidated,excluded.invalidated),"
+            "state=excluded.state",
+            (
+                event.plan_id,
+                event.attempt_id,
+                witness.local_block_id,
+                witness.provenance,
+                witness.reserved_handle_token,
+                witness.logical_proxy_token,
+                witness.logical_version,
+                witness.logical_generation,
+                witness.insertion_quantity_before,
+                witness.insertion_quantity_after,
+                witness.requested_insertion_serial,
+                witness.returned_serial,
+                int(witness.invalidated),
+                witness.state,
+            ),
+        )
+    return event_id
+
+
 __all__ = [
+    "persist_cfg_transaction_attempt",
     "persist_diagnostic_session",
     "persist_diagnostic_session_transition",
     "persist_lifecycle_event",

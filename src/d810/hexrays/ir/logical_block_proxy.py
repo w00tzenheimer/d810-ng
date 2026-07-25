@@ -196,15 +196,13 @@ class LogicalBlockProxy:
         provenance: BlockHandleProvenance,
         generation: int,
     ) -> LogicalBlockProxy:
-        if (
-            provenance is BlockHandleProvenance.SYNTHETIC
-            and stable_identity is not None
-        ):
+        synthetic_provenance = {
+            BlockHandleProvenance.CREATED_SYNTHETIC,
+            BlockHandleProvenance.OBSERVED_EPHEMERAL,
+        }
+        if provenance in synthetic_provenance and stable_identity is not None:
             raise ValueError("synthetic logical proxy cannot claim stable identity")
-        if (
-            provenance is not BlockHandleProvenance.SYNTHETIC
-            and stable_identity is None
-        ):
+        if provenance not in synthetic_provenance and stable_identity is None:
             raise ValueError("native logical proxy requires stable identity")
         return cls(
             proxy_token=proxy_token,

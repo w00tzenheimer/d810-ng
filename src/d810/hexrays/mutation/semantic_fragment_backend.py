@@ -3008,7 +3008,7 @@ def _reserve_root_fallthrough_helpers(
             raise SemanticFragmentBackendRejected(
                 f"root fallthrough helper id collision: {helper_block_id!r}"
             )
-        handle = gateway.identity_index.create_synthetic_handle()
+        handle = gateway.identity_index.create_observed_ephemeral_handle()
         staged = gateway.reserve_new_proxy(handle)
         proxy = gateway.identity_index.logical_proxy_for_handle(handle)
         if proxy is None:
