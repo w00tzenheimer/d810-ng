@@ -3847,3 +3847,49 @@ direct-rewrite contract and proving that its corridor is wholly owned by the
 selected detached component. Do not change the authoritative reference owner,
 merge it into the delivery block identity, or weaken containment. Validate one
 route at `0x40AB64` before considering the remaining five routes.
+
+**2026-07-25T08:49:13Z**
+
+Commit `80a9dae02` adds a required stable operation-owner identity and exact
+owner anchor to every portable direct rewrite. Canonical construction derives
+that owner from the state write when one exists, while the delivery operation
+continues to execute on the block containing the exact rewrite anchor. The
+detached oracle now compares the explicit operation owner rather than assuming
+that the owner and delivery tail occupy one native block. A pure split-owner
+test proves owner `0x40B51B` can remain authoritative when the delivery block
+contains only `0x40B52E`. Commit `943492485` is the separate Ruff-only
+formatting follow-up.
+
+The combined portable plan, canonical composition, detached oracle, gateway,
+and semantic-backend gate is 200/200 green. The three focused detached PREOPT
+direct-transfer runtime tests are 3/3 green. Ruff is clean for all eight
+touched files, and both commits pass ast-grep, the portable-shape gate,
+import-cycle analysis, and all 14 import-linter contracts.
+
+The mandatory exact cache-disabled A560 canary completed normally in 18.43
+seconds inside pytest with no worker crash or reported numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-direct-owner-contract-v1.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-direct-owner-contract-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-direct-owner-contract-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+The pseudocode remains the same eight-line false `while ( 1 )` stub, so this is
+not A560 acceptance.
+
+The intended route fact advanced: the `0x40AB64` reference-owner mismatch is
+gone, the six-route 31-operation semantic plan reaches the gateway, and its
+first attempt aborts without mutation to request the required CALLS companion
+for call `0x40AA30` over range `0x40AA2C-0x40AA60`. The controlled redo then
+reaches detached direct-transfer preflight. Its first failed C4 obligation is
+`detached_direct_transfer_tail_mismatch@0x40AA4F`: operation
+`state_assignment@0x40AA4F:0xE41F690E` owns its corridor and superseded anchor,
+but its imported delivery block continues to native tail `0x40AA57` with
+opcode 42 rather than ending at the rewrite anchor `0x40AA4F`.
+
+Both semantic receipts are aborted with zero applied operations, and there are
+zero detached reference comparisons. Production A560 therefore remains at C3.
+Continue by determining the proof-owned cut for the `0x40AA4F` delivery
+envelope before changing backend lowering. Do not presume that the whole
+`0x40AA35-0x40AA60` block is dispensable, and do not require the pre-rewrite
+native tail to equal the semantic rewrite anchor when an explicit validated
+cut can preserve required instructions through `0x40AA4F` and suppress only
+the obsolete suffix.
