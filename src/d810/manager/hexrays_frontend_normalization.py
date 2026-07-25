@@ -22,6 +22,7 @@ from d810.transforms.fragment_plan import (
     FragmentPlanRejected,
     fragment_plan_to_dict,
 )
+from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 
 
 logger = getLogger("D810.manager.frontend_normalization")
@@ -196,6 +197,25 @@ def run_live_frontend_normalization(
                 resolver_state.semantic_route_reference_oracle_provider
             ),
         )
+    except CfgGenerationPoisoned as exc:
+        emit_diagnostic(
+            LifecycleEventObserved(
+                session_id=session.identity_key,
+                func_ea=int(function_ea),
+                event_kind="frontend_normalization_generation_poisoned",
+                provider=_HANDLER_NAME,
+                phase=exc.failure.failure_phase,
+                evidence_generation=int(session.native_preanalysis.evidence_generation),
+                summary="frontend normalization poisoned the live MBA generation",
+                payload={
+                    "outcome": exc.failure.phase.value,
+                    "reason": exc.failure.reason,
+                    "interr_code": exc.failure.interr_code,
+                    "attempt_id": exc.failure.attempt_id.attempt_id,
+                },
+            )
+        )
+        raise
     except (FrontendNormalizationEvidenceRejected, FragmentPlanRejected) as exc:
         reason = str(exc)
         emit_diagnostic(

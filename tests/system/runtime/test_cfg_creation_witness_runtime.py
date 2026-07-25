@@ -84,6 +84,7 @@ def test_gateway_creation_witness_reaches_diagnostic_database(tmp_path) -> None:
             ("runtime-plan", "runtime-attempt"),
         ).fetchone() == (None, None, "reserved")
 
+        gateway._record_cfg_mutation_started()
         receipt = gateway.bind_reserved_plan_block(
             attempt,
             plan_ref,

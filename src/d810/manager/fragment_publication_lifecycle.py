@@ -18,6 +18,10 @@ from d810.transforms.fragment_plan import (
     FragmentWorkItemScope,
 )
 from d810.transforms.fragment_validation import FragmentValidationResult
+from d810.transforms.cfg_transaction import (
+    CfgTransactionFailure,
+    CfgTransactionPhase,
+)
 
 
 @dataclass(slots=True)
@@ -178,6 +182,40 @@ class SessionFragmentPublicationLifecycleAuthority:
             self.state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()
             self.state._fragment_publication_mark_receipt_committed()
         self._clear_pending()
+
+    def request_poisoned_generation_restart(
+        self,
+        plan: FragmentPlan,
+        failure: CfgTransactionFailure,
+    ) -> bool:
+        """Clear pending publication and stage the controller-owned poison retry."""
+        self._require_typed_plan(plan)
+        if not isinstance(failure, CfgTransactionFailure):
+            raise TypeError("poisoned restart requires a transaction failure")
+        if failure.phase is not CfgTransactionPhase.POISONED_RESTART_REQUIRED:
+            raise ValueError("poisoned restart requires poisoned failure evidence")
+        if failure.attempt_id.plan_id != plan.plan_id:
+            raise ValueError("poisoned restart attempt belongs to another plan")
+        if self._pending_plan_id is not None:
+            self._require_pending_plan(plan)
+            if (
+                plan.publication_purpose
+                is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+            ):
+                self.state._fragment_publication_abort_normalization(
+                    reason=failure.reason
+                )
+            else:
+                self.state._fragment_publication_abort_semantic_fragment(
+                    reason=failure.reason
+                )
+            self._clear_pending()
+        return self.state.request_poisoned_generation_restart(
+            reason=(
+                f"poisoned fragment generation during {failure.failure_phase}: "
+                f"{failure.reason}"
+            ),
+        )
 
 
 __all__ = ["SessionFragmentPublicationLifecycleAuthority"]

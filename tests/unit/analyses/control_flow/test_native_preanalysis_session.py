@@ -401,10 +401,92 @@ def test_evidence_observer_sees_generated_restart_request_and_consumption() -> N
         (
             "generated_restart_consumed",
             "accepted",
-            "controller_restart",
+            "calls_evidence",
             "flowchart consumed the staged generated-MBA restart",
         ),
     ]
+
+
+def test_poisoned_generation_restart_retains_reason_and_is_requested_once() -> None:
+    observed = []
+    state = NativePreanalysisSessionState(
+        evidence_generation=5,
+        event_observer=observed.append,
+    )
+
+    assert state.request_poisoned_generation_restart(
+        reason="poisoned fragment generation during stage: INTERR 50856"
+    )
+    assert not state.request_poisoned_generation_restart(
+        reason="duplicate poison request"
+    )
+
+    assert state.has_pending_generated_restart
+    assert observed[0].evidence_family == "poisoned_generation_restart"
+    assert observed[0].reason == (
+        "poisoned fragment generation during stage: INTERR 50856"
+    )
+    assert observed[1].outcome == "declined"
+
+
+def test_poisoned_restart_survives_prior_consumed_ordinary_redo() -> None:
+    state = NativePreanalysisSessionState(evidence_generation=5)
+    assert state.request_generated_restart(
+        evidence_family="ordinary",
+        reason="ordinary evidence retry",
+    )
+    assert state.consume_generated_restart()
+    assert not state.has_pending_generated_restart
+
+    assert state.request_poisoned_generation_restart(
+        reason="INTERR: 50856 after second-round insertion"
+    )
+    assert not state.request_poisoned_generation_restart(
+        reason="duplicate poison request"
+    )
+    assert state.has_pending_generated_restart
+    assert not state.has_exhausted_poison_restart
+    assert state.consume_generated_restart()
+    assert not state.consume_generated_restart()
+
+
+def test_distinct_poison_after_consumed_poison_restart_becomes_terminal() -> None:
+    state = NativePreanalysisSessionState(evidence_generation=5)
+    assert state.request_poisoned_generation_restart(reason="first poison incident")
+    assert state.consume_generated_restart()
+
+    assert not state.request_poisoned_generation_restart(
+        reason="fresh poison incident after recovery retry"
+    )
+    assert not state.has_pending_generated_restart
+    assert state.has_exhausted_poison_restart
+
+
+def test_changed_first_pass_facts_open_fresh_epoch_after_poison_exhaustion() -> None:
+    state = NativePreanalysisSessionState(evidence_generation=1)
+    assert state.portable_evidence_ready_generation == 1
+    assert state.normalization_published_postvalidated_generation is None
+    assert state.request_poisoned_generation_restart(reason="first poison incident")
+    assert state.consume_generated_restart()
+    assert not state.request_poisoned_generation_restart(
+        reason="distinct poison incident after recovery"
+    )
+    assert state.has_exhausted_poison_restart
+
+    state.mark_evidence_changed(
+        evidence_family="native_facts",
+        reason="genuinely changed native facts",
+    )
+
+    assert state.evidence_generation == 2
+    assert state.portable_evidence_ready_generation == 2
+    assert not state.has_exhausted_poison_restart
+    assert not state.has_pending_generated_restart
+    assert state.poisoned_restart_generation is None
+    assert state.exhausted_poison_restart_generation is None
+    assert state.pending_generated_restart_family is None
+    assert state.redo_generation is None
+    assert state.request_poisoned_generation_restart(reason="fresh epoch poison")
 
 
 def test_resolver_evidence_observer_names_the_changed_family() -> None:

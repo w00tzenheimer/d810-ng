@@ -858,6 +858,10 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
 
     class _Lifecycle:
         @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
         def has_pending_generated_restart(function_ea: int) -> bool:
             calls.append(("pending", function_ea))
             return next(pending)
@@ -888,3 +892,108 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
         ("decompile", 0x401000),
         ("pending", 0x401000),
     ]
+
+
+def test_decompile_controller_services_poison_restart_from_second_round(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+    pending = iter((True, True, False))
+
+    class _Lifecycle:
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
+        def has_pending_generated_restart(function_ea: int) -> bool:
+            calls.append(("pending", function_ea))
+            return next(pending)
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(
+        manager,
+        "prepare_native_preanalysis",
+        lambda function_ea: calls.append(("prepare", function_ea)) or 0,
+    )
+    rounds = iter(("first", "poisoned-second", "fresh-third"))
+
+    result = manager.decompile_with_native_preanalysis(
+        0x401000,
+        lambda: calls.append(("decompile", 0x401000)) or next(rounds),
+        lambda: calls.append(("invalidate", 0x401000)),
+    )
+
+    assert result == "fresh-third"
+    assert [kind for kind, _ea in calls].count("decompile") == 3
+    assert [kind for kind, _ea in calls].count("pending") == 3
+
+
+def test_decompile_controller_fails_loudly_if_restart_remains_after_poison_retry(
+    monkeypatch,
+) -> None:
+    class _Lifecycle:
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
+        def has_pending_generated_restart(_function_ea: int) -> bool:
+            return True
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+    rounds: list[str] = []
+
+    with pytest.raises(RuntimeError, match="restart budget exhausted"):
+        manager.decompile_with_native_preanalysis(
+            0x401000,
+            lambda: rounds.append("decompile"),
+            lambda: None,
+        )
+
+    assert rounds == ["decompile", "decompile", "decompile"]
+
+
+def test_decompile_controller_fails_on_distinct_post_recovery_poison(
+    monkeypatch,
+) -> None:
+    state = NativePreanalysisSessionState(evidence_generation=5)
+    assert state.request_generated_restart(
+        evidence_family="ordinary",
+        reason="ordinary evidence retry",
+    )
+    assert state.consume_generated_restart()
+
+    class _Lifecycle:
+        @staticmethod
+        def has_pending_generated_restart(_function_ea: int) -> bool:
+            return state.has_pending_generated_restart
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return state.has_exhausted_poison_restart
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+    rounds = 0
+
+    def decompile():
+        nonlocal rounds
+        rounds += 1
+        if rounds == 1:
+            assert state.request_poisoned_generation_restart(reason="first poison")
+        else:
+            assert state.consume_generated_restart()
+            assert not state.request_poisoned_generation_restart(
+                reason="fresh third-round poison"
+            )
+        return f"round-{rounds}"
+
+    with pytest.raises(RuntimeError, match="poison restart exhausted"):
+        manager.decompile_with_native_preanalysis(0x401000, decompile, lambda: None)
+
+    assert rounds == 2

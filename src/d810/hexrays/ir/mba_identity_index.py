@@ -29,7 +29,13 @@ from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockVersion,
     LogicalBlockVersionTransition,
 )
-from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
+from d810.transforms.cfg_transaction import (
+    CfgGenerationPoisoned,
+    CfgTransactionFailure,
+    CfgTransactionPhase,
+    PlanBlockRef,
+    TransactionAttemptId,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +192,12 @@ class MbaBlockIdentityIndex:
     _plan_creation_receipts: dict[
         tuple[TransactionAttemptId, PlanBlockRef], PlanBlockCreationReceipt
     ] = field(default_factory=dict, init=False, repr=False)
+    _poisoned_generation: int | None = field(default=None, init=False, repr=False)
+    _poisoned_failure: CfgTransactionFailure | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.session_id = str(self.session_id)
@@ -202,6 +214,32 @@ class MbaBlockIdentityIndex:
             raise ValueError("MBA identity index generation must be non-negative")
         if self.evidence_generation < 0:
             raise ValueError("MBA identity evidence generation must be non-negative")
+
+    @property
+    def generation_poisoned(self) -> bool:
+        """Whether an SDK write invalidated this exact live-MBA generation."""
+        return self._poisoned_generation == self.generation
+
+    @property
+    def poisoned_failure(self) -> CfgTransactionFailure | None:
+        """Return the first failure shared by every gateway over this index."""
+        return self._poisoned_failure if self.generation_poisoned else None
+
+    def poison_generation(self, failure: CfgTransactionFailure) -> None:
+        """Latch the first post-write failure for this live MBA generation."""
+        if not isinstance(failure, CfgTransactionFailure):
+            raise TypeError("MBA generation poison requires transaction failure evidence")
+        if failure.phase is not CfgTransactionPhase.POISONED_RESTART_REQUIRED:
+            raise ValueError("MBA generation poison requires a poisoned failure phase")
+        if self._poisoned_failure is None:
+            self._poisoned_generation = int(self.generation)
+            self._poisoned_failure = failure
+
+    def require_generation_usable(self) -> None:
+        """Reject every live-MBA operation after this generation diverged."""
+        failure = self.poisoned_failure
+        if failure is not None:
+            raise CfgGenerationPoisoned(failure)
 
     @classmethod
     def from_bindings(
@@ -419,6 +457,7 @@ class MbaBlockIdentityIndex:
     @property
     def serials_by_identity(self):
         """Read-only current bindings, for diagnostics and invariant tests."""
+        self.require_generation_usable()
         current: dict[StableBlockIdentity, set[int]] = defaultdict(set)
         for identity, tokens in self._tokens_by_identity.items():
             for token in tokens:
@@ -435,12 +474,14 @@ class MbaBlockIdentityIndex:
 
     @property
     def logical_proxy_count(self) -> int:
+        self.require_generation_usable()
         return len(self._proxies_by_token)
 
     def logical_proxy_for_handle(
         self,
         handle: MbaBlockHandle | None,
     ) -> LogicalBlockProxy | None:
+        self.require_generation_usable()
         if handle is None:
             return None
         proxy_token = self._proxy_token_by_handle_token.get(handle.token)
@@ -448,6 +489,7 @@ class MbaBlockIdentityIndex:
 
     def owns_logical_proxy(self, proxy: LogicalBlockProxy) -> bool:
         """Return whether *proxy* is this index's exact logical authority."""
+        self.require_generation_usable()
         return self._proxies_by_token.get(proxy.proxy_token) is proxy
 
     def resolve_logical_proxy(
@@ -462,6 +504,7 @@ class MbaBlockIdentityIndex:
         only then does the index bind that physical handle to a live serial.
         This keeps the serial lookup at the live backend boundary.
         """
+        self.require_generation_usable()
         if not self.owns_logical_proxy(proxy):
             raise ValueError("logical proxy is not owned by this identity index")
         version = proxy.resolve(transaction_id=transaction_id)
@@ -479,6 +522,7 @@ class MbaBlockIdentityIndex:
         transaction_id: str | None = None,
     ) -> BoundBlock | None:
         """Resolve one exact physical version without changing proxy authority."""
+        self.require_generation_usable()
         if not isinstance(version, LogicalBlockVersion):
             raise TypeError("logical version resolution requires a version")
         proxy = self._proxies_by_token.get(version.version_id.proxy_token)
@@ -636,6 +680,7 @@ class MbaBlockIdentityIndex:
         provenance: BlockHandleProvenance = BlockHandleProvenance.NATIVE,
     ) -> MbaBlockHandle:
         """Allocate an unbound native handle for a proved structural mutation."""
+        self.require_generation_usable()
         return self._new_handle(identity, provenance=provenance)
 
     def create_imported_native_handle(
@@ -643,6 +688,7 @@ class MbaBlockIdentityIndex:
         identity: StableBlockIdentity,
     ) -> MbaBlockHandle:
         """Allocate an exact live handle for an imported native translation."""
+        self.require_generation_usable()
         return self.create_native_handle(
             identity,
             provenance=BlockHandleProvenance.IMPORTED_NATIVE,
@@ -656,6 +702,7 @@ class MbaBlockIdentityIndex:
 
     def create_observed_ephemeral_handle(self) -> MbaBlockHandle:
         """Allocate an unowned handle for a block discovered around SDK work."""
+        self.require_generation_usable()
         return self._new_handle(
             None,
             provenance=BlockHandleProvenance.OBSERVED_EPHEMERAL,
@@ -663,6 +710,7 @@ class MbaBlockIdentityIndex:
 
     def ensure_serial_space(self, quantity: int) -> None:
         """Give every current serial a published logical proxy exactly once."""
+        self.require_generation_usable()
         for serial in range(int(quantity)):
             token = self._token_by_serial.get(serial)
             if token is None:
@@ -681,6 +729,7 @@ class MbaBlockIdentityIndex:
         coordinate.  Rebuild the map at every batch boundary so serial
         resolution cannot replay an obsolete shift.
         """
+        self.require_generation_usable()
         attempt = (
             transaction_id if isinstance(transaction_id, TransactionAttemptId) else None
         )
@@ -741,6 +790,7 @@ class MbaBlockIdentityIndex:
         replaces: MbaBlockHandle | None = None,
     ) -> PlanBlockReservation:
         """Allocate plan ownership before the corresponding SDK insertion."""
+        self.require_generation_usable()
         transaction_id = self._validate_plan_attempt(attempt, plan_ref)
         key = (attempt, plan_ref)
         if key in self._plan_reservations:
@@ -799,6 +849,7 @@ class MbaBlockIdentityIndex:
         returned_serial: int,
     ) -> PlanBlockCreationReceipt:
         """Bind the SDK result to its exact preallocated plan owner."""
+        self.require_generation_usable()
         transaction_id = self._validate_plan_attempt(attempt, plan_ref)
         key = (attempt, plan_ref)
         if key in self._plan_creation_receipts:
@@ -830,9 +881,11 @@ class MbaBlockIdentityIndex:
 
     @property
     def plan_creation_receipts(self) -> tuple[PlanBlockCreationReceipt, ...]:
+        self.require_generation_usable()
         return tuple(self._plan_creation_receipts.values())
 
     def transaction_quantity(self, transaction_id: str) -> int:
+        self.require_generation_usable()
         serials = self._serials_by_transaction.get(str(transaction_id))
         if serials is None:
             raise ValueError("identity transaction is not active")
@@ -843,6 +896,7 @@ class MbaBlockIdentityIndex:
         transaction_id: str,
         planned_serial: int,
     ) -> int | None:
+        self.require_generation_usable()
         transaction_id = str(transaction_id)
         planned_serial = int(planned_serial)
         baseline = self._baseline_tokens_by_transaction.get(transaction_id)
@@ -858,10 +912,12 @@ class MbaBlockIdentityIndex:
         return None if bound is None else int(bound.serial)
 
     def identity_for_serial(self, serial: int) -> StableBlockIdentity | None:
+        self.require_generation_usable()
         handle = self.handle_for_serial(serial)
         return None if handle is None else handle.stable_identity
 
     def handle_for_serial(self, serial: int) -> MbaBlockHandle | None:
+        self.require_generation_usable()
         token = self._token_by_serial.get(int(serial))
         if token is None:
             return None
@@ -874,6 +930,7 @@ class MbaBlockIdentityIndex:
         transaction_id: str | None = None,
     ) -> BoundBlock | None:
         """Resolve one unbroken current-generation handle, never by guessing."""
+        self.require_generation_usable()
         if handle.session_id != self.session_id:
             return None
         resolved_handle = handle
@@ -921,6 +978,7 @@ class MbaBlockIdentityIndex:
         returned_serial: int,
     ) -> LogicalBlockVersion:
         """Stage one physical replacement behind its logical proxy."""
+        self.require_generation_usable()
         transaction_id = str(transaction_id)
         serials = self._serials_by_transaction.get(transaction_id)
         if serials is None:
@@ -949,6 +1007,7 @@ class MbaBlockIdentityIndex:
         returned_serial: int,
     ) -> LogicalBlockVersion:
         """Record one SDK insertion as the next version of an existing proxy."""
+        self.require_generation_usable()
         transaction_id = str(transaction_id)
         serials = self._serials_by_transaction.get(transaction_id)
         if serials is None:
@@ -990,6 +1049,7 @@ class MbaBlockIdentityIndex:
         handle: MbaBlockHandle,
     ) -> LogicalBlockVersion:
         """Reserve a new logical owner without claiming a physical coordinate."""
+        self.require_generation_usable()
         return self._reserve_new_proxy(
             transaction_id=transaction_id,
             handle=handle,
@@ -1003,6 +1063,7 @@ class MbaBlockIdentityIndex:
         handle: MbaBlockHandle,
         allow_created_synthetic: bool,
     ) -> LogicalBlockVersion:
+        self.require_generation_usable()
         transaction_id = str(transaction_id)
         serials = self._serials_by_transaction.get(transaction_id)
         if serials is None:
@@ -1043,6 +1104,7 @@ class MbaBlockIdentityIndex:
         handle: MbaBlockHandle,
         returned_serial: int,
     ) -> LogicalBlockVersion:
+        self.require_generation_usable()
         transaction_id = str(transaction_id)
         staged = self.reserve_new_proxy(
             transaction_id=transaction_id,
@@ -1058,6 +1120,7 @@ class MbaBlockIdentityIndex:
         transaction_id: str,
         handle: MbaBlockHandle,
     ) -> None:
+        self.require_generation_usable()
         transaction_id = str(transaction_id)
         if transaction_id not in self._serials_by_transaction:
             raise ValueError("block retirement requires an active identity transaction")
@@ -1076,6 +1139,7 @@ class MbaBlockIdentityIndex:
         transaction_id: str,
     ) -> tuple[LogicalBlockVersionTransition, ...]:
         """Promote every replacement staged by one gateway transaction."""
+        self.require_generation_usable()
         transaction_id = str(transaction_id)
         serials = self._serials_by_transaction.get(transaction_id)
         if serials is None:
@@ -1292,6 +1356,7 @@ class MbaBlockIdentityIndex:
 
     def rebind_identity(self, identity: StableBlockIdentity) -> RebindResult:
         """Rebind any unique current translation of portable native identity."""
+        self.require_generation_usable()
         result, candidates = self._rebind_identity(identity, provenance=None)
         self._observe_decision(
             "rebind",
@@ -1306,6 +1371,7 @@ class MbaBlockIdentityIndex:
         identity: StableBlockIdentity,
     ) -> RebindResult:
         """Rebind only the unique non-imported live native translation."""
+        self.require_generation_usable()
         result, candidates = self._rebind_identity(
             identity,
             provenance=BlockHandleProvenance.NATIVE,
@@ -1323,6 +1389,7 @@ class MbaBlockIdentityIndex:
         identity: StableBlockIdentity,
     ) -> RebindResult:
         """Rebind only a unique importer-published native translation."""
+        self.require_generation_usable()
         result, candidates = self._rebind_identity(
             identity,
             provenance=BlockHandleProvenance.IMPORTED_NATIVE,
@@ -1422,6 +1489,7 @@ class MbaBlockIdentityIndex:
         in the regenerated MBA.  Native and imported translations are equally
         valid; duplicate ownership of the earliest anchor remains ambiguous.
         """
+        self.require_generation_usable()
         result = self._rebind_region_boundary(region, entry=True)
         self._observe_decision("rebind_region_entry", region, result)
         return result
@@ -1437,12 +1505,14 @@ class MbaBlockIdentityIndex:
         resolver-owned region is the portable mutation-time source.  Duplicate
         ownership of that anchor remains ambiguous.
         """
+        self.require_generation_usable()
         result = self._rebind_region_boundary(region, entry=False)
         self._observe_decision("rebind_region_exit", region, result)
         return result
 
     def rebind(self, handle: MbaBlockHandle) -> RebindResult:
         """Rebind native identity; synthetic handles never cross a rebuild."""
+        self.require_generation_usable()
         if handle.session_id != self.session_id:
             return RebindResult.stale_generation()
         if handle.stable_identity is None:
@@ -1452,6 +1522,7 @@ class MbaBlockIdentityIndex:
         return self.rebind_identity(handle.stable_identity)
 
     def identity_at_native_ea(self, anchor_ea: int) -> StableBlockIdentity | None:
+        self.require_generation_usable()
         matches = tuple(
             identity
             for identity in self.serials_by_identity
@@ -1466,6 +1537,7 @@ class MbaBlockIdentityIndex:
         owner: MbaBlockHandle | None = None,
     ) -> RebindResult:
         """Resolve one EA only when exact instruction or ownership proves it."""
+        self.require_generation_usable()
         anchor_ea = int(anchor_ea)
         candidates = tuple(
             (identity, token)
@@ -1499,6 +1571,7 @@ class MbaBlockIdentityIndex:
         returned_serial: int,
     ) -> None:
         """Record an unowned SDK insertion without consuming plan authority."""
+        self.require_generation_usable()
         if created.provenance is BlockHandleProvenance.CREATED_SYNTHETIC:
             raise ValueError(
                 "CREATED_SYNTHETIC insertion requires bind_reserved_plan_block"
@@ -1582,6 +1655,7 @@ class MbaBlockIdentityIndex:
         handle: MbaBlockHandle,
     ) -> None:
         """Unbind a physically rolled-back reserved insertion before abort."""
+        self.require_generation_usable()
         transaction_id = str(transaction_id)
         serials = self._serials_by_transaction.get(transaction_id)
         proxy = self.logical_proxy_for_handle(handle)
@@ -1619,6 +1693,7 @@ class MbaBlockIdentityIndex:
         returned_serial: int,
     ) -> None:
         """Bind a planned serial's transaction handle to its SDK result."""
+        self.require_generation_usable()
         transaction_id = str(transaction_id)
         expected_serial = int(expected_serial)
         baseline = self._baseline_tokens_by_transaction.get(transaction_id)
@@ -1657,6 +1732,7 @@ class MbaBlockIdentityIndex:
         returned_tail_serial: int,
     ) -> None:
         """Record a split without inventing a native identity for its tail."""
+        self.require_generation_usable()
         transaction_id = str(transaction_id)
         serials = self._serials_by_transaction.get(transaction_id)
         if serials is None:
@@ -1700,6 +1776,7 @@ class MbaBlockIdentityIndex:
         returned_serial: int,
     ) -> None:
         """Record an explicit clone handle; native duplicate rebinding stays ambiguous."""
+        self.require_generation_usable()
         if self.resolve(source, transaction_id=str(transaction_id)) is None:
             raise ValueError("cannot clone a stale or foreign handle")
         self.stage_new_proxy(
@@ -1715,6 +1792,7 @@ class MbaBlockIdentityIndex:
         transaction_id: str,
     ) -> None:
         """Stage retirement and compact only transaction-local coordinates."""
+        self.require_generation_usable()
         transaction_id = str(transaction_id)
         serials = self._serials_by_transaction.get(transaction_id)
         if serials is None:
@@ -1730,6 +1808,7 @@ class MbaBlockIdentityIndex:
 
     def advance_generation(self) -> int:
         """Mark one committed structural mutation batch without losing bindings."""
+        self.require_generation_usable()
         self.generation += 1
         return self.generation
 
@@ -1800,6 +1879,7 @@ class MbaBlockIdentityIndex:
         current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None,
     ) -> None:
         """Rebuild bindings from a callback-local MBA after an unknown SDK effect."""
+        self.require_generation_usable()
         self._replace_with_rebuilt(
             type(self).from_mba(
                 mba,
@@ -1814,6 +1894,7 @@ class MbaBlockIdentityIndex:
 
     def refresh_from_flow_graph(self, flow_graph: FlowGraph) -> None:
         """Discard unprovable handles and rebuild native bindings from a fresh lift."""
+        self.require_generation_usable()
         self._replace_with_rebuilt(
             type(self).from_flow_graph(
                 generation=self.generation,

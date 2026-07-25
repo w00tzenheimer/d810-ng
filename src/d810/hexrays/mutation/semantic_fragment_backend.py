@@ -4223,6 +4223,8 @@ def stage_semantic_fragment(
         state.projection = projection
         return projection
     except Exception:
+        if gateway.mutation_started:
+            raise
         try:
             discard_staged_semantic_fragment(modifier, plan)
         except Exception as cleanup_error:

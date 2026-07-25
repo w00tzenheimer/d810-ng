@@ -288,8 +288,8 @@
       "id": "partial_write_poison",
       "donor_source": "src/d810/hexrays/mutation/mba_mutation_events.py::def _record_fragment_mutation_started(",
       "donor_test": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_live_divergence_poisons_generation_without_cleanup_and_restarts_once",
-      "current_production_seam": "src/d810/transforms/cfg_transaction.py::class CfgGenerationPoisoned(RuntimeError):",
-      "current_status": "partial",
+      "current_production_seam": "src/d810/hexrays/mutation/mba_mutation_events.py::def _record_fragment_mutation_started(",
+      "current_status": "accepted",
       "required_port": "Mark immediately before the first SDK write; any later failure must poison and unwind without cleanup or further live lookup.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events"],
@@ -306,7 +306,7 @@
       "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::def generation_poisoned(",
       "donor_test": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_generation_poison_invalidates_sibling_gateway_over_shared_index",
       "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::class MbaBlockIdentityIndex:",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Own the first poison evidence on the exact live-MBA identity index and reject sibling gateways, refreshes, allocations, and resolutions.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts"],
@@ -323,7 +323,7 @@
       "donor_source": "src/d810/manager/fragment_publication_lifecycle.py::def request_poisoned_generation_restart(",
       "donor_test": "tests/system/runtime/hexrays/test_decompilation_lifecycle.py::def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo",
       "current_production_seam": "src/d810/manager/fragment_publication_lifecycle.py::class SessionFragmentPublicationLifecycleAuthority:",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Propagate typed poison across PREOPT and consume one lifecycle-owned poison restart as exactly one MERR_REDO, separate from ordinary redo.",
       "diagnostic_proof": {
         "tables": ["lifecycle_events", "cfg_transaction_attempts"],
@@ -340,7 +340,7 @@
       "donor_source": "src/d810/analyses/control_flow/native_preanalysis_session.py::def request_poisoned_generation_restart(",
       "donor_test": "tests/system/runtime/test_manager_native_preanalysis.py::def test_decompile_controller_fails_on_distinct_post_recovery_poison",
       "current_production_seam": "src/d810/manager/decompilation_lifecycle.py::class DecompilationLifecycleCoordinator:",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Latch exhausted poison recovery and refuse a poisoned result after the bounded initial, ordinary-redo, and poison-recovery attempts.",
       "diagnostic_proof": {
         "tables": ["lifecycle_events", "cfg_transaction_attempts"],
@@ -357,7 +357,7 @@
       "donor_source": "src/d810/analyses/control_flow/native_preanalysis_session.py::has_exhausted_poison_restart",
       "donor_test": "tests/unit/analyses/control_flow/test_native_preanalysis_session.py::def test_changed_first_pass_facts_open_fresh_epoch_after_poison_exhaustion",
       "current_production_seam": "src/d810/analyses/control_flow/native_preanalysis_session.py::class NativePreanalysisSessionState:",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Allow genuinely changed first-pass portable facts to advance evidence generation and reset retry authority after an exhausted poisoned epoch.",
       "diagnostic_proof": {
         "tables": ["evidence_generation_events", "lifecycle_events"],
@@ -374,7 +374,7 @@
       "donor_source": "src/d810/core/observability_events.py::class CfgTransactionAttemptObserved:",
       "donor_test": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart",
       "current_production_seam": "src/d810/core/observability_events.py::class CfgTransactionAttemptObserved:",
-      "current_status": "partial",
+      "current_status": "accepted",
       "required_port": "Emit portable planned, projected, preflighted, bound, realizing, observed, committed, rejected-clean, and poisoned observations at actual boundaries.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_phase_events"],
@@ -383,7 +383,7 @@
       },
       "acceptance_test": {
         "donor": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart",
-        "current": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart"
+        "current": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_gateway_commits_only_after_pre_and_post_semantic_validation"
       }
     },
     {
@@ -391,7 +391,7 @@
       "donor_source": "src/d810/core/diag/models.py::class CfgTransactionAttemptRecord(BaseModel):",
       "donor_test": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart",
       "current_production_seam": "src/d810/core/diag/models.py::class CfgTransactionAttemptRecord(BaseModel):",
-      "current_status": "partial",
+      "current_status": "accepted",
       "required_port": "Persist one normalized attempt row keyed by plan_id and attempt_id with generation, current phase, mutation-start, poison, and failure authority.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts"],
@@ -400,7 +400,7 @@
       },
       "acceptance_test": {
         "donor": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart",
-        "current": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart"
+        "current": "tests/unit/core/diag/test_mutation_timeline.py::def test_failed_cfg_transaction_authority_is_queryable_after_database_restart"
       }
     },
     {
@@ -424,8 +424,8 @@
       "id": "first_failure_monotonicity",
       "donor_source": "src/d810/core/diag/lifecycle.py::first_failure_obligation=excluded.first_failure_obligation",
       "donor_test": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_persists_only_the_first_failure",
-      "current_production_seam": "src/d810/core/diag/lifecycle.py::def persist_mutation_receipt(",
-      "current_status": "missing",
+      "current_production_seam": "src/d810/core/diag/lifecycle.py::def persist_cfg_transaction_attempt(",
+      "current_status": "accepted",
       "required_port": "Persist the first typed obligation/reason once while mutation-start and poison flags advance monotonically.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events"],

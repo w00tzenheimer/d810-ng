@@ -12,6 +12,7 @@ from d810.hexrays.hooks.glbopt_diagnostics import (
     apply_return_const_corruption_cleanup,
     prune_unreachable_condition_chain,
 )
+from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 
 main_logger = getLogger("D810")
 
@@ -365,6 +366,8 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                     # pointer handshake.
                     callback_pointer_refresh_required=False,
                 )
+        except CfgGenerationPoisoned:
+            raise
         except Exception:
             main_logger.debug(
                 "Hex-Rays PREOPT preanalysis event failed for 0x%X",

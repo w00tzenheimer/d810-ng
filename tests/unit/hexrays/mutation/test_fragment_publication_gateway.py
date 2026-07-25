@@ -18,6 +18,7 @@ from d810.core.semantic_route_oracle import (
 )
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import (
+    MbaCfgTransactionAuthorityObserved,
     MbaMutationAborted,
     MbaMutationCommitted,
     MbaMutationGateway,
@@ -75,8 +76,11 @@ from d810.transforms.fragment_projection import (
     FragmentProjectionInput,
     fragment_cfg_projection,
 )
-from d810.transforms.cfg_transaction import TransactionAttemptId
-from d810.transforms.detached_route_oracle import DetachedRouteOracleRejected
+from d810.transforms.cfg_transaction import (
+    CfgGenerationPoisoned,
+    CfgTransactionPhase,
+    TransactionAttemptId,
+)
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
     FragmentValidationPostcondition,
@@ -359,6 +363,10 @@ class _ReceiptLifecycleAuthority:
     ) -> None:
         self.events.append(("committed", (plan, receipt)))
 
+    def request_poisoned_generation_restart(self, plan, failure) -> bool:
+        self.events.append(("poisoned", (plan, failure)))
+        return True
+
 
 def _gateway(
     plan: FragmentPlan,
@@ -430,10 +438,18 @@ class _FragmentBackend:
         raise_during_rollback: bool = False,
         omit_semantic_edge_record: bool = False,
         disconnect_root_after_publication: bool = False,
+        raise_after_insertion: bool = False,
+        raise_after_observation: bool = False,
         current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None,
         malformed_route_projection: bool = False,
     ) -> None:
-        self.mba = SimpleNamespace(qty=4)
+        self.get_mblock_calls = 0
+
+        def get_mblock(_serial: int):
+            self.get_mblock_calls += 1
+            raise AssertionError("poisoned publication must not resolve live blocks")
+
+        self.mba = SimpleNamespace(qty=4, get_mblock=get_mblock)
         self.gateway = gateway
         self.invalid_preprojection = invalid_preprojection
         self.invalid_postobservation = invalid_postobservation
@@ -444,6 +460,8 @@ class _FragmentBackend:
         self.raise_during_rollback = raise_during_rollback
         self.omit_semantic_edge_record = omit_semantic_edge_record
         self.disconnect_root_after_publication = disconnect_root_after_publication
+        self.raise_after_insertion = raise_after_insertion
+        self.raise_after_observation = raise_after_observation
         self.current_mba_identity_binding = (
             CurrentMbaIdentityBindingSnapshot((), ())
             if current_mba_identity_binding is None
@@ -609,6 +627,7 @@ class _FragmentBackend:
         replacement = index.create_native_handle(
             plan.block("replacement").stable_identity
         )
+        self.gateway._record_fragment_mutation_started(plan)
         staged = self.gateway.stage_replacement(
             original=original,
             replacement=replacement,
@@ -625,6 +644,10 @@ class _FragmentBackend:
         assert published is not None
         self.original_handle = original
         self.replacement_handle = replacement
+        if self.raise_after_insertion:
+            error = RuntimeError("INTERR: 50856 after fragment insertion")
+            error.d810_interr_code = 50856
+            raise error
 
         entry_successor = "original" if self.invalid_preprojection else "replacement"
         original_predecessors = ("entry",) if self.invalid_preprojection else ()
@@ -781,6 +804,10 @@ class _FragmentBackend:
         assert self.root_published
         assert self.gateway.receipts == ()
         assert self.projection is not None
+        if self.raise_after_observation:
+            error = RuntimeError("INTERR: 50860 after fragment observation")
+            error.d810_interr_code = 50860
+            raise error
         projection = self.projection
         if self.disconnect_root_after_publication:
             replacements = {
@@ -866,7 +893,12 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     proxy = gateway.identity_index.logical_proxy_for_handle(original)
     assert proxy is not None
     planned: list[MbaMutationPlanned] = []
+    authority_events: list[MbaCfgTransactionAuthorityObserved] = []
     gateway.event_emitter.on(MbaMutationPlanned, planned.append)
+    gateway.event_emitter.on(
+        MbaCfgTransactionAuthorityObserved,
+        authority_events.append,
+    )
 
     receipt = gateway.publish_semantic_fragment(backend, plan)
 
@@ -907,6 +939,20 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     assert proxy.resolve().handle is backend.replacement_handle
     assert len(committed) == 1
     assert aborted == []
+    assert [event.phase for event in authority_events] == [
+        CfgTransactionPhase.PLANNED,
+        CfgTransactionPhase.PROJECTED,
+        CfgTransactionPhase.PREFLIGHTED,
+        CfgTransactionPhase.BOUND,
+        CfgTransactionPhase.REALIZING,
+        CfgTransactionPhase.OBSERVED,
+        CfgTransactionPhase.COMMITTED,
+    ]
+    assert [event.phase_index for event in authority_events] == list(range(7))
+    assert len({event.attempt_id for event in authority_events}) == 1
+    assert all(
+        event.attempt_id.plan_id == plan.plan_id for event in authority_events
+    )
 
 
 def test_gateway_commits_reference_matched_route_before_root_publication() -> None:
@@ -929,7 +975,7 @@ def test_gateway_commits_reference_matched_route_before_root_publication() -> No
     assert aborted == []
 
 
-def test_gateway_rejects_route_mismatch_before_root_preparation() -> None:
+def test_gateway_route_mismatch_after_staging_poisons_before_root_preparation() -> None:
     plan = _plan_with_reference_route()
     gateway, committed, aborted = _gateway(plan)
     backend = _FragmentBackend(gateway, malformed_route_projection=True)
@@ -939,7 +985,7 @@ def test_gateway_rejects_route_mismatch_before_root_preparation() -> None:
         compared.append,
     )
 
-    with pytest.raises(DetachedRouteOracleRejected, match="transfer_kind"):
+    with pytest.raises(CfgGenerationPoisoned, match="transfer_kind"):
         gateway.publish_semantic_fragment(backend, plan)
 
     assert backend.calls == [
@@ -947,7 +993,6 @@ def test_gateway_rejects_route_mismatch_before_root_preparation() -> None:
         "snapshot",
         "stage",
         "observe-staged",
-        "discard",
     ]
     assert not backend.root_published
     assert len(compared) == 1
@@ -957,6 +1002,9 @@ def test_gateway_rejects_route_mismatch_before_root_preparation() -> None:
     assert committed == []
     assert len(aborted) == 1
     assert not aborted[0].root_publication_attempted
+    assert gateway.generation_poisoned
+    assert gateway.transaction_failure is not None
+    assert gateway.transaction_failure.failure_phase == "detached_route_oracle"
 
 
 def test_gateway_receipts_current_mba_identity_binding_only_after_commit() -> None:
@@ -1270,7 +1318,7 @@ def test_partial_normalization_receipt_does_not_advance_generation_authority() -
     )
 
 
-def test_postpublication_failure_aborts_transient_semantic_lifecycle() -> None:
+def test_postpublication_failure_poisons_transient_semantic_lifecycle() -> None:
     plan = _plan()
     lifecycle = _semantic_lifecycle()
     gateway, _committed, _aborted = _gateway(
@@ -1278,7 +1326,7 @@ def test_postpublication_failure_aborts_transient_semantic_lifecycle() -> None:
         lifecycle_authority=lifecycle,
     )
 
-    with pytest.raises(SemanticFragmentPublicationRejected):
+    with pytest.raises(CfgGenerationPoisoned):
         gateway.publish_semantic_fragment(
             _FragmentBackend(gateway, invalid_postobservation=True),
             plan,
@@ -1289,9 +1337,10 @@ def test_postpublication_failure_aborts_transient_semantic_lifecycle() -> None:
     assert lifecycle.semantic_fragment_published_postvalidated_generation is None
     assert lifecycle.receipt_committed_generation is None
     assert lifecycle.canonical_semantic_plan_generation == 1
+    assert lifecycle.has_pending_generated_restart
 
 
-def test_postpublication_failure_restores_prior_normalization_authority() -> None:
+def test_postpublication_poison_restores_prior_normalization_authority() -> None:
     plan = replace(
         _plan(),
         publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
@@ -1314,7 +1363,7 @@ def test_postpublication_failure_restores_prior_normalization_authority() -> Non
         lifecycle_authority=lifecycle,
     )
 
-    with pytest.raises(SemanticFragmentPublicationRejected):
+    with pytest.raises(CfgGenerationPoisoned):
         gateway.publish_semantic_fragment(
             _FragmentBackend(gateway, invalid_postobservation=True),
             plan,
@@ -1323,6 +1372,7 @@ def test_postpublication_failure_restores_prior_normalization_authority() -> Non
     assert lifecycle.normalization_staged_generation == 1
     assert lifecycle.normalization_validated_generation == 1
     assert lifecycle.normalization_published_postvalidated_generation == 1
+    assert lifecycle.has_pending_generated_restart
     assert lifecycle.evidence_generation == 2
 
 
@@ -1386,19 +1436,18 @@ def test_commit_observer_failure_cannot_trigger_postcommit_root_rollback() -> No
     assert aborted == []
 
 
-def test_gateway_aborts_when_applied_operations_do_not_match_inventory() -> None:
+def test_inventory_divergence_poisons_without_recovery() -> None:
     plan = _plan()
     gateway, committed, aborted = _gateway(plan)
     backend = _FragmentBackend(gateway, omit_semantic_edge_record=True)
 
-    with pytest.raises(
-        RuntimeError,
-        match=r"operation inventory mismatch: planned=3 applied=2",
-    ):
+    with pytest.raises(CfgGenerationPoisoned, match="operation inventory mismatch"):
         gateway.publish_semantic_fragment(backend, plan)
 
-    assert not backend.root_published
-    assert backend.calls[-3:] == ["rollback-roots", "rebuild", "discard"]
+    assert backend.root_published
+    assert backend.calls[-1] == "observe"
+    assert "rollback-roots" not in backend.calls
+    assert "discard" not in backend.calls
     assert gateway.generation == 5
     assert gateway.receipts == ()
     assert committed == []
@@ -1427,17 +1476,167 @@ def test_prepublication_failure_discards_stage_without_exposing_roots() -> None:
     assert aborted == []
 
 
-def test_postpublication_failure_restores_roots_then_discards_stage() -> None:
+def test_preflight_rejection_is_clean_and_same_generation_remains_usable() -> None:
+    plan = _plan()
+    gateway, committed, aborted = _gateway(plan)
+
+    with pytest.raises(SemanticFragmentPublicationRejected):
+        gateway.publish_semantic_fragment(
+            _FragmentBackend(gateway, invalid_preprojection=True),
+            plan,
+        )
+
+    assert gateway.generation == 5
+    assert gateway.generation_poisoned is False
+    assert gateway.transaction_failure is not None
+    assert gateway.transaction_failure.phase is CfgTransactionPhase.REJECTED_CLEAN
+    assert gateway.transaction_failure.first_failed_obligation == (
+        "original_supersession:original"
+    )
+    receipt = gateway.publish_semantic_fragment(_FragmentBackend(gateway), plan)
+    assert receipt.pre_generation == 5
+    assert receipt.post_generation == 6
+    assert len(committed) == 1
+    assert aborted == []
+
+
+@pytest.mark.parametrize(
+    "failpoint,failed_phase,interr_code",
+    (
+        ("raise_after_insertion", "stage", 50856),
+        ("raise_after_observation", "postpublication_observation", 50860),
+    ),
+)
+def test_live_divergence_poisons_generation_without_cleanup_and_restarts_once(
+    failpoint: str,
+    failed_phase: str,
+    interr_code: int,
+) -> None:
+    plan = _plan()
+    lifecycle = _semantic_lifecycle()
+    gateway, committed, aborted = _gateway(
+        plan,
+        lifecycle_authority=lifecycle,
+    )
+    backend = _FragmentBackend(gateway, **{failpoint: True})
+    authority_events: list[MbaCfgTransactionAuthorityObserved] = []
+    gateway.event_emitter.on(
+        MbaCfgTransactionAuthorityObserved,
+        authority_events.append,
+    )
+
+    with pytest.raises(CfgGenerationPoisoned) as caught:
+        gateway.publish_semantic_fragment(backend, plan)
+
+    failure = caught.value.failure
+    assert failure.phase is CfgTransactionPhase.POISONED_RESTART_REQUIRED
+    assert failure.live_mutation_started is True
+    assert failure.failure_phase == failed_phase
+    assert failure.interr_code == interr_code
+    assert failure.first_failed_obligation == f"runtime:{failed_phase}"
+    assert gateway.generation_poisoned is True
+    assert gateway.mutation_started is True
+    assert gateway.transaction_failure == failure
+    assert authority_events[-1].phase is (
+        CfgTransactionPhase.POISONED_RESTART_REQUIRED
+    )
+    assert authority_events[-1].failure == failure
+    assert authority_events[-1].poisoned
+    assert [event.phase_index for event in authority_events] == list(
+        range(len(authority_events))
+    )
+    assert "rollback-roots" not in backend.calls
+    assert "discard" not in backend.calls
+    assert committed == []
+    assert len(aborted) == 1
+    assert lifecycle.has_pending_generated_restart
+    assert gateway.lifecycle_authority is not None
+    assert not gateway.lifecycle_authority.request_poisoned_generation_restart(
+        plan,
+        failure,
+    )
+    assert lifecycle.consume_generated_restart()
+    assert not lifecycle.consume_generated_restart()
+
+    get_mblock_calls = backend.get_mblock_calls
+    with pytest.raises(CfgGenerationPoisoned):
+        gateway.resolve_serial(1)
+    with pytest.raises(CfgGenerationPoisoned):
+        gateway.resolve_block(backend.replacement_handle)
+    with pytest.raises(CfgGenerationPoisoned):
+        gateway.publish_semantic_fragment(_FragmentBackend(gateway), plan)
+    assert backend.get_mblock_calls == get_mblock_calls
+
+
+def test_generation_poison_invalidates_sibling_gateway_over_shared_index() -> None:
+    plan = _plan()
+    gateway, _committed, _aborted = _gateway(
+        plan,
+        lifecycle_authority=_semantic_lifecycle(),
+    )
+    sibling = gateway.new_transaction()
+
+    with pytest.raises(CfgGenerationPoisoned):
+        gateway.publish_semantic_fragment(
+            _FragmentBackend(gateway, raise_after_insertion=True),
+            plan,
+        )
+
+    assert sibling.generation_poisoned
+    assert sibling.transaction_failure == gateway.transaction_failure
+    with pytest.raises(CfgGenerationPoisoned):
+        sibling.resolve_serial(1)
+    with pytest.raises(CfgGenerationPoisoned):
+        sibling.identity_index.identity_for_serial(1)
+    with pytest.raises(CfgGenerationPoisoned):
+        sibling.begin_batch(StructuralMutationKind.BLOCK_INSERT)
+    with pytest.raises(CfgGenerationPoisoned):
+        sibling.new_transaction()
+    with pytest.raises(CfgGenerationPoisoned):
+        sibling.identity_index.advance_generation()
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        lambda index: index.identity_for_serial(0),
+        lambda index: index.create_observed_ephemeral_handle(),
+        lambda index: index.begin_transaction("late-transaction"),
+        lambda index: index.record_realized_serial(
+            transaction_id="late-transaction",
+            expected_serial=0,
+            returned_serial=0,
+        ),
+        lambda index: index.refresh_from_flow_graph(object()),
+    ),
+    ids=("resolve", "allocate", "begin", "record", "refresh"),
+)
+def test_shared_poison_rejects_direct_identity_index_operations(operation) -> None:
+    plan = _plan()
+    gateway, _committed, _aborted = _gateway(
+        plan,
+        lifecycle_authority=_semantic_lifecycle(),
+    )
+    identity_index = gateway.identity_index
+
+    with pytest.raises(CfgGenerationPoisoned):
+        gateway.publish_semantic_fragment(
+            _FragmentBackend(gateway, raise_after_insertion=True),
+            plan,
+        )
+
+    with pytest.raises(CfgGenerationPoisoned):
+        operation(identity_index)
+
+
+def test_postpublication_failure_poisons_without_restoring_roots() -> None:
     plan = _plan()
     gateway, committed, aborted = _gateway(plan)
     backend = _FragmentBackend(gateway, invalid_postobservation=True)
     original = gateway.identity_index.handle_for_serial(1)
     proxy = gateway.identity_index.logical_proxy_for_handle(original)
 
-    with pytest.raises(
-        SemanticFragmentPublicationRejected,
-        match="postpublication.*postvalidation_coverage",
-    ):
+    with pytest.raises(CfgGenerationPoisoned, match="postpublication"):
         gateway.publish_semantic_fragment(backend, plan)
 
     assert backend.calls == [
@@ -1449,18 +1648,19 @@ def test_postpublication_failure_restores_roots_then_discards_stage() -> None:
         "publish-roots",
         "rebuild",
         "observe",
-        "rollback-roots",
-        "rebuild",
-        "discard",
     ]
-    assert not backend.root_published
+    assert backend.root_published
     assert proxy.resolve().handle is original
     assert gateway.generation == 5
     assert committed == []
     assert len(aborted) == 1
+    assert gateway.transaction_failure is not None
+    assert gateway.transaction_failure.first_failed_obligation == (
+        "postvalidation_coverage:original_supersession:original"
+    )
 
 
-def test_postpublication_detached_operation_rolls_back_before_receipt() -> None:
+def test_postpublication_detached_operation_poisons_before_receipt() -> None:
     plan = _plan()
     gateway, committed, aborted = _gateway(plan)
     backend = _FragmentBackend(
@@ -1468,10 +1668,7 @@ def test_postpublication_detached_operation_rolls_back_before_receipt() -> None:
         disconnect_root_after_publication=True,
     )
 
-    with pytest.raises(
-        SemanticFragmentPublicationRejected,
-        match="postpublication.*operation_reachability:direct-route",
-    ):
+    with pytest.raises(CfgGenerationPoisoned, match="postpublication"):
         gateway.publish_semantic_fragment(backend, plan)
 
     assert backend.calls == [
@@ -1483,9 +1680,6 @@ def test_postpublication_detached_operation_rolls_back_before_receipt() -> None:
         "publish-roots",
         "rebuild",
         "observe",
-        "rollback-roots",
-        "rebuild",
-        "discard",
     ]
     assert committed == []
     assert gateway.receipts == ()
@@ -1502,15 +1696,16 @@ def test_postpublication_detached_operation_rolls_back_before_receipt() -> None:
         )
     ]
     assert operation_failure.block_ids == ("replacement",)
-    assert aborted[0].rollback_succeeded
+    assert aborted[0].rollback_attempted is False
+    assert aborted[0].rollback_succeeded is None
 
 
-def test_partial_root_publication_exception_still_rolls_back() -> None:
+def test_partial_root_publication_exception_poisons_without_rollback() -> None:
     plan = _plan()
     gateway, committed, aborted = _gateway(plan)
     backend = _FragmentBackend(gateway, raise_during_publish=True)
 
-    with pytest.raises(RuntimeError, match="partial root publication"):
+    with pytest.raises(CfgGenerationPoisoned, match="partial root publication"):
         gateway.publish_semantic_fragment(backend, plan)
 
     assert backend.calls == [
@@ -1520,16 +1715,13 @@ def test_partial_root_publication_exception_still_rolls_back() -> None:
         "observe-staged",
         "prepare-roots",
         "publish-roots",
-        "rollback-roots",
-        "rebuild",
-        "discard",
     ]
-    assert not backend.root_published
+    assert backend.root_published
     assert committed == []
     assert len(aborted) == 1
 
 
-def test_rollback_failure_is_fatal_and_never_commits_a_receipt() -> None:
+def test_poison_path_never_invokes_even_a_failing_rollback() -> None:
     plan = _plan()
     gateway, committed, aborted = _gateway(plan)
     backend = _FragmentBackend(
@@ -1538,15 +1730,16 @@ def test_rollback_failure_is_fatal_and_never_commits_a_receipt() -> None:
         raise_during_rollback=True,
     )
 
-    with pytest.raises(SemanticFragmentRollbackFailed, match="root rollback failed"):
+    with pytest.raises(CfgGenerationPoisoned, match="postpublication"):
         gateway.publish_semantic_fragment(backend, plan)
 
     assert backend.root_published
-    assert "discard" in backend.calls
+    assert "rollback-roots" not in backend.calls
+    assert "discard" not in backend.calls
     assert gateway.generation == 5
     assert committed == []
     assert len(aborted) == 1
-    assert "rollback failed" in aborted[0].reason
+    assert "postpublication" in aborted[0].reason
 
 
 def test_stage_verifier_and_rollback_failures_remain_separate() -> None:

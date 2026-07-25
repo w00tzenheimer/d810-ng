@@ -3918,7 +3918,10 @@ class DeferredGraphModifier:
         except Exception:
             pending = self._pending_semantic_helper_version
             self._pending_semantic_helper_version = None
-            if pending is not None:
+            gateway = self._mutation_gateway
+            if pending is not None and (
+                gateway is None or not gateway.mutation_started
+            ):
                 self._discard_detached_semantic_versions((pending,))
             raise
         self._pending_semantic_helper_version = None
@@ -4224,6 +4227,7 @@ class DeferredGraphModifier:
                 "semantic fragment cannot clone a special Hex-Rays block"
             )
 
+        gateway._record_fragment_mutation_started()
         clone = copy_block_keep(self.mba, original, int(self.mba.qty) - 1)
         if clone is None:
             raise SemanticFragmentBackendRejected(
@@ -4243,7 +4247,8 @@ class DeferredGraphModifier:
             self._detach_semantic_fragment_block(clone)
             return staged
         except Exception:
-            self._discard_semantic_fragment_blocks((clone,))
+            if not gateway.mutation_started:
+                self._discard_semantic_fragment_blocks((clone,))
             raise
 
     def _stage_empty_semantic_block(
@@ -4259,6 +4264,7 @@ class DeferredGraphModifier:
             )
         reference = self._resolve_semantic_fragment_version(reference_version)
         created_handle = gateway.identity_index.create_observed_ephemeral_handle()
+        gateway._record_fragment_mutation_started()
         created = create_standalone_block(
             ref_blk=reference,
             blk_ins=[],
@@ -4289,7 +4295,8 @@ class DeferredGraphModifier:
                 )
             return staged
         except Exception:
-            self._discard_semantic_fragment_blocks((created,))
+            if not gateway.mutation_started:
+                self._discard_semantic_fragment_blocks((created,))
             raise
 
     def _stage_imported_native_semantic_block(
@@ -4309,6 +4316,7 @@ class DeferredGraphModifier:
                 "native body block identity belongs to another native key"
             )
         reference = self._resolve_semantic_fragment_version(reference_version)
+        gateway._record_fragment_mutation_started()
         created = create_standalone_block(
             ref_blk=reference,
             blk_ins=[],
@@ -4359,9 +4367,10 @@ class DeferredGraphModifier:
             self._detach_semantic_fragment_block(created)
             return staged
         except Exception:
-            if recorded and created_handle is not None:
-                gateway.discard_reserved_insert(created_handle)
-            self._discard_semantic_fragment_blocks((created,))
+            if not gateway.mutation_started:
+                if recorded and created_handle is not None:
+                    gateway.discard_reserved_insert(created_handle)
+                self._discard_semantic_fragment_blocks((created,))
             raise
 
     def _populate_imported_native_semantic_block(
@@ -4482,7 +4491,7 @@ class DeferredGraphModifier:
                 target_handle=target_handle,
             )
         except Exception:
-            if int(self.mba.qty) == old_qty + 1:
+            if not gateway.mutation_started and int(self.mba.qty) == old_qty + 1:
                 created = self.mba.get_mblock(expected_serial)
                 if created is not None:
                     self._discard_semantic_fragment_blocks((created,))
@@ -4494,7 +4503,7 @@ class DeferredGraphModifier:
             else proxy.resolve(transaction_id=self._semantic_fragment_transaction_id())
         )
         if helper_serial is None or staged is None:
-            if int(self.mba.qty) == old_qty + 1:
+            if not gateway.mutation_started and int(self.mba.qty) == old_qty + 1:
                 created = self.mba.get_mblock(expected_serial)
                 if created is not None:
                     self._discard_semantic_fragment_blocks((created,))
@@ -12090,6 +12099,8 @@ class DeferredGraphModifier:
             int(blk.tail.ea) if blk.tail is not None else int(self.mba.entry_ea)
         )
         old_qty = int(mba.qty)
+        if gateway.current_transaction_attempt is not None:
+            gateway._record_fragment_mutation_started()
         nop_block = mba.insert_block(int(blk.serial) + 1)
         if nop_block is None:
             return None
