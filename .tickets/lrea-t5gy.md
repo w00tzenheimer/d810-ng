@@ -5033,3 +5033,52 @@ v3.3 representation rule. The next slice must either make the complete intent
 and imported route ownership queryable in the DB or produce the one-route
 detached canonical plan from that imported source; another non-advancing slice
 requires reconsidering the representation before further implementation.
+
+**2026-07-25T16:55:29Z — portable owner split and authoritative v19 intent**
+
+Commit `9cb375202` corrects the portable direct-rewrite contract derived from
+the pinned fixture. It no longer conflates the evidence origin at `0x40BB44`
+with the native operation owner at `0x40BB51`; the rewrite anchor remains
+`0x40BB63`. The proof corridor must remain ordered and end at the rewrite, and
+the operation owner must lie between the proof origin and rewrite anchor.
+Forty-nine portable fragment and detached-oracle tests pass, with the
+architecture gates green.
+
+Commit `87335d2fc` records receipt-backed complete frontend-normalization
+intent as a diagnostic lifecycle event, including the complete serial-free
+plan. Commit `ddabb3ce8` contains only repository-wide Ruff formatting. The
+first v18 canary exposed an invalid hook assumption: a partial work-item
+receipt may have no fully published generation even though the current
+evidence-generation plan authority is valid. That hook raised after the
+successful PREOPT transaction, so v18 is not an accepted canary. Commit
+`cf06358f4` keys the event from the active evidence generation and has 16/16
+focused manager/adapter tests green.
+
+The fresh cache-disabled v19 A560 canary completed normally in 26.04 seconds
+without a crash, numeric INTERR, rollback, or diagnostic-write failure.
+Output: `.tmp/rhad-a560-v33-plan-intent-v19.txt`; primary DB:
+`.tmp/rhad-a560-v33-plan-intent-v19/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+The semantic oracle remains red on one false `while ( 1 )`.
+
+The new DB event is `frontend_normalization_plan_intent_recorded` at lifecycle
+event 30. It records plan `frontend-normalization:0xA560:g1`: 487 blocks, 478
+operations, 478 imported blocks, one native body, and a 792,096-byte complete
+portable plan. The exact selected route topology is now authoritative:
+
+- imported proof block `0x40BB3A` covers state write `0x40BB44`;
+- imported source block `0x40BB51` covers rewrite `0x40BB63`;
+- imported target block `0x40ACF3` covers target `0x40ACF3`;
+- all three belong to `native-body:frontend-normalization:g1`;
+- raw operation `native-body-edge@0x40BB51` owns predicate anchor `0x40BB63`
+  and the unlowered successors `0x40C6F7` and `0x40BB69`;
+- the body proof inventory includes
+  `rhad:0x40A560:flow_route:0x40BB63`.
+
+The canary remains C2, but the intended route-level fact advanced and this is
+not a second non-advancing slice. The first failed C3 obligation is now
+precise: canonical detached lowering must select the imported raw operation by
+its operation-owned rewrite anchor `0x40BB63`, bind reference owner
+`0x40BB51`, and replace both raw successors with direct target `0x40ACF3`
+off-side. Do not weaken stable block identity globally or reinterpret the
+imported source as live `EXTERNAL` authority; `0x40BB63` is an exact operation
+anchor inside the source range, while `0x40BB51` is the block identity anchor.
