@@ -1137,7 +1137,8 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
                 preds=(90,),
                 insn_eas=(0x1200, 0x1210),
             ),
-            90: _block(90, 0x1400, succs=(30,), preds=(10, 30)),
+            40: _block(40, 0x1600, succs=(90,), preds=(90,)),
+            90: _block(90, 0x1400, succs=(30, 40), preds=(10, 30, 40)),
         },
         entry_serial=10,
         func_ea=0x1000,
@@ -1319,6 +1320,10 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
     )
     assert any(
         block.role is FragmentBlockRole.EXTERNAL and block.semantic_anchor_ea == 0x1400
+        for block in plan.blocks
+    )
+    assert any(
+        block.role is FragmentBlockRole.EXTERNAL and block.semantic_anchor_ea == 0x1600
         for block in plan.blocks
     )
     (boundary_port,) = plan.boundary_ports

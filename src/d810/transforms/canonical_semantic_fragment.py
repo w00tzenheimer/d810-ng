@@ -27,7 +27,7 @@ from d810.ir.block_identity import (
     stable_block_identity_token,
 )
 from d810.ir.directed_graph import tarjan_scc
-from d810.ir.flowgraph import FlowGraph
+from d810.ir.flowgraph import BlockKind, FlowGraph
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
 from d810.transforms.fragment_plan import (
@@ -2952,6 +2952,36 @@ def compose_canonical_semantic_boundary_fragment_plan(
             )
         temporary_port_predecessors = incoming_predecessors
 
+    conditional_sibling_serials: list[int] = []
+    for predecessor in incoming_predecessors:
+        predecessor_block = graph.blocks.get(predecessor)
+        if (
+            predecessor_block is None
+            or predecessor_block.kind is not BlockKind.TWO_WAY
+        ):
+            continue
+        successors = tuple(int(successor) for successor in predecessor_block.succs)
+        sibling_serials = tuple(
+            successor for successor in successors if successor != root_serial
+        )
+        if len(successors) != 2 or root_serial not in successors or len(sibling_serials) != 1:
+            raise CanonicalSemanticFragmentRejected(
+                "published canonical boundary has an incomplete conditional envelope",
+                reason_code="published_boundary_conditional_envelope_incomplete",
+                anchor_ea=boundary_anchor_ea,
+                payload={
+                    "predecessor": (
+                        f"blk{predecessor}@0x{int(predecessor_block.start_ea):X}"
+                    ),
+                    "root": f"blk{root_serial}@0x{root_anchor_ea:X}",
+                    "successors": successors,
+                },
+            )
+        conditional_sibling_serials.extend(sibling_serials)
+    conditional_sibling_serials = list(
+        dict.fromkeys(conditional_sibling_serials)
+    )
+
     (
         target_blocks,
         target_operations,
@@ -3168,6 +3198,8 @@ def compose_canonical_semantic_boundary_fragment_plan(
     temporary_predecessor_ids = tuple(
         add_current_external(predecessor) for predecessor in temporary_port_predecessors
     )
+    for sibling in conditional_sibling_serials:
+        add_current_external(sibling)
     prohibited_witness_serials = (
         ()
         if temporary_port_predecessors
