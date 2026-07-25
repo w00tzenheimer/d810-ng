@@ -2944,6 +2944,8 @@ def _bake_patch_plans(
 
 def _static_branch_state_choices(
     entry_state: Mapping[int, Mapping[str, frozenset[int] | None]],
+    *,
+    target_patch_plans: list[_PatchPlan] | None = None,
 ) -> tuple[MaterializedIndirectTransfer, ...]:
     """Recover default-state/override-state branches before materialization."""
     import ida_ua  # type: ignore[import-untyped]
@@ -2988,13 +2990,13 @@ def _static_branch_state_choices(
 
     arm_frontier_cache: dict[
         tuple[int, tuple[tuple[str, int], ...]],
-        tuple[int, Mapping[str, frozenset[int] | None]] | None,
+        _ConcreteDispatchResult | None,
     ] = {}
 
     def arm_frontier(
         arm_entry_ea: int,
         source_state: Mapping[str, frozenset[int] | None],
-    ) -> tuple[int, Mapping[str, frozenset[int] | None]] | None:
+    ) -> _ConcreteDispatchResult | None:
         initial_register_values = _sv_concrete_register_values(source_state)
         cache_key = (int(arm_entry_ea), initial_register_values)
         if cache_key in arm_frontier_cache:
@@ -3012,15 +3014,7 @@ def _static_branch_state_choices(
             return_first_indirect_target=True,
             return_first_indirect_result=True,
         )
-        result = None
-        if isinstance(resolved, _ConcreteDispatchResult):
-            result = (
-                int(resolved.target_ea),
-                {
-                    str(register_name): _sv_singleton(int(value))
-                    for register_name, value in resolved.register_values
-                },
-            )
+        result = resolved if isinstance(resolved, _ConcreteDispatchResult) else None
         arm_frontier_cache[cache_key] = result
         return result
 
@@ -3029,6 +3023,7 @@ def _static_branch_state_choices(
     for source_block_ea, initial_state in sorted(entry_state.items()):
         state = dict(initial_state)
         predicate_register_names: frozenset[str] = frozenset()
+        condition_producer_ea: int | None = None
         ea = int(source_block_ea)
         while True:
             length = int(ida_ua.decode_insn(instruction, ea))
@@ -3057,8 +3052,43 @@ def _static_branch_state_choices(
                 fallthrough_result = arm_frontier(fallthrough_entry, state)
                 if taken_result is None or fallthrough_result is None:
                     break
-                taken_target, taken_state = taken_result
-                fallthrough_target, fallthrough_state = fallthrough_result
+                taken_state = {
+                    str(register_name): _sv_singleton(int(value))
+                    for register_name, value in taken_result.register_values
+                }
+                fallthrough_state = {
+                    str(register_name): _sv_singleton(int(value))
+                    for register_name, value in fallthrough_result.register_values
+                }
+                if (
+                    target_patch_plans is not None
+                    and taken_result.transfer_ea is not None
+                ):
+                    transfer_instruction = ida_ua.insn_t()
+                    transfer_length = int(
+                        ida_ua.decode_insn(
+                            transfer_instruction,
+                            int(taken_result.transfer_ea),
+                        )
+                    )
+                    target_plan = (
+                        None
+                        if transfer_length <= 0
+                        else _branch_target_patch_plan(
+                            source_block_ea=int(source_block_ea),
+                            condition_producer_ea=condition_producer_ea,
+                            predicate_ea=int(ea),
+                            condition_code=condition_code,
+                            source_state=state,
+                            taken_result=taken_result,
+                            fallthrough_result=fallthrough_result,
+                            transfer_end_ea=(
+                                int(taken_result.transfer_ea) + transfer_length
+                            ),
+                        )
+                    )
+                    if target_plan is not None:
+                        target_patch_plans.append(target_plan)
                 register_mregs = {
                     register_name: mreg
                     for register_name in (
@@ -3075,8 +3105,10 @@ def _static_branch_state_choices(
                         source_state=state,
                         taken_state=taken_state,
                         fallthrough_state=fallthrough_state,
-                        taken_resolved_target_ea=taken_target,
-                        fallthrough_resolved_target_ea=fallthrough_target,
+                        taken_resolved_target_ea=int(taken_result.target_ea),
+                        fallthrough_resolved_target_ea=int(
+                            fallthrough_result.target_ea
+                        ),
                         register_mregs=register_mregs,
                         predicate_register_names=predicate_register_names,
                     )
@@ -3085,6 +3117,7 @@ def _static_branch_state_choices(
             if mnemonic in {"jmp", "retn", "ret", "retf"}:
                 break
             if mnemonic in {"cmp", "test"}:
+                condition_producer_ea = int(ea)
                 predicate_register_names = frozenset(
                     register_name
                     for operand in (instruction.ops[0], instruction.ops[1])
@@ -3094,8 +3127,15 @@ def _static_branch_state_choices(
             if mnemonic == "call":
                 for register in _SV_CALLER_CLOBBERED:
                     state[register] = None
+                condition_producer_ea = None
             else:
                 _sv_process_writer(mnemonic, instruction, state)
+                if (
+                    condition_producer_ea is not None
+                    and mnemonic not in {"cmp", "test"}
+                    and mnemonic not in _SV_FLAG_SAFE_RELOC
+                ):
+                    condition_producer_ea = None
             ea = next_ea
     return tuple(
         sorted(
@@ -3125,6 +3165,14 @@ def resolve_computed_gotos_static(function_ea: int) -> ComputedGotoResolution | 
     entry_state, resolved_sites, unresolved_sites, block_entry_of, steps = (
         _static_resolver_fixpoint(function_ea)
     )
+    branch_target_candidates: list[_PatchPlan] = []
+    branch_state_choices = _static_branch_state_choices(
+        entry_state,
+        target_patch_plans=branch_target_candidates,
+    )
+    branch_target_plans, ambiguous_branch_sites = (
+        _select_unique_branch_target_patch_plans(branch_target_candidates)
+    )
     if not resolved_sites:
         return None
 
@@ -3133,7 +3181,10 @@ def resolve_computed_gotos_static(function_ea: int) -> ComputedGotoResolution | 
         all_targets.update(tgts)
     forbidden = all_targets | set(entry_state)
     plans, skipped = _bake_patch_plans(
-        resolved_sites, block_entry_of, entry_state, forbidden
+        resolved_sites,
+        block_entry_of,
+        entry_state,
+        forbidden,
     )
     if skipped:
         logger.info(
@@ -3173,8 +3224,13 @@ def resolve_computed_gotos_static(function_ea: int) -> ComputedGotoResolution | 
         arch=arch,
         executed_insns=steps,
         seeds_run=0,
-        stop_reasons=("static_fixpoint", f"unresolved={len(unresolved_sites)}"),
+        stop_reasons=(
+            "static_fixpoint",
+            f"unresolved={len(unresolved_sites)}",
+            f"ambiguous_contextual={len(ambiguous_branch_sites)}",
+        ),
         patch_plans=tuple(plans),
+        contextual_patch_plans=branch_target_plans,
         block_entries=tuple(sorted(set(entry_state))),
         function_context_register_values=_function_context_register_values(entry_state),
         corridor_register_snapshots=tuple(
@@ -3194,7 +3250,7 @@ def resolve_computed_gotos_static(function_ea: int) -> ComputedGotoResolution | 
                         entry_state,
                         native_stack_frame_offsets_by_ea=native_stack_offsets,
                     ),
-                    *_static_branch_state_choices(entry_state),
+                    *branch_state_choices,
                 },
                 key=lambda row: (
                     int(row.source_block_ea),
@@ -3506,6 +3562,73 @@ class _ConcreteDispatchResult(NamedTuple):
 
     target_ea: int
     register_values: tuple[tuple[str, int], ...]
+    transfer_ea: int | None = None
+
+
+def _branch_target_patch_plan(
+    *,
+    source_block_ea: int,
+    condition_producer_ea: int | None,
+    predicate_ea: int,
+    condition_code: int | None,
+    source_state: Mapping[str, frozenset[int] | None],
+    taken_result: _ConcreteDispatchResult,
+    fallthrough_result: _ConcreteDispatchResult,
+    transfer_end_ea: int,
+) -> _PatchPlan | None:
+    """Retain one native JCC whose arms feed the same indirect transfer."""
+    taken_transfer_ea = taken_result.transfer_ea
+    fallthrough_transfer_ea = fallthrough_result.transfer_ea
+    if (
+        condition_producer_ea is None
+        or condition_code not in _SV_JCC_CONDITION_CODES.values()
+        or taken_transfer_ea is None
+        or fallthrough_transfer_ea is None
+        or int(taken_transfer_ea) != int(fallthrough_transfer_ea)
+        or int(taken_result.target_ea) == int(fallthrough_result.target_ea)
+        or not int(source_block_ea)
+        <= int(condition_producer_ea)
+        < int(predicate_ea)
+        < int(taken_transfer_ea)
+        < int(transfer_end_ea)
+    ):
+        return None
+    transfer_ea = int(taken_transfer_ea)
+    return _PatchPlan(
+        jmp_ea=transfer_ea,
+        block_entry=int(source_block_ea),
+        patch_start=int(predicate_ea),
+        patch_bytes=b"",
+        region_end=int(transfer_end_ea),
+        insn_heads=(int(predicate_ea), transfer_ea),
+        new_block_eas=(int(predicate_ea), transfer_ea),
+        target_eas=(
+            int(taken_result.target_ea),
+            int(fallthrough_result.target_ea),
+        ),
+        condition_code=int(condition_code),
+        true_target_ea=int(taken_result.target_ea),
+        false_target_ea=int(fallthrough_result.target_ea),
+        source_register_values=_sv_concrete_register_values(source_state),
+        condition_producer_ea=int(condition_producer_ea),
+    )
+
+
+def _select_unique_branch_target_patch_plans(
+    candidates: Sequence[_PatchPlan],
+) -> tuple[tuple[_PatchPlan, ...], frozenset[int]]:
+    """Select one exact branch-target proof per indirect-transfer site."""
+    plans_by_site: dict[int, set[_PatchPlan]] = {}
+    for plan in candidates:
+        plans_by_site.setdefault(int(plan.jmp_ea), set()).add(plan)
+    selected: list[_PatchPlan] = []
+    ambiguous_sites: set[int] = set()
+    for jmp_ea, plans in sorted(plans_by_site.items()):
+        if len(plans) != 1:
+            ambiguous_sites.add(int(jmp_ea))
+            continue
+        selected.append(next(iter(plans)))
+    return tuple(selected), frozenset(ambiguous_sites)
 
 
 def _common_concrete_register_values(
@@ -3729,6 +3852,7 @@ def _resolve_concrete_dispatch_corridor(
                     return _ConcreteDispatchResult(
                         int(target),
                         _sv_concrete_register_values(state),
+                        int(ea),
                     )
                 return int(target)
             completed_dispatches += 1
@@ -3747,6 +3871,7 @@ def _resolve_concrete_dispatch_corridor(
                         return _ConcreteDispatchResult(
                             target_ea,
                             _sv_concrete_register_values(state),
+                            int(ea),
                         )
                     return target_ea
                 completed_dispatches += 1
@@ -9078,9 +9203,30 @@ def _plan_frontend_normalization_union_source(
     resolution: ComputedGotoResolution,
     *,
     transfers: Sequence[MaterializedIndirectTransfer],
+    contextual_patch_plans: Sequence[ComputedGotoPatchPlan] = (),
 ) -> _FrontendNormalizationUnionSource | None:
     """Build the detached closure directly from the portable transfer ledger."""
     key = int(resolution.function_ea)
+    selected_contextual_plans = tuple(
+        sorted(
+            set(contextual_patch_plans),
+            key=lambda plan: (
+                int(plan.block_entry),
+                int(plan.patch_start),
+                int(plan.jmp_ea),
+            ),
+        )
+    )
+    if any(
+        plan not in resolution.contextual_patch_plans
+        for plan in selected_contextual_plans
+    ):
+        logger.info(
+            "frontend normalization source abstained: func=0x%X "
+            "reason=foreign_contextual_patch_plan",
+            key,
+        )
+        return None
     resolver_targets_by_source = {
         int(source_ea): tuple(
             sorted({int(target_ea) for target_ea in target_eas})
@@ -9152,8 +9298,25 @@ def _plan_frontend_normalization_union_source(
         return None
     handler_entry_eas = tuple(sorted(handler_ranges_by_entry))
 
+    contextual_source_entry_eas = tuple(
+        sorted({int(plan.block_entry) for plan in selected_contextual_plans})
+    )
     source_entry_eas = tuple(
-        sorted({int(plan.block_entry) for plan in resolution.patch_plans})
+        sorted(
+            {
+                *(int(plan.block_entry) for plan in resolution.patch_plans),
+                *contextual_source_entry_eas,
+            }
+        )
+    )
+    contextual_target_eas = tuple(
+        sorted(
+            {
+                int(target_ea)
+                for plan in selected_contextual_plans
+                for target_ea in plan.target_eas
+            }
+        )
     )
     target_eas = tuple(
         sorted(
@@ -9161,6 +9324,10 @@ def _plan_frontend_normalization_union_source(
                 int(target_ea)
                 for targets in resolver_targets_by_source.values()
                 for target_ea in targets
+            }
+            | {
+                int(target_ea)
+                for target_ea in contextual_target_eas
             }
         )
     )
@@ -9202,8 +9369,16 @@ def _plan_frontend_normalization_union_source(
             for entry_ea in source_entry_eas
         },
         **{
+            (int(entry_ea), "contextual_computed_transfer_source"): ()
+            for entry_ea in contextual_source_entry_eas
+        },
+        **{
             (int(entry_ea), "computed_transfer_target"): ()
             for entry_ea in target_eas
+        },
+        **{
+            (int(entry_ea), "contextual_computed_transfer_target"): ()
+            for entry_ea in contextual_target_eas
         },
         **{
             (int(entry_ea), "static_handler_entry_route"): native_ranges
@@ -9302,6 +9477,9 @@ def _capture_prepatch_preopt_union_source(
     source_plan = _plan_frontend_normalization_union_source(
         resolution,
         transfers=enriched,
+        contextual_patch_plans=(
+            state.portable_evidence.promoted_contextual_patch_plans
+        ),
     )
     if source_plan is None:
         return abstain("portable_union_source")
@@ -11640,7 +11818,12 @@ def _on_build_callinfo(
                     and published_generation is not None
                     and int(published_generation) < int(state.evidence_generation)
                 ):
-                    state.native_preanalysis.request_generated_restart()
+                    state.native_preanalysis.request_generated_restart(
+                        evidence_family="materialized_transfers",
+                        reason=(
+                            "CALLS discovered detached local transfer evidence"
+                        ),
+                    )
                 combined_transfers = state.materialized_transfers
                 proven_reentry_eas = _proven_callinfo_reentry_eas(
                     resolution,
@@ -12207,7 +12390,10 @@ def _on_calls_done_preanalysis(
         imported_predicate_eas = frozenset(imported_origins)
 
         def request_generated_restart(reason: str, **details: object) -> bool:
-            if not state.native_preanalysis.request_generated_restart():
+            if not state.native_preanalysis.request_generated_restart(
+                evidence_family="calls_evidence",
+                reason=f"CALLS staged {reason} for PREOPT",
+            ):
                 return False
             decision["defer_generated_restart"] = True
             request_hexrays_redo(

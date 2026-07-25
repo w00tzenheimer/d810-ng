@@ -710,6 +710,299 @@ def test_branch_state_choice_recovers_default_and_overriding_dispatch_states() -
     )
 
 
+def test_branch_target_patch_plan_preserves_shared_indirect_conditional() -> None:
+    plan = computed_goto_resolver._branch_target_patch_plan(
+        source_block_ea=0x40B6C0,
+        condition_producer_ea=0x40B6C2,
+        predicate_ea=0x40B6C8,
+        condition_code=12,
+        source_state={
+            "eax": frozenset({0x48B77C}),
+            "ebx": frozenset({0xCB1F8618}),
+            "esi": frozenset({0xFDEE1C81}),
+        },
+        taken_result=_ConcreteDispatchResult(
+            0x40B6D6,
+            (("eax", 0x40B6D6), ("ebx", 0xCB1F8618)),
+            transfer_ea=0x40B6D4,
+        ),
+        fallthrough_result=_ConcreteDispatchResult(
+            0x40B790,
+            (("eax", 0x40B790), ("ebx", 0xCB1F8618)),
+            transfer_ea=0x40B6D4,
+        ),
+        transfer_end_ea=0x40B6D6,
+    )
+
+    assert plan == _PatchPlan(
+        jmp_ea=0x40B6D4,
+        block_entry=0x40B6C0,
+        patch_start=0x40B6C8,
+        patch_bytes=b"",
+        region_end=0x40B6D6,
+        insn_heads=(0x40B6C8, 0x40B6D4),
+        new_block_eas=(0x40B6C8, 0x40B6D4),
+        target_eas=(0x40B6D6, 0x40B790),
+        condition_code=12,
+        true_target_ea=0x40B6D6,
+        false_target_ea=0x40B790,
+        source_register_values=(
+            ("eax", 0x48B77C),
+            ("ebx", 0xCB1F8618),
+            ("esi", 0xFDEE1C81),
+        ),
+        condition_producer_ea=0x40B6C2,
+    )
+
+
+def test_static_branch_discovery_collects_shared_indirect_conditional(
+    monkeypatch,
+) -> None:
+    idaapi = ModuleType("idaapi")
+    idaapi.o_void = 0
+    idaapi.o_reg = 1
+    idaapi.o_imm = 2
+    idaapi.o_near = 3
+    idaapi.o_far = 4
+    mnemonics = {
+        0x40B6C0: "mov",
+        0x40B6C2: "cmp",
+        0x40B6C8: "jl",
+        0x40B6CA: "lea",
+        0x40B6D0: "mov",
+        0x40B6D2: "add",
+        0x40B6D4: "jmp",
+    }
+    idaapi.print_insn_mnem = lambda ea: mnemonics.get(int(ea), "")
+    monkeypatch.setitem(sys.modules, "idaapi", idaapi)
+    monkeypatch.setattr(computed_goto_resolver, "idaapi", idaapi)
+
+    class Operand:
+        def __init__(self, kind=0, *, addr=0):
+            self.type = kind
+            self.addr = addr
+            self.reg = 0
+
+    class Instruction:
+        def __init__(self):
+            self.ea = 0
+            self.ops = [Operand(), Operand()]
+
+    encoded = {
+        0x40B6C0: (2, Operand(idaapi.o_reg), Operand(idaapi.o_reg)),
+        0x40B6C2: (6, Operand(idaapi.o_imm), Operand(idaapi.o_imm)),
+        0x40B6C8: (2, Operand(idaapi.o_near, addr=0x40B6D0), Operand()),
+        0x40B6CA: (6, Operand(idaapi.o_reg), Operand(idaapi.o_imm)),
+        0x40B6D0: (2, Operand(idaapi.o_reg), Operand(idaapi.o_reg)),
+        0x40B6D2: (2, Operand(idaapi.o_reg), Operand(idaapi.o_reg)),
+        0x40B6D4: (2, Operand(idaapi.o_reg), Operand()),
+    }
+    ida_ua = ModuleType("ida_ua")
+    ida_ua.insn_t = Instruction
+
+    def decode_insn(insn, ea):
+        row = encoded.get(int(ea))
+        if row is None:
+            return 0
+        insn.ea = int(ea)
+        insn.ops = [row[1], row[2]]
+        return row[0]
+
+    ida_ua.decode_insn = decode_insn
+    monkeypatch.setitem(sys.modules, "ida_ua", ida_ua)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_register_mreg",
+        lambda name: {"eax": 8, "ebx": 20, "esi": 36}.get(name),
+    )
+
+    def process_writer(_mnemonic, insn, state):
+        if insn.ea == 0x40B6C0:
+            state["eax"] = frozenset({0x48B77C})
+        elif insn.ea == 0x40B6CA:
+            state["eax"] = frozenset({0x48B768})
+        elif insn.ea in {0x40B6D0, 0x40B6D2}:
+            state["eax"] = frozenset({insn.ea})
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_sv_process_writer",
+        process_writer,
+    )
+
+    def resolve_arm(start_ea, **_kwargs):
+        if int(start_ea) == 0x40B6D0:
+            return _ConcreteDispatchResult(
+                0x40B6D6,
+                (("eax", 0x40B6D6), ("ebx", 0xCB1F8618)),
+                transfer_ea=0x40B6D4,
+            )
+        if int(start_ea) == 0x40B6CA:
+            return _ConcreteDispatchResult(
+                0x40B790,
+                (("eax", 0x40B790), ("ebx", 0xCB1F8618)),
+                transfer_ea=0x40B6D4,
+            )
+        return None
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_resolve_concrete_dispatch_corridor",
+        resolve_arm,
+    )
+    target_plans = []
+
+    choices = computed_goto_resolver._static_branch_state_choices(
+        {
+            0x40B6C0: {
+                "eax": frozenset({0x48B77C}),
+                "ebx": frozenset({0xCB1F8618}),
+                "esi": frozenset({0xFDEE1C81}),
+            },
+        },
+        target_patch_plans=target_plans,
+    )
+
+    assert choices == ()
+    assert len(target_plans) == 1
+    assert target_plans[0].jmp_ea == 0x40B6D4
+    assert target_plans[0].target_eas == (0x40B6D6, 0x40B790)
+    assert target_plans[0].condition_producer_ea == 0x40B6C2
+
+
+def test_branch_target_patch_plan_selection_requires_one_exact_plan_per_site() -> None:
+    accepted_plan = _PatchPlan(
+        jmp_ea=0x40B6D4,
+        block_entry=0x40B6C0,
+        patch_start=0x40B6C8,
+        patch_bytes=b"",
+        region_end=0x40B6D6,
+        insn_heads=(0x40B6C8, 0x40B6D4),
+        new_block_eas=(0x40B6C8, 0x40B6D4),
+        target_eas=(0x40B6D6, 0x40B790),
+        condition_code=12,
+        true_target_ea=0x40B6D6,
+        false_target_ea=0x40B790,
+        condition_producer_ea=0x40B6C2,
+    )
+    ambiguous_plan = accepted_plan._replace(
+        jmp_ea=0x40C000,
+        target_eas=(0x40C100, 0x40C200),
+        true_target_ea=0x40C100,
+        false_target_ea=0x40C200,
+    )
+    conflicting_plan = ambiguous_plan._replace(
+        target_eas=(0x40C100, 0x40C300),
+        false_target_ea=0x40C300,
+    )
+
+    selected, ambiguous_sites = (
+        computed_goto_resolver._select_unique_branch_target_patch_plans(
+            (
+                accepted_plan,
+                accepted_plan,
+                ambiguous_plan,
+                conflicting_plan,
+            )
+        )
+    )
+
+    assert selected == (accepted_plan,)
+    assert ambiguous_sites == frozenset({0x40C000})
+
+
+def test_static_resolution_prefers_complete_shared_indirect_conditional(
+    monkeypatch,
+) -> None:
+    conditional_plan = _PatchPlan(
+        jmp_ea=0x40B6D4,
+        block_entry=0x40B6C0,
+        patch_start=0x40B6C8,
+        patch_bytes=b"",
+        region_end=0x40B6D6,
+        insn_heads=(0x40B6C8, 0x40B6D4),
+        new_block_eas=(0x40B6C8, 0x40B6D4),
+        target_eas=(0x40B6D6, 0x40B790),
+        condition_code=12,
+        true_target_ea=0x40B6D6,
+        false_target_ea=0x40B790,
+        source_register_values=(("eax", 0x48B77C),),
+        condition_producer_ea=0x40B6C2,
+    )
+    incomplete_plan = conditional_plan._replace(
+        patch_start=0x40B6D0,
+        insn_heads=(0x40B6D0,),
+        new_block_eas=(0x40B6D0,),
+        target_eas=(0x40B790,),
+        condition_code=None,
+        true_target_ea=None,
+        false_target_ea=None,
+        condition_producer_ea=None,
+    )
+    monkeypatch.setattr(computed_goto_resolver, "_detect_arch", lambda: "x86")
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_text_segment",
+        lambda _function_ea: (0x400000, 0x500000, object()),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_static_resolver_fixpoint",
+        lambda _function_ea: (
+            {0x40B6C0: {"eax": frozenset({0x48B77C})}},
+            {0x40B6D4: [0x40B790]},
+            {},
+            {0x40B6D4: 0x40B6C0},
+            17,
+        ),
+    )
+
+    def collect_branch_plans(_entry_state, *, target_patch_plans):
+        target_patch_plans.append(conditional_plan)
+        return ()
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_static_branch_state_choices",
+        collect_branch_plans,
+    )
+    baked_sites = []
+
+    def bake_plans(resolved_sites, *_args):
+        baked_sites.append(dict(resolved_sites))
+        return ([incomplete_plan], []) if resolved_sites else ([], [])
+
+    monkeypatch.setattr(computed_goto_resolver, "_bake_patch_plans", bake_plans)
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "native_stack_frame_offsets_for_ranges",
+        lambda *_args: {},
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_static_conditional_state_choices",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_function_context_register_values",
+        lambda _entry_state: (),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_dispatcher_context_register_values",
+        lambda *_args: (),
+    )
+
+    resolution = computed_goto_resolver.resolve_computed_gotos_static(0x40A560)
+
+    assert resolution is not None
+    assert resolution.jmp_targets[0x40B6D4] == (0x40B790,)
+    assert resolution.patch_plans == (incomplete_plan,)
+    assert resolution.contextual_patch_plans == (conditional_plan,)
+    assert baked_sites == [{0x40B6D4: [0x40B790]}]
+
+
 @pytest.mark.parametrize(
     ("source_values", "taken_values", "fallthrough_values", "taken_frontier"),
     (
@@ -9044,6 +9337,21 @@ def test_frontend_union_source_seeds_proof_owned_static_handler_body(
         new_block_eas=(),
         target_eas=(computed_target_ea,),
     )
+    contextual_source_ea = 0x1300
+    contextual_plan = _PatchPlan(
+        jmp_ea=0x1310,
+        block_entry=contextual_source_ea,
+        patch_start=0x1308,
+        patch_bytes=b"",
+        region_end=0x1312,
+        insn_heads=(0x1308, 0x1310),
+        new_block_eas=(0x1308, 0x1310),
+        target_eas=(computed_target_ea, handler_entry_ea),
+        condition_code=5,
+        true_target_ea=computed_target_ea,
+        false_target_ea=handler_entry_ea,
+        condition_producer_ea=0x1304,
+    )
     resolution = ComputedGotoResolution(
         function_ea=function_ea,
         jmp_targets={plan.jmp_ea: plan.target_eas},
@@ -9052,6 +9360,7 @@ def test_frontend_union_source_seeds_proof_owned_static_handler_body(
         executed_insns=0,
         seeds_run=0,
         patch_plans=(plan,),
+        contextual_patch_plans=(contextual_plan,),
     )
     handler_route = MaterializedIndirectTransfer(
         source_jmp_ea=0x1800,
@@ -9084,6 +9393,11 @@ def test_frontend_union_source_seeds_proof_owned_static_handler_body(
                     computed_target_ea: NativeBlock(
                         computed_target_ea,
                         0x1220,
+                        terminal=NativeTerminalKind.RETURN,
+                    ),
+                    contextual_source_ea: NativeBlock(
+                        contextual_source_ea,
+                        0x1320,
                         terminal=NativeTerminalKind.RETURN,
                     ),
                     handler_entry_ea: NativeBlock(
@@ -9124,12 +9438,19 @@ def test_frontend_union_source_seeds_proof_owned_static_handler_body(
     source = computed_goto_resolver._plan_frontend_normalization_union_source(
         resolution,
         transfers=(handler_route,),
+        contextual_patch_plans=(contextual_plan,),
     )
 
     assert source is not None
     assert len(cfg_calls) == 1
     assert handler_entry_ea in cfg_calls[0]["seed_eas"]
     assert handler_entry_ea in cfg_calls[0]["resolver_proven_unmarked_entry_eas"]
+    assert contextual_source_ea in cfg_calls[0]["seed_eas"]
+    assert contextual_source_ea in cfg_calls[0]["resolver_proven_unmarked_entry_eas"]
+    assert cfg_calls[0]["resolver_cut_eas"] == (plan.jmp_ea,)
+    assert cfg_calls[0]["resolver_target_eas_by_source"] == {
+        plan.jmp_ea: plan.target_eas,
+    }
     assert (
         ResolverProvenHandlerEntry(
             entry_ea=handler_entry_ea,
@@ -9141,6 +9462,104 @@ def test_frontend_union_source_seeds_proof_owned_static_handler_body(
     assert handler_entry_ea in source.closure.included_block_eas
     assert 0x2010 in source.closure.included_block_eas
     assert NativeRange(handler_entry_ea, 0x2020) in source.closure.native_ranges
+
+
+def test_prepatch_capture_selects_only_promoted_contextual_plan(
+    monkeypatch,
+) -> None:
+    generic_plan = _PatchPlan(
+        jmp_ea=0x1010,
+        block_entry=0x1000,
+        patch_start=0x1008,
+        patch_bytes=b"",
+        region_end=0x1012,
+        insn_heads=(0x1008,),
+        new_block_eas=(),
+        target_eas=(0x1200,),
+    )
+    bootstrap_plan = _PatchPlan(
+        jmp_ea=0x1310,
+        block_entry=0x1300,
+        patch_start=0x1308,
+        patch_bytes=b"",
+        region_end=0x1312,
+        insn_heads=(0x1308, 0x1310),
+        new_block_eas=(0x1308, 0x1310),
+        target_eas=(0x1400, 0x1500),
+        condition_code=5,
+        true_target_ea=0x1400,
+        false_target_ea=0x1500,
+        condition_producer_ea=0x1304,
+    )
+    unrelated_plan = bootstrap_plan._replace(
+        jmp_ea=0x1610,
+        block_entry=0x1600,
+        patch_start=0x1608,
+        region_end=0x1612,
+        insn_heads=(0x1608, 0x1610),
+        new_block_eas=(0x1608, 0x1610),
+        target_eas=(0x1700, 0x1800),
+        true_target_ea=0x1700,
+        false_target_ea=0x1800,
+        condition_producer_ea=0x1604,
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x1000,
+        jmp_targets={generic_plan.jmp_ea: generic_plan.target_eas},
+        reachable_eas=(0x1000,),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+        patch_plans=(generic_plan,),
+        contextual_patch_plans=(bootstrap_plan, unrelated_plan),
+    )
+    _session, state = _resolver_session(resolution)
+    assert state.native_preanalysis._fragment_publication_mark_normalization_staged()
+    assert state.native_preanalysis._fragment_publication_mark_normalization_validated()
+    assert not state.native_preanalysis._fragment_publication_commit_normalization_work_item(
+        work_item_id="frontend-normalization:g1:root@0x1000",
+        selected_obligation_ids=("native-body-edge@0x1300",),
+        remaining_obligation_ids=("native-body-edge@0x1600",),
+        unreachable_obligation_ids=(),
+    )
+    assert state.native_preanalysis.promote_contextual_patch_plan_for_anchor(
+        state.native_key,
+        bootstrap_plan.block_entry,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_enrich_preopt_union_route_ranges",
+        lambda _resolution, transfers: tuple(transfers),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_discover_static_state_write_routes",
+        lambda *_args: None,
+    )
+    captured: list[tuple[_PatchPlan, ...]] = []
+
+    def plan_source(
+        _resolution,
+        *,
+        transfers,
+        contextual_patch_plans=(),
+    ):
+        assert transfers == ()
+        captured.append(tuple(contextual_patch_plans))
+        return None
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_plan_frontend_normalization_union_source",
+        plan_source,
+    )
+
+    assert not computed_goto_resolver._capture_prepatch_preopt_union_source(
+        state,
+        resolution,
+        (),
+    )
+    assert captured == [(bootstrap_plan,)]
 
 
 def _install_preopt_union_success_harness(

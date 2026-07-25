@@ -253,7 +253,10 @@ def _new_semantic_native_body_materializer(*, session, mba):
             state = resolver_session_state(session)
             changed = state.request_call_companion_ranges(ranges)
             restart_requested = (
-                session.native_preanalysis.request_generated_restart()
+                session.native_preanalysis.request_generated_restart(
+                    evidence_family="call_companion_ranges",
+                    reason="CALLS requested analyzed native call companions",
+                )
             )
             accepted = bool(
                 all(

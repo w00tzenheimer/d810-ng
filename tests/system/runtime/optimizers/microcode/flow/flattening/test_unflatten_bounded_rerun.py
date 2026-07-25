@@ -41,6 +41,8 @@ from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockKind
 from d810.ir.maturity import IRMaturity
 from d810.analyses.control_flow.native_preanalysis_session import (
+    ComputedGotoPatchPlan,
+    ComputedGotoResolution,
     NativePreanalysisSessionState,
 )
 from d810.analyses.control_flow.materialized_indirect_transfer import (
@@ -1649,6 +1651,89 @@ def test_canonical_composition_rejection_reports_stable_route_obligation() -> No
         ),
         "owner_count": 0,
     }
+
+
+def test_unresolved_published_boundary_promotes_contextual_plan_and_restarts() -> None:
+    generic_plan = ComputedGotoPatchPlan(
+        jmp_ea=0x40B6D4,
+        block_entry=0x40B6CA,
+        patch_start=0x40B6D0,
+        patch_bytes=b"",
+        region_end=0x40B6D6,
+        insn_heads=(0x40B6D0, 0x40B6D4),
+        new_block_eas=(0x40B6D0,),
+        target_eas=(0x40B790,),
+    )
+    contextual_plan = ComputedGotoPatchPlan(
+        jmp_ea=0x40B6D4,
+        block_entry=0x40B6C0,
+        patch_start=0x40B6C8,
+        patch_bytes=b"",
+        region_end=0x40B6D6,
+        insn_heads=(0x40B6C8, 0x40B6D4),
+        new_block_eas=(0x40B6C8, 0x40B6D4),
+        target_eas=(0x40B6D6, 0x40B790),
+        condition_code=12,
+        true_target_ea=0x40B6D6,
+        false_target_ea=0x40B790,
+        condition_producer_ea=0x40B6C2,
+    )
+    native = NativePreanalysisSessionState()
+    assert native.set_computed_goto_resolution(
+        NATIVE_KEY,
+        ComputedGotoResolution(
+            function_ea=0x40A560,
+            jmp_targets={generic_plan.jmp_ea: generic_plan.target_eas},
+            reachable_eas=(),
+            arch="x86",
+            executed_insns=17,
+            seeds_run=0,
+            patch_plans=(generic_plan,),
+            contextual_patch_plans=(contextual_plan,),
+        ),
+    )
+    assert native._fragment_publication_mark_normalization_staged()
+    assert native._fragment_publication_mark_normalization_validated()
+    assert not native._fragment_publication_commit_normalization_work_item(
+        work_item_id="frontend-normalization:g1:root@0x40A5F0",
+        selected_obligation_ids=("native-body-edge@0x40B6C0",),
+        remaining_obligation_ids=("native-body-edge@0x40C4B4",),
+        unreachable_obligation_ids=(),
+    )
+    resolver_state = ResolverSessionState(
+        native_preanalysis=native,
+        native_key=NATIVE_KEY,
+        materialized=True,
+    )
+    reported = []
+    rule = _fresh_rule()
+    rule.current_resolver_session_state = lambda: resolver_state
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    mba = SimpleNamespace(entry_ea=0x40A560, maturity=_MAT2)
+    rejection = CanonicalSemanticFragmentRejected(
+        "published imported boundary retains unresolved semantic topology",
+        reason_code="published_imported_boundary_topology_unresolved",
+        anchor_ea=contextual_plan.block_entry,
+        payload={"operation_id": "native-body-edge@0x40B6C0"},
+    )
+
+    assert not rule._run_pipeline_with_canonical_diagnostics(
+        mba,
+        canonical_composition_ready=True,
+        run_pipeline=lambda: (_ for _ in ()).throw(rejection),
+    )
+
+    assert reported[-1].reason == (
+        "published_imported_boundary_topology_unresolved"
+    )
+    assert native.evidence_generation == 2
+    assert native.resolver_evidence is not None
+    assert native.resolver_evidence.promoted_contextual_patch_plans == (
+        contextual_plan,
+    )
+    assert native.has_pending_generated_restart
 
 
 def test_unexpected_canonical_pipeline_exception_is_reported_and_reraised() -> None:

@@ -398,8 +398,14 @@ def test_generated_restart_is_staged_once_then_consumed_by_flowchart(
         ),
     )
 
-    assert state.native_preanalysis.request_generated_restart()
-    assert not state.native_preanalysis.request_generated_restart()
+    assert state.native_preanalysis.request_generated_restart(
+        evidence_family="test_evidence",
+        reason="test staged a generated restart",
+    )
+    assert not state.native_preanalysis.request_generated_restart(
+        evidence_family="test_evidence",
+        reason="test staged a generated restart",
+    )
     # Evidence discovered later in the same decompile (for example terminal
     # return-carrier requests during GLBOPT) belongs to the already-staged
     # controller retry.  It must advance that pending generation rather than
@@ -790,7 +796,10 @@ def test_calls_ignores_obsolete_mba_after_generated_restart_is_staged(
     )
     state = resolver_session_state(session)
     state.materialized = True
-    assert state.native_preanalysis.request_generated_restart()
+    assert state.native_preanalysis.request_generated_restart(
+        evidence_family="test_evidence",
+        reason="test staged a generated restart",
+    )
     analyzed: list[object] = []
     monkeypatch.setattr(
         resolver,

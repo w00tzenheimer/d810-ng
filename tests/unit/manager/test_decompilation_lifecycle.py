@@ -941,7 +941,10 @@ def test_pending_generated_restart_retains_owner_until_flowchart_consumes_it() -
 
     assert created is True
     session.native_preanalysis.evidence_generation = 2
-    assert session.native_preanalysis.request_generated_restart()
+    assert session.native_preanalysis.request_generated_restart(
+        evidence_family="test_evidence",
+        reason="test staged a generated restart",
+    )
 
     assert coordinator.finish_hexrays_session() is None
     assert coordinator.current_session(0x401000) is session

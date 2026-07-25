@@ -274,6 +274,9 @@ class ComputedGotoResolution:
     seeds_run: int
     stop_reasons: tuple[str, ...] = field(default_factory=tuple)
     patch_plans: tuple[ComputedGotoPatchPlan, ...] = field(default_factory=tuple)
+    contextual_patch_plans: tuple[ComputedGotoPatchPlan, ...] = field(
+        default_factory=tuple
+    )
     block_entries: tuple[int, ...] = field(default_factory=tuple)
     function_context_register_values: tuple[tuple[str, int], ...] = field(
         default_factory=tuple
@@ -529,6 +532,31 @@ def _patch_plan_frontend_proof(
         diagnostic_provenance=(
             *provenance,
             ("condition_code", str(int(plan.condition_code))),
+        ),
+    )
+
+
+def _contextual_patch_plan_frontend_proof(
+    native_key: NativePreanalysisKey,
+    plan: ComputedGotoPatchPlan,
+    *,
+    atomic_group_id: str,
+) -> NativeIndirectTransferProof:
+    """Project one explicitly promoted contextual branch without globalizing it."""
+    proof = _patch_plan_frontend_proof(
+        native_key,
+        plan,
+        atomic_group_id=atomic_group_id,
+    )
+    return replace(
+        proof,
+        proof_id=(
+            f"native-contextual-indirect-transfer@0x{int(plan.patch_start):X}:"
+            f"0x{int(plan.jmp_ea):X}"
+        ),
+        diagnostic_provenance=(
+            *proof.diagnostic_provenance,
+            ("contextual_owner", "canonical_rejection_promotion"),
         ),
     )
 
@@ -804,12 +832,12 @@ def _static_state_choice_frontend_proof(
 
 def _without_superseded_frontier_patch_proofs(
     patch_proofs: tuple[NativeIndirectTransferProof, ...],
-    state_choice_proofs: tuple[NativeIndirectTransferProof, ...],
+    semantic_owner_proofs: tuple[NativeIndirectTransferProof, ...],
 ) -> tuple[
     tuple[NativeIndirectTransferProof, ...],
     tuple[NativeIndirectTransferProof, ...],
 ]:
-    """Give one complete state choice sole authority over its direct frontier."""
+    """Give one complete semantic envelope sole authority over its frontier."""
 
     def contains_identity(
         owner: StableBlockIdentity,
@@ -828,16 +856,16 @@ def _without_superseded_frontier_patch_proofs(
         )
 
     retained_patch_proofs: list[NativeIndirectTransferProof] = []
-    superseded_by_state_choice: dict[str, list[str]] = {}
+    superseded_by_semantic_owner: dict[str, list[str]] = {}
     for patch_proof in patch_proofs:
         owners = tuple(
-            state_choice_proof
-            for state_choice_proof in state_choice_proofs
+            semantic_owner_proof
+            for semantic_owner_proof in semantic_owner_proofs
             if patch_proof.shape is NativeTransferShape.DIRECT
             and int(patch_proof.source_transfer_ea)
-            == int(state_choice_proof.source_transfer_ea)
+            == int(semantic_owner_proof.source_transfer_ea)
             and contains_identity(
-                state_choice_proof.source_identity,
+                semantic_owner_proof.source_identity,
                 patch_proof.source_identity,
             )
         )
@@ -849,31 +877,33 @@ def _without_superseded_frontier_patch_proofs(
         if not owners:
             retained_patch_proofs.append(patch_proof)
             continue
-        superseded_by_state_choice.setdefault(
+        superseded_by_semantic_owner.setdefault(
             owners[0].proof_id,
             [],
         ).append(patch_proof.proof_id)
 
-    annotated_state_choice_proofs = tuple(
+    annotated_semantic_owner_proofs = tuple(
         (
-            state_choice_proof
-            if state_choice_proof.proof_id not in superseded_by_state_choice
+            semantic_owner_proof
+            if semantic_owner_proof.proof_id not in superseded_by_semantic_owner
             else replace(
-                state_choice_proof,
+                semantic_owner_proof,
                 diagnostic_provenance=(
-                    *state_choice_proof.diagnostic_provenance,
+                    *semantic_owner_proof.diagnostic_provenance,
                     *(
                         ("superseded_patch_proof", proof_id)
                         for proof_id in sorted(
-                            superseded_by_state_choice[state_choice_proof.proof_id]
+                            superseded_by_semantic_owner[
+                                semantic_owner_proof.proof_id
+                            ]
                         )
                     ),
                 ),
             )
         )
-        for state_choice_proof in state_choice_proofs
+        for semantic_owner_proof in semantic_owner_proofs
     )
-    return tuple(retained_patch_proofs), annotated_state_choice_proofs
+    return tuple(retained_patch_proofs), annotated_semantic_owner_proofs
 
 
 def _semantic_corridor_point(
@@ -1109,6 +1139,7 @@ class ResolverPortableEvidence:
         tuple[tuple[StableBlockIdentity, int], BootstrapRouteBindingEvidence], ...
     ] = ()
     computed_goto_resolution: ComputedGotoResolution | None = None
+    promoted_contextual_patch_plans: tuple[ComputedGotoPatchPlan, ...] = ()
     preopt_union_preparation: PreoptUnionPreparationResult | None = None
     prepatch_preopt_union_source: PrepatchPreoptUnionSource | None = None
     preopt_entry_bridges: tuple[EntryBridgeEvidence, ...] = ()
@@ -1740,15 +1771,23 @@ class NativePreanalysisSessionState:
                 if proof is not None
             )
         )
-        patch_proofs, state_choice_proofs = _without_superseded_frontier_patch_proofs(
+        contextual_patch_proofs = tuple(
+            _contextual_patch_plan_frontend_proof(
+                key,
+                plan,
+                atomic_group_id=atomic_group_id,
+            )
+            for plan in resolver_evidence.promoted_contextual_patch_plans
+        )
+        patch_proofs, semantic_owner_proofs = _without_superseded_frontier_patch_proofs(
             patch_proofs,
-            state_choice_proofs,
+            (*state_choice_proofs, *contextual_patch_proofs),
         )
         return FrontendNormalizationEvidence(
             native_key=key,
             generation=int(self.evidence_generation),
             atomic_group_id=atomic_group_id,
-            transfer_proofs=(*patch_proofs, *state_choice_proofs),
+            transfer_proofs=(*patch_proofs, *semantic_owner_proofs),
             semantic_closure=semantic_closure,
             native_cfg=native_cfg,
         )
@@ -2127,6 +2166,84 @@ class NativePreanalysisSessionState:
             computed_goto_resolution=resolution,
         )
 
+    def promote_contextual_patch_plan_for_anchor(
+        self,
+        key: NativePreanalysisKey,
+        source_anchor_ea: int,
+    ) -> bool:
+        """Promote one unique context-sensitive branch after a typed C3 gap."""
+        current = self._resolver_evidence_for(key)
+        resolution = current.computed_goto_resolution
+        source_anchor_ea = int(source_anchor_ea)
+        candidates = tuple(
+            plan
+            for plan in (
+                ()
+                if not isinstance(resolution, ComputedGotoResolution)
+                else resolution.contextual_patch_plans
+            )
+            if int(plan.block_entry) == source_anchor_ea
+        )
+        if len(set(candidates)) != 1:
+            generation = int(self.evidence_generation)
+            self._observe_transition(
+                operation="contextual_patch_plan_promoted",
+                previous_generation=generation,
+                evidence_family="contextual_patch_plans",
+                outcome="declined",
+                reason=(
+                    f"native source 0x{source_anchor_ea:X} has "
+                    f"{len(set(candidates))} contextual patch-plan candidates"
+                ),
+            )
+            return False
+        candidate = next(iter(set(candidates)))
+        if candidate in current.promoted_contextual_patch_plans:
+            generation = int(self.evidence_generation)
+            self._observe_transition(
+                operation="contextual_patch_plan_promoted",
+                previous_generation=generation,
+                evidence_family="contextual_patch_plans",
+                outcome="declined",
+                reason=(
+                    f"native source 0x{source_anchor_ea:X} contextual patch plan "
+                    "is already promoted"
+                ),
+            )
+            return False
+        promoted = tuple(
+            sorted(
+                {*current.promoted_contextual_patch_plans, candidate},
+                key=lambda plan: (
+                    int(plan.block_entry),
+                    int(plan.patch_start),
+                    int(plan.jmp_ea),
+                ),
+            )
+        )
+        changed = self._replace_resolver_evidence(
+            key,
+            evidence_family="contextual_patch_plans",
+            evidence_reason=(
+                f"unique contextual patch plan promoted for native source "
+                f"0x{source_anchor_ea:X}"
+            ),
+            advance_generation=False,
+            promoted_contextual_patch_plans=promoted,
+            preopt_union_preparation=None,
+            prepatch_preopt_union_source=None,
+        )
+        if not changed:
+            return False
+        self._advance_evidence_generation(
+            evidence_family="contextual_patch_plans",
+            reason=(
+                f"unique contextual patch plan promoted for native source "
+                f"0x{source_anchor_ea:X}"
+            ),
+        )
+        return True
+
     def set_preopt_union_preparation(
         self,
         key: NativePreanalysisKey,
@@ -2490,6 +2607,19 @@ class NativePreanalysisSessionState:
                 ),
             )
             return
+        self._advance_evidence_generation(
+            evidence_family=evidence_family,
+            reason=reason,
+        )
+
+    def _advance_evidence_generation(
+        self,
+        *,
+        evidence_family: str,
+        reason: str,
+    ) -> None:
+        """Advance one evidence epoch without first-pass coalescing."""
+        previous_generation = int(self.evidence_generation)
         restart_pending = self.pending_generated_restart_generation is not None
         self.evidence_generation += 1
         self.portable_evidence_ready_generation = self.evidence_generation
@@ -2655,29 +2785,40 @@ class NativePreanalysisSessionState:
         """Whether CALLS staged a controller-owned generated-MBA restart."""
         return self.pending_generated_restart_generation == self.evidence_generation
 
-    def request_generated_restart(self) -> bool:
-        """Stage one CALLS-discovered restart for a later flowchart callback.
+    def request_generated_restart(
+        self,
+        *,
+        evidence_family: str,
+        reason: str,
+    ) -> bool:
+        """Stage one evidence-owned restart for a later flowchart callback.
 
         ``hxe_calls_done`` has no documented microcode-error return contract.
         The owning decompile controller must initiate a follow-up pass; its
         flowchart callback then consumes this request and returns ``MERR_REDO``.
         """
+        evidence_family = str(evidence_family).strip()
+        reason = str(reason).strip()
+        if not evidence_family or not reason:
+            raise ValueError("generated restart requires typed evidence provenance")
         generation = int(self.evidence_generation)
         if not self.request_controlled_redo():
             self._observe_transition(
                 operation="generated_restart_requested",
                 previous_generation=generation,
-                evidence_family="controller_restart",
+                evidence_family=evidence_family,
                 outcome="declined",
-                reason="evidence generation already owns a controlled redo",
+                reason=(
+                    f"{reason}; evidence generation already owns a controlled redo"
+                ),
             )
             return False
         self.pending_generated_restart_generation = self.evidence_generation
         self._observe_transition(
             operation="generated_restart_requested",
             previous_generation=generation,
-            evidence_family="controller_restart",
-            reason="CALLS staged a controller-owned generated-MBA restart",
+            evidence_family=evidence_family,
+            reason=reason,
         )
         return True
 
