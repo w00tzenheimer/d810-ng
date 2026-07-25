@@ -19,6 +19,7 @@ from d810.core.observability_events import (
     SemanticFragmentRouteOracleComparedObserved,
 )
 from d810.core.config import ProjectConfiguration
+from d810.core.config_v2_defaults import select_config_v2_default_project
 from d810.core.semantic_route_oracle import RouteOracleComparison
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.ir.logical_block_proxy import (
@@ -188,16 +189,18 @@ def test_manager_loads_only_configured_relative_oracle_manifests(tmp_path) -> No
 
 
 def test_default_ollvm_profile_selects_pinned_six_route_oracle() -> None:
-    project = ProjectConfiguration.from_file(
+    source_project = ProjectConfiguration.from_file(
         Path(__file__).parents[3]
         / "src"
         / "d810"
         / "conf"
         / "default_unflattening_ollvm.json"
     )
+    runtime_selection = select_config_v2_default_project(source_project)
+    assert runtime_selection is not None
 
     registry = _load_semantic_route_reference_oracle_registry(
-        project.additional_configuration
+        runtime_selection.runtime_project.additional_configuration
     )
 
     assert registry is not None
