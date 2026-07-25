@@ -4813,3 +4813,48 @@ must select or compose the smallest actual entry-connected reference-route
 group, publish it through the same detached proof path, and make literal-entry
 postpublication reachability queryable in the DB. Do not broaden to all 91
 immediate routes merely because one provisional-port receipt committed.
+
+**2026-07-25T15:31:11Z**
+
+Commits `bacc80faf` and `f553a72f1` add the missing configured live-root
+selection path and keep its repository-wide Ruff formatting separate. When a
+configured reference scope contains exactly one route whose portable owner EA
+is the configured publication root, the pass now requires one exact candidate
+state route with the same state-write owner, rewrite anchor, and direct target;
+it composes that connected route work item before considering detached-boundary
+composition. Configured scopes with no route at the publication root retain the
+existing boundary and temporary-port path. The lowering module is 10/10 green;
+changed-file Ruff lint, repository-wide Ruff format, ast-grep, all 14 import
+contracts, `graphify update .`, and both pre-commit runs pass.
+
+The mandatory fresh cache-disabled A560 canary completed normally in 32.43
+seconds without a process crash, numeric `INTERR`, verifier failure, or
+diagnostic-write error. Log:
+`.tmp/rhad-a560-v33-live-root-selector-v12.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-live-root-selector-v12/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-live-root-selector-v12/test_real_loader_matches_reach0/sub_40A560.c`.
+The current manifest still selects the detached `0x40AE3E` group, so this run
+is a regression guard for the new selector rather than an exercise of its live
+route branch. The semantic oracle remains red on the same single false
+`while ( 1 )`.
+
+The diagnostic DB reproduces the prior bounded mechanics exactly. Transaction
+`22ba9021abe842b49275e7561a3cc711` matches all six selected reference routes,
+passes 85/85 prepublication and 159/159 postpublication checks, publishes the
+conditional-fallthrough group anchored at `0x40AE2E`, and commits all 31/31
+planned operations without rollback. At postpublication snapshot 15, however,
+only four of 50 blocks are reachable from literal entry:
+`blk0@0x40A560 -> blk1@0x40A560 -> blk2@0x40A5F0 -> blk34@0x40A560`, and
+`blk34@0x40A560` self-loops at synthetic instruction EA `0xF1C006EC`. The
+published cleanup/return component remains unreachable.
+
+The highest mechanical canary therefore remains C5, while the first unmet
+v3.3 obligation remains C5 literal-entry postpublication reachability; C6 is
+still false. The next vertical slice is now pinned to the reference-proved
+entry route owned at state write `0x40A5B2`, rewritten at `0x40A5C8`, and
+targeting `0x40BECC`. Configure the smallest exact oracle scope for that live
+root plus only the downstream direct rewrites required to close its detached
+target component, then require C4 and literal-entry C5 before adding another
+route group. Do not broaden to the 91 immediate routes or treat the provisional
+`0x40AE3E` receipt as architecture acceptance.
