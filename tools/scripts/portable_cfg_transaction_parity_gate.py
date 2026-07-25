@@ -12,9 +12,7 @@ from typing import NamedTuple
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_LEDGER = Path(__file__).with_name(
-    "portable_cfg_transaction_parity_ledger.json"
-)
+DEFAULT_LEDGER = Path(__file__).with_name("portable_cfg_transaction_parity_ledger.json")
 VALID_STATUSES = frozenset({"accepted", "partial", "missing"})
 REQUIRED_GUARANTEE_IDS = (
     "nominal_plan_block_identity",
@@ -118,12 +116,16 @@ def _validate_diagnostic_proof(value: object, *, guarantee_id: str) -> list[str]
     tables = value.get("tables")
     events = value.get("events")
     assertion = value.get("assertion")
-    if not isinstance(tables, list) or not tables or not all(
-        isinstance(item, str) and item.strip() for item in tables
+    if (
+        not isinstance(tables, list)
+        or not tables
+        or not all(isinstance(item, str) and item.strip() for item in tables)
     ):
         errors.append(f"{guarantee_id}: diagnostic_proof.tables must be nonempty")
-    if not isinstance(events, list) or not events or not all(
-        isinstance(item, str) and item.strip() for item in events
+    if (
+        not isinstance(events, list)
+        or not events
+        or not all(isinstance(item, str) and item.strip() for item in events)
     ):
         errors.append(f"{guarantee_id}: diagnostic_proof.events must be nonempty")
     if not isinstance(assertion, str) or not assertion.strip():
