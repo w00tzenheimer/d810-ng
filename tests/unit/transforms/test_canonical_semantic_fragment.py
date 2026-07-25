@@ -1300,6 +1300,45 @@ def test_published_boundary_rejection_records_prohibited_predecessor() -> None:
     }
 
 
+def test_published_boundary_missing_route_records_projection_inventory() -> None:
+    _graph, normalization_plan, evidence = _live_source_detached_target_case()
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x1000, succs=(30,), preds=()),
+            30: _block(30, 0x1200, succs=(90,), preds=(10, 90)),
+            90: _block(90, 0x1400, succs=(30,), preds=(30,)),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+
+    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
+        compose_canonical_semantic_boundary_fragment_plan(
+            graph,
+            normalization_plan,
+            boundary_anchor_ea=0x1200,
+            available_evidence=evidence,
+            current_identity_by_serial=_current_identity_authority(graph),
+            normalization_authority=_normalization_authority(
+                normalization_plan,
+                evidence,
+            ),
+            prohibited_dispatcher_serials=(90,),
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == "published_boundary_semantic_route_missing"
+    assert rejection.anchor_ea == 0x1200
+    assert rejection.payload["boundary_block_id"] == "detached-target"
+    assert (
+        rejection.payload["boundary_identity"] == _identity(0x1200).diagnostic_label()
+    )
+    assert rejection.payload["target_block_ids"] == ("detached-target",)
+    assert rejection.payload["target_operation_ids"] == ()
+    (decision,) = rejection.payload["nested_state_route_projection"]
+    assert decision["route_proof_id"] == "state-assignment@0x1100"
+
+
 def test_published_boundary_owner_mismatch_records_overlapping_identities() -> None:
     _graph, normalization_plan, evidence = _live_source_detached_target_case()
     boundary_identity = StableBlockIdentity.from_intervals(
