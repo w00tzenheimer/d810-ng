@@ -172,6 +172,7 @@ def _plan_with_reference_route() -> FragmentPlan:
             owner_identity=source_identity,
             owner_anchor_ea=0x401000,
             rewrite_anchor_ea=0x401004,
+            delivery_region=NativeEaInterval(0x401004, 0x401010),
             proof_corridor_instruction_eas=(0x401000, 0x401004),
             superseded_instruction_eas=(0x401004,),
             reference_route=ReferenceRouteRewrite(

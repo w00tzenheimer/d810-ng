@@ -460,6 +460,7 @@ def test_recover_state_transitions_binds_portable_semantic_route_group() -> None
                 shape=SemanticRouteShape.DIRECT,
                 source_identity=source_identity,
                 source_anchor_ea=0x1001,
+                delivery_region=NativeEaInterval(0x1001, 0x1002),
                 destinations=(
                     SemanticRouteDestination(
                         role=SemanticEdgeRole.DIRECT,

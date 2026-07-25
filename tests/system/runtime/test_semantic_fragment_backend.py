@@ -934,6 +934,10 @@ def _plan_with_prepared_imported_direct_transfer(
             owner_identity=imported.stable_identity,
             owner_anchor_ea=rewrite_anchor_ea,
             rewrite_anchor_ea=rewrite_anchor_ea,
+            delivery_region=NativeEaInterval(
+                rewrite_anchor_ea,
+                rewrite_anchor_ea + 1,
+            ),
             proof_corridor_instruction_eas=(rewrite_anchor_ea,),
             superseded_instruction_eas=(rewrite_anchor_ea,),
         ),

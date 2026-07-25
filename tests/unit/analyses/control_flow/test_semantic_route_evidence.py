@@ -48,6 +48,7 @@ def _proof() -> SemanticRouteProof:
         shape=SemanticRouteShape.DIRECT,
         source_identity=source,
         source_anchor_ea=0x1100,
+        delivery_region=NativeEaInterval(0x1100, 0x1101),
         destinations=(
             SemanticRouteDestination(
                 role=SemanticEdgeRole.DIRECT,
@@ -204,6 +205,7 @@ def test_conditional_proof_requires_both_semantic_arms() -> None:
             proof,
             proof_kind=SemanticRouteProofKind.STATE_CHOICE,
             shape=SemanticRouteShape.CONDITIONAL,
+            delivery_region=None,
             predicate=SemanticPredicateProof(
                 kind=SemanticPredicateKind.PRESERVE_LIVE,
                 origin=SemanticCorridorPoint(_identity(0x1100), 0x1100),
@@ -329,6 +331,7 @@ def test_binding_uses_exact_identity_when_branch_ea_has_a_helper_owner() -> None
         _proof(),
         source_identity=source_identity,
         source_anchor_ea=0x1105,
+        delivery_region=NativeEaInterval(0x1105, 0x1106),
         state_write=SemanticStateWriteProof(
             identity=source_identity,
             instruction_ea=0x1100,

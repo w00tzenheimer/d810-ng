@@ -128,6 +128,7 @@ def _graph_and_bound_evidence():
                 shape=SemanticRouteShape.DIRECT,
                 source_identity=source_identity,
                 source_anchor_ea=0x1100,
+                delivery_region=NativeEaInterval(0x1100, 0x1101),
                 destinations=(
                     SemanticRouteDestination(
                         role=SemanticEdgeRole.DIRECT,
@@ -467,6 +468,7 @@ def test_semantic_predecessor_uses_proved_state_write_block_entry() -> None:
         proof_id=f"state-assignment@0x{delivery_ea:X}",
         source_identity=_identity(delivery_ea),
         source_anchor_ea=delivery_ea,
+        delivery_region=NativeEaInterval(delivery_ea, delivery_ea + 1),
         state_write=replace(
             proof.state_write,
             identity=_identity(0x1100),

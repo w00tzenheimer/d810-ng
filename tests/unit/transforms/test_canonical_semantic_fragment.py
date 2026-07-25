@@ -146,6 +146,7 @@ def _direct_bound_evidence() -> tuple[FlowGraph, object]:
                 shape=SemanticRouteShape.DIRECT,
                 source_identity=source_identity,
                 source_anchor_ea=0x1100,
+                delivery_region=NativeEaInterval(0x1100, 0x1101),
                 destinations=(
                     SemanticRouteDestination(
                         role=SemanticEdgeRole.DIRECT,
@@ -311,6 +312,7 @@ def _live_source_detached_target_case() -> tuple[
                 shape=SemanticRouteShape.DIRECT,
                 source_identity=source_identity,
                 source_anchor_ea=0x1100,
+                delivery_region=NativeEaInterval(0x1100, 0x1101),
                 destinations=(
                     SemanticRouteDestination(
                         role=SemanticEdgeRole.DIRECT,
@@ -369,6 +371,7 @@ def _omitted_delivery_source_case() -> tuple[
                 proof_id=f"state-assignment@0x{delivery_ea:X}",
                 source_identity=_identity(delivery_ea),
                 source_anchor_ea=delivery_ea,
+                delivery_region=NativeEaInterval(delivery_ea, delivery_ea + 1),
                 state_write=replace(
                     proof.state_write,
                     identity=_identity(0x1100),
@@ -782,6 +785,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
             exact_instruction_eas=(0x1218,),
         ),
         source_anchor_ea=0x1218,
+        delivery_region=NativeEaInterval(0x1218, 0x1219),
         destinations=(
             SemanticRouteDestination(
                 role=SemanticEdgeRole.DIRECT,
@@ -1005,6 +1009,7 @@ def test_nested_imported_state_assignments_reach_fixpoint() -> None:
             shape=SemanticRouteShape.DIRECT,
             source_identity=_identity(delivery_ea),
             source_anchor_ea=delivery_ea,
+            delivery_region=NativeEaInterval(delivery_ea, delivery_ea + 1),
             destinations=(
                 SemanticRouteDestination(
                     role=SemanticEdgeRole.DIRECT,
@@ -1191,6 +1196,7 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
         shape=SemanticRouteShape.DIRECT,
         source_identity=_identity(0x1210),
         source_anchor_ea=0x1210,
+        delivery_region=NativeEaInterval(0x1210, 0x1211),
         destinations=(
             SemanticRouteDestination(
                 role=SemanticEdgeRole.DIRECT,
@@ -1445,6 +1451,7 @@ def test_published_boundary_projects_nested_terminal_route_atomically(
         shape=SemanticRouteShape.DIRECT,
         source_identity=capture_identity,
         source_anchor_ea=0x1218,
+        delivery_region=NativeEaInterval(0x1218, 0x1219),
         destinations=(
             SemanticRouteDestination(
                 role=SemanticEdgeRole.DIRECT,
@@ -1576,6 +1583,7 @@ def test_nested_terminal_staging_rejection_inventories_both_endpoints() -> None:
         shape=SemanticRouteShape.DIRECT,
         source_identity=source_identity,
         source_anchor_ea=0x1218,
+        delivery_region=NativeEaInterval(0x1218, 0x1219),
         destinations=(
             SemanticRouteDestination(
                 role=SemanticEdgeRole.DIRECT,
@@ -2258,6 +2266,7 @@ def test_detached_component_rejects_current_imported_successor_with_topology() -
         shape=SemanticRouteShape.DIRECT,
         source_identity=_identity(0x1600),
         source_anchor_ea=0x1600,
+        delivery_region=NativeEaInterval(0x1600, 0x1601),
         destinations=(
             SemanticRouteDestination(
                 role=SemanticEdgeRole.DIRECT,
@@ -3358,6 +3367,7 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
         shape=SemanticRouteShape.DIRECT,
         source_identity=capture_identity,
         source_anchor_ea=0x1100,
+        delivery_region=NativeEaInterval(0x1100, 0x1101),
         destinations=(
             SemanticRouteDestination(
                 role=SemanticEdgeRole.DIRECT,
@@ -3474,6 +3484,7 @@ def test_terminal_routes_share_one_owned_return_block_atomically() -> None:
             shape=SemanticRouteShape.DIRECT,
             source_identity=capture_identity,
             source_anchor_ea=source_ea,
+            delivery_region=NativeEaInterval(source_ea, source_ea + 1),
             destinations=(
                 SemanticRouteDestination(
                     role=SemanticEdgeRole.DIRECT,
@@ -3538,6 +3549,7 @@ def test_dispatcher_fed_semantic_target_remains_internal_not_a_root() -> None:
             shape=SemanticRouteShape.DIRECT,
             source_identity=source_identity,
             source_anchor_ea=source_ea,
+            delivery_region=NativeEaInterval(source_ea, source_ea + 1),
             destinations=(
                 SemanticRouteDestination(
                     role=SemanticEdgeRole.DIRECT,
@@ -3616,6 +3628,7 @@ def test_shared_external_target_rejects_bound_identity_drift() -> None:
             shape=SemanticRouteShape.DIRECT,
             source_identity=source_identity,
             source_anchor_ea=source_ea,
+            delivery_region=NativeEaInterval(source_ea, source_ea + 1),
             destinations=(
                 SemanticRouteDestination(
                     role=SemanticEdgeRole.DIRECT,

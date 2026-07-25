@@ -1862,6 +1862,10 @@ class NativePreanalysisSessionState:
                     shape=SemanticRouteShape.DIRECT,
                     source_identity=route.delivery_identity,
                     source_anchor_ea=int(route.delivery_ea),
+                    delivery_region=NativeEaInterval(
+                        int(route.delivery_region_start_ea),
+                        int(route.delivery_region_end_ea),
+                    ),
                     destinations=(
                         SemanticRouteDestination(
                             role=SemanticEdgeRole.DIRECT,

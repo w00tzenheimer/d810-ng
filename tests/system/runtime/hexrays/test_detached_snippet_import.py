@@ -1651,6 +1651,7 @@ def test_preopt_native_body_lowers_owned_direct_transfer_while_unpublished(
     corridor_start_ea = 0x3604
     preserved_setup_ea = 0x3608
     rewrite_anchor_ea = 0x3610
+    obsolete_tail_ea = 0x3614
     direct_target_ea = 0x3620
     discarded_arm_ea = 0x3630
     source = _Block(
@@ -1659,9 +1660,10 @@ def test_preopt_native_body_lowers_owned_direct_transfer_while_unpublished(
         (
             _Instruction(ida_hexrays.m_mov, corridor_start_ea),
             _Instruction(ida_hexrays.m_mov, preserved_setup_ea),
+            _Instruction(ida_hexrays.m_mov, rewrite_anchor_ea),
             _Instruction(
                 ida_hexrays.m_jcnd,
-                rewrite_anchor_ea,
+                obsolete_tail_ea,
                 dest=_Operand(ida_hexrays.mop_b, block_ref=1),
             ),
         ),
@@ -1754,6 +1756,10 @@ def test_preopt_native_body_lowers_owned_direct_transfer_while_unpublished(
                         ),
                         owner_anchor_ea=corridor_start_ea,
                         rewrite_anchor_ea=rewrite_anchor_ea,
+                        delivery_region=NativeEaInterval(
+                            rewrite_anchor_ea,
+                            obsolete_tail_ea + 1,
+                        ),
                         proof_corridor_instruction_eas=(
                             corridor_start_ea,
                             preserved_setup_ea,
@@ -1845,12 +1851,13 @@ def _direct_transfer_preflight_case(
     return native_body, operation, matched
 
 
-def test_preopt_direct_transfer_rejects_rewrite_anchor_tail_mismatch() -> None:
+def test_preopt_direct_transfer_rejects_delivery_suffix_outside_owned_cut() -> None:
     rewrite = FragmentDirectTransferRewrite(
         route_proof_id="proof:tail-mismatch",
         owner_identity=_direct_rewrite_owner_identity(0x3604, 0x3610),
         owner_anchor_ea=0x3604,
         rewrite_anchor_ea=0x3610,
+        delivery_region=NativeEaInterval(0x3610, 0x3611),
         proof_corridor_instruction_eas=(0x3604, 0x3610),
         superseded_instruction_eas=(0x3610,),
     )
@@ -1865,7 +1872,7 @@ def test_preopt_direct_transfer_rejects_rewrite_anchor_tail_mismatch() -> None:
 
     with pytest.raises(
         detached_handler_island.SemanticFragmentBackendRejected,
-        match="does not own its exact detached tail",
+        match="does not own its exact detached cut",
     ) as caught:
         detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._preflight_direct_transfer_rewrite(
             matched=matched,
@@ -1876,8 +1883,14 @@ def test_preopt_direct_transfer_rejects_rewrite_anchor_tail_mismatch() -> None:
             rewrite=rewrite,
         )
 
-    assert caught.value.reason_code == "detached_direct_transfer_tail_mismatch"
+    assert caught.value.reason_code == "detached_direct_transfer_cut_mismatch"
     assert caught.value.anchor_ea == 0x3610
+    assert caught.value.payload["delivery_region"] == ("0x3610", "0x3611")
+    assert caught.value.payload["delivery_suffix"] == (
+        ("0x3610", int(ida_hexrays.m_mov)),
+        ("0x3614", int(ida_hexrays.m_jcnd)),
+    )
+    assert caught.value.payload["suffix_escapes_delivery_region"] is True
 
 
 def test_preopt_direct_transfer_rejects_corridor_outside_native_body() -> None:
@@ -1886,6 +1899,7 @@ def test_preopt_direct_transfer_rejects_corridor_outside_native_body() -> None:
         owner_identity=_direct_rewrite_owner_identity(0x35FC, 0x3610),
         owner_anchor_ea=0x35FC,
         rewrite_anchor_ea=0x3610,
+        delivery_region=NativeEaInterval(0x3610, 0x3611),
         proof_corridor_instruction_eas=(0x35FC, 0x3610),
         superseded_instruction_eas=(0x3610,),
     )
