@@ -3262,3 +3262,35 @@ the unpublished boundary, including source block identity, source anchor,
 operation id, edge role, and sibling arms. Then decide whether the bounded
 publication root must move to the live `0x40AB31` owner. Do not treat
 `0x40B51B` as a live root or fabricate a state-route predecessor.
+
+**2026-07-25T05:17:16Z**
+
+Commit `8e811e49c` adds complete normalization-plan incoming topology to an
+unpublished-boundary rejection. Each entry records the operation id, portable
+source block and identity, source anchor, incoming edge role, and every sibling
+arm. The focused canonical/resolver gate is 279/279 green; Ruff, ast-grep,
+`graphify update .`, and all 14 import contracts pass.
+
+The mandatory cache-disabled A560 canary returned normally in 23.50 seconds
+(21.37 seconds inside pytest) with no process crash or numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-boundary-incoming-topology-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-boundary-incoming-topology-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-boundary-incoming-topology-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The DB now proves one and only one normalization-plan operation enters the
+unpublished `0x40B51B` block: `native-body-edge@0x40AB31`. Its portable source
+is `native[0x40AB31-0x40AB56;exact=0x40AB31]:imported`; the complete native
+conditional has taken target `0x40B51B` and fallthrough target `0x40AB56`.
+This agrees with the isolated reference oracle and rejects the state-route
+hypothesis. The highest completed semantic level remains C2 because no bounded
+plan, C4 oracle, or semantic transaction exists.
+
+Continue by adding the EA-anchored live-owner inventory for the incoming source
+identity to the same DB payload. If `0x40AB31` has exactly one current owner,
+move the bounded publication root there and retain the complete native
+conditional plus the downstream `0x40B51B -> 0x40AE3E` semantic rewrite in one
+detached fragment. If it has no owner, follow the unique incoming plan topology
+again; do not guess or publish an unattached fragment.
