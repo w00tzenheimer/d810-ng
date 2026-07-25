@@ -2554,3 +2554,38 @@ successor cardinality disagreeing with block type after the validation abort.
 Continue the v3.3 vertical loop by comparing the staged predicate producer and
 consumer operands plus exact UD/DU chains. Do not weaken data-flow validation,
 claim C4, or broaden to the 91-route publication.
+
+**2026-07-25T00:04:39Z**
+
+Commits `01531b5e7` and `d75385b06` finish the unpublished-root data-flow
+projection slice and isolate Ruff's complete reflow as a separate style
+commit. Exact register and stack queries now traverse the projected fragment
+topology without physically exposing its root edge, while instruction and
+storage matching still use live operands plus native instruction-origin
+authority. The exact-chain, semantic-backend, fragment-validation, and
+diagnostic-DB suite is 169/169 green; Ruff check/format, commit hooks,
+architecture gates, and `graphify update .` are green.
+
+The mandatory cache-disabled A560 diagnostic canary at committed HEAD
+`d75385b06` failed in 36.29 seconds during the first decompile with
+`INTERR 51974`; it did not segfault. Log:
+`.tmp/rhad-a560-v33-projected-dataflow-canary.txt`; primary DB:
+`.tmp/rhad-a560-v33-projected-dataflow-canary/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+No pseudocode artifact exists because Hex-Rays did not return a first cfunc.
+This is not A560 acceptance.
+
+The DB proves the selected narrow v3.3 fragment reached C5. Canonical
+transaction `4919de50cdbd429e92e910c46c775c5f` contains 46 blocks, 34
+operations, one native body, one owned original, one root, and two data-flow
+obligations. It passes all 295 prepublication checks, publishes its root groups
+and root exactly once, passes all 554 postpublication checks, and records a
+committed semantic receipt. Predicate outcomes 161-162 and carrier outcomes
+163-164 now pass across the unpublished root projection.
+
+The highest contiguous canary level is therefore C5. The first failed
+obligation is C6 semantic output: later Hex-Rays processing rejects the
+postpublication MBA with `INTERR 51974`. Continue the v3.3 vertical loop by
+identifying that verifier invariant and correlating it with an EA-anchored
+published owner/target in the diagnostic DB. Do not broaden to the 91-route
+publication or claim C6 until a fresh cache-disabled A560 cfunc satisfies the
+established semantic oracle.
