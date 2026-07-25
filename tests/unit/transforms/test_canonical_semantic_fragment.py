@@ -1270,6 +1270,37 @@ def test_detached_component_rejects_current_imported_successor_with_topology() -
             ),
         ),
     )
+    nested_proof = SemanticRouteProof(
+        proof_id="state-assignment@0x1600",
+        atomic_group_id=evidence.atomic_group_id,
+        proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=_identity(0x1600),
+        source_anchor_ea=0x1600,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.DIRECT,
+                state_constant=0x55,
+                target_identity=_identity(0x1200),
+                target_anchor_ea=0x1200,
+            ),
+        ),
+        state_write=SemanticStateWriteProof(
+            identity=_identity(0x1600),
+            instruction_ea=0x1600,
+            state_variable=StorageIdentity(
+                StorageIdentityKind.REGISTER,
+                20,
+            ),
+            width=4,
+            state_constant=0x55,
+            corridor_instruction_eas=(0x1600,),
+        ),
+    )
+    available_evidence = replace(
+        evidence,
+        route_proofs=(*evidence.route_proofs, nested_proof),
+    )
 
     with pytest.raises(
         CanonicalSemanticFragmentRejected,
@@ -1279,7 +1310,7 @@ def test_detached_component_rejects_current_imported_successor_with_topology() -
             graph,
             normalization_plan,
             evidence,
-            available_evidence=evidence,
+            available_evidence=available_evidence,
             current_identity_by_serial=_current_identity_authority(graph),
             normalization_authority=_normalization_authority(
                 normalization_plan,
@@ -1295,6 +1326,16 @@ def test_detached_component_rejects_current_imported_successor_with_topology() -
         "boundary_block_id": published_successor.block_id,
         "current_owner": "blk30@0x1250",
         "operation_id": "successor-normalization",
+        "nested_state_route_projection": (
+            {
+                "route_proof_id": nested_proof.proof_id,
+                "source_anchor_ea": "0x1600",
+                "disposition": "skipped",
+                "reason": "source_not_in_component",
+                "source_block_ids": (),
+                "corridor_block_ids": (),
+            },
+        ),
     }
 
 
