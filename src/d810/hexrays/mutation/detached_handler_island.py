@@ -2838,7 +2838,10 @@ class CallsSemanticNativeBodyMaterializer(PreoptUnionSemanticNativeBodyMateriali
             if terminal_return.block_id in body_block_ids
         )
         if not planned_returns:
-            return {str(block_id): tuple(block_rows) for block_id, block_rows in rows.items()}
+            return {
+                str(block_id): tuple(block_rows)
+                for block_id, block_rows in rows.items()
+            }
 
         planned_by_block = {
             terminal_return.block_id: terminal_return
@@ -2854,9 +2857,7 @@ class CallsSemanticNativeBodyMaterializer(PreoptUnionSemanticNativeBodyMateriali
             terminal_return: FragmentTerminalReturn | None = None,
         ) -> None:
             anchor_ea = (
-                None
-                if terminal_return is None
-                else int(terminal_return.instruction_ea)
+                None if terminal_return is None else int(terminal_return.instruction_ea)
             )
             raise SemanticFragmentBackendRejected(
                 message,
