@@ -1573,7 +1573,11 @@ def _with_nested_imported_state_routes(
             superseded_computed_branch_normalization=(
                 raw_operation.computed_branch_normalization
             ),
-            superseded_predicate_anchor_ea=raw_operation.predicate_anchor_ea,
+            superseded_predicate_anchor_ea=(
+                raw_operation.predicate_anchor_ea
+                if raw_operation.computed_branch_normalization is not None
+                else None
+            ),
             edges=(
                 FragmentEdge(
                     role=SemanticEdgeRole.DIRECT,

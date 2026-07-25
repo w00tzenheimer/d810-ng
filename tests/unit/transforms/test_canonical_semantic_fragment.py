@@ -666,7 +666,10 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
     ) == (0x1200, 0x1250, 0x1260)
 
 
-def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> None:
+@pytest.mark.parametrize("raw_normalization_kind", ("computed", "plain"))
+def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge(
+    raw_normalization_kind,
+) -> None:
     graph, normalization_plan, root_evidence = _live_source_detached_target_case()
     graph = replace(
         graph,
@@ -737,12 +740,16 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
                 operation_id="native-indirect-transfer@0x121F",
                 source_block_id=route_source.block_id,
                 predicate_anchor_ea=0x1218,
-                computed_branch_normalization=FragmentComputedBranchNormalization(
-                    predicate_kind=PredicateKind.SLT,
-                    normalization_start_ea=0x1214,
-                    condition_producer_ea=0x1212,
-                    unresolved_transfer_ea=0x121F,
-                    relocated_instruction_eas=(0x121A, 0x121C),
+                computed_branch_normalization=(
+                    FragmentComputedBranchNormalization(
+                        predicate_kind=PredicateKind.SLT,
+                        normalization_start_ea=0x1214,
+                        condition_producer_ea=0x1212,
+                        unresolved_transfer_ea=0x121F,
+                        relocated_instruction_eas=(0x121A, 0x121C),
+                    )
+                    if raw_normalization_kind == "computed"
+                    else None
                 ),
                 edges=(
                     FragmentEdge(
@@ -870,15 +877,21 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
     assert nested_operation.direct_transfer_rewrite.superseded_instruction_eas == (
         0x1218,
     )
-    assert (
+    source_normalization = (
         nested_operation.direct_transfer_rewrite.source_computed_branch_normalization
-        is not None
     )
-    assert (
-        nested_operation.direct_transfer_rewrite.source_computed_branch_normalization.relocated_instruction_eas
-        == (0x121A, 0x121C)
-    )
-    assert nested_operation.direct_transfer_rewrite.source_predicate_anchor_ea == 0x1218
+    if raw_normalization_kind == "computed":
+        assert source_normalization is not None
+        assert source_normalization.relocated_instruction_eas == (0x121A, 0x121C)
+        assert (
+            nested_operation.direct_transfer_rewrite.source_predicate_anchor_ea
+            == 0x1218
+        )
+    else:
+        assert source_normalization is None
+        assert (
+            nested_operation.direct_transfer_rewrite.source_predicate_anchor_ea is None
+        )
     assert tuple(
         (
             edge.role,
