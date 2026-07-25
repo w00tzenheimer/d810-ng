@@ -8,6 +8,7 @@ remain diagnostic metadata and never select behavior.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -17,6 +18,7 @@ from d810.analyses.control_flow.native_semantic_closure import (
     NativeSemanticClosure,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.semantic_route_oracle import ReferenceRouteRewrite
 from d810.ir.block_identity import StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -562,6 +564,8 @@ class DetachedSemanticClosureImportRequest:
 def plan_detached_semantic_closure_import(
     graph: FlowGraph,
     evidence: FrontendNormalizationEvidence,
+    *,
+    reference_routes: Sequence[ReferenceRouteRewrite] = (),
 ) -> DetachedSemanticClosureImportRequest | None:
     """Plan one closure import when a proved target is absent from the graph."""
     if not isinstance(graph, FlowGraph):
@@ -610,6 +614,45 @@ def plan_detached_semantic_closure_import(
                 continue
             missing_anchors.add(int(endpoint.anchor_ea))
             proof_ids.add(proof.proof_id)
+
+    reference_routes = tuple(reference_routes)
+    if any(not isinstance(route, ReferenceRouteRewrite) for route in reference_routes):
+        raise TypeError("detached closure reference routes must be portable rewrites")
+    for route in reference_routes:
+        if int(route.function_ea) != int(graph.func_ea):
+            raise FrontendNormalizationEvidenceRejected(
+                "detached closure reference route belongs to another function"
+            )
+        route_anchors = {
+            int(route.owner_ea),
+            int(route.rewrite_anchor_ea),
+            *(int(start_ea) for start_ea, _end_ea in route.corridor),
+            *(
+                int(target_ea)
+                for target_ea in (
+                    route.direct_target_ea,
+                    route.true_target_ea,
+                    route.false_target_ea,
+                )
+                if target_ea is not None
+            ),
+        }
+        missing_route_anchors = {
+            anchor_ea
+            for anchor_ea in route_anchors
+            if not any(
+                anchor_ea
+                in {
+                    int(block.start_ea),
+                    *(int(instruction.ea) for instruction in block.insn_snapshots),
+                }
+                for block in graph.blocks.values()
+            )
+        }
+        if not missing_route_anchors:
+            continue
+        missing_anchors.update(missing_route_anchors)
+        proof_ids.add(route.route_id)
 
     if not missing_anchors:
         return None

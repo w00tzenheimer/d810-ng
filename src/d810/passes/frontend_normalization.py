@@ -9,6 +9,10 @@ from d810.analyses.control_flow.frontend_normalization import (
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
 )
+from d810.capabilities.semantic_routes import (
+    SemanticRouteReferenceOracleCapability,
+)
+from d810.core.semantic_route_oracle import ReferenceRouteOracleSelection
 from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
     AnalysisContract,
@@ -98,7 +102,29 @@ class ImportDetachedSemanticClosure:
             return PassResult()
         if not isinstance(evidence, FrontendNormalizationEvidence):
             raise TypeError("frontend normalization analysis has the wrong type")
-        request = plan_detached_semantic_closure_import(ctx.graph, evidence)
+        oracle_provider = ctx.capabilities.optional(
+            SemanticRouteReferenceOracleCapability
+        )
+        selection = (
+            None
+            if oracle_provider is None
+            else oracle_provider.reference_oracle_scope_for(
+                int(ctx.graph.func_ea),
+                evidence.native_key,
+            )
+        )
+        if selection is not None and not isinstance(
+            selection,
+            ReferenceRouteOracleSelection,
+        ):
+            raise TypeError(
+                "semantic route reference oracle returned an invalid fragment scope"
+            )
+        request = plan_detached_semantic_closure_import(
+            ctx.graph,
+            evidence,
+            reference_routes=(() if selection is None else selection.routes),
+        )
         if request is None:
             return PassResult()
         return PassResult(
@@ -120,9 +146,14 @@ class NormalizeComputedBranch:
             return PassResult()
         if not isinstance(evidence, FrontendNormalizationEvidence):
             raise TypeError("frontend normalization analysis has the wrong type")
+        import_request = ctx.facts.get_analysis(
+            DETACHED_SEMANTIC_CLOSURE_IMPORT,
+            None,
+        )
         generation_plan = plan_frontend_normalization_generation(
             ctx.graph,
             evidence,
+            detached_import_request=import_request,
         )
         if generation_plan is None:
             return PassResult()

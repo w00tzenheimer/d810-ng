@@ -20,6 +20,9 @@ from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
     FrontendNormalizationPlanCapability,
 )
+from d810.capabilities.semantic_routes import (
+    SemanticRouteReferenceOracleCapability,
+)
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -254,6 +257,49 @@ def test_pipeline_reports_modification_only_after_current_receipt_generation() -
     assert authority.unreachable_obligation_ids == ()
     assert plan_authority.plan_for(0x1000, GENERATION + 1) is None
     assert plan_authority.plan_for(0x1001, GENERATION) is None
+
+
+def test_pipeline_exposes_reference_oracle_to_portable_frontend_passes() -> None:
+    graph = _graph(normalized=False)
+    provider = SimpleNamespace(
+        reference_oracle_scope_for=lambda _function_ea, _native_key: None,
+        reference_oracle_for=lambda _function_ea, _native_key, _anchors: None,
+    )
+
+    class _PassManager:
+        def __init__(self) -> None:
+            self.capabilities = None
+
+        def reset_func(self, function_ea: int) -> None:
+            assert function_ea == graph.func_ea
+
+        def run(self, **kwargs):
+            self.capabilities = kwargs["capabilities"]
+            return graph
+
+        def analysis_manager_for(self, function_ea: int):
+            assert function_ea == graph.func_ea
+            return None
+
+    manager = _PassManager()
+
+    result = run_frontend_normalization_pipeline(
+        source=_source(graph),
+        backend=_Backend(_state(), publish_receipt=False),
+        evidence_provider=_Provider(_evidence()),
+        plan_authority=_plan_authority(),
+        lifecycle_state=_state(),
+        native_key=NATIVE_KEY,
+        pass_manager=manager,
+        reference_oracle_provider=provider,
+    )
+
+    assert result.microcode_modified is False
+    assert manager.capabilities is not None
+    assert (
+        manager.capabilities.require(SemanticRouteReferenceOracleCapability)
+        is provider
+    )
 
 
 def test_pipeline_rejects_changed_graph_without_current_receipt_generation() -> None:
