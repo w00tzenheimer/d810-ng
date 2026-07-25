@@ -28,6 +28,7 @@ from d810.transforms.fragment_plan import (
     FragmentEdge,
     FragmentOperation,
     FragmentPlan,
+    FragmentPlanRejected,
     FragmentPublicationPurpose,
 )
 from d810.transforms.fragment_validation import (
@@ -331,6 +332,38 @@ def test_bind_fragment_reference_oracle_rejects_partial_authority() -> None:
 
     with pytest.raises(DetachedRouteOracleRejected, match="exact rewrite anchors"):
         bind_fragment_reference_oracle(plan, selection)
+
+
+def test_bind_fragment_reference_oracle_reports_identity_mismatch() -> None:
+    plan = _unbound_plan()
+    route = replace(
+        _reference_route(),
+        owner_ea=_OWNER_EA - 1,
+        corridor=((_OWNER_EA - 1, 0x40B534),),
+    )
+    selection = ReferenceRouteOracleSelection(
+        run=_reference_run(),
+        routes=(route,),
+    )
+
+    with pytest.raises(FragmentPlanRejected) as exc_info:
+        bind_fragment_reference_oracle(plan, selection)
+
+    error = exc_info.value
+    assert error.reason_code == "fragment_reference_route_identity_mismatch"
+    assert error.anchor_ea == _REWRITE_ANCHOR_EA
+    assert error.payload == {
+        "operation_id": "route:state_assignment@0x40B52E:0x13B0D3B2",
+        "source_block_id": "route.replacement",
+        "source_identity": plan.block("route.replacement")
+        .stable_identity.diagnostic_label(),
+        "reference_owner_ea": "0x40B51A",
+        "owner_bound": False,
+        "target_block_id": "target",
+        "target_identity": plan.block("target").stable_identity.diagnostic_label(),
+        "reference_target_ea": "0x40AE3E",
+        "target_bound": True,
+    }
 
 
 def test_detached_route_matches_reference_before_root_publication() -> None:
