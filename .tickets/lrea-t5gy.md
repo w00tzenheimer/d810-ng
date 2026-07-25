@@ -5082,3 +5082,57 @@ its operation-owned rewrite anchor `0x40BB63`, bind reference owner
 off-side. Do not weaken stable block identity globally or reinterpret the
 imported source as live `EXTERNAL` authority; `0x40BB63` is an exact operation
 anchor inside the source range, while `0x40BB51` is the block identity anchor.
+
+**2026-07-25T17:23:49Z — one-route detached C3 plan and v21 checkpoint**
+
+Commit `58b413504` adds a publication-ineligible `DetachedDirectRoutePlan` and
+selects the configured imported source by the operation-owned predicate anchor
+instead of requiring the rewrite EA to be an exact block-identity anchor. The
+plan binds the reference owner independently from the state-write proof
+origin, inventories every imported corridor owner, retains the superseded raw
+operation, and produces one reference-owned direct semantic operation. The
+configured pass records this complete plan and stops before live composition;
+it does not reinterpret the imported source as live authority. Commit
+`f1c43d6a6` contains only repository-wide Ruff formatting.
+
+The first cache-disabled v20 canary rejected the plan with
+`detached_direct_route_native_body_proof_missing`: the planner incorrectly
+required raw operation `native-body-edge@0x40BB51` to appear in the native-body
+proof inventory. The diagnostic DB showed that the pinned reference route ID,
+not the raw topology operation ID, is the intended proof authority. Commit
+`ceed28e9a` removes that false requirement while retaining the reference-route
+ownership gate. The 105-test fragment, oracle, and pass suite is green; the
+graph refresh and both architecture gates pass; repository-wide Ruff formatting
+requires no further changes.
+
+The mandatory fresh cache-disabled v21 A560 canary completed normally in
+26.89 seconds with worker return code zero, no crash, numeric INTERR,
+diagnostic-write failure, rollback, or aborted receipt. Output:
+`.tmp/rhad-a560-v33-detached-c3-v21.txt`; primary DB:
+`.tmp/rhad-a560-v33-detached-c3-v21/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode is beside the DB. The semantic oracle remains red on one false
+`while ( 1 )`.
+
+The v21 DB records one accepted
+`configured_reference_detached_direct_route` attempt at `MMAT_CALLS` with:
+
+- imported source `0x40BB51-0x40BB69`, exact owner `0x40BB51`;
+- rewrite anchor `0x40BB63` selected from raw operation
+  `native-body-edge@0x40BB51`;
+- superseded conditional-taken and conditional-fallthrough arms;
+- proof corridor `0x40BB44`, `0x40BB4B`, `0x40BB63`, owned by imported blocks
+  anchored at `0x40BB3A` and `0x40BB51`;
+- imported direct target `0x40ACF3-0x40AD06`, exact target `0x40ACF3`;
+- pinned reference route `rhad:0x40A560:flow_route:0x40BB63`;
+- evidence generation 1 and normalization plan
+  `frontend-normalization:0xA560:g1`.
+
+The existing frontend-normalization transaction remains mechanically healthy:
+one receipt committed all 260 planned operations. The highest canary level is
+now C3. The first failed obligation is C4:
+`canonical_detached_direct_route_projection_missing` at stable rewrite anchor
+`0x40BB63`. The next slice must realize this one operation in an unpublished
+projected fragment or detached MBA, prove the resulting `m_goto` and target
+against the pinned reference oracle, and only then select the smallest
+entry-connectable closed fragment. Do not widen to the 91-route set or expose a
+live root first.
