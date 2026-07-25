@@ -3985,3 +3985,54 @@ return carriers and terminal returns before realizing route operations in the
 same staged transaction, and validates their connected terminal route before
 publication. Prove that deferral contract locally, then rerun the exact DB
 canary.
+
+**2026-07-25T09:30:00Z**
+
+Commit `d8563f380` implements that exact deferral contract. CALLS preparation
+removes only the unique final top-level `m_ret` named by a plan-owned
+`FragmentTerminalReturn`; an unplanned return remains rejected, and the staged
+terminal block stays empty so the semantic backend can synthesize the return
+with its carrier and incoming route in one transaction. Commit `c7d3c22a5` is
+the separate Ruff-only formatting follow-up. The focused semantic evidence,
+plan, gateway, backend, and Hex-Rays runtime set is 370/370 green, with the
+seven CALLS materializer cases and the existing atomic terminal-effects runtime
+oracle also green. Both commits pass ast-grep, import-cycle analysis, the
+portable-shape gate, and all 14 import-linter contracts.
+
+The mandatory exact cache-disabled A560 canary completed normally inside
+pytest in 20.70 seconds, but its semantic oracle still fails on the same false
+`while ( 1 )`. Log: `.tmp/rhad-a560-v33-terminal-return-v1.txt`; primary
+schema-8 DB:
+`.tmp/rhad-a560-v33-terminal-return-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-terminal-return-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+A second capture-enabled reproduction completed in 26.58 seconds with log
+`.tmp/rhad-a560-v33-terminal-return-v2.txt` and verifier artifact
+`.tmp/rhad-a560-v33-terminal-return-v2-verify/verify_fail_20260725T092410.365384Z_000000000040A560_11.json`.
+
+The DB proves that terminal-return deferral advances staging beyond the prior
+barrier, but production remains at C3. The first semantic attempt requests the
+exact `0x40AA30` CALLS companion and rolls back cleanly with zero applied
+operations. After controlled redo, the 31-operation plan applies 24 gateway
+operations before the first failed C4 obligation: call-fallthrough operation
+`native-body-edge@0x40AE3E` binds its staged replacement as
+`blk89@0x40A560`, but that block is `BLT_1WAY` with no successor and an
+unmapped `m_goto` tail instead of the required zero-way block-closing analyzed
+call. There are no detached reference comparisons and no C5 receipt.
+
+This second rejection is not rollback-safe and is therefore a hard failure
+under v3.3. The first cleanup verification raises numeric `INTERR 50856`, which
+`verifier/verify.cpp` maps to `nsucc() != expected successor count`. The
+capture identifies surviving `blk88@0x40A560` as `BLT_1WAY` with zero
+successors after the staged sweep. The subsequent `INTERR 52719` maps in the
+SDK to `mba_t::get_mblock(uint n)` asserting `n < qty`; it is a secondary
+double-discard that tries to resolve transaction-local versions after the
+first sweep already compacted the MBA.
+
+Before changing `0x40AE3E` route semantics, reproduce and repair the rollback
+contract: staged insertion and discard must preserve the published
+fallthrough-to-stop edge, cleanup must be idempotent after a partially failed
+stage, the semantic state must not retain compacted serial bindings, and the
+fresh MBA must verify. Then rerun this exact diagnostic canary and continue
+from the stable-EA `0x40AE3E` call-ownership mismatch only after rollback is
+clean.
