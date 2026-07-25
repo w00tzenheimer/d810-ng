@@ -425,7 +425,7 @@ class CfgTransactionAttemptRecord(BaseModel):
     class Meta:
         table_name = "cfg_transaction_attempts"
         primary_key = CompositeKey("plan_id", "attempt_id")
-        indexes = ((('session', 'current_phase'), False),)
+        indexes = ((("session", "current_phase"), False),)
 
 
 class CfgTransactionPhaseEventRecord(BaseModel):
@@ -450,7 +450,7 @@ class CfgTransactionPhaseEventRecord(BaseModel):
     class Meta:
         table_name = "cfg_transaction_phase_events"
         primary_key = CompositeKey("plan_id", "attempt_id", "phase_index")
-        indexes = ((('event',), False),)
+        indexes = ((("event",), False),)
 
 
 class CfgCreationWitnessRecord(BaseModel):
@@ -480,7 +480,7 @@ class CfgCreationWitnessRecord(BaseModel):
     class Meta:
         table_name = "cfg_creation_witnesses"
         primary_key = CompositeKey("plan_id", "attempt_id", "local_block_id")
-        indexes = ((('reserved_handle_token',), False),)
+        indexes = ((("reserved_handle_token",), False),)
 
 
 class SemanticFragmentTransaction(BaseModel):

@@ -34,83 +34,83 @@ def test_gateway_creation_witness_reaches_diagnostic_database(tmp_path) -> None:
     conn = get_diag_conn(0x40C8B0, log_dir=str(tmp_path))
     assert conn is not None
     try:
-            emit(
-                DiagnosticSessionObserved(
-                    "runtime-session",
-                    0x40C8B0,
-                    1,
-                    "{}",
-                    "active",
-                )
+        emit(
+            DiagnosticSessionObserved(
+                "runtime-session",
+                0x40C8B0,
+                1,
+                "{}",
+                "active",
             )
-            index = MbaBlockIdentityIndex.from_bindings(
-                session_id="runtime-session",
-                generation=4,
-                bindings=(),
-                native_key=native_key,
-            )
-            gateway = MbaMutationGateway(
-                session_id="runtime-session",
-                function_ea=0x40C8B0,
-                maturity=1,
-                generation=4,
-                identity_index=index,
-                event_emitter=emitter,
-                native_key=native_key,
-            )
-            attempt = TransactionAttemptId(
-                plan_id="runtime-plan",
-                session_id="runtime-session",
-                generation=4,
-                attempt_id="runtime-attempt",
-            )
-            plan_ref = PlanBlockRef("runtime-plan", "created-block")
-            gateway.begin_batch(
-                StructuralMutationKind.BLOCK_INSERT,
-                serial_quantity=0,
-                transaction_attempt=attempt,
-                patch_plan_refs=(plan_ref,),
-            )
-            reservation = gateway.reserve_plan_block(attempt, plan_ref)
+        )
+        index = MbaBlockIdentityIndex.from_bindings(
+            session_id="runtime-session",
+            generation=4,
+            bindings=(),
+            native_key=native_key,
+        )
+        gateway = MbaMutationGateway(
+            session_id="runtime-session",
+            function_ea=0x40C8B0,
+            maturity=1,
+            generation=4,
+            identity_index=index,
+            event_emitter=emitter,
+            native_key=native_key,
+        )
+        attempt = TransactionAttemptId(
+            plan_id="runtime-plan",
+            session_id="runtime-session",
+            generation=4,
+            attempt_id="runtime-attempt",
+        )
+        plan_ref = PlanBlockRef("runtime-plan", "created-block")
+        gateway.begin_batch(
+            StructuralMutationKind.BLOCK_INSERT,
+            serial_quantity=0,
+            transaction_attempt=attempt,
+            patch_plan_refs=(plan_ref,),
+        )
+        reservation = gateway.reserve_plan_block(attempt, plan_ref)
 
-            assert conn.execute(
-                "SELECT current_phase,mutation_started FROM cfg_transaction_attempts "
-                "WHERE plan_id=? AND attempt_id=?",
-                ("runtime-plan", "runtime-attempt"),
-            ).fetchone() == ("bound", 0)
-            assert conn.execute(
-                "SELECT requested_insertion_serial,returned_serial,state "
-                "FROM cfg_creation_witnesses WHERE plan_id=? AND attempt_id=?",
-                ("runtime-plan", "runtime-attempt"),
-            ).fetchone() == (None, None, "reserved")
+        assert conn.execute(
+            "SELECT current_phase,mutation_started FROM cfg_transaction_attempts "
+            "WHERE plan_id=? AND attempt_id=?",
+            ("runtime-plan", "runtime-attempt"),
+        ).fetchone() == ("bound", 0)
+        assert conn.execute(
+            "SELECT requested_insertion_serial,returned_serial,state "
+            "FROM cfg_creation_witnesses WHERE plan_id=? AND attempt_id=?",
+            ("runtime-plan", "runtime-attempt"),
+        ).fetchone() == (None, None, "reserved")
 
-            receipt = gateway.bind_reserved_plan_block(
-                attempt,
-                plan_ref,
-                insertion_serial=0,
-                returned_serial=0,
-            )
-            gateway.commit()
+        receipt = gateway.bind_reserved_plan_block(
+            attempt,
+            plan_ref,
+            insertion_serial=0,
+            returned_serial=0,
+        )
+        gateway.commit()
 
-            assert receipt.logical_version is reservation.logical_version
-            assert conn.execute(
-                "SELECT current_phase,mutation_started,poisoned "
-                "FROM cfg_transaction_attempts WHERE plan_id=? AND attempt_id=?",
-                ("runtime-plan", "runtime-attempt"),
-            ).fetchone() == ("committed", 1, 0)
-            assert conn.execute(
-                "SELECT provenance,reserved_handle_token,logical_proxy_token,"
-                "requested_insertion_serial,returned_serial,state "
-                "FROM cfg_creation_witnesses WHERE plan_id=? AND attempt_id=?",
-                ("runtime-plan", "runtime-attempt"),
-            ).fetchone() == (
-                "created_synthetic",
-                reservation.logical_version.handle.token,
-                reservation.logical_version.version_id.proxy_token,
-                0,
-                0,
-                "committed",
-            )
+        assert receipt.logical_version is reservation.logical_version
+        assert conn.execute(
+            "SELECT current_phase,mutation_started,poisoned "
+            "FROM cfg_transaction_attempts WHERE plan_id=? AND attempt_id=?",
+            ("runtime-plan", "runtime-attempt"),
+        ).fetchone() == ("committed", 1, 0)
+        assert conn.execute(
+            "SELECT provenance,reserved_handle_token,logical_proxy_token,"
+            "requested_insertion_serial,returned_serial,state "
+            "FROM cfg_creation_witnesses WHERE plan_id=? AND attempt_id=?",
+            ("runtime-plan", "runtime-attempt"),
+        ).fetchone() == (
+            "created_synthetic",
+            reservation.logical_version.handle.token,
+            reservation.logical_version.version_id.proxy_token,
+            0,
+            0,
+            "committed",
+        )
     finally:
         close_diag_session()
         configure_settings(diag_snapshots=previous_diag_snapshots)

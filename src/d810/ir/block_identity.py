@@ -468,10 +468,14 @@ class MbaBlockHandle:
             and self.stable_identity is None
         ):
             raise ValueError("native MBA handle requires stable identity")
-        if self.provenance in {
-            BlockHandleProvenance.CREATED_SYNTHETIC,
-            BlockHandleProvenance.OBSERVED_EPHEMERAL,
-        } and self.stable_identity is not None:
+        if (
+            self.provenance
+            in {
+                BlockHandleProvenance.CREATED_SYNTHETIC,
+                BlockHandleProvenance.OBSERVED_EPHEMERAL,
+            }
+            and self.stable_identity is not None
+        ):
             raise ValueError("synthetic MBA handle must not claim stable identity")
         object.__setattr__(self, "session_id", session_id)
         object.__setattr__(self, "token", token)
