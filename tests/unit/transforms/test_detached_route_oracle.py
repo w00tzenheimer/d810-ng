@@ -24,6 +24,8 @@ from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentBoundaryPort,
+    FragmentBoundaryPortKind,
     FragmentDirectTransferRewrite,
     FragmentEdge,
     FragmentOperation,
@@ -289,6 +291,70 @@ def _projection(plan: FragmentPlan) -> ProjectedFragment:
     )
 
 
+def _projection_behind_temporary_port(
+    plan: FragmentPlan,
+) -> tuple[FragmentPlan, ProjectedFragment]:
+    predecessor = FragmentBlock(
+        block_id="temporary.port.predecessor",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x40A570,
+        stable_identity=_identity(0x40A570, 0x40A571, 0x40A570),
+    )
+    plan = replace(
+        plan,
+        blocks=plan.blocks + (predecessor,),
+        boundary_ports=(
+            FragmentBoundaryPort(
+                port_id="temporary-dispatcher-entry@0x40B51B",
+                kind=FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_ENTRY,
+                predecessor_block_id=predecessor.block_id,
+                root_block_id="route.replacement",
+                retirement_obligation_id=(
+                    "retire-temporary-dispatcher-entry@0x40B51B:"
+                    "publish-semantic-predecessor@0x40A570"
+                ),
+            ),
+        ),
+    )
+    projection = _projection(plan)
+    projection = replace(
+        projection,
+        blocks=tuple(
+            replace(block, kind=BlockKind.ZERO_WAY, successors=())
+            if block.block_id == "entry"
+            else replace(block, predecessors=(predecessor.block_id,))
+            if block.block_id == "route.replacement"
+            else block
+            for block in projection.blocks
+        )
+        + (
+            ProjectedFragmentBlock(
+                block_id=predecessor.block_id,
+                kind=BlockKind.ONE_WAY,
+                successors=("route.replacement",),
+                predecessors=(),
+                physical_position=4,
+                adjacent_fallthrough_target_id=None,
+                instruction_eas=(0x40A570,),
+                terminator_ea=0x40A570,
+                terminator_kind=InsnKind.GOTO,
+            ),
+        ),
+        identity_bindings=projection.identity_bindings
+        + (
+            _binding(
+                plan,
+                predecessor.block_id,
+                owner="logical:temporary-port-predecessor",
+                version=0,
+                state=FragmentBindingState.PUBLISHED,
+            ),
+        ),
+    )
+    return plan, projection
+
+
 def _unbound_plan() -> FragmentPlan:
     plan = _plan()
     operation = plan.operations[0]
@@ -457,6 +523,38 @@ def test_detached_route_matches_reference_before_root_publication() -> None:
     assert comparison.candidate_shape.terminator_opcode == InsnKind.GOTO.value
     assert comparison.candidate_shape.direct_target_ea == _TARGET_EA
     assert comparison.candidate_shape.reachable_from_entry
+
+
+def test_detached_route_normalizes_exact_temporary_port_as_entry_authority() -> None:
+    plan, projection = _projection_behind_temporary_port(_plan())
+
+    result = compare_detached_route_oracle(plan, projection)
+
+    assert result.passed
+    comparison = result.comparisons[0]
+    assert comparison.candidate_shape is not None
+    assert comparison.candidate_shape.reachable_from_entry
+
+
+def test_detached_route_rejects_disconnected_source_without_typed_port() -> None:
+    plan = _plan()
+    projection = _projection(plan)
+    projection = replace(
+        projection,
+        blocks=tuple(
+            replace(block, kind=BlockKind.ZERO_WAY, successors=())
+            if block.block_id == "entry"
+            else replace(block, predecessors=())
+            if block.block_id == "route.replacement"
+            else block
+            for block in projection.blocks
+        ),
+    )
+
+    result = compare_detached_route_oracle(plan, projection)
+
+    assert not result.passed
+    assert result.comparisons[0].failed_invariant == "reachable_from_entry"
 
 
 def test_detached_route_rejects_api_success_without_semantic_replacement() -> None:

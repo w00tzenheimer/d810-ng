@@ -16,7 +16,10 @@ from d810.core.semantic_route_oracle import (
 )
 from d810.ir.flowgraph import InsnKind
 from d810.transforms.fragment_plan import FragmentOperation, FragmentPlan
-from d810.transforms.fragment_validation import ProjectedFragment
+from d810.transforms.fragment_validation import (
+    ProjectedFragment,
+    projected_publication_authority_roots,
+)
 
 
 _DETACHED_MATURITY = "DETACHED_PREPUBLICATION"
@@ -130,9 +133,12 @@ def bind_fragment_reference_oracle(
     )
 
 
-def _reachable_block_ids(projection: ProjectedFragment) -> frozenset[str]:
+def _reachable_block_ids(
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+) -> frozenset[str]:
     by_id = {block.block_id: block for block in projection.blocks}
-    pending = [projection.entry_block_id]
+    pending = list(projected_publication_authority_roots(plan, projection))
     reached: set[str] = set()
     while pending:
         block_id = pending.pop()
@@ -328,7 +334,7 @@ def compare_detached_route_oracle(
             "detached route oracle requires selected semantic rewrites"
         )
 
-    reachable_block_ids = _reachable_block_ids(projection)
+    reachable_block_ids = _reachable_block_ids(plan, projection)
     comparisons: list[RouteOracleComparison] = []
     for operation, route in selected:
         reference = _reference_observation(route)

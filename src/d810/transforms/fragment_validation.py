@@ -683,6 +683,39 @@ def _boundary_port_root_witness(
     )
 
 
+def _projected_publication_authority_roots(
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+    blocks: dict[str, ProjectedFragmentBlock],
+) -> tuple[str, ...]:
+    """Return entry authorities whose exact projected attachment is proven."""
+    return tuple(
+        dict.fromkeys(
+            (
+                projection.entry_block_id,
+                *(
+                    port.predecessor_block_id
+                    for port in plan.boundary_ports
+                    if _boundary_port_root_witness(port, projection, blocks)
+                ),
+            )
+        )
+    )
+
+
+def projected_publication_authority_roots(
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+) -> tuple[str, ...]:
+    """Normalize literal entry and validated typed ports as entry authority."""
+    if not isinstance(plan, FragmentPlan):
+        raise TypeError("publication authority roots require a FragmentPlan")
+    if not isinstance(projection, ProjectedFragment):
+        raise TypeError("publication authority roots require a ProjectedFragment")
+    blocks = {block.block_id: block for block in projection.blocks}
+    return _projected_publication_authority_roots(plan, projection, blocks)
+
+
 def _site_present(
     site: FragmentValueSite,
     blocks: dict[str, ProjectedFragmentBlock],
@@ -856,13 +889,12 @@ def _validate_reachability(
     include_detached_native_body_roots: bool,
 ) -> None:
     entry_reachable = _reachable(blocks, (projection.entry_block_id,))
-    boundary_port_predecessors = tuple(
-        dict.fromkeys(port.predecessor_block_id for port in plan.boundary_ports)
+    publication_authority_roots = _projected_publication_authority_roots(
+        plan,
+        projection,
+        blocks,
     )
-    publication_authority_roots = (
-        projection.entry_block_id,
-        *boundary_port_predecessors,
-    )
+    boundary_port_predecessors = publication_authority_roots[1:]
     publication_reachable = _reachable(blocks, publication_authority_roots)
     connectivity_roots = (
         (
@@ -2145,6 +2177,7 @@ __all__ = [
     "ProjectedRangeFact",
     "ProjectedRootFallthroughHelper",
     "ProjectedTerminalEffectDiagnostic",
+    "projected_publication_authority_roots",
     "validate_fragment_projection",
     "validate_published_fragment_projection",
     "validate_published_fragment_observation",
