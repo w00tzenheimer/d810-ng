@@ -251,8 +251,7 @@ def test_null_or_empty_inputs_yield_empty_plan():
             transition_result=TransitionResult(),
             dispatch_map=_Map(),
             dispatcher_entry_serial=5,
-        )
-        .steps
+        ).steps
         == ()
     )
     # missing dispatch_map -> empty
@@ -265,7 +264,6 @@ def test_null_or_empty_inputs_yield_empty_plan():
             ),
             dispatch_map=None,
             dispatcher_entry_serial=5,
-        )
-        .steps
+        ).steps
         == ()
     )
