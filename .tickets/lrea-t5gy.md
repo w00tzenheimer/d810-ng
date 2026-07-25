@@ -4914,3 +4914,35 @@ its first rejection and make that decision visible in the diagnostic DB.
 Require the detached route comparison before live publication; do not debug
 the broad plan's downstream false loop, count its receipt as v3.3 C5, or add
 another route group.
+
+**2026-07-25T15:59:09Z — v14 correction and v3.3 pivot**
+
+The unchanged v15 diagnostic rerun mounted fresh debug logs and confirms the
+current `d4c753e47` source no longer reaches the imported-call rejection or
+`INTERR 50856`. Output: `.tmp/rhad-a560-v33-entry-route-trace-v15.txt`;
+primary DB:
+`.tmp/rhad-a560-v33-entry-route-trace-v15/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+The DB reproduces the same committed frontend-normalization receipt and red
+`while ( 1 )` output as v14.
+
+Correction: the DB does persist the later C3 decline, but in
+`fact_consumers`, not the semantic-transaction tables queried for the v14
+checkpoint. Its stable record is
+`canonical_route:0x40A5B2` at `MMAT_CALLS`, reason
+`canonical_configured_reference_scope_invalid`, with cause
+`fragment and reference selection require exact rewrite anchors`. The accepted
+composition-attempt record proves the one-route entry manifest is not one
+small vertical fragment: selecting `state_assignment@0x40A5C8:0xABB95547`
+also pulls downstream `state-choice@0x40BECC:0xEC71CA67:0xA0716E5B`, yielding
+163 blocks and 150 operations before oracle binding rejects the incomplete
+manifest.
+
+Therefore the preceding instruction to continue expanding the `0x40A5B2`
+entry plan is superseded. Adding all anchors required by that 150-operation
+plan would repeat the broad-publication strategy that v3.3 forbids. Continue
+with v3.3's prescribed first direct fixture instead: native owner `0x40BB51`,
+delivery tail `0x40BB63`, and target `0x40ACF3`. Establish its exact isolated
+reference shape and first candidate divergence, then build the smallest
+detached rewrite and require its C4 oracle proof before any live publication.
+The v14/v15 broad frontend receipt remains diagnostic evidence only and does
+not raise the v3.3 canary above C2.
