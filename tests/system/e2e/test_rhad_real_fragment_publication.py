@@ -470,7 +470,7 @@ def _run_worker(
                     _DELIVERY_COMPARE_EA,
                     _DELIVERY_EA,
                 ),
-            ),
+            authority_transfer_ea = None, preserved_call_instruction_eas = ()),
             terminal_return_carrier=terminal_carrier,
             diagnostic_provenance=(
                 ("provider_proof_kind", "terminal_state_route"),

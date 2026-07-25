@@ -347,6 +347,8 @@ class SemanticStateWriteProof:
     width: int
     state_constant: int
     corridor_instruction_eas: tuple[int, ...]
+    authority_transfer_ea: int | None
+    preserved_call_instruction_eas: tuple[int, ...]
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, StableBlockIdentity):
@@ -375,10 +377,51 @@ class SemanticStateWriteProof:
             raise SemanticRouteEvidenceRejected(
                 "semantic state-write corridor must begin at its exact write"
             )
+        authority_transfer_ea = (
+            None
+            if self.authority_transfer_ea is None
+            else _native_ea(
+                self.authority_transfer_ea,
+                "semantic state-write authority transfer",
+            )
+        )
+        preserved_call_instruction_eas = tuple(
+            _native_ea(ea, "semantic state-write preserved call")
+            for ea in self.preserved_call_instruction_eas
+        )
+        if (authority_transfer_ea is None) != (
+            not preserved_call_instruction_eas
+        ):
+            raise SemanticRouteEvidenceRejected(
+                "semantic state-write call preservation requires one transfer "
+                "authority"
+            )
+        if preserved_call_instruction_eas:
+            if (
+                preserved_call_instruction_eas
+                != tuple(sorted(set(preserved_call_instruction_eas)))
+                or not set(preserved_call_instruction_eas).issubset(corridor)
+                or any(
+                    not instruction_ea < call_ea < corridor[-1]
+                    for call_ea in preserved_call_instruction_eas
+                )
+                or authority_transfer_ea is None
+                or not corridor[-1] < authority_transfer_ea
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "semantic state-write preserved calls require an ordered "
+                    "write-to-delivery corridor before their transfer authority"
+                )
         object.__setattr__(self, "instruction_ea", instruction_ea)
         object.__setattr__(self, "width", width)
         object.__setattr__(self, "state_constant", int(self.state_constant))
         object.__setattr__(self, "corridor_instruction_eas", corridor)
+        object.__setattr__(self, "authority_transfer_ea", authority_transfer_ea)
+        object.__setattr__(
+            self,
+            "preserved_call_instruction_eas",
+            preserved_call_instruction_eas,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -581,6 +624,22 @@ class SemanticRouteProof:
             if state_write.identity.native_key != native_key:
                 raise SemanticRouteEvidenceRejected(
                     "semantic route state write belongs to another native key"
+                )
+            authority_transfer_ea = state_write.authority_transfer_ea
+            if authority_transfer_ea is not None and (
+                self.shape is not SemanticRouteShape.DIRECT
+                or delivery_region is None
+                or state_write.corridor_instruction_eas[-1] != source_anchor_ea
+                or not delivery_region.start_ea
+                <= authority_transfer_ea
+                < delivery_region.end_ea
+                or not self.source_identity.native_ranges.contains(
+                    authority_transfer_ea
+                )
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "semantic state-write transfer authority must belong to its "
+                    "direct delivery source"
                 )
         if self.proof_kind is SemanticRouteProofKind.STATE_ASSIGNMENT:
             if state_write is None:
