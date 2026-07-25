@@ -2589,3 +2589,51 @@ identifying that verifier invariant and correlating it with an EA-anchored
 published owner/target in the diagnostic DB. Do not broaden to the 91-route
 publication or claim C6 until a fresh cache-disabled A560 cfunc satisfies the
 established semantic oracle.
+
+**2026-07-25T01:21:11Z**
+
+Commit `60a57f4fa` corrects the false-closure condition behind the preceding
+C5 receipt. A uniquely rebound published imported boundary may be reused only
+when it is terminal in the selected normalization native body. If it still
+owns a semantic operation, canonical composition now rejects the route with
+the stable reason `published_imported_boundary_topology_unresolved` instead of
+silently externalizing that operation and publishing an incomplete fragment.
+The regression test was observed red before the guard and green afterward.
+
+The focused portable/frontend/canonical/validation/runtime suite is 217/217
+green. Changed-file Ruff check and format, ast-grep, all 14 worktree-local
+import contracts, `graphify update .`, the portable-core shape ratchet, and
+commit hooks are green. Docker client/server 29.6.2 is live. The pinned image
+identity is
+`sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a`;
+the Rhad fixture SHA-256 is
+`2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c`.
+
+The mandatory cache-disabled A560 diagnostic canary at committed HEAD
+`60a57f4fa` returned normally in 20.06 seconds with no process crash, numeric
+INTERR, canonical staging, root publication, or rollback. Log:
+`.tmp/rhad-a560-v33-published-boundary-topology.txt`; primary DB:
+`.tmp/rhad-a560-v33-published-boundary-topology/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-published-boundary-topology/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one `while ( 1 )`; this is not A560
+acceptance.
+
+The database records the first failure at snapshot 3 / MMAT_CALLS as fact
+consumer `canonical_route:0x40B6C0`, declined for
+`published_imported_boundary_topology_unresolved`. Its payload names imported
+boundary `native[0x40B6C0-0x40B6CA;exact=0x40B6C0]`, live owner
+`blk63@0x40A560`, and unresolved operation `native-body-edge@0x40B6C0`.
+There are zero canonical semantic transactions; the only transaction is the
+committed frontend-normalization publication. Thus the current highest
+contiguous level is C2 and the first failed obligation is C3: construct a
+complete detached semantic plan through the `0x40B6C0` frontier.
+
+This deliberately withdraws the previous current-path C5 claim: the old
+receipt proved operation execution and postpublication checks for a fragment
+whose nonterminal published boundary had been incorrectly treated as closed.
+Do not recover that C5 by recursively importing every nonterminal successor;
+the exact probe of that coarse rule expanded to 133 imported blocks and
+aborted on unrelated CALLS companion authority. Continue with the smallest
+reference-equivalent conditional transaction at native `0x40B6C0`, whose
+semantic arms are `0x40B6D6` and `0x40B790`, then re-run the v3.3 C0-C6 loop.
