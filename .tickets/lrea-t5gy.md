@@ -3364,3 +3364,38 @@ explain why proved route `0x40B51B -> 0x40AE3E` is not included in the forward
 fragment; do not remove the requirement that a C3 fragment own at least one
 real reference route, claim the temporary port itself as semantic work, or
 publish before C4.
+
+**2026-07-25T05:36:21Z**
+
+Commit `c056aebbc` records the detached target inventory and the complete
+nested state-route projection ledger when canonical composition rejects a
+published boundary for owning no semantic route. The combined canonical,
+resolver, fragment-plan, fragment-validation, and semantic-backend gate is
+446/446 green; Ruff, ast-grep, `graphify update .`, and all 14 import contracts
+pass.
+
+The mandatory cache-disabled A560 canary completed normally in 19.03 seconds
+inside pytest with no process crash or numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-missing-route-projection-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-missing-route-projection-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-missing-route-projection-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red as an eight-line stub with one false
+`while ( 1 )`; this is not A560 acceptance.
+
+The DB identifies the first failed obligation as
+`published_boundary_semantic_route_missing@0x40AE3E`. The selected detached
+component contains imported and live identities rooted at `0x40AE3E` and only
+operation `native-body-edge@0x40AE3E`. Every one of the projected state routes
+is skipped as `source_not_in_component`, including the required
+`state_assignment@0x40B52E:0x13B0D3B2` delivery into `0x40AE3E`. The only
+committed transaction/receipt remains the 260/260 frontend-normalization
+publication; there are zero semantic-oracle runs or comparisons. Therefore the
+highest completed semantic level remains C2, not C5.
+
+Continue from this C3 composition obligation. Inspect and test the detached
+component-selection contract so the bounded vertical can own the proved
+incoming semantic route and its corridor without weakening the semantic-route
+requirement, treating the temporary dispatcher port as semantic work, or
+publishing before a C4 oracle comparison. Do not broaden to the 91-route
+publication until one complete fragment reaches C5.
