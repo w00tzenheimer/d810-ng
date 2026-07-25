@@ -173,8 +173,7 @@ def test_manager_loads_only_configured_relative_oracle_manifests(tmp_path) -> No
     assert selection is not None
     assert selection.run.run_id == "configured-a560-boundary"
     assert (
-        _load_semantic_route_reference_oracle_registry({}, config_root=tmp_path)
-        is None
+        _load_semantic_route_reference_oracle_registry({}, config_root=tmp_path) is None
     )
     with pytest.raises(ValueError, match="non-empty array"):
         _load_semantic_route_reference_oracle_registry(

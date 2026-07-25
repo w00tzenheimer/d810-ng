@@ -305,8 +305,7 @@ class ReferenceRouteOracleRegistry:
     def __post_init__(self) -> None:
         catalogs = tuple(self.catalogs)
         if not catalogs or any(
-            not isinstance(catalog, ReferenceRouteOracleCatalog)
-            for catalog in catalogs
+            not isinstance(catalog, ReferenceRouteOracleCatalog) for catalog in catalogs
         ):
             raise ValueError("reference route registry requires portable catalogs")
         authority_keys = tuple(
