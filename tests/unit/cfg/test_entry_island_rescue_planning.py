@@ -71,7 +71,10 @@ class TestScoreEntryIslandRescueOption:
         monkeypatch.setattr(
             rescue_mod,
             "compile_patch_plan",
-            lambda modifications, flow_graph: ("plan", tuple(modifications)),
+            lambda modifications, flow_graph, **_kwargs: (
+                "plan",
+                tuple(modifications),
+            ),
         )
         monkeypatch.setattr(
             rescue_mod,
@@ -82,6 +85,7 @@ class TestScoreEntryIslandRescueOption:
         scored = score_entry_island_rescue_option(
             EntryIslandRescueOption(40, 90, 6),
             base_flow_graph=object(),
+            block_refs_by_serial={},
             builder=_DummyBuilder(),
             modifications=[],
             baseline_reachable_count=2,
@@ -104,7 +108,7 @@ class TestSelectEntryIslandRescue:
         monkeypatch.setattr(
             rescue_mod,
             "compile_patch_plan",
-            lambda modifications, flow_graph: tuple(modifications),
+            lambda modifications, flow_graph, **_kwargs: tuple(modifications),
         )
 
         def _project_post_state(flow_graph, patch_plan):
@@ -122,6 +126,7 @@ class TestSelectEntryIslandRescue:
             ),
             current_projected_flow_graph=flow_graph,
             base_flow_graph=flow_graph,
+            block_refs_by_serial={},
             builder=_DummyBuilder(),
             modifications=[],
             reachable_blocks={6, 12, 13},
@@ -151,7 +156,7 @@ class TestSelectEntryIslandRescue:
         monkeypatch.setattr(
             rescue_mod,
             "compile_patch_plan",
-            lambda modifications, flow_graph: tuple(modifications),
+            lambda modifications, flow_graph, **_kwargs: tuple(modifications),
         )
         monkeypatch.setattr(
             rescue_mod,
@@ -163,6 +168,7 @@ class TestSelectEntryIslandRescue:
             seeds=(EntryIslandRescuePlanningSeed(source_block=40, lifted_entry=90),),
             current_projected_flow_graph=flow_graph,
             base_flow_graph=flow_graph,
+            block_refs_by_serial={},
             builder=_DummyBuilder(),
             modifications=[],
             reachable_blocks={6, 12},
@@ -188,7 +194,7 @@ class TestPlanEntryIslandRescues:
         monkeypatch.setattr(
             rescue_mod,
             "compile_patch_plan",
-            lambda modifications, flow_graph: tuple(modifications),
+            lambda modifications, flow_graph, **_kwargs: tuple(modifications),
         )
         monkeypatch.setattr(
             rescue_mod,
@@ -205,6 +211,7 @@ class TestPlanEntryIslandRescues:
         run = plan_entry_island_rescues(
             dag=object(),
             base_flow_graph=flow_graph,
+            block_refs_by_serial={},
             projected_flow_graph=flow_graph,
             builder=_DummyBuilder(),
             modifications=modifications,
@@ -232,7 +239,7 @@ class TestPlanEntryIslandRescues:
         monkeypatch.setattr(
             rescue_mod,
             "compile_patch_plan",
-            lambda modifications, flow_graph: tuple(modifications),
+            lambda modifications, flow_graph, **_kwargs: tuple(modifications),
         )
         monkeypatch.setattr(
             rescue_mod,
@@ -243,6 +250,7 @@ class TestPlanEntryIslandRescues:
         run = plan_entry_island_rescues(
             dag=object(),
             base_flow_graph=flow_graph,
+            block_refs_by_serial={},
             projected_flow_graph=flow_graph,
             builder=_DummyBuilder(),
             modifications=modifications,
@@ -269,7 +277,7 @@ class TestPlanEntryIslandRescues:
         monkeypatch.setattr(
             rescue_mod,
             "compile_patch_plan",
-            lambda modifications, flow_graph: tuple(modifications),
+            lambda modifications, flow_graph, **_kwargs: tuple(modifications),
         )
         monkeypatch.setattr(
             rescue_mod,
@@ -280,6 +288,7 @@ class TestPlanEntryIslandRescues:
         run = plan_entry_island_rescues(
             dag=object(),
             base_flow_graph=flow_graph,
+            block_refs_by_serial={},
             projected_flow_graph=flow_graph,
             builder=_DummyBuilder(),
             modifications=modifications,

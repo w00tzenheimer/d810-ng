@@ -36,6 +36,7 @@ class TestReconstructionRescueExecution:
             builder="builder",
             modifications=[],
             dispatcher_region={6},
+            block_refs_by_serial={},
             collect_seeds=lambda **kwargs: (),
             compute_reachable_blocks=lambda fg: {1, 2},
         )
@@ -60,6 +61,7 @@ class TestReconstructionRescueExecution:
             builder="builder",
             modifications=[],
             dispatcher_region={6},
+            block_refs_by_serial={},
             collect_seeds=lambda **kwargs: (),
             collect_diagnostics=lambda fg, **kwargs: ("diag-a", "diag-b"),
             compute_reachable_blocks=lambda fg: {1, 2, 3},
@@ -83,6 +85,7 @@ class TestReconstructionRescueExecution:
             builder="builder",
             modifications=[],
             dispatcher_region={6},
+            block_refs_by_serial={},
             collect_seeds=lambda **kwargs: (),
             collect_diagnostics=lambda fg, **kwargs: ("should-not-run",),
             compute_reachable_blocks=lambda fg: {1, 2, 3},

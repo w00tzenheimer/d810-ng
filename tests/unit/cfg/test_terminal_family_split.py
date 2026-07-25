@@ -356,12 +356,13 @@ class TestSelectTerminalFamilySplit:
         original_compile = split_mod.compile_patch_plan
         original_project = split_mod.project_post_state
         try:
-            split_mod.compile_patch_plan = lambda mods, _cfg: tuple(mods)
+            split_mod.compile_patch_plan = lambda mods, _cfg, **_kwargs: tuple(mods)
             split_mod.project_post_state = lambda _cfg, _plan: projected_flow_graph
 
             selection = select_terminal_family_split(
                 candidates,
                 base_flow_graph=base_flow_graph,
+                block_refs_by_serial={},
                 projected_flow_graph=projected_flow_graph,
                 builder=_DummyBuilder(),
                 modifications=[],
@@ -418,12 +419,13 @@ class TestPlanTerminalFamilySplits:
         original_compile = split_mod.compile_patch_plan
         original_project = split_mod.project_post_state
         try:
-            split_mod.compile_patch_plan = lambda mods, _cfg: tuple(mods)
+            split_mod.compile_patch_plan = lambda mods, _cfg, **_kwargs: tuple(mods)
             split_mod.project_post_state = lambda _cfg, _plan: projected_flow_graph
 
             run = plan_terminal_family_splits(
                 dag=object(),
                 base_flow_graph=base_flow_graph,
+                block_refs_by_serial={},
                 projected_flow_graph=projected_flow_graph,
                 dispatcher_region=set(),
                 state_var_stkoff=None,
@@ -496,12 +498,13 @@ class TestPlanTerminalFamilySplits:
         original_compile = split_mod.compile_patch_plan
         original_project = split_mod.project_post_state
         try:
-            split_mod.compile_patch_plan = lambda mods, _cfg: tuple(mods)
+            split_mod.compile_patch_plan = lambda mods, _cfg, **_kwargs: tuple(mods)
             split_mod.project_post_state = lambda _cfg, _plan: projected_flow_graph
 
             run = plan_terminal_family_splits(
                 dag=object(),
                 base_flow_graph=base_flow_graph,
+                block_refs_by_serial={},
                 projected_flow_graph=projected_flow_graph,
                 dispatcher_region=set(),
                 state_var_stkoff=None,
@@ -571,12 +574,13 @@ class TestPlanTerminalFamilySplits:
         original_compile = split_mod.compile_patch_plan
         original_project = split_mod.project_post_state
         try:
-            split_mod.compile_patch_plan = lambda mods, _cfg: tuple(mods)
+            split_mod.compile_patch_plan = lambda mods, _cfg, **_kwargs: tuple(mods)
             split_mod.project_post_state = lambda _cfg, _plan: projected_flow_graph
 
             run = plan_terminal_family_splits(
                 dag=object(),
                 base_flow_graph=base_flow_graph,
+                block_refs_by_serial={},
                 projected_flow_graph=projected_flow_graph,
                 dispatcher_region=set(),
                 state_var_stkoff=None,
