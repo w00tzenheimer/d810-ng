@@ -2152,16 +2152,40 @@ def compose_canonical_semantic_boundary_fragment_plan(
     prohibited_serials = frozenset(
         int(serial) for serial in prohibited_dispatcher_serials
     )
+    incoming_predecessors = tuple(
+        int(predecessor) for predecessor in graph.predecessors(root_serial)
+    )
     outside_predecessors = tuple(
-        int(predecessor)
-        for predecessor in graph.predecessors(root_serial)
+        predecessor
+        for predecessor in incoming_predecessors
         if int(predecessor) not in prohibited_serials
     )
     if not outside_predecessors:
+        incoming_inventory = tuple(
+            {
+                "block": (
+                    f"blk{predecessor}@0x{int(graph.blocks[predecessor].start_ea):X}"
+                ),
+                "prohibited": predecessor in prohibited_serials,
+                "stable_identity": (
+                    None
+                    if current_identity_by_serial.get(predecessor) is None
+                    else current_identity_by_serial[predecessor].diagnostic_label()
+                ),
+            }
+            for predecessor in incoming_predecessors
+        )
         raise CanonicalSemanticFragmentRejected(
             "published canonical boundary has no entry-connectable predecessor",
             reason_code="published_boundary_predecessor_missing",
             anchor_ea=boundary_anchor_ea,
+            payload={
+                "boundary_block_id": target.block_id,
+                "boundary_identity": target_identity.diagnostic_label(),
+                "current_owner": f"blk{root_serial}@0x{root_anchor_ea:X}",
+                "current_owner_identity": root_identity.diagnostic_label(),
+                "incoming_predecessors": incoming_inventory,
+            },
         )
 
     (

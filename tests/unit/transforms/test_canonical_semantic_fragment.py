@@ -1248,6 +1248,51 @@ def test_published_boundary_root_closes_one_nested_semantic_route() -> None:
     )
 
 
+def test_published_boundary_rejection_records_prohibited_predecessor() -> None:
+    _graph, normalization_plan, evidence = _live_source_detached_target_case()
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x1000, succs=(90,), preds=()),
+            30: _block(30, 0x1200, succs=(90,), preds=(90,)),
+            90: _block(90, 0x1400, succs=(30,), preds=(10, 30)),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    current_identity_by_serial = _current_identity_authority(graph)
+
+    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
+        compose_canonical_semantic_boundary_fragment_plan(
+            graph,
+            normalization_plan,
+            boundary_anchor_ea=0x1200,
+            available_evidence=evidence,
+            current_identity_by_serial=current_identity_by_serial,
+            normalization_authority=_normalization_authority(
+                normalization_plan,
+                evidence,
+            ),
+            prohibited_dispatcher_serials=(90,),
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == "published_boundary_predecessor_missing"
+    assert rejection.anchor_ea == 0x1200
+    assert rejection.payload == {
+        "boundary_block_id": "detached-target",
+        "boundary_identity": _identity(0x1200).diagnostic_label(),
+        "current_owner": "blk30@0x1200",
+        "current_owner_identity": _identity(0x1200).diagnostic_label(),
+        "incoming_predecessors": (
+            {
+                "block": "blk90@0x1400",
+                "prohibited": True,
+                "stable_identity": _identity(0x1400).diagnostic_label(),
+            },
+        ),
+    }
+
+
 def test_detached_component_rebinds_published_replacement_boundary_as_external() -> (
     None
 ):
