@@ -4340,3 +4340,47 @@ exactly one PREOPT union template but observes zero, raising
 `canonical_pipeline_exception`. Continue at that one template-binding
 failure. Do not weaken the exactly-one invariant, publish an unresolved union,
 fall back to live copy-and-swap repair, or add backward compatibility.
+
+**2026-07-25T12:54:52Z**
+
+Commits `ebdb1eadc` and `d81439152` correct the C4 template diagnosis and keep
+repository-wide Ruff formatting separate. The canonical direct route at
+synthetic delivery `0x40AE09` now retains its superseded computed-branch
+normalization plus the exact relocatable native tail at `0x40AE0C`,
+`0x40AE0E`, `0x40AE12`, and `0x40AE16`. Detached preflight proves the original
+split conditional, unique join ownership, complete contiguous relocation
+inventory, exact byte-span equivalence, portable operands, and delivery
+extent before staging the preserved prefix, relocated side effects, and one
+semantic `goto`. Omitting one relocation head rejects before staging. This
+supersedes the prior claim that the PREOPT template was absent: the template
+existed, but canonical replacement had discarded the source normalization and
+relocation envelope needed to bind it.
+
+Verification is 584/584 affected unit/runtime tests plus 95/95 semantic
+fragment backend tests. The authoritative Docker resolver gate is 285/285
+green, increasing by exactly the native-tail inventory contract. Ruff format,
+ast-grep, import-cycle analysis, the portable-shape gate, all 14 import
+contracts, diff checks, and `graphify update .` pass.
+
+The mandatory cache-disabled A560 canary completed normally in 18.37 seconds
+without a process crash, numeric `INTERR`, or verifier event. Log:
+`.tmp/rhad-a560-v33-split-normalized-tail-v1.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-split-normalized-tail-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-split-normalized-tail-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects one false `while ( 1 )`, so this is not A560
+acceptance.
+
+The DB records a committed 260-operation frontend-normalization transaction,
+639/639 passing prepublication outcomes, 1180/1180 passing postpublication
+outcomes, and receipt-backed binding of 93 imported blocks. Canonical
+composition does not record a plan, detached oracle comparison, or semantic
+receipt. Main-path A560 therefore reaches C2, not C3. The first failed
+obligation is the CALLS fact-consumer rejection
+`canonical_pipeline:0x40A560 / fragment_plan_rejected`: `fragment superseded
+normalization requires its predicate anchor`. The transport added for
+computed normalization copied a raw predicate anchor even when the replaced
+operation used another predicate materialization and had no computed
+normalization. Continue by pairing that temporary anchor only with an actual
+computed normalization; do not weaken the pair invariant, discard relocation
+evidence, broaden publication, or add compatibility behavior.
