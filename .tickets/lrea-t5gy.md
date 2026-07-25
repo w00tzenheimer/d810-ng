@@ -4233,3 +4233,57 @@ target as one closed detached fragment. Do not add all 325 entries, stage all
 changing closure behavior, make the diagnostic DB record each route-level
 composition attempt and the exact entry-connectivity rejection so later
 canaries do not collapse the evidence into one final rejection.
+
+**2026-07-25T11:50:43Z**
+
+Commits `18f57faf3` and `2625babb8` complete and separately format the
+canonical-composition diagnostic ledger. Every route, boundary,
+semantic-predecessor, and temporary-port composition attempt is now carried in
+the typed final rejection and expanded by the runtime into one independently
+queryable `fact_consumers` row. Each row records stable native route IDs and EA
+anchors, outcome, reason, rejection payload, and accepted plan inventory. The
+final composition summary remains compact. No semantic acceptance, fallback,
+compatibility path, or schema-specific runtime dependency was added.
+
+Focused verification is 47/47 portable canonical-composition tests and 65/65
+pinned-Docker bounded-rerun runtime tests. The red runtime contract first
+proved that only one summary row was persisted; the green contract proves two
+attempt rows plus the compact summary. Repository-wide Ruff formatting is
+clean, and both commits pass ast-grep, import-cycle analysis, the portable-shape
+gate, and all 14 import-linter contracts.
+
+The mandatory exact cache-disabled A560 canary completed normally in 32.51
+seconds with no process crash, numeric `INTERR`, or verifier event. Log:
+`.tmp/rhad-a560-v33-composition-ledger-v1.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-composition-ledger-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-composition-ledger-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects the same false `while ( 1 )`, so this is not
+A560 acceptance.
+
+The DB now contains 90 route-attempt rows plus one boundary-attempt row at each
+of CALLS snapshots 3 and 11. Generation 1 and generation 2 frontend
+transactions remain committed at 260/260 and 288/288 operations. There is no
+canonical semantic transaction, detached oracle comparison, or semantic C5
+receipt, so production remains at C2.
+
+The ledger corrects the ordering of the next obligation. The exact call-backed
+route `state_assignment@0x40B4BA:0xBD9A2C2A` is attempted as route index 31 at
+both snapshots and first rejects with
+`normalization_plan_owner_count_mismatch`: native delivery `0x40B4BA` has zero
+eligible canonical route-source owners. The complete frontend plan does own
+that EA, but in imported block
+`native[0x40B4A4-0x40B4C5;exact=0x40B4A4,0x40B4B4,0x40B4BA]:imported`, while a
+top-level canonical route source is intentionally required to be an external,
+already-published owner. Relaxing that role check would expose a disconnected
+imported root and is not the fix.
+
+The disconnected handler-entry finding therefore remains valid but is now
+properly downstream: handler entry `0x40B3FF` needs a bounded semantic
+predecessor closure before `0x40B4BA` can be projected inside an
+entry-connectable component. Continue by deriving the shortest proof chain
+from an eligible published root through one route targeting `0x40B3FF`, then
+include only that handler's call corridor and semantic target. The next red
+contract must prove this closure remains bounded and fragment-atomic; do not
+permit imported sources as independent publication roots or broaden to all 90
+route attempts.
