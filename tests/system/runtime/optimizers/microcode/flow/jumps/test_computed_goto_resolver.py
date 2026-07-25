@@ -9653,6 +9653,43 @@ def test_call_companion_ranges_exclude_unique_proven_trailing_resolver_cut() -> 
     ) == ((0x2000, resolver_exit_ea),)
 
 
+def test_call_companion_ranges_exclude_proven_interior_resolver_cut() -> None:
+    native_range = (0x2000, 0x2040)
+    resolver_exit_ea = 0x202E
+    resolver_exit_end_ea = 0x2030
+    cfg = NativeCfg(
+        {
+            0x2000: NativeBlock(
+                0x2000,
+                resolver_exit_end_ea,
+                outgoing_edges=(
+                    NativeEdge(
+                        NativeEdgeKind.INDIRECT,
+                        0x3000,
+                        resolver_proven=True,
+                        provenance="resolver_proven_native_cut",
+                        source_instruction_ea=resolver_exit_ea,
+                    ),
+                ),
+                terminal=NativeTerminalKind.STOP,
+            ),
+            resolver_exit_end_ea: NativeBlock(
+                resolver_exit_end_ea,
+                native_range[1],
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
+    )
+
+    assert computed_goto_resolver._call_companion_native_ranges(
+        native_range,
+        cfg,
+    ) == (
+        (native_range[0], resolver_exit_ea),
+        (resolver_exit_end_ea, native_range[1]),
+    )
+
+
 @pytest.mark.parametrize(
     "cfg",
     (

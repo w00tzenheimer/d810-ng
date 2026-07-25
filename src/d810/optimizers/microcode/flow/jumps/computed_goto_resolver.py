@@ -8696,49 +8696,64 @@ def _call_companion_native_ranges(
     native_range: tuple[int, int],
     cfg: NativeCfg,
 ) -> tuple[tuple[int, int], ...]:
-    """Exclude only a uniquely proven trailing resolver transfer from CALLS.
+    """Exclude only proven resolver-transfer instruction extents from CALLS.
 
     The complete native range remains the pristine PREOPT inventory authority.
     Isolated CALLS generation needs the semantic body and analyzed call owners,
-    but exposing its resolver-owned terminal indirect jump lets Hex-Rays
-    reclassify that jump as a tail call.  Trim only when the portable CFG proves
-    that every outgoing edge of the unique terminal block is the same resolved
-    indirect-transfer site.
+    but exposing resolver-owned terminal indirect jumps lets Hex-Rays reclassify
+    them as tail calls.  Subtract one terminal instruction extent only when the
+    portable CFG proves that every outgoing edge of its STOP block belongs to
+    the same resolved indirect-transfer site.
     """
     start_ea, end_ea = map(int, native_range)
     complete_range = ((start_ea, end_ea),)
     if start_ea <= 0 or end_ea <= start_ea:
         return complete_range
-    terminal_blocks = tuple(
-        block
-        for block in cfg.blocks_by_ea.values()
-        if start_ea <= int(block.start_ea) < end_ea
-        and int(block.end_ea) == end_ea
-        and block.terminal is NativeTerminalKind.STOP
-    )
-    if len(terminal_blocks) != 1:
+    resolver_cut_extents: list[tuple[int, int]] = []
+    for block in cfg.blocks_by_ea.values():
+        block_start_ea = int(block.start_ea)
+        block_end_ea = int(block.end_ea)
+        if (
+            block_start_ea < start_ea
+            or block_end_ea > end_ea
+            or block.terminal is not NativeTerminalKind.STOP
+        ):
+            continue
+        outgoing_edges = tuple(block.outgoing_edges)
+        if not outgoing_edges or any(
+            edge.kind is not NativeEdgeKind.INDIRECT
+            or not edge.resolver_proven
+            or edge.provenance != "resolver_proven_native_cut"
+            or edge.target_ea is None
+            or edge.source_instruction_ea is None
+            for edge in outgoing_edges
+        ):
+            continue
+        source_eas = {
+            int(edge.source_instruction_ea)
+            for edge in outgoing_edges
+            if edge.source_instruction_ea is not None
+        }
+        if len(source_eas) != 1:
+            continue
+        resolver_exit_ea = next(iter(source_eas))
+        if not block_start_ea <= resolver_exit_ea < block_end_ea:
+            continue
+        resolver_cut_extents.append((resolver_exit_ea, block_end_ea))
+
+    if not resolver_cut_extents:
         return complete_range
-    outgoing_edges = tuple(terminal_blocks[0].outgoing_edges)
-    if not outgoing_edges or any(
-        edge.kind is not NativeEdgeKind.INDIRECT
-        or not edge.resolver_proven
-        or edge.provenance != "resolver_proven_native_cut"
-        or edge.target_ea is None
-        or edge.source_instruction_ea is None
-        for edge in outgoing_edges
-    ):
-        return complete_range
-    source_eas = {
-        int(edge.source_instruction_ea)
-        for edge in outgoing_edges
-        if edge.source_instruction_ea is not None
-    }
-    if len(source_eas) != 1:
-        return complete_range
-    resolver_exit_ea = next(iter(source_eas))
-    if not start_ea < resolver_exit_ea < end_ea:
-        return complete_range
-    return ((start_ea, resolver_exit_ea),)
+    calls_ranges: list[tuple[int, int]] = []
+    cursor_ea = start_ea
+    for cut_start_ea, cut_end_ea in sorted(resolver_cut_extents):
+        if cut_start_ea < cursor_ea:
+            return complete_range
+        if cursor_ea < cut_start_ea:
+            calls_ranges.append((cursor_ea, cut_start_ea))
+        cursor_ea = cut_end_ea
+    if cursor_ea < end_ea:
+        calls_ranges.append((cursor_ea, end_ea))
+    return tuple(calls_ranges)
 
 
 def prepare_requested_detached_call_companions(
