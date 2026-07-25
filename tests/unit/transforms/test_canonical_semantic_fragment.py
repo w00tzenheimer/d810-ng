@@ -629,7 +629,9 @@ def test_detached_direct_route_binds_imported_operation_anchor_and_owner() -> No
     assert detached_plan.superseded_operation.operation_id == (
         "native-body-edge@0x40BB51"
     )
-    assert detached_plan.operation.source_block_id == detached_plan.source_block.block_id
+    assert (
+        detached_plan.operation.source_block_id == detached_plan.source_block.block_id
+    )
     assert tuple(
         (
             edge.role,
