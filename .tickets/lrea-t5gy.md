@@ -3893,3 +3893,53 @@ envelope before changing backend lowering. Do not presume that the whole
 native tail to equal the semantic rewrite anchor when an explicit validated
 cut can preserve required instructions through `0x40AA4F` and suppress only
 the obsolete suffix.
+
+**2026-07-25T09:10:00Z**
+
+Commit `9805682cf` adds the typed direct-route delivery interval, carries it
+from portable state-write evidence through canonical construction, validates
+full interval ownership for imported detached sources, and lowers a direct
+route by cutting the detached instruction suffix at one exact rewrite anchor
+before appending `m_goto`. The backend rejects missing or ambiguous anchors,
+suffix instructions outside the owned interval, and non-branch tails with
+structured `detached_direct_transfer_cut_mismatch` payloads. Commit
+`e84c37b42` is the separate Ruff-only formatting follow-up.
+
+The focused semantic evidence, canonical composition, fragment-plan,
+reference-oracle, gateway, backend, and Hex-Rays runtime gate is 396/396 green.
+Both commits pass ast-grep, the portable-shape gate, import-cycle analysis, and
+all 14 import-linter contracts. The interior-cut runtime proves that a source
+containing preserved prefix instructions, an instruction at rewrite anchor
+`0x3610`, and a conditional tail at `0x3614` stages only the prefix plus the
+new direct transfer. No live MBA mutation occurs on a rejected cut.
+
+The mandatory exact cache-disabled A560 canary completed normally in 11.71
+seconds inside pytest with no worker crash or reported numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-delivery-cut-v1.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-delivery-cut-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-delivery-cut-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+The pseudocode remains the same eight-line false `while ( 1 )` stub, so this is
+not A560 acceptance.
+
+The DB records only the 260/260 committed frontend-normalization transaction
+and no canonical semantic transaction, comparison, or receipt. This canary's
+highest completed level is therefore C2, a regression from the preceding C3
+checkpoint. A separate focused worker trace at
+`.tmp/rhad-a560-v33-delivery-cut-worker.txt` identifies the first failed C3
+obligation as proof construction rejecting a direct route because its wider
+physical delivery interval is outside its one-anchor `delivery_identity`.
+That rejection is repeated from CALLS onward but is absent from the DB, which
+is an observability defect: the DB correctly proves where progress stopped but
+does not yet persist why.
+
+The contract conflated two deliberately distinct authorities.
+`PortableStateWriteRouteEvidence` uses `delivery_identity` to bind the exact
+route anchor and `delivery_region_start_ea/end_ea` to own the physical suffix
+that may be cut. Immediate routes explicitly construct the former as
+`[delivery_ea, delivery_ea + 1)` while the latter extends through the native
+transfer tail. Keep the proof-level anchor-in-region check, remove the invalid
+requirement that the region fit inside the anchor identity, and retain the
+full-region containment check when canonical planning binds an imported
+physical source. Rerun the same A560 DB canary before interpreting the new
+`0x40AA4F` cut result.
