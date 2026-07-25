@@ -3294,3 +3294,37 @@ move the bounded publication root there and retain the complete native
 conditional plus the downstream `0x40B51B -> 0x40AE3E` semantic rewrite in one
 detached fragment. If it has no owner, follow the unique incoming plan topology
 again; do not guess or publish an unattached fragment.
+
+**2026-07-25T05:21:11Z**
+
+Commit `e208463b9` adds exact live-owner labels and overlap inventory for every
+normalization-plan source entering an unpublished boundary. The focused
+canonical/resolver gate is 279/279 green; Ruff, ast-grep, `graphify update .`,
+and all 14 import contracts pass.
+
+The mandatory cache-disabled A560 canary returned normally in 22.53 seconds
+(20.50 seconds inside pytest) with no process crash or numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-boundary-source-owners-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-boundary-source-owners-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-boundary-source-owners-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The DB proves that incoming source
+`native[0x40AB31-0x40AB56;exact=0x40AB31]:imported` also has zero current owners
+and an empty current-overlap inventory. Receipt-backed event 30 records 93
+current-MBA import bindings; querying that authority shows `0x40AE3E` is the
+only live identity among `0x40AE3E`, `0x40B51B`, `0x40AB31`, and the upstream
+`0x40C328` / `0x40C335` route block. Therefore recursively moving the live root
+upstream is not viable. The highest completed semantic level remains C2.
+
+The bounded vertical must return to the one live root at `0x40AE3E`. Its
+prohibited dispatcher predecessor may be used only as an explicit temporary
+publication port, not silently accepted as reference topology. Model that port
+as a typed remaining work-item obligation that survives the C5 receipt and is
+superseded when the upstream semantic fragment is later published. C4 should
+compare the selected fragment's internal routes and normalize the temporary
+external boundary port. This is the evidence-backed exception to the earlier
+blanket predecessor veto; do not erase the obligation, call the port
+reference-equivalent, or broaden to the 91-route publication.
