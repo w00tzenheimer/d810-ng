@@ -165,7 +165,9 @@ def _direct_bound_evidence() -> tuple[FlowGraph, object]:
                     width=4,
                     state_constant=0xAABBCCDD,
                     corridor_instruction_eas=(0x1100,),
-                authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+                    authority_transfer_ea=None,
+                    preserved_call_instruction_eas=(),
+                ),
             ),
         ),
     )
@@ -331,7 +333,9 @@ def _live_source_detached_target_case() -> tuple[
                     width=4,
                     state_constant=0xAABBCCDD,
                     corridor_instruction_eas=(0x1100,),
-                authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+                    authority_transfer_ea=None,
+                    preserved_call_instruction_eas=(),
+                ),
             ),
         ),
     )
@@ -815,7 +819,9 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
             width=4,
             state_constant=0x44,
             corridor_instruction_eas=(0x1210, 0x1218),
-        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+        ),
     )
     available_evidence = replace(
         root_evidence,
@@ -1035,7 +1041,9 @@ def test_nested_imported_state_assignments_reach_fixpoint() -> None:
                 width=4,
                 state_constant=state_constant,
                 corridor_instruction_eas=(write_ea, delivery_ea),
-            authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+                authority_transfer_ea=None,
+                preserved_call_instruction_eas=(),
+            ),
         )
 
     first_proof = nested_proof(
@@ -1222,7 +1230,9 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
             width=4,
             state_constant=0x44,
             corridor_instruction_eas=(0x1210,),
-        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+        ),
     )
     available_evidence = replace(
         root_evidence,
@@ -1478,7 +1488,9 @@ def test_published_boundary_projects_nested_terminal_route_atomically(
             width=4,
             state_constant=state_constant,
             corridor_instruction_eas=(0x1210, 0x1215, 0x1218),
-        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+        ),
         terminal_return_carrier=carrier,
     )
     available_evidence = replace(
@@ -1610,7 +1622,9 @@ def test_nested_terminal_staging_rejection_inventories_both_endpoints() -> None:
             width=4,
             state_constant=state_constant,
             corridor_instruction_eas=(0x1210, 0x1215, 0x1218),
-        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+        ),
         terminal_return_carrier=carrier,
     )
     operation = FragmentOperation(
@@ -2514,7 +2528,9 @@ def test_detached_component_requires_receipted_current_imported_successor_topolo
             width=4,
             state_constant=0x55,
             corridor_instruction_eas=(0x1600,),
-        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+        ),
     )
     available_evidence = replace(
         evidence,
@@ -3648,7 +3664,9 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
             width=4,
             state_constant=state_constant,
             corridor_instruction_eas=(0x1100,),
-        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+        ),
         terminal_return_carrier=carrier,
     )
     evidence = CanonicalSemanticEvidence(
@@ -3765,7 +3783,9 @@ def test_terminal_routes_share_one_owned_return_block_atomically() -> None:
                 width=4,
                 state_constant=state_constant,
                 corridor_instruction_eas=(source_ea,),
-            authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+                authority_transfer_ea=None,
+                preserved_call_instruction_eas=(),
+            ),
             terminal_return_carrier=carrier,
         )
 
@@ -3829,7 +3849,9 @@ def test_dispatcher_fed_semantic_target_remains_internal_not_a_root() -> None:
                 width=4,
                 state_constant=state_constant,
                 corridor_instruction_eas=(source_ea,),
-            authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+                authority_transfer_ea=None,
+                preserved_call_instruction_eas=(),
+            ),
         )
 
     graph = FlowGraph(
@@ -3908,7 +3930,9 @@ def test_shared_external_target_rejects_bound_identity_drift() -> None:
                 width=4,
                 state_constant=state_constant,
                 corridor_instruction_eas=(source_ea,),
-            authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+                authority_transfer_ea=None,
+                preserved_call_instruction_eas=(),
+            ),
         )
 
     graph = FlowGraph(

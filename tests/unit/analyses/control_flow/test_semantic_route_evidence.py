@@ -67,7 +67,9 @@ def _proof() -> SemanticRouteProof:
             width=4,
             state_constant=0xAABBCCDD,
             corridor_instruction_eas=(0x1100,),
-        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+        ),
     )
 
 
@@ -363,7 +365,9 @@ def test_binding_uses_exact_identity_when_branch_ea_has_a_helper_owner() -> None
             width=4,
             state_constant=0xAABBCCDD,
             corridor_instruction_eas=(0x1100, 0x1105),
-        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+        ),
     )
     graph = FlowGraph(
         blocks={

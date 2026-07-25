@@ -1675,8 +1675,7 @@ def _call_backed_nested_route_staging_requirements(
         )
         if (
             normalization is None
-            or int(normalization.normalization_start_ea)
-            != int(proof.source_anchor_ea)
+            or int(normalization.normalization_start_ea) != int(proof.source_anchor_ea)
             or int(normalization.unresolved_transfer_ea)
             != int(state_write.authority_transfer_ea)
         ):
@@ -1714,9 +1713,7 @@ def _call_backed_nested_route_staging_requirements(
                     anchor_ea=int(corridor_ea),
                     payload={
                         "route_proof_id": proof.proof_id,
-                        "owner_block_ids": tuple(
-                            block.block_id for block in owners
-                        ),
+                        "owner_block_ids": tuple(block.block_id for block in owners),
                     },
                 )
             corridor_owner_by_ea[int(corridor_ea)] = owners[0]
@@ -1752,9 +1749,7 @@ def _call_backed_nested_route_staging_requirements(
             )
         for call_ea in state_write.preserved_call_instruction_eas:
             call_owner = corridor_owner_by_ea[int(call_ea)]
-            call_operations = tuple(
-                operation_by_source.get(call_owner.block_id, ())
-            )
+            call_operations = tuple(operation_by_source.get(call_owner.block_id, ()))
             call_owner_index = ordered_owner_ids.index(call_owner.block_id)
             expected_successor_id = (
                 None
@@ -1766,8 +1761,7 @@ def _call_backed_nested_route_staging_requirements(
                 or expected_successor_id is None
                 or tuple(edge.role for edge in call_operations[0].edges)
                 != (SemanticEdgeRole.CALL_FALLTHROUGH,)
-                or call_operations[0].edges[0].target_block_id
-                != expected_successor_id
+                or call_operations[0].edges[0].target_block_id != expected_successor_id
             ):
                 raise CanonicalSemanticFragmentRejected(
                     "call-backed nested route does not preserve its call edge",
@@ -1793,9 +1787,7 @@ def _call_backed_nested_route_staging_requirements(
                 block_ids=frozenset(required_exact_eas_by_block_id),
                 exact_instruction_eas_by_block_id={
                     block_id: frozenset(exact_eas)
-                    for block_id, exact_eas in (
-                        required_exact_eas_by_block_id.items()
-                    )
+                    for block_id, exact_eas in (required_exact_eas_by_block_id.items())
                 },
             )
         )
@@ -1961,13 +1953,11 @@ def _resolved_detached_target_component(
         raise CanonicalSemanticFragmentRejected(
             "detached canonical target lacks native-body ownership"
         )
-    call_backed_staging_requirements = (
-        _call_backed_nested_route_staging_requirements(
-            normalization_plan,
-            available_evidence,
-            native_body_id=target_native_body_id,
-            excluded_proof_ids=excluded_proof_ids,
-        )
+    call_backed_staging_requirements = _call_backed_nested_route_staging_requirements(
+        normalization_plan,
+        available_evidence,
+        native_body_id=target_native_body_id,
+        excluded_proof_ids=excluded_proof_ids,
     )
     provisional_required_staged_ids = frozenset(
         block_id
@@ -2001,9 +1991,7 @@ def _resolved_detached_target_component(
                 allow_unresolved_published_boundaries=True,
                 prohibited_dispatcher_serials=prohibited_dispatcher_serials,
                 replaced_current_owner_serials=replaced_current_owner_serials,
-                required_staged_destination_ids=(
-                    provisional_required_staged_ids
-                ),
+                required_staged_destination_ids=(provisional_required_staged_ids),
                 required_exact_instruction_eas_by_block_id={},
             )
         )
@@ -2097,9 +2085,10 @@ def _resolved_detached_target_component(
         }
         required_exact_instruction_eas_by_block_id: dict[str, set[int]] = {}
         for requirement in selected_call_backed_requirements:
-            for block_id, exact_instruction_eas in (
-                requirement.exact_instruction_eas_by_block_id.items()
-            ):
+            for (
+                block_id,
+                exact_instruction_eas,
+            ) in requirement.exact_instruction_eas_by_block_id.items():
                 required_exact_instruction_eas_by_block_id.setdefault(
                     block_id,
                     set(),

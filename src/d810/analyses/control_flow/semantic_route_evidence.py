@@ -389,12 +389,9 @@ class SemanticStateWriteProof:
             _native_ea(ea, "semantic state-write preserved call")
             for ea in self.preserved_call_instruction_eas
         )
-        if (authority_transfer_ea is None) != (
-            not preserved_call_instruction_eas
-        ):
+        if (authority_transfer_ea is None) != (not preserved_call_instruction_eas):
             raise SemanticRouteEvidenceRejected(
-                "semantic state-write call preservation requires one transfer "
-                "authority"
+                "semantic state-write call preservation requires one transfer authority"
             )
         if preserved_call_instruction_eas:
             if (
