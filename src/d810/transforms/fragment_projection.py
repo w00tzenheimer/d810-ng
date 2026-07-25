@@ -519,9 +519,11 @@ def fragment_cfg_projection(
             insn_snapshots=(),
             kind=block.kind,
             tail_kind=(
-                None
-                if block.terminator_kind is InsnKind.UNKNOWN
-                else block.terminator_kind
+                InsnKind.COND_JUMP
+                if block.kind is BlockKind.TWO_WAY
+                else InsnKind.GOTO
+                if block.kind is BlockKind.ONE_WAY
+                else None
             ),
         )
         for block in ordered

@@ -37,10 +37,12 @@ from d810.hexrays.ir.exact_value_ranges import (  # noqa: E402
     prove_exact_unsigned_range,
 )
 from d810.hexrays.mutation.semantic_fragment_publication import (  # noqa: E402
+    SemanticFragmentTransactionParticipant,
     SemanticFragmentPublicationRejected,
 )
 from d810.hexrays.mutation.semantic_fragment_preparation import (  # noqa: E402
     PreparedNativeBodyPreparation,
+    PreparedSemanticFragment,
     build_prepared_native_body,
 )
 from d810.ir.expressions import ValueOpKind  # noqa: E402
@@ -85,12 +87,21 @@ from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentValueSite,
     FragmentWorkItemScope,
 )
+from d810.transforms.fragment_projection import (  # noqa: E402
+    FragmentProjectionFailure,
+)
 from d810.transforms.fragment_validation import (  # noqa: E402
     FragmentBindingState,
     FragmentValidationPostcondition,
     ProjectedDataFlowRelation,
+    ProjectedFragment,
     ProjectedRangeFact,
     validate_fragment_projection,
+)
+from d810.transforms.cfg_transaction import (  # noqa: E402
+    BoundCfgTransaction,
+    CfgProjection,
+    PreparedCfgTransaction,
 )
 from tests.system.runtime.mutation_gateway import (  # noqa: E402
     make_fragment_publication_gateway,
@@ -102,6 +113,29 @@ def _fragment_gateway(mba):
         mba,
         publication_purpose=FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
     )
+
+
+def _begin_preflight_fragment_batch(
+    gateway,
+    modifier,
+    plan: FragmentPlan,
+) -> PreparedSemanticFragment:
+    """Open a direct-stage test batch through production preflight authority."""
+    participant = SemanticFragmentTransactionParticipant(gateway, modifier)
+    projected = participant.project(plan, None)
+    prepared = participant.preflight(projected)
+    bound = participant.bind(prepared, gateway.identity_index)
+    fragment = getattr(bound, "fragment", None)
+    assert isinstance(fragment, PreparedSemanticFragment)
+    gateway._begin_semantic_fragment_batch(
+        modifier,
+        plan,
+        fragment.authority.root_inventory,
+        fragment.authority.attempt_id,
+        fragment.authority.snapshot_id,
+        fragment,
+    )
+    return fragment
 
 
 def test_backend_state_uses_typed_synthesized_predicate_binding() -> None:
@@ -2257,10 +2291,9 @@ def test_backend_stages_hidden_replacement_and_projects_root_publication() -> No
     assert proxy is not None
     published = proxy.resolve()
     assert published is not None
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     result = validate_fragment_projection(plan, projection)
     assert result.passed, result.failures
@@ -2333,10 +2366,9 @@ def test_backend_projects_positional_entry_boundary_before_semantic_entry() -> N
         target=target.serial,
         dispatcher=dispatcher.serial,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     result = validate_fragment_projection(plan, projection)
     assert result.passed, result.failures
@@ -2397,17 +2429,19 @@ def test_backend_projects_opaque_published_fallthrough_witness() -> None:
         target=target.serial,
         dispatcher=dispatcher.serial,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     projected_target = projection.block("target")
     assert projected_target.successors == (
-        "unowned:blk3@0x401030",
-        "unowned:blk4@0x401040",
+        "function-block:logical:3",
+        "function-block:logical:4",
     )
-    assert projected_target.adjacent_fallthrough_target_id == "unowned:blk3@0x401030"
+    assert (
+        projected_target.adjacent_fallthrough_target_id
+        == "function-block:logical:3"
+    )
     result = validate_fragment_projection(plan, projection)
     assert result.passed, result.failures
 
@@ -2496,12 +2530,11 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
     )
     original_ranges = _outline_ranges(mba)
     assert not int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
     transaction_id = gateway.active_batch_id
     assert transaction_id is not None
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     assert materializer.calls == [
         (plan.plan_id, "native-body", transaction_id),
@@ -2618,10 +2651,9 @@ def test_backend_does_not_realize_prepared_imported_direct_transfer_twice(
         "_realize_semantic_edge_operation",
         record_generic_realization,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     assert generic_realizations == ["fragment operation direct-route"]
     state = modifier._semantic_fragment_state
@@ -2681,14 +2713,11 @@ def test_backend_prepares_all_native_bodies_before_live_staging(
     )
     original_ranges = _outline_ranges(mba)
     identity_generation = gateway.identity_index.generation
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
-
     with pytest.raises(
-        sfb.SemanticFragmentBackendRejected,
+        FragmentProjectionFailure,
         match="native body preparation rejected before staging",
     ):
-        modifier._stage_semantic_fragment(plan)
+        _begin_preflight_fragment_batch(gateway, modifier, plan)
 
     assert materializer.prepare_calls == 1
     assert materializer.stage_calls == 0
@@ -2697,9 +2726,8 @@ def test_backend_prepares_all_native_bodies_before_live_staging(
     assert _outline_ranges(mba) == original_ranges
     assert gateway.identity_index.generation == identity_generation
     assert modifier._semantic_fragment_state is None
-    assert gateway.active
+    assert gateway.active is False
     assert gateway.receipts == ()
-    gateway.abort(reason="runtime preparation rejection cleanup")
 
 
 def test_backend_materializes_and_observes_terminal_effects_from_live_mba(
@@ -2708,10 +2736,9 @@ def test_backend_materializes_and_observes_terminal_effects_from_live_mba(
     mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
         monkeypatch
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     validation = validate_fragment_projection(plan, projection)
     assert validation.passed, validation.failures
@@ -2795,6 +2822,270 @@ def test_gateway_receipts_terminal_effects_in_atomic_publication_inventory(
         block.block_id for block in plan.blocks
     }
     assert committed[0].receipt.version_transitions
+
+
+def test_production_participant_preflights_before_realization_and_observes_live_state(
+    monkeypatch,
+) -> None:
+    mba, gateway, modifier, plan, _entry, _original = (
+        _terminal_effect_runtime_case(monkeypatch)
+    )
+    participant = SemanticFragmentTransactionParticipant(gateway, modifier)
+    quantity = mba.qty
+    generation = gateway.generation
+
+    projected = participant.project(plan, None)
+    prepared = participant.preflight(projected)
+    bound = participant.bind(prepared, gateway.identity_index)
+
+    assert isinstance(projected, CfgProjection)
+    assert isinstance(prepared, PreparedCfgTransaction)
+    assert isinstance(bound, BoundCfgTransaction)
+    assert prepared.fragment is not None
+    assert bound.fragment is prepared.fragment
+    assert prepared.fragment.authority.projection is projected.semantic_projection
+    assert gateway.active is False
+    assert gateway.generation == generation
+    assert mba.qty == quantity
+
+    realized = participant.realize(bound, gateway)
+    assert gateway._active_prepared_semantic_fragment is prepared.fragment
+    observed = participant.observe(realized, mba)
+
+    assert isinstance(realized, ProjectedFragment)
+    assert isinstance(observed, ProjectedFragment)
+    assert observed == realized
+    assert observed is not realized
+    assert gateway.active
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="production participant test cleanup")
+
+
+def _direct_prepared_runtime_case():
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
+    return mba, gateway, modifier, plan, prepared
+
+
+@pytest.mark.parametrize("drift", ("plan", "generation", "snapshot", "roots"))
+def test_backend_rejects_foreign_or_stale_prepared_authority_before_write(
+    drift: str,
+) -> None:
+    mba, gateway, modifier, plan, prepared = _direct_prepared_runtime_case()
+    authority = prepared.authority
+    staged_plan = plan
+    if drift == "plan":
+        staged_plan = replace(plan, plan_id="foreign-plan")
+    elif drift == "generation":
+        generation = authority.generation + 1
+        authority = replace(
+            authority,
+            generation=generation,
+            attempt_id=replace(authority.attempt_id, generation=generation),
+            snapshot=replace(authority.snapshot, generation=generation),
+        )
+    elif drift == "snapshot":
+        foreign_id = f"{authority.snapshot_id}:foreign"
+        authority = replace(
+            authority,
+            snapshot_id=foreign_id,
+            snapshot=replace(
+                authority.snapshot,
+                projection_input=replace(
+                    authority.snapshot.projection_input,
+                    snapshot_id=foreign_id,
+                ),
+            ),
+            cfg_projection=replace(
+                authority.cfg_projection,
+                snapshot_id=foreign_id,
+            ),
+        )
+    else:
+        first_item = authority.root_inventory.items[0]
+        authority = replace(
+            authority,
+            root_inventory=replace(
+                authority.root_inventory,
+                items=(
+                    replace(
+                        first_item,
+                        requires_helper=not first_item.requires_helper,
+                    ),
+                    *authority.root_inventory.items[1:],
+                ),
+            ),
+        )
+    candidate = replace(prepared, authority=authority)
+    quantity = mba.qty
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="foreign or stale",
+    ):
+        modifier._stage_semantic_fragment(staged_plan, candidate)
+
+    assert mba.qty == quantity
+    assert modifier._semantic_fragment_state is None
+    assert authority.attempt_id not in modifier._consumed_semantic_fragment_attempts
+    gateway.abort(reason="foreign prepared authority cleanup")
+
+
+def test_backend_rejects_swapped_projection_inside_scoped_authority_before_write(
+) -> None:
+    mba, gateway, modifier, plan, prepared = _direct_prepared_runtime_case()
+    authority = prepared.authority
+    alternate_entry = next(
+        block.block_id
+        for block in authority.projection.blocks
+        if block.block_id != authority.projection.entry_block_id
+    )
+    object.__setattr__(
+        authority,
+        "projection",
+        replace(
+            authority.projection,
+            entry_block_id=alternate_entry,
+        ),
+    )
+    quantity = mba.qty
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="projection was forged",
+    ):
+        modifier._stage_semantic_fragment(plan, prepared)
+
+    assert mba.qty == quantity
+    assert modifier._semantic_fragment_state is None
+    assert authority.attempt_id not in modifier._consumed_semantic_fragment_attempts
+    gateway.abort(reason="forged prepared projection cleanup")
+
+
+def test_backend_rejects_same_id_distinct_plan_object_before_write() -> None:
+    mba, gateway, modifier, plan, prepared = _direct_prepared_runtime_case()
+    same_id_plan = replace(plan)
+    assert same_id_plan is not plan
+    quantity = mba.qty
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="foreign or stale",
+    ):
+        modifier._stage_semantic_fragment(same_id_plan, prepared)
+
+    assert mba.qty == quantity
+    assert modifier._semantic_fragment_state is None
+    assert prepared.authority.attempt_id not in (
+        modifier._consumed_semantic_fragment_attempts
+    )
+    gateway.abort(reason="same-id foreign plan cleanup")
+
+
+def test_backend_rejects_same_id_distinct_snapshot_token_before_write() -> None:
+    mba, gateway, modifier, plan, prepared = _direct_prepared_runtime_case()
+    distinct_snapshot = replace(prepared.authority.snapshot)
+    assert distinct_snapshot is not prepared.authority.snapshot
+    candidate = replace(
+        prepared,
+        authority=replace(
+            prepared.authority,
+            snapshot=distinct_snapshot,
+        ),
+    )
+    quantity = mba.qty
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="foreign or stale",
+    ):
+        modifier._stage_semantic_fragment(plan, candidate)
+
+    assert mba.qty == quantity
+    assert modifier._semantic_fragment_state is None
+    assert prepared.authority.attempt_id not in (
+        modifier._consumed_semantic_fragment_attempts
+    )
+    gateway.abort(reason="same-id foreign snapshot cleanup")
+
+
+def test_backend_consumes_prepared_authority_exactly_once() -> None:
+    mba, gateway, modifier, plan, prepared = _direct_prepared_runtime_case()
+    projection = modifier._stage_semantic_fragment(plan, prepared)
+    assert validate_fragment_projection(plan, projection).passed
+    modifier._discard_staged_semantic_fragment(plan)
+    quantity = mba.qty
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="already consumed",
+    ):
+        modifier._stage_semantic_fragment(plan, prepared)
+
+    assert mba.qty == quantity
+    assert modifier._semantic_fragment_state is None
+    gateway.abort(reason="prepared authority reuse cleanup")
+
+
+def test_malformed_native_payload_rejects_before_first_sdk_write(monkeypatch) -> None:
+    mba, gateway, modifier, plan, _entry, _original = (
+        _terminal_effect_runtime_case(monkeypatch)
+    )
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
+    instruction = prepared.payload.native_body_rows[0][1][0][2][0][1]
+    instruction.opcode = int(ida_hexrays.m_add)
+    quantity = mba.qty
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="payload diverges from facts",
+    ):
+        modifier._stage_semantic_fragment(plan, prepared)
+
+    assert mba.qty == quantity
+    assert modifier._semantic_fragment_state is None
+    assert prepared.authority.attempt_id not in (
+        modifier._consumed_semantic_fragment_attempts
+    )
+    gateway.abort(reason="malformed prepared payload cleanup")
+
+
+def test_return_register_preflight_failure_performs_zero_sdk_writes(
+    monkeypatch,
+) -> None:
+    mba, gateway, modifier, plan, entry, original = (
+        _terminal_effect_runtime_case(monkeypatch)
+    )
+    monkeypatch.setattr(
+        sfb,
+        "_return_mreg",
+        lambda: (_ for _ in ()).throw(
+            sfb.SemanticFragmentBackendRejected("return mreg unavailable")
+        ),
+    )
+    quantity = mba.qty
+
+    with pytest.raises(
+        SemanticFragmentPublicationRejected,
+        match="return_carrier_integrity:return-value",
+    ):
+        gateway.publish_semantic_fragment(modifier, plan)
+
+    assert gateway.active is False
+    assert mba.qty == quantity
+    assert tuple(entry.succset) == (original.serial,)
+    assert modifier._semantic_fragment_state is None
 
 
 def test_live_fragment_publication_is_reconstructible_from_diagnostic_db(
@@ -3209,9 +3500,8 @@ def test_staged_block_discard_invalidates_state_after_cleanup_failure(
     gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
-    modifier._stage_semantic_fragment(plan)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
+    modifier._stage_semantic_fragment(plan, prepared)
     cleanup_calls = 0
 
     def fail_after_possible_compaction(_versions) -> None:
@@ -3427,10 +3717,9 @@ def test_backend_round_trips_portable_terminal_carrier_sources(
         operation=operation,
         return_width=return_width,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     validation = validate_fragment_projection(plan, projection)
     assert validation.passed, validation.failures
@@ -3467,15 +3756,11 @@ def test_backend_rejects_conflicting_terminal_carrier_atomically(
             conflicting_carrier=True,
         ),
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
-
     with pytest.raises(
-        sfb.SemanticFragmentBackendRejected,
-        match="return carrier conflicts",
+        SemanticFragmentPublicationRejected,
+        match="terminal_route_atomicity",
     ):
-        modifier._stage_semantic_fragment(plan)
-    gateway.abort(reason="runtime conflicting terminal carrier cleanup")
+        _begin_preflight_fragment_batch(gateway, modifier, plan)
 
     assert mba.qty == 5
     assert tuple(entry.succset) == (original.serial,)
@@ -3517,10 +3802,9 @@ def test_native_body_origin_binding_translates_operations_and_projection(
         dispatcher=3,
         predicate_native_ea=predicate_native_ea,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     imported = projection.block("imported-conditional")
     assert imported.instruction_eas == (predicate_native_ea,)
@@ -3653,10 +3937,9 @@ def test_cached_preopt_body_materializes_through_the_fragment_transaction(
             )
         ),
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     imported = projection.block("imported-conditional")
     assert imported.instruction_eas == (0x500001, predicate_native_ea)
@@ -3849,10 +4132,9 @@ def test_cached_preopt_body_binds_one_native_block_split_into_select_microblocks
             )
         ),
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     imported = projection.block("imported-conditional")
     assert imported.instruction_eas == (
@@ -3927,10 +4209,9 @@ def test_cached_preopt_call_materializes_with_gateway_owned_fallthrough(
             )
         ),
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     imported = projection.block("imported-call")
     helper = projection.block("fallthrough-helper:imported-call-continuation")
@@ -3988,10 +4269,9 @@ def test_calls_built_imported_native_splits_owned_continuation_after_call(
             )
         ),
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     state = modifier._semantic_fragment_state
     assert state is not None
@@ -4085,10 +4365,9 @@ def test_calls_built_replacement_splits_owned_continuation_after_call(
     monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
     monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     state = modifier._semantic_fragment_state
     assert state is not None
@@ -4139,14 +4418,13 @@ def test_native_body_rejects_an_unbound_materialized_instruction(
         target=2,
         dispatcher=3,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
     with pytest.raises(
         sfb.SemanticFragmentBackendRejected,
         match="unbound live instruction",
     ):
-        modifier._stage_semantic_fragment(plan)
+        modifier._stage_semantic_fragment(plan, prepared)
 
     assert mba.qty == 5
     assert gateway.active
@@ -4311,10 +4589,16 @@ def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
     )
     monkeypatch.setattr(sfb, reaching_query_name, _reaching_definitions)
     monkeypatch.setattr(sfb, reached_uses_query_name, _reached_uses)
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
-
-    projection = modifier._stage_semantic_fragment(plan)
+    if extra_use:
+        projected = SemanticFragmentTransactionParticipant(
+            gateway,
+            modifier,
+        ).project(plan, None)
+        projection = projected.semantic_projection
+        assert projection is not None
+    else:
+        prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
+        projection = modifier._stage_semantic_fragment(plan, prepared)
 
     planned_relation = ProjectedDataFlowRelation(
         value_id="state",
@@ -4352,8 +4636,12 @@ def test_backend_projects_exact_data_flow_without_hiding_extra_uses(
         }
         assert validation.passed, validation.failures
 
-    modifier._discard_staged_semantic_fragment(plan)
-    gateway.abort(reason="runtime data-flow projection cleanup")
+    if extra_use:
+        assert gateway.active is False
+        assert modifier._semantic_fragment_state is None
+    else:
+        modifier._discard_staged_semantic_fragment(plan)
+        gateway.abort(reason="runtime data-flow projection cleanup")
 
 
 def test_backend_rebinds_data_flow_instruction_origins(monkeypatch) -> None:
@@ -4650,10 +4938,9 @@ def test_backend_validates_data_flow_across_unpublished_root_projection() -> Non
             ),
         ),
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     assert validate_fragment_projection(plan, projection).passed
     assert {
@@ -4699,19 +4986,16 @@ def test_backend_rejects_duplicate_physical_data_flow_anchors(
             UseSite(block_serial, 0x401010, ida_hexrays.m_mov),
         ],
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
-
     with pytest.raises(
-        sfb.SemanticFragmentBackendRejected,
+        FragmentProjectionFailure,
         match="use observation is ambiguous.*replacement@0x401010",
     ):
-        modifier._stage_semantic_fragment(plan)
+        _begin_preflight_fragment_batch(gateway, modifier, plan)
 
     assert modifier._semantic_fragment_state is None
     assert mba.qty == 5
     assert tuple(entry.succset) == (original.serial,)
-    gateway.abort(reason="runtime ambiguous data-flow cleanup")
+    assert gateway.active is False
 
 
 def test_backend_rejects_unsupported_data_flow_storage_namespace() -> None:
@@ -4729,19 +5013,16 @@ def test_backend_rejects_unsupported_data_flow_storage_namespace() -> None:
         _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
         StorageIdentity(StorageIdentityKind.GLOBAL, offset=0x404000),
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
-
     with pytest.raises(
-        sfb.SemanticFragmentBackendRejected,
+        FragmentProjectionFailure,
         match="unsupported storage namespace global",
     ):
-        modifier._stage_semantic_fragment(plan)
+        _begin_preflight_fragment_batch(gateway, modifier, plan)
 
     assert modifier._semantic_fragment_state is None
     assert mba.qty == 5
     assert tuple(entry.succset) == (original.serial,)
-    gateway.abort(reason="runtime unsupported data-flow cleanup")
+    assert gateway.active is False
 
 
 def _flag_corridor_runtime_case(*, intervening_clobber: bool):
@@ -4776,10 +5057,9 @@ def test_backend_projects_exact_condition_code_writes() -> None:
     mba, gateway, modifier, plan, entry, original = _flag_corridor_runtime_case(
         intervening_clobber=False,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     replacement = projection.block("replacement")
     assert replacement.flag_write_eas == frozenset({0x401010})
@@ -4846,19 +5126,16 @@ def test_backend_rejects_ambiguous_flag_corridor_endpoint() -> None:
     assert target is not None and target.head is not None
     duplicate_consumer = _Instruction(ida_hexrays.m_nop, 0x401020)
     _set_block_instructions(target, target.head, duplicate_consumer)
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
-
     with pytest.raises(
-        sfb.SemanticFragmentBackendRejected,
+        FragmentProjectionFailure,
         match="consumer.*target@0x401020.*observed 2",
     ):
-        modifier._stage_semantic_fragment(plan)
+        _begin_preflight_fragment_batch(gateway, modifier, plan)
 
     assert modifier._semantic_fragment_state is None
     assert mba.qty == 5
     assert tuple(entry.succset) == (original.serial,)
-    gateway.abort(reason="runtime ambiguous flag endpoint cleanup")
+    assert gateway.active is False
 
 
 def test_backend_groups_native_flag_producer_microinstructions() -> None:
@@ -4878,10 +5155,9 @@ def test_backend_groups_native_flag_producer_microinstructions() -> None:
         *producer_microinstructions,
         original.tail,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     replacement = projection.block("replacement")
     assert replacement.flag_write_eas == frozenset({0x401010})
@@ -4920,7 +5196,7 @@ def test_gateway_rolls_back_postpublication_flag_clobber(monkeypatch) -> None:
 
     with pytest.raises(
         SemanticFragmentPublicationRejected,
-        match="postpublication.*flag_corridor_integrity:branch-flags",
+        match="staged_observation.*flag_corridor_integrity:branch-flags",
     ):
         gateway.publish_semantic_fragment(modifier, plan)
 
@@ -5034,14 +5310,14 @@ def test_backend_projects_exact_live_value_range(
 ) -> None:
     mba, gateway, modifier, plan, entry, original, target = _range_runtime_case(
         (1, 1),
+        (1, 1),
         observation=observation,
     )
     _install_range_data_flow_queries(monkeypatch, target)
     _install_range_value_query(monkeypatch)
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     assert projection.value_ranges == (
         ProjectedRangeFact(
@@ -5053,6 +5329,7 @@ def test_backend_projects_exact_live_value_range(
         ),
     )
     assert target.valrange_queries == [
+        (0x401020, int(ida_hexrays.VR_EXACT) | int(expected_position)),
         (0x401020, int(ida_hexrays.VR_EXACT) | int(expected_position)),
     ]
     assert validate_fragment_projection(plan, projection).passed
@@ -5067,9 +5344,9 @@ def test_gateway_validates_live_value_range_atomically(
     monkeypatch,
     live_bounds: tuple[int, int],
 ) -> None:
+    bounds = (live_bounds,) if live_bounds == (0, 2) else (live_bounds,) * 4
     mba, gateway, modifier, plan, entry, original, target = _range_runtime_case(
-        live_bounds,
-        live_bounds,
+        *bounds
     )
     _install_range_data_flow_queries(monkeypatch, target)
     _install_range_value_query(monkeypatch)
@@ -5130,7 +5407,7 @@ def test_gateway_rolls_back_postpublication_value_range_drift(
 
     with pytest.raises(
         SemanticFragmentPublicationRejected,
-        match="postpublication.*value_range_proven:selector-domain",
+        match="staged_observation.*value_range_proven:selector-domain",
     ):
         gateway.publish_semantic_fragment(modifier, plan)
 
@@ -5270,7 +5547,7 @@ def test_gateway_revalidates_data_flow_after_root_publication(
     if postpublication_extra_use:
         with pytest.raises(
             SemanticFragmentPublicationRejected,
-            match="postpublication",
+            match="staged_observation",
         ):
             gateway.publish_semantic_fragment(modifier, plan)
         assert reached_use_calls == 2
@@ -5284,7 +5561,7 @@ def test_gateway_revalidates_data_flow_after_root_publication(
 
     receipt = gateway.publish_semantic_fragment(modifier, plan)
 
-    assert reached_use_calls == 2
+    assert reached_use_calls == 4
     assert receipt.prepublication_validation.passed
     assert receipt.postpublication_validation.passed
     assert any(
@@ -6175,10 +6452,9 @@ def test_backend_stages_plan_owned_empty_synthetic_block(monkeypatch) -> None:
             ),
         ),
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     result = validate_fragment_projection(plan, projection)
     assert result.passed, result.failures
@@ -6223,10 +6499,9 @@ def test_backend_stages_complete_conditional_with_owned_fallthrough_helper(
         fallthrough=3,
         dispatcher=4,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     result = validate_fragment_projection(plan, projection)
     assert result.passed, result.failures
@@ -6319,10 +6594,9 @@ def test_backend_normalizes_conditional_select_only_on_detached_replacement(
         taken=4,
         fallthrough=5,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     state = modifier._semantic_fragment_state
     assert state is not None
@@ -6457,10 +6731,9 @@ def test_backend_clones_nested_signed_skip_before_replacing_parent(
         taken=4,
         fallthrough=5,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     state = modifier._semantic_fragment_state
     assert state is not None
@@ -6543,14 +6816,13 @@ def test_backend_rejects_stale_conditional_select_copy_shape(monkeypatch) -> Non
         taken=4,
         fallthrough=5,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
     with pytest.raises(
         sfb.SemanticFragmentBackendRejected,
         match="conditional-select envelope",
     ):
-        modifier._stage_semantic_fragment(plan)
+        modifier._stage_semantic_fragment(plan, prepared)
 
     assert tuple(entry.succset) == (original.serial,)
     assert gateway.active
@@ -6581,10 +6853,9 @@ def test_backend_stages_conditional_with_transaction_local_targets(
         fallthrough=3,
         dispatcher=4,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
-    projection = modifier._stage_semantic_fragment(plan)
+    projection = modifier._stage_semantic_fragment(plan, prepared)
 
     result = validate_fragment_projection(plan, projection)
     assert result.passed, result.failures
@@ -6627,8 +6898,7 @@ def test_conditional_staging_failure_discards_helper_and_replacement(
         fallthrough=3,
         dispatcher=4,
     )
-    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
-    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
     def _reject_after_helper(*_blocks) -> None:
         raise RuntimeError("post-helper failure")
@@ -6636,7 +6906,7 @@ def test_conditional_staging_failure_discards_helper_and_replacement(
     monkeypatch.setattr(modifier, "_semantic_edge_mark", _reject_after_helper)
 
     with pytest.raises(RuntimeError, match="post-helper failure"):
-        modifier._stage_semantic_fragment(plan)
+        modifier._stage_semantic_fragment(plan, prepared)
     gateway.abort(reason="runtime conditional failure cleanup")
 
     assert mba.qty == 6

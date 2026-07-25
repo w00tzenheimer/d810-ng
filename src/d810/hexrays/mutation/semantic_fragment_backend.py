@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import ida_hexrays
 import ida_range
@@ -45,6 +45,13 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
 )
 from d810.hexrays.mutation.semantic_fragment_preparation import (
     PreparedNativeBodyPreparation,
+    PreparedNativeBodyPayload,
+    PreparedReturnCarrierConstruction,
+    PreparedSemanticFragment,
+    SemanticFragmentRealizationPayload,
+    SemanticFragmentSnapshotAuthority,
+    SemanticFragmentSnapshotPreparation,
+    sdk_instruction_operand_shape,
 )
 from d810.ir.block_identity import BlockHandleProvenance
 from d810.ir.expressions import ValueOpKind
@@ -67,6 +74,16 @@ from d810.transforms.fragment_plan import (
     FragmentReturnSourceKind,
     FragmentTerminalReturn,
 )
+from d810.transforms.fragment_projection import (
+    FragmentCloneSourceInstruction,
+    FragmentCloneSourceInstructions,
+    FragmentProjectionBlockInput,
+    FragmentProjectionFailure,
+    FragmentProjectionInput,
+    fragment_cfg_projection,
+    project_fragment,
+)
+from d810.transforms.contract import CfgContract, CfgContractViolationError
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
     FragmentValidationPostcondition,
@@ -222,6 +239,12 @@ class SemanticFragmentBackendState:
     staged_mba_outline_ranges: tuple[tuple[int, int], ...] = ()
     original_mba_had_outlines: bool | None = None
     projection: ProjectedFragment | None = None
+    preflight_projection: ProjectedFragment | None = None
+    return_carrier_constructions: dict[
+        str,
+        PreparedReturnCarrierConstruction,
+    ] = field(default_factory=dict)
+    return_carrier_operands: dict[str, object] = field(default_factory=dict)
 
     def binding(self, block_id: str) -> SemanticFragmentRuntimeBinding:
         try:
@@ -1445,6 +1468,23 @@ def _return_source_operand(
     return operand
 
 
+def _prepared_operand_shape(
+    operand: object,
+    source: FragmentReturnSource,
+) -> tuple[object, ...]:
+    """Return immutable primitive shape for one prepared carrier operand."""
+    storage = source.storage_identity
+    return (
+        source.kind.value,
+        int(source.width),
+        None if storage is None else storage.kind.value,
+        None if storage is None else int(storage.offset),
+        None if source.constant is None else int(source.constant),
+        int(getattr(operand, "t", -1)),
+        int(getattr(operand, "size", 0)),
+    )
+
+
 def _stack_identity_from_operand(mba, operand) -> StorageIdentity | None:
     stack_ref = getattr(operand, "s", None)
     if stack_ref is None:
@@ -1789,16 +1829,20 @@ def _materialize_return_carrier(
 
     live_ea = int(modifier.mba.alloc_fict_ea(planned.carrier_ea))
     try:
+        construction = state.return_carrier_constructions[planned.carrier_id]
+        if (
+            construction.source != planned.source
+            or construction.return_width != planned.return_width
+        ):
+            raise SemanticFragmentBackendRejected(
+                "prepared return-carrier construction differs from the plan"
+            )
         instruction = ida_hexrays.minsn_t(live_ea)
         instruction.opcode = _RETURN_CARRIER_OPCODES[planned.operation]
-        source = _return_source_operand(
-            modifier.mba,
-            planned.source,
-            live_ea=live_ea,
-        )
+        source = state.return_carrier_operands[planned.carrier_id]
         instruction.l.assign(source)
         instruction.r.erase()
-        instruction.d.make_reg(_return_mreg(), planned.return_width)
+        instruction.d.make_reg(construction.return_mreg, planned.return_width)
         modifier.insert_instruction_now(
             block,
             instruction,
@@ -2505,45 +2549,64 @@ def _project_fragment(
                 )
             continue
         live_by_id[block_id] = live
-    if not any(int(block.serial) == 0 for block in live_by_id.values()):
-        gateway = _gateway(modifier)
-        entry_handle = gateway.identity_index.handle_for_serial(0)
-        entry = modifier.mba.get_mblock(0)
-        entry_label = _unowned_endpoint(modifier, 0).removeprefix("unowned:")
-        if entry_handle is None or entry is None:
-            raise SemanticFragmentBackendRejected(
-                f"projected function entry {entry_label} has no live logical handle"
-            )
-        entry_proxy = gateway.identity_index.logical_proxy_for_handle(entry_handle)
-        if entry_proxy is None:
-            raise SemanticFragmentBackendRejected(
-                f"projected function entry {entry_label} has no logical owner"
-            )
-        entry_version = entry_proxy.resolve()
-        if entry_version is None:
-            raise SemanticFragmentBackendRejected(
-                f"projected function entry {entry_label} has no published version"
-            )
-        entry_bound = gateway.identity_index.resolve_logical_version(
-            entry_version,
-            transaction_id=_transaction_id(modifier),
+    if state.preflight_projection is None:
+        raise SemanticFragmentBackendRejected(
+            "staged semantic fragment lacks immutable preflight authority"
         )
-        if entry_bound is None or int(entry_bound.serial) != 0:
-            raise SemanticFragmentBackendRejected(
-                f"projected function entry {entry_label} changed physical version"
+    gateway = _gateway(modifier)
+    transaction_id = _transaction_id(modifier)
+    for expected_binding in state.preflight_projection.identity_bindings:
+        block_id = expected_binding.block_id
+        if block_id in projection_bindings:
+            continue
+        matches: list[tuple[object, object, object]] = []
+        for serial in range(int(modifier.mba.qty)):
+            handle = gateway.identity_index.handle_for_serial(serial)
+            proxy = gateway.identity_index.logical_proxy_for_handle(handle)
+            if proxy is None or proxy.proxy_token != expected_binding.logical_owner_id:
+                continue
+            version = proxy.resolve(transaction_id=transaction_id)
+            bound = (
+                None
+                if version is None
+                else gateway.identity_index.resolve_logical_version(
+                    version,
+                    transaction_id=transaction_id,
+                )
             )
-        entry_block_id = f"function-entry:{entry_proxy.proxy_token}"
-        if entry_block_id in projection_bindings:
-            raise SemanticFragmentBackendRejected(
-                f"projected function entry {entry_label} collides with a plan block"
+            live = (
+                None
+                if bound is None
+                else modifier.mba.get_mblock(int(bound.serial))
             )
-        projection_bindings[entry_block_id] = SemanticFragmentRuntimeBinding(
-            block_id=entry_block_id,
-            proxy=entry_proxy,
-            version=entry_version,
+            if live is not None and bound is not None and version is not None:
+                matches.append((live, proxy, version))
+        if len(matches) != 1:
+            raise SemanticFragmentBackendRejected(
+                f"full staged CFG block {block_id!r} lacks immutable "
+                "transaction-local authority"
+            )
+        live, proxy, version = matches[0]
+        if version.version_id.version != expected_binding.version:
+            raise SemanticFragmentBackendRejected(
+                f"full staged CFG block {block_id!r} changed logical version"
+            )
+        projection_bindings[block_id] = SemanticFragmentRuntimeBinding(
+            block_id=block_id,
+            proxy=proxy,
+            version=version,
             state=FragmentBindingState.PUBLISHED,
         )
-        live_by_id[entry_block_id] = entry
+        live_by_id[block_id] = live
+    represented_serials = {int(block.serial) for block in live_by_id.values()}
+    for serial in range(int(modifier.mba.qty)):
+        if serial in represented_serials:
+            continue
+        block = modifier.mba.get_mblock(serial)
+        anchor_ea = int(getattr(block, "start", 0) or 0)
+        raise SemanticFragmentBackendRejected(
+            f"staged SDK produced unwitnessed blk{serial}@0x{anchor_ea:X}"
+        )
     ids_by_serial: dict[int, str] = {}
     for block_id, block in live_by_id.items():
         serial = int(block.serial)
@@ -2562,13 +2625,33 @@ def _project_fragment(
     terminator_eas: dict[str, int | None] = {}
     terminator_kinds: dict[str, InsnKind] = {}
     for block_id, block in live_by_id.items():
-        successors[block_id] = [
-            ids_by_serial.get(
-                int(serial),
-                _unowned_endpoint(modifier, int(serial)),
+        block_kind = _block_kind(int(block.type))
+        raw_successors = tuple(int(serial) for serial in block.succset)
+        if block_kind is BlockKind.ZERO_WAY and raw_successors:
+            stop = (
+                modifier.mba.get_mblock(raw_successors[0])
+                if len(raw_successors) == 1
+                else None
             )
-            for serial in block.succset
-        ]
+            if (
+                stop is None
+                or int(stop.type) != int(ida_hexrays.BLT_STOP)
+                or int(stop.serial) != int(modifier.mba.qty) - 1
+            ):
+                raise SemanticFragmentBackendRejected(
+                    f"zero-way successor bookkeeping is malformed for {block_id!r}"
+                )
+        successors[block_id] = (
+            []
+            if block_kind is BlockKind.ZERO_WAY
+            else [
+                ids_by_serial.get(
+                    int(serial),
+                    _unowned_endpoint(modifier, int(serial)),
+                )
+                for serial in raw_successors
+            ]
+        )
         predecessors[block_id] = [
             ids_by_serial.get(
                 int(serial),
@@ -2576,7 +2659,6 @@ def _project_fragment(
             )
             for serial in block.predset
         ]
-        block_kind = _block_kind(int(block.type))
         kinds[block_id] = block_kind
         physical_positions[block_id] = int(block.serial)
         next_block = getattr(block, "nextb", None)
@@ -2971,6 +3053,530 @@ def plan_semantic_fragment_root_inventory(
         plan_id=plan.plan_id,
         atomic_group_id=plan.atomic_group_id,
         items=tuple(items),
+    )
+
+
+def snapshot_semantic_fragment_inputs(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+) -> SemanticFragmentSnapshotPreparation:
+    """Capture immutable projection authority before opening a live batch."""
+    gateway = modifier._mutation_gateway
+    if gateway is None:
+        raise SemanticFragmentBackendRejected(
+            "semantic fragment snapshot requires a mutation gateway"
+        )
+    if gateway.active or modifier._semantic_fragment_state is not None:
+        raise SemanticFragmentBackendRejected(
+            "semantic fragment snapshots require an idle mutation gateway"
+        )
+
+    try:
+        preparations = _prepare_native_bodies(modifier, plan)
+    except SemanticFragmentBackendRejected as exc:
+        if plan.return_carriers:
+            postcondition = FragmentValidationPostcondition.RETURN_CARRIER_INTEGRITY
+            subject_id = plan.return_carriers[0].carrier_id
+        elif plan.terminal_returns:
+            postcondition = FragmentValidationPostcondition.TERMINAL_RETURN_INTEGRITY
+            subject_id = plan.terminal_returns[0].return_id
+        else:
+            postcondition = FragmentValidationPostcondition.GRAPH_CLOSURE
+            subject_id = "native-body-preparation"
+        raise FragmentProjectionFailure(
+            postcondition,
+            subject_id,
+            str(exc),
+        ) from exc
+
+    carrier_constructions: list[PreparedReturnCarrierConstruction] = []
+    carrier_payloads: list[tuple[str, object]] = []
+    for carrier in plan.return_carriers:
+        try:
+            operand = _return_source_operand(
+                modifier.mba,
+                carrier.source,
+                live_ea=carrier.carrier_ea,
+            )
+            return_mreg = _return_mreg()
+        except SemanticFragmentBackendRejected as exc:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.RETURN_CARRIER_INTEGRITY,
+                carrier.carrier_id,
+                str(exc),
+            ) from exc
+        carrier_constructions.append(
+            PreparedReturnCarrierConstruction(
+                carrier_id=carrier.carrier_id,
+                source=carrier.source,
+                return_width=carrier.return_width,
+                return_mreg=return_mreg,
+                operand_shape=_prepared_operand_shape(operand, carrier.source),
+            )
+        )
+        carrier_payloads.append((carrier.carrier_id, operand))
+
+    live_by_id: dict[str, object] = {}
+    binding_by_id: dict[str, ProjectedIdentityBinding] = {}
+    ids_by_serial: dict[int, str] = {}
+    for planned in plan.blocks:
+        if planned.materialization is not FragmentBlockMaterialization.REUSE_PUBLISHED:
+            continue
+        rebound = gateway.identity_index.rebind_identity(planned.stable_identity)
+        if rebound.block is None:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+                planned.block_id,
+                f"snapshot block {planned.block_id!r} does not rebind uniquely",
+            )
+        live = modifier.mba.get_mblock(int(rebound.block.serial))
+        if live is None:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+                planned.block_id,
+                f"snapshot block {planned.block_id!r} is absent from the MBA",
+            )
+        serial = int(live.serial)
+        if serial in ids_by_serial:
+            anchor = int(live.start)
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+                planned.block_id,
+                f"snapshot blocks {ids_by_serial[serial]!r} and "
+                f"{planned.block_id!r} alias blk{serial}@0x{anchor:X}",
+            )
+        proxy = gateway.identity_index.logical_proxy_for_handle(rebound.block.handle)
+        version = None if proxy is None else proxy.resolve()
+        if proxy is None or version is None:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+                planned.block_id,
+                f"snapshot block {planned.block_id!r} lacks published authority",
+            )
+        live_by_id[planned.block_id] = live
+        ids_by_serial[serial] = planned.block_id
+        binding_by_id[planned.block_id] = ProjectedIdentityBinding(
+            block_id=planned.block_id,
+            logical_owner_id=proxy.proxy_token,
+            version=version.version_id.version,
+            generation=version.generation,
+            state=FragmentBindingState.PUBLISHED,
+            stable_identity=planned.stable_identity,
+            previous_version=(
+                None
+                if version.predecessor_version_id is None
+                else version.predecessor_version_id.version
+            ),
+        )
+
+    for serial in range(int(modifier.mba.qty)):
+        if serial in ids_by_serial:
+            continue
+        handle = gateway.identity_index.handle_for_serial(serial)
+        live = modifier.mba.get_mblock(serial)
+        proxy = (
+            None
+            if handle is None
+            else gateway.identity_index.logical_proxy_for_handle(handle)
+        )
+        version = None if proxy is None else proxy.resolve()
+        if live is None or proxy is None or version is None:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+                f"function-block:{serial}",
+                "full CFG snapshot block lacks published authority",
+            )
+        block_id = f"function-block:{proxy.proxy_token}"
+        if block_id in live_by_id:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+                block_id,
+                "full CFG snapshot block id collides with plan authority",
+            )
+        live_by_id[block_id] = live
+        ids_by_serial[serial] = block_id
+        binding_by_id[block_id] = ProjectedIdentityBinding(
+            block_id=block_id,
+            logical_owner_id=proxy.proxy_token,
+            version=version.version_id.version,
+            generation=version.generation,
+            state=FragmentBindingState.PUBLISHED,
+            stable_identity=version.handle.stable_identity,
+            previous_version=(
+                None
+                if version.predecessor_version_id is None
+                else version.predecessor_version_id.version
+            ),
+        )
+
+    if 0 not in ids_by_serial:
+        raise FragmentProjectionFailure(
+            FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+            "function-entry",
+            "snapshot function entry lacks published authority",
+        )
+    entry_block_id = ids_by_serial[0]
+
+    blocks: list[FragmentProjectionBlockInput] = []
+    for block_id, live in live_by_id.items():
+        writes = frozenset()
+        if plan.flag_corridors:
+            try:
+                writes = frozenset(
+                    int(ea) for ea in condition_code_write_eas(live)
+                )
+            except ConditionCodeQueryUnavailable as exc:
+                raise FragmentProjectionFailure(
+                    FragmentValidationPostcondition.FLAG_CORRIDOR_INTEGRITY,
+                    plan.flag_corridors[0].corridor_id,
+                    f"condition-code writes cannot be snapshotted for {block_id}",
+                ) from exc
+        kind = _block_kind(int(live.type))
+        raw_successors = tuple(int(serial) for serial in live.succset)
+        if kind is BlockKind.ZERO_WAY:
+            successors: tuple[str, ...] = ()
+            if raw_successors:
+                stop = (
+                    modifier.mba.get_mblock(raw_successors[0])
+                    if len(raw_successors) == 1
+                    else None
+                )
+                if (
+                    stop is None
+                    or int(stop.type) != int(ida_hexrays.BLT_STOP)
+                    or int(stop.serial) != int(modifier.mba.qty) - 1
+                ):
+                    raise FragmentProjectionFailure(
+                        FragmentValidationPostcondition.GRAPH_CLOSURE,
+                        block_id,
+                        "zero-way successor bookkeeping is malformed for "
+                        f"{block_id!r}",
+                    )
+        else:
+            successors = tuple(ids_by_serial[int(serial)] for serial in raw_successors)
+        next_block = getattr(live, "nextb", None)
+        instruction_eas = _instruction_eas(live, None)
+        terminator_ea, terminator_kind = _projected_terminator(live, None)
+        blocks.append(
+            FragmentProjectionBlockInput(
+                block_id=block_id,
+                kind=kind,
+                successors=successors,
+                predecessors=tuple(
+                    ids_by_serial[int(serial)] for serial in live.predset
+                ),
+                physical_position=int(live.serial),
+                adjacent_fallthrough_target_id=(
+                    None
+                    if kind is not BlockKind.TWO_WAY or next_block is None
+                    else ids_by_serial[int(next_block.serial)]
+                ),
+                terminator_ea=terminator_ea,
+                terminator_kind=terminator_kind,
+                instruction_eas=instruction_eas,
+                flag_write_eas=writes,
+            )
+        )
+
+    preparation_by_body_id = dict(preparations)
+    prepared_instruction_rows_by_block: dict[
+        str,
+        tuple[tuple[int, object], ...],
+    ] = {}
+    next_position = max(
+        (block.physical_position for block in blocks),
+        default=-1,
+    ) + 1
+    for planned in plan.blocks:
+        if planned.materialization is not FragmentBlockMaterialization.IMPORT_NATIVE:
+            continue
+        preparation = preparation_by_body_id.get(str(planned.native_body_id))
+        if preparation is None:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.GRAPH_CLOSURE,
+                planned.block_id,
+                "imported block lacks immutable native-body preparation",
+            )
+        fact = preparation.fact.block(planned.block_id)
+        payload_rows = {
+            block_id: (block_flags, instruction_rows)
+            for block_id, block_flags, instruction_rows in preparation.payload.rows
+        }
+        _block_flags, instruction_rows = payload_rows[planned.block_id]
+        instruction_rows = tuple(instruction_rows)
+        prepared_instruction_rows_by_block[planned.block_id] = instruction_rows
+        instruction_eas = tuple(
+            dict.fromkeys(
+                int(native_ea) for native_ea, _instruction in instruction_rows
+            )
+        )
+        if fact.terminator_ea is not None and (
+            not instruction_eas or instruction_eas[-1] != fact.terminator_ea
+        ):
+            instruction_eas = (*instruction_eas, fact.terminator_ea)
+        blocks.append(
+            FragmentProjectionBlockInput(
+                block_id=planned.block_id,
+                kind=fact.kind,
+                successors=tuple(
+                    edge.target_block_id for edge in fact.successors
+                ),
+                predecessors=fact.predecessor_block_ids,
+                physical_position=next_position,
+                adjacent_fallthrough_target_id=None,
+                terminator_ea=fact.terminator_ea,
+                terminator_kind=fact.terminator_kind,
+                instruction_eas=instruction_eas,
+                flag_write_eas=frozenset(
+                    instruction.native_ea
+                    for instruction in fact.instructions
+                    if instruction.writes_condition_codes is True
+                ),
+            )
+        )
+        next_position += 1
+
+    clone_source_instructions: list[FragmentCloneSourceInstructions] = []
+    for planned in plan.blocks:
+        if planned.materialization is not FragmentBlockMaterialization.CLONE_PUBLISHED:
+            continue
+        source_block_id = str(planned.replaces_block_id)
+        source = live_by_id.get(source_block_id)
+        if source is None:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+                planned.block_id,
+                "clone-source instruction evidence lacks its published source",
+            )
+        source_rows = tuple(
+            (
+                int(getattr(instruction, "ea", -1) or -1),
+                instruction,
+            )
+            for instruction in _iter_block_instructions(source)
+        )
+        prepared_instruction_rows_by_block[planned.block_id] = source_rows
+        clone_source_instructions.append(
+            FragmentCloneSourceInstructions(
+                block_id=planned.block_id,
+                source_block_id=source_block_id,
+                instructions=tuple(
+                    FragmentCloneSourceInstruction(
+                        native_ea=native_ea,
+                        opcode=int(getattr(instruction, "opcode", -1)),
+                    )
+                    for native_ea, instruction in source_rows
+                ),
+            )
+        )
+
+    analysis_live_by_id = dict(live_by_id)
+    analysis_ids_by_serial = dict(ids_by_serial)
+    for planned in plan.blocks:
+        if planned.role is not FragmentBlockRole.REPLACEMENT:
+            continue
+        original_id = str(planned.replaces_block_id)
+        original_live = live_by_id.get(original_id)
+        if original_live is not None:
+            analysis_live_by_id[planned.block_id] = original_live
+            analysis_ids_by_serial[int(original_live.serial)] = planned.block_id
+    analysis_state = SemanticFragmentBackendState(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+    )
+    live_flag_corridors = tuple(
+        corridor
+        for corridor in plan.flag_corridors
+        if corridor.producer.block_id in analysis_live_by_id
+        and corridor.consumer.block_id in analysis_live_by_id
+    )
+    if live_flag_corridors:
+        try:
+            _require_flag_corridor_sites(
+                analysis_state,
+                replace(plan, flag_corridors=live_flag_corridors),
+                analysis_live_by_id,
+            )
+        except SemanticFragmentBackendRejected as exc:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.FLAG_CORRIDOR_INTEGRITY,
+                live_flag_corridors[0].corridor_id,
+                str(exc),
+            ) from exc
+
+    predecessor_serials = {
+        int(live.serial): tuple(int(value) for value in live.predset)
+        for live in analysis_live_by_id.values()
+    }
+    successor_serials = {
+        int(live.serial): tuple(int(value) for value in live.succset)
+        for live in analysis_live_by_id.values()
+    }
+    try:
+        data_flow = _project_data_flow_relations(
+            modifier,
+            plan,
+            analysis_state,
+            analysis_live_by_id,
+            analysis_ids_by_serial,
+            predecessor_serials,
+            successor_serials,
+        )
+    except SemanticFragmentBackendRejected as exc:
+        subject_id = (
+            plan.data_flow_obligations[0].obligation_id
+            if plan.data_flow_obligations
+            else "data-flow-evidence"
+        )
+        raise FragmentProjectionFailure(
+            FragmentValidationPostcondition.USE_DEF_INTEGRITY,
+            subject_id,
+            str(exc),
+        ) from exc
+    try:
+        ranges = _project_value_ranges(
+            analysis_state,
+            plan,
+            analysis_live_by_id,
+        )
+    except SemanticFragmentBackendRejected as exc:
+        subject_id = (
+            plan.value_range_assumptions[0].assumption_id
+            if plan.value_range_assumptions
+            else "value-range-evidence"
+        )
+        raise FragmentProjectionFailure(
+            FragmentValidationPostcondition.VALUE_RANGE_PROVEN,
+            subject_id,
+            str(exc),
+        ) from exc
+
+    verified_carriers: list[FragmentReturnCarrier] = []
+    terminal_diagnostics: list[ProjectedTerminalEffectDiagnostic] = []
+    for carrier in plan.return_carriers:
+        rows = prepared_instruction_rows_by_block.get(carrier.block_id, ())
+        state_matches = tuple(
+            index
+            for index, (ea, _instruction) in enumerate(rows)
+            if int(ea) == carrier.state_write_ea
+        )
+        carrier_matches = tuple(
+            (index, instruction)
+            for index, (ea, instruction) in enumerate(rows)
+            if int(ea) == carrier.carrier_ea
+        )
+        block_identity = plan.block(carrier.block_id).stable_identity
+        can_insert = bool(
+            len(state_matches) == 1
+            and not carrier_matches
+            and block_identity is not None
+            and carrier.carrier_ea in block_identity.exact_instruction_eas
+        )
+        existing_matches = bool(
+            len(state_matches) == 1
+            and len(carrier_matches) == 1
+            and state_matches[0] < carrier_matches[0][0]
+            and value_op_from_opcode(int(carrier_matches[0][1].opcode))
+            is carrier.operation
+        )
+        if can_insert or existing_matches:
+            verified_carriers.append(carrier)
+        else:
+            terminal_diagnostics.append(
+                ProjectedTerminalEffectDiagnostic(
+                    effect_id=carrier.carrier_id,
+                    reason=(
+                        "prepared carrier anchors or operation do not fit atomically"
+                    ),
+                )
+            )
+
+    verified_returns: list[FragmentTerminalReturn] = []
+    closing_opcodes = {
+        int(ida_hexrays.m_ijmp),
+        int(ida_hexrays.m_jtbl),
+        int(ida_hexrays.m_call),
+        int(ida_hexrays.m_icall),
+        int(ida_hexrays.m_ret),
+    }
+    for terminal in plan.terminal_returns:
+        rows = prepared_instruction_rows_by_block.get(terminal.block_id, ())
+        matches = tuple(
+            (index, instruction)
+            for index, (ea, instruction) in enumerate(rows)
+            if int(ea) == terminal.instruction_ea
+        )
+        block_identity = plan.block(terminal.block_id).stable_identity
+        tail_opcode = None if not rows else int(rows[-1][1].opcode)
+        can_insert = bool(
+            not matches
+            and block_identity is not None
+            and terminal.instruction_ea in block_identity.exact_instruction_eas
+            and (
+                tail_opcode is None
+                or (
+                    not ida_hexrays.is_mcode_jcond(tail_opcode)
+                    and tail_opcode not in closing_opcodes
+                    and tail_opcode != int(ida_hexrays.m_goto)
+                )
+            )
+        )
+        rewritable_tail = bool(
+            len(matches) == 1
+            and matches[0][0] == len(rows) - 1
+            and int(matches[0][1].opcode) == int(ida_hexrays.m_goto)
+        )
+        existing_return = bool(
+            len(matches) == 1
+            and matches[0][0] == len(rows) - 1
+            and int(matches[0][1].opcode) == int(ida_hexrays.m_ret)
+        )
+        if can_insert or rewritable_tail or existing_return:
+            verified_returns.append(terminal)
+        else:
+            terminal_diagnostics.append(
+                ProjectedTerminalEffectDiagnostic(
+                    effect_id=terminal.return_id,
+                    reason=(
+                        "prepared terminal return opcode or placement is invalid"
+                    ),
+                )
+            )
+
+    projection_input = FragmentProjectionInput(
+        snapshot_id=(
+            f"semantic-fragment:{gateway.session_id}:"
+            f"{gateway.generation}:{plan.plan_id}"
+        ),
+        entry_block_id=entry_block_id,
+        blocks=tuple(blocks),
+        identity_bindings=tuple(binding_by_id.values()),
+        data_flow_relations=data_flow,
+        value_ranges=ranges,
+        return_carriers=tuple(verified_carriers),
+        terminal_returns=tuple(verified_returns),
+        terminal_effect_diagnostics=tuple(terminal_diagnostics),
+        clone_source_instructions=tuple(clone_source_instructions),
+    )
+    return SemanticFragmentSnapshotPreparation(
+        authority=SemanticFragmentSnapshotAuthority(
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            session_id=gateway.session_id,
+            generation=gateway.generation,
+            projection_input=projection_input,
+            native_bodies=tuple(
+                preparation.fact for _body_id, preparation in preparations
+            ),
+            return_carrier_constructions=tuple(carrier_constructions),
+        ),
+        payload=SemanticFragmentRealizationPayload(
+            native_body_rows=tuple(
+                (preparation.fact.body_id, preparation.payload.rows)
+                for _body_id, preparation in preparations
+            ),
+            return_carrier_operands=tuple(carrier_payloads),
+        ),
     )
 
 
@@ -3435,16 +4041,159 @@ def observe_published_semantic_fragment(
 def stage_semantic_fragment(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
+    prepared_fragment: PreparedSemanticFragment,
 ) -> ProjectedFragment:
     """Stage direct replacement routes without exposing any publication root."""
     if not isinstance(plan, FragmentPlan):
         raise TypeError("semantic fragment backend requires a FragmentPlan")
     if modifier._semantic_fragment_state is not None:
         raise RuntimeError("a semantic fragment is already staged")
-    preparations = _prepare_native_bodies(modifier, plan)
+    if not isinstance(prepared_fragment, PreparedSemanticFragment):
+        raise SemanticFragmentBackendRejected(
+            "semantic fragment realization requires prepared fragment authority"
+        )
+    authority = prepared_fragment.authority
+    gateway = _gateway(modifier)
+    if (
+        authority.plan_id != plan.plan_id
+        or authority.atomic_group_id != plan.atomic_group_id
+        or authority.attempt_id.plan_id != plan.plan_id
+        or authority.attempt_id.session_id != gateway.session_id
+        or authority.attempt_id.generation != gateway.generation
+        or authority.session_id != gateway.session_id
+        or authority.generation != gateway.generation
+        or authority.snapshot_id
+        != authority.snapshot.projection_input.snapshot_id
+        or authority.cfg_projection.plan_id != plan.plan_id
+        or authority.cfg_projection.snapshot_id != authority.snapshot_id
+        or gateway._active_fragment_plan is not plan
+        or gateway._active_prepared_semantic_fragment is not prepared_fragment
+        or gateway.active_batch_id != authority.attempt_id.attempt_id
+        or gateway._active_fragment_snapshot_id != authority.snapshot_id
+        or gateway._active_fragment_root_inventory_signature
+        != authority.root_inventory_signature
+    ):
+        raise SemanticFragmentBackendRejected(
+            "semantic fragment realization authority is foreign or stale"
+        )
+    if authority.attempt_id in modifier._consumed_semantic_fragment_attempts:
+        raise SemanticFragmentBackendRejected(
+            "semantic fragment realization authority was already consumed"
+        )
+    try:
+        expected_projection = project_fragment(
+            plan,
+            authority.snapshot.projection_input,
+            authority.root_inventory,
+        )
+        expected_cfg_projection = fragment_cfg_projection(
+            plan,
+            authority.snapshot.projection_input,
+            expected_projection,
+        )
+        CfgContract().verify_projection(expected_cfg_projection, scope="full")
+    except (FragmentProjectionFailure, CfgContractViolationError) as exc:
+        raise SemanticFragmentBackendRejected(
+            "semantic fragment realization authority cannot be reproduced"
+        ) from exc
+    if (
+        authority.projection != expected_projection
+        or authority.cfg_projection != expected_cfg_projection
+    ):
+        raise SemanticFragmentBackendRejected(
+            "semantic fragment realization authority projection was forged"
+        )
+
+    fact_by_body_id = {
+        fact.body_id: fact for fact in authority.snapshot.native_bodies
+    }
+    try:
+        preparations = tuple(
+            (
+                body_id,
+                PreparedNativeBodyPreparation(
+                    fact=fact_by_body_id[body_id],
+                    payload=PreparedNativeBodyPayload(
+                        plan_id=plan.plan_id,
+                        body_id=body_id,
+                        rows=rows,
+                    ),
+                ),
+            )
+            for body_id, rows in prepared_fragment.payload.native_body_rows
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SemanticFragmentBackendRejected(
+            "prepared native realization payload diverges from facts"
+        ) from exc
+    for _body_id, preparation in preparations:
+        try:
+            native_body = next(
+                body
+                for body in plan.native_bodies
+                if body.body_id == preparation.fact.body_id
+            )
+            preparation.assert_authority(plan=plan, native_body=native_body)
+        except (StopIteration, TypeError, ValueError) as exc:
+            raise SemanticFragmentBackendRejected(
+                "prepared native realization payload diverges from facts"
+            ) from exc
+        for fact_block, payload_row in zip(
+            preparation.fact.blocks,
+            preparation.payload.rows,
+        ):
+            _block_id, block_flags, instructions = payload_row
+            if fact_block.block_flags != int(block_flags) or len(
+                fact_block.instructions
+            ) != len(instructions):
+                raise SemanticFragmentBackendRejected(
+                    "prepared native realization payload diverges from facts"
+                )
+            for fact, (native_ea, instruction) in zip(
+                fact_block.instructions,
+                instructions,
+            ):
+                try:
+                    writes_flags = instruction_writes_condition_codes(instruction)
+                except ConditionCodeQueryUnavailable:
+                    writes_flags = None
+                if (
+                    fact.native_ea != int(native_ea)
+                    or fact.opcode != int(instruction.opcode)
+                    or fact.operand_shape
+                    != sdk_instruction_operand_shape(instruction)
+                    or fact.writes_condition_codes != writes_flags
+                ):
+                    raise SemanticFragmentBackendRejected(
+                        "prepared native realization payload diverges from facts"
+                    )
+
+    construction_by_id = {
+        item.carrier_id: item
+        for item in authority.snapshot.return_carrier_constructions
+    }
+    operand_by_id = dict(prepared_fragment.payload.return_carrier_operands)
+    if set(construction_by_id) != set(operand_by_id):
+        raise SemanticFragmentBackendRejected(
+            "prepared return-carrier payload diverges from facts"
+        )
+    for carrier_id, construction in construction_by_id.items():
+        operand = operand_by_id[carrier_id]
+        if (
+            _prepared_operand_shape(operand, construction.source)
+            != construction.operand_shape
+        ):
+            raise SemanticFragmentBackendRejected(
+                "prepared return-carrier payload diverges from facts"
+            )
+
+    modifier._consumed_semantic_fragment_attempts.add(authority.attempt_id)
     state = SemanticFragmentBackendState(
         plan_id=plan.plan_id,
         atomic_group_id=plan.atomic_group_id,
+        preflight_projection=authority.projection,
+        return_carrier_constructions=construction_by_id,
+        return_carrier_operands=operand_by_id,
     )
     modifier._semantic_fragment_state = state
     try:
@@ -3494,6 +4243,23 @@ def stage_semantic_fragment(
         raise
 
 
+def observe_staged_semantic_fragment(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+) -> ProjectedFragment:
+    """Re-observe one staged fragment from the live MBA without publishing roots."""
+    state = modifier._semantic_fragment_state
+    if (
+        state is None
+        or state.plan_id != plan.plan_id
+        or state.atomic_group_id != plan.atomic_group_id
+    ):
+        raise SemanticFragmentBackendRejected(
+            "staged semantic fragment observation lacks exact plan authority"
+        )
+    return _project_fragment(modifier, plan, state)
+
+
 def discard_staged_semantic_fragment(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -3524,8 +4290,10 @@ __all__ = [
     "SemanticNativeBodyMaterializer",
     "SemanticNativeBodyStagingContext",
     "discard_staged_semantic_fragment",
+    "observe_staged_semantic_fragment",
     "observe_published_semantic_fragment",
     "plan_semantic_fragment_root_inventory",
     "prepare_semantic_fragment_root_publication",
+    "snapshot_semantic_fragment_inputs",
     "stage_semantic_fragment",
 ]

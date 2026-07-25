@@ -219,12 +219,17 @@ from d810.hexrays.mutation.semantic_fragment_backend import (
     SemanticNativeBodyMaterializer,
     discard_staged_semantic_fragment,
     observe_published_semantic_fragment,
+    observe_staged_semantic_fragment,
     plan_semantic_fragment_root_inventory,
     prepare_semantic_fragment_root_publication,
+    snapshot_semantic_fragment_inputs,
     stage_semantic_fragment,
 )
 from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventory,
+)
+from d810.hexrays.mutation.semantic_fragment_preparation import (
+    PreparedSemanticFragment,
 )
 from d810.hexrays.mutation.cfg_verify import capture_failure_artifact
 from d810.hexrays.mutation.cfg_verify import register_resolver_proven_live_predicate
@@ -233,6 +238,7 @@ from d810.hexrays.mutation.cfg_mutations import change_0way_block_successor
 from d810.hexrays.mutation.cfg_mutations import change_1way_block_successor
 from d810.hexrays.mutation.cfg_mutations import change_2way_block_conditional_successor
 from d810.hexrays.mutation.cfg_mutations import coalesce_jtbl_cases
+from d810.transforms.cfg_transaction import TransactionAttemptId
 from d810.hexrays.mutation.cfg_mutations import create_standalone_block
 from d810.hexrays.mutation.cfg_mutations import downgrade_nway_null_tail_to_1way
 from d810.hexrays.mutation.cfg_mutations import duplicate_block
@@ -1154,6 +1160,11 @@ class DeferredGraphModifier:
     )
     _semantic_fragment_state: SemanticFragmentBackendState | None = field(
         default=None,
+        init=False,
+        repr=False,
+    )
+    _consumed_semantic_fragment_attempts: set[TransactionAttemptId] = field(
+        default_factory=set,
         init=False,
         repr=False,
     )
@@ -3913,9 +3924,21 @@ class DeferredGraphModifier:
         self._pending_semantic_helper_version = None
         return result
 
-    def _stage_semantic_fragment(self, plan: FragmentPlan):
+    def _snapshot_semantic_fragment_inputs(self, plan: FragmentPlan):
+        """Backend-only immutable preflight snapshot port."""
+        return snapshot_semantic_fragment_inputs(self, plan)
+
+    def _stage_semantic_fragment(
+        self,
+        plan: FragmentPlan,
+        prepared_fragment: PreparedSemanticFragment,
+    ):
         """Backend-only detached materialization port used by the gateway."""
-        return stage_semantic_fragment(self, plan)
+        return stage_semantic_fragment(self, plan, prepared_fragment)
+
+    def _observe_staged_semantic_fragment(self, plan: FragmentPlan):
+        """Backend-only live observation of an unpublished fragment."""
+        return observe_staged_semantic_fragment(self, plan)
 
     def _semantic_fragment_transaction_id(self) -> str:
         gateway = self._mutation_gateway

@@ -30,6 +30,13 @@ from d810.hexrays.mutation.semantic_fragment_publication import (
     SemanticFragmentPublicationRejected,
     SemanticFragmentRollbackFailed,
 )
+from d810.hexrays.mutation.semantic_fragment_preparation import (
+    PreparedSemanticFragment,
+    PreparedSemanticFragmentAuthority,
+    SemanticFragmentRealizationPayload,
+    SemanticFragmentSnapshotAuthority,
+    SemanticFragmentSnapshotPreparation,
+)
 from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventory,
     SemanticFragmentRootInventoryItem,
@@ -63,6 +70,12 @@ from d810.transforms.fragment_plan import (
     FragmentTerminalRoute,
     FragmentWorkItemScope,
 )
+from d810.transforms.fragment_projection import (
+    FragmentProjectionBlockInput,
+    FragmentProjectionInput,
+    fragment_cfg_projection,
+)
+from d810.transforms.cfg_transaction import TransactionAttemptId
 from d810.transforms.detached_route_oracle import DetachedRouteOracleRejected
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
@@ -443,6 +456,95 @@ class _FragmentBackend:
         self.original_handle = None
         self.replacement_handle = None
 
+    def _snapshot_semantic_fragment_inputs(
+        self,
+        plan: FragmentPlan,
+    ) -> SemanticFragmentSnapshotPreparation:
+        self.calls.append("snapshot")
+        bindings = (
+            self._published_binding(plan, "entry", 0),
+            self._published_binding(plan, "original", 1),
+            self._published_binding(plan, "target", 2),
+            self._published_binding(plan, "dispatcher", 3),
+        )
+        target_successors = ("original",) if self.invalid_preprojection else ()
+        original_predecessors = (
+            ("entry", "target")
+            if self.invalid_preprojection
+            else ("entry",)
+        )
+        projection_input = FragmentProjectionInput(
+            snapshot_id="snapshot:gateway-fragment",
+            entry_block_id="entry",
+            blocks=(
+                FragmentProjectionBlockInput(
+                    "entry",
+                    BlockKind.ONE_WAY,
+                    ("original",),
+                    (),
+                    0,
+                    None,
+                    None,
+                    InsnKind.GOTO,
+                ),
+                FragmentProjectionBlockInput(
+                    "original",
+                    BlockKind.ZERO_WAY,
+                    (),
+                    original_predecessors,
+                    1,
+                    None,
+                    None,
+                    InsnKind.UNKNOWN,
+                    instruction_eas=(0x401000, 0x401004),
+                ),
+                FragmentProjectionBlockInput(
+                    "target",
+                    (
+                        BlockKind.ONE_WAY
+                        if target_successors
+                        else BlockKind.ZERO_WAY
+                    ),
+                    target_successors,
+                    (),
+                    2,
+                    None,
+                    None,
+                    (
+                        InsnKind.GOTO
+                        if target_successors
+                        else InsnKind.UNKNOWN
+                    ),
+                ),
+                FragmentProjectionBlockInput(
+                    "dispatcher",
+                    BlockKind.ZERO_WAY,
+                    (),
+                    (),
+                    3,
+                    None,
+                    None,
+                    InsnKind.UNKNOWN,
+                ),
+            ),
+            identity_bindings=bindings,
+        )
+        return SemanticFragmentSnapshotPreparation(
+            authority=SemanticFragmentSnapshotAuthority(
+                plan_id=plan.plan_id,
+                atomic_group_id=plan.atomic_group_id,
+                session_id=self.gateway.session_id,
+                generation=self.gateway.generation,
+                projection_input=projection_input,
+                native_bodies=(),
+                return_carrier_constructions=(),
+            ),
+            payload=SemanticFragmentRealizationPayload(
+                native_body_rows=(),
+                return_carrier_operands=(),
+            ),
+        )
+
     def _semantic_fragment_current_mba_identity_binding(
         self,
         _plan: FragmentPlan,
@@ -490,8 +592,13 @@ class _FragmentBackend:
             stable_identity=plan.block(block_id).stable_identity,
         )
 
-    def _stage_semantic_fragment(self, plan: FragmentPlan) -> ProjectedFragment:
+    def _stage_semantic_fragment(
+        self,
+        plan: FragmentPlan,
+        prepared_fragment: PreparedSemanticFragment,
+    ) -> ProjectedFragment:
         self.calls.append("stage")
+        assert self.gateway._active_prepared_semantic_fragment is prepared_fragment
         if self.raise_during_stage:
             try:
                 raise LookupError(
@@ -628,6 +735,14 @@ class _FragmentBackend:
         )
         self.projection = projection
         return projection
+
+    def _observe_staged_semantic_fragment(
+        self,
+        _plan: FragmentPlan,
+    ) -> ProjectedFragment:
+        self.calls.append("observe-staged")
+        assert self.projection is not None
+        return replace(self.projection)
 
     def _discard_staged_semantic_fragment(self, _plan: FragmentPlan) -> None:
         self.calls.append("discard")
@@ -767,7 +882,9 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
 
     assert backend.calls == [
         "plan-roots",
+        "snapshot",
         "stage",
+        "observe-staged",
         "prepare-roots",
         "publish-roots",
         "rebuild",
@@ -835,7 +952,13 @@ def test_gateway_rejects_route_mismatch_before_root_preparation() -> None:
     with pytest.raises(DetachedRouteOracleRejected, match="transfer_kind"):
         gateway.publish_semantic_fragment(backend, plan)
 
-    assert backend.calls == ["plan-roots", "stage", "discard"]
+    assert backend.calls == [
+        "plan-roots",
+        "snapshot",
+        "stage",
+        "observe-staged",
+        "discard",
+    ]
     assert not backend.root_published
     assert len(compared) == 1
     assert not compared[0].result.passed
@@ -896,11 +1019,83 @@ def test_gateway_inventories_terminal_effects_as_first_class_fragment_items() ->
             ),
         ),
     )
+    backend = _FragmentBackend(gateway)
+    snapshot_preparation = backend._snapshot_semantic_fragment_inputs(plan)
+    snapshot = snapshot_preparation.authority.projection_input
+    projection = ProjectedFragment(
+        entry_block_id="entry",
+        blocks=(
+            ProjectedFragmentBlock(
+                block_id="entry",
+                kind=BlockKind.ONE_WAY,
+                successors=("original",),
+                predecessors=(),
+                physical_position=0,
+                adjacent_fallthrough_target_id=None,
+                terminator_ea=None,
+                terminator_kind=InsnKind.GOTO,
+            ),
+            ProjectedFragmentBlock(
+                block_id="original",
+                kind=BlockKind.ZERO_WAY,
+                successors=(),
+                predecessors=("entry",),
+                physical_position=1,
+                adjacent_fallthrough_target_id=None,
+                terminator_ea=None,
+                terminator_kind=InsnKind.UNKNOWN,
+            ),
+            ProjectedFragmentBlock(
+                block_id="target",
+                kind=BlockKind.ZERO_WAY,
+                successors=(),
+                predecessors=(),
+                physical_position=2,
+                adjacent_fallthrough_target_id=None,
+                terminator_ea=None,
+                terminator_kind=InsnKind.UNKNOWN,
+            ),
+            ProjectedFragmentBlock(
+                block_id="dispatcher",
+                kind=BlockKind.ZERO_WAY,
+                successors=(),
+                predecessors=(),
+                physical_position=3,
+                adjacent_fallthrough_target_id=None,
+                terminator_ea=None,
+                terminator_kind=InsnKind.UNKNOWN,
+            ),
+        ),
+        identity_bindings=snapshot.identity_bindings,
+    )
+    attempt = TransactionAttemptId.new(
+        plan.plan_id,
+        gateway.session_id,
+        gateway.generation,
+    )
+    prepared = PreparedSemanticFragment(
+        authority=PreparedSemanticFragmentAuthority(
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            session_id=gateway.session_id,
+            generation=gateway.generation,
+            snapshot_id=snapshot.snapshot_id,
+            attempt_id=attempt,
+            root_inventory=inventory,
+            snapshot=snapshot_preparation.authority,
+            projection=projection,
+            cfg_projection=fragment_cfg_projection(plan, snapshot, projection),
+        ),
+        payload=snapshot_preparation.payload,
+    )
 
     gateway._begin_semantic_fragment_batch(
-        SimpleNamespace(mba=SimpleNamespace(qty=4)),
+        backend,
         plan,
         inventory,
+        attempt,
+        snapshot.snapshot_id,
+        prepared,
     )
 
     assert len(planned) == 1
@@ -1234,13 +1429,12 @@ def test_prepublication_failure_discards_stage_without_exposing_roots() -> None:
     ):
         gateway.publish_semantic_fragment(backend, plan)
 
-    assert backend.calls == ["plan-roots", "stage", "discard"]
+    assert backend.calls == ["plan-roots", "snapshot"]
     assert not backend.root_published
     assert proxy.resolve().handle is original
     assert gateway.generation == 5
     assert committed == []
-    assert len(aborted) == 1
-    assert "original_supersession:original" in aborted[0].reason
+    assert aborted == []
 
 
 def test_postpublication_failure_restores_roots_then_discards_stage() -> None:
@@ -1258,7 +1452,9 @@ def test_postpublication_failure_restores_roots_then_discards_stage() -> None:
 
     assert backend.calls == [
         "plan-roots",
+        "snapshot",
         "stage",
+        "observe-staged",
         "prepare-roots",
         "publish-roots",
         "rebuild",
@@ -1290,7 +1486,9 @@ def test_postpublication_detached_operation_rolls_back_before_receipt() -> None:
 
     assert backend.calls == [
         "plan-roots",
+        "snapshot",
         "stage",
+        "observe-staged",
         "prepare-roots",
         "publish-roots",
         "rebuild",
@@ -1327,7 +1525,9 @@ def test_partial_root_publication_exception_still_rolls_back() -> None:
 
     assert backend.calls == [
         "plan-roots",
+        "snapshot",
         "stage",
+        "observe-staged",
         "prepare-roots",
         "publish-roots",
         "rollback-roots",
@@ -1374,7 +1574,7 @@ def test_stage_verifier_and_rollback_failures_remain_separate() -> None:
     ):
         gateway.publish_semantic_fragment(backend, plan)
 
-    assert backend.calls == ["plan-roots", "stage", "discard"]
+    assert backend.calls == ["plan-roots", "snapshot", "stage", "discard"]
     assert committed == []
     assert len(aborted) == 1
     assert [
@@ -1428,7 +1628,7 @@ def test_failed_stage_cleanup_is_not_retried_after_possible_compaction() -> None
     with pytest.raises(SemanticFragmentRollbackFailed, match="INTERR: 50856"):
         gateway.publish_semantic_fragment(backend, plan)
 
-    assert backend.calls == ["plan-roots", "stage"]
+    assert backend.calls == ["plan-roots", "snapshot", "stage"]
     assert committed == []
     assert len(aborted) == 1
     assert aborted[0].rollback_attempted

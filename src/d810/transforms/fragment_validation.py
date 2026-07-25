@@ -1817,6 +1817,84 @@ def validate_fragment_projection(
     )
 
 
+def compare_fragment_projection_obligations(
+    expected: ProjectedFragment,
+    observed: ProjectedFragment,
+) -> tuple[str, ...]:
+    """Compare staged semantics while ignoring backend-local owner tokens."""
+    mismatches: list[str] = []
+    expected_blocks = {block.block_id: block for block in expected.blocks}
+    observed_blocks = {block.block_id: block for block in observed.blocks}
+    if set(expected_blocks) != set(observed_blocks):
+        mismatches.append("block-set")
+    for block_id in sorted(set(expected_blocks) & set(observed_blocks)):
+        left = expected_blocks[block_id]
+        right = observed_blocks[block_id]
+        if (
+            left.kind,
+            left.successors,
+            frozenset(left.predecessors),
+            left.adjacent_fallthrough_target_id,
+        ) != (
+            right.kind,
+            right.successors,
+            frozenset(right.predecessors),
+            right.adjacent_fallthrough_target_id,
+        ):
+            mismatches.append(f"block:{block_id}")
+    for label, left, right in (
+        (
+            "fallthrough-helpers",
+            expected.fallthrough_helpers,
+            observed.fallthrough_helpers,
+        ),
+        (
+            "root-fallthrough-helpers",
+            expected.root_fallthrough_helpers,
+            observed.root_fallthrough_helpers,
+        ),
+        ("return-carriers", expected.return_carriers, observed.return_carriers),
+        ("terminal-returns", expected.terminal_returns, observed.terminal_returns),
+        ("data-flow", expected.data_flow_relations, observed.data_flow_relations),
+        ("value-ranges", expected.value_ranges, observed.value_ranges),
+        (
+            "terminal-effect-diagnostics",
+            expected.terminal_effect_diagnostics,
+            observed.terminal_effect_diagnostics,
+        ),
+    ):
+        if left != right:
+            mismatches.append(label)
+
+    def binding_shape(projection: ProjectedFragment) -> tuple[object, ...]:
+        owner_groups: dict[str, list[str]] = {}
+        for binding in projection.identity_bindings:
+            owner_groups.setdefault(binding.logical_owner_id, []).append(
+                binding.block_id
+            )
+        owner_class = {
+            block_id: tuple(sorted(group))
+            for group in owner_groups.values()
+            for block_id in group
+        }
+        return tuple(
+            sorted(
+                (
+                    binding.block_id,
+                    owner_class[binding.block_id],
+                    binding.state,
+                    binding.stable_identity,
+                    binding.previous_version is None,
+                )
+                for binding in projection.identity_bindings
+            )
+        )
+
+    if binding_shape(expected) != binding_shape(observed):
+        mismatches.append("identity-bindings")
+    return tuple(mismatches)
+
+
 def validate_published_fragment_projection(
     plan: FragmentPlan,
     projection: ProjectedFragment,
@@ -2177,6 +2255,7 @@ __all__ = [
     "ProjectedRangeFact",
     "ProjectedRootFallthroughHelper",
     "ProjectedTerminalEffectDiagnostic",
+    "compare_fragment_projection_obligations",
     "projected_publication_authority_roots",
     "validate_fragment_projection",
     "validate_published_fragment_projection",
