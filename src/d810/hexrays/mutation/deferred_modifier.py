@@ -3887,13 +3887,49 @@ class DeferredGraphModifier:
                 if predecessor is None
                 else tuple(int(value) for value in predecessor.succset)
             )
+            predecessor_label = (
+                "missing"
+                if predecessor is None
+                else f"blk{int(predecessor.serial)}@0x{int(predecessor.start):X}"
+            )
+            successor_labels = tuple(
+                (
+                    f"blk{successor_serial}@0x{int(successor.start):X}"
+                    if (successor := self.mba.get_mblock(successor_serial)) is not None
+                    else f"missing@0x{successor_serial:X}"
+                )
+                for successor_serial in predecessor_successors
+            )
+            stop_label = (
+                "missing"
+                if stop is None
+                else f"blk{int(stop.serial)}@0x{int(stop.start):X}"
+            )
+            logger.debug(
+                "staged semantic rollback tail preflight: first=%s "
+                "count=%d contiguous=%s predecessor=%s type=%s succs=%s "
+                "tail_opcode=%s stop=%s stop_type=%s",
+                (
+                    "none"
+                    if not serials
+                    else f"blk{first_staged_serial}@0x{int(blocks_by_serial[first_staged_serial].start):X}"
+                ),
+                len(serials),
+                serials == staged_tail_band,
+                predecessor_label,
+                None if predecessor is None else int(predecessor.type),
+                successor_labels,
+                None if predecessor_tail is None else int(predecessor_tail.opcode),
+                stop_label,
+                None if stop is None else int(stop.type),
+            )
             if (
                 serials == staged_tail_band
                 and predecessor is not None
                 and stop is not None
                 and int(predecessor.type) == int(ida_hexrays.BLT_1WAY)
                 and predecessor_successors
-                in {(first_staged_serial,), (original_qty - 1,)}
+                in {(), (first_staged_serial,), (original_qty - 1,)}
                 and predecessor_tail is not None
                 and int(predecessor_tail.opcode) != int(ida_hexrays.m_goto)
                 and int(stop.type) == int(ida_hexrays.BLT_STOP)

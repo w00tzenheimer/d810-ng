@@ -2818,8 +2818,6 @@ def test_staged_block_discard_restores_published_tail_fallthrough_to_stop(
     _connect(entry, published_tail)
     published_tail.head = _Instruction(ida_hexrays.m_mov, published_tail.start)
     published_tail.tail = published_tail.head
-    published_tail.succset.push_back(staged.serial)
-    staged.predset.push_back(published_tail.serial)
     mba = _Mba((entry, published_tail, staged, stop))
     gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
