@@ -3007,3 +3007,35 @@ unreached. Do not add a route fact for `0x40AE3E`, relax strict closure, or
 continue the global fixpoint. First redesign fragment selection so one
 reference rewrite site and only its required dependencies form a bounded,
 entry-connectable closed fragment, then drive that fragment through C3-C5.
+
+**2026-07-25T04:20:22Z**
+
+The bounded-fragment selection rule is now grounded in the reproducible
+reference-patched CFG rather than inferred from the malformed candidate.
+Capstone reachability over
+`.tmp/rhad-oracle-v33.mcFPat/rhad_reference_patched.bin` (SHA-256
+`6358957fe74360725b125bdc41b16df9952d95b338792fd3521249e5030ddd8c`),
+using the manifest's exact `0x40A560-0x40C8A2` function range, shows that only
+45 of the 93 committed reference flow-route transactions are reachable from
+the function entry. The current canonical fixpoint projected 70 routes, so it
+provably crossed into reference-unreachable topology; its expansion is not a
+valid semantic closure.
+
+The current `MMAT_CALLS` database also shows that only the bootstrap source
+write at `0x40A5B2` is materialized as a route source. Therefore selecting a
+different top-level live route cannot produce the required small vertical.
+The correct seam is the first published boundary found by strict root
+traversal. For `0x40AE3E`, the reference-patched suffix is entry-connectable,
+reaches the real return at `0x40C89F`, and contains exactly three committed
+flow-route rewrites:
+
+- `0x40C341 -> 0x40AB31`;
+- `0x40AB64 -> 0x40AA2C`;
+- `0x40B52E -> 0x40AE3E`.
+
+This makes `0x40AE3E` the first bounded v3.3 work item. Plan it as a published
+root replacement with the call fallthrough and those three internal semantic
+routes fragment-atomic, validate detached closure/oracle equivalence, and
+publish one root transaction. Do not resume bootstrap-root composition until
+that boundary has a semantic C5 receipt; the receipt can then close the
+bootstrap fragment at the same stable native boundary.
