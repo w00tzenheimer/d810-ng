@@ -799,7 +799,11 @@ def _bind_imported_conditional_select_envelope(
         if (
             source.terminal is not NativeTerminalKind.STOP
             or len(control_edges) != len(endpoint_eas)
-            or {int(edge.target_ea) for edge in control_edges if edge.target_ea is not None}
+            or {
+                int(edge.target_ea)
+                for edge in control_edges
+                if edge.target_ea is not None
+            }
             != endpoint_eas
             or any(
                 edge.kind is not NativeEdgeKind.INDIRECT

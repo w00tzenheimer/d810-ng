@@ -199,9 +199,7 @@ class NativeIndirectTransferProof:
                 "native conditional-select join",
             )
         )
-        if (conditional_select_ea is None) != (
-            conditional_select_join_ea is None
-        ):
+        if (conditional_select_ea is None) != (conditional_select_join_ea is None):
             raise FrontendNormalizationEvidenceRejected(
                 "native conditional-select coordinates require a complete pair"
             )

@@ -2097,20 +2097,17 @@ class FragmentPlan:
                             selected_value_ea=envelope.selected_value_ea,
                         )
                     )
-                    invalid_overlap = (
-                        _stable_identities_overlap(
-                            selected_identity,
-                            join_identity,
-                        )
-                        or (
-                            not nested_source_partition
-                            and (
-                                (
-                                    source_selected_overlap
-                                    and not role_shared_source_selected
-                                )
-                                or _stable_identities_overlap(identity, join_identity)
+                    invalid_overlap = _stable_identities_overlap(
+                        selected_identity,
+                        join_identity,
+                    ) or (
+                        not nested_source_partition
+                        and (
+                            (
+                                source_selected_overlap
+                                and not role_shared_source_selected
                             )
+                            or _stable_identities_overlap(identity, join_identity)
                         )
                     )
                     if invalid_overlap:
