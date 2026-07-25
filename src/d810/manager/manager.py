@@ -1572,18 +1572,14 @@ class D810Manager:
             logical_version = (
                 receipt.logical_version
                 if receipt is not None
-                else (
-                    None if reservation is None else reservation.logical_version
-                )
+                else (None if reservation is None else reservation.logical_version)
             )
             quantities = quantities_by_ref.get(plan_ref)
             state = "planned"
             if reservation is not None:
                 state = "reserved"
             if receipt is not None:
-                state = (
-                    "committed" if event.phase.value == "committed" else "bound"
-                )
+                state = "committed" if event.phase.value == "committed" else "bound"
             witnesses.append(
                 CfgCreationWitnessObserved(
                     local_block_id=plan_ref.local_block_id,
@@ -1593,7 +1589,9 @@ class D810Manager:
                         else logical_version.handle.provenance.value
                     ),
                     reserved_handle_token=(
-                        None if logical_version is None else logical_version.handle.token
+                        None
+                        if logical_version is None
+                        else logical_version.handle.token
                     ),
                     logical_proxy_token=(
                         None

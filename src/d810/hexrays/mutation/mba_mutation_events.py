@@ -683,7 +683,10 @@ class MbaMutationGateway:
                 creation_receipts=tuple(self._cfg_creation_receipts.values()),
                 creation_quantities=tuple(
                     (plan_ref, before, after)
-                    for plan_ref, (before, after) in self._cfg_creation_quantities.items()
+                    for plan_ref, (
+                        before,
+                        after,
+                    ) in self._cfg_creation_quantities.items()
                 ),
             ),
             mutation_batch_id=attempt.attempt_id,

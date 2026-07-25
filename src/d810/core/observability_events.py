@@ -434,11 +434,14 @@ class CfgTransactionAttemptObserved:
             raise ValueError("CFG transaction phase is invalid")
         if not self.session_id or not self.plan_id or not self.attempt_id:
             raise ValueError("CFG transaction authority is incomplete")
-        if min(
-            int(self.phase_index),
-            int(self.mba_generation),
-            int(self.evidence_generation),
-        ) < 0:
+        if (
+            min(
+                int(self.phase_index),
+                int(self.mba_generation),
+                int(self.evidence_generation),
+            )
+            < 0
+        ):
             raise ValueError("CFG transaction counters must be non-negative")
         if bool(self.poisoned) != (self.phase == "poisoned_restart_required"):
             raise ValueError("CFG transaction poison flag is invalid")

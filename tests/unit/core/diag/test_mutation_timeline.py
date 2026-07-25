@@ -200,15 +200,9 @@ def test_cfg_transaction_authority_and_creation_witness_survive_restart(
                         logical_proxy_token="proxy-created",
                         logical_version=1,
                         logical_generation=8,
-                        insertion_quantity_before=(
-                            12 if phase != "planned" else None
-                        ),
-                        insertion_quantity_after=(
-                            13 if phase != "planned" else None
-                        ),
-                        requested_insertion_serial=(
-                            7 if phase != "planned" else None
-                        ),
+                        insertion_quantity_before=(12 if phase != "planned" else None),
+                        insertion_quantity_after=(13 if phase != "planned" else None),
+                        requested_insertion_serial=(7 if phase != "planned" else None),
                         returned_serial=(8 if phase != "planned" else None),
                         state=("committed" if phase == "committed" else phase),
                     ),

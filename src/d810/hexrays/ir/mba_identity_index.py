@@ -682,11 +682,11 @@ class MbaBlockIdentityIndex:
         resolution cannot replay an obsolete shift.
         """
         attempt = (
-            transaction_id
-            if isinstance(transaction_id, TransactionAttemptId)
-            else None
+            transaction_id if isinstance(transaction_id, TransactionAttemptId) else None
         )
-        transaction_id = attempt.attempt_id if attempt is not None else str(transaction_id)
+        transaction_id = (
+            attempt.attempt_id if attempt is not None else str(transaction_id)
+        )
         if not transaction_id:
             raise ValueError("identity transaction requires a non-empty id")
         if transaction_id in self._serials_by_transaction:
@@ -746,7 +746,9 @@ class MbaBlockIdentityIndex:
         if key in self._plan_reservations:
             raise ValueError("plan block is already reserved in this attempt")
         if handle is None and replaces is not None:
-            raise ValueError("plan replacement reservation requires a replacement handle")
+            raise ValueError(
+                "plan replacement reservation requires a replacement handle"
+            )
         if handle is None:
             handle = self._create_plan_handle()
         elif (

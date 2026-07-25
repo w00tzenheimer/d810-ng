@@ -1028,8 +1028,7 @@ def test_reserved_synthetic_proxy_binds_only_when_insertion_is_realized() -> Non
     assert proxy.resolve() is None
     assert proxy.resolve(transaction_id=attempt.attempt_id) is staged
     assert (
-        index.resolve_logical_version(staged, transaction_id=attempt.attempt_id)
-        is None
+        index.resolve_logical_version(staged, transaction_id=attempt.attempt_id) is None
     )
     assert index.logical_proxy_count == proxy_count + 1
 
