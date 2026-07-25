@@ -32,6 +32,7 @@ from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
     stable_block_identity_from_snapshot,
+    stable_block_identity_token,
 )
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
@@ -1299,10 +1300,23 @@ def test_published_boundary_projects_nested_terminal_route_atomically(
         func_ea=0x1000,
     )
     (native_body,) = normalization_plan.native_bodies
+    staged_capture_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1210, 0x1219),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1210, 0x1218),
+    )
     capture_identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x1210, 0x1219),),
         native_key=NATIVE_KEY,
         exact_instruction_eas=(0x1210, 0x1215, 0x1218),
+    )
+    staged_terminal_identity = StableBlockIdentity.from_intervals(
+        (
+            NativeEaInterval(0x1320, 0x1321),
+            NativeEaInterval(0x1328, 0x1329),
+        ),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1320,),
     )
     terminal_identity = StableBlockIdentity.from_instruction_eas(
         (0x1320, 0x1328),
@@ -1313,7 +1327,7 @@ def test_published_boundary_projects_nested_terminal_route_atomically(
         role=FragmentBlockRole.IMPORTED,
         materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
         semantic_anchor_ea=0x1210,
-        stable_identity=capture_identity,
+        stable_identity=staged_capture_identity,
         native_body_id=native_body.body_id,
     )
     raw_dispatcher = FragmentBlock(
@@ -1329,7 +1343,7 @@ def test_published_boundary_projects_nested_terminal_route_atomically(
         role=FragmentBlockRole.IMPORTED,
         materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
         semantic_anchor_ea=0x1320,
-        stable_identity=terminal_identity,
+        stable_identity=staged_terminal_identity,
         native_body_id=native_body.body_id,
     )
     normalization_plan = replace(
@@ -1435,7 +1449,7 @@ def test_published_boundary_projects_nested_terminal_route_atomically(
             SemanticRouteDestination(
                 role=SemanticEdgeRole.DIRECT,
                 state_constant=state_constant,
-                target_identity=terminal_identity,
+                target_identity=staged_terminal_identity,
                 target_anchor_ea=0x1320,
                 terminal=True,
             ),
@@ -1477,13 +1491,27 @@ def test_published_boundary_projects_nested_terminal_route_atomically(
         for item in plan.operations
         if item.operation_id == f"route:{terminal_proof.proof_id}"
     )
+    source = plan.block(operation.source_block_id)
+    assert source.stable_identity is not None
+    assert source.stable_identity.exact_instruction_eas == frozenset(
+        {0x1210, 0x1215, 0x1218}
+    )
+    assert source.block_id == (
+        f"native[{stable_block_identity_token(source.stable_identity)}]:imported"
+    )
     assert operation.direct_transfer_rewrite is not None
     assert len(plan.return_carriers) == 1
     assert plan.return_carriers[0].block_id == operation.source_block_id
     assert len(plan.terminal_returns) == 1
     assert operation.edges[0].target_block_id == plan.terminal_returns[0].block_id
-    assert (
-        plan.block(plan.terminal_returns[0].block_id).role is FragmentBlockRole.IMPORTED
+    terminal = plan.block(plan.terminal_returns[0].block_id)
+    assert terminal.role is FragmentBlockRole.IMPORTED
+    assert terminal.stable_identity is not None
+    assert terminal.stable_identity.exact_instruction_eas == frozenset(
+        {0x1320, 0x1328}
+    )
+    assert terminal.block_id == (
+        f"native[{stable_block_identity_token(terminal.stable_identity)}]:imported"
     )
     assert len(plan.terminal_routes) == 1
     assert plan.terminal_routes[0].operation_id == operation.operation_id
