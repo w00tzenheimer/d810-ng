@@ -1328,9 +1328,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         cut_index = cut_indexes[0] if len(cut_indexes) == 1 else None
         delivery_region = rewrite.delivery_region
         delivery_suffix = (
-            ()
-            if cut_index is None
-            else template_block.instructions[int(cut_index) :]
+            () if cut_index is None else template_block.instructions[int(cut_index) :]
         )
         suffix_escapes_delivery_region = any(
             not (
@@ -1371,9 +1369,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                         (hex(int(instruction.ea)), int(instruction.opcode))
                         for instruction in delivery_suffix
                     ),
-                    "suffix_escapes_delivery_region": (
-                        suffix_escapes_delivery_region
-                    ),
+                    "suffix_escapes_delivery_region": (suffix_escapes_delivery_region),
                     "source_instruction_inventory": tuple(
                         (hex(ea), opcode) for ea, opcode in source_inventory
                     ),

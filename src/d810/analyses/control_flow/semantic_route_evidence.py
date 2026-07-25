@@ -451,18 +451,14 @@ class SemanticRouteProof:
                     "direct semantic route requires an exact delivery region"
                 )
             if not (
-                delivery_region.start_ea
-                <= source_anchor_ea
-                < delivery_region.end_ea
+                delivery_region.start_ea <= source_anchor_ea < delivery_region.end_ea
             ):
                 raise SemanticRouteEvidenceRejected(
                     "direct semantic route anchor is outside its delivery region"
                 )
             if not any(
-                int(source_interval.start_ea)
-                <= int(delivery_region.start_ea)
-                and int(delivery_region.end_ea)
-                <= int(source_interval.end_ea)
+                int(source_interval.start_ea) <= int(delivery_region.start_ea)
+                and int(delivery_region.end_ea) <= int(source_interval.end_ea)
                 for source_interval in self.source_identity.native_ranges.intervals
             ):
                 raise SemanticRouteEvidenceRejected(
