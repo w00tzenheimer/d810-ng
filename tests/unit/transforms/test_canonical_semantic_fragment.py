@@ -1305,6 +1305,20 @@ def test_published_boundary_owner_mismatch_records_overlapping_identities() -> N
         native_key=NATIVE_KEY,
         exact_instruction_eas=(0x1204,),
     )
+    incoming_operation = replace(
+        normalization_plan.operations[0],
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                target_block_id="detached-target",
+            ),
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                target_block_id="unrelated-exit",
+            ),
+        ),
+        predicate_anchor_ea=0x1300,
+    )
     normalization_plan = replace(
         normalization_plan,
         blocks=tuple(
@@ -1317,6 +1331,7 @@ def test_published_boundary_owner_mismatch_records_overlapping_identities() -> N
             replace(body, native_ranges=(NativeEaInterval(0x1200, 0x1210),))
             for body in normalization_plan.native_bodies
         ),
+        operations=(incoming_operation,),
     )
     graph = FlowGraph(
         blocks={
@@ -1357,6 +1372,30 @@ def test_published_boundary_owner_mismatch_records_overlapping_identities() -> N
                 "contains_anchor": False,
                 "overlaps_boundary_identity": True,
                 "stable_identity": overlapping_identity.diagnostic_label(),
+            },
+        ),
+        "normalization_incoming_operations": (
+            {
+                "operation_id": "unrelated-normalization",
+                "source_block_id": "unrelated-replacement",
+                "source_anchor_ea": "0x1300",
+                "source_identity": _identity(0x1300).diagnostic_label(),
+                "edges": (
+                    {
+                        "role": "conditional_taken",
+                        "target_block_id": "detached-target",
+                        "target_anchor_ea": "0x1200",
+                        "target_identity": boundary_identity.diagnostic_label(),
+                        "enters_boundary": True,
+                    },
+                    {
+                        "role": "conditional_fallthrough",
+                        "target_block_id": "unrelated-exit",
+                        "target_anchor_ea": "0x1500",
+                        "target_identity": _identity(0x1500).diagnostic_label(),
+                        "enters_boundary": False,
+                    },
+                ),
             },
         ),
     }
