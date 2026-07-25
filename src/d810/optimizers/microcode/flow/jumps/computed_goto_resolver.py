@@ -6292,6 +6292,57 @@ def _frontend_normalized_state_route_delivery_site(
     )
 
 
+def _frontend_normalized_state_route_corridor(
+    decoded_prefix: Sequence[_DecodedStateRouteInstruction],
+    *,
+    condition_producer_ea: int,
+    normalization_start_ea: int,
+    delivery_ea: int,
+    delivery_region_end_ea: int,
+) -> tuple[_DecodedStateRouteInstruction, ...]:
+    """Join an original condition prefix to one proven synthetic delivery."""
+    ordered = tuple(decoded_prefix)
+    if not ordered:
+        return ()
+    producer = int(condition_producer_ea)
+    normalization_start = int(normalization_start_ea)
+    delivery = int(delivery_ea)
+    region_end = int(delivery_region_end_ea)
+    heads = tuple(int(instruction.ea) for instruction in ordered)
+    if heads != tuple(sorted(set(heads))):
+        return ()
+    if any(
+        int(instruction.ea) >= int(instruction.end_ea) for instruction in ordered
+    ):
+        return ()
+    if any(
+        int(current.end_ea) > int(following.ea)
+        for current, following in zip(ordered, ordered[1:])
+    ):
+        return ()
+    if (
+        int(ordered[-1].ea) != producer
+        or int(ordered[-1].end_ea) != normalization_start
+        or not int(ordered[0].ea)
+        <= producer
+        < normalization_start
+        <= delivery
+        < region_end
+    ):
+        return ()
+    return (
+        *ordered,
+        _DecodedStateRouteInstruction(
+            delivery,
+            delivery + 1,
+            "normalized_branch",
+            None,
+            False,
+            None,
+        ),
+    )
+
+
 def _select_frontend_normalized_state_write_assignment(
     decoded: Sequence[_DecodedStateRouteInstruction],
     *,
@@ -6658,10 +6709,35 @@ def _discover_static_state_write_routes(
     for site, normalization_plan in delivery_sites:
         authority_transfer_ea: int | None = None
         preserved_call_instruction_eas: tuple[int, ...] = ()
-        decoded = _decode_static_state_route_corridor(
-            int(site.block_entry_ea),
-            int(site.delivery_ea),
+        uses_frontend_normalized_delivery = (
+            normalization_plan is not None
+            and int(site.delivery_ea) != int(normalization_plan.jmp_ea)
         )
+        if (
+            uses_frontend_normalized_delivery
+            and normalization_plan is not None
+            and normalization_plan.condition_producer_ea is not None
+        ):
+            condition_producer_ea = int(normalization_plan.condition_producer_ea)
+            decoded_prefix = _decode_static_state_route_corridor(
+                _block_start_of(
+                    condition_producer_ea,
+                    int(resolution.function_ea),
+                ),
+                condition_producer_ea,
+            )
+            decoded = _frontend_normalized_state_route_corridor(
+                decoded_prefix,
+                condition_producer_ea=condition_producer_ea,
+                normalization_start_ea=int(normalization_plan.patch_start),
+                delivery_ea=int(site.delivery_ea),
+                delivery_region_end_ea=int(site.delivery_region_end_ea),
+            )
+        else:
+            decoded = _decode_static_state_route_corridor(
+                int(site.block_entry_ea),
+                int(site.delivery_ea),
+            )
         decoded_count += bool(decoded)
         selected = (
             _select_static_state_write_assignment(
@@ -6669,8 +6745,7 @@ def _discover_static_state_write_routes(
                 state_var_reg=int(state_var_reg),
                 delivery_ea=int(site.delivery_ea),
             )
-            if normalization_plan is None
-            or int(site.delivery_ea) == int(normalization_plan.jmp_ea)
+            if not uses_frontend_normalized_delivery
             else _select_frontend_normalized_state_write_assignment(
                 decoded,
                 state_var_reg=int(state_var_reg),
