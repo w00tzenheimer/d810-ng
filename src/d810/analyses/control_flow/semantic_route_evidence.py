@@ -630,13 +630,10 @@ class SemanticRouteProof:
                 or not delivery_region.start_ea
                 <= authority_transfer_ea
                 < delivery_region.end_ea
-                or not self.source_identity.native_ranges.contains(
-                    authority_transfer_ea
-                )
             ):
                 raise SemanticRouteEvidenceRejected(
                     "semantic state-write transfer authority must belong to its "
-                    "direct delivery source"
+                    "direct delivery region"
                 )
         if self.proof_kind is SemanticRouteProofKind.STATE_ASSIGNMENT:
             if state_write is None:
