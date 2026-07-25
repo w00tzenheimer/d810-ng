@@ -75,6 +75,7 @@ def test_manifest_is_derived_from_exact_reference_transaction(tmp_path) -> None:
         run_id="a560-v33-40bb63",
         function_ea=0x40A560,
         function_end_ea=0x40C8A2,
+        publication_root_ea=0x40BB51,
         rewrite_owners={0x40BB63: 0x40BB51},
         fixture_path=fixture,
         reference_binary_path=reference,
@@ -113,6 +114,8 @@ def test_manifest_is_derived_from_exact_reference_transaction(tmp_path) -> None:
             "MMAT_GLBOPT1",
         ],
     }
+    assert manifest["publication_root_ea"] == "0x40BB51"
+    assert manifest["schema_version"] == 2
 
 
 def test_manifest_rejects_missing_or_ambiguous_reference_anchor(tmp_path) -> None:
@@ -125,6 +128,7 @@ def test_manifest_rejects_missing_or_ambiguous_reference_anchor(tmp_path) -> Non
         "run_id": "a560-v33-40bb63",
         "function_ea": 0x40A560,
         "function_end_ea": 0x40C8A2,
+        "publication_root_ea": 0x40BB51,
         "fixture_path": fixture,
         "reference_binary_path": reference,
         "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",

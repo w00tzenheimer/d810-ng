@@ -310,6 +310,7 @@ def test_bind_fragment_reference_oracle_attaches_exact_authority() -> None:
     plan = _unbound_plan()
     selection = ReferenceRouteOracleSelection(
         run=_reference_run(),
+        publication_root_ea=_OWNER_EA,
         routes=(_reference_route(),),
     )
 
@@ -333,6 +334,7 @@ def test_bind_fragment_reference_oracle_rejects_partial_authority() -> None:
     )
     selection = ReferenceRouteOracleSelection(
         run=_reference_run(),
+        publication_root_ea=_OWNER_EA,
         routes=(route,),
     )
 
@@ -349,6 +351,7 @@ def test_bind_fragment_reference_oracle_reports_identity_mismatch() -> None:
     )
     selection = ReferenceRouteOracleSelection(
         run=_reference_run(),
+        publication_root_ea=_OWNER_EA,
         routes=(route,),
     )
 
@@ -375,6 +378,18 @@ def test_bind_fragment_reference_oracle_reports_identity_mismatch() -> None:
         "reference_target_ea": "0x40AE3E",
         "target_bound": True,
     }
+
+
+def test_bind_fragment_reference_oracle_rejects_wrong_publication_root() -> None:
+    plan = _unbound_plan()
+    selection = ReferenceRouteOracleSelection(
+        run=_reference_run(),
+        publication_root_ea=_TARGET_EA,
+        routes=(_reference_route(),),
+    )
+
+    with pytest.raises(DetachedRouteOracleRejected, match="publication root"):
+        bind_fragment_reference_oracle(plan, selection)
 
 
 def test_reference_owner_is_independent_of_delivery_block_identity() -> None:

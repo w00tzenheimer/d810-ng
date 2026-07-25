@@ -821,6 +821,7 @@ def test_bounded_candidate_plan_binds_exact_reference_oracle_capability() -> Non
     )
     selection = ReferenceRouteOracleSelection(
         run=run,
+        publication_root_ea=0x1100,
         routes=(
             ReferenceRouteRewrite(
                 route_id="test:0x1000:flow_route:0x1100",
@@ -839,6 +840,13 @@ def test_bounded_candidate_plan_binds_exact_reference_oracle_capability() -> Non
     calls: list[tuple[int, object, tuple[int, ...]]] = []
 
     class _ReferenceOracleProvider:
+        def reference_oracle_scope_for(
+            self,
+            function_ea: int,
+            native_key,
+        ):
+            return selection
+
         def reference_oracle_for(
             self,
             function_ea: int,
@@ -864,6 +872,177 @@ def test_bounded_candidate_plan_binds_exact_reference_oracle_capability() -> Non
 
     assert calls == [(graph.func_ea, NATIVE_KEY, (0x1100,))]
     assert result == bind_fragment_reference_oracle(plan, selection)
+
+
+def test_configured_reference_scope_drives_bounded_composition_before_root_plan(
+    monkeypatch,
+) -> None:
+    graph, bound = _graph_and_bound_evidence()
+    candidate = bound.evidence
+    plan = build_canonical_semantic_fragment_plan(
+        graph,
+        bound,
+        prohibited_dispatcher_serials=(30,),
+    )
+    run = RouteOracleRun(
+        run_id="test-configured-bounded-route",
+        function_ea=graph.func_ea,
+        fixture_sha256="a" * 64,
+        reference_binary_sha256="b" * 64,
+        candidate_binary_sha256="a" * 64,
+        reference_commit="deadbeef",
+        runtime_image="test-image",
+        runtime_image_id="sha256:" + "c" * 64,
+        cache_disabled=True,
+    )
+    selection = ReferenceRouteOracleSelection(
+        run=run,
+        publication_root_ea=0x1100,
+        routes=(
+            ReferenceRouteRewrite(
+                route_id="test:0x1000:flow_route:0x1100",
+                function_ea=graph.func_ea,
+                owner_ea=0x1100,
+                rewrite_anchor_ea=0x1100,
+                corridor=((0x1100, 0x1101),),
+                reference_phase="flow_route",
+                original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+                final_transfer_kind=SemanticTransferKind.DIRECT,
+                direct_target_ea=0x1200,
+                reference_ledger_identity="flow_route:0x1100",
+            ),
+        ),
+    )
+    frontend_evidence = FrontendNormalizationEvidence(
+        native_key=NATIVE_KEY,
+        generation=candidate.generation,
+        atomic_group_id="frontend-normalization:g7",
+        transfer_proofs=(
+            NativeIndirectTransferProof(
+                proof_id="native-transfer@0x1100",
+                atomic_group_id="frontend-normalization:g7",
+                shape=NativeTransferShape.DIRECT,
+                source_identity=_identity(0x1100),
+                source_anchor_ea=0x1100,
+                source_transfer_ea=0x1100,
+                endpoints=(
+                    NativeTransferEndpoint(
+                        role=SemanticEdgeRole.DIRECT,
+                        identity=_identity(0x1200),
+                        anchor_ea=0x1200,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    class _CandidateProvider:
+        def candidate_evidence_for(self, function_ea: int):
+            return candidate if int(function_ea) == graph.func_ea else None
+
+    class _FrontendProvider:
+        def evidence_for(self, function_ea: int):
+            return frontend_evidence if int(function_ea) == graph.func_ea else None
+
+    class _PlanProvider:
+        def plan_for(self, function_ea: int, evidence_generation: int):
+            return None
+
+    class _ReferenceOracleProvider:
+        def reference_oracle_scope_for(self, function_ea: int, native_key):
+            if int(function_ea) == graph.func_ea and native_key == NATIVE_KEY:
+                return selection
+            return None
+
+        def reference_oracle_for(
+            self,
+            function_ea: int,
+            native_key,
+            rewrite_anchor_eas: tuple[int, ...],
+        ):
+            if rewrite_anchor_eas == (0x1100,):
+                return selection
+            return None
+
+    current_identity_by_serial = {
+        int(serial): _identity(int(block.start_ea))
+        for serial, block in graph.blocks.items()
+    }
+    analyses = AnalysisManager(graph)
+    analyses.put_analysis(
+        "current_block_identity_index",
+        SimpleNamespace(identity_for_serial=current_identity_by_serial.get),
+    )
+    context = FunctionPipelineContext(
+        source=None,
+        graph=graph,
+        maturity=None,
+        project_config=None,
+        facts=analyses.view(),
+        capabilities=(
+            CapabilitySet()
+            .with_capability(
+                CanonicalSemanticCandidateEvidenceCapability,
+                _CandidateProvider(),
+            )
+            .with_capability(
+                FrontendNormalizationEvidenceCapability,
+                _FrontendProvider(),
+            )
+            .with_capability(
+                FrontendNormalizationPlanCapability,
+                _PlanProvider(),
+            )
+            .with_capability(
+                SemanticRouteReferenceOracleCapability,
+                _ReferenceOracleProvider(),
+            )
+        ),
+    )
+    normalization_authority = object()
+    monkeypatch.setattr(
+        state_machine_module,
+        "_plan_candidate_normalization",
+        lambda *_args, **_kwargs: (plan, normalization_authority),
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "compose_canonical_semantic_fragment_plan",
+        lambda *_args, **_kwargs: pytest.fail(
+            "configured scope must run before generic root composition"
+        ),
+    )
+    boundary_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def compose_boundary(*args, **kwargs):
+        boundary_calls.append((args, kwargs))
+        return plan
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "compose_canonical_semantic_boundary_fragment_plan",
+        compose_boundary,
+    )
+
+    result, generation = state_machine_module._compose_candidate_semantic_fragment(
+        context,
+        prohibited_dispatcher_serials=(30,),
+    )
+
+    assert generation == candidate.generation
+    assert result == bind_fragment_reference_oracle(plan, selection)
+    assert boundary_calls == [
+        (
+            (graph, plan),
+            {
+                "available_evidence": candidate,
+                "boundary_anchor_ea": 0x1100,
+                "current_identity_by_serial": current_identity_by_serial,
+                "normalization_authority": normalization_authority,
+                "prohibited_dispatcher_serials": (30,),
+            },
+        )
+    ]
 
 
 def test_semantic_evidence_spine_declares_fragment_publication_authority() -> None:

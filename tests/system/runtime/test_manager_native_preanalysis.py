@@ -110,6 +110,10 @@ def test_resolver_attachment_reads_manager_owned_reference_oracle_port() -> None
 
     class _ReferenceOracleProvider:
         @staticmethod
+        def reference_oracle_scope_for(function_ea, native_key):
+            return None
+
+        @staticmethod
         def reference_oracle_for(function_ea, native_key, rewrite_anchor_eas):
             return None
 
@@ -124,7 +128,8 @@ def test_resolver_attachment_reads_manager_owned_reference_oracle_port() -> None
 
 def test_manager_loads_only_configured_relative_oracle_manifests(tmp_path) -> None:
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "publication_root_ea": "0x40AE3E",
         "run": {
             "run_id": "configured-a560-boundary",
             "function_ea": "0x40A560",

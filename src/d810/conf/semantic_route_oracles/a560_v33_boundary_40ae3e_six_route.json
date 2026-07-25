@@ -1,4 +1,5 @@
 {
+  "publication_root_ea": "0x40AE3E",
   "capture": {
     "function_end_ea": "0x40C8A2",
     "maturities": [
@@ -452,5 +453,5 @@
     "runtime_image": "d810-idapro-9.3-test-runtime:py313-v1",
     "runtime_image_id": "sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a"
   },
-  "schema_version": 1
+  "schema_version": 2
 }

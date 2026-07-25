@@ -80,6 +80,14 @@ def bind_fragment_reference_oracle(
         raise DetachedRouteOracleRejected(
             "fragment plan already carries reference oracle authority"
         )
+    root_anchors = tuple(
+        int(plan.block(root_block_id).semantic_anchor_ea)
+        for root_block_id in plan.roots
+    )
+    if root_anchors != (int(selection.publication_root_ea),):
+        raise DetachedRouteOracleRejected(
+            "fragment and reference selection require one exact publication root"
+        )
     operations_with_rewrites = tuple(
         operation
         for operation in plan.operations

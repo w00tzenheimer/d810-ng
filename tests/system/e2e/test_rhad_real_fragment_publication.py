@@ -49,7 +49,8 @@ _SIDECAR_SUFFIXES = (".id0", ".id1", ".id2", ".nam", ".til", ".i64")
 
 def _reference_oracle_manifest() -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "publication_root_ea": hex(_STATE_WRITE_EA),
         "run": {
             "run_id": _REFERENCE_RUN_ID,
             "function_ea": hex(_FUNCTION_EA),
