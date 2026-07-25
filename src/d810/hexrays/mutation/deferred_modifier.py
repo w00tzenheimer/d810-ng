@@ -3955,7 +3955,13 @@ class DeferredGraphModifier:
             successor = self.mba.get_mblock(successor_serial)
             if successor is not None:
                 successor.predset._del(block_serial)
-                successor.mark_lists_dirty()
+                # BLT_STOP is instructionless, so changing only predecessor
+                # metadata does not invalidate its block-local use/def lists.
+                # Once callinfo is built, Hex-Rays requires the lists produced
+                # by refine_return_type to remain ready (verify.cpp INTERR
+                # 51328).
+                if int(successor.type) != int(ida_hexrays.BLT_STOP):
+                    successor.mark_lists_dirty()
         for predecessor_serial in tuple(int(value) for value in block.predset):
             predecessor = self.mba.get_mblock(predecessor_serial)
             if predecessor is not None:

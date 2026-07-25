@@ -2870,6 +2870,7 @@ def test_staged_block_discard_preserves_calls_built_stop_use_def_lists(
     staged = _Block(2, start=0xF10000, block_type=ida_hexrays.BLT_0WAY)
     stop = _Block(3, start=0x401020, block_type=ida_hexrays.BLT_STOP)
     _connect(entry, published_tail)
+    _connect(staged, stop)
     published_tail.head = _Instruction(ida_hexrays.m_mov, published_tail.start)
     published_tail.tail = published_tail.head
     mba = _Mba((entry, published_tail, staged, stop))
