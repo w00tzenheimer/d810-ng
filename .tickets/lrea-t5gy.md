@@ -2967,3 +2967,43 @@ retain the existing strict final boundary validation. Prove the two-hop
 `0x40C2E9 -> 0x40C62F -> 0x40C63A -> 0x40B9A6` vertical in the canonical
 transform before another A560 diagnostic canary. Do not broaden to 91-route
 publication, relax the `0x40A607` boundary, or add another semantic fact.
+
+**2026-07-25T04:08:31Z**
+
+Commit `5f5b34959` implements the requested monotonic nested-route projection
+fixpoint and proves the two-hop canonical-transform case. The focused
+resolver/canonical suite is 270/270 green; Ruff, ast-grep, graphify, and all 14
+import contracts pass.
+
+The mandatory cache-disabled A560 diagnostic canary returned normally in
+17.58 seconds with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-nested-fixpoint-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-nested-fixpoint-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The SQLite evidence proves the intended target chain: `0x40C2E9` projects in
+round 1 and the corrected `0x40C63A -> 0x40B9A6` route projects in round 2.
+It also rejects the current planner shape under v3.3. Starting from root proof
+`state_assignment@0x40A5C8:0xABB95547`, the unrestricted connectivity
+fixpoint projects 70 routes across 13 rounds before round 14 skips the 17
+remaining proofs. The per-round projected counts are
+`4,7,8,10,10,6,7,4,1,2,4,5,2`. This is effectively broad route expansion,
+not the required smallest entry-connectable vertical fragment.
+
+Strict C3 closure correctly declines the plan at native boundary `0x40AE3E`.
+The exact incoming operation is
+`route:state_assignment@0x40B52E:0x13B0D3B2`, sourced from
+`native[0x40B51B-0x40B534;exact=0x40B51B]:imported`; the unresolved operation
+is `native-body-edge@0x40AE3E`. No semantic fragment mutation was published.
+The only committed receipt in this run is lifecycle event 28, the earlier
+generation-1 frontend-normalization publication with 260/260 operations.
+
+This corrects the prior C-level classification. That legacy frontend receipt
+is not a v3.3 semantic C5 vertical. For the selected semantic route, C0-C2 are
+complete and the first failed obligation is C3 closed-fragment planning at
+`0x40AE3E`; C4 detached closure/oracle and C5 semantic publication remain
+unreached. Do not add a route fact for `0x40AE3E`, relax strict closure, or
+continue the global fixpoint. First redesign fragment selection so one
+reference rewrite site and only its required dependencies form a bounded,
+entry-connectable closed fragment, then drive that fragment through C3-C5.
