@@ -194,6 +194,27 @@ def test_direct_assignment_proof_requires_matching_state_write() -> None:
         )
 
 
+def test_direct_proof_separates_anchor_identity_from_delivery_region() -> None:
+    source = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1100, 0x1101),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1100,),
+    )
+    baseline = _proof()
+
+    proof = replace(
+        baseline,
+        source_identity=source,
+        delivery_region=NativeEaInterval(0x1100, 0x1110),
+        state_write=replace(baseline.state_write, identity=source),
+    )
+
+    assert proof.source_identity.native_ranges.intervals == (
+        NativeEaInterval(0x1100, 0x1101),
+    )
+    assert proof.delivery_region == NativeEaInterval(0x1100, 0x1110)
+
+
 def test_conditional_proof_requires_both_semantic_arms() -> None:
     proof = _proof()
 

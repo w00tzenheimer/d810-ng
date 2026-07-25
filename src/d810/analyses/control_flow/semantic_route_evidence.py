@@ -456,14 +456,6 @@ class SemanticRouteProof:
                 raise SemanticRouteEvidenceRejected(
                     "direct semantic route anchor is outside its delivery region"
                 )
-            if not any(
-                int(source_interval.start_ea) <= int(delivery_region.start_ea)
-                and int(delivery_region.end_ea) <= int(source_interval.end_ea)
-                for source_interval in self.source_identity.native_ranges.intervals
-            ):
-                raise SemanticRouteEvidenceRejected(
-                    "direct semantic route delivery region is outside its source identity"
-                )
         elif delivery_region is not None:
             raise SemanticRouteEvidenceRejected(
                 "conditional semantic route cannot claim a direct delivery region"
