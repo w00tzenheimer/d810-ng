@@ -756,6 +756,50 @@ def _plan_candidate_normalization(
     return plan, authority
 
 
+def _semantic_predecessor_boundary_anchor(
+    rejection: CanonicalSemanticFragmentRejected,
+    evidence: CanonicalSemanticEvidence,
+) -> int | None:
+    """Recover one proof-owned source block behind a rejected boundary."""
+    if (
+        rejection.reason_code != "published_imported_boundary_topology_unresolved"
+        or rejection.anchor_ea is None
+    ):
+        return None
+    operation_id = rejection.payload.get("incoming_operation_id")
+    source_anchor = rejection.payload.get("incoming_source_anchor_ea")
+    if not isinstance(operation_id, str) or not operation_id.startswith("route:"):
+        return None
+    if isinstance(source_anchor, str):
+        try:
+            source_anchor_ea = int(source_anchor, 0)
+        except ValueError:
+            return None
+    elif isinstance(source_anchor, int):
+        source_anchor_ea = int(source_anchor)
+    else:
+        return None
+    proof_id = operation_id.removeprefix("route:")
+    proofs = tuple(
+        proof for proof in evidence.route_proofs if proof.proof_id == proof_id
+    )
+    if len(proofs) != 1:
+        return None
+    (proof,) = proofs
+    boundary_anchor_ea = int(rejection.anchor_ea)
+    if (
+        source_anchor_ea not in proof.source_identity.exact_instruction_eas
+        or not proof.source_identity.native_ranges.contains(source_anchor_ea)
+        or not any(
+            destination.target_identity.native_ranges.contains(boundary_anchor_ea)
+            and int(destination.target_anchor_ea) == boundary_anchor_ea
+            for destination in proof.destinations
+        )
+    ):
+        return None
+    return source_anchor_ea
+
+
 def _compose_candidate_semantic_fragment(
     context: FunctionPipelineContext,
     *,
@@ -843,6 +887,10 @@ def _compose_candidate_semantic_fragment(
 
     plans: list[FragmentPlan] = []
     unresolved_boundary_anchors: list[int] = []
+    unresolved_boundary_rejection_by_anchor: dict[
+        int,
+        CanonicalSemanticFragmentRejected,
+    ] = {}
     first_rejection: CanonicalSemanticFragmentRejected | None = None
     first_rejected_proof = None
     for route_index, proof in enumerate(candidate.route_proofs):
@@ -874,10 +922,15 @@ def _compose_candidate_semantic_fragment(
                 boundary_anchor_ea = int(exc.anchor_ea)
                 if boundary_anchor_ea not in unresolved_boundary_anchors:
                     unresolved_boundary_anchors.append(boundary_anchor_ea)
+                    unresolved_boundary_rejection_by_anchor[boundary_anchor_ea] = exc
             continue
         plans.append(plan)
     boundary_plans: list[tuple[int, FragmentPlan]] = []
     first_boundary_rejection: CanonicalSemanticFragmentRejected | None = None
+    boundary_plan_rejection_by_anchor: dict[
+        int,
+        CanonicalSemanticFragmentRejected,
+    ] = {}
     if not plans:
         for boundary_anchor_ea in unresolved_boundary_anchors:
             try:
@@ -891,10 +944,47 @@ def _compose_candidate_semantic_fragment(
                     prohibited_dispatcher_serials=prohibited_dispatcher_serials,
                 )
             except CanonicalSemanticFragmentRejected as exc:
+                boundary_plan_rejection_by_anchor[boundary_anchor_ea] = exc
                 if first_boundary_rejection is None:
                     first_boundary_rejection = exc
                 continue
             boundary_plans.append((boundary_anchor_ea, boundary_plan))
+    if not plans and not boundary_plans:
+        attempted_anchors = set(unresolved_boundary_anchors)
+        first_upstream_rejection: CanonicalSemanticFragmentRejected | None = None
+        for boundary_anchor_ea in unresolved_boundary_anchors:
+            if (
+                boundary_plan_rejection_by_anchor[boundary_anchor_ea].reason_code
+                != "published_boundary_predecessor_missing"
+            ):
+                continue
+            boundary_rejection = unresolved_boundary_rejection_by_anchor[
+                boundary_anchor_ea
+            ]
+            source_anchor_ea = _semantic_predecessor_boundary_anchor(
+                boundary_rejection,
+                candidate,
+            )
+            if source_anchor_ea is None or source_anchor_ea in attempted_anchors:
+                continue
+            attempted_anchors.add(source_anchor_ea)
+            try:
+                boundary_plan = compose_canonical_semantic_boundary_fragment_plan(
+                    context.graph,
+                    normalization_plan,
+                    boundary_anchor_ea=source_anchor_ea,
+                    available_evidence=candidate,
+                    current_identity_by_serial=current_identity_by_serial,
+                    normalization_authority=normalization_authority,
+                    prohibited_dispatcher_serials=prohibited_dispatcher_serials,
+                )
+            except CanonicalSemanticFragmentRejected as exc:
+                if first_upstream_rejection is None:
+                    first_upstream_rejection = exc
+                continue
+            boundary_plans.append((source_anchor_ea, boundary_plan))
+        if first_upstream_rejection is not None:
+            first_boundary_rejection = first_upstream_rejection
     if boundary_plans:
         boundary_anchor_ea, boundary_plan = min(
             boundary_plans,

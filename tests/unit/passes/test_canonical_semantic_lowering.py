@@ -446,7 +446,7 @@ def test_candidate_normalization_rejects_missing_receipted_plan_intent() -> None
     }
 
 
-def test_candidate_composition_selects_boundary_plan_but_requires_oracle(
+def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_oracle(
     monkeypatch,
 ) -> None:
     graph, bound = _graph_and_bound_evidence()
@@ -516,8 +516,29 @@ def test_candidate_composition_selects_boundary_plan_but_requires_oracle(
             payload={
                 "boundary_block_id": "native[0x1200-0x1201]",
                 "incoming_operation_id": "route:state-assignment@0x1100",
+                "incoming_source_anchor_ea": "0x1100",
+                "incoming_source_block_id": "native[0x1100-0x1101]",
             },
         )
+
+    def compose_boundary(*args, **kwargs):
+        boundary_calls.append((args, kwargs))
+        if kwargs["boundary_anchor_ea"] == 0x1200:
+            raise CanonicalSemanticFragmentRejected(
+                "published canonical boundary has no entry-connectable predecessor",
+                reason_code="published_boundary_predecessor_missing",
+                anchor_ea=0x1200,
+                payload={
+                    "incoming_predecessors": (
+                        {
+                            "block": "blk30@0x1400",
+                            "prohibited": True,
+                        },
+                    ),
+                },
+            )
+        assert kwargs["boundary_anchor_ea"] == 0x1100
+        return expected_plan
 
     monkeypatch.setattr(
         state_machine_module,
@@ -527,7 +548,7 @@ def test_candidate_composition_selects_boundary_plan_but_requires_oracle(
     monkeypatch.setattr(
         state_machine_module,
         "compose_canonical_semantic_boundary_fragment_plan",
-        lambda *args, **kwargs: boundary_calls.append((args, kwargs)) or expected_plan,
+        compose_boundary,
         raising=False,
     )
 
@@ -589,11 +610,11 @@ def test_candidate_composition_selects_boundary_plan_but_requires_oracle(
 
     rejection = exc_info.value
     assert rejection.reason_code == "canonical_boundary_detached_oracle_required"
-    assert rejection.anchor_ea == 0x1200
+    assert rejection.anchor_ea == 0x1100
     assert rejection.payload == {
         "atomic_group_id": expected_plan.atomic_group_id,
         "block_count": len(expected_plan.blocks),
-        "boundary_anchor_ea": "0x1200",
+        "boundary_anchor_ea": "0x1100",
         "native_body_count": len(expected_plan.native_bodies),
         "operation_count": len(expected_plan.operations),
         "operation_ids": tuple(
@@ -602,11 +623,19 @@ def test_candidate_composition_selects_boundary_plan_but_requires_oracle(
         "plan_id": expected_plan.plan_id,
         "route_proof_ids": ("state-assignment@0x1100",),
     }
-    assert len(boundary_calls) == 1
+    assert len(boundary_calls) == 2
     assert boundary_calls[0][0] == (graph, normalization_plan)
     assert boundary_calls[0][1] == {
         "available_evidence": candidate,
         "boundary_anchor_ea": 0x1200,
+        "current_identity_by_serial": current_identity_by_serial,
+        "normalization_authority": normalization_authority,
+        "prohibited_dispatcher_serials": (30,),
+    }
+    assert boundary_calls[1][0] == (graph, normalization_plan)
+    assert boundary_calls[1][1] == {
+        "available_evidence": candidate,
+        "boundary_anchor_ea": 0x1100,
         "current_identity_by_serial": current_identity_by_serial,
         "normalization_authority": normalization_authority,
         "prohibited_dispatcher_serials": (30,),
