@@ -787,14 +787,27 @@ def _semantic_predecessor_boundary_anchor(
         return None
     (proof,) = proofs
     boundary_anchor_ea = int(rejection.anchor_ea)
-    if (
-        source_anchor_ea not in proof.source_identity.exact_instruction_eas
-        or not proof.source_identity.native_ranges.contains(source_anchor_ea)
-        or not any(
-            destination.target_identity.native_ranges.contains(boundary_anchor_ea)
-            and int(destination.target_anchor_ea) == boundary_anchor_ea
-            for destination in proof.destinations
+    state_write = proof.state_write
+    source_is_state_write_entry = bool(
+        state_write is not None
+        and int(state_write.instruction_ea) == source_anchor_ea
+        and source_anchor_ea in state_write.identity.exact_instruction_eas
+        and state_write.identity.native_ranges.contains(source_anchor_ea)
+        and state_write.corridor_instruction_eas
+        and int(state_write.corridor_instruction_eas[0]) == source_anchor_ea
+        and int(state_write.corridor_instruction_eas[-1]) == int(proof.source_anchor_ea)
+    )
+    source_identity_owns_entry = bool(
+        proof.source_identity.native_ranges.contains(source_anchor_ea)
+        and (
+            source_anchor_ea in proof.source_identity.exact_instruction_eas
+            or source_is_state_write_entry
         )
+    )
+    if not source_identity_owns_entry or not any(
+        destination.target_identity.native_ranges.contains(boundary_anchor_ea)
+        and int(destination.target_anchor_ea) == boundary_anchor_ea
+        for destination in proof.destinations
     ):
         return None
     return source_anchor_ea
