@@ -4084,3 +4084,47 @@ zero-way block-closing call for the `0x40AE3E` call-fallthrough boundary. Do
 not allow the goto as call fallthrough. Continue by reconciling canonical
 source ownership and PREOPT/CALLS binding at stable native EA `0x40AE3E`, then
 rerun the same diagnostic canary.
+
+**2026-07-25T10:55:25Z**
+
+Commits `d2b0ff7a8` and `2314a9596` preserve the exact operation inventory of
+each committed frontend-normalization work item in
+`NormalizationWorkItemAuthority`; the second commit is the separate Ruff-only
+formatting change. The canonical composer may now reuse a currently published
+direct or call-fallthrough boundary only when that exact supporting operation
+belonged to the atomically committed and postvalidated work item. An
+unreceipted boundary remains rejected, and a raw conditional still cannot be
+declared semantic merely because its mutation calls completed. No compatibility
+path or architecture ignore was added.
+
+Focused verification is 157/157 local lifecycle, manager, plan, canonical
+composition, and gateway tests plus 9/9 pinned Docker manager/runtime tests at
+`.tmp/rhad-published-frontier-runtime.txt`. Both commits pass ast-grep,
+import-cycle analysis, the portable-shape gate, and all 14 import-linter
+contracts.
+
+The mandatory exact cache-disabled A560 canary completed normally in 33.80
+seconds with no process segfault, numeric `INTERR`, or verifier-failure event.
+Log: `.tmp/rhad-a560-v33-published-frontier-v1.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-published-frontier-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+planner trace:
+`.tmp/a560-published-frontier-trace-v1/composition-trace.json`. The semantic
+oracle still rejects the false `while ( 1 )`, so this is not A560 acceptance.
+
+The DB proves the new authority moves the canonical frontier past the prior
+`0x40AE3E` CALLS boundary. Generation 1 commits its 260/260 normalization
+transaction, then the first canonical attempt reaches the unresolved native
+router path, promotes contextual source `0x40B790`, and requests one controlled
+generated-MBA restart. Generation 2 commits a 288/288 normalization
+transaction. No canonical semantic transaction, detached route comparison, or
+semantic receipt follows.
+
+The highest current v3.3 canary level is therefore C2. The first failed C3
+obligation is recorded in `fact_consumers` at CALLS snapshot 11 as
+`published_boundary_semantic_route_missing` for native router `0x40B6C0`.
+Native bytes prove `0x40B6C0` is dispatcher selection topology: it compares the
+state carrier, selects a table address, and flows through indirect transfer
+`0x40B6D4`. Do not relabel that raw conditional as a closed published frontier.
+Continue by recovering or composing its exact semantic route authority, keep
+both arms atomic, and rerun the same diagnostic canary without broadening to
+the 91-route publication.
