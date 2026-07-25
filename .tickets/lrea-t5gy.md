@@ -2835,3 +2835,41 @@ explain which selected semantic exit still reaches that dispatcher router and
 derive its exact reference-equivalent route proof. Use the audited oracle as
 the C1 pattern for that exit; do not reimplement the direct rewrite, add a raw
 boundary exception, or broaden publication.
+
+**2026-07-25T03:28:50Z**
+
+Commit `a4e2bd0c0` makes nested state-route projection decisions observable in
+the canonical-composition fact-consumer payload. Every eligible proof now
+records its native source anchor, projected or skipped disposition, reason,
+source block identity, and corridor block identities when strict closure
+later rejects the fragment. The canonical transform suite is 28/28 green,
+Ruff is clean, and the pre-commit architecture/import gates pass.
+
+The mandatory cache-disabled A560 diagnostic canary returned normally in
+34.63 seconds with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-nested-projection-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-nested-projection-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-nested-projection-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The highest completed level remains C5 through generation-2 receipt event
+287. The first post-C5 obligation remains snapshot 11 / `MMAT_CALLS` at
+`native[0x40A607-0x40A615;exact=0x40A607]`, uniquely rebound as
+`blk8@0x40A560`, with unresolved `native-body-edge@0x40A607` under root proof
+`state_assignment@0x40A5C8:0xABB95547`.
+
+The new DB evidence corrects the preceding hypothesis. Of 89 eligible nested
+state-route proofs, four were projected and 85 were outside this component.
+The projected set is exactly native anchors `0x40BB63 -> 0x40ACF3`,
+`0x40C2E9 -> 0x40C62F`, `0x40C6F1 -> 0x40AF00`, and
+`0x40C7D1 -> 0x40B287`. Therefore the two reference-equivalent handler routes
+were not missed; strict traversal reaches `0x40A607` through some other
+selected incoming operation.
+
+Continue the v3.3 loop by recording that incoming operation and native source
+anchor on the unresolved-boundary rejection, then rerun the exact canary and
+follow the resulting EA-keyed edge. Do not add another route proof, relax the
+boundary, or broaden publication until that predecessor is identified in the
+diagnostic DB.
