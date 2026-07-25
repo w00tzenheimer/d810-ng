@@ -3039,3 +3039,39 @@ routes fragment-atomic, validate detached closure/oracle equivalence, and
 publish one root transaction. Do not resume bootstrap-root composition until
 that boundary has a semantic C5 receipt; the receipt can then close the
 bootstrap fragment at the same stable native boundary.
+
+**2026-07-25T04:33:11Z**
+
+Commit `5b0e7754c` adds the first portable published-boundary planner without
+wiring it into live publication. It resolves a uniquely EA-anchored imported
+boundary, clones the current published owner as the replacement root, retains
+the owned call fallthrough as the detached body entry, resolves nested semantic
+routes under strict closure, and emits one canonical fragment plan. The pure
+fixture proves one boundary-root replacement with one nested semantic route;
+the focused canonical/resolver gate is 275/275 green. Ruff, ast-grep, all 14
+import contracts, diff checks, and `graphify update .` pass. A requested full
+`pyenv exec ruff format .` pass examined 1,862 files and changed none, so there
+is no formatting-only diff or empty formatting commit.
+
+The mandatory cache-disabled A560 diagnostic canary returned normally in
+17.54 seconds with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-boundary-planner-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-boundary-planner-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-boundary-planner-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The DB records only the legacy generation-1 frontend-normalization transaction:
+260/260 operations committed at lifecycle event 28. It records no semantic
+fragment transaction and no route-oracle comparison. The canonical fact
+consumer again declines at snapshot 3 / `MMAT_CALLS`, native boundary
+`0x40AE3E`, with incoming direct operation
+`route:state_assignment@0x40B52E:0x13B0D3B2` from
+`native[0x40B51B-0x40B534;exact=0x40B51B]:imported`. Therefore the selected
+semantic vertical remains C2; its first failed obligation is C3 production
+selection of the new bounded published-boundary plan. C4 detached oracle proof
+and C5 semantic publication remain unreached. Continue by selecting this
+portable boundary plan in the canonical pass and proving its exact three-route
+reference equivalence before permitting live publication; do not resume the
+70-route bootstrap expansion or treat the legacy receipt as semantic C5.
