@@ -122,6 +122,21 @@ def _identity_ranges_contain(
     )
 
 
+def _identity_ranges_overlap(
+    left: StableBlockIdentity,
+    right: StableBlockIdentity,
+) -> bool:
+    return bool(
+        left.native_key == right.native_key
+        and any(
+            max(int(left_interval.start_ea), int(right_interval.start_ea))
+            < min(int(left_interval.end_ea), int(right_interval.end_ea))
+            for left_interval in left.native_ranges.intervals
+            for right_interval in right.native_ranges.intervals
+        )
+    )
+
+
 def _unique_plan_block(
     plan: FragmentPlan,
     identity: StableBlockIdentity,
@@ -302,6 +317,33 @@ def _current_owners_containing_identity(
             )
         )
     return tuple(owners)
+
+
+def _current_identity_inventory_for_boundary(
+    graph: FlowGraph,
+    identity: StableBlockIdentity,
+    boundary_anchor_ea: int,
+    *,
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
+) -> tuple[dict[str, object], ...]:
+    """Describe live identities that touch one rejected portable boundary."""
+    boundary_anchor_ea = int(boundary_anchor_ea)
+    inventory: list[dict[str, object]] = []
+    for serial, current_identity in sorted(current_identity_by_serial.items()):
+        contains_anchor = current_identity.native_ranges.contains(boundary_anchor_ea)
+        overlaps_boundary = _identity_ranges_overlap(current_identity, identity)
+        if not contains_anchor and not overlaps_boundary:
+            continue
+        block = graph.blocks[int(serial)]
+        inventory.append(
+            {
+                "block": f"blk{int(serial)}@0x{int(block.start_ea):X}",
+                "contains_anchor": contains_anchor,
+                "overlaps_boundary_identity": overlaps_boundary,
+                "stable_identity": current_identity.diagnostic_label(),
+            }
+        )
+    return tuple(inventory)
 
 
 def _portable_dispatcher_scc_witnesses(
@@ -2142,9 +2184,19 @@ def compose_canonical_semantic_boundary_fragment_plan(
             reason_code="published_boundary_current_owner_count_mismatch",
             anchor_ea=boundary_anchor_ea,
             payload={
+                "boundary_block_id": target.block_id,
+                "boundary_identity": target_identity.diagnostic_label(),
                 "owner_labels": tuple(
                     f"blk{serial}@0x{anchor_ea:X}"
                     for serial, anchor_ea, _identity in current_owners
+                ),
+                "current_identity_inventory": (
+                    _current_identity_inventory_for_boundary(
+                        graph,
+                        target_identity,
+                        boundary_anchor_ea,
+                        current_identity_by_serial=current_identity_by_serial,
+                    )
                 ),
             },
         )
