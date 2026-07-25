@@ -742,8 +742,7 @@ def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_orac
                 "reason_code": "published_imported_boundary_topology_unresolved",
                 "rejection_anchor_ea": "0x1200",
                 "detail": (
-                    "published imported boundary retains unresolved semantic "
-                    "topology"
+                    "published imported boundary retains unresolved semantic topology"
                 ),
                 "rejection_payload": {
                     "boundary_block_id": "native[0x1200-0x1201]",
@@ -759,8 +758,7 @@ def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_orac
                 "reason_code": "published_boundary_predecessor_missing",
                 "rejection_anchor_ea": "0x1200",
                 "detail": (
-                    "published canonical boundary has no entry-connectable "
-                    "predecessor"
+                    "published canonical boundary has no entry-connectable predecessor"
                 ),
                 "rejection_payload": {
                     "incoming_predecessors": (

@@ -1697,13 +1697,10 @@ def test_canonical_composition_rejection_reports_each_attempt() -> None:
     route_record, boundary_record, summary_record = reported
     assert route_record.strategy == "canonical_semantic_composition_attempt"
     assert route_record.fact_id == (
-        "canonical_composition_attempt:route:"
-        "state_assignment@0x40B4BA:0xBD9A2C2A"
+        "canonical_composition_attempt:route:state_assignment@0x40B4BA:0xBD9A2C2A"
     )
     assert route_record.decision == "rejected"
-    assert route_record.reason == (
-        "published_imported_boundary_topology_unresolved"
-    )
+    assert route_record.reason == ("published_imported_boundary_topology_unresolved")
     assert route_record.payload == {"attempt_index": 0, **route_attempt}
     assert boundary_record.strategy == "canonical_semantic_composition_attempt"
     assert boundary_record.fact_id == (
