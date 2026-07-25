@@ -1261,6 +1261,216 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
     assert boundary_port.retirement_obligation_id == "publish-semantic-entry@0x1200"
 
 
+def test_published_boundary_projects_nested_terminal_route_atomically() -> None:
+    graph, normalization_plan, root_evidence = _live_source_detached_target_case()
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x1000, succs=(90,), preds=()),
+            30: _block(
+                30,
+                0x1200,
+                succs=(90,),
+                preds=(90,),
+                insn_eas=(0x1200, 0x1210, 0x1215, 0x1218),
+            ),
+            90: _block(90, 0x1400, succs=(30,), preds=(10, 30)),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    (native_body,) = normalization_plan.native_bodies
+    capture_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1210, 0x1219),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1210, 0x1215, 0x1218),
+    )
+    terminal_identity = StableBlockIdentity.from_instruction_eas(
+        (0x1320, 0x1328),
+        native_key=NATIVE_KEY,
+    )
+    route_source = FragmentBlock(
+        block_id="boundary-terminal-source",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1210,
+        stable_identity=capture_identity,
+        native_body_id=native_body.body_id,
+    )
+    raw_dispatcher = FragmentBlock(
+        block_id="boundary-terminal-dispatcher",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1300,
+        stable_identity=_identity(0x1300),
+        native_body_id=native_body.body_id,
+    )
+    terminal_target = FragmentBlock(
+        block_id="boundary-terminal-target",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1320,
+        stable_identity=terminal_identity,
+        native_body_id=native_body.body_id,
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *normalization_plan.blocks,
+            route_source,
+            raw_dispatcher,
+            terminal_target,
+        ),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="boundary-terminal-fallthrough@0x1200",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                        target_block_id=route_source.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="native-indirect-transfer@0x1218",
+                source_block_id=route_source.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=raw_dispatcher.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="native-body-edge@0x1300",
+                source_block_id=raw_dispatcher.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=terminal_target.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    route_source.block_id,
+                    raw_dispatcher.block_id,
+                    terminal_target.block_id,
+                ),
+                terminal_block_ids=(terminal_target.block_id,),
+                native_ranges=(
+                    NativeEaInterval(0x1200, 0x1201),
+                    NativeEaInterval(0x1210, 0x1219),
+                    NativeEaInterval(0x1300, 0x1301),
+                    NativeEaInterval(0x1320, 0x1321),
+                    NativeEaInterval(0x1328, 0x1329),
+                ),
+                proof_ids=(
+                    *native_body.proof_ids,
+                    "boundary-terminal-fallthrough@0x1200",
+                    "native-indirect-transfer@0x1218",
+                    "native-body-edge@0x1300",
+                ),
+            ),
+        ),
+    )
+    state_constant = 0x19A7218A
+    carrier = TerminalReturnCarrierEvidence(
+        request=TerminalReturnCarrierRequest(
+            source_handler_ea=0x1210,
+            terminal_target_ea=0x1320,
+            state_var_reg=20,
+            state_constant=state_constant,
+        ),
+        capture_identity=capture_identity,
+        terminal_identity=terminal_identity,
+        state_write_ea=0x1210,
+        carrier_ea=0x1215,
+        terminal_return_ea=0x1328,
+        operation=ValueOpKind.MOVE,
+        source=TerminalReturnCarrierSource(
+            kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
+            width=4,
+            storage_identity=StorageIdentity(
+                StorageIdentityKind.GLOBAL,
+                0x48B8A4,
+            ),
+        ),
+        return_width=4,
+        corridor_instruction_eas=(0x1210, 0x1215),
+    )
+    terminal_proof = SemanticRouteProof(
+        proof_id="terminal-return@0x1218:0x19A7218A",
+        atomic_group_id=root_evidence.atomic_group_id,
+        proof_kind=SemanticRouteProofKind.TERMINAL_RETURN,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=capture_identity,
+        source_anchor_ea=0x1218,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.DIRECT,
+                state_constant=state_constant,
+                target_identity=terminal_identity,
+                target_anchor_ea=0x1320,
+                terminal=True,
+            ),
+        ),
+        state_write=SemanticStateWriteProof(
+            identity=capture_identity,
+            instruction_ea=0x1210,
+            state_variable=StorageIdentity(
+                StorageIdentityKind.REGISTER,
+                20,
+            ),
+            width=4,
+            state_constant=state_constant,
+            corridor_instruction_eas=(0x1210, 0x1215, 0x1218),
+        ),
+        terminal_return_carrier=carrier,
+    )
+    available_evidence = replace(
+        root_evidence,
+        route_proofs=(terminal_proof,),
+    )
+
+    plan = compose_canonical_semantic_boundary_fragment_plan(
+        graph,
+        normalization_plan,
+        boundary_anchor_ea=0x1200,
+        available_evidence=available_evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            available_evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+        temporary_dispatcher_entry_port_obligation_id=("publish-semantic-entry@0x1200"),
+    )
+
+    operation = next(
+        item
+        for item in plan.operations
+        if item.operation_id == f"route:{terminal_proof.proof_id}"
+    )
+    assert operation.direct_transfer_rewrite is not None
+    assert len(plan.return_carriers) == 1
+    assert plan.return_carriers[0].block_id == operation.source_block_id
+    assert len(plan.terminal_returns) == 1
+    assert operation.edges[0].target_block_id == plan.terminal_returns[0].block_id
+    assert len(plan.terminal_routes) == 1
+    assert plan.terminal_routes[0].operation_id == operation.operation_id
+    assert all(
+        block.semantic_anchor_ea != 0x1300
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+    )
+
+
 def test_published_boundary_rejection_records_prohibited_predecessor() -> None:
     _graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = FlowGraph(

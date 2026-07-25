@@ -74,7 +74,7 @@ class CanonicalSemanticFragmentRejected(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class _NestedStateAssignmentProjectionDecision:
+class _NestedStateRouteProjectionDecision:
     """One portable nested-route projection decision for diagnostics."""
 
     route_proof_id: str
@@ -1198,7 +1198,7 @@ def _with_semantic_imported_consumer(
     )
 
 
-def _with_nested_imported_state_assignments(
+def _with_nested_imported_state_routes(
     plan: FragmentPlan,
     available_evidence: CanonicalSemanticEvidence,
     *,
@@ -1210,17 +1210,17 @@ def _with_nested_imported_state_assignments(
 ) -> tuple[
     FragmentPlan,
     tuple[SemanticRouteProof, ...],
-    tuple[_NestedStateAssignmentProjectionDecision, ...],
+    tuple[_NestedStateRouteProjectionDecision, ...],
 ]:
     """Replace reachable imported dispatcher exits with canonical state routes.
 
     Frontend normalization retains the native selector topology so later
-    canonical passes can inspect it.  Once a state assignment and its delivery
-    corridor are proved, however, the generic selector edge is no longer
-    authoritative.  This projection replaces only routes whose complete
-    write-to-delivery corridor already belongs to the selected detached
-    component.  It never expands the work item merely because another route is
-    present elsewhere in the normalization inventory.
+    canonical passes can inspect it.  Once a state assignment or terminal
+    return and its delivery corridor are proved, however, the generic selector
+    edge is no longer authoritative.  This projection replaces only routes
+    whose complete write-to-delivery corridor already belongs to the selected
+    detached component.  It never expands the work item merely because another
+    route is present elsewhere in the normalization inventory.
     """
     imported_component_blocks = tuple(
         block
@@ -1246,13 +1246,17 @@ def _with_nested_imported_state_assignments(
             FragmentBlock,
         ]
     ] = []
-    decisions: list[_NestedStateAssignmentProjectionDecision] = []
+    decisions: list[_NestedStateRouteProjectionDecision] = []
     claimed_source_ids = dict(claimed_source_proof_ids)
     claimed_corridor_ids = dict(claimed_corridor_proof_ids)
     for proof in available_evidence.route_proofs:
         if (
             proof.proof_id in excluded_proof_ids
-            or proof.proof_kind is not SemanticRouteProofKind.STATE_ASSIGNMENT
+            or proof.proof_kind
+            not in {
+                SemanticRouteProofKind.STATE_ASSIGNMENT,
+                SemanticRouteProofKind.TERMINAL_RETURN,
+            }
             or proof.shape is not SemanticRouteShape.DIRECT
             or len(proof.destinations) != 1
             or proof.state_write is None
@@ -1275,7 +1279,7 @@ def _with_nested_imported_state_assignments(
         )
         if not source_matches:
             decisions.append(
-                _NestedStateAssignmentProjectionDecision(
+                _NestedStateRouteProjectionDecision(
                     route_proof_id=proof.proof_id,
                     source_anchor_ea=int(proof.source_anchor_ea),
                     disposition="skipped",
@@ -1399,7 +1403,7 @@ def _with_nested_imported_state_assignments(
             )
         )
         decisions.append(
-            _NestedStateAssignmentProjectionDecision(
+            _NestedStateRouteProjectionDecision(
                 route_proof_id=proof.proof_id,
                 source_anchor_ea=int(proof.source_anchor_ea),
                 disposition="projected",
@@ -1484,6 +1488,114 @@ def _with_nested_imported_state_assignments(
     )
 
 
+def _nested_terminal_effects(
+    blocks: tuple[FragmentBlock, ...],
+    operations: tuple[FragmentOperation, ...],
+    proofs: tuple[SemanticRouteProof, ...],
+) -> tuple[
+    tuple[FragmentReturnCarrier, ...],
+    tuple[FragmentTerminalReturn, ...],
+    tuple[FragmentTerminalRoute, ...],
+]:
+    """Project terminal carrier, return, and route as one detached fragment."""
+    block_by_id = {block.block_id: block for block in blocks}
+    operation_by_id = {operation.operation_id: operation for operation in operations}
+    return_carriers: list[FragmentReturnCarrier] = []
+    terminal_returns: list[FragmentTerminalReturn] = []
+    terminal_routes: list[FragmentTerminalRoute] = []
+    return_by_block_id: dict[str, FragmentTerminalReturn] = {}
+    for proof in proofs:
+        if proof.proof_kind is not SemanticRouteProofKind.TERMINAL_RETURN:
+            continue
+        carrier = proof.terminal_return_carrier
+        operation_id = f"route:{proof.proof_id}"
+        operation = operation_by_id.get(operation_id)
+        if (
+            carrier is None
+            or operation is None
+            or len(operation.edges) != 1
+            or operation.edges[0].role is not SemanticEdgeRole.DIRECT
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "nested terminal route lacks one complete direct operation",
+                reason_code="nested_terminal_route_operation_missing",
+                anchor_ea=int(proof.source_anchor_ea),
+                payload={"route_proof_id": proof.proof_id},
+            )
+        source = block_by_id.get(operation.source_block_id)
+        destination = block_by_id.get(operation.edges[0].target_block_id)
+        if (
+            source is None
+            or destination is None
+            or source.role
+            not in {
+                FragmentBlockRole.IMPORTED,
+                FragmentBlockRole.REPLACEMENT,
+            }
+            or destination.role
+            not in {
+                FragmentBlockRole.IMPORTED,
+                FragmentBlockRole.REPLACEMENT,
+            }
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "nested terminal route is not wholly staged",
+                reason_code="nested_terminal_route_staged_owner_missing",
+                anchor_ea=int(proof.source_anchor_ea),
+                payload={"route_proof_id": proof.proof_id},
+            )
+        carrier_id = f"return-carrier:{proof.proof_id}"
+        return_carriers.append(
+            FragmentReturnCarrier(
+                carrier_id=carrier_id,
+                block_id=source.block_id,
+                state_write_ea=int(carrier.state_write_ea),
+                carrier_ea=int(carrier.carrier_ea),
+                operation=carrier.operation,
+                source=FragmentReturnSource(
+                    kind=FragmentReturnSourceKind(carrier.source.kind.value),
+                    width=int(carrier.source.width),
+                    storage_identity=carrier.source.storage_identity,
+                    constant=carrier.source.constant,
+                ),
+                return_width=int(carrier.return_width),
+                corridor_instruction_eas=tuple(
+                    int(ea) for ea in carrier.corridor_instruction_eas
+                ),
+            )
+        )
+        terminal_return = return_by_block_id.get(destination.block_id)
+        if terminal_return is None:
+            terminal_return = FragmentTerminalReturn(
+                return_id=(
+                    f"terminal-return:0x{int(carrier.request.terminal_target_ea):X}"
+                ),
+                block_id=destination.block_id,
+                instruction_ea=int(carrier.terminal_return_ea),
+                return_width=int(carrier.return_width),
+            )
+            return_by_block_id[destination.block_id] = terminal_return
+            terminal_returns.append(terminal_return)
+        elif terminal_return.instruction_ea != int(
+            carrier.terminal_return_ea
+        ) or terminal_return.return_width != int(carrier.return_width):
+            raise CanonicalSemanticFragmentRejected(
+                "nested terminal routes disagree on their shared return",
+                reason_code="nested_terminal_return_conflict",
+                anchor_ea=int(carrier.request.terminal_target_ea),
+                payload={"route_proof_id": proof.proof_id},
+            )
+        terminal_routes.append(
+            FragmentTerminalRoute(
+                terminal_route_id=f"terminal-route:{proof.proof_id}",
+                operation_id=operation_id,
+                carrier_id=carrier_id,
+                return_id=terminal_return.return_id,
+            )
+        )
+    return tuple(return_carriers), tuple(terminal_returns), tuple(terminal_routes)
+
+
 def _resolved_detached_target_component(
     graph: FlowGraph,
     normalization_plan: FragmentPlan,
@@ -1501,15 +1613,18 @@ def _resolved_detached_target_component(
     tuple[FragmentOperation, ...],
     FragmentNativeBody,
     tuple[SemanticRouteProof, ...],
-    tuple[_NestedStateAssignmentProjectionDecision, ...],
+    tuple[_NestedStateRouteProjectionDecision, ...],
+    tuple[FragmentReturnCarrier, ...],
+    tuple[FragmentTerminalReturn, ...],
+    tuple[FragmentTerminalRoute, ...],
 ]:
     """Resolve every nested state route before exposing one target component."""
     effective_normalization_plan = normalization_plan
     selected_proof_ids = set(excluded_proof_ids)
-    nested_state_assignment_proof_list: list[SemanticRouteProof] = []
+    nested_route_proof_list: list[SemanticRouteProof] = []
     nested_decision_by_proof_id: dict[
         str,
-        _NestedStateAssignmentProjectionDecision,
+        _NestedStateRouteProjectionDecision,
     ] = {}
     claimed_nested_source_ids: dict[str, str] = {}
     claimed_nested_corridor_ids: dict[str, str] = {}
@@ -1524,7 +1639,7 @@ def _resolved_detached_target_component(
                 canonical_proof_id="+".join(
                     (
                         *canonical_proof_ids,
-                        *(item.proof_id for item in nested_state_assignment_proof_list),
+                        *(item.proof_id for item in nested_route_proof_list),
                     )
                 ),
                 normalization_authority=normalization_authority,
@@ -1537,7 +1652,7 @@ def _resolved_detached_target_component(
             projected_plan,
             projected_proofs,
             projection_decisions,
-        ) = _with_nested_imported_state_assignments(
+        ) = _with_nested_imported_state_routes(
             effective_normalization_plan,
             available_evidence,
             component_block_ids=frozenset(
@@ -1593,7 +1708,7 @@ def _resolved_detached_target_component(
                     projected_proof.proof_id
                 )
         effective_normalization_plan = projected_plan
-        nested_state_assignment_proof_list.extend(projected_proofs)
+        nested_route_proof_list.extend(projected_proofs)
         selected_proof_ids.update(projected_proof_ids)
     else:
         raise CanonicalSemanticFragmentRejected(
@@ -1601,8 +1716,8 @@ def _resolved_detached_target_component(
             reason_code="nested_state_route_projection_bound_exceeded",
             anchor_ea=int(target.semantic_anchor_ea),
         )
-    nested_state_assignment_proofs = tuple(nested_state_assignment_proof_list)
-    nested_state_assignment_decisions = tuple(
+    nested_route_proofs = tuple(nested_route_proof_list)
+    nested_route_decisions = tuple(
         nested_decision_by_proof_id[item.proof_id]
         for item in available_evidence.route_proofs
         if item.proof_id in nested_decision_by_proof_id
@@ -1616,7 +1731,7 @@ def _resolved_detached_target_component(
             canonical_proof_id="+".join(
                 (
                     *canonical_proof_ids,
-                    *(item.proof_id for item in nested_state_assignment_proofs),
+                    *(item.proof_id for item in nested_route_proofs),
                 )
             ),
             normalization_authority=normalization_authority,
@@ -1625,7 +1740,7 @@ def _resolved_detached_target_component(
             replaced_current_owner_serials=replaced_current_owner_serials,
         )
     except CanonicalSemanticFragmentRejected as exc:
-        if not nested_state_assignment_decisions:
+        if not nested_route_decisions:
             raise
         raise CanonicalSemanticFragmentRejected(
             str(exc),
@@ -1634,14 +1749,13 @@ def _resolved_detached_target_component(
             payload={
                 **exc.payload,
                 "nested_state_route_projection": tuple(
-                    decision.diagnostic_payload()
-                    for decision in nested_state_assignment_decisions
+                    decision.diagnostic_payload() for decision in nested_route_decisions
                 ),
             },
         ) from exc
     nested_rewrite_by_operation_id = {
         f"route:{item.proof_id}": _direct_transfer_rewrite(item)
-        for item in nested_state_assignment_proofs
+        for item in nested_route_proofs
     }
     target_operations = tuple(
         replace(
@@ -1654,12 +1768,20 @@ def _resolved_detached_target_component(
         else operation
         for operation in target_operations
     )
+    return_carriers, terminal_returns, terminal_routes = _nested_terminal_effects(
+        target_blocks,
+        target_operations,
+        nested_route_proofs,
+    )
     return (
         target_blocks,
         target_operations,
         native_body,
-        nested_state_assignment_proofs,
-        nested_state_assignment_decisions,
+        nested_route_proofs,
+        nested_route_decisions,
+        return_carriers,
+        terminal_returns,
+        terminal_routes,
     )
 
 
@@ -1818,8 +1940,11 @@ def compose_canonical_semantic_fragment_plan(
         target_blocks,
         target_operations,
         native_body,
-        _nested_state_assignment_proofs,
-        _nested_state_assignment_decisions,
+        _nested_route_proofs,
+        _nested_route_decisions,
+        nested_return_carriers,
+        nested_terminal_returns,
+        nested_terminal_routes,
     ) = _resolved_detached_target_component(
         graph,
         effective_normalization_plan,
@@ -2182,6 +2307,9 @@ def compose_canonical_semantic_fragment_plan(
         normalization_authority=normalization_authority,
         native_bodies=(native_body,),
         data_flow_obligations=tuple(data_flow_obligations),
+        return_carriers=nested_return_carriers,
+        terminal_returns=nested_terminal_returns,
+        terminal_routes=nested_terminal_routes,
     )
 
 
@@ -2369,8 +2497,11 @@ def compose_canonical_semantic_boundary_fragment_plan(
         target_blocks,
         target_operations,
         native_body,
-        nested_state_assignment_proofs,
-        nested_state_assignment_decisions,
+        nested_route_proofs,
+        nested_route_decisions,
+        nested_return_carriers,
+        nested_terminal_returns,
+        nested_terminal_routes,
     ) = _resolved_detached_target_component(
         graph,
         normalization_plan,
@@ -2383,7 +2514,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
         prohibited_dispatcher_serials=prohibited_serials,
         replaced_current_owner_serials=frozenset({int(root_serial)}),
     )
-    if not nested_state_assignment_proofs:
+    if not nested_route_proofs:
         raise CanonicalSemanticFragmentRejected(
             "published canonical boundary owns no semantic route",
             reason_code="published_boundary_semantic_route_missing",
@@ -2396,8 +2527,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
                     operation.operation_id for operation in target_operations
                 ),
                 "nested_state_route_projection": tuple(
-                    decision.diagnostic_payload()
-                    for decision in nested_state_assignment_decisions
+                    decision.diagnostic_payload() for decision in nested_route_decisions
                 ),
             },
         )
@@ -2453,6 +2583,28 @@ def compose_canonical_semantic_boundary_fragment_plan(
             ),
         )
         for operation in target_operations
+    )
+    rewritten_return_carriers = tuple(
+        replace(
+            carrier,
+            block_id=(
+                replacement_id
+                if carrier.block_id == target.block_id
+                else carrier.block_id
+            ),
+        )
+        for carrier in nested_return_carriers
+    )
+    rewritten_terminal_returns = tuple(
+        replace(
+            terminal_return,
+            block_id=(
+                replacement_id
+                if terminal_return.block_id == target.block_id
+                else terminal_return.block_id
+            ),
+        )
+        for terminal_return in nested_terminal_returns
     )
     remaining_imported_blocks = tuple(
         block
@@ -2580,9 +2732,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
     for block in remaining_imported_blocks:
         block_by_id[block.block_id] = block
 
-    route_group_id = "+".join(
-        proof.proof_id for proof in nested_state_assignment_proofs
-    )
+    route_group_id = "+".join(proof.proof_id for proof in nested_route_proofs)
     boundary_ports = tuple(
         FragmentBoundaryPort(
             port_id=f"temporary-dispatcher-entry@0x{boundary_anchor_ea:X}",
@@ -2611,6 +2761,9 @@ def compose_canonical_semantic_boundary_fragment_plan(
         operations=rewritten_operations,
         normalization_authority=normalization_authority,
         native_bodies=native_bodies,
+        return_carriers=rewritten_return_carriers,
+        terminal_returns=rewritten_terminal_returns,
+        terminal_routes=nested_terminal_routes,
         boundary_ports=boundary_ports,
     )
 
