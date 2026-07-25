@@ -1337,6 +1337,7 @@ def test_published_boundary_owner_mismatch_records_overlapping_identities() -> N
         blocks={
             10: _block(10, 0x1000, succs=(90,), preds=()),
             30: _block(30, 0x1204, succs=(90,), preds=(90,)),
+            40: _block(40, 0x1300, succs=(), preds=()),
             90: _block(90, 0x1400, succs=(30,), preds=(10, 30)),
         },
         entry_serial=10,
@@ -1380,6 +1381,15 @@ def test_published_boundary_owner_mismatch_records_overlapping_identities() -> N
                 "source_block_id": "unrelated-replacement",
                 "source_anchor_ea": "0x1300",
                 "source_identity": _identity(0x1300).diagnostic_label(),
+                "source_owner_labels": ("blk40@0x1300",),
+                "source_current_identity_inventory": (
+                    {
+                        "block": "blk40@0x1300",
+                        "contains_anchor": True,
+                        "overlaps_boundary_identity": True,
+                        "stable_identity": _identity(0x1300).diagnostic_label(),
+                    },
+                ),
                 "edges": (
                     {
                         "role": "conditional_taken",

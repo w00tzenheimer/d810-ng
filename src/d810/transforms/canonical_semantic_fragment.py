@@ -347,8 +347,11 @@ def _current_identity_inventory_for_boundary(
 
 
 def _normalization_incoming_operation_inventory(
+    graph: FlowGraph,
     plan: FragmentPlan,
     boundary_block_id: str,
+    *,
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
 ) -> tuple[dict[str, object], ...]:
     """Describe complete plan operations that enter one unpublished block."""
     inventory: list[dict[str, object]] = []
@@ -358,6 +361,16 @@ def _normalization_incoming_operation_inventory(
         ):
             continue
         source = plan.block(operation.source_block_id)
+        source_identity = source.stable_identity
+        source_owners = (
+            ()
+            if source_identity is None
+            else _current_owners_containing_identity(
+                graph,
+                source_identity,
+                current_identity_by_serial=current_identity_by_serial,
+            )
+        )
         inventory.append(
             {
                 "operation_id": operation.operation_id,
@@ -365,8 +378,22 @@ def _normalization_incoming_operation_inventory(
                 "source_anchor_ea": f"0x{int(source.semantic_anchor_ea):X}",
                 "source_identity": (
                     None
-                    if source.stable_identity is None
-                    else source.stable_identity.diagnostic_label()
+                    if source_identity is None
+                    else source_identity.diagnostic_label()
+                ),
+                "source_owner_labels": tuple(
+                    f"blk{serial}@0x{anchor_ea:X}"
+                    for serial, anchor_ea, _identity in source_owners
+                ),
+                "source_current_identity_inventory": (
+                    ()
+                    if source_identity is None
+                    else _current_identity_inventory_for_boundary(
+                        graph,
+                        source_identity,
+                        int(source.semantic_anchor_ea),
+                        current_identity_by_serial=current_identity_by_serial,
+                    )
                 ),
                 "edges": tuple(
                     {
@@ -2245,8 +2272,10 @@ def compose_canonical_semantic_boundary_fragment_plan(
                 ),
                 "normalization_incoming_operations": (
                     _normalization_incoming_operation_inventory(
+                        graph,
                         normalization_plan,
                         target.block_id,
+                        current_identity_by_serial=current_identity_by_serial,
                     )
                 ),
             },
