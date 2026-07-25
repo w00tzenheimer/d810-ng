@@ -21,6 +21,7 @@ Detection flow
 6. Convert to ``m_goto`` when all entries resolve to a single block; annotate
    otherwise.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING, List, Optional
@@ -47,8 +48,7 @@ from d810.hexrays.utils.table_utils import (
 )
 
 from d810.optimizers.microcode.handler import ConfigParam
-from d810.hexrays.mutation.cfg_verify import (
-    safe_verify)
+from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
 logger = getLogger("D810.optimizer")
@@ -97,7 +97,9 @@ class IndirectBranchResolver(FlowOptimizationRule):
     DESCRIPTION = "Resolves obfuscated indirect jumps by analysing encoded jump tables"
     CATEGORY = "Indirect Jumps"
     USES_DEFERRED_CFG = True  # Uses DeferredGraphModifier for CFG changes
-    SAFE_MATURITIES: list[int] = []  # Populated after class definition when IDA is available
+    SAFE_MATURITIES: list[
+        int
+    ] = []  # Populated after class definition when IDA is available
 
     def __init__(self) -> None:
         super().__init__()
@@ -132,7 +134,8 @@ class IndirectBranchResolver(FlowOptimizationRule):
 
         logger.debug(
             "IndirectBranchResolver: analysing block %d (m_ijmp at %#x)",
-            blk.serial, blk.tail.ea,
+            blk.serial,
+            blk.tail.ea,
         )
         logger.info(
             "IndirectBranchResolver: inspect ijmp blk=%d ea=%#x l.t=%d r.t=%d d.t=%d",
@@ -183,7 +186,8 @@ class IndirectBranchResolver(FlowOptimizationRule):
 
         logger.debug(
             "IndirectBranchResolver: table at %#x for block %d",
-            table_ea, blk.serial,
+            table_ea,
+            blk.serial,
         )
 
         # 3. Analyse table encoding
@@ -192,7 +196,9 @@ class IndirectBranchResolver(FlowOptimizationRule):
         )
         logger.debug(
             "IndirectBranchResolver: encoding=%s key=%#x base=%#x",
-            encoding.name, xor_key, base_offset,
+            encoding.name,
+            xor_key,
+            base_offset,
         )
         base_offset = self._resolve_base_offset_value(base_offset, runtime_globals)
 
@@ -221,8 +227,16 @@ class IndirectBranchResolver(FlowOptimizationRule):
             for fallback in fallback_encodings:
                 if fallback == encoding:
                     continue
-                fb_key = xor_key if fallback in (TableEncoding.XOR, TableEncoding.OFFSET_XOR) else 0
-                fb_base = base_offset if fallback in (TableEncoding.OFFSET, TableEncoding.OFFSET_XOR) else 0
+                fb_key = (
+                    xor_key
+                    if fallback in (TableEncoding.XOR, TableEncoding.OFFSET_XOR)
+                    else 0
+                )
+                fb_base = (
+                    base_offset
+                    if fallback in (TableEncoding.OFFSET, TableEncoding.OFFSET_XOR)
+                    else 0
+                )
                 alt_targets = self._decode_valid_targets(
                     raw_entries, fallback, fb_key, fb_base, func_start, func_end
                 )
@@ -253,7 +267,8 @@ class IndirectBranchResolver(FlowOptimizationRule):
 
         logger.info(
             "IndirectBranchResolver: resolved %d targets for block %d",
-            len(targets), blk.serial,
+            len(targets),
+            blk.serial,
         )
 
         # 6. Convert to direct jump
@@ -306,7 +321,9 @@ class IndirectBranchResolver(FlowOptimizationRule):
         # m_ijmp target is frequently in r (and not l). Try r first.
         for mop in (blk.tail.r, blk.tail.l):
             target = self._eval_operand_to_ea(mop, reg_values)
-            if target is not None and validate_code_target(target, func_start, func_end):
+            if target is not None and validate_code_target(
+                target, func_start, func_end
+            ):
                 return target
         return None
 
@@ -449,16 +466,13 @@ class IndirectBranchResolver(FlowOptimizationRule):
         for candidate in reversed(blocks):
             ins = candidate.head
             while ins is not None:
-                if (
-                    ins.d.t == ida_hexrays.mop_v
-                    and ins.opcode in (
-                        ida_hexrays.m_mov,
-                        ida_hexrays.m_add,
-                        ida_hexrays.m_sub,
-                        ida_hexrays.m_xor,
-                        ida_hexrays.m_or,
-                        ida_hexrays.m_and,
-                    )
+                if ins.d.t == ida_hexrays.mop_v and ins.opcode in (
+                    ida_hexrays.m_mov,
+                    ida_hexrays.m_add,
+                    ida_hexrays.m_sub,
+                    ida_hexrays.m_xor,
+                    ida_hexrays.m_or,
+                    ida_hexrays.m_and,
                 ):
                     value = IndirectBranchResolver._eval_insn_constant(
                         ins, global_values
@@ -702,7 +716,8 @@ class IndirectBranchResolver(FlowOptimizationRule):
             if ea != BADADDR:
                 logger.debug(
                     "IndirectBranchResolver: found named table '%s' at %#x",
-                    name, ea,
+                    name,
+                    ea,
                 )
                 return ea
         return None
@@ -729,7 +744,8 @@ class IndirectBranchResolver(FlowOptimizationRule):
                     max_index = int(mask) + 1
                     logger.debug(
                         "IndirectBranchResolver: index bound via AND mask %#x -> %d entries",
-                        mask, max_index,
+                        mask,
+                        max_index,
                     )
                     return min(max_index, MAX_TABLE_ENTRIES)
                 if ins.l.t == ida_hexrays.mop_n:
@@ -802,7 +818,8 @@ class IndirectBranchResolver(FlowOptimizationRule):
     # ------------------------------------------------------------------
     @staticmethod
     def _resolve_target_blocks(
-        mba: "ida_hexrays.mba_t", targets: List[int],
+        mba: "ida_hexrays.mba_t",
+        targets: List[int],
     ) -> List[Optional[int]]:
         """Map target EAs to block serial numbers."""
         result: List[Optional[int]] = []
@@ -844,7 +861,8 @@ class IndirectBranchResolver(FlowOptimizationRule):
 
         logger.info(
             "IndirectBranchResolver: converting block %d m_ijmp -> m_goto(blk %d)",
-            block_serial, target_blk_idx,
+            block_serial,
+            target_blk_idx,
         )
 
         # --- Apply phase: re-fetch fresh pointer and modify ---
@@ -889,7 +907,8 @@ class IndirectBranchResolver(FlowOptimizationRule):
         if ok:
             logger.info(
                 "IndirectBranchResolver: block %d successfully converted to goto blk %d",
-                block_serial, target_blk_idx,
+                block_serial,
+                target_blk_idx,
             )
             return 1
 
@@ -920,7 +939,8 @@ class IndirectBranchResolver(FlowOptimizationRule):
         idaapi.set_cmt(blk.start, comment, False)
         logger.info(
             "IndirectBranchResolver: annotated block %d with %d targets",
-            blk.serial, len(targets),
+            blk.serial,
+            len(targets),
         )
 
     # TODO(phase5): Add frameless continuation fallback (see stack_tracker.cpp)

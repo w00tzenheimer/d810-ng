@@ -1,4 +1,5 @@
 """Unit tests for branch witness model and static validation."""
+
 from __future__ import annotations
 
 import pytest
@@ -41,7 +42,9 @@ _STATE = 0x64
 
 def _mov_state(ea, const):
     return InsnSnapshot(
-        opcode=_OP_MOV, ea=ea, operands=(),
+        opcode=_OP_MOV,
+        ea=ea,
+        operands=(),
         l=MopSnapshot(t=_T_NUM, size=4, value=const, kind=OperandKind.NUMBER),
         d=MopSnapshot(t=_T_STK, size=4, stkoff=_STATE, kind=OperandKind.STACK),
         kind=InsnKind.MOV,
@@ -51,7 +54,9 @@ def _mov_state(ea, const):
 def _jz_block(serial, const, taken, fallthrough, preds=(), insns=()):
     """An equality-chain compare block: ``jz [state], const -> taken; fallthrough``."""
     tail = InsnSnapshot(
-        opcode=_OP_JZ, ea=0x1000 + serial * 0x40, operands=(),
+        opcode=_OP_JZ,
+        ea=0x1000 + serial * 0x40,
+        operands=(),
         l=MopSnapshot(t=_T_STK, size=4, stkoff=_STATE, kind=OperandKind.STACK),
         r=MopSnapshot(t=_T_NUM, size=4, value=const, kind=OperandKind.NUMBER),
         d=MopSnapshot(t=0, size=0, block_ref=taken, kind=OperandKind.BLOCK),
@@ -60,8 +65,12 @@ def _jz_block(serial, const, taken, fallthrough, preds=(), insns=()):
         is_conditional_jump=True,
     )
     return BlockSnapshot(
-        serial=serial, block_type=4, succs=(fallthrough, taken),
-        preds=tuple(preds), flags=0, start_ea=0x1000 + serial * 0x40,
+        serial=serial,
+        block_type=4,
+        succs=(fallthrough, taken),
+        preds=tuple(preds),
+        flags=0,
+        start_ea=0x1000 + serial * 0x40,
         insn_snapshots=(*insns, tail),
     )
 
@@ -73,7 +82,9 @@ def _jnz_block(serial, const, taken, fallthrough, preds=(), insns=()):
     next comparator.
     """
     tail = InsnSnapshot(
-        opcode=_OP_JNZ, ea=0x1000 + serial * 0x40, operands=(),
+        opcode=_OP_JNZ,
+        ea=0x1000 + serial * 0x40,
+        operands=(),
         l=MopSnapshot(t=_T_STK, size=4, stkoff=_STATE, kind=OperandKind.STACK),
         r=MopSnapshot(t=_T_NUM, size=4, value=const, kind=OperandKind.NUMBER),
         d=MopSnapshot(t=0, size=0, block_ref=taken, kind=OperandKind.BLOCK),
@@ -82,16 +93,25 @@ def _jnz_block(serial, const, taken, fallthrough, preds=(), insns=()):
         is_conditional_jump=True,
     )
     return BlockSnapshot(
-        serial=serial, block_type=4, succs=(fallthrough, taken),
-        preds=tuple(preds), flags=0, start_ea=0x1000 + serial * 0x40,
+        serial=serial,
+        block_type=4,
+        succs=(fallthrough, taken),
+        preds=tuple(preds),
+        flags=0,
+        start_ea=0x1000 + serial * 0x40,
         insn_snapshots=(*insns, tail),
     )
 
 
 def _b(serial, succs, preds=(), insns=()):
     return BlockSnapshot(
-        serial=serial, block_type=0, succs=tuple(succs), preds=tuple(preds),
-        flags=0, start_ea=0x1000 + serial * 0x40, insn_snapshots=tuple(insns),
+        serial=serial,
+        block_type=0,
+        succs=tuple(succs),
+        preds=tuple(preds),
+        flags=0,
+        start_ea=0x1000 + serial * 0x40,
+        insn_snapshots=tuple(insns),
     )
 
 
@@ -99,17 +119,25 @@ class TestStaticWitnessForState:
     def test_eq_witness_records_selected_and_rejected(self):
         """Static EQ witness records selected (taken) and rejected (fallthrough)."""
         # blk2: jz state == 0x10 -> blk10 (handler), fallthrough -> blk3 (next cmp)
-        fg = FlowGraph(blocks={
-            2: _jz_block(2, 0x10, taken=10, fallthrough=3),
-            3: _jz_block(3, 0x20, taken=20, fallthrough=99),
-            10: _b(10, (99,), (2,)),
-            20: _b(20, (99,), (3,)),
-            99: _b(99, (), (10, 20)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jz_block(2, 0x10, taken=10, fallthrough=3),
+                3: _jz_block(3, 0x20, taken=20, fallthrough=99),
+                10: _b(10, (99,), (2,)),
+                20: _b(20, (99,), (3,)),
+                99: _b(99, (), (10, 20)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
 
         row = BranchWitnessRow(
-            state=0x10, compare_block=2, predicate="eq", compare_const=0x10,
-            selected_successor=10, rejected_successors=(3,),
+            state=0x10,
+            compare_block=2,
+            predicate="eq",
+            compare_const=0x10,
+            selected_successor=10,
+            rejected_successors=(3,),
         )
         witness = static_witness_for_state(fg, row, 0x10, _STATE)
         assert isinstance(witness, ExactBranchWitness)
@@ -122,16 +150,24 @@ class TestStaticWitnessForState:
 
     def test_eq_witness_not_equal_selects_fallthrough(self):
         """When state != const on EQ row, selected=fallthrough (next comparator)."""
-        fg = FlowGraph(blocks={
-            2: _jz_block(2, 0x10, taken=10, fallthrough=3),
-            3: _jz_block(3, 0x10, taken=10, fallthrough=99),
-            10: _b(10, (99,), (2, 3)),
-            99: _b(99, (), (10,)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jz_block(2, 0x10, taken=10, fallthrough=3),
+                3: _jz_block(3, 0x10, taken=10, fallthrough=99),
+                10: _b(10, (99,), (2, 3)),
+                99: _b(99, (), (10,)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
 
         row = BranchWitnessRow(
-            state=0x20, compare_block=2, predicate="eq", compare_const=0x10,
-            selected_successor=3, rejected_successors=(10,),
+            state=0x20,
+            compare_block=2,
+            predicate="eq",
+            compare_const=0x10,
+            selected_successor=3,
+            rejected_successors=(10,),
         )
         # State 0x20 != 0x10 => selected = fallthrough = 3
         witness = static_witness_for_state(fg, row, 0x20, _STATE)
@@ -142,17 +178,25 @@ class TestStaticWitnessForState:
     def test_ne_witness_records_selected_and_rejected(self):
         """Static NE witness records the taken successor when state != const."""
         # blk2: jnz state != 0x10 -> blk3 (next cmp), fallthrough -> blk10 (handler)
-        fg = FlowGraph(blocks={
-            2: _jnz_block(2, 0x10, taken=3, fallthrough=10),
-            3: _jnz_block(3, 0x20, taken=99, fallthrough=20),
-            10: _b(10, (99,), (2,)),
-            20: _b(20, (99,), (3,)),
-            99: _b(99, (), (10, 20)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jnz_block(2, 0x10, taken=3, fallthrough=10),
+                3: _jnz_block(3, 0x20, taken=99, fallthrough=20),
+                10: _b(10, (99,), (2,)),
+                20: _b(20, (99,), (3,)),
+                99: _b(99, (), (10, 20)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
 
         row = BranchWitnessRow(
-            state=0x20, compare_block=2, predicate="ne", compare_const=0x10,
-            selected_successor=3, rejected_successors=(10,),
+            state=0x20,
+            compare_block=2,
+            predicate="ne",
+            compare_const=0x10,
+            selected_successor=3,
+            rejected_successors=(10,),
         )
         # 0x20 != 0x10, so the NE branch is taken to the next comparator.
         witness = static_witness_for_state(fg, row, 0x20, _STATE)
@@ -164,18 +208,26 @@ class TestStaticWitnessForState:
 
     def test_stale_row_target_not_successor_returns_abstain(self):
         """Row whose target_block is no longer a block successor returns abstain."""
-        fg = FlowGraph(blocks={
-            2: _jz_block(2, 0x10, taken=10, fallthrough=3),
-            3: _jz_block(3, 0x20, taken=20, fallthrough=99),
-            10: _b(10, (99,), ()),
-            20: _b(20, (99,), (3,)),
-            99: _b(99, (), (10, 20)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jz_block(2, 0x10, taken=10, fallthrough=3),
+                3: _jz_block(3, 0x20, taken=20, fallthrough=99),
+                10: _b(10, (99,), ()),
+                20: _b(20, (99,), (3,)),
+                99: _b(99, (), (10, 20)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
 
         # Claim target=100, but blk2's successors are only 10 and 3.
         row = BranchWitnessRow(
-            state=0x10, compare_block=2, predicate="eq", compare_const=0x10,
-            selected_successor=100, rejected_successors=(3,),
+            state=0x10,
+            compare_block=2,
+            predicate="eq",
+            compare_const=0x10,
+            selected_successor=100,
+            rejected_successors=(3,),
         )
         witness = static_witness_for_state(fg, row, 0x10, _STATE)
         assert isinstance(witness, BranchWitnessAbstain)
@@ -183,16 +235,24 @@ class TestStaticWitnessForState:
 
     def test_unknown_predicate_returns_abstain(self):
         """Unrecognized branch_kind returns abstain."""
-        fg = FlowGraph(blocks={
-            2: _jz_block(2, 0x10, taken=10, fallthrough=3),
-            10: _b(10, (99,), (2,)),
-            99: _b(99, (), (10,)),
-            3: _b(3, (99,), (2,)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jz_block(2, 0x10, taken=10, fallthrough=3),
+                10: _b(10, (99,), (2,)),
+                99: _b(99, (), (10,)),
+                3: _b(3, (99,), (2,)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
 
         row = BranchWitnessRow(
-            state=0x10, compare_block=2, predicate="lt", compare_const=0x10,
-            selected_successor=10, rejected_successors=(3,),
+            state=0x10,
+            compare_block=2,
+            predicate="lt",
+            compare_const=0x10,
+            selected_successor=10,
+            rejected_successors=(3,),
         )
         witness = static_witness_for_state(fg, row, 0x10, _STATE)
         assert isinstance(witness, BranchWitnessAbstain)
@@ -200,16 +260,24 @@ class TestStaticWitnessForState:
 
     def test_wrong_state_constant_returns_abstain(self):
         """Row state_const != block comparison constant returns abstain."""
-        fg = FlowGraph(blocks={
-            2: _jz_block(2, 0x10, taken=10, fallthrough=3),
-            10: _b(10, (99,), (2,)),
-            3: _b(3, (99,), (2,)),
-            99: _b(99, (), (10, 3)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jz_block(2, 0x10, taken=10, fallthrough=3),
+                10: _b(10, (99,), (2,)),
+                3: _b(3, (99,), (2,)),
+                99: _b(99, (), (10, 3)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
 
         row = BranchWitnessRow(
-            state=0x10, compare_block=2, predicate="eq", compare_const=0x99,
-            selected_successor=10, rejected_successors=(3,),
+            state=0x10,
+            compare_block=2,
+            predicate="eq",
+            compare_const=0x99,
+            selected_successor=10,
+            rejected_successors=(3,),
         )
         witness = static_witness_for_state(fg, row, 0x10, _STATE)
         assert isinstance(witness, BranchWitnessAbstain)
@@ -223,30 +291,51 @@ class TestResolveExactBranchWitness:
         state=0x20: blk2 checks 0x10 (not match, selected=fallthrough=blk4),
         blk4 checks 0x20 (match, selected=taken=blk20). Target handler = blk20.
         """
-        fg = FlowGraph(blocks={
-            0: _b(0, (2,), ()),
-            2: _jz_block(2, 0x10, taken=10, fallthrough=4, preds=(0,), insns=(_mov_state(0x800, 0x20),)),
-            4: _jz_block(4, 0x20, taken=20, fallthrough=6, preds=(2,)),
-            10: _b(10, (99,), (2,)),
-            20: _b(20, (99,), (4,)),
-            6: _b(6, (4,), ()),
-            99: _b(99, (), (10, 20)),
-        }, entry_serial=0, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                0: _b(0, (2,), ()),
+                2: _jz_block(
+                    2,
+                    0x10,
+                    taken=10,
+                    fallthrough=4,
+                    preds=(0,),
+                    insns=(_mov_state(0x800, 0x20),),
+                ),
+                4: _jz_block(4, 0x20, taken=20, fallthrough=6, preds=(2,)),
+                10: _b(10, (99,), (2,)),
+                20: _b(20, (99,), (4,)),
+                6: _b(6, (4,), ()),
+                99: _b(99, (), (10, 20)),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
 
         rows = (
             BranchWitnessRow(
-                state=0x20, compare_block=2, predicate="eq", compare_const=0x10,
-                selected_successor=4, rejected_successors=(10,),
+                state=0x20,
+                compare_block=2,
+                predicate="eq",
+                compare_const=0x10,
+                selected_successor=4,
+                rejected_successors=(10,),
             ),
             BranchWitnessRow(
-                state=0x20, compare_block=4, predicate="eq", compare_const=0x20,
-                selected_successor=20, rejected_successors=(6,),
+                state=0x20,
+                compare_block=4,
+                predicate="eq",
+                compare_const=0x20,
+                selected_successor=20,
+                rejected_successors=(6,),
             ),
         )
-        dispatcher = IntervalDispatcher([
-            IntervalRow(lo=0x10, hi=0x11, target=10),
-            IntervalRow(lo=0x20, hi=0x21, target=20),
-        ])
+        dispatcher = IntervalDispatcher(
+            [
+                IntervalRow(lo=0x10, hi=0x11, target=10),
+                IntervalRow(lo=0x20, hi=0x21, target=20),
+            ]
+        )
         branch_witness_map = BranchWitnessMap(
             rows=rows,
             dispatcher_entry_block=2,
@@ -256,7 +345,10 @@ class TestResolveExactBranchWitness:
         )
         # Dispatch map: blk2 and blk4 are dispatcher blocks.
         result = resolve_exact_branch_witness(
-            fg, dispatcher, 0x20, _STATE,
+            fg,
+            dispatcher,
+            0x20,
+            _STATE,
             branch_witness_map=branch_witness_map,
         )
         assert isinstance(result, tuple)
@@ -276,12 +368,16 @@ class TestResolveExactBranchWitness:
 
     def test_abstains_when_branch_witness_map_missing(self):
         """Without branch-witness rows, static witness abstains."""
-        fg = FlowGraph(blocks={
-            2: _jz_block(2, 0x10, taken=10, fallthrough=3),
-            3: _b(3, (99,), (2,)),
-            10: _b(10, (99,), (2,)),
-            99: _b(99, (), (3, 10)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jz_block(2, 0x10, taken=10, fallthrough=3),
+                3: _b(3, (99,), (2,)),
+                10: _b(10, (99,), (2,)),
+                99: _b(99, (), (3, 10)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
 
         dispatcher = IntervalDispatcher([IntervalRow(lo=0x10, hi=0x11, target=10)])
         result = resolve_exact_branch_witness(fg, dispatcher, 0x10, _STATE)
@@ -290,40 +386,57 @@ class TestResolveExactBranchWitness:
 
     def test_abstains_when_state_not_covered(self):
         """State not in IntervalDispatcher -> abstain."""
-        fg = FlowGraph(blocks={
-            2: _jz_block(2, 0x10, taken=10, fallthrough=3),
-            3: _b(3, (99,), (2,)),
-            10: _b(10, (99,), (2,)),
-            99: _b(99, (), (3, 10)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jz_block(2, 0x10, taken=10, fallthrough=3),
+                3: _b(3, (99,), (2,)),
+                10: _b(10, (99,), (2,)),
+                99: _b(99, (), (3, 10)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
 
         rows = (
             BranchWitnessRow(
-                state=0x10, compare_block=2, predicate="eq", compare_const=0x10,
-                selected_successor=10, rejected_successors=(3,),
+                state=0x10,
+                compare_block=2,
+                predicate="eq",
+                compare_const=0x10,
+                selected_successor=10,
+                rejected_successors=(3,),
             ),
         )
         # Empty dispatcher (no rows) -> no lookup.
         dispatcher = IntervalDispatcher([])
         branch_witness_map = BranchWitnessMap(
-            rows=rows, dispatcher_entry_block=2, dispatcher_blocks=frozenset((2,)),
+            rows=rows,
+            dispatcher_entry_block=2,
+            dispatcher_blocks=frozenset((2,)),
             state_var_stkoff=_STATE,
             router_kind=RouterKind.CONDITION_CHAIN,
         )
         result = resolve_exact_branch_witness(
-            fg, dispatcher, 0x10, _STATE,
+            fg,
+            dispatcher,
+            0x10,
+            _STATE,
             branch_witness_map=branch_witness_map,
         )
         assert isinstance(result, BranchWitnessAbstain)
 
     def test_adapter_ignores_stale_endpoint_target_block(self):
         """StateDispatcherMap endpoint rows are not branch proof rows."""
-        fg = FlowGraph(blocks={
-            2: _jz_block(2, 0x10, taken=10, fallthrough=3),
-            3: _b(3, (99,), (2,)),
-            10: _b(10, (99,), (2,)),
-            99: _b(99, (), (3, 10)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jz_block(2, 0x10, taken=10, fallthrough=3),
+                3: _b(3, (99,), (2,)),
+                10: _b(10, (99,), (2,)),
+                99: _b(99, (), (3, 10)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
 
         dispatch_map = StateDispatcherMap(
             rows=(
@@ -350,7 +463,10 @@ class TestResolveExactBranchWitness:
 
         dispatcher = IntervalDispatcher([IntervalRow(lo=0x10, hi=0x11, target=10)])
         result = resolve_exact_branch_witness(
-            fg, dispatcher, 0x10, _STATE,
+            fg,
+            dispatcher,
+            0x10,
+            _STATE,
             branch_witness_map=branch_witness_map,
         )
         assert isinstance(result, tuple)
@@ -359,12 +475,16 @@ class TestResolveExactBranchWitness:
 
     def test_adapter_abstains_for_non_conditional_chain_maps(self):
         """Switch/indirect/condition-chain maps must not become equality-chain witnesses."""
-        fg = FlowGraph(blocks={
-            2: _jz_block(2, 0x10, taken=10, fallthrough=3),
-            3: _b(3, (99,), (2,)),
-            10: _b(10, (99,), (2,)),
-            99: _b(99, (), (3, 10)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jz_block(2, 0x10, taken=10, fallthrough=3),
+                3: _b(3, (99,), (2,)),
+                10: _b(10, (99,), (2,)),
+                99: _b(99, (), (3, 10)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
         dispatch_map = StateDispatcherMap(
             rows=(
                 StateDispatcherRow(
@@ -387,12 +507,16 @@ class TestResolveExactBranchWitness:
 
     def test_emulation_without_branch_witness_map_abstains(self):
         """Emulation fallback still needs branch-witness compare-block context."""
-        fg = FlowGraph(blocks={
-            2: _jz_block(2, 0x10, taken=10, fallthrough=3),
-            3: _b(3, (99,), (2,)),
-            10: _b(10, (99,), (2,)),
-            99: _b(99, (), (3, 10)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jz_block(2, 0x10, taken=10, fallthrough=3),
+                3: _b(3, (99,), (2,)),
+                10: _b(10, (99,), (2,)),
+                99: _b(99, (), (3, 10)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
 
         dispatcher = IntervalDispatcher([IntervalRow(lo=0x10, hi=0x11, target=10)])
 
@@ -408,17 +532,25 @@ class TestResolveExactBranchWitness:
 
     def test_conflicts_when_emulation_disagrees_with_static(self):
         """Exact proof sources that select different successors conflict."""
-        fg = FlowGraph(blocks={
-            2: _jz_block(2, 0x10, taken=10, fallthrough=3),
-            3: _b(3, (99,), (2,)),
-            10: _b(10, (99,), (2,)),
-            99: _b(99, (), (3, 10)),
-        }, entry_serial=2, func_ea=0x1000)
+        fg = FlowGraph(
+            blocks={
+                2: _jz_block(2, 0x10, taken=10, fallthrough=3),
+                3: _b(3, (99,), (2,)),
+                10: _b(10, (99,), (2,)),
+                99: _b(99, (), (3, 10)),
+            },
+            entry_serial=2,
+            func_ea=0x1000,
+        )
 
         rows = (
             BranchWitnessRow(
-                state=0x10, compare_block=2, predicate="eq", compare_const=0x10,
-                selected_successor=10, rejected_successors=(3,),
+                state=0x10,
+                compare_block=2,
+                predicate="eq",
+                compare_const=0x10,
+                selected_successor=10,
+                rejected_successors=(3,),
             ),
         )
         dispatcher = IntervalDispatcher([IntervalRow(lo=0x10, hi=0x11, target=10)])
@@ -444,7 +576,11 @@ class TestResolveExactBranchWitness:
                 )
 
         result = resolve_exact_branch_witness(
-            fg, dispatcher, 0x10, _STATE, branch_witness_map=branch_witness_map,
+            fg,
+            dispatcher,
+            0x10,
+            _STATE,
+            branch_witness_map=branch_witness_map,
             emu=_DisagreeingEmu(),
         )
         assert isinstance(result, BranchWitnessConflict)

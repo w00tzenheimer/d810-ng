@@ -4,6 +4,7 @@ Passes use :class:`RunLater` to ask for a later pass run. The scheduler stores
 only primitive identities plus the portable IR maturity; a backend coordinator
 is responsible for translating drained records into concrete work.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -13,6 +13,7 @@ segment/edge structure (``StateLocalSegment`` / ``StateLocalEdge``) and the oute
 transition edges (``StateDagEdge``) land in follow-up increments; this increment
 is the node projection.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.block_ownership_domain import (
@@ -78,7 +79,9 @@ def read_dag_from(
     ownership fields are the owner-set read-off.
     """
     owners = block_owners(owner_result)
-    range_map = {int(b): (int(lo), int(hi)) for b, (lo, hi) in view.handler_range_map.items()}
+    range_map = {
+        int(b): (int(lo), int(hi)) for b, (lo, hi) in view.handler_range_map.items()
+    }
 
     # state -> handler: the exact handlers, plus (when a transition result is given)
     # the full transition handler map -- so the read-off expands to one node per
@@ -100,7 +103,10 @@ def read_dag_from(
             lo, hi = range_map[handler]
             kind = StateNodeKind.RANGE_BACKED
             key = StateDagNodeKey(
-                handler_serial=handler, state_const=state_const, range_lo=lo, range_hi=hi
+                handler_serial=handler,
+                state_const=state_const,
+                range_lo=lo,
+                range_hi=hi,
             )
             label = _state_label(kind, state_const, lo, hi)
         else:
@@ -174,7 +180,9 @@ def read_dag_from(
         state_var_stkoff=state_var_stkoff,
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
-        condition_chain_blocks=tuple(sorted(int(b) for b in view.condition_chain_blocks)),
+        condition_chain_blocks=tuple(
+            sorted(int(b) for b in view.condition_chain_blocks)
+        ),
         nodes=tuple(nodes),
         edges=edges,
     )

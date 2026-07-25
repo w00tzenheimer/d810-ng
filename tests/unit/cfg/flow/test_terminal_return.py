@@ -1,4 +1,5 @@
 """Unit tests for terminal return CFG frontier helpers."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.terminal_frontier import (

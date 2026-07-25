@@ -68,9 +68,7 @@ class SemanticFragmentRollbackFailed(RuntimeError):
         )
 
 
-_INTERR_PATTERN = re.compile(
-    r"\b(?:INTERR\s*:?\s*|Internal error\s+)(?P<code>\d+)\b"
-)
+_INTERR_PATTERN = re.compile(r"\b(?:INTERR\s*:?\s*|Internal error\s+)(?P<code>\d+)\b")
 
 
 def _exception_chain(error: Exception) -> tuple[Exception, ...]:
@@ -82,9 +80,7 @@ def _exception_chain(error: Exception) -> tuple[Exception, ...]:
         seen.add(id(current))
         chain.append(current)
         current = (
-            current.__cause__
-            if current.__cause__ is not None
-            else current.__context__
+            current.__cause__ if current.__cause__ is not None else current.__context__
         )
     chain.reverse()
     return tuple(chain)
@@ -142,11 +138,7 @@ def _record_primary_failure(
             plan,
             MbaSemanticFragmentFailure(
                 failure_kind="verifier",
-                phase=(
-                    phase
-                    if candidate is primary
-                    else f"{phase}_cleanup"
-                ),
+                phase=(phase if candidate is primary else f"{phase}_cleanup"),
                 error_type=type(candidate).__name__,
                 error_message=_failure_message(candidate),
                 interr_code=interr_code,
@@ -212,9 +204,7 @@ def _require_lifecycle_authority(
 ) -> FragmentPublicationLifecycleAuthority:
     authority = getattr(gateway, "lifecycle_authority", None)
     if not isinstance(authority, FragmentPublicationLifecycleAuthority):
-        raise TypeError(
-            "fragment publication requires a lifecycle authority"
-        )
+        raise TypeError("fragment publication requires a lifecycle authority")
     return authority
 
 

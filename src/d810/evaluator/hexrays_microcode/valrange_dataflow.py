@@ -403,21 +403,37 @@ def _refine_for_branch_edge(
 # ---------------------------------------------------------------------------
 
 
-_SET_FLAG_OPCODES = frozenset({
-    ida_hexrays.m_setz, ida_hexrays.m_setnz,
-    ida_hexrays.m_setae, ida_hexrays.m_setb,
-    ida_hexrays.m_seta, ida_hexrays.m_setbe,
-    ida_hexrays.m_setg, ida_hexrays.m_setge,
-    ida_hexrays.m_setl, ida_hexrays.m_setle,
-    ida_hexrays.m_sets, ida_hexrays.m_seto, ida_hexrays.m_setp,
-})
+_SET_FLAG_OPCODES = frozenset(
+    {
+        ida_hexrays.m_setz,
+        ida_hexrays.m_setnz,
+        ida_hexrays.m_setae,
+        ida_hexrays.m_setb,
+        ida_hexrays.m_seta,
+        ida_hexrays.m_setbe,
+        ida_hexrays.m_setg,
+        ida_hexrays.m_setge,
+        ida_hexrays.m_setl,
+        ida_hexrays.m_setle,
+        ida_hexrays.m_sets,
+        ida_hexrays.m_seto,
+        ida_hexrays.m_setp,
+    }
+)
 
-_ARITH_OPCODES = frozenset({
-    ida_hexrays.m_add, ida_hexrays.m_sub,
-    ida_hexrays.m_mul,
-    ida_hexrays.m_xor, ida_hexrays.m_and, ida_hexrays.m_or,
-    ida_hexrays.m_shl, ida_hexrays.m_shr, ida_hexrays.m_sar,
-})
+_ARITH_OPCODES = frozenset(
+    {
+        ida_hexrays.m_add,
+        ida_hexrays.m_sub,
+        ida_hexrays.m_mul,
+        ida_hexrays.m_xor,
+        ida_hexrays.m_and,
+        ida_hexrays.m_or,
+        ida_hexrays.m_shl,
+        ida_hexrays.m_shr,
+        ida_hexrays.m_sar,
+    }
+)
 
 
 def _try_gen(ins, key: ValrangeKey, env: ValrangeEnv) -> Optional[ida_hexrays.valrng_t]:
@@ -452,7 +468,9 @@ def _try_gen(ins, key: ValrangeKey, env: ValrangeEnv) -> Optional[ida_hexrays.va
             if ins.l.t == ida_hexrays.mop_d and ins.l.d is not None:
                 if ins.l.d.opcode in _SET_FLAG_OPCODES:
                     vr = ida_hexrays.valrng_t(key.size)
-                    vr.set_cmp(4, 1)  # CMP_A=4 → <=1 after negation... actually use range
+                    vr.set_cmp(
+                        4, 1
+                    )  # CMP_A=4 → <=1 after negation... actually use range
                     # Simpler: just set [0, 1]
                     vr0 = ida_hexrays.valrng_t(key.size)
                     vr0.set_eq(0)
@@ -685,10 +703,7 @@ def _transfer_single_insn(ins, blk, env: ValrangeEnv) -> None:
         try:
             def_list = blk.build_def_list(ins, ida_hexrays.MUST_ACCESS)
             if not def_list.empty():
-                to_kill = [
-                    k for k in env
-                    if def_list.has_common(_key_to_mlist(k))
-                ]
+                to_kill = [k for k in env if def_list.has_common(_key_to_mlist(k))]
                 for k in to_kill:
                     del env[k]
         except Exception:

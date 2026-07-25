@@ -25,6 +25,7 @@ domain stays portable-core (no IDA import): per-block state-write evidence and
 topology cross the boundary as plain data, exactly like the
 ``ReachingDefinitionsDomain`` worked example in ``test_worklist_solver.py``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -8,6 +8,7 @@ Schema follows the existing pattern in ``core/persistence.py``:
 
 No IDA imports - fully unit-testable.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -22,7 +23,11 @@ from types import MappingProxyType
 from d810.core.typing import TypeVar
 
 from d810.core import logging
-from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints, PreanalysisResult
+from d810.analyses.control_flow.models import (
+    CandidateFlag,
+    DeobfuscationHints,
+    PreanalysisResult,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +133,9 @@ def _delete_sqlite_database(db_path: Path) -> None:
         try:
             path.unlink(missing_ok=True)
         except OSError:
-            logger.warning("preanalysis store: failed to delete %s", path, exc_info=True)
+            logger.warning(
+                "preanalysis store: failed to delete %s", path, exc_info=True
+            )
 
 
 def _ensure_readable_database(db_path: Path) -> None:
@@ -250,8 +257,10 @@ class PreanalysisStore:
             """,
             (int(func_ea), int(provider_level)),
         )
-        return [self._row_to_result(row, func_ea=func_ea, provider_level=provider_level)
-                for row in cursor.fetchall()]
+        return [
+            self._row_to_result(row, func_ea=func_ea, provider_level=provider_level)
+            for row in cursor.fetchall()
+        ]
 
     def load_all_preanalysis_results(self, *, func_ea: int) -> list[PreanalysisResult]:
         """Load all collector results for a function across all maturities."""
@@ -329,8 +338,7 @@ class PreanalysisStore:
         row: sqlite3.Row, *, func_ea: int, provider_level: int
     ) -> PreanalysisResult:
         candidates = tuple(
-            _candidate_from_dict(d)
-            for d in json.loads(row["candidates_json"] or "[]")
+            _candidate_from_dict(d) for d in json.loads(row["candidates_json"] or "[]")
         )
         return PreanalysisResult(
             collector_name=str(row["collector_name"]),
@@ -382,14 +390,15 @@ class PreanalysisStore:
         if row is None:
             return None
         candidates = tuple(
-            _candidate_from_dict(d)
-            for d in json.loads(row["candidates_json"] or "[]")
+            _candidate_from_dict(d) for d in json.loads(row["candidates_json"] or "[]")
         )
         return DeobfuscationHints(
             func_ea=int(func_ea),
             obfuscation_type=row["obfuscation_type"],
             confidence=float(row["confidence"]),
-            recommended_inferences=tuple(json.loads(row["recommended_inferences_json"] or "[]")),
+            recommended_inferences=tuple(
+                json.loads(row["recommended_inferences_json"] or "[]")
+            ),
             candidates=candidates,
             suppress_rules=tuple(json.loads(row["suppress_rules_json"] or "[]")),
         )
@@ -416,8 +425,15 @@ class PreanalysisStore:
             "INSERT OR REPLACE INTO preanalysis_session_summary "
             "(func_ea, timestamp, collectors_fired, classification, confidence, "
             "inferences_json, suppress_rules_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (func_ea, time.time(), collectors_fired, classification, confidence,
-             json.dumps(inferences), json.dumps(suppress_rules)),
+            (
+                func_ea,
+                time.time(),
+                collectors_fired,
+                classification,
+                confidence,
+                json.dumps(inferences),
+                json.dumps(suppress_rules),
+            ),
         )
         self._conn.commit()
 
@@ -457,9 +473,16 @@ class PreanalysisStore:
             "INSERT OR REPLACE INTO consumer_outcomes "
             "(func_ea, consumer_name, timestamp, artifacts_available, summary_available, "
             "verdict_applied, detail, provenance_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (func_ea, consumer_name, time.time(),
-             int(artifacts_available), int(summary_available), int(verdict_applied),
-             detail, provenance_json),
+            (
+                func_ea,
+                consumer_name,
+                time.time(),
+                int(artifacts_available),
+                int(summary_available),
+                int(verdict_applied),
+                detail,
+                provenance_json,
+            ),
         )
         self._conn.commit()
 
@@ -574,7 +597,10 @@ class PreanalysisStore:
         ).fetchone()
         if row is None:
             return None
-        return {"override_value": row["override_value"], "confidence": row["confidence"]}
+        return {
+            "override_value": row["override_value"],
+            "confidence": row["confidence"],
+        }
 
     # ------------------------------------------------------------------
     # Lifecycle

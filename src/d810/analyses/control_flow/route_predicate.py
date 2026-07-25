@@ -27,6 +27,7 @@ Pure: no IDA. Extraction of the backend comparison shape from live microcode liv
 ``backends/hexrays/evidence/condition_chain_analysis``; this module only consumes the
 ``RouteComparison`` records.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

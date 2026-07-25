@@ -128,7 +128,9 @@ def init_database(db_path: pathlib.Path = DB_PATH) -> sqlite3.Connection:
     cursor = conn.execute("SELECT version FROM schema_version")
     row = cursor.fetchone()
     if row is None:
-        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
+        )
         conn.commit()
 
     return conn
@@ -137,6 +139,7 @@ def init_database(db_path: pathlib.Path = DB_PATH) -> sqlite3.Connection:
 # =============================================================================
 # Result Capture
 # =============================================================================
+
 
 class TestResultCapture:
     """Capture test results to database."""
@@ -217,13 +220,26 @@ class TestResultCapture:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                test_suite, test_name, test_class, test_file,
-                function_name, binary_name, function_address,
-                code_before, code_after, code_changed,
-                json.dumps(rules_fired), json.dumps(stats_dict),
-                json.dumps(optimizer_usage), json.dumps(cfg_rule_usage),
-                passed, error_message, skipped, skip_reason,
-                test_duration, pytest_nodeid,
+                test_suite,
+                test_name,
+                test_class,
+                test_file,
+                function_name,
+                binary_name,
+                function_address,
+                code_before,
+                code_after,
+                code_changed,
+                json.dumps(rules_fired),
+                json.dumps(stats_dict),
+                json.dumps(optimizer_usage),
+                json.dumps(cfg_rule_usage),
+                passed,
+                error_message,
+                skipped,
+                skip_reason,
+                test_duration,
+                pytest_nodeid,
             ),
         )
         self.conn.commit()
@@ -233,6 +249,7 @@ class TestResultCapture:
 # =============================================================================
 # Query Helpers
 # =============================================================================
+
 
 class TestResultQuery:
     """Query test results from database."""
@@ -334,12 +351,9 @@ class TestResultQuery:
                 AND t2.function_name = test_results.function_name
             )
             """,
-            (suite1,)
+            (suite1,),
         )
-        suite1_results = {
-            row["function_name"]: dict(row)
-            for row in cursor1.fetchall()
-        }
+        suite1_results = {row["function_name"]: dict(row) for row in cursor1.fetchall()}
 
         cursor2 = self.conn.execute(
             """
@@ -352,12 +366,9 @@ class TestResultQuery:
                 AND t2.function_name = test_results.function_name
             )
             """,
-            (suite2,)
+            (suite2,),
         )
-        suite2_results = {
-            row["function_name"]: dict(row)
-            for row in cursor2.fetchall()
-        }
+        suite2_results = {row["function_name"]: dict(row) for row in cursor2.fetchall()}
 
         functions1 = set(suite1_results.keys())
         functions2 = set(suite2_results.keys())
@@ -447,7 +458,7 @@ class TestResultQuery:
             ORDER BY timestamp DESC
             LIMIT ?
             """,
-            (limit,)
+            (limit,),
         )
         return [dict(row) for row in cursor.fetchall()]
 
@@ -475,6 +486,7 @@ class TestResultQuery:
 # =============================================================================
 # Pytest Plugin
 # =============================================================================
+
 
 def pytest_addoption(parser):
     """Add pytest command-line options."""
@@ -586,6 +598,7 @@ class CapturePlugin:
 # Pytest Fixture (for manual capture in tests)
 # =============================================================================
 
+
 def pytest_configure_for_fixtures(config):
     """Make fixtures available."""
     pass
@@ -615,6 +628,7 @@ try:
             class NoOpCapture:
                 def record(self, **kwargs):
                     pass
+
             return NoOpCapture()
 
         # Get test context
@@ -645,7 +659,9 @@ try:
                 if binary_name:
                     request.node.user_properties.append(("binary_name", binary_name))
                 if function_address:
-                    request.node.user_properties.append(("function_address", function_address))
+                    request.node.user_properties.append(
+                        ("function_address", function_address)
+                    )
 
         return CaptureHelper()
 
@@ -658,6 +674,7 @@ except ImportError:
 # CLI Interface
 # =============================================================================
 
+
 def main():
     """Command-line interface for querying test results."""
     import argparse
@@ -668,54 +685,37 @@ def main():
 
     # list-functions command
     subparsers.add_parser(
-        "list-functions",
-        help="List all functions tested with coverage info"
+        "list-functions", help="List all functions tested with coverage info"
     )
 
     # get-function command
     func_parser = subparsers.add_parser(
-        "get-function",
-        help="Get all results for a specific function"
+        "get-function", help="Get all results for a specific function"
     )
     func_parser.add_argument("function_name", help="Function name to query")
     func_parser.add_argument("--limit", type=int, help="Limit number of results")
 
     # compare-suites command
     compare_parser = subparsers.add_parser(
-        "compare-suites",
-        help="Compare results between two test suites"
+        "compare-suites", help="Compare results between two test suites"
     )
     compare_parser.add_argument("suite1", help="First test suite")
     compare_parser.add_argument("suite2", help="Second test suite")
     compare_parser.add_argument(
-        "--show-code",
-        action="store_true",
-        help="Show code differences"
+        "--show-code", action="store_true", help="Show code differences"
     )
 
     # list-suites command
-    subparsers.add_parser(
-        "list-suites",
-        help="List all test suites in database"
-    )
+    subparsers.add_parser("list-suites", help="List all test suites in database")
 
     # recent command
-    recent_parser = subparsers.add_parser(
-        "recent",
-        help="Show recent test runs"
-    )
+    recent_parser = subparsers.add_parser("recent", help="Show recent test runs")
     recent_parser.add_argument(
-        "--limit",
-        type=int,
-        default=10,
-        help="Number of recent runs to show"
+        "--limit", type=int, default=10, help="Number of recent runs to show"
     )
 
     # stats command
-    subparsers.add_parser(
-        "stats",
-        help="Show database statistics"
-    )
+    subparsers.add_parser("stats", help="Show database statistics")
 
     args = parser.parse_args()
 
@@ -732,7 +732,9 @@ def main():
     with TestResultQuery() as query:
         if args.command == "list-functions":
             functions = query.list_functions()
-            print(f"{'Function':<40} {'Suites':<3} {'Runs':<5} {'Passed':<6} {'Test Suites'}")
+            print(
+                f"{'Function':<40} {'Suites':<3} {'Runs':<5} {'Passed':<6} {'Test Suites'}"
+            )
             print("=" * 100)
             for func in functions:
                 print(
@@ -744,18 +746,15 @@ def main():
                 )
 
         elif args.command == "get-function":
-            results = query.get_function_results(
-                args.function_name,
-                limit=args.limit
-            )
+            results = query.get_function_results(args.function_name, limit=args.limit)
             if not results:
                 print(f"No results found for function: {args.function_name}")
                 return 1
 
             for i, result in enumerate(results, 1):
-                print(f"\n{'='*80}")
+                print(f"\n{'=' * 80}")
                 print(f"Result {i} of {len(results)}")
-                print(f"{'='*80}")
+                print(f"{'=' * 80}")
                 print(f"Test: {result['test_suite']} :: {result['test_name']}")
                 print(f"Function: {result['function_name']}")
                 print(f"Passed: {result['passed']}")
@@ -770,18 +769,24 @@ def main():
 
         elif args.command == "compare-suites":
             comparison = query.compare_suites(
-                args.suite1,
-                args.suite2,
-                show_code_diff=args.show_code
+                args.suite1, args.suite2, show_code_diff=args.show_code
             )
 
             print(f"\nComparison: {comparison['suite1']} vs {comparison['suite2']}")
-            print(f"{'='*80}")
-            print(f"Total functions in {comparison['suite1']}: {comparison['total_functions_suite1']}")
-            print(f"Total functions in {comparison['suite2']}: {comparison['total_functions_suite2']}")
+            print(f"{'=' * 80}")
+            print(
+                f"Total functions in {comparison['suite1']}: {comparison['total_functions_suite1']}"
+            )
+            print(
+                f"Total functions in {comparison['suite2']}: {comparison['total_functions_suite2']}"
+            )
             print(f"Common functions: {comparison['total_common']}")
-            print(f"Only in {comparison['suite1']}: {len(comparison['only_in_suite1'])}")
-            print(f"Only in {comparison['suite2']}: {len(comparison['only_in_suite2'])}")
+            print(
+                f"Only in {comparison['suite1']}: {len(comparison['only_in_suite1'])}"
+            )
+            print(
+                f"Only in {comparison['suite2']}: {len(comparison['only_in_suite2'])}"
+            )
 
             if comparison["only_in_suite1"]:
                 print(f"\nFunctions only in {comparison['suite1']}:")
@@ -794,22 +799,28 @@ def main():
                     print(f"  - {func}")
 
             if comparison["differences"]:
-                print(f"\nDifferences in common functions ({len(comparison['differences'])}):")
+                print(
+                    f"\nDifferences in common functions ({len(comparison['differences'])}):"
+                )
                 for diff in comparison["differences"]:
                     print(f"\n  {diff['function']}:")
                     print(f"    Passed in suite1: {diff['passed_in_suite1']}")
                     print(f"    Passed in suite2: {diff['passed_in_suite2']}")
                     print(f"    Code changed: {diff['code_changed']}")
-                    if diff['rules_only_in_suite1']:
-                        print(f"    Rules only in suite1: {', '.join(diff['rules_only_in_suite1'])}")
-                    if diff['rules_only_in_suite2']:
-                        print(f"    Rules only in suite2: {', '.join(diff['rules_only_in_suite2'])}")
-                    if args.show_code and diff['code_changed']:
+                    if diff["rules_only_in_suite1"]:
+                        print(
+                            f"    Rules only in suite1: {', '.join(diff['rules_only_in_suite1'])}"
+                        )
+                    if diff["rules_only_in_suite2"]:
+                        print(
+                            f"    Rules only in suite2: {', '.join(diff['rules_only_in_suite2'])}"
+                        )
+                    if args.show_code and diff["code_changed"]:
                         print(f"\n    Code in suite1:")
-                        for line in diff['code_suite1'].split('\n'):
+                        for line in diff["code_suite1"].split("\n"):
                             print(f"      {line}")
                         print(f"\n    Code in suite2:")
-                        for line in diff['code_suite2'].split('\n'):
+                        for line in diff["code_suite2"].split("\n"):
                             print(f"      {line}")
             else:
                 print("\nNo differences found in common functions!")
@@ -822,7 +833,9 @@ def main():
 
         elif args.command == "recent":
             runs = query.get_recent_runs(limit=args.limit)
-            print(f"{'Timestamp':<20} {'Suite':<30} {'Function':<30} {'Passed':<7} {'Duration'}")
+            print(
+                f"{'Timestamp':<20} {'Suite':<30} {'Function':<30} {'Passed':<7} {'Duration'}"
+            )
             print("=" * 120)
             for run in runs:
                 print(
@@ -830,7 +843,9 @@ def main():
                     f"{run['test_suite']:<30} "
                     f"{run['function_name']:<30} "
                     f"{'*' if run['passed'] else 'x':<7} "
-                    f"{run['test_duration']:.3f}s" if run['test_duration'] else ""
+                    f"{run['test_duration']:.3f}s"
+                    if run["test_duration"]
+                    else ""
                 )
 
         elif args.command == "stats":
@@ -841,8 +856,10 @@ def main():
             print(f"  Functions tested: {stats['total_functions']}")
             print(f"  Passed: {stats['passed_count']}")
             print(f"  Skipped: {stats['skipped_count']}")
-            print(f"  Failed: {stats['total_tests'] - stats['passed_count'] - stats['skipped_count']}")
-            if stats['avg_duration']:
+            print(
+                f"  Failed: {stats['total_tests'] - stats['passed_count'] - stats['skipped_count']}"
+            )
+            if stats["avg_duration"]:
                 print(f"  Average duration: {stats['avg_duration']:.3f}s")
 
     return 0
@@ -850,4 +867,5 @@ def main():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(main())

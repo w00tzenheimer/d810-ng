@@ -255,8 +255,9 @@ class ArithmeticChainSimplification(object):
 
     def add_mop(self, sign, mop):
         # sign is 0 if +, 1 is minus => minus minus = 1 ^ 1 = 0 so add
-        if (mop.t == ida_hexrays.mop_d) and (mop.d.opcode in [ida_hexrays.m_add, ida_hexrays.m_sub]):
-
+        if (mop.t == ida_hexrays.mop_d) and (
+            mop.d.opcode in [ida_hexrays.m_add, ida_hexrays.m_sub]
+        ):
             self.add_mop(sign, mop.d.l)
             if mop.d.opcode == ida_hexrays.m_add:
                 self.add_mop(sign, mop.d.r)

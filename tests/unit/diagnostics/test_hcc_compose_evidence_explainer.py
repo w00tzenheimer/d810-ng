@@ -4,6 +4,7 @@ Covers bucket priority ordering, target row selection, region log
 parsing, formatting, and the full DB-join pipeline against an
 in-memory SQLite fixture.
 """
+
 from __future__ import annotations
 
 import json
@@ -315,17 +316,38 @@ def in_memory_db() -> sqlite3.Connection:
         [
             # block 200 is the target of an InsertBlock; trace will say
             # preserved_in_insertblock=0 -> insertblock_succ_no_byte_evidence.
-            dict(snapshot=7, mod_index=0, mod_type="InsertBlock",
-                 source_block=199, target_block=200, old_target=201,
-                 status="emitted", reason=None),
+            dict(
+                snapshot=7,
+                mod_index=0,
+                mod_type="InsertBlock",
+                source_block=199,
+                target_block=200,
+                old_target=201,
+                status="emitted",
+                reason=None,
+            ),
             # block 300 is the source of a redirect (rewired away).
-            dict(snapshot=7, mod_index=1, mod_type="RedirectGoto",
-                 source_block=300, target_block=999, old_target=998,
-                 status="emitted", reason=None),
+            dict(
+                snapshot=7,
+                mod_index=1,
+                mod_type="RedirectGoto",
+                source_block=300,
+                target_block=999,
+                old_target=998,
+                status="emitted",
+                reason=None,
+            ),
             # block 400 is only a target of redirects.
-            dict(snapshot=7, mod_index=2, mod_type="RedirectGoto",
-                 source_block=401, target_block=400, old_target=999,
-                 status="emitted", reason=None),
+            dict(
+                snapshot=7,
+                mod_index=2,
+                mod_type="RedirectGoto",
+                source_block=401,
+                target_block=400,
+                old_target=999,
+                status="emitted",
+                reason=None,
+            ),
             # block 500 has no mod referencing it.
         ]
     ).execute()
@@ -362,7 +384,10 @@ def test_explain_byte_redirect_target_only_when_block_400(in_memory_db):
 def test_explain_with_missing_db_falls_back_to_trace_only(tmp_path: Path):
     rows = [_row(2, block_serial=118)]
     explanations = explain(
-        rows, tmp_path / "missing.sqlite3", "", bytes_filter=[2],
+        rows,
+        tmp_path / "missing.sqlite3",
+        "",
+        bytes_filter=[2],
     )
     assert len(explanations) == 1
     # No DB -> no mods -> no_mod_touches_block (trace-only fallback).

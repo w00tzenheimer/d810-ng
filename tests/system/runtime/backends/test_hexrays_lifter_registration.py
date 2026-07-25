@@ -8,6 +8,7 @@ leave the registry empty.  ``Manager.start`` calls the ensure() helper instead.
 IDA-bound: ``backends.facts.ida`` imports ``ida_hexrays`` via
 ``d810.hexrays.fact_target``, so this only collects under real IDA.
 """
+
 from __future__ import annotations
 
 import ida_hexrays  # noqa: F401  # gate: collected only under real IDA
@@ -36,7 +37,8 @@ def _restore_registry():
 
 def _hexrays_lifter_count() -> int:
     return sum(
-        1 for lifter in registered_lifters()
+        1
+        for lifter in registered_lifters()
         if isinstance(lifter, HexRaysMicrocodeLifter)
     )
 

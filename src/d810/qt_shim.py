@@ -757,11 +757,15 @@ def _setup_compatibility() -> None:
     # Try direct access - it may work even though hasattr returns False
     try:
         # Direct access to enum values (works even if hasattr returns False)
-        QTreeWidget.ExtendedSelection = QAbstractItemView.SelectionMode.ExtendedSelection  # type: ignore[attr-defined]
+        QTreeWidget.ExtendedSelection = (
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )  # type: ignore[attr-defined]
         QTreeWidget.SingleSelection = QAbstractItemView.SelectionMode.SingleSelection  # type: ignore[attr-defined]
         QTreeWidget.MultiSelection = QAbstractItemView.SelectionMode.MultiSelection  # type: ignore[attr-defined]
         QTreeWidget.NoSelection = QAbstractItemView.SelectionMode.NoSelection  # type: ignore[attr-defined]
-        QTreeWidget.ContiguousSelection = QAbstractItemView.SelectionMode.ContiguousSelection  # type: ignore[attr-defined]
+        QTreeWidget.ContiguousSelection = (
+            QAbstractItemView.SelectionMode.ContiguousSelection
+        )  # type: ignore[attr-defined]
     except (AttributeError, TypeError):
         # Fallback: try QTreeWidget.SelectionMode (shouldn't happen in PySide6)
         try:
@@ -769,7 +773,9 @@ def _setup_compatibility() -> None:
             QTreeWidget.SingleSelection = QTreeWidget.SelectionMode.SingleSelection  # type: ignore[attr-defined]
             QTreeWidget.MultiSelection = QTreeWidget.SelectionMode.MultiSelection  # type: ignore[attr-defined]
             QTreeWidget.NoSelection = QTreeWidget.SelectionMode.NoSelection  # type: ignore[attr-defined]
-            QTreeWidget.ContiguousSelection = QTreeWidget.SelectionMode.ContiguousSelection  # type: ignore[attr-defined]
+            QTreeWidget.ContiguousSelection = (
+                QTreeWidget.SelectionMode.ContiguousSelection
+            )  # type: ignore[attr-defined]
         except (AttributeError, TypeError):
             # If both fail, we can't set up the compatibility shim
             # This should not happen in normal circumstances
@@ -795,7 +801,8 @@ def set_high_dpi_attributes() -> None:
         # Qt6: High DPI scaling is always enabled, but we can set rounding policy
         try:
             QApplication.setAttribute(
-                Qt.HighDpiScaleFactorRoundingPolicy.PassThrough, True  # type: ignore[attr-defined]
+                Qt.HighDpiScaleFactorRoundingPolicy.PassThrough,
+                True,  # type: ignore[attr-defined]
             )
         except AttributeError:
             # Attribute might not exist in all Qt6 versions

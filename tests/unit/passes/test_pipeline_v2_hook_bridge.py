@@ -1,4 +1,5 @@
 """Config-v2 live Hex-Rays hook activation bridge tests."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,9 +23,7 @@ _CONF_DIR = Path("src/d810/conf")
 
 
 def _config_v2_project(name: str) -> ProjectConfiguration:
-    canary = ProjectConfiguration.from_file(
-        _CONF_DIR / f"{name}_config_v2_canary.json"
-    )
+    canary = ProjectConfiguration.from_file(_CONF_DIR / f"{name}_config_v2_canary.json")
     additional_configuration = dict(canary.additional_configuration)
     additional_configuration["pipeline_v2_mode"] = "config-v2"
     return ProjectConfiguration(

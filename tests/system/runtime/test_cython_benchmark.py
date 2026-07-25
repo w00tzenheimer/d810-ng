@@ -19,6 +19,7 @@ from tests.system.runtime.bench_utils import BenchResult, timed_run
 # Import both implementations directly for comparison
 try:
     from d810.speedups.expr import c_ast as cython_ast
+
     CYTHON_AVAILABLE = True
 except ImportError:
     CYTHON_AVAILABLE = False
@@ -186,6 +187,7 @@ class TestCythonAvailability:
         try:
             from d810.speedups.expr import c_ast
             from d810.speedups.expr import c_ast_evaluate
+
             cython_available = True
         except ImportError as e:
             print(f"\nCython import error: {e}")
@@ -195,7 +197,9 @@ class TestCythonAvailability:
 
         # This test documents the state, doesn't assert
         if not cython_available:
-            pytest.skip("Cython extensions not built - run: IDA_SDK=... python setup.py build_ext --inplace")
+            pytest.skip(
+                "Cython extensions not built - run: IDA_SDK=... python setup.py build_ext --inplace"
+            )
 
     def test_cython_mode_toggle(self):
         """Verify CythonMode can be toggled."""

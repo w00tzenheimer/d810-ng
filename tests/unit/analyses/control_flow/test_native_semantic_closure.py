@@ -217,10 +217,7 @@ def test_closure_separates_internal_edges_from_import_boundary_edges():
 
     fields = nsc.NativeSemanticClosure.__dataclass_fields__
     assert "proven_internal_edges" in fields
-    assert (
-        "proven_import_boundary_edges"
-        in fields
-    )
+    assert "proven_import_boundary_edges" in fields
     assert "proven_boundary_edges" not in fields
     assert _internal_edge_tuples(result) == {
         (0x5000, 0x5010, kind.DIRECT_JUMP),

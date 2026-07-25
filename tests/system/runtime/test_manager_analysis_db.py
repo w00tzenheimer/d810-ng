@@ -1,4 +1,5 @@
 """Tests for D810Manager.analysis_db property."""
+
 import pathlib
 import tempfile
 

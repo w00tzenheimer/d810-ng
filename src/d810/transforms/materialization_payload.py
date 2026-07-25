@@ -5,6 +5,7 @@ The cfg layer is allowed to route a captured instruction body through a
 payload itself. Only the backend adapter that produced the payload may unwrap
 the backend-specific contents.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

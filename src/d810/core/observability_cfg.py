@@ -14,12 +14,14 @@ labels; explicit ``*_label`` overrides win.
 See:
     docs/diag-observability-boundary.md
 """
+
 from __future__ import annotations
 
 from d810.core.observability import (
     emit as _emit,
     has_subscribers as _has_subscribers,
 )
+
 # Event dataclasses live under d810.core.observability_events so the
 # SQLite sink can subscribe without an upward import. This facade
 # re-exports the cfg-relevant types so call sites don't have to know
@@ -72,9 +74,7 @@ def observe_cfg_provenance(
     # Live-label resolution (cheap, happens in the producer process).
     if mba is not None:
         block_int = safe_serial(block_serial)
-        target_int = (
-            safe_serial(target_serial) if target_serial is not None else None
-        )
+        target_int = safe_serial(target_serial) if target_serial is not None else None
         if block_label is None:
             block_label = live_block_label(mba, block_int)
         if block_ea is None:
@@ -85,21 +85,21 @@ def observe_cfg_provenance(
             target_ea = live_block_start_ea(mba, target_int)
         if maturity_label is None:
             maturity_label = live_maturity_label(mba)
-    _emit(CfgProvenanceObserved(
-        pass_name=str(pass_name),
-        action=str(action),
-        block_serial=int(block_serial),
-        target_serial=(
-            int(target_serial) if target_serial is not None else None
-        ),
-        reason=str(reason),
-        extra=dict(extra or {}),
-        block_label=block_label,
-        block_ea=block_ea,
-        target_label=target_label,
-        target_ea=target_ea,
-        maturity_label=maturity_label,
-    ))
+    _emit(
+        CfgProvenanceObserved(
+            pass_name=str(pass_name),
+            action=str(action),
+            block_serial=int(block_serial),
+            target_serial=(int(target_serial) if target_serial is not None else None),
+            reason=str(reason),
+            extra=dict(extra or {}),
+            block_label=block_label,
+            block_ea=block_ea,
+            target_label=target_label,
+            target_ea=target_ea,
+            maturity_label=maturity_label,
+        )
+    )
 
 
 def observe_cfg_provenance_latest(
@@ -118,12 +118,10 @@ def observe_cfg_provenance_latest(
     target_ea: int | None = None,
     maturity_label: str | None = None,
 ) -> None:
-    "Publish CFG provenance against the latest snapshot for ``func_ea``.\n\n    Late-binding companion to :func:`observe_cfg_provenance`, for\n    planning/preanalysis observations (abstentions, vetoes) where there may be\n    no later MBA snapshot to flush a buffered row. Label resolution mirrors\n    :func:`observe_cfg_provenance` (delegated to\n    :mod:`d810.core.observability_labels`).\n    "
+    "Publish CFG provenance against the latest snapshot for ``func_ea``.\n\n    Late-binding companion to :func:`observe_cfg_provenance`, for\n    planning/preanalysis observations (abstentions, vetoes) where there may be\n    no later MBA snapshot to flush a buffered row. Label resolution mirrors\n    :func:`observe_cfg_provenance` (delegated to\n    :mod:`d810.core.observability_labels`).\n"
     if mba is not None:
         block_int = safe_serial(block_serial)
-        target_int = (
-            safe_serial(target_serial) if target_serial is not None else None
-        )
+        target_int = safe_serial(target_serial) if target_serial is not None else None
         if block_label is None:
             block_label = live_block_label(mba, block_int)
         if block_ea is None:
@@ -138,9 +136,7 @@ def observe_cfg_provenance_latest(
         pass_name=str(pass_name),
         action=str(action),
         block_serial=int(block_serial),
-        target_serial=(
-            int(target_serial) if target_serial is not None else None
-        ),
+        target_serial=(int(target_serial) if target_serial is not None else None),
         reason=str(reason),
         extra=dict(extra or {}),
         block_label=block_label,
@@ -156,10 +152,12 @@ def observe_cfg_provenance_latest(
     if not _has_subscribers(CfgProvenanceForLatestSnapshot):
         _emit(event)
         return
-    _emit(CfgProvenanceForLatestSnapshot(
-        func_ea=int(func_ea),
-        events=(event,),
-    ))
+    _emit(
+        CfgProvenanceForLatestSnapshot(
+            func_ea=int(func_ea),
+            events=(event,),
+        )
+    )
 
 
 def observe_watch_block_transition(
@@ -178,20 +176,22 @@ def observe_watch_block_transition(
     now_preds: tuple[int, ...] | None,
 ) -> None:
     """Publish a :class:`WatchBlockTransitionObserved` event."""
-    _emit(WatchBlockTransitionObserved(
-        func_ea=int(func_ea),
-        apply_session_id=str(apply_session_id),
-        mod_index=mod_index,
-        mod_type=str(mod_type),
-        phase=str(phase),
-        block_serial=int(block_serial),
-        prev_type_name=prev_type_name,
-        prev_succs=prev_succs,
-        prev_preds=prev_preds,
-        now_type_name=now_type_name,
-        now_succs=now_succs,
-        now_preds=now_preds,
-    ))
+    _emit(
+        WatchBlockTransitionObserved(
+            func_ea=int(func_ea),
+            apply_session_id=str(apply_session_id),
+            mod_index=mod_index,
+            mod_type=str(mod_type),
+            phase=str(phase),
+            block_serial=int(block_serial),
+            prev_type_name=prev_type_name,
+            prev_succs=prev_succs,
+            prev_preds=prev_preds,
+            now_type_name=now_type_name,
+            now_succs=now_succs,
+            now_preds=now_preds,
+        )
+    )
 
 
 def diagnostics_enabled() -> bool:

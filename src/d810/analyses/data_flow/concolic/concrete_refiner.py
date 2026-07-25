@@ -13,6 +13,7 @@ but precision.  In S3 these run as standalone, unit-tested functions; the
 ``ConcolicTransitionDomain`` calls ``refine_concrete`` once instruction-level
 transfer is wired in S4.  Ticket llr-iqm3 / epic llr-7ouc.  Portable: no IDA, no z3.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Callable
@@ -90,4 +91,6 @@ def refine_concrete(
     """
     if emu is None:
         return value
-    return fold_exact(value, emu.eval_insn(insn, store), insn.dest, on_unsound=on_unsound)
+    return fold_exact(
+        value, emu.eval_insn(insn, store), insn.dest, on_unsound=on_unsound
+    )

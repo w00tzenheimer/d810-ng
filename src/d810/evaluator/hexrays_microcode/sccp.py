@@ -25,6 +25,7 @@ References:
     LLVM SparsePropagation.h
     docs/plans/2026-03-16-emulator-cross-block-resolution.md  (Algorithm 3)
 """
+
 from __future__ import annotations
 
 from collections import defaultdict, deque
@@ -124,29 +125,67 @@ def _init_opcode_sets(hx: Any) -> None:
     if _UNARY_OPCODES is not None:
         return
 
-    _UNARY_OPCODES = frozenset([
-        hx.m_mov, hx.m_neg, hx.m_lnot, hx.m_bnot,
-        hx.m_xds, hx.m_xdu, hx.m_low, hx.m_high,
-    ])
+    _UNARY_OPCODES = frozenset(
+        [
+            hx.m_mov,
+            hx.m_neg,
+            hx.m_lnot,
+            hx.m_bnot,
+            hx.m_xds,
+            hx.m_xdu,
+            hx.m_low,
+            hx.m_high,
+        ]
+    )
 
-    _BINARY_OPCODES = frozenset([
-        hx.m_add, hx.m_sub, hx.m_mul,
-        hx.m_udiv, hx.m_sdiv, hx.m_umod, hx.m_smod,
-        hx.m_or, hx.m_and, hx.m_xor,
-        hx.m_shl, hx.m_shr, hx.m_sar,
-    ])
+    _BINARY_OPCODES = frozenset(
+        [
+            hx.m_add,
+            hx.m_sub,
+            hx.m_mul,
+            hx.m_udiv,
+            hx.m_sdiv,
+            hx.m_umod,
+            hx.m_smod,
+            hx.m_or,
+            hx.m_and,
+            hx.m_xor,
+            hx.m_shl,
+            hx.m_shr,
+            hx.m_sar,
+        ]
+    )
 
-    _CMP_OPCODES = frozenset([
-        hx.m_setz, hx.m_setnz, hx.m_setae, hx.m_setb,
-        hx.m_seta, hx.m_setbe, hx.m_setg, hx.m_setge,
-        hx.m_setl, hx.m_setle,
-    ])
+    _CMP_OPCODES = frozenset(
+        [
+            hx.m_setz,
+            hx.m_setnz,
+            hx.m_setae,
+            hx.m_setb,
+            hx.m_seta,
+            hx.m_setbe,
+            hx.m_setg,
+            hx.m_setge,
+            hx.m_setl,
+            hx.m_setle,
+        ]
+    )
 
-    _COND_BRANCH_OPCODES = frozenset([
-        hx.m_jcnd, hx.m_jnz, hx.m_jz,
-        hx.m_jae, hx.m_jb, hx.m_ja, hx.m_jbe,
-        hx.m_jg, hx.m_jge, hx.m_jl, hx.m_jle,
-    ])
+    _COND_BRANCH_OPCODES = frozenset(
+        [
+            hx.m_jcnd,
+            hx.m_jnz,
+            hx.m_jz,
+            hx.m_jae,
+            hx.m_jb,
+            hx.m_ja,
+            hx.m_jbe,
+            hx.m_jg,
+            hx.m_jge,
+            hx.m_jl,
+            hx.m_jle,
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +330,9 @@ def _run_sccp_impl(
     def _mask(size: int) -> int:
         return AND_TABLE.get(size, AND_TABLE[8])
 
-    def _short_circuit(opcode: int, lv: LatticeVal, rv: LatticeVal, dest_size: int) -> LatticeVal | None:
+    def _short_circuit(
+        opcode: int, lv: LatticeVal, rv: LatticeVal, dest_size: int
+    ) -> LatticeVal | None:
         """Apply short-circuit evaluation rules from Rust SCCP.
 
         Returns a LatticeVal if the result can be determined without both
@@ -363,7 +404,9 @@ def _run_sccp_impl(
                 return Const((v ^ mask) & mask, dest_size)
             if opcode == hx.m_xds:
                 left_signed = unsigned_to_signed(v, ls)
-                return Const(signed_to_unsigned(left_signed, dest_size) & mask, dest_size)
+                return Const(
+                    signed_to_unsigned(left_signed, dest_size) & mask, dest_size
+                )
             if opcode == hx.m_xdu:
                 return Const(v & mask, dest_size)
             if opcode == hx.m_low:
@@ -442,7 +485,9 @@ def _run_sccp_impl(
             elif opcode == hx.m_shr:
                 result = (a >> b) & mask
             elif opcode == hx.m_sar:
-                result = signed_to_unsigned(unsigned_to_signed(a, ls) >> b, dest_size) & mask
+                result = (
+                    signed_to_unsigned(unsigned_to_signed(a, ls) >> b, dest_size) & mask
+                )
 
             # Comparison ops
             elif opcode == hx.m_setz:
@@ -458,13 +503,21 @@ def _run_sccp_impl(
             elif opcode == hx.m_setbe:
                 result = (1 if a <= b else 0) & mask
             elif opcode == hx.m_setg:
-                result = (1 if unsigned_to_signed(a, ls) > unsigned_to_signed(b, rs) else 0) & mask
+                result = (
+                    1 if unsigned_to_signed(a, ls) > unsigned_to_signed(b, rs) else 0
+                ) & mask
             elif opcode == hx.m_setge:
-                result = (1 if unsigned_to_signed(a, ls) >= unsigned_to_signed(b, rs) else 0) & mask
+                result = (
+                    1 if unsigned_to_signed(a, ls) >= unsigned_to_signed(b, rs) else 0
+                ) & mask
             elif opcode == hx.m_setl:
-                result = (1 if unsigned_to_signed(a, ls) < unsigned_to_signed(b, rs) else 0) & mask
+                result = (
+                    1 if unsigned_to_signed(a, ls) < unsigned_to_signed(b, rs) else 0
+                ) & mask
             elif opcode == hx.m_setle:
-                result = (1 if unsigned_to_signed(a, ls) <= unsigned_to_signed(b, rs) else 0) & mask
+                result = (
+                    1 if unsigned_to_signed(a, ls) <= unsigned_to_signed(b, rs) else 0
+                ) & mask
 
             if result is not None:
                 return Const(result, dest_size)
@@ -608,7 +661,10 @@ def _run_sccp_impl(
         if logger.debug_on and isinstance(merged, Const):
             logger.debug(
                 "SCCP-LATTICE: key=%s -> Const(0x%x, %d) from_ea=0x%x",
-                dest_key, merged.value, merged.size, ins_ea,
+                dest_key,
+                merged.value,
+                merged.size,
+                ins_ea,
             )
         return True
 

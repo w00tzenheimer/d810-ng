@@ -3,6 +3,7 @@
 Tests the CythonMode singleton and CythonImporter helper that control
 Cython-accelerated implementations at runtime.
 """
+
 import os
 import sys
 import unittest
@@ -14,6 +15,7 @@ from d810.core.cymode import CythonMode, CythonImporter, _get_default_cython_ena
 def _cython_importable() -> bool:
     try:
         import cython  # noqa: F401
+
         return True
     except ImportError:
         return False

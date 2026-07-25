@@ -42,14 +42,18 @@ def resolve_semantic_reference_entry_for_state(
         if label_text not in target_labels:
             raw_match = _RAW_STATE_LABEL_RE.match(label_text)
             if raw_match is not None:
-                normalized_label = f"STATE_{raw_match.group(1).upper()}{raw_match.group(2) or ''}"
+                normalized_label = (
+                    f"STATE_{raw_match.group(1).upper()}{raw_match.group(2) or ''}"
+                )
                 if normalized_label not in target_labels:
                     continue
             else:
                 state_match = _STATE_LABEL_RE.match(label_text)
                 if state_match is None:
                     continue
-                normalized_label = f"0x{state_match.group(1).upper()}{state_match.group(2) or ''}"
+                normalized_label = (
+                    f"0x{state_match.group(1).upper()}{state_match.group(2) or ''}"
+                )
                 if normalized_label not in target_labels:
                     continue
         entry_anchor = getattr(node, "entry_anchor", None)
@@ -61,12 +65,9 @@ def resolve_semantic_reference_entry_for_state(
             _STATE_LABEL_RE.match(label_text) is not None
             or _RAW_STATE_LABEL_RE.match(label_text) is not None
         )
-        if (
-            entry_value in dispatcher_blocks
-            and not (
-                allow_dispatcher_exact_head
-                and (node_kind == "state_family" or label_is_state_family)
-            )
+        if entry_value in dispatcher_blocks and not (
+            allow_dispatcher_exact_head
+            and (node_kind == "state_family" or label_is_state_family)
         ):
             continue
         return entry_value
@@ -94,12 +95,8 @@ def resolve_exact_dag_entry_for_state(
             continue
         entry_value = int(entry_anchor)
         kind_name = str(getattr(getattr(node, "kind", None), "name", "") or "")
-        if (
-            entry_value in dispatcher_blocks
-            and not (
-                allow_dispatcher_exact_head
-                and kind_name == "EXACT"
-            )
+        if entry_value in dispatcher_blocks and not (
+            allow_dispatcher_exact_head and kind_name == "EXACT"
         ):
             continue
         exact_rank = 0 if kind_name == "EXACT" else 1
@@ -172,7 +169,10 @@ def resolve_edge_target_entry(
                 matches.append((key, node))
         matches.sort(
             key=lambda item: (
-                0 if str(getattr(getattr(item[1], "kind", None), "name", "") or "") == "EXACT" else 1,
+                0
+                if str(getattr(getattr(item[1], "kind", None), "name", "") or "")
+                == "EXACT"
+                else 1,
                 int(item[1].entry_anchor),
                 int(getattr(item[1], "handler_serial", item[1].entry_anchor)),
             )

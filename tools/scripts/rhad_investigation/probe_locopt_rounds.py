@@ -1,4 +1,5 @@
 """Measure repeated production LOCOPT/CALLS decompilation of sub_40A560."""
+
 from __future__ import annotations
 
 import argparse
@@ -60,9 +61,7 @@ def main() -> None:
                         continue
                     recovered = str(cfunc)
                     origins = dict(
-                        imported_detached_snippet_instruction_origins(
-                            cfunc.mba
-                        )
+                        imported_detached_snippet_instruction_origins(cfunc.mba)
                     )
                     jumpout_eas = {
                         int(match, 16)

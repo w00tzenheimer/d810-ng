@@ -10,6 +10,7 @@ the portable FlowGraph. The StaticShape engine impl lives in a SEPARATE module
 (static_shape_engine.py) that may import the resolver chain; this Protocol module
 must not, so the contract stays a cycle-free leaf.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

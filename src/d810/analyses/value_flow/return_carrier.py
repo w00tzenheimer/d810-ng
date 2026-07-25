@@ -27,6 +27,7 @@ only shape a production fact target ever is) is projected via
 flat fallback was removed (S11) -- it was unreachable by any real source once
 every production fact target became a canonical ``FlowGraph``.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -175,7 +176,9 @@ def _is_return_register_read(insn: _ReturnCarrierInsn) -> bool:
     return True
 
 
-def _return_slot_offsets(instructions: tuple[_ReturnCarrierInsn, ...]) -> frozenset[int]:
+def _return_slot_offsets(
+    instructions: tuple[_ReturnCarrierInsn, ...],
+) -> frozenset[int]:
     return frozenset(
         int(insn.src_l_stkoff)
         for insn in instructions
@@ -352,8 +355,7 @@ class ReturnSlotFactCollector:
             source = _source_signature(insn)
             carrier_class = _carrier_class(insn)
             semantic_key = (
-                f"return_carrier:slot=0x{slot:x}:class={carrier_class}:"
-                f"source={source}"
+                f"return_carrier:slot=0x{slot:x}:class={carrier_class}:source={source}"
             )
             fact_id = (
                 f"{semantic_key}:blk={insn.block_serial}:"
@@ -398,41 +400,42 @@ class ReturnSlotFactCollector:
                 if upstream is not None:
                     upstream_source_offsets = _source_storage_offsets(upstream)
                     upstream_source_keys = tuple(
-                        _stack_storage_key(offset)
-                        for offset in upstream_source_offsets
+                        _stack_storage_key(offset) for offset in upstream_source_offsets
                     )
-                    payload.update({
-                        "carrier_dst_stkoff": int(insn.src_l_stkoff),
-                        "carrier_dst_storage_key": _stack_storage_key(
-                            int(insn.src_l_stkoff)
-                        ),
-                        "carrier_dst_storage_identity": _stack_storage_record(
-                            int(insn.src_l_stkoff)
-                        ),
-                        "upstream_writer_block_serial": upstream.block_serial,
-                        "upstream_writer_insn_index": upstream.insn_index,
-                        "upstream_writer_ea": upstream.ea,
-                        "upstream_writer_opcode": upstream.opcode_name,
-                        "upstream_writer_dest_stkoff": upstream.dest_stkoff,
-                        "upstream_writer_dest_storage_key": (
-                            _stack_storage_key(upstream.dest_stkoff)
-                            if upstream.dest_stkoff is not None
-                            else None
-                        ),
-                        "upstream_writer_dest_storage_identity": (
-                            _stack_storage_record(upstream.dest_stkoff)
-                            if upstream.dest_stkoff is not None
-                            else None
-                        ),
-                        "upstream_writer_dstr": upstream.dstr,
-                        "upstream_writer_source_storage_keys": list(
-                            upstream_source_keys
-                        ),
-                        "upstream_writer_source_storage_identities": [
-                            _stack_storage_record(offset)
-                            for offset in upstream_source_offsets
-                        ],
-                    })
+                    payload.update(
+                        {
+                            "carrier_dst_stkoff": int(insn.src_l_stkoff),
+                            "carrier_dst_storage_key": _stack_storage_key(
+                                int(insn.src_l_stkoff)
+                            ),
+                            "carrier_dst_storage_identity": _stack_storage_record(
+                                int(insn.src_l_stkoff)
+                            ),
+                            "upstream_writer_block_serial": upstream.block_serial,
+                            "upstream_writer_insn_index": upstream.insn_index,
+                            "upstream_writer_ea": upstream.ea,
+                            "upstream_writer_opcode": upstream.opcode_name,
+                            "upstream_writer_dest_stkoff": upstream.dest_stkoff,
+                            "upstream_writer_dest_storage_key": (
+                                _stack_storage_key(upstream.dest_stkoff)
+                                if upstream.dest_stkoff is not None
+                                else None
+                            ),
+                            "upstream_writer_dest_storage_identity": (
+                                _stack_storage_record(upstream.dest_stkoff)
+                                if upstream.dest_stkoff is not None
+                                else None
+                            ),
+                            "upstream_writer_dstr": upstream.dstr,
+                            "upstream_writer_source_storage_keys": list(
+                                upstream_source_keys
+                            ),
+                            "upstream_writer_source_storage_identities": [
+                                _stack_storage_record(offset)
+                                for offset in upstream_source_offsets
+                            ],
+                        }
+                    )
                     evidence = (insn.dstr, upstream.dstr)
 
             observations.append(
@@ -446,8 +449,7 @@ class ReturnSlotFactCollector:
                     source_block=insn.block_serial,
                     source_ea=insn.ea,
                     block_fingerprint=(
-                        f"blk[{insn.block_serial}].{insn.insn_index}:"
-                        f"{insn.opcode_name}"
+                        f"blk[{insn.block_serial}].{insn.insn_index}:{insn.opcode_name}"
                     ),
                     mop_signature=f"return_slot:mop_S:0x{slot:x}:{dest_size}",
                     payload=payload,
@@ -494,8 +496,10 @@ class ReturnValueFactCollector:
             phase=phase,
             legacy_fields=legacy_fields,
         )
-        projected = project_value_flow_facts(self._slot_collector.collect(
-            target,
-            context=context,
-        ))
+        projected = project_value_flow_facts(
+            self._slot_collector.collect(
+                target,
+                context=context,
+            )
+        )
         return tuple(fact for fact in projected if fact.kind == RETURN_VALUE_FACT_TYPE)

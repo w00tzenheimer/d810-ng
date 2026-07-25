@@ -5,6 +5,7 @@
 
 Ported from herast (herast/tree/patterns/block_searches.py).
 """
+
 from __future__ import annotations
 
 import idaapi
@@ -22,7 +23,9 @@ class SeqPat(InstructionPat):
 
     op = idaapi.cit_block if idaapi is not None else None
 
-    def __init__(self, *pats: typing.Any, skip_missing: bool = True, **kwargs: typing.Any) -> None:
+    def __init__(
+        self, *pats: typing.Any, skip_missing: bool = True, **kwargs: typing.Any
+    ) -> None:
         """
         :param pats: instruction patterns
         :param skip_missing: whether should skip missing instructions
@@ -34,6 +37,7 @@ class SeqPat(InstructionPat):
             pats = tuple(pats[0])
 
         from d810.ctree.consts import cinsn_op2str
+
         for p in pats:
             if p.op is not None and cinsn_op2str.get(p.op) is None:
                 logger.warning("SeqPat expects instructions, not expression")

@@ -36,6 +36,7 @@ from d810.hexrays.ir.mop_snapshot import MopSnapshot
 # rejects unittest.mock.MagicMock / Mock objects; a SimpleNamespace with
 # plain integers is fine.
 
+
 class _MopT:
     """Sentinel class standing in for ida_hexrays.mop_t.
 
@@ -62,25 +63,23 @@ _IDA_HEX = types.SimpleNamespace(
     mop_t=_MopT,
     # vd_printer_t stand-in class (needed by hexrays_formatters class defs)
     vd_printer_t=_VdPrinterT,
-
     # mop operand-type enum constants (mop_snapshot.py uses these)
-    mop_z=0,   # undefined / zero
-    mop_n=1,   # numeric constant
-    mop_r=2,   # register
-    mop_S=3,   # stack variable
-    mop_v=4,   # global variable
-    mop_d=5,   # result of another instruction
-    mop_a=6,   # address of operand
-    mop_f=7,   # list of arguments
-    mop_l=8,   # local variable
-    mop_b=9,   # micro basic-block reference
+    mop_z=0,  # undefined / zero
+    mop_n=1,  # numeric constant
+    mop_r=2,  # register
+    mop_S=3,  # stack variable
+    mop_v=4,  # global variable
+    mop_d=5,  # result of another instruction
+    mop_a=6,  # address of operand
+    mop_f=7,  # list of arguments
+    mop_l=8,  # local variable
+    mop_b=9,  # micro basic-block reference
     mop_p=10,  # operand pair
     mop_c=11,  # switch cases
     mop_str=12,  # string constant
     mop_h=13,  # helper function name
     mop_fn=14,  # floating point constant
     mop_sc=15,  # scattered operand
-
     # mcode_t opcode enum (values from _chexrays.pxd)
     m_nop=0x00,
     m_stx=0x01,
@@ -155,7 +154,6 @@ _IDA_HEX = types.SimpleNamespace(
     m_fsub=0x46,
     m_fmul=0x47,
     m_fdiv=0x48,
-
     # mba_maturity_t constants
     MMAT_ZERO=0,
     MMAT_GENERATED=1,
@@ -179,6 +177,7 @@ _OPC = _IDA_HEX  # same namespace, cleaner name
 # ---------------------------------------------------------------------------
 # Minimal mock AST node / leaf classes (no IDA types, no d810.hexrays.expr.p_ast)
 # ---------------------------------------------------------------------------
+
 
 class _Leaf:
     """Minimal variable leaf — value comes from env."""
@@ -244,6 +243,7 @@ class _Node:
 # Fixture
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def ev() -> ConcreteEvaluator:
     """Fresh ConcreteEvaluator instance."""
@@ -253,6 +253,7 @@ def ev() -> ConcreteEvaluator:
 # ---------------------------------------------------------------------------
 # Leaf evaluation
 # ---------------------------------------------------------------------------
+
 
 class TestLeafEvaluation:
     """Tests for _eval_leaf: variable and constant leaves."""
@@ -285,6 +286,7 @@ class TestLeafEvaluation:
 # ---------------------------------------------------------------------------
 # Unary opcodes
 # ---------------------------------------------------------------------------
+
 
 class TestUnaryOpcodes:
     """Tests for m_mov, m_neg, m_lnot, m_bnot, m_xdu, m_low."""
@@ -351,6 +353,7 @@ class TestUnaryOpcodes:
 # Binary arithmetic
 # ---------------------------------------------------------------------------
 
+
 class TestBinaryArithmetic:
     """Tests for m_add, m_sub, m_mul, m_udiv, m_sdiv, m_umod, m_smod."""
 
@@ -400,6 +403,7 @@ class TestBinaryArithmetic:
 # Bitwise operations
 # ---------------------------------------------------------------------------
 
+
 class TestBitwiseOpcodes:
     """Tests for m_and, m_or, m_xor."""
 
@@ -421,13 +425,16 @@ class TestBitwiseOpcodes:
 
     def test_m_xor_same_values(self, ev):
         """XOR of identical values is always 0."""
-        node = _Node(_OPC.m_xor, _ConstLeaf(0x1234, 2), _ConstLeaf(0x1234, 2), dest_size=2)
+        node = _Node(
+            _OPC.m_xor, _ConstLeaf(0x1234, 2), _ConstLeaf(0x1234, 2), dest_size=2
+        )
         assert ev.evaluate(node, {}) == 0
 
 
 # ---------------------------------------------------------------------------
 # Shift operations
 # ---------------------------------------------------------------------------
+
 
 class TestShiftOpcodes:
     """Tests for m_shl, m_shr, m_sar."""
@@ -461,6 +468,7 @@ class TestShiftOpcodes:
 # Sign-extension / high-extract
 # ---------------------------------------------------------------------------
 
+
 class TestSignExtension:
     """Tests for m_xds, m_high."""
 
@@ -489,6 +497,7 @@ class TestSignExtension:
 # m_sets (sign flag)
 # ---------------------------------------------------------------------------
 
+
 class TestSetsOpcode:
     """Tests for m_sets (sign flag)."""
 
@@ -514,6 +523,7 @@ class TestSetsOpcode:
 # ---------------------------------------------------------------------------
 # Comparison / set-flag opcodes
 # ---------------------------------------------------------------------------
+
 
 class TestSetFlagOpcodes:
     """Tests for m_setnz, m_setz, m_setae, m_setb, m_seta, m_setbe."""
@@ -571,6 +581,7 @@ class TestSetFlagOpcodes:
 # Signed comparison opcodes
 # ---------------------------------------------------------------------------
 
+
 class TestSignedComparisons:
     """Tests for m_setg, m_setge, m_setl, m_setle."""
 
@@ -604,6 +615,7 @@ class TestSignedComparisons:
 # m_call — rotate helpers
 # ---------------------------------------------------------------------------
 
+
 class TestRotateHelperCall:
     """Tests for m_call dispatch to rotate helpers via HelperRegistry."""
 
@@ -611,10 +623,7 @@ class TestRotateHelperCall:
         """m_call node with func_name=__ROL4__ delegates to the registry."""
         val_leaf = _ConstLeaf(0x12345678, 4)
         rot_leaf = _ConstLeaf(8, 1)
-        node = _Node(
-            _OPC.m_call, val_leaf, rot_leaf,
-            dest_size=4, func_name="__ROL4__"
-        )
+        node = _Node(_OPC.m_call, val_leaf, rot_leaf, dest_size=4, func_name="__ROL4__")
         result = ev.evaluate(node, {})
         assert result == 0x34567812
 
@@ -622,10 +631,7 @@ class TestRotateHelperCall:
         """m_call node with func_name=__ROR4__ delegates to the registry."""
         val_leaf = _ConstLeaf(0x12345678, 4)
         rot_leaf = _ConstLeaf(8, 1)
-        node = _Node(
-            _OPC.m_call, val_leaf, rot_leaf,
-            dest_size=4, func_name="__ROR4__"
-        )
+        node = _Node(_OPC.m_call, val_leaf, rot_leaf, dest_size=4, func_name="__ROR4__")
         result = ev.evaluate(node, {})
         assert result == 0x78123456
 
@@ -633,10 +639,7 @@ class TestRotateHelperCall:
         """m_call node with func_name=__ROL1__: bit 7 wraps to bit 0."""
         val_leaf = _ConstLeaf(0x80, 1)
         rot_leaf = _ConstLeaf(1, 1)
-        node = _Node(
-            _OPC.m_call, val_leaf, rot_leaf,
-            dest_size=1, func_name="__ROL1__"
-        )
+        node = _Node(_OPC.m_call, val_leaf, rot_leaf, dest_size=1, func_name="__ROL1__")
         result = ev.evaluate(node, {})
         assert result == 0x01
 
@@ -645,8 +648,7 @@ class TestRotateHelperCall:
         val_leaf = _ConstLeaf(0x12345678, 4)
         rot_leaf = _ConstLeaf(8, 1)
         node = _Node(
-            _OPC.m_call, val_leaf, rot_leaf,
-            dest_size=4, func_name="!__ROL4__"
+            _OPC.m_call, val_leaf, rot_leaf, dest_size=4, func_name="!__ROL4__"
         )
         result = ev.evaluate(node, {})
         assert result == 0x34567812
@@ -656,8 +658,7 @@ class TestRotateHelperCall:
         val_leaf = _ConstLeaf(0xDEAD, 2)
         rot_leaf = _ConstLeaf(1, 1)
         node = _Node(
-            _OPC.m_call, val_leaf, rot_leaf,
-            dest_size=2, func_name="__UNKNOWN__"
+            _OPC.m_call, val_leaf, rot_leaf, dest_size=2, func_name="__UNKNOWN__"
         )
         result = ev.evaluate(node, {})
         assert result == 0
@@ -666,10 +667,7 @@ class TestRotateHelperCall:
         """m_call with no func_name returns 0."""
         val_leaf = _ConstLeaf(0xDEAD, 2)
         rot_leaf = _ConstLeaf(1, 1)
-        node = _Node(
-            _OPC.m_call, val_leaf, rot_leaf,
-            dest_size=2, func_name=""
-        )
+        node = _Node(_OPC.m_call, val_leaf, rot_leaf, dest_size=2, func_name="")
         result = ev.evaluate(node, {})
         assert result == 0
 
@@ -677,6 +675,7 @@ class TestRotateHelperCall:
 # ---------------------------------------------------------------------------
 # env bindings and variable leaves
 # ---------------------------------------------------------------------------
+
 
 class TestEnvBindings:
     """Tests for variable-leaf env lookup in larger tree expressions.
@@ -730,12 +729,14 @@ class TestEnvBindings:
 # Error cases
 # ---------------------------------------------------------------------------
 
+
 class TestErrorCases:
     """Tests for error / edge-case handling."""
 
     def test_unknown_opcode_raises(self, ev):
         """AstEvaluationException for an unsupported opcode."""
         from d810.errors import AstEvaluationException
+
         node = _Node(0xFF, _ConstLeaf(1, 1), dest_size=1)
         with pytest.raises(AstEvaluationException, match="Can't evaluate opcode"):
             ev.evaluate(node, {})
@@ -785,6 +786,7 @@ class TestErrorCases:
 # evaluate_with_leaf_info
 # ---------------------------------------------------------------------------
 
+
 class _FakeAstInfo:
     """Minimal AstInfo-like object for evaluate_with_leaf_info tests."""
 
@@ -831,7 +833,9 @@ def _default_binary() -> str:
     override = _os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if _platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if _platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 class TestConcreteWithRealAst:
@@ -851,6 +855,7 @@ class TestConcreteWithRealAst:
 
         try:
             from d810.speedups.evaluator.c_concrete import CythonConcreteEvaluator
+
             assert isinstance(_default_evaluator, CythonConcreteEvaluator), (
                 f"Expected CythonConcreteEvaluator, got {type(_default_evaluator).__name__}"
             )
@@ -895,13 +900,16 @@ class TestConcreteWithRealAst:
             # the important thing is that the isinstance dispatch did not raise
             # AstEvaluationException about an unsupported type.
             from d810.errors import AstEvaluationException
+
             if "Unsupported AST node type" in str(exc):
                 pytest.fail(
                     f"AstProxy/AstNode type not recognised by Cython dispatch: {exc}"
                 )
             # Other exceptions (ZeroDivisionError, ValueError) are acceptable
 
-    def test_evaluate_concrete_real_astproxy_dispatch(self, libobfuscated_setup, real_asts):
+    def test_evaluate_concrete_real_astproxy_dispatch(
+        self, libobfuscated_setup, real_asts
+    ):
         """AstProxy objects returned by minsn_to_ast() are handled without TypeError.
 
         minsn_to_ast() returns AstProxy when the same sub-expression is reused.
@@ -930,6 +938,7 @@ class TestConcreteWithRealAst:
             # Check if any sub-AST is an AstProxy instance
             try:
                 from d810.hexrays.expr.ast import AstProxy
+
                 for info in sub_infos.values():
                     if isinstance(getattr(info, "ast", None), AstProxy):
                         proxy_count += 1
@@ -941,7 +950,9 @@ class TestConcreteWithRealAst:
                 evaluate_concrete(ast, env)
             except AstEvaluationException as exc:
                 if "Unsupported AST node type" in str(exc):
-                    failures.append(f"Type dispatch failed for {type(ast).__name__}: {exc}")
+                    failures.append(
+                        f"Type dispatch failed for {type(ast).__name__}: {exc}"
+                    )
             except Exception:
                 # ZeroDivisionError, ValueError etc. are acceptable
                 pass

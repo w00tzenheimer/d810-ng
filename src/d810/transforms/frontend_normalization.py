@@ -102,9 +102,7 @@ class ProjectedRouteCorridorFailure:
         if not edge_role:
             raise ValueError("projected corridor failure edge role must not be empty")
         if not 0 <= context_anchor_ea < _BADADDR:
-            raise ValueError(
-                "projected corridor failure requires a valid context EA"
-            )
+            raise ValueError("projected corridor failure requires a valid context EA")
         object.__setattr__(self, "reason_code", reason_code)
         object.__setattr__(self, "edge_role", edge_role)
         object.__setattr__(self, "context_anchor_ea", context_anchor_ea)
@@ -144,9 +142,7 @@ class ProjectedRouteCorridorFailure:
         return f"{self.reason_code} at {corridor_label}"
 
 
-class FrontendNormalizationCorridorRejected(
-    FrontendNormalizationEvidenceRejected
-):
+class FrontendNormalizationCorridorRejected(FrontendNormalizationEvidenceRejected):
     """Projected normalization routes have an open EA-anchored boundary."""
 
     def __init__(self, failure: ProjectedRouteCorridorFailure) -> None:
@@ -157,8 +153,7 @@ class FrontendNormalizationCorridorRejected(
             )
         self.failure = failure
         super().__init__(
-            "original route corridor is not closed: "
-            f"{failure.description()}"
+            f"original route corridor is not closed: {failure.description()}"
         )
 
 
@@ -393,9 +388,7 @@ def _bind_conditional_select_envelope(
     if explicit_target is None:
         return None
     nonexplicit_targets = tuple(
-        int(serial)
-        for serial in source.succs
-        if int(serial) != int(explicit_target)
+        int(serial) for serial in source.succs if int(serial) != int(explicit_target)
     )
     if int(explicit_target) not in source.succs or len(nonexplicit_targets) != 1:
         return None
@@ -425,8 +418,7 @@ def _bind_conditional_select_envelope(
             or semantic_true_target != int(selected.serial)
             or selected.kind is not BlockKind.ONE_WAY
             or selected.succs != (int(join.serial),)
-            or tuple(graph.predecessors(int(selected.serial)))
-            != (int(source.serial),)
+            or tuple(graph.predecessors(int(selected.serial))) != (int(source.serial),)
             or set(graph.predecessors(int(join.serial)))
             != {int(source.serial), int(selected.serial)}
             or len(selected_instructions) != 1
@@ -472,11 +464,7 @@ def _conditional_select_diagnostic(
             int(operand.size),
             operand.reg,
             operand.value,
-            (
-                None
-                if operand.sub_kind is None
-                else operand.sub_kind.value
-            ),
+            (None if operand.sub_kind is None else operand.sub_kind.value),
             (
                 None
                 if operand.sub_value_op_kind is None
@@ -798,14 +786,10 @@ def _bind_imported_conditional_select_envelope(
         return None
 
     control_edges = tuple(
-        edge
-        for edge in source.outgoing_edges
-        if edge.kind is not NativeEdgeKind.CALL
+        edge for edge in source.outgoing_edges if edge.kind is not NativeEdgeKind.CALL
     )
     edge_by_kind = {edge.kind: edge for edge in control_edges}
-    branch_eas = {
-        edge.source_instruction_ea for edge in control_edges
-    }
+    branch_eas = {edge.source_instruction_ea for edge in control_edges}
     join = _request_native_block(request, transfer_ea)
     if (
         len(control_edges) != 2
@@ -852,9 +836,7 @@ def _bind_imported_conditional_select_envelope(
         )
     )
     join_control_edges = tuple(
-        edge
-        for edge in join.outgoing_edges
-        if edge.kind is not NativeEdgeKind.CALL
+        edge for edge in join.outgoing_edges if edge.kind is not NativeEdgeKind.CALL
     )
     if (
         selected is None
@@ -971,14 +953,10 @@ def _projected_route_corridor_serials(
                 edge_role=edge_role,
                 context_anchor_ea=int(graph.func_ea),
                 corridor_block=(
-                    None
-                    if corridor_serial is None
-                    else block_ref(corridor_serial)
+                    None if corridor_serial is None else block_ref(corridor_serial)
                 ),
                 boundary_block=(
-                    None
-                    if boundary_serial is None
-                    else block_ref(boundary_serial)
+                    None if boundary_serial is None else block_ref(boundary_serial)
                 ),
             )
         )
@@ -1195,9 +1173,7 @@ def plan_frontend_computed_branch_normalization(
                     "belongs to multiple semantic envelopes"
                 )
     absorbed_native_entries = frozenset(absorbed_native_entry_owners)
-    overlapping_proof_sources = (
-        absorbed_native_entries & set(imported_binding_by_entry)
-    )
+    overlapping_proof_sources = absorbed_native_entries & set(imported_binding_by_entry)
     if overlapping_proof_sources:
         raise FrontendNormalizationEvidenceRejected(
             "imported conditional-select routing blocks overlap transfer "
@@ -1223,9 +1199,7 @@ def plan_frontend_computed_branch_normalization(
                         *imported_binding.proof.flag_corridor,
                     )
                     for ea in proof_identity.exact_instruction_eas
-                    if int(native_block.start_ea)
-                    <= int(ea)
-                    < int(native_block.end_ea)
+                    if int(native_block.start_ea) <= int(ea) < int(native_block.end_ea)
                 )
             )
             identity = _native_block_identity(
@@ -1461,9 +1435,7 @@ def plan_frontend_computed_branch_normalization(
     for binding in imported_bindings:
         proof = binding.proof
         source_block_id = imported_ids[int(binding.source.start_ea)]
-        imported_conditional_select = imported_conditional_selects.get(
-            proof.proof_id
-        )
+        imported_conditional_select = imported_conditional_selects.get(proof.proof_id)
         imported_edges: list[FragmentEdge] = []
         for endpoint, live_target, native_target in binding.endpoints:
             target_block_id = (
@@ -1510,9 +1482,7 @@ def plan_frontend_computed_branch_normalization(
                                 join_identity=_native_block_identity(
                                     imported_conditional_select.join,
                                     evidence,
-                                    exact_instruction_eas=(
-                                        proof.source_transfer_ea,
-                                    ),
+                                    exact_instruction_eas=(proof.source_transfer_ea,),
                                 ),
                             )
                         ),
@@ -1594,8 +1564,7 @@ def plan_frontend_computed_branch_normalization(
                     )
                 if edge.kind is NativeEdgeKind.INDIRECT and not edge.resolver_proven:
                     raise FrontendNormalizationEvidenceRejected(
-                        f"detached block 0x{entry_ea:X} has an unproved "
-                        "indirect edge"
+                        f"detached block 0x{entry_ea:X} has an unproved indirect edge"
                     )
                 target_id = target_block_id(int(edge.target_ea))
                 if target_id is None:
@@ -1627,8 +1596,7 @@ def plan_frontend_computed_branch_normalization(
                 NativeEdgeKind.CONDITIONAL_FALSE,
             }:
                 raise FrontendNormalizationEvidenceRejected(
-                    f"detached block 0x{entry_ea:X} has an unsupported "
-                    "multi-edge shape"
+                    f"detached block 0x{entry_ea:X} has an unsupported multi-edge shape"
                 )
             true_edge = edge_by_kind[NativeEdgeKind.CONDITIONAL_TRUE]
             false_edge = edge_by_kind[NativeEdgeKind.CONDITIONAL_FALSE]
@@ -1684,9 +1652,7 @@ def plan_frontend_computed_branch_normalization(
         semantic_entry_block_ids.update(
             imported_block_id
             for seed in import_request.semantic_closure.seed_provenance
-            for imported_block_id in (
-                imported_id_for_anchor(int(seed.entry_ea)),
-            )
+            for imported_block_id in (imported_id_for_anchor(int(seed.entry_ea)),)
             if imported_block_id is not None
         )
         entry_block_ids = tuple(
@@ -1870,8 +1836,7 @@ def _select_frontend_root_component(
         return block_ids, operation_ids, flag_corridors
 
     publication_root_components = tuple(
-        (root_block_id, *root_component(root_block_id))
-        for root_block_id in plan.roots
+        (root_block_id, *root_component(root_block_id)) for root_block_id in plan.roots
     )
     proof_owned_native_body_entry_ids: set[str] = set()
     semantic_closure = evidence.semantic_closure
@@ -1952,14 +1917,10 @@ def _select_frontend_root_component(
     pending_proof_ids = tuple(
         proof_id
         for proof_id in proof_ids
-        if any(
-            operation.operation_id == proof_id for operation in plan.operations
-        )
+        if any(operation.operation_id == proof_id for operation in plan.operations)
     )
     selected_proof_ids = tuple(
-        proof_id
-        for proof_id in pending_proof_ids
-        if proof_id in selected_operation_ids
+        proof_id for proof_id in pending_proof_ids if proof_id in selected_operation_ids
     )
     if not selected_proof_ids:
         raise FrontendNormalizationEvidenceRejected(

@@ -1,4 +1,5 @@
 "Portable induction-variable analysis.\n\nPorts the additive induction classifier (``x = x +/- c``) from\n``preanalysis.facts.collectors.induction_carrier._classify_induction_update`` /\n``_signed_step`` (lines 232-330) to the analyses layer, cfg-free: opcodes are\nmatched by string forms plus the portable ``ir.expressions.ValueOpKind`` names,\nnever ``from d810.ir.flowgraph import InsnKind`` (an upward analyses->cfg edge).\n\nThe preanalysis collector classified ONE instruction at a time.  ``analyze_loop`` adds\nthe loop dimension with an OPTIMISTIC (union) meet across a loop's blocks: a\ncandidate discovered in any loop block survives at the loop head.  A\nbottom-absorbing intersection would wipe a loop-head candidate that is absent on\nthe loop's entry edge -- the same lattice-polarity trap behind the LS6\n``state_write`` kill-on-unresolved bug.\n\nNet-new and unwired (Landing Sequence LS8 S5).\n"
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ _SUB_OPCODES = frozenset({"op_13", ValueOpKind.SUB.name, ValueOpKind.SUB.value})
 
 
 def _signed_step(value: int) -> int:
-    "Interpret a possibly-64-bit-unsigned immediate as signed.\n\n    Ported verbatim from ``preanalysis.facts.collectors.induction_carrier``.\n    "
+    "Interpret a possibly-64-bit-unsigned immediate as signed.\n\n    Ported verbatim from ``preanalysis.facts.collectors.induction_carrier``.\n"
     value = int(value)
     if value > 0x7FFFFFFFFFFFFFFF:
         return value - (1 << 64)
@@ -28,7 +29,7 @@ def _signed_step(value: int) -> int:
 
 
 class InstructionView(Protocol):
-    "Structural view of one instruction the classifier reads.\n\n    Callers / backends supply concrete views (e.g. snapshot rows); only these\n    fields are consumed.  Mirrors the preanalysis induction collector's\n    canonical instruction-view field subset.\n    "
+    "Structural view of one instruction the classifier reads.\n\n    Callers / backends supply concrete views (e.g. snapshot rows); only these\n    fields are consumed.  Mirrors the preanalysis induction collector's\n    canonical instruction-view field subset.\n"
 
     block_serial: int
     opcode_name: str
@@ -56,9 +57,7 @@ class InductionVariableAnalysis:
     """Classifies additive induction-variable updates and aggregates them over a
     loop with an optimistic union meet."""
 
-    def classify_update(
-        self, insn: InstructionView
-    ) -> Optional[InductionVariableFact]:
+    def classify_update(self, insn: InstructionView) -> Optional[InductionVariableFact]:
         """Classify one instruction as an additive self-update, or return None.
 
         Ports ``_classify_induction_update``: ``x = x + c`` (either operand
@@ -104,9 +103,7 @@ class InductionVariableAnalysis:
         for insn in insns:
             fact = self.classify_update(insn)
             if fact is not None:
-                by_offset.setdefault(fact.dest_stkoff, {}).setdefault(
-                    fact.step, fact
-                )
+                by_offset.setdefault(fact.dest_stkoff, {}).setdefault(fact.step, fact)
         return {off: tuple(by_step.values()) for off, by_step in by_offset.items()}
 
     def merge(

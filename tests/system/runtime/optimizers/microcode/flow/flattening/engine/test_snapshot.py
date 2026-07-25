@@ -1,4 +1,5 @@
 """Unit tests for shared engine snapshot types."""
+
 from __future__ import annotations
 
 from d810.optimizers.microcode.flow.flattening import engine

@@ -8,6 +8,7 @@ Minimum viable scope: additive recurrences ``{base, +, step}``.  ``RecurrenceExp
 is the umbrella (currently a single kind); widen it to a ``Union`` when a second
 recurrence kind (e.g. multiplicative) lands.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

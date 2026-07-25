@@ -1,4 +1,5 @@
 """SQLite-backed selected-alternate-edge override diagnostics."""
+
 from __future__ import annotations
 
 from d810.core import getLogger

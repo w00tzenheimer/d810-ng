@@ -15,6 +15,7 @@ The full implementation now lives in
 ``tests/unit/diagnostics/test_redirect_reconcile.py``. The cfg-layer
 classification logic in ``d810.analyses.control_flow.redirect_reconciliation`` is unchanged.
 """
+
 from __future__ import annotations
 
 import os

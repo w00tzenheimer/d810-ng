@@ -16,6 +16,7 @@ Lives in the evaluator layer (like ``HexRaysUseDefSafetyBackend``) because every
 method needs live ``ida_hexrays`` access.  The portable Protocol + ``ValRange``
 result type live in :mod:`d810.capabilities.value_range`.
 """
+
 from __future__ import annotations
 
 import ida_hexrays
@@ -127,7 +128,9 @@ class HexRaysValRangeCapability:
     # Custom-fixpoint fallback (valrange_dataflow)
     # ------------------------------------------------------------------
 
-    def _fixpoint_state_value(self, block_serial: int, state_var_stkoff: int, at_insn) -> int | None:
+    def _fixpoint_state_value(
+        self, block_serial: int, state_var_stkoff: int, at_insn
+    ) -> int | None:
         """Resolve via the hand-rolled forward value-range fixpoint when native fails."""
         in_states = self._ensure_fixpoint()
         if in_states is None:

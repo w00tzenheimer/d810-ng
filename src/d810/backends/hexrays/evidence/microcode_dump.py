@@ -15,6 +15,7 @@ from d810.evaluator.hexrays_microcode.valrange_dataflow import (
 from d810.evaluator.hexrays_microcode.valranges import (
     collect_instruction_valrange_records,
 )
+
 # Compatibility facade: the live-capture half moved to
 # ``d810.hexrays.diagnostics.microcode_capture`` (axis-C slice 1).
 # These re-exports preserve the seven existing
@@ -79,7 +80,9 @@ from d810.analyses.control_flow.linearized_state_dag import (
 from d810.backends.hexrays.evidence.flattening.dynamic_state_transition_recovery import (
     recover_dynamic_state_write_transitions,
 )
-from d810.analyses.control_flow.persisted_preanalysis_dag import get_persisted_preanalysis_dag
+from d810.analyses.control_flow.persisted_preanalysis_dag import (
+    get_persisted_preanalysis_dag,
+)
 from d810.analyses.control_flow.comparison_dispatcher_model import (
     ComparisonDispatcherModel,
 )
@@ -104,7 +107,9 @@ from d810.analyses.data_flow.resolve import (
     ResolvePoint,
     resolve as resolve_ladder,
 )
-from d810.analyses.control_flow.transition_builder import _convert_condition_chain_to_result
+from d810.analyses.control_flow.transition_builder import (
+    _convert_condition_chain_to_result,
+)
 from d810.analyses.control_flow.transition_report import (
     TransitionKind,
     build_dispatcher_transition_report,
@@ -658,13 +663,13 @@ def dump_dispatcher_tree(
     sections.append("=== DISPATCHER CONDITION CHAIN ===")
     condition_chain_lines: List[str] = []
     condition_chain_visited: set = set()
-    handler_state_map: Dict[int, int] = (
-        {}
-    )  # handler_serial -> state_constant (from condition-chain leaf)
+    handler_state_map: Dict[
+        int, int
+    ] = {}  # handler_serial -> state_constant (from condition-chain leaf)
     handler_serials: set = set()
-    handler_range_map: Dict[int, Tuple[Optional[int], Optional[int]]] = (
-        {}
-    )  # handler_serial -> (lo, hi)
+    handler_range_map: Dict[
+        int, Tuple[Optional[int], Optional[int]]
+    ] = {}  # handler_serial -> (lo, hi)
 
     _dump_dispatcher_node(
         mba,
@@ -733,7 +738,9 @@ def dump_dispatcher_tree(
                 pre_header_serial=range_evidence.pre_header_serial,
                 initial_state=range_evidence.initial_state,
                 handler_range_map=range_evidence.handler_range_map,
-                condition_chain_blocks=tuple(sorted(range_evidence.condition_chain_blocks)),
+                condition_chain_blocks=tuple(
+                    sorted(range_evidence.condition_chain_blocks)
+                ),
             )
         except Exception:
             logger.warning("Failed to build recovered transition report", exc_info=True)
@@ -818,7 +825,9 @@ def _build_comparison_model_from_condition_chain(
     dispatch_map = StateDispatcherMap(
         rows=tuple(rows),
         dispatcher_entry_block=int(dispatcher_entry_serial),
-        dispatcher_blocks=frozenset(int(s) for s in range_evidence.condition_chain_blocks)
+        dispatcher_blocks=frozenset(
+            int(s) for s in range_evidence.condition_chain_blocks
+        )
         | {int(dispatcher_entry_serial)},
         state_var_stkoff=state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
@@ -1013,7 +1022,10 @@ def _inject_explore_resolved_edges(
         _states.sort(key=lambda d: d["handler"])
         with open(os.path.join(".tmp", "explore_states.json"), "w") as _fh:
             _json.dump(_states, _fh, indent=1)
-        logger.info("explore: dumped %d resolve/route states to .tmp/explore_states.json", len(_states))
+        logger.info(
+            "explore: dumped %d resolve/route states to .tmp/explore_states.json",
+            len(_states),
+        )
     except Exception:
         logger.warning("explore-states dump failed", exc_info=True)
 
@@ -1106,7 +1118,9 @@ def _build_live_linearized_state_dag(
     )
     transition_result = _convert_condition_chain_to_result(range_evidence)
     flow_graph = IDAIRTranslator().lift(mba)
-    known_states = set(int(value) for value in range_evidence.handler_state_map.values())
+    known_states = set(
+        int(value) for value in range_evidence.handler_state_map.values()
+    )
     if range_evidence.initial_state is not None:
         known_states.add(int(range_evidence.initial_state))
     transition_result = recover_dynamic_state_write_transitions(
@@ -1152,7 +1166,7 @@ def dump_linearized_dag(
     *,
     order_strategy: RenderOrderStrategy = RenderOrderStrategy.CATALOG,
 ) -> str:
-    "Render the canonical preanalysis-time DAG when available, else the\n    post-mutation live rebuild with an explicit non-canonical label.\n\n    Diagnostics that rebuild the DAG from a mutated MBA can produce\n    different anchor selections than what HCC actually consumed at\n    preanalysis time (the condition-chain/state-machine analysis reads the live CFG).\n    The preanalysis-time DAG is captured into the per-function process-level\n    cache by ``build_round_discovery_context``; consult it first so the\n    diagnostic shows what the engine actually saw.\n\n    Adds an explicit ``POST_MUTATION_INFERRED \u2014 not canonical`` header\n    to live-rebuild output so future debuggers don't trust it as\n    semantic ground truth.\n    "
+    "Render the canonical preanalysis-time DAG when available, else the\n    post-mutation live rebuild with an explicit non-canonical label.\n\n    Diagnostics that rebuild the DAG from a mutated MBA can produce\n    different anchor selections than what HCC actually consumed at\n    preanalysis time (the condition-chain/state-machine analysis reads the live CFG).\n    The preanalysis-time DAG is captured into the per-function process-level\n    cache by ``build_round_discovery_context``; consult it first so the\n    diagnostic shows what the engine actually saw.\n\n    Adds an explicit ``POST_MUTATION_INFERRED \u2014 not canonical`` header\n    to live-rebuild output so future debuggers don't trust it as\n    semantic ground truth.\n"
     func_ea = int(getattr(mba, "entry_ea", 0) or 0)
     persisted = get_persisted_preanalysis_dag(func_ea) if func_ea else None
     if persisted is not None:
@@ -1225,8 +1239,16 @@ def resolve_dispatcher_context_for_linearized_program(
         blk = mba.get_mblock(serial)
         if blk is None:
             continue
-        nsucc = int(getattr(blk, "nsucc", lambda: 0)() if callable(getattr(blk, "nsucc", None)) else getattr(blk, "nsucc", 0) or 0)
-        npred = int(getattr(blk, "npred", lambda: 0)() if callable(getattr(blk, "npred", None)) else getattr(blk, "npred", 0) or 0)
+        nsucc = int(
+            getattr(blk, "nsucc", lambda: 0)()
+            if callable(getattr(blk, "nsucc", None))
+            else getattr(blk, "nsucc", 0) or 0
+        )
+        npred = int(
+            getattr(blk, "npred", lambda: 0)()
+            if callable(getattr(blk, "npred", None))
+            else getattr(blk, "npred", 0) or 0
+        )
         if nsucc < 2:
             continue
         candidates.append((serial, npred, nsucc))
@@ -1250,7 +1272,9 @@ def resolve_dispatcher_context_for_linearized_program(
 
         exact_handlers = len(result.handler_state_map)
         ranged_handlers = sum(
-            1 for handler in result.handler_range_map if handler not in result.handler_state_map
+            1
+            for handler in result.handler_range_map
+            if handler not in result.handler_state_map
         )
         total_handlers = exact_handlers + ranged_handlers
         if total_handlers <= 0:
@@ -1288,7 +1312,7 @@ def build_live_linearized_program(
     boundary_inline_mode: BoundaryInlineMode = BoundaryInlineMode.LABELS_ONLY,
     comment_mode: ProgramCommentMode = ProgramCommentMode.DEBUG_METADATA,
 ) -> RenderedProgramSnapshot:
-    "Build the linearized-program IR for a dispatcher.\n\n    Prefers the canonical preanalysis-time DAG (persisted by\n    ``build_round_discovery_context``) when available so the rendered\n    program reflects what HCC actually consumed.  Falls back to live\n    rebuild from the post-mutation MBA only when no persisted DAG\n    exists; live rebuilds are intrinsically less stable across pipeline\n    mutations and may produce different anchor selections than preanalysis\n    time.\n    "
+    "Build the linearized-program IR for a dispatcher.\n\n    Prefers the canonical preanalysis-time DAG (persisted by\n    ``build_round_discovery_context``) when available so the rendered\n    program reflects what HCC actually consumed.  Falls back to live\n    rebuild from the post-mutation MBA only when no persisted DAG\n    exists; live rebuilds are intrinsically less stable across pipeline\n    mutations and may produce different anchor selections than preanalysis\n    time.\n"
     func_ea = int(getattr(mba, "entry_ea", 0) or 0)
     dag = get_persisted_preanalysis_dag(func_ea) if func_ea else None
     if dag is None:
@@ -1353,7 +1377,7 @@ def dump_linearized_dag_dot(
     *,
     expanded: bool = False,
 ) -> str:
-    "Build and render the unified state-level DAG as Graphviz DOT.\n\n    Prefers the canonical preanalysis-time DAG (persisted by\n    ``build_round_discovery_context``) when available so the rendered\n    graph reflects what HCC actually consumed.  Falls back to live\n    rebuild from the post-mutation MBA only when no persisted DAG\n    exists; live rebuilds are intrinsically less stable across pipeline\n    mutations and may produce different anchor selections than preanalysis\n    time.  The fallback output is explicitly labeled\n    ``POST_MUTATION_INFERRED`` so future debuggers don't trust it as\n    semantic ground truth.\n    "
+    "Build and render the unified state-level DAG as Graphviz DOT.\n\n    Prefers the canonical preanalysis-time DAG (persisted by\n    ``build_round_discovery_context``) when available so the rendered\n    graph reflects what HCC actually consumed.  Falls back to live\n    rebuild from the post-mutation MBA only when no persisted DAG\n    exists; live rebuilds are intrinsically less stable across pipeline\n    mutations and may produce different anchor selections than preanalysis\n    time.  The fallback output is explicitly labeled\n    ``POST_MUTATION_INFERRED`` so future debuggers don't trust it as\n    semantic ground truth.\n"
     func_ea = int(getattr(mba, "entry_ea", 0) or 0)
     dag = get_persisted_preanalysis_dag(func_ea) if func_ea else None
     rendered = None

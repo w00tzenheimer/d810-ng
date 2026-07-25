@@ -35,6 +35,7 @@ Default bounds:
   ``_DEFAULT_MAX_DEPTH``).
 - BFS visited cap: 64 blocks (matches the audit).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -100,6 +101,7 @@ _RETURN_WRITER_KINDS = frozenset(
 # of a ``Space.UNKNOWN`` collapse.
 # ---------------------------------------------------------------------------
 
+
 def _is_register_storage(view: object | None) -> bool:
     return isinstance(view, Varnode) and view.space is Space.REGISTER
 
@@ -121,7 +123,7 @@ def _is_lvar_storage(view: object | None) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class ReturnFrontierCarrierFact:
-    "Immutable record of a return-frontier writer's carrier identity.\n\n    Attributes:\n        ret_block: Serial of the return/stop block.\n        writer_block: Serial of the block writing the return slot.\n        walk_path: Block serials from writer_block ... ret_block (inclusive\n            on both ends).  Length >= 1 (at minimum the writer is also the\n            ret block).\n        carrier_lvar_idx: lvar index of the writer's lvar source, or\n            ``None`` if the source is not an lvar.\n        carrier_stkoff: Canonical STACK storage offset of the writer's stack\n            source, or ``None`` if the source is not a stkvar.\n        writer_path_blocks: Frozenset of block serials whose preservation\n            is required for the carrier identity to survive end-to-end\n            (writer + immediate predecessors that reference the carrier\n            by lvar / stack identity).  HCC uses this set to reject mods that\n            would inject foreign predecessors or rewrite edges inside.\n        classification: Preanalysis carrier classification. The protected\n            non-carrier class means the writer is not a recoverable return\n            carrier, but topology rewrites must preserve it unless a later\n            proof supplies a precise lowering.\n        artifact_kind: Optional protected non-carrier writer shape.\n    "
+    "Immutable record of a return-frontier writer's carrier identity.\n\n    Attributes:\n        ret_block: Serial of the return/stop block.\n        writer_block: Serial of the block writing the return slot.\n        walk_path: Block serials from writer_block ... ret_block (inclusive\n            on both ends).  Length >= 1 (at minimum the writer is also the\n            ret block).\n        carrier_lvar_idx: lvar index of the writer's lvar source, or\n            ``None`` if the source is not an lvar.\n        carrier_stkoff: Canonical STACK storage offset of the writer's stack\n            source, or ``None`` if the source is not a stkvar.\n        writer_path_blocks: Frozenset of block serials whose preservation\n            is required for the carrier identity to survive end-to-end\n            (writer + immediate predecessors that reference the carrier\n            by lvar / stack identity).  HCC uses this set to reject mods that\n            would inject foreign predecessors or rewrite edges inside.\n        classification: Preanalysis carrier classification. The protected\n            non-carrier class means the writer is not a recoverable return\n            carrier, but topology rewrites must preserve it unless a later\n            proof supplies a precise lowering.\n        artifact_kind: Optional protected non-carrier writer shape.\n"
 
     ret_block: int
     writer_block: int
@@ -150,9 +152,7 @@ def _is_return_block(blk: BlockSnapshot) -> bool:
     return False
 
 
-def _dest_is_return_slot(
-    insn: InsnSnapshot, *, return_stkoff: int
-) -> bool:
+def _dest_is_return_slot(insn: InsnSnapshot, *, return_stkoff: int) -> bool:
     """Heuristic: writer's destination is rax (any register) OR the
     return-slot stkvar at ``return_stkoff``.
 
@@ -231,9 +231,7 @@ def _find_writer_in_block(
             continue
         if not _dest_is_return_slot(insn, return_stkoff=return_stkoff):
             continue
-        if skip_trivial_copy and _is_trivial_copy(
-            insn, return_stkoff=return_stkoff
-        ):
+        if skip_trivial_copy and _is_trivial_copy(insn, return_stkoff=return_stkoff):
             continue
         last = insn
     return last
@@ -363,8 +361,7 @@ def _protected_non_carrier_return_writer_fact(
         carrier_stkoff=None,
         writer_path_blocks=frozenset(protected),
         classification=(
-            ReturnFrontierCarrierClassification
-            .PROTECTED_NON_CARRIER_RETURN_WRITER.value
+            ReturnFrontierCarrierClassification.PROTECTED_NON_CARRIER_RETURN_WRITER.value
         ),
         artifact_kind=(
             ReturnFrontierArtifactKind.KNOWN_IMPOSSIBLE_CONSTANT_RETURN_WRITER.value
@@ -453,9 +450,7 @@ def _detect_protected_non_carrier_return_writer_facts_for_return(
                 const_value = _writer_const_value(writer)
                 if (
                     const_value is not None
-                    and artifact_priors.is_known_impossible_return_constant(
-                        const_value
-                    )
+                    and artifact_priors.is_known_impossible_return_constant(const_value)
                 ):
                     facts.append(
                         _protected_non_carrier_return_writer_fact(
@@ -511,9 +506,7 @@ def detect_return_frontier_carrier_facts(
         # Determine the return slot from a return-block stack-to-register
         # move; fall back only to an explicit caller/profile hint.
         return_stkoff = (
-            int(return_stkoff_hint)
-            if return_stkoff_hint is not None
-            else None
+            int(return_stkoff_hint) if return_stkoff_hint is not None else None
         )
         for ins in ret_blk.insn_snapshots:
             if ins.kind is not InsnKind.MOV:
@@ -595,8 +588,7 @@ def detect_return_frontier_carrier_facts(
                     frontier.append((pserial, depth + 1, new_path))
             if writer is None:
                 logger.debug(
-                    "RETURN_FRONTIER_CARRIER_FACT: ret=blk[%d] "
-                    "writer=<none> (cap=%s)",
+                    "RETURN_FRONTIER_CARRIER_FACT: ret=blk[%d] writer=<none> (cap=%s)",
                     ret_serial,
                     "1" if hit_cap else "0",
                 )

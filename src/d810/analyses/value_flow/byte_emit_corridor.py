@@ -5,6 +5,7 @@ family-level structural fact.  It is observability-only: consumers can query
 which byte families survive or remap without treating individual byte steps as
 the whole corridor.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Any
@@ -71,8 +72,7 @@ class ByteEmitCorridorFactCollector:
             if len(ordered) < 2:
                 continue
             byte_indexes = tuple(
-                int(member.payload.get("byte_index", -1))
-                for member in ordered
+                int(member.payload.get("byte_index", -1)) for member in ordered
             )
             source_blocks = tuple(
                 int(member.source_block)
@@ -85,14 +85,19 @@ class ByteEmitCorridorFactCollector:
                 if member.source_ea is not None
             )
             unique_bytes = tuple(sorted(set(byte_indexes)))
-            unique_destinations = tuple(sorted({
-                str(member.payload.get("destination_buffer_expression"))
-                for member in ordered
-            }))
-            unique_counters = tuple(sorted({
-                str(member.payload.get("counter_carrier"))
-                for member in ordered
-            }))
+            unique_destinations = tuple(
+                sorted(
+                    {
+                        str(member.payload.get("destination_buffer_expression"))
+                        for member in ordered
+                    }
+                )
+            )
+            unique_counters = tuple(
+                sorted(
+                    {str(member.payload.get("counter_carrier")) for member in ordered}
+                )
+            )
             byte_text = ",".join(str(byte) for byte in unique_bytes)
             first_block = source_blocks[0] if source_blocks else None
             first_ea = source_eas[0] if source_eas else None

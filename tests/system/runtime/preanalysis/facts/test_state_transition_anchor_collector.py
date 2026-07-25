@@ -1,4 +1,5 @@
 """Tests for StateTransitionAnchorFactCollector."""
+
 from __future__ import annotations
 
 import json
@@ -12,7 +13,9 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.analyses.control_flow.state_transition_anchor import StateTransitionAnchorFactCollector
+from d810.analyses.control_flow.state_transition_anchor import (
+    StateTransitionAnchorFactCollector,
+)
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 from tests.system.runtime.preanalysis.facts._diag_meta_builder import flat_meta
@@ -173,7 +176,7 @@ def _target(*blocks: BlockSnapshot) -> SimpleNamespace:
 def _collect(target: object) -> tuple[object, ...]:
     return StateTransitionAnchorFactCollector().collect(
         target,
-        func_ea=0x180012df0,
+        func_ea=0x180012DF0,
         maturity=_MATURITY_VALUES["MMAT_LOCOPT"],
         phase="pre_d810",
     )
@@ -207,10 +210,7 @@ def test_direct_transition_records_both_consts() -> None:
     assert blk100.payload["successor_kind"] == "direct"
     assert blk100.payload["state_var_stkoff"] == 0x3C
     assert "state_var_reg" not in blk100.payload
-    assert (
-        blk100.mop_signature
-        == "state_transition:0x5a21d9db->0x63d54755:kind=direct"
-    )
+    assert blk100.mop_signature == "state_transition:0x5a21d9db->0x63d54755:kind=direct"
 
 
 def test_register_state_machine_records_register_identity_and_transition():
@@ -374,7 +374,9 @@ def test_canonical_stkoff_picked_by_frequency() -> None:
             _block(
                 10,
                 _state_insn(index=0, state_const=0xAAAAAAAA, ea=0x180014000),
-                _state_insn(index=1, state_const=0xBBBBBBBB, ea=0x180014008, stkoff=0x68),
+                _state_insn(
+                    index=1, state_const=0xBBBBBBBB, ea=0x180014008, stkoff=0x68
+                ),
                 succs=(20,),
             ),
             _block(
@@ -417,8 +419,7 @@ def test_view_accessor_returns_per_source_block() -> None:
     )
     assert len(facts) == 2
     obs_tuple = tuple(
-        f if isinstance(f, FactObservation)
-        else FactObservation(**f.__dict__)
+        f if isinstance(f, FactObservation) else FactObservation(**f.__dict__)
         for f in facts
     )
     view = ValidatedFactView(
@@ -519,10 +520,7 @@ def test_direct_transition_from_canonical_flowgraph_source() -> None:
     assert blk100.payload["next_state_const"] == 0x63D54755
     assert blk100.payload["successor_kind"] == "direct"
     assert blk100.payload["dest_var_signature"] == "%var_7BC.4"
-    assert (
-        blk100.mop_signature
-        == "state_transition:0x5a21d9db->0x63d54755:kind=direct"
-    )
+    assert blk100.mop_signature == "state_transition:0x5a21d9db->0x63d54755:kind=direct"
 
 
 def _meta_stack(stkoff: int, size: int = 4) -> dict:
@@ -560,9 +558,7 @@ def _meta_mov(
         src_r_value=None,
         dstr=f"mov #0x{state_const:08X}.4, %var_7BC.4",
     )
-    insn.meta = json.dumps(
-        {"l": _meta_const(state_const), "d": _meta_stack(stkoff)}
-    )
+    insn.meta = json.dumps({"l": _meta_const(state_const), "d": _meta_stack(stkoff)})
     return insn
 
 

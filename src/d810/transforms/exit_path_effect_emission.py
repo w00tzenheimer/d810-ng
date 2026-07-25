@@ -258,7 +258,9 @@ def _collect_linear_predecessor_exit_path(
     return tuple(reversed(path))
 
 
-def _alias_map_for_path(flow_graph: object, path_blocks: tuple[int, ...]) -> dict[int, int]:
+def _alias_map_for_path(
+    flow_graph: object, path_blocks: tuple[int, ...]
+) -> dict[int, int]:
     aliases: dict[int, int] = {}
     get_block = getattr(flow_graph, "get_block", None)
     if not callable(get_block):
@@ -414,9 +416,8 @@ def _expected_terminal_successor(
     right_state = int(state_var_stkoff) in tuple(getattr(right, "stack_refs", ()) or ())
     left_value = _number_value(left)
     right_value = _number_value(right)
-    compares_terminal = (
-        (left_state and right_value == int(terminal_state))
-        or (right_state and left_value == int(terminal_state))
+    compares_terminal = (left_state and right_value == int(terminal_state)) or (
+        right_state and left_value == int(terminal_state)
     )
     if not compares_terminal:
         return None
@@ -453,7 +454,10 @@ def _return_block_for_terminal(
     if expected is None:
         return None
     return_block = get_block(expected) if callable(get_block) else None
-    if return_block is None or getattr(return_block, "nsucc", len(getattr(return_block, "succs", ()))) != 0:
+    if (
+        return_block is None
+        or getattr(return_block, "nsucc", len(getattr(return_block, "succs", ()))) != 0
+    ):
         return None
     return int(expected)
 
@@ -603,9 +607,7 @@ def plan_state_exit_path_effect_lowerings(
 
     return ExitPathLoweringExecutionPlan(
         modifications=modifications_out,
-        owned_blocks=frozenset(
-            int(site.anchor_serial) for site in supported
-        ),
+        owned_blocks=frozenset(int(site.anchor_serial) for site in supported),
         owned_edges=frozenset(
             (int(site.anchor_serial), int(dispatcher_entry_serial))
             for site in supported

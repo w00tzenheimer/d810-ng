@@ -3,6 +3,7 @@
 Tests are built against synthetic ``LinearizedStateDag`` fixtures so they
 have zero IDA dependency and run in the unit-test tier.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -78,12 +79,15 @@ def _edge(
             None
             if target_handler is None
             else StateDagNodeKey(
-                handler_serial=target_handler, state_const=target_state_const,
+                handler_serial=target_handler,
+                state_const=target_state_const,
             )
         ),
         target_state=target_state_const,
         target_entry_anchor=target_entry_anchor,
-        target_label=f"state_{target_state_const:#x}" if target_state_const is not None else "",
+        target_label=f"state_{target_state_const:#x}"
+        if target_state_const is not None
+        else "",
         source_anchor=StateRedirectAnchor(
             kind=(
                 RedirectSourceKind.UNCONDITIONAL
@@ -135,8 +139,10 @@ class TestCanonicalTargetFor:
 
     def test_unique_edge_returns_target(self):
         edge = _edge(
-            source_handler=10, target_handler=20,
-            target_entry_anchor=20, source_block=10,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
+            source_block=10,
         )
         node10 = _node(handler_serial=10, entry_anchor=10)
         node20 = _node(handler_serial=20, entry_anchor=20)
@@ -153,12 +159,18 @@ class TestCanonicalTargetFor:
         # Same source block, two distinct branch arms → independent
         # decisions, each with its own target.  Not a conflict.
         edge_arm0 = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
-            source_block=10, branch_arm=0,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
+            source_block=10,
+            branch_arm=0,
         )
         edge_arm1 = _edge(
-            source_handler=10, target_handler=30, target_entry_anchor=30,
-            source_block=10, branch_arm=1,
+            source_handler=10,
+            target_handler=30,
+            target_entry_anchor=30,
+            source_block=10,
+            branch_arm=1,
         )
         dag = _dag(edges=(edge_arm0, edge_arm1))
         auth = DagAuthority(dag)
@@ -172,11 +184,15 @@ class TestCanonicalTargetFor:
         # canonical_target_for returns None; conflicts_for_source surfaces
         # the conflict.
         edge_a = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
             source_block=10,
         )
         edge_b = _edge(
-            source_handler=10, target_handler=30, target_entry_anchor=30,
+            source_handler=10,
+            target_handler=30,
+            target_entry_anchor=30,
             source_block=10,
         )
         dag = _dag(edges=(edge_a, edge_b))
@@ -189,11 +205,15 @@ class TestCanonicalTargetFor:
         # Two edges from same anchor agreeing on target → not a conflict;
         # canonical lookup returns the agreed target.
         edge_a = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
             source_block=10,
         )
         edge_b = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
             source_block=10,
         )
         dag = _dag(edges=(edge_a, edge_b))
@@ -207,8 +227,11 @@ class TestCanonicalTargetFor:
         # contribute to canonical_target_for; they're handled by separate
         # PrivateTerminalSuffix / return-family lowering strategies.
         edge_return = _edge(
-            source_handler=10, target_handler=None, target_entry_anchor=None,
-            source_block=10, kind=SemanticEdgeKind.CONDITIONAL_RETURN,
+            source_handler=10,
+            target_handler=None,
+            target_entry_anchor=None,
+            source_block=10,
+            kind=SemanticEdgeKind.CONDITIONAL_RETURN,
         )
         dag = _dag(edges=(edge_return,))
         auth = DagAuthority(dag)
@@ -218,7 +241,9 @@ class TestCanonicalTargetFor:
         # Edges with target_entry_anchor=None aren't planner-emittable
         # — ``select_plannable_dag_edges`` filters them out, and so do we.
         edge = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=None,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=None,
             source_block=10,
         )
         dag = _dag(edges=(edge,))
@@ -237,7 +262,9 @@ class TestPermitsRedirectGoto:
 
     def test_allows_when_target_matches_dag(self):
         edge = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
             source_block=10,
         )
         dag = _dag(edges=(edge,))
@@ -251,7 +278,9 @@ class TestPermitsRedirectGoto:
 
     def test_refuses_when_target_disagrees_with_dag(self):
         edge = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
             source_block=10,
         )
         dag = _dag(edges=(edge,))
@@ -277,11 +306,15 @@ class TestPermitsRedirectGoto:
 
     def test_refuses_with_gap_when_dag_internally_conflicting(self):
         edge_a = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
             source_block=10,
         )
         edge_b = _edge(
-            source_handler=10, target_handler=30, target_entry_anchor=30,
+            source_handler=10,
+            target_handler=30,
+            target_entry_anchor=30,
             source_block=10,
         )
         dag = _dag(edges=(edge_a, edge_b))
@@ -305,7 +338,9 @@ class TestPermitsConvertToGoto:
 
     def test_allows_when_target_matches_dag(self):
         edge = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
             source_block=10,
         )
         dag = _dag(edges=(edge,))
@@ -318,7 +353,9 @@ class TestPermitsConvertToGoto:
 
     def test_refuses_when_target_disagrees(self):
         edge = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
             source_block=10,
         )
         dag = _dag(edges=(edge,))
@@ -366,7 +403,9 @@ class TestStrictGapRefusals:
 class TestPermitsDispatcher:
     def test_dispatches_redirect_goto(self):
         edge = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
             source_block=10,
         )
         dag = _dag(edges=(edge,))
@@ -378,7 +417,9 @@ class TestPermitsDispatcher:
 
     def test_dispatches_convert_to_goto(self):
         edge = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
             source_block=10,
         )
         dag = _dag(edges=(edge,))
@@ -450,8 +491,11 @@ class TestIndexHelpers:
 
     def test_edges_from_returns_outgoing_edges(self):
         edge = _edge(
-            source_handler=10, target_handler=20, target_entry_anchor=20,
-            source_block=10, source_state_const=0x1,
+            source_handler=10,
+            target_handler=20,
+            target_entry_anchor=20,
+            source_block=10,
+            source_state_const=0x1,
         )
         dag = _dag(edges=(edge,))
         auth = DagAuthority(dag)
@@ -497,7 +541,9 @@ class TestCorridorSpliceClosure:
         auth = self._seeded_authority()
         assert auth.canonical_corridor_splice_for(45) is None
 
-    def test_permits_edge_redirect_via_pred_split_allows_when_seed_matches(self) -> None:
+    def test_permits_edge_redirect_via_pred_split_allows_when_seed_matches(
+        self,
+    ) -> None:
         seed = CorridorSpliceData(
             function_ea=0x180012B60,
             shared_block=45,
@@ -518,7 +564,9 @@ class TestCorridorSpliceClosure:
         assert decision.target_entry_anchor == 180
         assert decision.proof_edge_key[0] == "corridor_splice"
 
-    def test_permits_edge_redirect_via_pred_split_disagrees_on_target_mismatch(self) -> None:
+    def test_permits_edge_redirect_via_pred_split_disagrees_on_target_mismatch(
+        self,
+    ) -> None:
         seed = CorridorSpliceData(
             function_ea=0x180012B60,
             shared_block=45,
@@ -554,7 +602,10 @@ class TestCorridorSpliceClosure:
         # DAG_GAP:unknown_mod_kind:EdgeRedirectViaPredSplit.
         auth = self._seeded_authority()
         mod = EdgeRedirectViaPredSplit(
-            src_block=122, old_target=45, new_target=180, via_pred=37,
+            src_block=122,
+            old_target=45,
+            new_target=180,
+            via_pred=37,
         )
         decision = auth.permits(mod)
         assert decision.is_gap
@@ -575,6 +626,7 @@ class _StubProjectedBlock:
 class _StubProjectedFlowGraph:
     def __init__(self, blocks: dict[int, _StubProjectedBlock]):
         self.blocks = blocks
+
     def get_block(self, serial: int):
         return self.blocks.get(int(serial))
 
@@ -590,9 +642,11 @@ class TestDeadBlockTerminatorClosure:
 
     def test_allows_unreachable_block_with_dispatcher_succ(self) -> None:
         auth = DagAuthority(_dag())
-        graph = _StubProjectedFlowGraph({
-            42: _StubProjectedBlock(preds=(), succs=(2,)),
-        })
+        graph = _StubProjectedFlowGraph(
+            {
+                42: _StubProjectedBlock(preds=(), succs=(2,)),
+            }
+        )
         mod = RedirectGoto(from_serial=42, old_target=2, new_target=99)
         decision = auth.permits_dead_block_terminator_redirect(
             mod,
@@ -607,9 +661,11 @@ class TestDeadBlockTerminatorClosure:
     def test_refuses_block_with_preds(self) -> None:
         # Block has predecessors → not dead → can't be retargeted to STOP.
         auth = DagAuthority(_dag())
-        graph = _StubProjectedFlowGraph({
-            42: _StubProjectedBlock(preds=(10,), succs=(2,)),
-        })
+        graph = _StubProjectedFlowGraph(
+            {
+                42: _StubProjectedBlock(preds=(10,), succs=(2,)),
+            }
+        )
         mod = RedirectGoto(from_serial=42, old_target=2, new_target=99)
         decision = auth.permits_dead_block_terminator_redirect(
             mod,
@@ -622,9 +678,11 @@ class TestDeadBlockTerminatorClosure:
 
     def test_refuses_block_succ_not_dispatcher(self) -> None:
         auth = DagAuthority(_dag())
-        graph = _StubProjectedFlowGraph({
-            42: _StubProjectedBlock(preds=(), succs=(50,)),  # not dispatcher
-        })
+        graph = _StubProjectedFlowGraph(
+            {
+                42: _StubProjectedBlock(preds=(), succs=(50,)),  # not dispatcher
+            }
+        )
         mod = RedirectGoto(from_serial=42, old_target=50, new_target=99)
         decision = auth.permits_dead_block_terminator_redirect(
             mod,
@@ -637,9 +695,11 @@ class TestDeadBlockTerminatorClosure:
 
     def test_refuses_target_not_stop(self) -> None:
         auth = DagAuthority(_dag())
-        graph = _StubProjectedFlowGraph({
-            42: _StubProjectedBlock(preds=(), succs=(2,)),
-        })
+        graph = _StubProjectedFlowGraph(
+            {
+                42: _StubProjectedBlock(preds=(), succs=(2,)),
+            }
+        )
         mod = RedirectGoto(from_serial=42, old_target=2, new_target=88)  # not 99
         decision = auth.permits_dead_block_terminator_redirect(
             mod,

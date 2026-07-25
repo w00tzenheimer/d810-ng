@@ -1,4 +1,5 @@
 """Hex-Rays live-analysis evidence adapters."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -36,10 +37,22 @@ _MBLOCK_TYPE_NAMES = {
     6: "BLT_XTRN",
 }
 
-_CONDITIONAL_JUMP_LEADING_WORDS = frozenset({
-    "jcnd", "jnz", "jz", "jae", "jb", "ja", "jbe",
-    "jg", "jge", "jl", "jle", "jtbl",
-})
+_CONDITIONAL_JUMP_LEADING_WORDS = frozenset(
+    {
+        "jcnd",
+        "jnz",
+        "jz",
+        "jae",
+        "jb",
+        "ja",
+        "jbe",
+        "jg",
+        "jge",
+        "jl",
+        "jle",
+        "jtbl",
+    }
+)
 
 _UNCONDITIONAL_JUMP_LEADING_WORDS = frozenset({"goto", "ijmp", "ret"})
 
@@ -114,7 +127,10 @@ def _collect_block_predicate_read_write(
         insn = getattr(insn, "next", None)
 
     tail_reads = frozenset()
-    if tail_text is not None and _leading_opcode(tail_text) in _CONDITIONAL_JUMP_LEADING_WORDS:
+    if (
+        tail_text is not None
+        and _leading_opcode(tail_text) in _CONDITIONAL_JUMP_LEADING_WORDS
+    ):
         tail_reads = parse_var_tokens(tail_text)
     return PredicateReadWriteEvidence(
         block_serial=int(block_serial),

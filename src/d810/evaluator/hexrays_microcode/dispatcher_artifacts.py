@@ -1,4 +1,5 @@
 """Evaluator-backed plans for dispatcher-state materialization artifacts."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -112,10 +113,7 @@ def plan_dispatcher_state_return_carrier_artifact(
     if len(body) != 3:
         return None
     selector_write, left_const_write, right_const_write = body
-    if any(
-        int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_mov)
-        for insn in body
-    ):
+    if any(int(getattr(insn, "opcode", -1)) != int(ida_hexrays.m_mov) for insn in body):
         return None
     selector_value = _mop_const_value(ida_hexrays, getattr(selector_write, "l", None))
     if selector_value is None or not (0 <= int(selector_value) <= 0xFF):
@@ -140,7 +138,10 @@ def plan_dispatcher_state_return_carrier_artifact(
     if {join_left_reg, join_right_reg} != {left_reg, right_reg}:
         return None
     dispatcher_dst = getattr(join_insn, "d", None)
-    if dispatcher_dst is None or getattr(dispatcher_dst, "t", None) == ida_hexrays.mop_z:
+    if (
+        dispatcher_dst is None
+        or getattr(dispatcher_dst, "t", None) == ida_hexrays.mop_z
+    ):
         return None
 
     folded = resolve_predecessor_seeded_write_value(

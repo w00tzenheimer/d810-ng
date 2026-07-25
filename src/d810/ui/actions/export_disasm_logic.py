@@ -6,6 +6,7 @@ unit testing.
 
 All functions in this module can be imported and tested without IDA Pro.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ class DisasmExportSettings:
         include_segments: Include segment information
         output_path: Path to output file
     """
+
     format: str = "LST"
     include_headers: bool = True
     include_segments: bool = True
@@ -81,7 +83,9 @@ def to_ida_format_int_with_loader(fmt: str, loader: Any | None = None) -> int:
     }
 
     if fmt not in fallback_map:
-        raise ValueError(f"Unknown format: {fmt}. Expected one of: {list(fallback_map.keys())}")
+        raise ValueError(
+            f"Unknown format: {fmt}. Expected one of: {list(fallback_map.keys())}"
+        )
 
     if loader is None:
         return fallback_map[fmt]
@@ -129,11 +133,15 @@ def to_ida_flags(settings: DisasmExportSettings) -> int:
     return to_ida_flags_with_loader(settings, loader=None)
 
 
-def to_ida_flags_with_loader(settings: DisasmExportSettings, loader: Any | None = None) -> int:
+def to_ida_flags_with_loader(
+    settings: DisasmExportSettings, loader: Any | None = None
+) -> int:
     """Build IDA loader flags from settings using injected loader."""
     flags = 0
 
-    asmtype = 0x0002 if loader is None else int(getattr(loader, "GENFLG_ASMTYPE", 0x0002))
+    asmtype = (
+        0x0002 if loader is None else int(getattr(loader, "GENFLG_ASMTYPE", 0x0002))
+    )
 
     if settings.include_headers:
         flags |= asmtype
@@ -187,6 +195,7 @@ def suggest_disasm_filename(func_name: str, fmt: str) -> str:
     """
     # Sanitize function name (remove invalid filename characters)
     import re
+
     sanitized = re.sub(r'[<>:"/\\|?*]', "_", func_name)
     sanitized = sanitized.replace(" ", "_")
 
@@ -268,7 +277,9 @@ class MasmPrinter:
             x = f"{value:X}h"
             self.write(x if x[0] in "0123456789" else f"0{x}")
 
-    def write_bytes(self, data: bytes, offset: int, length: int, per_line: int = 32) -> None:
+    def write_bytes(
+        self, data: bytes, offset: int, length: int, per_line: int = 32
+    ) -> None:
         for i in range(length):
             if i % per_line:
                 self.write(",")

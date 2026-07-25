@@ -393,7 +393,7 @@ class BlockType(enum.IntEnum):
 
     XTRN = ida_hexrays.BLT_XTRN
     """external block (out of function address)"""
-    
+
     @property
     def display_name(self) -> str:
         mapping = {
@@ -548,7 +548,6 @@ class MicrocodeBasicBlockFlag(enum.IntEnum):
     EXTFRAME = idaapi.MBL_EXTFRAME
     """an inlined block with an external frame"""
 
-
     @classmethod
     def block_header_flags_str(cls, flags: int) -> str:
         """Return the flag suffix string for a block header, matching C++ order.
@@ -558,7 +557,7 @@ class MicrocodeBasicBlockFlag(enum.IntEnum):
             >>> MicrocodeBasicBlockFlag.block_header_flags_str(0x0084)
             ' TAILCALL FAKE'
         """
-    
+
         _HEADER_FLAGS: list = [
             ("DSLOT", "DSLOT"),
             ("NORET", "NORET"),
@@ -571,7 +570,7 @@ class MicrocodeBasicBlockFlag(enum.IntEnum):
             ("INLINED", "INLINED"),
             ("EXTFRAME", "EXTFRAME"),
             # print? MBL_GOTO MBL_DMT64 MBL_DEAD MBL_BACKPROP
-        ]        
+        ]
         return "".join(
             f" {display}"
             for member_name, display in _HEADER_FLAGS
@@ -709,8 +708,6 @@ class UseDefFlags(enum.IntEnum):
 
     CALL_SPOILS_ONLY_ARGS = idaapi.CALL_SPOILS_ONLY_ARGS
     """For build_def_list() & MAY_ACCESS: do not include global memory into the spoiled list of a call."""
-
-
 
 
 # Hex-Rays mop equality checking

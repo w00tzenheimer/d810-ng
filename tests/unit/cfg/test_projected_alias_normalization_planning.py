@@ -26,13 +26,18 @@ class _FakeFlowGraph:
 def test_collect_projected_alias_normalization_actions_adds_new_redirect() -> None:
     actions = collect_projected_alias_normalization_actions(
         dag=SimpleNamespace(),
-        projected_flow_graph=_FakeFlowGraph({95: _FakeBlock((160,)), 202: _FakeBlock(())}),
+        projected_flow_graph=_FakeFlowGraph(
+            {95: _FakeBlock((160,)), 202: _FakeBlock(())}
+        ),
         dispatcher_serial=2,
         redirected_blocks={95},
         condition_chain_blocks={2},
         modifications=[],
         emitted=set(),
-        resolve_projected_path_tail_target=lambda dag, *, source_block, condition_chain_blocks: (0x24E2E77A, 202),
+        resolve_projected_path_tail_target=lambda dag, *, source_block, condition_chain_blocks: (
+            0x24E2E77A,
+            202,
+        ),
     )
 
     assert actions == (
@@ -47,16 +52,23 @@ def test_collect_projected_alias_normalization_actions_adds_new_redirect() -> No
     )
 
 
-def test_collect_projected_alias_normalization_actions_replaces_existing_redirect() -> None:
+def test_collect_projected_alias_normalization_actions_replaces_existing_redirect() -> (
+    None
+):
     actions = collect_projected_alias_normalization_actions(
         dag=SimpleNamespace(),
-        projected_flow_graph=_FakeFlowGraph({95: _FakeBlock((160,)), 202: _FakeBlock(())}),
+        projected_flow_graph=_FakeFlowGraph(
+            {95: _FakeBlock((160,)), 202: _FakeBlock(())}
+        ),
         dispatcher_serial=2,
         redirected_blocks={95},
         condition_chain_blocks={2},
         modifications=[RedirectGoto(from_serial=95, old_target=2, new_target=160)],
         emitted={(95, 160)},
-        resolve_projected_path_tail_target=lambda dag, *, source_block, condition_chain_blocks: (0x24E2E77A, 202),
+        resolve_projected_path_tail_target=lambda dag, *, source_block, condition_chain_blocks: (
+            0x24E2E77A,
+            202,
+        ),
     )
 
     assert actions == (
@@ -71,7 +83,9 @@ def test_collect_projected_alias_normalization_actions_replaces_existing_redirec
     )
 
 
-def test_apply_projected_alias_normalization_actions_updates_claims_and_replaces_old_emit() -> None:
+def test_apply_projected_alias_normalization_actions_updates_claims_and_replaces_old_emit() -> (
+    None
+):
     actions = (
         ProjectedAliasNormalizationAction(
             source_block=95,

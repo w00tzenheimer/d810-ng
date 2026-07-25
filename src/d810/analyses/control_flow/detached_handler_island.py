@@ -1,4 +1,5 @@
 """Portable proof and planning for a detached conditional handler island."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -106,9 +107,7 @@ def plan_conditional_handler_bridges(
         proofs = candidates[source_ea]
         if len(proofs) != 1:
             continue
-        plan, true_state, false_state, true_target, false_target = next(
-            iter(proofs)
-        )
+        plan, true_state, false_state, true_target, false_target = next(iter(proofs))
         if (
             state_targets.get(true_state) != true_target
             or state_targets.get(false_state) != false_target
@@ -185,8 +184,7 @@ def conditional_bridge_route_evidence_converged(
         for transfer in transfers
         if transfer.resolver_kind == "residual_state_route"
         and transfer.selector_state_constant is not None
-        and (int(transfer.selector_state_constant) & 0xFFFFFFFF)
-        in predicate_states
+        and (int(transfer.selector_state_constant) & 0xFFFFFFFF) in predicate_states
     }
     exact_route_states = {
         int(transfer.selector_state_constant) & 0xFFFFFFFF
@@ -266,9 +264,7 @@ def plan_live_handler_template_replacements(
         row = next(iter(rows))
         branch_ea = int(row.conditional_branch_ea)
         branch_targets = tuple(int(ea) for ea in row.conditional_target_eas)
-        terminal_exits = tuple(
-            dict.fromkeys(int(ea) for ea in row.terminal_exit_eas)
-        )
+        terminal_exits = tuple(dict.fromkeys(int(ea) for ea in row.terminal_exit_eas))
         selector_states = tuple(
             sorted(
                 int(state) & 0xFFFFFFFF
@@ -425,9 +421,7 @@ def merge_detached_snippet_ranges(
 ) -> tuple[tuple[int, int], ...]:
     """Return sorted, non-overlapping snippet ranges accepted by Hex-Rays."""
     normalized = sorted(
-        (int(start), int(end))
-        for start, end in ranges
-        if int(start) < int(end)
+        (int(start), int(end)) for start, end in ranges if int(start) < int(end)
     )
     merged: list[tuple[int, int]] = []
     for start, end in normalized:
@@ -625,13 +619,9 @@ def normalize_detached_snippet_boundary_ports(
             f"source=0x{source_block_ea:X} instruction=0x{source_instruction_ea:X}"
         )
     return DetachedSnippetBoundaryPorts(
-        direct=tuple(
-            port
-            for _source, port in sorted(direct_by_source.items())
-        ),
+        direct=tuple(port for _source, port in sorted(direct_by_source.items())),
         conditional=tuple(
-            port
-            for _source, port in sorted(conditional_by_source.items())
+            port for _source, port in sorted(conditional_by_source.items())
         ),
     )
 
@@ -643,13 +633,7 @@ def select_unique_block_native_ea(
     """Select a stable native block identity, including empty external blocks."""
     start_ea = int(block_start_ea)
     candidates = tuple(
-        sorted(
-            {
-                int(ea)
-                for ea in instruction_eas
-                if 0 < int(ea) < 0xFFFFFFFFFFFFFFFF
-            }
-        )
+        sorted({int(ea) for ea in instruction_eas if 0 < int(ea) < 0xFFFFFFFFFFFFFFFF})
     )
     if start_ea in candidates:
         return start_ea
@@ -682,9 +666,7 @@ def plan_detached_snippet_routes(
     live_target_eas: frozenset[int] | None = None,
 ) -> tuple[DetachedSnippetRoutePlan, ...]:
     """Select unique static routes that require explicit snippet materialization."""
-    routable_target_eas = (
-        live_eas if live_target_eas is None else live_target_eas
-    )
+    routable_target_eas = live_eas if live_target_eas is None else live_target_eas
     condition_chain_targets: dict[int, set[int]] = {}
     owned_ranges_by_state_target: dict[
         tuple[int, int],
@@ -733,8 +715,7 @@ def plan_detached_snippet_routes(
             state = int(transfer.selector_state_constant) & 0xFFFFFFFF
             target_ea = int(transfer.target_eas[0])
         elif (
-            transfer.resolver_kind
-            in {"static_equality_fixpoint", "static_fixpoint"}
+            transfer.resolver_kind in {"static_equality_fixpoint", "static_fixpoint"}
             and transfer.selector_compare_constant is not None
             and transfer.condition_code in (4, 5)
         ):
@@ -812,11 +793,7 @@ def plan_detached_snippet_routes(
         candidates.setdefault((source_ea, state), set()).add(plan)
     return tuple(
         sorted(
-            (
-                next(iter(plans))
-                for plans in candidates.values()
-                if len(plans) == 1
-            ),
+            (next(iter(plans)) for plans in candidates.values() if len(plans) == 1),
             key=lambda plan: (plan.source_ea, plan.target_ea, plan.state_constant),
         )
     )
@@ -829,10 +806,12 @@ def select_detached_snippet_capture_ranges(
 ) -> tuple[tuple[int, int], ...] | None:
     """Return unique pre-patch owned ranges, or ``None`` for normal discovery."""
     candidates = {
-        tuple((int(start_ea), int(end_ea)) for start_ea, end_ea in plan.owned_native_ranges)
+        tuple(
+            (int(start_ea), int(end_ea))
+            for start_ea, end_ea in plan.owned_native_ranges
+        )
         for plan in plans
-        if int(plan.target_ea) == int(target_ea)
-        and plan.owned_native_ranges
+        if int(plan.target_ea) == int(target_ea) and plan.owned_native_ranges
     }
     if not candidates:
         return None

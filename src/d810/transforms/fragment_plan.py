@@ -169,9 +169,7 @@ def _stable_identity_overlap_is_one_shared_anchor(
 ) -> bool:
     """Allow one role-tagged same-EA microblock split, and nothing wider."""
     anchor_ea = int(anchor_ea)
-    exact_overlap = (
-        left.exact_instruction_eas & right.exact_instruction_eas
-    )
+    exact_overlap = left.exact_instruction_eas & right.exact_instruction_eas
     if exact_overlap != {anchor_ea}:
         return False
     overlaps = tuple(
@@ -349,21 +347,20 @@ class FragmentNativeBody:
             not isinstance(native_range, NativeEaInterval)
             for native_range in native_ranges
         ):
-            raise FragmentPlanRejected(
-                "fragment native body requires native EA ranges"
+            raise FragmentPlanRejected("fragment native body requires native EA ranges")
+        if (
+            tuple(
+                sorted(
+                    native_ranges,
+                    key=lambda native_range: (
+                        native_range.start_ea,
+                        native_range.end_ea,
+                    ),
+                )
             )
-        if tuple(
-            sorted(
-                native_ranges,
-                key=lambda native_range: (
-                    native_range.start_ea,
-                    native_range.end_ea,
-                ),
-            )
-        ) != native_ranges:
-            raise FragmentPlanRejected(
-                "fragment native body ranges must be ordered"
-            )
+            != native_ranges
+        ):
+            raise FragmentPlanRejected("fragment native body ranges must be ordered")
         for previous, current in zip(native_ranges, native_ranges[1:]):
             if current.start_ea < previous.end_ea:
                 raise FragmentPlanRejected(
@@ -410,9 +407,7 @@ class FragmentConditionalSelectEnvelope:
             "conditional-select predicate",
         )
         if not isinstance(self.observed_predicate_kind, PredicateKind):
-            raise TypeError(
-                "conditional-select envelope requires a PredicateKind"
-            )
+            raise TypeError("conditional-select envelope requires a PredicateKind")
         selected_value_block_id = _require_identifier(
             self.selected_value_block_id,
             "conditional-select selected-value block",
@@ -458,20 +453,13 @@ class FragmentImportedConditionalSelectEnvelope:
                 "imported conditional-select selected value requires stable identity"
             )
         if not isinstance(self.join_identity, StableBlockIdentity):
-            raise TypeError(
-                "imported conditional-select join requires stable identity"
-            )
-        if (
-            self.selected_value_identity.native_key
-            != self.join_identity.native_key
-        ):
+            raise TypeError("imported conditional-select join requires stable identity")
+        if self.selected_value_identity.native_key != self.join_identity.native_key:
             raise FragmentPlanRejected(
                 "imported conditional-select envelope requires one native key"
             )
         if (
-            not self.selected_value_identity.native_ranges.contains(
-                selected_value_ea
-            )
+            not self.selected_value_identity.native_ranges.contains(selected_value_ea)
             or selected_value_ea
             not in self.selected_value_identity.exact_instruction_eas
         ):
@@ -504,9 +492,7 @@ class FragmentComputedBranchNormalization:
 
     def __post_init__(self) -> None:
         if not isinstance(self.predicate_kind, PredicateKind):
-            raise TypeError(
-                "computed branch normalization requires a PredicateKind"
-            )
+            raise TypeError("computed branch normalization requires a PredicateKind")
         normalization_start_ea = _require_native_ea(
             self.normalization_start_ea,
             "computed branch normalization start",
@@ -525,8 +511,7 @@ class FragmentComputedBranchNormalization:
             or condition_producer_ea == unresolved_transfer_ea
         ):
             raise FragmentPlanRejected(
-                "computed branch start, producer, and transfer require distinct "
-                "anchors"
+                "computed branch start, producer, and transfer require distinct anchors"
             )
         conditional_select_envelope = self.conditional_select_envelope
         if conditional_select_envelope is not None and not isinstance(
@@ -536,9 +521,7 @@ class FragmentComputedBranchNormalization:
                 FragmentImportedConditionalSelectEnvelope,
             ),
         ):
-            raise TypeError(
-                "computed branch conditional-select envelope is invalid"
-            )
+            raise TypeError("computed branch conditional-select envelope is invalid")
         object.__setattr__(
             self,
             "normalization_start_ea",
@@ -717,9 +700,7 @@ class FragmentOperation:
         predicate_anchor_ea = self.predicate_anchor_ea
         direct_transfer_rewrite = self.direct_transfer_rewrite
         computed_branch_normalization = self.computed_branch_normalization
-        storage_predicate_materialization = (
-            self.storage_predicate_materialization
-        )
+        storage_predicate_materialization = self.storage_predicate_materialization
         if computed_branch_normalization is not None and not isinstance(
             computed_branch_normalization,
             FragmentComputedBranchNormalization,
@@ -732,12 +713,9 @@ class FragmentOperation:
             FragmentDirectTransferRewrite,
         ):
             raise TypeError("fragment operation direct transfer rewrite is invalid")
-        if (
-            storage_predicate_materialization is not None
-            and not isinstance(
-                storage_predicate_materialization,
-                FragmentStoragePredicateMaterialization,
-            )
+        if storage_predicate_materialization is not None and not isinstance(
+            storage_predicate_materialization,
+            FragmentStoragePredicateMaterialization,
         ):
             raise TypeError(
                 "fragment operation storage predicate materialization is invalid"
@@ -916,13 +894,8 @@ class FragmentReturnCarrier:
             raise TypeError("fragment return carrier requires a portable source")
         return_width = int(self.return_width)
         if not 1 <= return_width <= 8:
-            raise FragmentPlanRejected(
-                "fragment return width must be 1..8 bytes"
-            )
-        if (
-            self.operation is ValueOpKind.MOVE
-            and self.source.width != return_width
-        ):
+            raise FragmentPlanRejected("fragment return width must be 1..8 bytes")
+        if self.operation is ValueOpKind.MOVE and self.source.width != return_width:
             raise FragmentPlanRejected(
                 "fragment return move source and result widths must match"
             )
@@ -940,8 +913,7 @@ class FragmentReturnCarrier:
             len(corridor_instruction_eas) < 2
             or corridor_instruction_eas[0] != state_write_ea
             or corridor_instruction_eas[-1] != carrier_ea
-            or len(set(corridor_instruction_eas))
-            != len(corridor_instruction_eas)
+            or len(set(corridor_instruction_eas)) != len(corridor_instruction_eas)
         ):
             raise FragmentPlanRejected(
                 "fragment return carrier corridor must run uniquely "
@@ -1241,8 +1213,7 @@ class FragmentRangeAssumption:
             )
         max_unsigned = (1 << (self.site.width * 8)) - 1
         if any(
-            bound is not None and not 0 <= bound <= max_unsigned
-            for bound in (lo, hi)
+            bound is not None and not 0 <= bound <= max_unsigned for bound in (lo, hi)
         ):
             raise FragmentPlanRejected(
                 "fragment range bounds must fit the unsigned site width"
@@ -1282,9 +1253,7 @@ class FragmentPlan:
             "fragment atomic group id",
         )
         if not isinstance(self.publication_purpose, FragmentPublicationPurpose):
-            raise TypeError(
-                "fragment plan requires a FragmentPublicationPurpose"
-            )
+            raise TypeError("fragment plan requires a FragmentPublicationPurpose")
         if not isinstance(self.native_key, NativePreanalysisKey):
             raise TypeError("fragment plan requires a native preanalysis key")
         work_item_scope = self.work_item_scope
@@ -1484,9 +1453,7 @@ class FragmentPlan:
                     )
             direct_rewrite = operation.direct_transfer_rewrite
             if direct_rewrite is not None:
-                native_body = native_body_by_id.get(
-                    str(source.native_body_id)
-                )
+                native_body = native_body_by_id.get(str(source.native_body_id))
                 canonical_imported_rewrite = bool(
                     source.role is FragmentBlockRole.IMPORTED
                     and source.materialization
@@ -1540,14 +1507,10 @@ class FragmentPlan:
                         f"0x{envelope_ea:X}: {existing_owner!r} and "
                         f"{operation.operation_id!r}"
                     )
-            storage_materialization = (
-                operation.storage_predicate_materialization
-            )
+            storage_materialization = operation.storage_predicate_materialization
             if storage_materialization is not None:
                 identity = source.stable_identity
-                native_body = native_body_by_id.get(
-                    str(source.native_body_id)
-                )
+                native_body = native_body_by_id.get(str(source.native_body_id))
                 if (
                     self.publication_purpose
                     is not FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
@@ -1578,13 +1541,9 @@ class FragmentPlan:
                         "storage predicate anchors require exact physical "
                         "source ownership"
                     )
-            computed_normalization = (
-                operation.computed_branch_normalization
-            )
+            computed_normalization = operation.computed_branch_normalization
             if computed_normalization is not None:
-                native_body = native_body_by_id.get(
-                    str(source.native_body_id)
-                )
+                native_body = native_body_by_id.get(str(source.native_body_id))
                 canonical_imported_normalization = bool(
                     self.publication_purpose
                     is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
@@ -1629,9 +1588,7 @@ class FragmentPlan:
                             "computed branch anchors do not belong to its source "
                             "identity"
                         )
-                    native_body = native_body_by_id.get(
-                        str(source.native_body_id)
-                    )
+                    native_body = native_body_by_id.get(str(source.native_body_id))
                     if (
                         native_body is None
                         or operation.operation_id not in native_body.proof_ids
@@ -1666,9 +1623,7 @@ class FragmentPlan:
                             "conditional-select source anchors do not belong to "
                             "its replacement identity"
                         )
-                    selected = block_by_id.get(
-                        envelope.selected_value_block_id
-                    )
+                    selected = block_by_id.get(envelope.selected_value_block_id)
                     join = block_by_id.get(envelope.join_block_id)
                     if (
                         selected is None
@@ -1724,8 +1679,7 @@ class FragmentPlan:
                             "exact physical source ownership"
                         )
                     if (
-                        envelope.selected_value_identity.native_key
-                        != self.native_key
+                        envelope.selected_value_identity.native_key != self.native_key
                         or envelope.join_identity.native_key != self.native_key
                         or not envelope.join_identity.native_ranges.contains(
                             computed_normalization.unresolved_transfer_ea
@@ -1738,9 +1692,7 @@ class FragmentPlan:
                             "imported conditional-select envelope does not own "
                             "its selected-value and join anchors"
                         )
-                    native_body = native_body_by_id.get(
-                        str(source.native_body_id)
-                    )
+                    native_body = native_body_by_id.get(str(source.native_body_id))
                     if (
                         native_body is None
                         or operation.operation_id not in native_body.proof_ids
@@ -1757,8 +1709,7 @@ class FragmentPlan:
                         selected_identity,
                     )
                     role_shared_source_selected = bool(
-                        envelope.source_branch_ea
-                        == envelope.selected_value_ea
+                        envelope.source_branch_ea == envelope.selected_value_ea
                         and _stable_identity_overlap_is_one_shared_anchor(
                             identity,
                             selected_identity,
@@ -1766,10 +1717,7 @@ class FragmentPlan:
                         )
                     )
                     if (
-                        (
-                            source_selected_overlap
-                            and not role_shared_source_selected
-                        )
+                        (source_selected_overlap and not role_shared_source_selected)
                         or _stable_identities_overlap(identity, join_identity)
                         or _stable_identities_overlap(
                             selected_identity,
@@ -1803,9 +1751,7 @@ class FragmentPlan:
                         f"fragment operation {operation.operation_id!r} has unknown "
                         f"target block {edge.target_block_id!r}"
                     )
-        operation_source_ids = {
-            operation.source_block_id for operation in operations
-        }
+        operation_source_ids = {operation.source_block_id for operation in operations}
         for native_body in native_bodies:
             terminal_ids = set(native_body.terminal_block_ids)
             if terminal_ids & operation_source_ids:
@@ -1814,9 +1760,7 @@ class FragmentPlan:
                     "cannot also own an operation"
                 )
             missing_topology = (
-                set(native_body.block_ids)
-                - terminal_ids
-                - operation_source_ids
+                set(native_body.block_ids) - terminal_ids - operation_source_ids
             )
             if missing_topology:
                 raise FragmentPlanRejected(
@@ -1834,15 +1778,12 @@ class FragmentPlan:
             (carrier.carrier_id for carrier in return_carriers),
             "fragment return carrier",
         )
-        carrier_by_id = {
-            carrier.carrier_id: carrier for carrier in return_carriers
-        }
+        carrier_by_id = {carrier.carrier_id: carrier for carrier in return_carriers}
         for carrier in return_carriers:
             block = block_by_id.get(carrier.block_id)
             if block is None:
                 raise FragmentPlanRejected(
-                    f"fragment return carrier {carrier.carrier_id!r} has "
-                    "unknown block"
+                    f"fragment return carrier {carrier.carrier_id!r} has unknown block"
                 )
             if block.role not in {
                 FragmentBlockRole.REPLACEMENT,
@@ -1903,11 +1844,8 @@ class FragmentPlan:
             identity = block.stable_identity
             if (
                 identity is None
-                or not identity.native_ranges.contains(
-                    terminal_return.instruction_ea
-                )
-                or terminal_return.instruction_ea
-                not in identity.exact_instruction_eas
+                or not identity.native_ranges.contains(terminal_return.instruction_ea)
+                or terminal_return.instruction_ea not in identity.exact_instruction_eas
             ):
                 raise FragmentPlanRejected(
                     f"fragment terminal return {terminal_return.return_id!r} "
@@ -1965,8 +1903,7 @@ class FragmentPlan:
             if (
                 len(operation.edges) != 1
                 or operation.edges[0].role is not SemanticEdgeRole.DIRECT
-                or operation.edges[0].target_block_id
-                != terminal_return.block_id
+                or operation.edges[0].target_block_id != terminal_return.block_id
             ):
                 raise FragmentPlanRejected(
                     f"fragment terminal route {terminal_route.terminal_route_id!r} "
@@ -2187,8 +2124,7 @@ def _portable_fragment_json_value(value):
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     raise TypeError(
-        "fragment plan contains a non-portable JSON value: "
-        f"{type(value).__name__}"
+        f"fragment plan contains a non-portable JSON value: {type(value).__name__}"
     )
 
 

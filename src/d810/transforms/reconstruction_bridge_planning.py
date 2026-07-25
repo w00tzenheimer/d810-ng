@@ -94,7 +94,9 @@ def _resolve_exact_then_interval(
 
 
 def _edge_kind_name(edge) -> str:
-    return getattr(getattr(edge, "kind", None), "name", str(getattr(edge, "kind", None)))
+    return getattr(
+        getattr(edge, "kind", None), "name", str(getattr(edge, "kind", None))
+    )
 
 
 def collect_reconstruction_claims(
@@ -130,11 +132,7 @@ def plan_reconstruction_preheader_bridge(
     condition_chain_blocks: set[int],
     dispatcher,
 ) -> ReconstructionPreheaderBridgeResult:
-    if (
-        dispatcher is None
-        or dag.pre_header_serial is None
-        or dag.initial_state is None
-    ):
+    if dispatcher is None or dag.pre_header_serial is None or dag.initial_state is None:
         return ReconstructionPreheaderBridgeResult(
             modification=None,
             resolved_target=None,
@@ -226,7 +224,9 @@ def plan_reconstruction_bridge_modifications(
         if block is None:
             continue
 
-        already_wired = any(int(block.succs[i]) == target_entry for i in range(block.nsucc))
+        already_wired = any(
+            int(block.succs[i]) == target_entry for i in range(block.nsucc)
+        )
         if already_wired:
             claimed_targets.add(target_entry)
             continue
@@ -284,11 +284,7 @@ def plan_reconstruction_bridge_modifications(
                 bridge_mods.append(modification)
                 claimed_targets.add(target_entry)
                 claimed_sources.add(exit_block)
-                tag = (
-                    "empty-path direct wire"
-                    if not edge.ordered_path
-                    else "1-way"
-                )
+                tag = "empty-path direct wire" if not edge.ordered_path else "1-way"
                 log_entries.append(
                     ReconstructionBridgeLogEntry(
                         source_block=exit_block,
@@ -332,7 +328,9 @@ def plan_reconstruction_bridge_modifications(
                                 logger.debug(
                                     "RECON BRIDGE: redirect veto callback raised"
                                     " for %s state=0x%08X %s",
-                                    edge_label(flow_graph, int(exit_block), int(target_entry)),
+                                    edge_label(
+                                        flow_graph, int(exit_block), int(target_entry)
+                                    ),
                                     int(edge_state) & 0xFFFFFFFF,
                                     flow_graph_context_label(flow_graph),
                                     exc_info=True,
@@ -342,7 +340,9 @@ def plan_reconstruction_bridge_modifications(
                             logger.warning(
                                 "RECON BRIDGE: redirect vetoed %s old=%s state=0x%08X"
                                 " reason=%s %s",
-                                edge_label(flow_graph, int(exit_block), int(target_entry)),
+                                edge_label(
+                                    flow_graph, int(exit_block), int(target_entry)
+                                ),
                                 block_label(flow_graph, int(arm_target)),
                                 int(edge_state) & 0xFFFFFFFF,
                                 veto_reason,
@@ -422,7 +422,10 @@ def plan_reconstruction_feeder_modifications(
 
         if src_block.nsucc == 1:
             old_target = int(src_block.succs[0])
-            if old_target != dispatcher_serial and old_target not in condition_chain_set:
+            if (
+                old_target != dispatcher_serial
+                and old_target not in condition_chain_set
+            ):
                 continue
 
             feeder_tag = "UNKNOWN 1-way" if edge_kind_name == "UNKNOWN" else "1-way"
@@ -443,13 +446,16 @@ def plan_reconstruction_feeder_modifications(
             if edge_pred is not None:
                 pred_block = projected_flow_graph.get_block(edge_pred)
                 if pred_block is not None:
-                    pred_succs = tuple(int(succ) for succ in getattr(pred_block, "succs", ()))
+                    pred_succs = tuple(
+                        int(succ) for succ in getattr(pred_block, "succs", ())
+                    )
             target_reaches_pred = (
                 target_reaches_source_ignoring_blocks(
                     projected_flow_graph,
                     target_entry=target_entry,
                     source_block=edge_pred,
-                    ignored_blocks=condition_chain_set | {dispatcher_serial, src_serial},
+                    ignored_blocks=condition_chain_set
+                    | {dispatcher_serial, src_serial},
                 )
                 if edge_pred is not None
                 else False

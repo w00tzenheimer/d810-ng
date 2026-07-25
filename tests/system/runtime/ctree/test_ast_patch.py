@@ -3,6 +3,7 @@
 Tests ASTPatch class, remove_instr, replace_instr, replace_expr
 using lightweight mocks that simulate ctree structures.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -14,11 +15,18 @@ from d810.ctree.ast_patch import ASTPatch, remove_instr, replace_instr, replace_
 # Mock helpers
 # ---------------------------------------------------------------------------
 
+
 class MockItem:
     """Mock for a ctree item (cinsn_t / cexpr_t)."""
 
-    def __init__(self, op: int = 0, ea: int = 0x1000, label_num: int = -1,
-                 opname: str = "mock_instr", is_expr_val: bool = False):
+    def __init__(
+        self,
+        op: int = 0,
+        ea: int = 0x1000,
+        label_num: int = -1,
+        opname: str = "mock_instr",
+        is_expr_val: bool = False,
+    ):
         self.op = op
         self.ea = ea
         self.label_num = label_num
@@ -70,6 +78,7 @@ class MockASTContext:
 # ---------------------------------------------------------------------------
 # ASTPatch class tests
 # ---------------------------------------------------------------------------
+
 
 class TestASTPatch:
     def test_scheme_modified_patch_type(self):
@@ -134,6 +143,7 @@ class TestASTPatch:
 # remove_instr tests (without IDA -- limited, tests label/parent logic)
 # ---------------------------------------------------------------------------
 
+
 class TestRemoveInstr:
     def test_remove_instr_no_parent_returns_false(self):
         """When no parent block is found, remove_instr should return False."""
@@ -147,6 +157,7 @@ class TestRemoveInstr:
         item is a real cinsn_t. Passing a MockItem (not a cinsn_t) raises
         AssertionError propagated from the IDA type-check guard."""
         import idaapi as _idaapi
+
         if _idaapi is None:
             pytest.skip("IDA not available")
         parent_cinsn = MockItem()
@@ -162,6 +173,7 @@ class TestRemoveInstr:
 # ---------------------------------------------------------------------------
 # replace_instr tests (without IDA)
 # ---------------------------------------------------------------------------
+
 
 class TestReplaceInstr:
     def test_replace_preserves_label(self):
@@ -188,6 +200,7 @@ class TestReplaceInstr:
 # ---------------------------------------------------------------------------
 # replace_expr tests (without IDA)
 # ---------------------------------------------------------------------------
+
 
 class TestReplaceExpr:
     def test_replace_expr_returns_false_without_ida(self):

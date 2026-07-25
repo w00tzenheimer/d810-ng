@@ -554,9 +554,7 @@ def find_materialized_handler_block_by_native_ea(
         return matches[0]
     mba_identity = stable_mba_identity(mba)
     required_eas = frozenset(
-        int(required_ea)
-        for required_ea in required_native_eas
-        if int(required_ea) > 0
+        int(required_ea) for required_ea in required_native_eas if int(required_ea) > 0
     )
     imported_root = _IMPORTED_SNIPPET_ROOTS.get((mba_identity, target_ea))
     relocated_imported_root = (
@@ -585,9 +583,11 @@ def find_materialized_handler_block_by_native_ea(
         exact_imported_matches_by_serial[int(relocated_imported_root.serial)] = (
             relocated_imported_root
         )
-    for (owner_identity, start_ea, _end_ea), owner in (
-        _IMPORTED_NATIVE_BLOCK_RANGES.items()
-    ):
+    for (
+        owner_identity,
+        start_ea,
+        _end_ea,
+    ), owner in _IMPORTED_NATIVE_BLOCK_RANGES.items():
         if int(owner_identity) != int(mba_identity) or int(start_ea) != target_ea:
             continue
         relocated_range_owner = _relocate_imported_owner(mba, owner)
@@ -992,9 +992,7 @@ def _template_block_covers_identity(
     identity: StableBlockIdentity,
 ) -> bool:
     """Whether one cached microblock contains every exact portable anchor."""
-    instruction_eas = {
-        int(instruction.ea) for instruction in block.instructions
-    }
+    instruction_eas = {int(instruction.ea) for instruction in block.instructions}
     template_coordinates = {
         int(block.native_entry_ea),
         *instruction_eas,
@@ -1018,9 +1016,7 @@ def _template_block_anchors_split_normalization(
         or operation.computed_branch_normalization is None
         or operation.predicate_anchor_ea is None
         or len(operation.edges) != 2
-        or {
-            edge.role for edge in operation.edges
-        }
+        or {edge.role for edge in operation.edges}
         != {
             SemanticEdgeRole.CONDITIONAL_TAKEN,
             SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
@@ -1055,9 +1051,7 @@ def _template_block_anchors_split_normalization(
     return bool(
         int(semantic_anchor_ea) in source_coordinates
         and proof_anchors <= identity.exact_instruction_eas
-        and identity.native_ranges.contains(
-            int(normalization.unresolved_transfer_ea)
-        )
+        and identity.native_ranges.contains(int(normalization.unresolved_transfer_ea))
         and all(
             identity.native_ranges.contains(int(instruction.ea))
             for instruction in block.instructions
@@ -1129,9 +1123,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         for index, instruction in enumerate(instructions):
             if int(instruction.ea) != int(normalization.condition_producer_ea):
                 continue
-            producer_predicate = set_predicate_from_opcode(
-                int(instruction.opcode)
-            )
+            producer_predicate = set_predicate_from_opcode(int(instruction.opcode))
             if producer_predicate is normalization.predicate_kind:
                 branch_opcode = int(ida_hexrays.m_jnz)
             elif (
@@ -1165,9 +1157,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             ]
         ] = []
         candidate_diagnostics: list[tuple[int, int, str]] = []
-        for (owner_ea, target_ea), template in (
-            _PREOPT_UNION_SNIPPET_TEMPLATES.items()
-        ):
+        for (owner_ea, target_ea), template in _PREOPT_UNION_SNIPPET_TEMPLATES.items():
             if int(owner_ea) != int(self.function_ea):
                 continue
             if int(template.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED):
@@ -1198,14 +1188,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     if operation.source_block_id == block_id
                 )
                 source_operation = (
-                    source_operations[0]
-                    if len(source_operations) == 1
-                    else None
+                    source_operations[0] if len(source_operations) == 1 else None
                 )
                 matches = (
                     ()
-                    if identity is None
-                    or identity.native_key != plan.native_key
+                    if identity is None or identity.native_key != plan.native_key
                     else tuple(
                         template_block
                         for template_block in template.blocks
@@ -1217,9 +1204,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                             or _template_block_anchors_split_normalization(
                                 template_block,
                                 identity,
-                                semantic_anchor_ea=int(
-                                    plan_block.semantic_anchor_ea
-                                ),
+                                semantic_anchor_ea=int(plan_block.semantic_anchor_ea),
                                 operation=source_operation,
                             )
                         )
@@ -1310,8 +1295,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 payload={
                     "operation_id": operation.operation_id,
                     "proof_corridor_instruction_eas": tuple(
-                        hex(int(ea))
-                        for ea in rewrite.proof_corridor_instruction_eas
+                        hex(int(ea)) for ea in rewrite.proof_corridor_instruction_eas
                     ),
                 },
             )
@@ -1371,8 +1355,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         dict[int, int],
         dict[
             str,
-            _ComputedBranchNormalizationPlan
-            | _StoragePredicateNormalizationPlan,
+            _ComputedBranchNormalizationPlan | _StoragePredicateNormalizationPlan,
         ],
         dict[str, _DirectTransferRewritePlan],
     ]:
@@ -1382,8 +1365,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         computed_normalizations: dict[
             str,
-            _ComputedBranchNormalizationPlan
-            | _StoragePredicateNormalizationPlan,
+            _ComputedBranchNormalizationPlan | _StoragePredicateNormalizationPlan,
         ] = {}
         direct_transfer_rewrites: dict[str, _DirectTransferRewritePlan] = {}
         terminal_block_ids = set(native_body.terminal_block_ids)
@@ -1426,7 +1408,9 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     ),
                 )
                 operands = _instruction_operands(captured)
-                if any(int(operand.t) == int(ida_hexrays.mop_l) for operand in operands):
+                if any(
+                    int(operand.t) == int(ida_hexrays.mop_l) for operand in operands
+                ):
                     raise SemanticFragmentBackendRejected(
                         "PREOPT native body contains an unportable local variable"
                     )
@@ -1444,8 +1428,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                         "PREOPT native body stack identity cannot be rebound"
                     )
                 block_ref_count = sum(
-                    int(operand.t) == int(ida_hexrays.mop_b)
-                    for operand in operands
+                    int(operand.t) == int(ida_hexrays.mop_b) for operand in operands
                 )
                 allowed_top_level_block_ref = bool(
                     (
@@ -1484,9 +1467,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 else operations[0].storage_predicate_materialization
             )
             direct_transfer_rewrite = (
-                None
-                if len(operations) != 1
-                else operations[0].direct_transfer_rewrite
+                None if len(operations) != 1 else operations[0].direct_transfer_rewrite
             )
             if direct_transfer_rewrite is not None:
                 direct_transfer_rewrites[str(block_id)] = (
@@ -1499,10 +1480,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                         rewrite=direct_transfer_rewrite,
                     )
                 )
-            if (
-                len(operations) == 1
-                and len(operations[0].edges) == 2
-            ):
+            if len(operations) == 1 and len(operations[0].edges) == 2:
                 if storage_predicate_materialization is not None:
                     computed_normalizations[str(block_id)] = (
                         self._preflight_storage_predicate_materialization(
@@ -1535,24 +1513,19 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                             )
                         )
             compatible_conditional = bool(
-                (
-                    conditional_tail
-                    and str(block_id) not in direct_transfer_rewrites
-                )
+                (conditional_tail and str(block_id) not in direct_transfer_rewrites)
                 or str(block_id) in computed_normalizations
             )
             operation_has_call_fallthrough = bool(
                 len(operations) == 1
                 and len(operations[0].edges) == 1
-                and operations[0].edges[0].role
-                is SemanticEdgeRole.CALL_FALLTHROUGH
+                and operations[0].edges[0].role is SemanticEdgeRole.CALL_FALLTHROUGH
             )
             if (
                 len(operations) != expected_operations
                 or (
                     operations
-                    and (len(operations[0].edges) == 2)
-                    != compatible_conditional
+                    and (len(operations[0].edges) == 2) != compatible_conditional
                 )
                 or has_call_fallthrough != operation_has_call_fallthrough
             ):
@@ -1603,8 +1576,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         normalization_start_indexes = tuple(
             index
             for index, instruction in enumerate(instructions)
-            if int(instruction.ea)
-            == int(normalization.normalization_start_ea)
+            if int(instruction.ea) == int(normalization.normalization_start_ea)
         )
         oriented_producers = (
             PreoptUnionSemanticNativeBodyMaterializer._oriented_predicate_producers(
@@ -1613,9 +1585,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             )
         )
         tail = None if not instructions else instructions[-1]
-        block_by_serial = {
-            int(block.source_serial): block for block in template.blocks
-        }
+        block_by_serial = {int(block.source_serial): block for block in template.blocks}
         join_serial = (
             None
             if tail is None or int(tail.d.t) != int(ida_hexrays.mop_b)
@@ -1638,25 +1608,16 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             else tuple(
                 int(block.source_serial)
                 for block in template.blocks
-                if join_serial
-                in {int(serial) for serial in block.successor_serials}
+                if join_serial in {int(serial) for serial in block.successor_serials}
             )
         )
         join_tail = (
-            None
-            if join is None or not join.instructions
-            else join.instructions[-1]
+            None if join is None or not join.instructions else join.instructions[-1]
         )
         join_successor_labels = tuple(
             (
-                (
-                    f"blk{int(successor_serial)}"
-                    f"@0x{int(successor.native_entry_ea):X}"
-                )
-                if (
-                    successor := block_by_serial.get(int(successor_serial))
-                )
-                is not None
+                (f"blk{int(successor_serial)}@0x{int(successor.native_entry_ea):X}")
+                if (successor := block_by_serial.get(int(successor_serial))) is not None
                 else (
                     f"native@0x{int(join.external_successor_eas[index]):X}"
                     if index < len(join.external_successor_eas)
@@ -1672,9 +1633,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             (
                 join_successor_labels[index],
                 None if successor is None else int(successor.block_type),
-                None
-                if successor is None
-                else f"0x{int(successor.block_flags):X}",
+                None if successor is None else f"0x{int(successor.block_flags):X}",
                 None
                 if successor is None
                 else tuple(
@@ -1685,9 +1644,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             for index, successor_serial in enumerate(
                 () if join is None else join.successor_serials
             )
-            for successor in (
-                block_by_serial.get(int(successor_serial)),
-            )
+            for successor in (block_by_serial.get(int(successor_serial)),)
         )
         join_tail_operands = (
             None
@@ -1707,14 +1664,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         join_callinfo = (
             None
-            if join_tail is None
-            or int(join_tail.d.t) != int(ida_hexrays.mop_f)
+            if join_tail is None or int(join_tail.d.t) != int(ida_hexrays.mop_f)
             else join_tail.d.f
         )
         join_callinfo_flags = (
-            None
-            if join_callinfo is None
-            else int(getattr(join_callinfo, "flags", 0))
+            None if join_callinfo is None else int(getattr(join_callinfo, "flags", 0))
         )
         join_callinfo_callee = (
             None
@@ -1722,9 +1676,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             else int(getattr(join_callinfo, "callee", ida_idaapi.BADADDR))
         )
         join_callinfo_args = (
-            None
-            if join_callinfo is None
-            else len(getattr(join_callinfo, "args", ()))
+            None if join_callinfo is None else len(getattr(join_callinfo, "args", ()))
         )
         join_callinfo_retregs = (
             None
@@ -1742,8 +1694,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             and not join.successor_serials
             and join_tail is not None
             and int(join_tail.opcode) == int(ida_hexrays.m_ijmp)
-            and int(join_tail.ea)
-            == int(normalization.unresolved_transfer_ea)
+            and int(join_tail.ea) == int(normalization.unresolved_transfer_ea)
         )
         artificial_tail_call_transfer = bool(
             join is not None
@@ -1751,15 +1702,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             and bool(int(join.block_flags) & int(ida_hexrays.MBL_TCAL))
             and not bool(
                 int(join.block_flags)
-                & (
-                    int(ida_hexrays.MBL_CALL)
-                    | int(ida_hexrays.MBL_NORET)
-                )
+                & (int(ida_hexrays.MBL_CALL) | int(ida_hexrays.MBL_NORET))
             )
             and join_tail is not None
             and int(join_tail.opcode) == int(ida_hexrays.m_icall)
-            and int(join_tail.ea)
-            == int(normalization.unresolved_transfer_ea)
+            and int(join_tail.ea) == int(normalization.unresolved_transfer_ea)
             and int(join_tail.l.t) == int(ida_hexrays.mop_r)
             and int(join_tail.r.t) == int(ida_hexrays.mop_r)
             and int(join_tail.d.t) == int(ida_hexrays.mop_z)
@@ -1768,10 +1715,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             and int(join_successor.native_entry_ea)
             == int(normalization.unresolved_transfer_ea)
             and int(join_successor.block_type) == int(ida_hexrays.BLT_STOP)
-            and bool(
-                int(join_successor.block_flags)
-                & int(ida_hexrays.MBL_FAKE)
-            )
+            and bool(int(join_successor.block_flags) & int(ida_hexrays.MBL_FAKE))
             and not bool(
                 int(join_successor.block_flags)
                 & (
@@ -1781,13 +1725,9 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 )
             )
             and not join_successor.successor_serials
-            and not any(
-                int(ea) > 0
-                for ea in join_successor.external_successor_eas
-            )
+            and not any(int(ea) > 0 for ea in join_successor.external_successor_eas)
             and len(join_successor.instructions) == 1
-            and int(join_successor.instructions[0].opcode)
-            == int(ida_hexrays.m_ret)
+            and int(join_successor.instructions[0].opcode) == int(ida_hexrays.m_ret)
             and int(join_successor.instructions[0].ea)
             == int(normalization.unresolved_transfer_ea)
         )
@@ -1828,9 +1768,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 in imported_envelope.join_identity.exact_instruction_eas
             )
         )
-        producer_row = (
-            None if len(oriented_producers) != 1 else oriented_producers[0]
-        )
+        producer_row = None if len(oriented_producers) != 1 else oriented_producers[0]
         producer_index = None if producer_row is None else int(producer_row[0])
         producer = None if producer_row is None else producer_row[1]
         branch_opcode = None if producer_row is None else int(producer_row[2])
@@ -1864,17 +1802,12 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 )
             ):
                 tail_skips_semantic_true = True
-            elif (
-                branch_opcode == int(ida_hexrays.m_jz)
-                and tail.l.equal_mops(
-                    producer.d,
-                    int(ida_hexrays.EQ_IGNSIZE),
-                )
+            elif branch_opcode == int(ida_hexrays.m_jz) and tail.l.equal_mops(
+                producer.d,
+                int(ida_hexrays.EQ_IGNSIZE),
             ):
                 tail_skips_semantic_true = True
-        source_successors = {
-            int(serial) for serial in template_block.successor_serials
-        }
+        source_successors = {int(serial) for serial in template_block.successor_serials}
         expected_source_successors = (
             None
             if join_serial is None or len(selected_serials) != 1
@@ -1888,10 +1821,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             (
                 "predicate_anchor_bound_or_synthetic",
                 len(predicate_indexes) == 1
-                or (
-                    not predicate_indexes
-                    and signed_split_plan is not None
-                ),
+                or (not predicate_indexes and signed_split_plan is not None),
             ),
             ("oriented_producer_unique", normalization_plan_count == 1),
             (
@@ -1911,8 +1841,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     producer_index is not None
                     and len(predicate_indexes) == 1
                     and len(normalization_start_indexes) == 1
-                    and producer_index
-                    < int(normalization_start_indexes[0])
+                    and producer_index < int(normalization_start_indexes[0])
                 ),
             ),
             (
@@ -1921,8 +1850,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             ),
             (
                 "source_tail_is_jcnd",
-                tail is not None
-                and int(tail.opcode) == int(ida_hexrays.m_jcnd),
+                tail is not None and int(tail.opcode) == int(ida_hexrays.m_jcnd),
             ),
             ("join_target_unique", join_serial is not None),
             ("selected_target_unique", len(selected_serials) == 1),
@@ -1958,8 +1886,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             ("join_owner_exact", join_owner_exact),
             (
                 "join_transfer_topology_supported",
-                direct_unresolved_transfer
-                or artificial_tail_call_transfer,
+                direct_unresolved_transfer or artificial_tail_call_transfer,
             ),
             (
                 "join_predecessors_exact",
@@ -1972,14 +1899,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             ),
             (
                 "join_tail_is_unresolved_transfer",
-                direct_unresolved_transfer
-                or artificial_tail_call_transfer,
+                direct_unresolved_transfer or artificial_tail_call_transfer,
             ),
             ("tail_skips_semantic_true", tail_skips_semantic_true),
         )
-        failed_obligations = tuple(
-            name for name, passed in checks if not passed
-        )
+        failed_obligations = tuple(name for name, passed in checks if not passed)
         if failed_obligations:
             source_instruction_shapes = tuple(
                 (
@@ -2006,10 +1930,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             join_label = (
                 "none"
                 if join is None
-                else (
-                    f"blk{int(join.source_serial)}"
-                    f"@0x{int(join.native_entry_ea):X}"
-                )
+                else (f"blk{int(join.source_serial)}@0x{int(join.native_entry_ea):X}")
             )
             raise SemanticFragmentBackendRejected(
                 "PREOPT split conditional-select envelope does not match its "
@@ -2091,9 +2012,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             )
         first_cut_index = int(cut_indexes[0])
         last_cut_index = int(cut_indexes[-1])
-        if cut_indexes != tuple(
-            range(first_cut_index, last_cut_index + 1)
-        ):
+        if cut_indexes != tuple(range(first_cut_index, last_cut_index + 1)):
             raise SemanticFragmentBackendRejected(
                 "PREOPT storage predicate cut anchor is not one contiguous "
                 f"instruction group; {label} indexes={cut_indexes!r}"
@@ -2132,9 +2051,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 or (
                     index != len(suffix) - 1
                     and (
-                        ida_hexrays.is_mcode_jcond(
-                            int(instruction.opcode)
-                        )
+                        ida_hexrays.is_mcode_jcond(int(instruction.opcode))
                         or int(instruction.opcode)
                         in {
                             int(ida_hexrays.m_goto),
@@ -2215,12 +2132,9 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         if len(producer_candidates) == 1:
             producer_index, producer, branch_opcode = producer_candidates[0]
-            if (
-                not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
-                    producer
-                )
-                or not int(producer_index) < int(predicate_indexes[0])
-            ):
+            if not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                producer
+            ) or not int(producer_index) < int(predicate_indexes[0]):
                 raise SemanticFragmentBackendRejected(
                     "PREOPT computed branch condition producer has no portable "
                     f"boolean result before its predicate anchor; {label} "
@@ -2264,11 +2178,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 int(instructions[index].opcode),
                 (
                     None
-                    if value_op_from_opcode(int(instructions[index].opcode))
-                    is None
-                    else value_op_from_opcode(
-                        int(instructions[index].opcode)
-                    ).value
+                    if value_op_from_opcode(int(instructions[index].opcode)) is None
+                    else value_op_from_opcode(int(instructions[index].opcode)).value
                 ),
             )
             for index in predicate_indexes
@@ -2428,8 +2339,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             predicate_index = int(predicate_indexes[0])
             predicate = instructions[predicate_index]
             if (
-                value_op_from_opcode(int(predicate.opcode))
-                is not ValueOpKind.ZEXT
+                value_op_from_opcode(int(predicate.opcode)) is not ValueOpKind.ZEXT
                 or int(predicate.l.t) != int(ida_hexrays.mop_d)
                 or value_op_from_opcode(int(predicate.l.d.opcode))
                 is not ValueOpKind.XOR
@@ -2442,17 +2352,14 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             cut_index = predicate_index
             branch_condition_template = predicate.l
         else:
-            xor_index, predicate_index = (
-                int(index) for index in predicate_indexes
-            )
+            xor_index, predicate_index = (int(index) for index in predicate_indexes)
             xor = instructions[xor_index]
             predicate = instructions[predicate_index]
             compare_flags = int(ida_hexrays.EQ_IGNSIZE)
             if (
                 predicate_index != xor_index + 1
                 or value_op_from_opcode(int(xor.opcode)) is not ValueOpKind.XOR
-                or value_op_from_opcode(int(predicate.opcode))
-                is not ValueOpKind.ZEXT
+                or value_op_from_opcode(int(predicate.opcode)) is not ValueOpKind.ZEXT
                 or not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
                     xor
                 )
@@ -2464,15 +2371,13 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             ):
                 return None
             if normalization.predicate_kind is PredicateKind.SLT:
-                predicate_consumes_xor = (
-                    int(predicate.l.t) != int(ida_hexrays.mop_d)
-                    and predicate.l.equal_mops(xor.d, compare_flags)
-                )
+                predicate_consumes_xor = int(predicate.l.t) != int(
+                    ida_hexrays.mop_d
+                ) and predicate.l.equal_mops(xor.d, compare_flags)
             else:
                 predicate_consumes_xor = (
                     int(predicate.l.t) == int(ida_hexrays.mop_d)
-                    and int(predicate.l.d.ea)
-                    == int(operation.predicate_anchor_ea)
+                    and int(predicate.l.d.ea) == int(operation.predicate_anchor_ea)
                     and value_op_from_opcode(int(predicate.l.d.opcode))
                     is ValueOpKind.LNOT
                     and int(predicate.l.d.r.t) == int(ida_hexrays.mop_z)
@@ -2495,26 +2400,18 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         producer_kinds = {row[2] for row in producer_rows}
         if (
             len(producer_rows) != 2
-            or producer_kinds
-            != {ValueOpKind.OVERFLOW_FLAG, ValueOpKind.SIGN_BIT}
-            or tuple(row[0] for row in producer_rows)
-            != (cut_index - 2, cut_index - 1)
+            or producer_kinds != {ValueOpKind.OVERFLOW_FLAG, ValueOpKind.SIGN_BIT}
+            or tuple(row[0] for row in producer_rows) != (cut_index - 2, cut_index - 1)
             or not all(
-                PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
-                    row[1]
-                )
+                PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(row[1])
                 for row in producer_rows
             )
         ):
             return None
         overflow = next(
-            row[1]
-            for row in producer_rows
-            if row[2] is ValueOpKind.OVERFLOW_FLAG
+            row[1] for row in producer_rows if row[2] is ValueOpKind.OVERFLOW_FLAG
         )
-        sign = next(
-            row[1] for row in producer_rows if row[2] is ValueOpKind.SIGN_BIT
-        )
+        sign = next(row[1] for row in producer_rows if row[2] is ValueOpKind.SIGN_BIT)
         compare_flags = int(ida_hexrays.EQ_IGNSIZE)
         if not (
             (
@@ -2548,8 +2445,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         stack_map: Mapping[int, int],
         computed_normalizations: Mapping[
             str,
-            _ComputedBranchNormalizationPlan
-            | _StoragePredicateNormalizationPlan,
+            _ComputedBranchNormalizationPlan | _StoragePredicateNormalizationPlan,
         ],
         direct_transfer_rewrites: Mapping[
             str,
@@ -2564,9 +2460,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             captured_instructions = (
                 template_block.instructions
                 if normalization_entry is None
-                else template_block.instructions[
-                    : normalization_entry.cut_index
-                ]
+                else template_block.instructions[: normalization_entry.cut_index]
             )
             superseded_instruction_eas = (
                 frozenset()
@@ -2611,18 +2505,13 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     _StoragePredicateNormalizationPlan,
                 ):
                     predicate = normalization_entry.predicate
-                    if (
-                        operation.storage_predicate_materialization
-                        != predicate
-                    ):
+                    if operation.storage_predicate_materialization != predicate:
                         raise SemanticFragmentBackendRejected(
                             "PREOPT storage predicate materialization changed "
                             "during preparation"
                         )
                     predicate_vd = int(
-                        self.mba.stkoff_ida2vd(
-                            int(predicate.storage_identity.offset)
-                        )
+                        self.mba.stkoff_ida2vd(int(predicate.storage_identity.offset))
                     )
                     if predicate_vd < 0:
                         raise SemanticFragmentBackendRejected(
@@ -2645,9 +2534,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                         normalization_entry.branch_condition_template
                     )
                     if branch_condition_template is None:
-                        result_index = (
-                            normalization_entry.result_instruction_index
-                        )
+                        result_index = normalization_entry.result_instruction_index
                         if (
                             result_index is None
                             or not 0 <= int(result_index) < len(instructions)
@@ -2656,8 +2543,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                             )
                         ):
                             raise SemanticFragmentBackendRejected(
-                                "PREOPT computed branch result changed during "
-                                "rebase"
+                                "PREOPT computed branch result changed during rebase"
                             )
                         result = instructions[int(result_index)][1]
                         branch.l.assign(result.d)
@@ -2679,8 +2565,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                             predicate_stack_map,
                         ):
                             raise SemanticFragmentBackendRejected(
-                                "PREOPT computed branch template changed "
-                                "during rebase"
+                                "PREOPT computed branch template changed during rebase"
                             )
                     compare_constant = 0
                 if int(branch.l.size) <= 0:
@@ -2696,9 +2581,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 branch.d = ida_hexrays.mop_t()
                 instructions.append((predicate_ea, branch))
             if direct_rewrite_entry is not None:
-                rewrite_anchor_ea = int(
-                    direct_rewrite_entry.rewrite.rewrite_anchor_ea
-                )
+                rewrite_anchor_ea = int(direct_rewrite_entry.rewrite.rewrite_anchor_ea)
                 direct = ida_hexrays.minsn_t(rewrite_anchor_ea)
                 direct.opcode = int(ida_hexrays.m_goto)
                 direct.l = ida_hexrays.mop_t()
@@ -2815,8 +2698,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             not isinstance(preparation, _PreparedSemanticNativeBody)
             or preparation.plan_id != context.plan.plan_id
             or preparation.body_id != native_body.body_id
-            or tuple(row[0] for row in preparation.rows)
-            != native_body.block_ids
+            or tuple(row[0] for row in preparation.rows) != native_body.block_ids
         ):
             raise SemanticFragmentBackendRejected(
                 "prepared native body does not match the staging context"
@@ -2842,14 +2724,10 @@ class PreoptUnionSemanticNativeBodyMaterializer:
 
 
 @dataclass(slots=True)
-class CallsSemanticNativeBodyMaterializer(
-    PreoptUnionSemanticNativeBodyMaterializer
-):
+class CallsSemanticNativeBodyMaterializer(PreoptUnionSemanticNativeBodyMaterializer):
     """Populate one canonical CALLS body from PREOPT plus analyzed companions."""
 
-    request_call_companions: (
-        Callable[[tuple[tuple[int, int], ...]], bool] | None
-    ) = None
+    request_call_companions: Callable[[tuple[tuple[int, int], ...]], bool] | None = None
 
     @staticmethod
     def _instruction_tree(instruction: object) -> tuple[object, ...]:
@@ -2898,11 +2776,9 @@ class CallsSemanticNativeBodyMaterializer(
                             f"call=0x{int(nested.ea):X}"
                         )
                     observed_call_eas.append(int(nested.ea))
-        if (
-            len(observed_call_eas) != len(set(observed_call_eas))
-            or frozenset(observed_call_eas)
-            != frozenset(int(ea) for ea in expected_call_eas)
-        ):
+        if len(observed_call_eas) != len(set(observed_call_eas)) or frozenset(
+            observed_call_eas
+        ) != frozenset(int(ea) for ea in expected_call_eas):
             raise SemanticFragmentBackendRejected(
                 "CALLS native body analyzed call inventory changed; "
                 f"expected={tuple(hex(int(ea)) for ea in sorted(expected_call_eas))!r} "
@@ -2952,12 +2828,11 @@ class CallsSemanticNativeBodyMaterializer(
         call_ea: int,
         raw_call: object,
     ) -> tuple[DetachedSnippetTemplate, _AnalyzedCallReplacement] | None:
-        candidates: list[
-            tuple[DetachedSnippetTemplate, _AnalyzedCallReplacement]
-        ] = []
-        for (owner_ea, target_ea), template in (
-            _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES.items()
-        ):
+        candidates: list[tuple[DetachedSnippetTemplate, _AnalyzedCallReplacement]] = []
+        for (
+            owner_ea,
+            target_ea,
+        ), template in _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES.items():
             if (
                 int(owner_ea) != int(self.function_ea)
                 or int(template.maturity) != int(ida_hexrays.MMAT_CALLS)
@@ -3008,18 +2883,14 @@ class CallsSemanticNativeBodyMaterializer(
             matches = tuple(
                 native_range
                 for native_range in native_body.native_ranges
-                if int(native_range.start_ea)
-                <= int(call_ea)
-                < int(native_range.end_ea)
+                if int(native_range.start_ea) <= int(call_ea) < int(native_range.end_ea)
             )
             if len(matches) != 1:
                 raise SemanticFragmentBackendRejected(
                     "CALLS native call lacks one owned native range; "
                     f"call=0x{int(call_ea):X} matches={len(matches)}"
                 )
-            requested.add(
-                (int(matches[0].start_ea), int(matches[0].end_ea))
-            )
+            requested.add((int(matches[0].start_ea), int(matches[0].end_ea)))
         return tuple(sorted(requested))
 
     def _prepare_analyzed_replacement(
@@ -3115,9 +2986,7 @@ class CallsSemanticNativeBodyMaterializer(
                 anchor_ea=int(call_ea),
                 payload={
                     **diagnostic_payload,
-                    "failed_invariant": (
-                        "source_stkargs_top >= source_call_spd"
-                    ),
+                    "failed_invariant": ("source_stkargs_top >= source_call_spd"),
                     "required_stack_growth": None,
                 },
             )
@@ -3125,9 +2994,7 @@ class CallsSemanticNativeBodyMaterializer(
             raise SemanticFragmentBackendRejected(
                 "CALLS companion stack window cannot be rebound; "
                 f"call=0x{int(call_ea):X} top={destination_top} span={stack_span}",
-                reason_code=(
-                    "calls_companion_destination_stack_window_insufficient"
-                ),
+                reason_code=("calls_companion_destination_stack_window_insufficient"),
                 anchor_ea=int(call_ea),
                 payload={
                     **diagnostic_payload,
@@ -3728,12 +3595,10 @@ def _split_semantic_target_entry_blocks(
             (port.old_taken_target_ea, port.old_taken_target_owner),
             (port.old_fallthrough_target_ea, port.old_fallthrough_target_owner),
         )
-        if target_ea is not None
-        and owner is DetachedSnippetBoundaryPortOwner.IMPORTED
+        if target_ea is not None and owner is DetachedSnippetBoundaryPortOwner.IMPORTED
     )
     target_eas.update(
-        int(target_ea)
-        for target_ea in resolver_internal_successor_eas.values()
+        int(target_ea) for target_ea in resolver_internal_successor_eas.values()
     )
     if not target_eas:
         return blocks
@@ -3749,8 +3614,7 @@ def _split_semantic_target_entry_blocks(
             block
             for block in blocks
             if any(
-                int(instruction.ea) == resolver_ea
-                for instruction in block.instructions
+                int(instruction.ea) == resolver_ea for instruction in block.instructions
             )
         )
         target_matches = tuple(
@@ -3827,10 +3691,13 @@ def _split_semantic_target_entry_blocks(
     if not split_indexes_by_serial:
         return blocks
 
-    next_serial = max(
-        (int(block.source_serial) for block in blocks),
-        default=-1,
-    ) + 1
+    next_serial = (
+        max(
+            (int(block.source_serial) for block in blocks),
+            default=-1,
+        )
+        + 1
+    )
     result: list[DetachedSnippetBlockTemplate] = []
     for block in blocks:
         split_indexes = tuple(
@@ -3865,9 +3732,7 @@ def _split_semantic_target_entry_blocks(
                     ),
                     instructions=chunk,
                     block_type=(
-                        int(block.block_type)
-                        if is_last
-                        else int(ida_hexrays.BLT_1WAY)
+                        int(block.block_type) if is_last else int(ida_hexrays.BLT_1WAY)
                     ),
                     block_flags=int(block.block_flags),
                     successor_serials=(
@@ -3889,14 +3754,11 @@ def _split_semantic_target_entry_blocks(
             (index, block)
             for index, block in enumerate(result)
             if any(
-                int(instruction.ea) == resolver_ea
-                for instruction in block.instructions
+                int(instruction.ea) == resolver_ea for instruction in block.instructions
             )
         )
         target_matches = tuple(
-            block
-            for block in result
-            if int(block.native_entry_ea) == target_ea
+            block for block in result if int(block.native_entry_ea) == target_ea
         )
         if len(source_matches) != 1 or len(target_matches) != 1:
             logger.info(
@@ -4355,29 +4217,33 @@ def _capture_detached_snippet_template(
             normalized_ranges,
         )
         if (
-            native_entry is not None
-            and owned_entries is not None
-            and int(native_entry) in owned_entries | additional_owned_entries
-        ) or (
-            owned_entries is None
-            and (
-                (
-                    native_entry is not None
-                    and int(native_entry) in additional_owned_entries
-                )
-                or any(
-                    _ea_in_ranges(native_ea, normalized_ranges)
-                    for native_ea in _block_native_eas(block)
-                )
+            (
+                native_entry is not None
+                and owned_entries is not None
+                and int(native_entry) in owned_entries | additional_owned_entries
             )
-        ) or (
-            block.head is None
-            and int(block.start) in terminal_return_entries
-            and (
+            or (
                 owned_entries is None
-                or int(block.start) in owned_entries | additional_owned_entries
+                and (
+                    (
+                        native_entry is not None
+                        and int(native_entry) in additional_owned_entries
+                    )
+                    or any(
+                        _ea_in_ranges(native_ea, normalized_ranges)
+                        for native_ea in _block_native_eas(block)
+                    )
+                )
             )
-            and _ea_in_ranges(int(block.start), normalized_ranges)
+            or (
+                block.head is None
+                and int(block.start) in terminal_return_entries
+                and (
+                    owned_entries is None
+                    or int(block.start) in owned_entries | additional_owned_entries
+                )
+                and _ea_in_ranges(int(block.start), normalized_ranges)
+            )
         ):
             included[int(block.serial)] = block
     roots = tuple(
@@ -4587,8 +4453,7 @@ def _capture_detached_snippet_template(
                         normalized_ranges,
                     )
                     == int(proven_internal_target_ea)
-                    or int(proven_internal_target_ea)
-                    in _block_native_eas(candidate)
+                    or int(proven_internal_target_ea) in _block_native_eas(candidate)
                 )
             )
             if len(target_serials) != 1:
@@ -4791,10 +4656,7 @@ def _capture_detached_snippet_template(
                 and int(block.nsucc()) == 2
                 and len(internal_successors) == 2
                 and len(external_successors) == 2
-                and len(
-                    set(zip(internal_successors, external_successors))
-                )
-                == 2
+                and len(set(zip(internal_successors, external_successors))) == 2
                 and int(proven_internal_target_serial) in internal_successors
                 and int(tail.d.b) in internal_successors
             )
@@ -4813,9 +4675,7 @@ def _capture_detached_snippet_template(
                         % (
                             int(successor),
                             int(
-                                _unique_block_native_ea(
-                                    mba.get_mblock(int(successor))
-                                )
+                                _unique_block_native_ea(mba.get_mblock(int(successor)))
                                 or int(mba.get_mblock(int(successor)).start)
                             ),
                         )
@@ -5038,13 +4898,10 @@ def _capture_detached_snippet_template(
         int(block.source_serial)
         for block in normalized_templates
         if any(
-            int(instruction.ea) == int(target_ea)
-            for instruction in block.instructions
+            int(instruction.ea) == int(target_ea) for instruction in block.instructions
         )
     )
-    normalized_serials = {
-        int(block.source_serial) for block in normalized_templates
-    }
+    normalized_serials = {int(block.source_serial) for block in normalized_templates}
     normalized_root_source_serial = (
         int(exact_root_instruction_serials[0])
         if len(exact_root_instruction_serials) == 1
@@ -5882,10 +5739,7 @@ def capture_preopt_union_call_companion_template(
             reason="component_range_invalid",
         )
     normalized_calls_ranges = tuple(
-        sorted(
-            (int(start_ea), int(end_ea))
-            for start_ea, end_ea in calls_native_ranges
-        )
+        sorted((int(start_ea), int(end_ea)) for start_ea, end_ea in calls_native_ranges)
     )
     if (
         not normalized_calls_ranges
@@ -7181,11 +7035,7 @@ def _exact_jcc_predicate_true_is_taken(
                 return None
             if int(expression.l.t) == int(ida_hexrays.mop_d):
                 nested_orientation = expression_orientation(expression.l.d)
-                return (
-                    None
-                    if nested_orientation is None
-                    else not nested_orientation
-                )
+                return None if nested_orientation is None else not nested_orientation
             if (
                 int(expression.l.t) == int(ida_hexrays.mop_r)
                 and int(expression.l.size) == 1
@@ -7234,10 +7084,9 @@ def _exact_jcc_predicate_true_is_taken(
         or int(compared_predicate.r.size) != int(predicate_size)
     ):
         return None
-    register_matches = (
-        int(compared_predicate.l.t) == int(ida_hexrays.mop_r)
-        and int(compared_predicate.l.r) == int(predicate_register)
-    )
+    register_matches = int(compared_predicate.l.t) == int(ida_hexrays.mop_r) and int(
+        compared_predicate.l.r
+    ) == int(predicate_register)
     imported_derived_left = allow_imported_derived_left and int(
         compared_predicate.l.t
     ) == int(ida_hexrays.mop_d)
@@ -7373,9 +7222,7 @@ def _preflight_terminal_return_templates(
             int(request.state_var_reg),
             int(request.state_constant) & 0xFFFFFFFF,
         )
-        carrier_templates_by_identity.setdefault(identity, []).append(
-            carrier_template
-        )
+        carrier_templates_by_identity.setdefault(identity, []).append(carrier_template)
     snippet_templates_by_target = {
         int(template.target_ea): template for template in selected_templates
     }
@@ -7862,9 +7709,7 @@ def _preflight_boundary_port_batch(
                 else "inverted"
             )
         )
-        preserved_target_is_current_taken = (
-            relation == "matching" if proven else None
-        )
+        preserved_target_is_current_taken = relation == "matching" if proven else None
         predicate_shape: dict[str, object] = {}
         if source is not None and source.imported_key is not None:
             template_target_ea, template_serial = source.imported_key
@@ -7884,9 +7729,7 @@ def _preflight_boundary_port_batch(
                     f"blk{int(proof_block.source_serial)}"
                     f"@0x{int(proof_block.native_entry_ea):X}"
                 )
-                predicate_shape["successor_count"] = len(
-                    proof_block.successor_serials
-                )
+                predicate_shape["successor_count"] = len(proof_block.successor_serials)
             if proof_predicate is not None:
                 diagnostic_condition_opcodes = {
                     2: (int(ida_hexrays.m_jb), int(ida_hexrays.m_jae)),
@@ -7919,6 +7762,7 @@ def _preflight_boundary_port_batch(
                 )
                 if int(proof_predicate.l.t) == int(ida_hexrays.mop_d):
                     nested_predicate = proof_predicate.l.d
+
                     def diagnostic_expression(
                         expression: object,
                         depth: int = 0,
@@ -7931,9 +7775,7 @@ def _preflight_boundary_port_batch(
                             "right_type": int(expression.r.t),
                             "right_size": int(expression.r.size),
                         }
-                        if depth < 4 and int(expression.l.t) == int(
-                            ida_hexrays.mop_d
-                        ):
+                        if depth < 4 and int(expression.l.t) == int(ida_hexrays.mop_d):
                             row["left_expression"] = diagnostic_expression(
                                 expression.l.d,
                                 depth + 1,
@@ -7943,9 +7785,7 @@ def _preflight_boundary_port_batch(
                     predicate_shape.update(
                         {
                             "nested_predicate_ea": int(nested_predicate.ea),
-                            "nested_predicate_opcode": int(
-                                nested_predicate.opcode
-                            ),
+                            "nested_predicate_opcode": int(nested_predicate.opcode),
                             "nested_left_type": int(nested_predicate.l.t),
                             "nested_left_size": int(nested_predicate.l.size),
                             "nested_right_type": int(nested_predicate.r.t),
@@ -9845,20 +9685,13 @@ def _apply_boundary_port_batch(
             continue
         if mutation.preserve_live_predicate:
             port = mutation.record.port
-            live_predicate_ea = (
-                None if source.tail is None else int(source.tail.ea)
-            )
-            predicate_origin_matches = (
-                live_predicate_ea is not None
-                and (
-                    live_predicate_ea == int(port.predicate_ea)
-                    or instruction_origins.get((mba_identity, live_predicate_ea))
-                    == int(port.predicate_ea)
-                    or _IMPORTED_INSTRUCTION_ORIGINS.get(
-                        (mba_identity, live_predicate_ea)
-                    )
-                    == int(port.predicate_ea)
-                )
+            live_predicate_ea = None if source.tail is None else int(source.tail.ea)
+            predicate_origin_matches = live_predicate_ea is not None and (
+                live_predicate_ea == int(port.predicate_ea)
+                or instruction_origins.get((mba_identity, live_predicate_ea))
+                == int(port.predicate_ea)
+                or _IMPORTED_INSTRUCTION_ORIGINS.get((mba_identity, live_predicate_ea))
+                == int(port.predicate_ea)
             )
             validation_ok = not (
                 mutation.preserved_predicate_true_is_taken not in (True, False)
@@ -9911,9 +9744,7 @@ def _apply_boundary_port_batch(
                                     "successors": [
                                         int(serial) for serial in source.succset
                                     ],
-                                    "tail_ea": (
-                                        None if tail is None else int(tail.ea)
-                                    ),
+                                    "tail_ea": (None if tail is None else int(tail.ea)),
                                     "tail_opcode": (
                                         None if tail is None else int(tail.opcode)
                                     ),
@@ -10182,8 +10013,7 @@ def apply_live_conditional_boundary_ports(
     if any(
         port.source_owner is not DetachedSnippetBoundaryPortOwner.LIVE
         or port.taken_target_owner is not DetachedSnippetBoundaryPortOwner.LIVE
-        or port.fallthrough_target_owner
-        is not DetachedSnippetBoundaryPortOwner.LIVE
+        or port.fallthrough_target_owner is not DetachedSnippetBoundaryPortOwner.LIVE
         or port.logical_source_owner
         not in (None, DetachedSnippetBoundaryPortOwner.LIVE)
         for port in ports
@@ -10842,15 +10672,12 @@ def _materialize_detached_snippet_templates(
                                 consumer="detached_snippet_import",
                                 identity_role="instruction_origin",
                                 native_key_json=mutation_gateway.native_key.to_json(),
-                                exact_eas_json=json.dumps(
-                                    [int(native_instruction_ea)]
-                                ),
+                                exact_eas_json=json.dumps([int(native_instruction_ea)]),
                                 native_ranges_json=json.dumps(
                                     [
                                         {
                                             "start_ea": int(native_instruction_ea),
-                                            "end_ea": int(native_instruction_ea)
-                                            + 1,
+                                            "end_ea": int(native_instruction_ea) + 1,
                                         }
                                     ],
                                     sort_keys=True,
@@ -10872,9 +10699,7 @@ def _materialize_detached_snippet_templates(
                                 candidates_json=json.dumps(
                                     [
                                         {
-                                            "imported_ea": int(
-                                                imported_instruction_ea
-                                            ),
+                                            "imported_ea": int(imported_instruction_ea),
                                             "native_ea_collision": bool(
                                                 not native_call_ea_available
                                             ),

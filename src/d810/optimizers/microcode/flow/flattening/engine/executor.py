@@ -105,7 +105,9 @@ from d810.analyses.control_flow.safeguards import (
     should_apply_bulk_cfg_modifications,
 )
 from d810.analyses.control_flow.terminal_return_audit import build_terminal_return_audit
-from d810.backends.hexrays.evidence.microcode_dump import mba_to_human_readable  # compatibility seam for legacy diagnostics/tests
+from d810.backends.hexrays.evidence.microcode_dump import (
+    mba_to_human_readable,
+)  # compatibility seam for legacy diagnostics/tests
 
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
@@ -180,7 +182,11 @@ def _preflight_priority(mod: GraphModification) -> int:
 
 def _preflight_simulated_priority(edit: SimulatedEdit) -> int:
     match edit.kind:
-        case "create_conditional_redirect" | "duplicate_block" | "clone_conditional_as_goto":
+        case (
+            "create_conditional_redirect"
+            | "duplicate_block"
+            | "clone_conditional_as_goto"
+        ):
             return 5
         case "edge_split_redirect":
             return 12 if edit.clone_until is not None else 8
@@ -222,7 +228,9 @@ class TransactionalExecutor:
         """Attach per-round analysis context for fact-backed executor guards."""
         self.validated_fact_view = getattr(snapshot, "diagnostic_fact_view", None)
         try:
-            self.dispatcher_serial = int(getattr(snapshot, "dispatcher_root_serial", -1))
+            self.dispatcher_serial = int(
+                getattr(snapshot, "dispatcher_root_serial", -1)
+            )
         except (TypeError, ValueError):
             self.dispatcher_serial = -1
 
@@ -305,7 +313,9 @@ class TransactionalExecutor:
                 continue
 
             result = self.execute_stage(
-                fragment, total_handlers, cumulative_pre_cfg=cumulative_cfg,
+                fragment,
+                total_handlers,
+                cumulative_pre_cfg=cumulative_cfg,
             )
             results.append(result)
 
@@ -460,8 +470,7 @@ class TransactionalExecutor:
         stale_hazard_override_keys = frozenset(
             tuple(int(part) for part in key)
             for key in (
-                fragment.metadata.get("return_carrier_stale_hazard_overrides", ())
-                or ()
+                fragment.metadata.get("return_carrier_stale_hazard_overrides", ()) or ()
             )
             if isinstance(key, (tuple, list)) and len(key) == 3
         )
@@ -474,20 +483,18 @@ class TransactionalExecutor:
             if isinstance(key, (tuple, list)) and len(key) == 3
         )
 
-        modifications, return_carrier_rejections = (
-            filter_return_carrier_fact_redirects(
-                modifications,
-                mba=self.mba,
-                fact_view=self.validated_fact_view,
-                dispatcher_serial=self.dispatcher_serial,
-                flow_graph=pre_cfg,
-                stale_hazard_override_keys=stale_hazard_override_keys,
-                reject_carrier_writer_bypass=(
-                    fragment.strategy_name == "dispatcher_loop_recovery"
-                ),
-                insn_kind_classifier=classify_live_insn_kind,
-                operand_kind_classifier=classify_live_operand_kind,
-            )
+        modifications, return_carrier_rejections = filter_return_carrier_fact_redirects(
+            modifications,
+            mba=self.mba,
+            fact_view=self.validated_fact_view,
+            dispatcher_serial=self.dispatcher_serial,
+            flow_graph=pre_cfg,
+            stale_hazard_override_keys=stale_hazard_override_keys,
+            reject_carrier_writer_bypass=(
+                fragment.strategy_name == "dispatcher_loop_recovery"
+            ),
+            insn_kind_classifier=classify_live_insn_kind,
+            operand_kind_classifier=classify_live_operand_kind,
         )
         if return_carrier_rejections:
             bypass_rejections = sum(
@@ -513,9 +520,7 @@ class TransactionalExecutor:
                 fact_view=self.validated_fact_view,
                 dispatcher_serial=self.dispatcher_serial,
                 flow_graph=pre_cfg,
-                dag_frontier_override_keys=(
-                    terminal_byte_emit_dag_frontier_overrides
-                ),
+                dag_frontier_override_keys=(terminal_byte_emit_dag_frontier_overrides),
                 insn_kind_classifier=classify_live_insn_kind,
                 operand_kind_classifier=classify_live_operand_kind,
             )
@@ -548,7 +553,9 @@ class TransactionalExecutor:
             result.metadata["gate_accounting"] = gate_accounting
             return result
 
-        patch_plan_preview = compile_patch_plan(modifications, pre_cfg, execution_policy)
+        patch_plan_preview = compile_patch_plan(
+            modifications, pre_cfg, execution_policy
+        )
         modifications, patch_plan_preview, backend_removed = (
             self._filter_backend_unsupported_modifications(
                 pre_cfg,
@@ -731,6 +738,7 @@ class TransactionalExecutor:
         # --- Diagnostic snapshot (gated behind D810_DIAG_SNAPSHOT=1) ---
         try:
             from d810.hexrays.observability import request_capture_mba_snapshot
+
             request_capture_mba_snapshot(
                 blocks=_mba_to_block_snapshots(self.mba),
                 label=f"{fragment.strategy_name}_post_apply",
@@ -740,7 +748,8 @@ class TransactionalExecutor:
             )
         except Exception:
             executor_logger.debug(
-                "Diagnostic snapshot failed (non-critical)", exc_info=True,
+                "Diagnostic snapshot failed (non-critical)",
+                exc_info=True,
             )
 
         reachable_blocks = self._compute_reachability_from_cfg(post_cfg)
@@ -950,6 +959,7 @@ class TransactionalExecutor:
             return
         try:
             from d810.transforms.block_lineage import buffer_patch_plan_block_lineage
+
             buffer_patch_plan_block_lineage(patch_plan, pre_cfg, post_cfg)
         except Exception:
             executor_logger.debug(
@@ -957,12 +967,16 @@ class TransactionalExecutor:
                 exc_info=True,
             )
         try:
-            from d810.core.observability_cfg import observe_cfg_provenance as log_cfg_provenance
+            from d810.core.observability_cfg import (
+                observe_cfg_provenance as log_cfg_provenance,
+            )
         except Exception:
             log_cfg_provenance = None
 
         for spec in patch_plan.new_blocks:
-            assigned_serial = patch_plan.relocation_map.assigned_serial_for(spec.block_id)
+            assigned_serial = patch_plan.relocation_map.assigned_serial_for(
+                spec.block_id
+            )
             if assigned_serial is None:
                 continue
             origin_serial = spec.template_block
@@ -1196,7 +1210,9 @@ class TransactionalExecutor:
         )
         return (
             filtered_modifications,
-            compile_patch_plan(filtered_modifications, pre_cfg, patch_plan.execution_policy),
+            compile_patch_plan(
+                filtered_modifications, pre_cfg, patch_plan.execution_policy
+            ),
             removed_count + edge_split_removed_count,
         )
 
@@ -1391,7 +1407,9 @@ class TransactionalExecutor:
             )
         if filtered_modifications != modifications:
             modifications = filtered_modifications
-            patch_plan = compile_patch_plan(modifications, pre_cfg, patch_plan.execution_policy)
+            patch_plan = compile_patch_plan(
+                modifications, pre_cfg, patch_plan.execution_policy
+            )
             simulated_edits = sorted(
                 patch_plan_to_simulated_edits(patch_plan),
                 key=_preflight_simulated_priority,
@@ -1553,7 +1571,10 @@ class TransactionalExecutor:
 
             edits_to_remove: set[int] = set()
             for idx, (_, edit) in enumerate(current_pairs):
-                if edit.kind not in {"edge_split_redirect", "clone_conditional_as_goto"}:
+                if edit.kind not in {
+                    "edge_split_redirect",
+                    "clone_conditional_as_goto",
+                }:
                     continue
                 if edit.new_target in cycle_nodes or edit.source in cycle_nodes:
                     edits_to_remove.add(idx)

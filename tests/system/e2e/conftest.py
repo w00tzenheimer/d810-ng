@@ -5,6 +5,7 @@ against golden output (pseudocode snapshots, statistics, DeobfuscationCase).
 
 Failure means: "The deobfuscation pipeline is wrong."
 """
+
 from __future__ import annotations
 
 import pytest

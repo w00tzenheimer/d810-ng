@@ -3,6 +3,7 @@
 Re-analyzes the current function or a selected range and refreshes the
 Hex-Rays decompiler output.
 """
+
 from __future__ import annotations
 
 from d810.core import typing
@@ -52,7 +53,9 @@ class ForceAnalyze(D810ActionHandler):
                 else:
                     idaapi_shim.decompile(func_start)
             except Exception as exc:
-                logger.warning("ForceAnalyze: decompile failed at %s: %s", hex(func_start), exc)
+                logger.warning(
+                    "ForceAnalyze: decompile failed at %s: %s", hex(func_start), exc
+                )
             _auto_wait()
 
         def _reset_problems(func_start: int, func_end: int) -> None:
@@ -77,7 +80,11 @@ class ForceAnalyze(D810ActionHandler):
             if viewer is not None and hasattr(idaapi_shim, "read_range_selection"):
                 is_selected, start_ea, end_ea = idaapi_shim.read_range_selection(viewer)
 
-            if is_selected and start_ea != idaapi_shim.BADADDR and end_ea != idaapi_shim.BADADDR:
+            if (
+                is_selected
+                and start_ea != idaapi_shim.BADADDR
+                and end_ea != idaapi_shim.BADADDR
+            ):
                 ea = start_ea
             else:
                 start_ea = ea
@@ -89,7 +96,9 @@ class ForceAnalyze(D810ActionHandler):
                     idaapi_shim.msg("d810-ng: Selection cancelled.\n")
                     return 0
                 if end_ea <= start_ea:
-                    idaapi_shim.warning("End address must be greater than start address.")
+                    idaapi_shim.warning(
+                        "End address must be greater than start address."
+                    )
                     return 0
             idaapi_shim.msg(
                 "d810-ng: Selection start 0x%X, end 0x%X (user-defined)\n"
@@ -100,12 +109,9 @@ class ForceAnalyze(D810ActionHandler):
             _delete_and_recreate_function(start_ea, end_ea)
             _decompile_function(start_ea)
             _reset_problems(start_ea, end_ea)
-            logger.info(
-                "ForceAnalyze: reanalyzed range 0x%X - 0x%X", start_ea, end_ea
-            )
+            logger.info("ForceAnalyze: reanalyzed range 0x%X - 0x%X", start_ea, end_ea)
             idaapi_shim.msg(
-                "d810-ng: Forced analysis of range 0x%X - 0x%X\n"
-                % (start_ea, end_ea)
+                "d810-ng: Forced analysis of range 0x%X - 0x%X\n" % (start_ea, end_ea)
             )
         finally:
             idaapi_shim.jumpto(ea)

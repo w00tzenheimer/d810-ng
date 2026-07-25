@@ -24,6 +24,7 @@ extracted verbatim and each occurs once per file. The two structurally-special
 readers (residual_worksheet: two opens; hcc_anchor_snapshot_context: inline
 one-liner) are handled separately, not here.
 """
+
 from __future__ import annotations
 
 import sys
@@ -36,13 +37,10 @@ IMPORT_NEW = "from d810.core.diag import read_diag_db"
 
 # Header variant A: a `conn = db.connection()` line precedes the `try:`.
 HEADER_A_OLD = (
-    "    db = open_diag_database(str(db_path))\n"
-    "    conn = db.connection()\n"
-    "    try:"
+    "    db = open_diag_database(str(db_path))\n    conn = db.connection()\n    try:"
 )
 HEADER_A_NEW = (
-    "    with read_diag_db(str(db_path)) as db:\n"
-    "        conn = db.connection()"
+    "    with read_diag_db(str(db_path)) as db:\n        conn = db.connection()"
 )
 
 # Header variant B: `try:` directly follows the open (conn is created inside).
@@ -130,9 +128,13 @@ def convert_residual() -> None:
         print(f"{mod}: already converted, skipping")
         return
     text = _replace_once(text, IMPORT_OLD, IMPORT_NEW, what="import", mod=mod)
-    text = _replace_once(text, RESIDUAL_OPEN1_OLD, RESIDUAL_OPEN1_NEW, what="open1", mod=mod)
+    text = _replace_once(
+        text, RESIDUAL_OPEN1_OLD, RESIDUAL_OPEN1_NEW, what="open1", mod=mod
+    )
     text = _replace_once(text, RESIDUAL_FINALLY1_OLD, "", what="finally1", mod=mod)
-    text = _replace_once(text, RESIDUAL_OPEN2_OLD, RESIDUAL_OPEN2_NEW, what="open2", mod=mod)
+    text = _replace_once(
+        text, RESIDUAL_OPEN2_OLD, RESIDUAL_OPEN2_NEW, what="open2", mod=mod
+    )
     text = _replace_once(text, RESIDUAL_FINALLY2_OLD, "", what="finally2", mod=mod)
     path.write_text(text, encoding="utf-8")
     print(f"{mod}: converted (2 opens)")

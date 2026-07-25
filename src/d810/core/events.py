@@ -3,6 +3,7 @@
 Extracted from registry.py so that event subscription/emission can be
 imported without pulling in the full Registry/Registrant machinery.
 """
+
 from __future__ import annotations
 
 import collections

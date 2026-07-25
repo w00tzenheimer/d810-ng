@@ -18,6 +18,7 @@ possibly-incomplete concolic-only machine.  Design §7 is explicit on this order
 
 Portable: no IDA.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.recovered_machine import RecoveredMachine, Soundness

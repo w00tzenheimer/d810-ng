@@ -1,4 +1,5 @@
 """Runtime tests for side-effect selector-loop cleanup."""
+
 from __future__ import annotations
 
 from dataclasses import replace

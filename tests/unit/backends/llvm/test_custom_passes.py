@@ -34,9 +34,9 @@ entry:
 
 
 def _or_candidate_ir() -> str:
-    return Path(
-        "tools/llvm_m2_custom_pass/fixtures/mba_or_and_xor.ll"
-    ).read_text(encoding="utf-8")
+    return Path("tools/llvm_m2_custom_pass/fixtures/mba_or_and_xor.ll").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_d810_mba_xor_pass_rewrites_or_sub_and_with_z3_proof():
@@ -44,12 +44,15 @@ def test_d810_mba_xor_pass_rewrites_or_sub_and_with_z3_proof():
 
     assert result.status is LlvmCustomPassStatus.PASSED
     assert result.changed
-    assert result.after_ir == """define i32 @mba(i32 %x, i32 %y) {
+    assert (
+        result.after_ir
+        == """define i32 @mba(i32 %x, i32 %y) {
 entry:
   %out = xor i32 %x, %y
   ret i32 %out
 }
 """
+    )
     pass_result = result.pass_results[0]
     assert pass_result.pass_id == D810_MBA_XOR_OR_SUB_AND_PASS.pass_id
     assert pass_result.diagnostics == ()
@@ -72,12 +75,15 @@ def test_d810_mba_or_pass_rewrites_and_plus_xor_with_z3_proof():
     )
 
     assert result.status is LlvmCustomPassStatus.PASSED
-    assert result.after_ir == """define i32 @mba_or(i32 %x, i32 %y) {
+    assert (
+        result.after_ir
+        == """define i32 @mba_or(i32 %x, i32 %y) {
 entry:
   %out = or i32 %x, %y
   ret i32 %out
 }
 """
+    )
     pass_result = result.pass_results[0]
     assert pass_result.pass_id == D810_MBA_OR_AND_XOR_ADD_PASS.pass_id
     assert pass_result.diagnostics == ()

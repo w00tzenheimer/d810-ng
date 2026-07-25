@@ -4,6 +4,7 @@
 Reads the rule's ``CONFIG_SCHEMA`` (a tuple of :class:`ConfigParam`) and
 builds the appropriate Qt editor widgets for each parameter type.
 """
+
 from __future__ import annotations
 
 import html
@@ -52,33 +53,43 @@ class RuleDetailPanel(QtWidgets.QWidget):
         self._header_browser.setReadOnly(True)
         self._header_browser.setOpenLinks(False)  # Prevent link navigation
         self._header_browser.setFrameShape(QtWidgets.QFrame.NoFrame)  # Seamless look
-        self._header_browser.setStyleSheet("QTextBrowser { background: transparent; border: none; }")
+        self._header_browser.setStyleSheet(
+            "QTextBrowser { background: transparent; border: none; }"
+        )
         self._header_browser.viewport().setAutoFillBackground(False)
         self._header_browser.document().setDocumentMargin(4)
         self._header_browser.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self._header_browser.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         # Set size policy to prevent vertical expansion
         self._header_browser.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding,   # horizontal: fill width
-            QtWidgets.QSizePolicy.Fixed         # vertical: stay at fixed height
+            QtWidgets.QSizePolicy.Expanding,  # horizontal: fill width
+            QtWidgets.QSizePolicy.Fixed,  # vertical: stay at fixed height
         )
         # Add with stretch=0 and AlignTop alignment
-        self._outer_layout.addWidget(self._header_browser, stretch=0, alignment=QtCore.Qt.AlignTop)
+        self._outer_layout.addWidget(
+            self._header_browser, stretch=0, alignment=QtCore.Qt.AlignTop
+        )
 
         # Scroll area for config editors gets all remaining space
         self._scroll = QtWidgets.QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self._scroll.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        self._outer_layout.addWidget(self._scroll, 1)  # stretch=1 to fill remaining vertical space
+        self._scroll.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding
+        )
+        self._outer_layout.addWidget(
+            self._scroll, 1
+        )  # stretch=1 to fill remaining vertical space
 
         # Inner widget for the scroll area
         self._config_widget = QtWidgets.QWidget()
         self._config_layout = QtWidgets.QFormLayout(self._config_widget)
         self._config_layout.setContentsMargins(0, 0, 0, 0)
         self._config_layout.setSpacing(6)
-        self._config_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.ExpandingFieldsGrow)
+        self._config_layout.setFieldGrowthPolicy(
+            QtWidgets.QFormLayout.ExpandingFieldsGrow
+        )
         self._scroll.setWidget(self._config_widget)
 
     # --- Public API ---------------------------------------------------------
@@ -103,7 +114,9 @@ class RuleDetailPanel(QtWidgets.QWidget):
         if rule is None:
             self._header_browser.setHtml("<i>(no rule selected)</i>")
             self._adjust_header_height()  # immediate
-            QtCore.QTimer.singleShot(0, self._adjust_header_height)  # deferred for accurate width
+            QtCore.QTimer.singleShot(
+                0, self._adjust_header_height
+            )  # deferred for accurate width
             self._scroll.setVisible(False)
             return
 
@@ -116,21 +129,25 @@ class RuleDetailPanel(QtWidgets.QWidget):
         # Description with WARNING/backtick processing
         # _process_description() already returns HTML, so don't escape it
         desc_html = self._process_description(rule.description)
-        html_parts.append(f'<p>{desc_html}</p>')
+        html_parts.append(f"<p>{desc_html}</p>")
 
         # Maturities
         mat_names = self._format_maturities(rule)
         if mat_names:
-            html_parts.append(f'<p style="color: #888;">Maturities: {html.escape(mat_names)}</p>')
+            html_parts.append(
+                f'<p style="color: #888;">Maturities: {html.escape(mat_names)}</p>'
+            )
 
         # Separator and config header
-        html_parts.append('<hr>')
-        html_parts.append('<b>Configuration</b>')
+        html_parts.append("<hr>")
+        html_parts.append("<b>Configuration</b>")
 
         self._header_browser.setHtml("".join(html_parts))
         # Adjust height after content is set (immediate + deferred)
         self._adjust_header_height()  # immediate
-        QtCore.QTimer.singleShot(0, self._adjust_header_height)  # deferred for accurate width
+        QtCore.QTimer.singleShot(
+            0, self._adjust_header_height
+        )  # deferred for accurate width
 
         # Build config editors
         schema = getattr(rule, "CONFIG_SCHEMA", ())
@@ -238,9 +255,7 @@ class RuleDetailPanel(QtWidgets.QWidget):
             sb.setValue(int(value))
         except (TypeError, ValueError):
             sb.setValue(int(param.default) if param.default else 0)
-        sb.valueChanged.connect(
-            lambda v, name=param.name: self._emit_change(name, v)
-        )
+        sb.valueChanged.connect(lambda v, name=param.name: self._emit_change(name, v))
         return sb
 
     def _make_double_spinbox(
@@ -253,9 +268,7 @@ class RuleDetailPanel(QtWidgets.QWidget):
             dsb.setValue(float(value))
         except (TypeError, ValueError):
             dsb.setValue(float(param.default) if param.default else 0.0)
-        dsb.valueChanged.connect(
-            lambda v, name=param.name: self._emit_change(name, v)
-        )
+        dsb.valueChanged.connect(lambda v, name=param.name: self._emit_change(name, v))
         return dsb
 
     def _make_line_edit(
@@ -269,9 +282,7 @@ class RuleDetailPanel(QtWidgets.QWidget):
         )
         return le
 
-    def _make_combo(
-        self, param: ConfigParam, value: typing.Any
-    ) -> QtWidgets.QComboBox:
+    def _make_combo(self, param: ConfigParam, value: typing.Any) -> QtWidgets.QComboBox:
         cb = QtWidgets.QComboBox()
         cb.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         for choice in param.choices:
@@ -281,9 +292,7 @@ class RuleDetailPanel(QtWidgets.QWidget):
         if idx >= 0:
             cb.setCurrentIndex(idx)
         cb.currentIndexChanged.connect(
-            lambda _idx, name=param.name, w=cb: self._emit_change(
-                name, w.currentData()
-            )
+            lambda _idx, name=param.name, w=cb: self._emit_change(name, w.currentData())
         )
         return cb
 
@@ -292,7 +301,9 @@ class RuleDetailPanel(QtWidgets.QWidget):
     ) -> QtWidgets.QWidget:
         """Multi-select toggle buttons for list types with choices."""
         container = QtWidgets.QWidget()
-        container.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        container.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
 
         # Use grid layout with 4 columns for a flow-like appearance
         layout = QtWidgets.QGridLayout(container)
@@ -309,6 +320,7 @@ class RuleDetailPanel(QtWidgets.QWidget):
                 # It's likely a maturity enum value - convert to string
                 try:
                     from d810.hexrays.utils.hexrays_formatters import maturity_to_string
+
                     current_values_as_strings.add(maturity_to_string(v))
                 except ImportError:
                     current_values_as_strings.add(str(v))
@@ -339,7 +351,9 @@ class RuleDetailPanel(QtWidgets.QWidget):
                 }
             """)
 
-            btn.toggled.connect(lambda checked, p=param.name: self._on_button_toggled(p))
+            btn.toggled.connect(
+                lambda checked, p=param.name: self._on_button_toggled(p)
+            )
             buttons.append(btn)
 
             # Layout in grid: 4 columns
@@ -393,9 +407,7 @@ class RuleDetailPanel(QtWidgets.QWidget):
         te.setProperty("_param_name", param.name)
         return te
 
-    def eventFilter(
-        self, obj: QtCore.QObject, event: QtCore.QEvent
-    ) -> bool:
+    def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:
         """Intercept focus-out on JSON QTextEdits to emit changes."""
         if (
             isinstance(event, QtCore.QEvent)
@@ -435,15 +447,17 @@ class RuleDetailPanel(QtWidgets.QWidget):
         # Replace backtick-wrapped text with inline code
         # Pattern: `some code` -> <code>some code</code>
         # Note: Content is already HTML-escaped, so safe to wrap
-        backtick_pattern = re.compile(r'`([^`]+)`')
+        backtick_pattern = re.compile(r"`([^`]+)`")
         desc_html = backtick_pattern.sub(
             r'<code style="background: #e0e0e0; padding: 1px 4px; border-radius: 2px; font-family: monospace;">\1</code>',
-            desc_html
+            desc_html,
         )
 
         # Replace warning keywords with red-styled HTML
         # Note: Keywords are already HTML-escaped, safe to wrap
-        if any(keyword in desc.upper() for keyword in ["WARNING:", "CAUTION:", "DANGER:"]):
+        if any(
+            keyword in desc.upper() for keyword in ["WARNING:", "CAUTION:", "DANGER:"]
+        ):
             for keyword in ["WARNING:", "CAUTION:", "DANGER:"]:
                 # Case-insensitive replacement
                 # Escape the keyword for pattern matching (already escaped in desc_html)
@@ -451,7 +465,7 @@ class RuleDetailPanel(QtWidgets.QWidget):
                 pattern = re.compile(re.escape(escaped_keyword), re.IGNORECASE)
                 desc_html = pattern.sub(
                     f'<span style="color: #D32F2F; font-weight: bold;">\u26a0 {escaped_keyword}</span>',
-                    desc_html
+                    desc_html,
                 )
 
         return desc_html
@@ -473,9 +487,7 @@ class RuleDetailPanel(QtWidgets.QWidget):
 
     def _emit_change(self, param_name: str, value: typing.Any) -> None:
         if logger.debug_on:
-            logger.debug(
-                "Config param changed: %s = %s", param_name, value
-            )
+            logger.debug("Config param changed: %s = %s", param_name, value)
         self.config_changed.emit(param_name, value)
 
     @staticmethod

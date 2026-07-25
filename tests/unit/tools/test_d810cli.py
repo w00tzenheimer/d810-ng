@@ -1,4 +1,5 @@
 """Tests for the renamed D810 operator CLI and legacy shim."""
+
 from __future__ import annotations
 
 import argparse
@@ -38,14 +39,7 @@ def _run_tool(tool: str, *args: str) -> subprocess.CompletedProcess[str]:
 
 def _worktree_log_dir(repo_root: Path, worktree: str) -> Path:
     """Create the d810 log layout under pytest's tempfile-backed tmp_path."""
-    path = (
-        repo_root
-        / ".worktrees"
-        / worktree
-        / ".tmp"
-        / "logs"
-        / "d810_logs"
-    )
+    path = repo_root / ".worktrees" / worktree / ".tmp" / "logs" / "d810_logs"
     path.mkdir(parents=True)
     return path
 
@@ -148,7 +142,9 @@ def test_dump_full_diagnostics_expands_preanalysis_diag_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     wt = _make_temp_repo_worktree(tmp_path, monkeypatch)
-    monkeypatch.setattr(d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh")
+    monkeypatch.setattr(
+        d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh"
+    )
 
     calls: list[tuple[list[str], dict[str, str], str]] = []
 
@@ -210,7 +206,9 @@ def test_dump_without_worktree_uses_root_checkout_and_omits_runner_worktree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(d810cli, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh")
+    monkeypatch.setattr(
+        d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh"
+    )
     (tmp_path / "src").mkdir()
     calls: list[tuple[list[str], dict[str, str], str]] = []
 
@@ -285,7 +283,9 @@ def test_pseudocode_capture_without_dump_uses_default_dump_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     wt = _make_temp_repo_worktree(tmp_path, monkeypatch)
-    monkeypatch.setattr(d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh")
+    monkeypatch.setattr(
+        d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh"
+    )
     db = tmp_path / "capture.sqlite3"
     calls: list[list[str]] = []
 
@@ -326,7 +326,9 @@ def test_trace_uses_default_dump_diagnostics_without_full_diagnostics_attr(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _make_temp_repo_worktree(tmp_path, monkeypatch)
-    monkeypatch.setattr(d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh")
+    monkeypatch.setattr(
+        d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh"
+    )
     calls: list[list[str]] = []
 
     def fake_call(argv: list[str], **_kwargs) -> int:

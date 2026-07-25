@@ -31,6 +31,7 @@ The module is pure Python with no d810 runtime imports, so it works as a
 ``run_audit()`` for the orchestrator + report, or call ``scan_log_file`` /
 ``scan_log_directory`` directly to consume the structured ``AuditSummary``.
 """
+
 from __future__ import annotations
 
 import json
@@ -62,9 +63,9 @@ TRACKED_BYPASS_REASONS: frozenset[str] = frozenset(
 class GateEvent:
     """One parsed gate event from a log line."""
 
-    source: str          # executor / flow_context / preconditioner / safeguard / ...
-    verdict: str         # PASSED, FAILED, BYPASSED, SKIPPED
-    reason: str          # human-readable reason
+    source: str  # executor / flow_context / preconditioner / safeguard / ...
+    verdict: str  # PASSED, FAILED, BYPASSED, SKIPPED
+    reason: str  # human-readable reason
     line_number: int = 0
     rule_name: str = ""
 
@@ -112,17 +113,11 @@ RE_GATE_ACCOUNTING = re.compile(
     r"(\d+)\s+passed,\s*(\d+)\s+failed,\s*(\d+)\s+bypassed"
 )
 # 2. Flow-context gate denial
-RE_FLOW_CONTEXT_GATE = re.compile(
-    r"Skipping\s+(\S+)\s+via flow context gate:\s*(.+)"
-)
+RE_FLOW_CONTEXT_GATE = re.compile(r"Skipping\s+(\S+)\s+via flow context gate:\s*(.+)")
 # 3. Preconditioner gate bypass
-RE_GATE_BYPASSED = re.compile(
-    r"Gate bypassed\s*\[(\w+)\]:\s*(\S+)\s*(.*)"
-)
+RE_GATE_BYPASSED = re.compile(r"Gate bypassed\s*\[(\w+)\]:\s*(\S+)\s*(.*)")
 # 4. Gate skipped (maturity_filter / max_passes)
-RE_GATE_SKIPPED = re.compile(
-    r"Gate skipped\s*\[(\w+)\]:\s*(\S+)\s*(.*)"
-)
+RE_GATE_SKIPPED = re.compile(r"Gate skipped\s*\[(\w+)\]:\s*(\S+)\s*(.*)")
 # 5. Safeguard gate rejection
 RE_SAFEGUARD_REJECTED = re.compile(
     r"Safeguard gate rejected stage\s+(\S+):\s*"
@@ -343,9 +338,7 @@ def render_text_report(summary: AuditSummary, *, strict: bool = False) -> str:
 
     if strict:
         if summary.bypassed > 0:
-            lines.append(
-                f"STRICT MODE: {summary.bypassed} bypass(es) found -- FAIL"
-            )
+            lines.append(f"STRICT MODE: {summary.bypassed} bypass(es) found -- FAIL")
         else:
             lines.append("STRICT MODE: zero bypasses -- PASS")
     else:

@@ -31,6 +31,7 @@ Hard exclusions
 * Never modify CFG topology -- only mutate operand identity in an
   existing instruction.
 """
+
 from __future__ import annotations
 
 import os
@@ -133,13 +134,11 @@ class ReturnFrontierCarrierPreserveStrategy:
             )
         finally:
             if prior_audit_gate:
-                os.environ[
-                    "D810_RECON_RETURN_FRONTIER_CARRIER_AUDIT"
-                ] = prior_audit_gate
-            else:
-                os.environ.pop(
-                    "D810_RECON_RETURN_FRONTIER_CARRIER_AUDIT", None
+                os.environ["D810_RECON_RETURN_FRONTIER_CARRIER_AUDIT"] = (
+                    prior_audit_gate
                 )
+            else:
+                os.environ.pop("D810_RECON_RETURN_FRONTIER_CARRIER_AUDIT", None)
 
         accepted_blocks: list[int] = []
         owned_blocks: set[int] = set()
@@ -186,14 +185,13 @@ class ReturnFrontierCarrierPreserveStrategy:
                     path_blk = mba.get_mblock(int(path_blk_serial))
                     if path_blk is None:
                         continue
-                    carrier_mop = self._find_sibling_carrier(
-                        path_blk, writer_insn
-                    )
+                    carrier_mop = self._find_sibling_carrier(path_blk, writer_insn)
                     if carrier_mop is not None:
                         logger.info(
                             "RETURN_FRONTIER_CARRIER_PRESERVE: carrier "
                             "found in path_blk=%d (writer=%d)",
-                            int(path_blk_serial), int(writer_serial),
+                            int(path_blk_serial),
+                            int(writer_serial),
                         )
                         break
             if carrier_mop is None:
@@ -254,7 +252,7 @@ class ReturnFrontierCarrierPreserveStrategy:
         return PlanFragment(
             strategy_name=self.name,
             family=self.family,
-            modifications=[],   # operand mutation, not a CFG edit
+            modifications=[],  # operand mutation, not a CFG edit
             ownership=ownership,
             prerequisites=["counter_hoist"],
             expected_benefit=benefit,

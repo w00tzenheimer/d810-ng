@@ -1,4 +1,5 @@
 """Pure selectors for blocks that should be tagged with ``MBL_KEEP``."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

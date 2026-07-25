@@ -1,4 +1,5 @@
 """Tests for the executor terminal-byte-emit fact guard."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -273,7 +274,9 @@ def test_dag_frontier_override_is_exact_keyed(monkeypatch) -> None:
     assert rejections[0].target_block == 217
 
 
-def test_zero_guard_return_successor_into_terminal_byte_emit_rejects(monkeypatch) -> None:
+def test_zero_guard_return_successor_into_terminal_byte_emit_rejects(
+    monkeypatch,
+) -> None:
     """The residual-zero fallthrough is a return path.  Redirecting it to a
     terminal byte-emitter block turns ``v53 == 0`` into a byte6 emit; reject
     that even when the source block has no state-const write."""
@@ -556,8 +559,7 @@ def test_protected_non_carrier_return_writer_fact_stays_observational() -> None:
     }
     fact = SimpleNamespace(
         classification=(
-            ReturnFrontierCarrierClassification
-            .PROTECTED_NON_CARRIER_RETURN_WRITER
+            ReturnFrontierCarrierClassification.PROTECTED_NON_CARRIER_RETURN_WRITER
         ),
         ret_block=219,
         writer_block=41,
@@ -573,7 +575,9 @@ def test_protected_non_carrier_return_writer_fact_stays_observational() -> None:
     assert filtered == []
 
 
-def test_protected_non_carrier_return_writer_fact_does_not_duplicate_existing_lowering() -> None:
+def test_protected_non_carrier_return_writer_fact_does_not_duplicate_existing_lowering() -> (
+    None
+):
     blocks = {
         27: SimpleNamespace(
             predset=(),
@@ -590,8 +594,7 @@ def test_protected_non_carrier_return_writer_fact_does_not_duplicate_existing_lo
     }
     fact = SimpleNamespace(
         classification=(
-            ReturnFrontierCarrierClassification
-            .PROTECTED_NON_CARRIER_RETURN_WRITER
+            ReturnFrontierCarrierClassification.PROTECTED_NON_CARRIER_RETURN_WRITER
         ),
         ret_block=219,
         writer_block=41,

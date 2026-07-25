@@ -7,6 +7,7 @@ Importing this package eagerly imports every unflatten profile module (``hodur``
 (``hodur``, ``approov``, ``tigress``) and returns the first match; ``ApproovFamily`` is
 polled before ``TigressFamily`` so it keeps the switch-table claim by default.
 """
+
 from __future__ import annotations
 
 from .lowering_plan import FlowAutomaton, LoweringGraph

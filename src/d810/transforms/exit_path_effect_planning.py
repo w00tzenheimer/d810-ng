@@ -53,15 +53,16 @@ def compute_suffix_group_decision(
     exit_path_info,
     semantic_action: TerminalLoweringAction,
 ) -> SuffixGroupDecision:
-    handler_entries = tuple(sorted({int(entry.handler_entry) for entry in forward_entries}))
+    handler_entries = tuple(
+        sorted({int(entry.handler_entry) for entry in forward_entries})
+    )
     handler_count = len(handler_entries)
 
     carrier_kinds = tuple(
         sorted({entry.carrier_source_kind.value for entry in forward_entries})
     )
     has_state_const = any(
-        entry.carrier_source_kind.value == "state_const"
-        for entry in forward_entries
+        entry.carrier_source_kind.value == "state_const" for entry in forward_entries
     )
 
     proof_resolved = sum(
@@ -76,8 +77,7 @@ def compute_suffix_group_decision(
     rejection_reasons: list[str] = []
     if semantic_action != TerminalLoweringAction.PRIVATE_TERMINAL_SUFFIX:
         rejection_reasons.append(
-            "semantic_action=%s (need PRIVATE_TERMINAL_SUFFIX)"
-            % semantic_action.value
+            "semantic_action=%s (need PRIVATE_TERMINAL_SUFFIX)" % semantic_action.value
         )
     if not exit_path_info.clonable:
         rejection_reasons.append("exit_path not clonable")

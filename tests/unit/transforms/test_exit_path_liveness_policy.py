@@ -130,14 +130,17 @@ def _nested_entry_graph(*, proven_value: int) -> FlowGraph:
 def test_no_provider_liveness_allows_redundant_constant_write_on_proven_edge() -> None:
     fg = _nested_entry_graph(proven_value=1)
 
-    assert exit_path_blocks_live_violations(
-        fg,
-        (9,),
-        13,
-        _STATE,
-        source_blocks=(3,),
-        old_target=9,
-    ) == set()
+    assert (
+        exit_path_blocks_live_violations(
+            fg,
+            (9,),
+            13,
+            _STATE,
+            source_blocks=(3,),
+            old_target=9,
+        )
+        == set()
+    )
 
 
 def test_no_provider_liveness_keeps_unproven_live_definition_unsafe() -> None:
@@ -179,10 +182,13 @@ def test_router_boundary_liveness_ignores_uses_confined_to_bypassed_router() -> 
         13,
         _STATE,
     ) == {("reg", scratch)}
-    assert exit_path_blocks_live_violations(
-        fg,
-        (9, 15),
-        13,
-        _STATE,
-        cut_exit_path_uses=True,
-    ) == set()
+    assert (
+        exit_path_blocks_live_violations(
+            fg,
+            (9, 15),
+            13,
+            _STATE,
+            cut_exit_path_uses=True,
+        )
+        == set()
+    )

@@ -17,6 +17,7 @@ These tests pin the correctness invariants (spec §8):
   owner;
 * determinism -- the read-off is sorted and set-valued (no duplicates).
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.block_ownership_domain import (

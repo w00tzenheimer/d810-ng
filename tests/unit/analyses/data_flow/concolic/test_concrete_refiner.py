@@ -3,6 +3,7 @@
 Gate: abstain/unsupported leave the result == the abstract-only (S2) value; a valid
 exact folds to CONCRETE (>=1 transition newly resolved); a wrong exact is dropped.
 """
+
 from __future__ import annotations
 
 from d810.analyses.data_flow.concolic.concrete_refiner import (
@@ -44,7 +45,9 @@ def test_exact_in_floor_folds_to_concrete() -> None:
 
 def test_exact_omitting_dest_is_a_no_op() -> None:
     top = ConcolicValue.top(W)
-    assert fold_exact(top, ExactResult({LOC: 7}), DEST) == top  # value_for(DEST) is None
+    assert (
+        fold_exact(top, ExactResult({LOC: 7}), DEST) == top
+    )  # value_for(DEST) is None
 
 
 def test_wrong_exact_is_dropped_and_reported() -> None:
@@ -52,10 +55,13 @@ def test_wrong_exact_is_dropped_and_reported() -> None:
     five = ConcolicValue.of(5, W)
     seen: list[tuple] = []
     out = fold_exact(
-        five, ExactResult({DEST: 6}), DEST, on_unsound=lambda d, e, a: seen.append((d, e))
+        five,
+        ExactResult({DEST: 6}),
+        DEST,
+        on_unsound=lambda d, e, a: seen.append((d, e)),
     )
-    assert out == five              # concrete claim dropped -> stay with the sound floor
-    assert seen == [(DEST, 6)]      # the unsoundness was surfaced, not silent
+    assert out == five  # concrete claim dropped -> stay with the sound floor
+    assert seen == [(DEST, 6)]  # the unsoundness was surfaced, not silent
 
 
 def test_refine_concrete_resolves_via_emulator() -> None:

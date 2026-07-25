@@ -4,6 +4,7 @@ Unit tests for conditional exit block detection.
 These tests verify the classification logic for dispatcher exit blocks,
 which is critical for proper control flow reconstruction during unflattening.
 """
+
 import types
 import unittest
 
@@ -286,5 +287,5 @@ class TestEdgeCases(unittest.TestCase):
         self.assertNotIn(exit_succ, dispatcher_serials)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

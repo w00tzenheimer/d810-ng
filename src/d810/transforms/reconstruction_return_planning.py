@@ -27,7 +27,9 @@ class ReconstructionReturnPlanResult:
 
 
 def _edge_kind_name(edge) -> str:
-    return getattr(getattr(edge, "kind", None), "name", str(getattr(edge, "kind", None)))
+    return getattr(
+        getattr(edge, "kind", None), "name", str(getattr(edge, "kind", None))
+    )
 
 
 def _is_terminal_stop(flow_graph, serial: int) -> bool:
@@ -88,13 +90,17 @@ def plan_reconstruction_return_modifications(
         source_node = node_by_key.get(edge.source_key)
         node_shared_suffix: set[int] = set()
         if source_node is not None:
-            node_shared_suffix = {int(block) for block in source_node.shared_suffix_blocks}
+            node_shared_suffix = {
+                int(block) for block in source_node.shared_suffix_blocks
+            }
 
         suffix_entry_serial: int | None = None
         anchor_serial: int | None = None
         terminal = ordered[-1]
         ordered_set = set(ordered)
-        corridor_candidates = sorted(block for block in common_return_corridor if block != terminal)
+        corridor_candidates = sorted(
+            block for block in common_return_corridor if block != terminal
+        )
         if not corridor_candidates:
             # The per-node ``shared_suffix_blocks`` fallback includes EVERY block
             # downstream of the handler -- both the return path AND the handler's

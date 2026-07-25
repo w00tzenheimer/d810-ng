@@ -3,6 +3,7 @@
 Pure: synthetic ``FlowGraph`` + ``IntervalDispatcher`` (no IDA).  The MBA fold
 runs through a registered portable ``forward_eval_insn`` seam.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -37,7 +38,10 @@ from d810.analyses.value_flow.state_write import (
     MicrocodeEvalSeams,
     forward_eval_insn as _portable_forward_eval_insn,
 )
-from d810.capabilities.providers import ConditionChainWalkerProvider, register_condition_chain_walkers
+from d810.capabilities.providers import (
+    ConditionChainWalkerProvider,
+    register_condition_chain_walkers,
+)
 from d810.ir.flowgraph import (
     BlockKind,
     BlockSnapshot,
@@ -86,7 +90,11 @@ def _seam():
     def _fwd(insn, stk_map, reg_map, state_var_stkoff, **kwargs):
         kwargs.pop("seams", None)
         return _portable_forward_eval_insn(
-            insn, stk_map, reg_map, state_var_stkoff, seams=seams,
+            insn,
+            stk_map,
+            reg_map,
+            state_var_stkoff,
+            seams=seams,
             mba=kwargs.pop("mba", None),
             state_var_lvar_idx=kwargs.pop("state_var_lvar_idx", None),
         )
@@ -145,7 +153,9 @@ def _addr(off: int) -> MopSnapshot:
 
 
 def _mov(ea: int, src: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
-    return InsnSnapshot(opcode=_OP_MOV, ea=ea, operands=(), l=src, d=dst, kind=InsnKind.MOV)
+    return InsnSnapshot(
+        opcode=_OP_MOV, ea=ea, operands=(), l=src, d=dst, kind=InsnKind.MOV
+    )
 
 
 def _store(ea: int, src: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
@@ -192,7 +202,7 @@ def _jz_stack_const(ea: int, stkoff: int, const: int, target: int) -> InsnSnapsh
 
 
 _OP_AND = 21  # m_and (portable evaluator default)
-_OP_OR = 22   # m_or  (portable evaluator default)
+_OP_OR = 22  # m_or  (portable evaluator default)
 
 
 def _and(
@@ -231,18 +241,31 @@ def _or(
     )
 
 
-def _blk(serial, succs, preds, insns, *, ea=None, kind=BlockKind.UNKNOWN) -> BlockSnapshot:
+def _blk(
+    serial, succs, preds, insns, *, ea=None, kind=BlockKind.UNKNOWN
+) -> BlockSnapshot:
     return BlockSnapshot(
-        serial=serial, block_type=0, succs=tuple(succs), preds=tuple(preds),
-        flags=0, start_ea=ea if ea is not None else 0x1000 + serial * 0x40,
-        insn_snapshots=tuple(insns), kind=kind,
+        serial=serial,
+        block_type=0,
+        succs=tuple(succs),
+        preds=tuple(preds),
+        flags=0,
+        start_ea=ea if ea is not None else 0x1000 + serial * 0x40,
+        insn_snapshots=tuple(insns),
+        kind=kind,
     )
 
 
 def _stop(serial, preds) -> BlockSnapshot:
     return BlockSnapshot(
-        serial=serial, block_type=0, succs=(), preds=tuple(preds), flags=0,
-        start_ea=0x9000 + serial, insn_snapshots=(), kind=BlockKind.STOP,
+        serial=serial,
+        block_type=0,
+        succs=(),
+        preds=tuple(preds),
+        flags=0,
+        start_ea=0x9000 + serial,
+        insn_snapshots=(),
+        kind=BlockKind.STOP,
     )
 
 
@@ -261,7 +284,9 @@ class _RawLiveGlobalFieldOperand:
         raise AssertionError("raw live global field should not be read")
 
 
-def _dispatcher(point_targets: dict[int, int], *, exit_block: int, domain_hi: int = 0x100000000) -> IntervalDispatcher:
+def _dispatcher(
+    point_targets: dict[int, int], *, exit_block: int, domain_hi: int = 0x100000000
+) -> IntervalDispatcher:
     """Total-cover partition: each state -> its target; gaps -> exit_block.
 
     The exit block therefore owns the most rows, so it is the default target.
@@ -324,7 +349,9 @@ def test_residual_state_key_upgrades_default_terminal_without_source_anchor() ->
     assert result[0].proof.kind == "computed_goto_target"
 
 
-def test_static_fixpoint_terminal_delivery_overrides_intermediate_equality_handler() -> None:
+def test_static_fixpoint_terminal_delivery_overrides_intermediate_equality_handler() -> (
+    None
+):
     """A byte-patch plan's exact terminal arm outranks its selector stub."""
     state = 0x19A7218A
     graph = FlowGraph(
@@ -447,7 +474,9 @@ def test_source_local_terminal_write_overrides_stale_transition_state() -> None:
     assert resolved.proof.reason == "source_local_terminal_state_write"
 
 
-def test_residual_state_key_uses_condition_chain_handler_authority_without_dag() -> None:
+def test_residual_state_key_uses_condition_chain_handler_authority_without_dag() -> (
+    None
+):
     state = 0xEC71CA67
     graph = FlowGraph(
         blocks={
@@ -728,11 +757,16 @@ def test_unconditional_literal_transition(_seam) -> None:
             10: _blk(10, (2,), (2,), (_mov(0x1000, _num(0x20), _stk(_STATE_OFF)),)),
             20: _blk(20, (2,), (2,), (_mov(0x3000, _num(0), _reg(0)),)),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     disp = _dispatcher({0x10: 10, 0x20: 20}, exit_block=99)
-    edges = {e.handler: e for e in recover_handler_transitions(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    edges = {
+        e.handler: e
+        for e in recover_handler_transitions(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     assert set(edges) == {10, 20}
     h10 = edges[10]
     assert not h10.is_conditional
@@ -752,11 +786,16 @@ def test_conditional_two_arm_transition(_seam) -> None:
             40: _blk(40, (2,), (2,), ()),
             50: _blk(50, (2,), (2,), ()),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     disp = _dispatcher({0x30: 30, 0xAA: 40, 0xBB: 50}, exit_block=99)
-    edges = {e.handler: e for e in recover_handler_transitions(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    edges = {
+        e.handler: e
+        for e in recover_handler_transitions(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     h30 = edges[30]
     assert h30.is_conditional
     targets = {a.next_state: a.target_handler for a in h30.arms}
@@ -846,7 +885,9 @@ def test_handler_scan_stops_at_alternate_dispatcher_region_entry(_seam) -> None:
     assert arm.ordered_path == (10,)
 
 
-def test_handler_scan_uses_authoritative_handlers_not_coarse_interval_leaves(_seam) -> None:
+def test_handler_scan_uses_authoritative_handlers_not_coarse_interval_leaves(
+    _seam,
+) -> None:
     """An interval leaf can be handler glue, not a semantic handler entry."""
     state_reg = 20
     fg = FlowGraph(
@@ -912,10 +953,7 @@ def test_handler_scan_preserves_distinct_unresolved_branch_paths(_seam) -> None:
     )
 
     assert len(transitions) == 1
-    assert {
-        (arm.branch_block, arm.ordered_path)
-        for arm in transitions[0].arms
-    } == {
+    assert {(arm.branch_block, arm.ordered_path) for arm in transitions[0].arms} == {
         (11, (10, 11, 12)),
         (11, (10, 11, 13)),
     }
@@ -1155,7 +1193,9 @@ def test_exact_exit_route_preserves_healthy_nonself_handler_transition() -> None
     ) == (transition,)
 
 
-def test_exact_exit_route_preserves_concrete_unresolved_state_for_direct_routing() -> None:
+def test_exact_exit_route_preserves_concrete_unresolved_state_for_direct_routing() -> (
+    None
+):
     transition = HandlerTransition(
         handler=10,
         states=(0x10,),
@@ -1189,7 +1229,9 @@ def test_nested_dispatcher_corridor_uses_concrete_reentry_path(_seam) -> None:
     fg = FlowGraph(
         blocks={
             0: _blk(0, (9,), (), ()),
-            2: _blk(2, (3, 6), (14, 15, 6), (_jz_stack_const(0x2000, outer_state, 0, 6),)),
+            2: _blk(
+                2, (3, 6), (14, 15, 6), (_jz_stack_const(0x2000, outer_state, 0, 6),)
+            ),
             3: _blk(3, (4, 9), (2,), (_jz_stack_const(0x3000, outer_state, 1, 9),)),
             4: _stop(4, (3,)),
             6: _blk(6, (2,), (2,), (_mov(0x6000, _num(0), _stk(_STATE_OFF)),)),
@@ -1381,7 +1423,9 @@ def test_multi_entry_scan_does_not_collapse_partitioned_predecessors(_seam) -> N
     assert all(len(targets) == 1 for targets in targets_by_physical_edge.values())
 
 
-def test_partitioned_fixpoint_resolves_joined_stack_address_alias_state_store(_seam) -> None:
+def test_partitioned_fixpoint_resolves_joined_stack_address_alias_state_store(
+    _seam,
+) -> None:
     # Both incoming edges to blk12 prove r3 == &state_var before the shared store.
     # This is the exit-path effect shape from sub_1815C8C30: the state store is
     # not in the alias-defining block, and the shared store block has more than
@@ -1416,7 +1460,9 @@ def test_partitioned_fixpoint_resolves_joined_stack_address_alias_state_store(_s
     assert edge.proof.kind == "stack_address_alias_store"
 
 
-def test_partitioned_fixpoint_resolves_nested_join_stack_address_alias_state_store(_seam) -> None:
+def test_partitioned_fixpoint_resolves_nested_join_stack_address_alias_state_store(
+    _seam,
+) -> None:
     # The alias can be established before a join that then flows into the store
     # block. Every incoming edge to blk12 proves the same alias, blk12 preserves
     # it, and blk13 writes through the register.
@@ -1451,7 +1497,9 @@ def test_partitioned_fixpoint_resolves_nested_join_stack_address_alias_state_sto
     assert edge.proof.kind == "stack_address_alias_store"
 
 
-def test_partitioned_fixpoint_splits_predecessor_sensitive_stack_alias_store(_seam) -> None:
+def test_partitioned_fixpoint_splits_predecessor_sensitive_stack_alias_store(
+    _seam,
+) -> None:
     # Mirrors sub_1815C8C30's terminal block: through one predecessor r3 is a
     # non-state stack address, through the terminal predecessor r3 is &state.
     # The provider must keep the shared carrier block on the terminal arm via
@@ -1525,21 +1573,42 @@ def test_shared_suffix_folds_per_handler(_seam) -> None:
     fg = FlowGraph(
         blocks={
             2: _blk(2, (10, 60, 20, 70), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
-            10: _blk(10, (11,), (2,), (_mov(0x1000, _num(0x12345678), _reg(8)),
-                                       _mov(0x1004, _num(0x081CC5A1), _reg(9)))),
-            60: _blk(60, (11,), (2,), (_mov(0x6000, _num(0x11111111), _reg(8)),
-                                       _mov(0x6004, _num(0x22222222), _reg(9)))),
-            11: _blk(11, (2,), (10, 60), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)),
+            10: _blk(
+                10,
+                (11,),
+                (2,),
+                (
+                    _mov(0x1000, _num(0x12345678), _reg(8)),
+                    _mov(0x1004, _num(0x081CC5A1), _reg(9)),
+                ),
+            ),
+            60: _blk(
+                60,
+                (11,),
+                (2,),
+                (
+                    _mov(0x6000, _num(0x11111111), _reg(8)),
+                    _mov(0x6004, _num(0x22222222), _reg(9)),
+                ),
+            ),
+            11: _blk(
+                11, (2,), (10, 60), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)
+            ),
             20: _blk(20, (2,), (2,), ()),
             70: _blk(70, (2,), (2,), ()),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     disp = _dispatcher(
         {0x10: 10, 0x60: 60, 0x1A2893D9: 20, 0x33333333: 70}, exit_block=99
     )
-    edges = {e.handler: e for e in recover_handler_transitions(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    edges = {
+        e.handler: e
+        for e in recover_handler_transitions(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     assert edges[10].arms[0].next_state == 0x1A2893D9
     assert edges[10].arms[0].target_handler == 20
     assert edges[60].arms[0].next_state == 0x33333333
@@ -1551,15 +1620,22 @@ def test_terminal_when_next_state_routes_to_exit(_seam) -> None:
     fg = FlowGraph(
         blocks={
             2: _blk(2, (10,), (10,), (_mov(0x2000, _num(0), _reg(0)),)),
-            10: _blk(10, (2,), (2,), (_mov(0x1000, _num(0x7FFFFFFF), _stk(_STATE_OFF)),)),
+            10: _blk(
+                10, (2,), (2,), (_mov(0x1000, _num(0x7FFFFFFF), _stk(_STATE_OFF)),)
+            ),
             99: _stop(99, (2,)),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     # 0x7FFFFFFF falls in a gap -> routes to exit(99); 99 is a STOP block.
     disp = _dispatcher({0x10: 10}, exit_block=99)
-    edges = {e.handler: e for e in recover_handler_transitions(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    edges = {
+        e.handler: e
+        for e in recover_handler_transitions(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     arm = edges[10].arms[0]
     assert arm.is_return is True
 
@@ -1570,14 +1646,21 @@ def test_scan_stops_at_other_handler_entry(_seam) -> None:
     fg = FlowGraph(
         blocks={
             2: _blk(2, (10, 20), (20,), (_mov(0x2000, _num(0), _reg(0)),)),
-            10: _blk(10, (20,), (2,), (_mov(0x1000, _num(0), _reg(0)),)),  # no state write
+            10: _blk(
+                10, (20,), (2,), (_mov(0x1000, _num(0), _reg(0)),)
+            ),  # no state write
             20: _blk(20, (2,), (10,), (_mov(0x2000, _num(0x20), _stk(_STATE_OFF)),)),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     disp = _dispatcher({0x10: 10, 0x20: 20}, exit_block=99)
-    edges = {e.handler: e for e in recover_handler_transitions(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    edges = {
+        e.handler: e
+        for e in recover_handler_transitions(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     # blk10 wrote nothing and stopped at blk20's entry -> no next-state -> return.
     assert edges[10].arms[0].next_state is None
     assert edges[10].arms[0].is_return is True
@@ -1597,12 +1680,22 @@ def _multicell_xor_fg() -> FlowGraph:
     return FlowGraph(
         blocks={
             2: _blk(2, (10, 20), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
-            10: _blk(10, (11,), (2,), (_mov(0x1000, _num(0x12345678), _reg(8)),
-                                       _mov(0x1004, _num(0x081CC5A1), _reg(9)))),
-            11: _blk(11, (2,), (10,), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)),
+            10: _blk(
+                10,
+                (11,),
+                (2,),
+                (
+                    _mov(0x1000, _num(0x12345678), _reg(8)),
+                    _mov(0x1004, _num(0x081CC5A1), _reg(9)),
+                ),
+            ),
+            11: _blk(
+                11, (2,), (10,), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)
+            ),
             20: _blk(20, (2,), (2,), ()),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
 
 
@@ -1617,8 +1710,12 @@ def test_b1_multicell_folds_opaque_xor_back_edge(_seam) -> None:
     # 0x10 routes to the handler region (blk10); its back-edge folds to 0x1A2893D9.
     disp = _dispatcher({0x10: 10, 0x1A2893D9: 20}, exit_block=99)
 
-    prod = {t.write_block: t for t in recover_state_write_transitions(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    prod = {
+        t.write_block: t
+        for t in recover_state_write_transitions(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     assert prod[11].next_state == 0x1A2893D9 and prod[11].target_handler == 20
 
     # Single-cell shadow: blk11 has no state-write anchor -> unresolved (the residual).
@@ -1631,16 +1728,24 @@ def test_b1_multicell_folds_opaque_xor_back_edge(_seam) -> None:
         handler_entry_by_state={0x10: 10, 0x1A2893D9: 20},
         entry_state=StateValue.top(),
     )
-    single = {t.write_block: t for t in recover_state_write_transitions_via_fixpoint(
-        fg, disp, dispatcher_entry_serial=2, out_states=fp.out_states)}
+    single = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_fixpoint(
+            fg, disp, dispatcher_entry_serial=2, out_states=fp.out_states
+        )
+    }
     # The single-cell fixpoint only carries the state slot: blk11's opaque XOR
     # write is not folded, so it passes through blk10's stale entry-assume (0x10)
     # instead of the real next-state -- DISAGREEING with production.
     assert single[11].next_state != prod[11].next_state
 
     # Multi-cell shadow: folds reg8^reg9 -> resolves to the production value.
-    multi = {t.write_block: t for t in recover_state_write_transitions_via_multicell_fixpoint(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    multi = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_multicell_fixpoint(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     assert multi[11].next_state == 0x1A2893D9
     assert multi[11].target_handler == 20
     assert multi[11].is_return is False
@@ -1659,36 +1764,68 @@ def test_b2_partitioned_reproduces_case2_via_block_split(_seam) -> None:
     fg = FlowGraph(
         blocks={
             2: _blk(2, (10, 60, 20, 70), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
-            10: _blk(10, (11,), (2,), (_mov(0x1000, _num(0x12345678), _reg(8)),
-                                       _mov(0x1004, _num(0x081CC5A1), _reg(9)))),
-            60: _blk(60, (11,), (2,), (_mov(0x6000, _num(0x11111111), _reg(8)),
-                                       _mov(0x6004, _num(0x22222222), _reg(9)))),
-            11: _blk(11, (2,), (10, 60), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)),
+            10: _blk(
+                10,
+                (11,),
+                (2,),
+                (
+                    _mov(0x1000, _num(0x12345678), _reg(8)),
+                    _mov(0x1004, _num(0x081CC5A1), _reg(9)),
+                ),
+            ),
+            60: _blk(
+                60,
+                (11,),
+                (2,),
+                (
+                    _mov(0x6000, _num(0x11111111), _reg(8)),
+                    _mov(0x6004, _num(0x22222222), _reg(9)),
+                ),
+            ),
+            11: _blk(
+                11, (2,), (10, 60), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)
+            ),
             20: _blk(20, (2,), (2,), ()),
             70: _blk(70, (2,), (2,), ()),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     disp = _dispatcher(
         {0x10: 10, 0x60: 60, 0x1A2893D9: 20, 0x33333333: 70}, exit_block=99
     )
 
     prod = recover_state_write_transitions(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+    )
     prod_splits = {t.write_block: t for t in prod if t.via_block == 11}
     # Production emits the Case-2 split: blk10->20, blk60->70, both via_block=11.
-    assert prod_splits[10].next_state == 0x1A2893D9 and prod_splits[10].target_handler == 20
-    assert prod_splits[60].next_state == 0x33333333 and prod_splits[60].target_handler == 70
+    assert (
+        prod_splits[10].next_state == 0x1A2893D9
+        and prod_splits[10].target_handler == 20
+    )
+    assert (
+        prod_splits[60].next_state == 0x33333333
+        and prod_splits[60].target_handler == 70
+    )
 
     # Single-partition multi-cell MEETs the conflicting reg consts -> blk11 unresolved.
-    multi = {t.write_block: t for t in recover_state_write_transitions_via_multicell_fixpoint(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    multi = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_multicell_fixpoint(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     assert multi[11].next_state is None and multi[11].is_return is True
 
     # Partitioned shadow reproduces the split byte-identically.
-    pp_splits = {t.write_block: t for t in
-                 recover_state_write_transitions_via_partitioned_fixpoint(
-                     fg, disp, _STATE_OFF, dispatcher_entry_serial=2) if t.via_block == 11}
+    pp_splits = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_partitioned_fixpoint(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+        if t.via_block == 11
+    }
     assert pp_splits[10].next_state == 0x1A2893D9 and pp_splits[10].target_handler == 20
     assert pp_splits[10].is_return is False and pp_splits[10].via_block == 11
     assert pp_splits[60].next_state == 0x33333333 and pp_splits[60].target_handler == 70
@@ -1709,9 +1846,12 @@ def test_c3b_global_fold_attaches_trusted_proof(_seam) -> None:
     """A back-edge that folds unambiguously gets a trusted ``global_fold`` proof."""
     fg = _multicell_xor_fg()
     disp = _dispatcher({0x10: 10, 0x1A2893D9: 20}, exit_block=99)
-    by_block = {t.write_block: t for t in
-                recover_state_write_transitions_via_partitioned_fixpoint(
-                    fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    by_block = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_partitioned_fixpoint(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     p = by_block[11].proof
     assert p is not None
     assert p.oracle_kind == "region_partitioned_fixpoint"
@@ -1724,22 +1864,43 @@ def test_c3b_predecessor_partitioned_proof(_seam) -> None:
     fg = FlowGraph(
         blocks={
             2: _blk(2, (10, 60, 20, 70), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
-            10: _blk(10, (11,), (2,), (_mov(0x1000, _num(0x12345678), _reg(8)),
-                                       _mov(0x1004, _num(0x081CC5A1), _reg(9)))),
-            60: _blk(60, (11,), (2,), (_mov(0x6000, _num(0x11111111), _reg(8)),
-                                       _mov(0x6004, _num(0x22222222), _reg(9)))),
-            11: _blk(11, (2,), (10, 60), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)),
+            10: _blk(
+                10,
+                (11,),
+                (2,),
+                (
+                    _mov(0x1000, _num(0x12345678), _reg(8)),
+                    _mov(0x1004, _num(0x081CC5A1), _reg(9)),
+                ),
+            ),
+            60: _blk(
+                60,
+                (11,),
+                (2,),
+                (
+                    _mov(0x6000, _num(0x11111111), _reg(8)),
+                    _mov(0x6004, _num(0x22222222), _reg(9)),
+                ),
+            ),
+            11: _blk(
+                11, (2,), (10, 60), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)
+            ),
             20: _blk(20, (2,), (2,), ()),
             70: _blk(70, (2,), (2,), ()),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     disp = _dispatcher(
         {0x10: 10, 0x60: 60, 0x1A2893D9: 20, 0x33333333: 70}, exit_block=99
     )
-    splits = {t.write_block: t for t in
-              recover_state_write_transitions_via_partitioned_fixpoint(
-                  fg, disp, _STATE_OFF, dispatcher_entry_serial=2) if t.via_block == 11}
+    splits = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_partitioned_fixpoint(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+        if t.via_block == 11
+    }
     for wb in (10, 60):
         assert splits[wb].proof is not None
         assert splits[wb].proof.kind == "predecessor_partitioned"
@@ -1758,18 +1919,30 @@ def test_c3b_region_agreed_proof(_seam) -> None:
     fg = FlowGraph(
         blocks={
             2: _blk(2, (10, 60, 20), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
-            10: _blk(10, (11,), (2,), (_mov(0x1000, _num(0xF0), _reg(8)),
-                                       _mov(0x1004, _num(0x0F), _reg(9)))),
-            60: _blk(60, (11,), (2,), (_mov(0x6000, _num(0x0F), _reg(8)),
-                                       _mov(0x6004, _num(0xF0), _reg(9)))),
-            11: _blk(11, (2,), (10, 60), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)),
+            10: _blk(
+                10,
+                (11,),
+                (2,),
+                (_mov(0x1000, _num(0xF0), _reg(8)), _mov(0x1004, _num(0x0F), _reg(9))),
+            ),
+            60: _blk(
+                60,
+                (11,),
+                (2,),
+                (_mov(0x6000, _num(0x0F), _reg(8)), _mov(0x6004, _num(0xF0), _reg(9))),
+            ),
+            11: _blk(
+                11, (2,), (10, 60), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)
+            ),
             20: _blk(20, (2,), (2,), ()),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     disp = _dispatcher({0x10: 10, 0x60: 60, 0xFF: 20}, exit_block=99)
     rows = recover_state_write_transitions_via_partitioned_fixpoint(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+    )
     by_block = {t.write_block: t for t in rows}
     # No split emitted: the shared back-edge blk11 redirects once to route(0xFF)=20.
     assert all(t.via_block is None for t in rows)
@@ -1783,15 +1956,19 @@ def test_c3b_unresolved_proof_is_untrusted(_seam) -> None:
     """A back-edge with no foldable state write -> an UNTRUSTED ``unresolved`` proof."""
     fg = FlowGraph(
         blocks={
-            2: _blk(2, (11,), (11,), ()),     # dispatcher header, no state write
-            11: _blk(11, (2,), (2,), ()),     # back-edge, writes no state
+            2: _blk(2, (11,), (11,), ()),  # dispatcher header, no state write
+            11: _blk(11, (2,), (2,), ()),  # back-edge, writes no state
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     disp = _dispatcher({}, exit_block=99)
-    by_block = {t.write_block: t for t in
-                recover_state_write_transitions_via_partitioned_fixpoint(
-                    fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    by_block = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_partitioned_fixpoint(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     t = by_block[11]
     assert t.next_state is None and t.is_return is True
     assert t.proof is not None
@@ -1812,11 +1989,20 @@ def test_c3b_diff_ignores_proof_field(_seam) -> None:
     )
     attributed = (
         StateWriteTransition(
-            11, 0x1A2893D9, 20, False, None,
+            11,
+            0x1A2893D9,
+            20,
+            False,
+            None,
             proof=TransitionProof("region_partitioned_fixpoint", "global_fold", True),
         ),
         StateWriteTransition(
-            10, 0x33333333, 70, False, None, via_block=11,
+            10,
+            0x33333333,
+            70,
+            False,
+            None,
+            via_block=11,
             proof=TransitionProof(
                 "region_partitioned_fixpoint", "predecessor_partitioned", True
             ),
@@ -1858,26 +2044,40 @@ def test_masked_or_back_edge_resolved_via_region_seed(_seam) -> None:
             # Dispatcher with two state-write preds; no register pre-zeroing, so
             # the AND's source (the state var) is genuinely unknown globally.
             2: _blk(2, (10, 60, 20, 70), (10, 60), ()),
-            10: _blk(10, (2,), (2,), (
-                _and(0x1000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
-                _or(0x1004, _reg(8), _num(1), _stk(_STATE_OFF)),
-            )),
-            60: _blk(60, (2,), (2,), (
-                _and(0x6000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
-                _or(0x6004, _reg(8), _num(3), _stk(_STATE_OFF)),
-            )),
+            10: _blk(
+                10,
+                (2,),
+                (2,),
+                (
+                    _and(0x1000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
+                    _or(0x1004, _reg(8), _num(1), _stk(_STATE_OFF)),
+                ),
+            ),
+            60: _blk(
+                60,
+                (2,),
+                (2,),
+                (
+                    _and(0x6000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
+                    _or(0x6004, _reg(8), _num(3), _stk(_STATE_OFF)),
+                ),
+            ),
             20: _blk(20, (90,), (2,), ()),
             70: _blk(70, (91,), (2,), ()),
             90: _stop(90, (20,)),
             91: _stop(91, (70,)),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     disp = _dispatcher({0x0: 10, 0x2: 60, 0x1: 20, 0x3: 70}, exit_block=99)
 
-    by_block = {t.write_block: t for t in
-                recover_state_write_transitions_via_partitioned_fixpoint(
-                    fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    by_block = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_partitioned_fixpoint(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     assert by_block[10].next_state == 1 and by_block[10].target_handler == 20
     assert by_block[60].next_state == 3 and by_block[60].target_handler == 70
     for wb in (10, 60):
@@ -1889,8 +2089,12 @@ def test_masked_or_back_edge_resolved_via_region_seed(_seam) -> None:
 
     # Without the seed the global/multicell fixpoint cannot fold the state-reading
     # writes -> the back-edges are unresolved (proving the seed is what resolves them).
-    multi = {t.write_block: t for t in recover_state_write_transitions_via_multicell_fixpoint(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    multi = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_multicell_fixpoint(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     assert multi[10].next_state is None and multi[60].next_state is None
 
 
@@ -1909,27 +2113,42 @@ def test_masked_or_shared_glue_block_partitioned_via_seed(_seam) -> None:
     fg = FlowGraph(
         blocks={
             2: _blk(2, (10, 60, 20, 70), (11,), ()),
-            10: _blk(10, (11,), (2,), (
-                _and(0x1000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
-                _or(0x1004, _reg(8), _num(1), _stk(_STATE_OFF)),
-            )),
-            60: _blk(60, (11,), (2,), (
-                _and(0x6000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
-                _or(0x6004, _reg(8), _num(3), _stk(_STATE_OFF)),
-            )),
+            10: _blk(
+                10,
+                (11,),
+                (2,),
+                (
+                    _and(0x1000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
+                    _or(0x1004, _reg(8), _num(1), _stk(_STATE_OFF)),
+                ),
+            ),
+            60: _blk(
+                60,
+                (11,),
+                (2,),
+                (
+                    _and(0x6000, _stk(_STATE_OFF), _num(0xFFFFFFF0), _reg(8)),
+                    _or(0x6004, _reg(8), _num(3), _stk(_STATE_OFF)),
+                ),
+            ),
             11: _blk(11, (2,), (10, 60), ()),
             20: _blk(20, (90,), (2,), ()),
             70: _blk(70, (91,), (2,), ()),
             90: _stop(90, (20,)),
             91: _stop(91, (70,)),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     disp = _dispatcher({0x0: 10, 0x2: 60, 0x1: 20, 0x3: 70}, exit_block=99)
 
-    splits = {t.write_block: t for t in
-              recover_state_write_transitions_via_partitioned_fixpoint(
-                  fg, disp, _STATE_OFF, dispatcher_entry_serial=2) if t.via_block == 11}
+    splits = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_partitioned_fixpoint(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+        if t.via_block == 11
+    }
     assert splits[10].next_state == 1 and splits[10].target_handler == 20
     assert splits[60].next_state == 3 and splits[60].target_handler == 70
     for wb in (10, 60):

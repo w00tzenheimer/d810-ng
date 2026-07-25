@@ -2,6 +2,7 @@
 confidence / InsnHandle). Pure-Python, no IDA: these are portable dataclasses
 and NewTypes.
 """
+
 from __future__ import annotations
 
 import dataclasses

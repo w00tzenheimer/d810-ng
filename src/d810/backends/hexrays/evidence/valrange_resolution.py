@@ -9,6 +9,7 @@ target handler and a redirect is emitted.
 
 This mirrors hrtng's ``get_valranges(VR_EXACT)`` fallback in ``unflat.cpp``.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING
@@ -159,7 +160,9 @@ class ValrangeResolutionStrategy:
             for candidate in discovery.candidates
         ]
         ownership = OwnershipScope(
-            blocks=frozenset(int(candidate.from_block) for candidate in discovery.candidates),
+            blocks=frozenset(
+                int(candidate.from_block) for candidate in discovery.candidates
+            ),
             edges=frozenset(),
             transitions=frozenset(
                 (int(candidate.from_state), int(candidate.to_state))

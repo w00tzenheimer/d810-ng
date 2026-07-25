@@ -8,6 +8,7 @@ used at rule-matching time) is injected via :mod:`d810.ir.expr.mop_ops`, never a
 static or ``importlib`` import of Hex-Rays. See ticket llr-n2so / concolic epic
 llr-7ouc.
 """
+
 from __future__ import annotations
 
 from .constraints import (

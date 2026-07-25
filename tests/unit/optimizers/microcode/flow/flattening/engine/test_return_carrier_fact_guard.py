@@ -1,4 +1,5 @@
 """Tests for the executor return-carrier fact guard."""
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
@@ -7,7 +8,12 @@ from d810.transforms import return_carrier_fact_guard
 from d810.transforms.return_carrier_fact_guard import (
     filter_return_carrier_fact_redirects,
 )
-from d810.analyses.value_flow.facts import FactMapping, FactObservation, FactStatus, ValidatedFactView
+from d810.analyses.value_flow.facts import (
+    FactMapping,
+    FactObservation,
+    FactStatus,
+    ValidatedFactView,
+)
 
 
 def _flow_graph(succs_by_block: dict[int, tuple[int, ...]]) -> FlowGraph:
@@ -89,7 +95,9 @@ def test_active_return_carrier_fact_rejects_redirect(monkeypatch) -> None:
     assert rejections[0].overlap == ("s552",)
 
 
-def test_carrier_writer_bypass_requires_explicit_loop_recovery_gate(monkeypatch) -> None:
+def test_carrier_writer_bypass_requires_explicit_loop_recovery_gate(
+    monkeypatch,
+) -> None:
     _patch_const_refs(monkeypatch, frozenset())
     fact = _return_carrier_fact("return:active")
     redirect = RedirectGoto(from_serial=132, old_target=2, new_target=93)

@@ -1,4 +1,5 @@
 "Hodur adapter for generic preanalysis-store artifact helpers."
+
 from __future__ import annotations
 
 from pathlib import Path

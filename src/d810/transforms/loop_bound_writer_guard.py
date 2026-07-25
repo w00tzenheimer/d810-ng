@@ -44,6 +44,7 @@ level.  The accepted classifier parameters are retained for caller
 compatibility; the canonical projection already carries the semantic kind, so
 they are no longer consulted on the projected path.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable

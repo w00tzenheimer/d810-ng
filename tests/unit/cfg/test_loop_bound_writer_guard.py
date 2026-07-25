@@ -5,6 +5,7 @@ must not import live Hex-Rays modules. These tests use hand-built ``mba``
 skeletons with known opcode/mop_t values so we can verify the detector returns
 a diagnostic only for the intended block.
 """
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import (
@@ -68,9 +69,7 @@ class _Insn:
         self.next = None
 
     def to_snapshot(self) -> InsnSnapshot:
-        operands = tuple(
-            op for op in (self.l, self.r, self.d) if op is not None
-        )
+        operands = tuple(op for op in (self.l, self.r, self.d) if op is not None)
         return InsnSnapshot(
             opcode=-1,
             ea=int(self.ea),
@@ -128,7 +127,9 @@ def _build_unrelated_block() -> _Mblock:
     return _Mblock(_chain(insn))
 
 
-def _build_counter_advance_block(*, counter_stkoff: int, delta: int, ea: int) -> _Mblock:
+def _build_counter_advance_block(
+    *, counter_stkoff: int, delta: int, ea: int
+) -> _Mblock:
     """Block with ``m_add %counter, #delta -> %temp`` (the advance)."""
     counter_var = _Mop(OperandKind.STACK, s=_StkOff(counter_stkoff))
     delta_const = _Mop(OperandKind.NUMBER, nnn=_NumValue(delta))
@@ -164,24 +165,26 @@ class TestDetectLoopCounterWritebackTail:
         #   1: loop test consumer (counter+#2 vs bound)
         #   2: writeback tail (m_mov temp -> counter)
         #   3: unrelated
-        return _Mba([
-            _build_counter_advance_block(
-                counter_stkoff=counter_stkoff,
-                delta=2,
-                ea=self.ADVANCE_EA,
-            ),
-            _build_loop_test_block(
-                bound_stkoff=bound_stkoff,
-                counter_stkoff=counter_stkoff,
-                delta=2,
-                ea=self.LOOP_TEST_EA,
-            ),
-            self._build_lvar_writeback_block(
-                counter_stkoff=counter_stkoff,
-                ea=self.WRITEBACK_EA,
-            ),
-            _build_unrelated_block(),
-        ])
+        return _Mba(
+            [
+                _build_counter_advance_block(
+                    counter_stkoff=counter_stkoff,
+                    delta=2,
+                    ea=self.ADVANCE_EA,
+                ),
+                _build_loop_test_block(
+                    bound_stkoff=bound_stkoff,
+                    counter_stkoff=counter_stkoff,
+                    delta=2,
+                    ea=self.LOOP_TEST_EA,
+                ),
+                self._build_lvar_writeback_block(
+                    counter_stkoff=counter_stkoff,
+                    ea=self.WRITEBACK_EA,
+                ),
+                _build_unrelated_block(),
+            ]
+        )
 
     def test_matches_writeback_tail_block(self):
         from d810.transforms.loop_bound_writer_guard import (
@@ -205,11 +208,17 @@ class TestDetectLoopCounterWritebackTail:
 
         flow_graph = _flow_graph_from_blocks(self._build_mba()._blocks)
         # Block 0 has the advance compute, not a writeback to counter.
-        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=0) is None
+        assert (
+            detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=0) is None
+        )
         # Block 1 has the loop test, not a writeback.
-        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=1) is None
+        assert (
+            detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=1) is None
+        )
         # Block 3 is unrelated.
-        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=3) is None
+        assert (
+            detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=3) is None
+        )
 
     def test_rejects_when_writeback_source_is_constant(self):
         """``mov #0, %counter`` is a counter RESET, not a loop-carried
@@ -221,21 +230,25 @@ class TestDetectLoopCounterWritebackTail:
         const_zero = _Mop(OperandKind.NUMBER, nnn=_NumValue(0))
         dest = _Mop(OperandKind.STACK, s=_StkOff(self.COUNTER_STKOFF))
         reset = _Insn(InsnKind.MOV, ea=self.WRITEBACK_EA, l=const_zero, d=dest)
-        flow_graph = _flow_graph_from_blocks([
-            _build_counter_advance_block(
-                counter_stkoff=self.COUNTER_STKOFF,
-                delta=2,
-                ea=self.ADVANCE_EA,
-            ),
-            _build_loop_test_block(
-                bound_stkoff=self.BOUND_STKOFF,
-                counter_stkoff=self.COUNTER_STKOFF,
-                delta=2,
-                ea=self.LOOP_TEST_EA,
-            ),
-            _Mblock(_chain(reset)),
-        ])
-        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=2) is None
+        flow_graph = _flow_graph_from_blocks(
+            [
+                _build_counter_advance_block(
+                    counter_stkoff=self.COUNTER_STKOFF,
+                    delta=2,
+                    ea=self.ADVANCE_EA,
+                ),
+                _build_loop_test_block(
+                    bound_stkoff=self.BOUND_STKOFF,
+                    counter_stkoff=self.COUNTER_STKOFF,
+                    delta=2,
+                    ea=self.LOOP_TEST_EA,
+                ),
+                _Mblock(_chain(reset)),
+            ]
+        )
+        assert (
+            detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=2) is None
+        )
 
     def test_rejects_when_no_loop_test_present(self):
         """Without a ``counter+small_const`` loop test, the writeback is
@@ -244,19 +257,23 @@ class TestDetectLoopCounterWritebackTail:
             detect_loop_counter_writeback_tail,
         )
 
-        flow_graph = _flow_graph_from_blocks([
-            _build_counter_advance_block(
-                counter_stkoff=self.COUNTER_STKOFF,
-                delta=2,
-                ea=self.ADVANCE_EA,
-            ),
-            _build_unrelated_block(),
-            self._build_lvar_writeback_block(
-                counter_stkoff=self.COUNTER_STKOFF,
-                ea=self.WRITEBACK_EA,
-            ),
-        ])
-        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=2) is None
+        flow_graph = _flow_graph_from_blocks(
+            [
+                _build_counter_advance_block(
+                    counter_stkoff=self.COUNTER_STKOFF,
+                    delta=2,
+                    ea=self.ADVANCE_EA,
+                ),
+                _build_unrelated_block(),
+                self._build_lvar_writeback_block(
+                    counter_stkoff=self.COUNTER_STKOFF,
+                    ea=self.WRITEBACK_EA,
+                ),
+            ]
+        )
+        assert (
+            detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=2) is None
+        )
 
     def test_rejects_when_no_advance_compute(self):
         """Without an ``m_add counter+small_const`` somewhere in the
@@ -265,20 +282,24 @@ class TestDetectLoopCounterWritebackTail:
             detect_loop_counter_writeback_tail,
         )
 
-        flow_graph = _flow_graph_from_blocks([
-            _build_unrelated_block(),
-            _build_loop_test_block(
-                bound_stkoff=self.BOUND_STKOFF,
-                counter_stkoff=self.COUNTER_STKOFF,
-                delta=2,
-                ea=self.LOOP_TEST_EA,
-            ),
-            self._build_lvar_writeback_block(
-                counter_stkoff=self.COUNTER_STKOFF,
-                ea=self.WRITEBACK_EA,
-            ),
-        ])
-        assert detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=2) is None
+        flow_graph = _flow_graph_from_blocks(
+            [
+                _build_unrelated_block(),
+                _build_loop_test_block(
+                    bound_stkoff=self.BOUND_STKOFF,
+                    counter_stkoff=self.COUNTER_STKOFF,
+                    delta=2,
+                    ea=self.LOOP_TEST_EA,
+                ),
+                self._build_lvar_writeback_block(
+                    counter_stkoff=self.COUNTER_STKOFF,
+                    ea=self.WRITEBACK_EA,
+                ),
+            ]
+        )
+        assert (
+            detect_loop_counter_writeback_tail(flow_graph, tail_block_serial=2) is None
+        )
 
     def test_returns_none_when_flow_graph_is_none(self):
         from d810.transforms.loop_bound_writer_guard import (
@@ -401,9 +422,11 @@ class TestCollectConstVarRefsInBlock:
         insn.dstr = lambda: "mov    #0xC0FFEE.8, %var_DEAD.8"
         flow_graph = _flow_graph_from_blocks([_Mblock(_chain(insn))])
 
-        assert collect_const_var_refs_in_block(flow_graph, block_serial=0) == frozenset({
-            "s1608",
-        })
+        assert collect_const_var_refs_in_block(flow_graph, block_serial=0) == frozenset(
+            {
+                "s1608",
+            }
+        )
 
     def test_returns_empty_when_block_has_no_const_writes(self):
         from d810.transforms.loop_bound_writer_guard import (
@@ -417,7 +440,9 @@ class TestCollectConstVarRefsInBlock:
         arith = _Insn(InsnKind.ADD, l=var_x, r=var_y, d=dest)
         flow_graph = _flow_graph_from_blocks([_Mblock(_chain(arith))])
 
-        assert collect_const_var_refs_in_block(flow_graph, block_serial=0) == frozenset()
+        assert (
+            collect_const_var_refs_in_block(flow_graph, block_serial=0) == frozenset()
+        )
 
     def test_returns_empty_when_block_serial_out_of_range(self):
         from d810.transforms.loop_bound_writer_guard import (
@@ -428,7 +453,9 @@ class TestCollectConstVarRefsInBlock:
         flow_graph = _flow_graph_from_blocks([block])
 
         # Block 5 is absent from the FlowGraph (only serial 0 exists).
-        assert collect_const_var_refs_in_block(flow_graph, block_serial=5) == frozenset()
+        assert (
+            collect_const_var_refs_in_block(flow_graph, block_serial=5) == frozenset()
+        )
 
     def test_returns_empty_when_flow_graph_is_none(self):
         from d810.transforms.loop_bound_writer_guard import (
@@ -450,4 +477,6 @@ class TestCollectConstVarRefsInBlock:
         insn = _Insn(InsnKind.MOV, l=src_var, d=dst_var)
         flow_graph = _flow_graph_from_blocks([_Mblock(_chain(insn))])
 
-        assert collect_const_var_refs_in_block(flow_graph, block_serial=0) == frozenset()
+        assert (
+            collect_const_var_refs_in_block(flow_graph, block_serial=0) == frozenset()
+        )

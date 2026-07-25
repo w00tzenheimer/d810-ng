@@ -688,16 +688,13 @@ def _connected_route_candidate(
             changed = True
     if len(selected) == len(evidence.route_proofs):
         return evidence
-    atomic_group_id = (
-        f"{evidence.atomic_group_id}:work-item:{root.proof_id}"
-    )
+    atomic_group_id = f"{evidence.atomic_group_id}:work-item:{root.proof_id}"
     return CanonicalSemanticEvidence(
         native_key=evidence.native_key,
         generation=evidence.generation,
         atomic_group_id=atomic_group_id,
         route_proofs=tuple(
-            replace(proof, atomic_group_id=atomic_group_id)
-            for proof in selected
+            replace(proof, atomic_group_id=atomic_group_id) for proof in selected
         ),
     )
 
@@ -769,14 +766,8 @@ def _compose_candidate_semantic_fragment(
     frontend_provider = context.capabilities.optional(
         FrontendNormalizationEvidenceCapability
     )
-    plan_provider = context.capabilities.optional(
-        FrontendNormalizationPlanCapability
-    )
-    if (
-        candidate_provider is None
-        or frontend_provider is None
-        or plan_provider is None
-    ):
+    plan_provider = context.capabilities.optional(FrontendNormalizationPlanCapability)
+    if candidate_provider is None or frontend_provider is None or plan_provider is None:
         raise CanonicalSemanticFragmentRejected(
             "canonical composition requires candidate evidence, normalization "
             "evidence, and receipt-associated PREOPT plan intent",
@@ -868,9 +859,7 @@ def _compose_candidate_semantic_fragment(
                 available_evidence=candidate,
                 current_identity_by_serial=current_identity_by_serial,
                 normalization_authority=normalization_authority,
-                prohibited_dispatcher_serials=(
-                    prohibited_dispatcher_serials
-                ),
+                prohibited_dispatcher_serials=(prohibited_dispatcher_serials),
             )
         except CanonicalSemanticFragmentRejected as exc:
             if first_rejection is None:
@@ -881,8 +870,7 @@ def _compose_candidate_semantic_fragment(
     if not plans:
         first_route_anchor = (
             int(first_rejection.anchor_ea)
-            if first_rejection is not None
-            and first_rejection.anchor_ea is not None
+            if first_rejection is not None and first_rejection.anchor_ea is not None
             else (
                 int(first_rejected_proof.source_anchor_ea)
                 if first_rejected_proof is not None
@@ -898,16 +886,10 @@ def _compose_candidate_semantic_fragment(
             }
         )
         if first_rejected_proof is not None:
-            first_rejection_payload["route_proof_id"] = (
-                first_rejected_proof.proof_id
-            )
+            first_rejection_payload["route_proof_id"] = first_rejected_proof.proof_id
         raise CanonicalSemanticFragmentRejected(
             "canonical composition found no complete route"
-            + (
-                ""
-                if first_rejection is None
-                else f": {first_rejection}"
-            ),
+            + ("" if first_rejection is None else f": {first_rejection}"),
             reason_code=(
                 "canonical_route_incomplete"
                 if first_rejection is None
@@ -938,9 +920,7 @@ class LowerCanonicalSemanticFragment(PipelinePass):
         recovery = _analysis(context, "recover_dispatcher")
         range_evidence = _analysis(context, "range_evidence")
         dispatch_map = (
-            getattr(recovery, "dispatch_map", None)
-            if recovery is not None
-            else None
+            getattr(recovery, "dispatch_map", None) if recovery is not None else None
         )
         dispatcher_serials = {
             int(serial)
@@ -970,8 +950,7 @@ class LowerCanonicalSemanticFragment(PipelinePass):
             decision_dag = getattr(range_evidence, "decision_dag", None)
             if decision_dag is not None:
                 dispatcher_serials.update(
-                    int(serial)
-                    for serial in getattr(decision_dag, "nodes", ()) or ()
+                    int(serial) for serial in getattr(decision_dag, "nodes", ()) or ()
                 )
         if not dispatcher_serials:
             raise CanonicalSemanticFragmentRejected(
@@ -983,9 +962,7 @@ class LowerCanonicalSemanticFragment(PipelinePass):
         if bound is None:
             plan, evidence_generation = _compose_candidate_semantic_fragment(
                 context,
-                prohibited_dispatcher_serials=tuple(
-                    sorted(dispatcher_serials)
-                ),
+                prohibited_dispatcher_serials=tuple(sorted(dispatcher_serials)),
             )
         else:
             plan = build_canonical_semantic_fragment_plan(
@@ -1000,9 +977,7 @@ class LowerCanonicalSemanticFragment(PipelinePass):
             "evidence_generation": evidence_generation,
             "operation_count": len(plan.operations),
             "owned_original_count": len(plan.owned_originals),
-            "prohibited_dispatcher_count": len(
-                plan.prohibited_dispatcher_blocks
-            ),
+            "prohibited_dispatcher_count": len(plan.prohibited_dispatcher_blocks),
         }
         _publish(context, LOWER_STATE_MACHINE_PLAN_METADATA, metadata)
         return PassResult(

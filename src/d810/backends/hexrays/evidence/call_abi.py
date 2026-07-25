@@ -1,4 +1,5 @@
 """Live Hex-Rays evidence adapters for narrow call ABI proofs."""
+
 from __future__ import annotations
 
 import ida_hexrays
@@ -18,10 +19,7 @@ from d810.analyses.control_flow.call_abi import (
 
 def _same_live_instruction(left: object, right: object) -> bool:
     """Compare SWIG instruction proxies by stable live identity."""
-    return (
-        int(left.ea) == int(right.ea)
-        and int(left.opcode) == int(right.opcode)
-    )
+    return int(left.ea) == int(right.ea) and int(left.opcode) == int(right.opcode)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,9 +184,8 @@ def _native_instruction_writes_stack_pointer(instruction: object) -> bool:
     register_names = ida_idp.ph_get_regnames()
     for access in accesses:
         name = str(register_names[int(access.regnum)]).lower()
-        if (
-            name in {"sp", "esp", "rsp"}
-            and int(access.access_type) & int(ida_idp.WRITE_ACCESS)
+        if name in {"sp", "esp", "rsp"} and int(access.access_type) & int(
+            ida_idp.WRITE_ACCESS
         ):
             return True
     return False
@@ -287,9 +284,7 @@ def build_three_argument_stdcall_callinfo(
     callinfo.cc = ida_typeinf.CM_CC_STDCALL
     callinfo.solid_args = int(proof.argument_count)
     callinfo.call_spd = min(argument.vd_offset for argument in arguments)
-    callinfo.stkargs_top = max(
-        argument.vd_offset + 4 for argument in arguments
-    )
+    callinfo.stkargs_top = max(argument.vd_offset + 4 for argument in arguments)
     callinfo.flags |= (
         int(ida_hexrays.FCI_FINAL)
         | int(ida_hexrays.FCI_SPLOK)

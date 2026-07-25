@@ -1,4 +1,5 @@
 """Unit tests for semantic graph checks (no IDA dependency)."""
+
 from types import SimpleNamespace
 
 import pytest
@@ -45,7 +46,8 @@ def _make_block(
         flags=0,
         start_ea=0x1000 + serial if start_ea is None else start_ea,
         insn_snapshots=(),
-        kind=kind or (
+        kind=kind
+        or (
             BlockKind.TWO_WAY
             if len(succs) == 2
             else BlockKind.ONE_WAY
@@ -88,7 +90,9 @@ class TestDetectTerminalCycles:
         handler_entries = {1, 2, 3}
         terminal_exits = {4}  # block 4 has 0 successors — true terminal
         dispatcher = 0
-        result = detect_terminal_cycles(adj, terminal_exits, handler_entries, dispatcher)
+        result = detect_terminal_cycles(
+            adj, terminal_exits, handler_entries, dispatcher
+        )
         assert result.passed
         assert result.cycles == []
 
@@ -98,7 +102,9 @@ class TestDetectTerminalCycles:
         handler_entries = {1, 2, 3}
         terminal_exits = {3}
         dispatcher = 0
-        result = detect_terminal_cycles(adj, terminal_exits, handler_entries, dispatcher)
+        result = detect_terminal_cycles(
+            adj, terminal_exits, handler_entries, dispatcher
+        )
         assert not result.passed
         assert len(result.cycles) == 1
         assert result.cycles[0].terminal_block == 3
@@ -110,7 +116,9 @@ class TestDetectTerminalCycles:
         handler_entries = {1, 2, 3}
         terminal_exits = {3}
         dispatcher = 0
-        result = detect_terminal_cycles(adj, terminal_exits, handler_entries, dispatcher)
+        result = detect_terminal_cycles(
+            adj, terminal_exits, handler_entries, dispatcher
+        )
         assert not result.passed
         assert result.cycles[0].reentry_target == 1
 
@@ -121,26 +129,36 @@ class TestDetectTerminalCycles:
         handler_entries = {1, 2, 3}
         terminal_exits = {4}
         dispatcher = 0
-        result = detect_terminal_cycles(adj, terminal_exits, handler_entries, dispatcher)
+        result = detect_terminal_cycles(
+            adj, terminal_exits, handler_entries, dispatcher
+        )
         assert result.passed
 
     def test_terminal_target_with_preexisting_backedge(self):
         """Terminal redirect target has pre-existing edge to handler entry."""
         # Handler exit (blk[5]) redirected to terminal target (blk[219])
         # blk[219] has pre-existing edge back to handler entry (blk[180])
-        adj = _make_adj([
-            (0, 1), (1, 2), (2, 5),  # handler chain
-            (5, 219),   # terminal redirect
-            (219, 180),  # pre-existing back-edge to handler entry
-            (180, 181),  # handler 180's body
-        ])
+        adj = _make_adj(
+            [
+                (0, 1),
+                (1, 2),
+                (2, 5),  # handler chain
+                (5, 219),  # terminal redirect
+                (219, 180),  # pre-existing back-edge to handler entry
+                (180, 181),  # handler 180's body
+            ]
+        )
         handler_entries = {1, 2, 5, 180}
         # terminal_exits must include BOTH source (5) AND target (219)
         terminal_exits = {5, 219}
         dispatcher = 0
-        result = detect_terminal_cycles(adj, terminal_exits, handler_entries, dispatcher)
+        result = detect_terminal_cycles(
+            adj, terminal_exits, handler_entries, dispatcher
+        )
         assert not result.passed
-        assert any(c.terminal_block == 219 and c.reentry_target == 180 for c in result.cycles)
+        assert any(
+            c.terminal_block == 219 and c.reentry_target == 180 for c in result.cycles
+        )
 
     def test_multiple_terminals_mixed(self):
         # Terminal A is clean, terminal B cycles
@@ -148,7 +166,9 @@ class TestDetectTerminalCycles:
         handler_entries = {1, 2, 3, 4}
         terminal_exits = {5, 4}  # 5 clean (no succs), 4 cycles
         dispatcher = 0
-        result = detect_terminal_cycles(adj, terminal_exits, handler_entries, dispatcher)
+        result = detect_terminal_cycles(
+            adj, terminal_exits, handler_entries, dispatcher
+        )
         assert not result.passed
         assert len(result.cycles) == 1
 
@@ -372,7 +392,10 @@ class TestPreflightCycleRejection:
         # Bad edit: redirect 30->10 (terminal re-enters handler).
         adj = _make_adj([(0, 10), (10, 20), (20, 30), (30, 99)])
         bad_edit = SimulatedEdit(
-            kind="goto_redirect", source=30, old_target=99, new_target=10,
+            kind="goto_redirect",
+            source=30,
+            old_target=99,
+            new_target=10,
         )
         sim_adj = simulate_edits(adj, [bad_edit]).adj
         result = detect_terminal_cycles(
@@ -389,7 +412,10 @@ class TestPreflightCycleRejection:
         adj = _make_adj([(0, 10), (10, 20), (20, 30), (30, 0)])
         adj[99] = []  # true exit node with 0 successors
         good_edit = SimulatedEdit(
-            kind="goto_redirect", source=30, old_target=0, new_target=99,
+            kind="goto_redirect",
+            source=30,
+            old_target=0,
+            new_target=99,
         )
         sim_adj = simulate_edits(adj, [good_edit]).adj
         result = detect_terminal_cycles(

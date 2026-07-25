@@ -2,6 +2,7 @@
 
 These tests verify the pure Python logic without requiring IDA Pro.
 """
+
 from __future__ import annotations
 
 from d810.ui.actions.export_microcode_logic import (
@@ -143,7 +144,9 @@ class TestValidateExportSettings:
     def test_all_maturity_levels_valid(self):
         """Test all maturity levels pass validation."""
         for name, _ in MATURITY_CHOICES:
-            settings = MicrocodeExportSettings(maturity=name, output_path="/tmp/out.json")
+            settings = MicrocodeExportSettings(
+                maturity=name, output_path="/tmp/out.json"
+            )
             valid, msg = validate_export_settings(settings)
             assert valid is True, f"{name} should be valid but got: {msg}"
             assert msg == ""

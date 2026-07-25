@@ -4,6 +4,7 @@ These helpers classify backend-neutral relationships between raw semantic
 regions before a strategy decides how to lower them.  They do not inspect
 Hex-Rays microblocks and they do not own HCC log formatting or emission policy.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class RawRegionInfo:
-    "Best-effort observation about one raw semantic region.\n\n    The concrete DAG node and composed-candidate types intentionally remain\n    structural: ``cfg`` owns the admission decision, while concrete semantic\n    DAG dataclasses live in ``preanalysis`` and concrete materialization candidates\n    are produced by strategy/backend code.\n    "
+    "Best-effort observation about one raw semantic region.\n\n    The concrete DAG node and composed-candidate types intentionally remain\n    structural: ``cfg`` owns the admission decision, while concrete semantic\n    DAG dataclasses live in ``preanalysis`` and concrete materialization candidates\n    are produced by strategy/backend code.\n"
 
     region_nodes: tuple[object, ...]
     head_node: object
@@ -66,9 +67,8 @@ def classify_source_covered_by_other_region(
             has_collision = True
         if src_int in other.region_anchors:
             has_handlers = True
-        if (
-            other.old_physical_pred is not None
-            and src_int == int(other.old_physical_pred)
+        if other.old_physical_pred is not None and src_int == int(
+            other.old_physical_pred
         ):
             has_physical_pred = True
 
@@ -116,7 +116,8 @@ def classify_yes_handlers_subclass(
     YES_HANDLERS candidate.
     """
     covers = find_cover_regions(
-        self_info=self_info, raw_region_table=raw_region_table,
+        self_info=self_info,
+        raw_region_table=raw_region_table,
     )
     if not covers:
         return "CONFLICT"

@@ -4,6 +4,7 @@ Pure-type tests (no IDA): the value-side seam (``AbstractValue``), the
 router-side seam (``RouteResult``), and the projection of each lattice element
 (``KnownBits`` / ``WrappedInterval`` / ``StateValue``) into ``AbstractValue``.
 """
+
 from __future__ import annotations
 
 from d810.analyses.abstract_domains import KnownBits, WrappedInterval
@@ -194,8 +195,8 @@ import operator
 def test_fold_correlated_binop_xor_split_to_oneof():
     # The sub_7FFD case: var_7BC = var_D0 ^ var_C8, each operand set in blocks
     # 126 and 191. Correlated fold -> the two REAL states, no spurious cross pair.
-    a = {126: 0x500A02CF, 191: 0xA805A51A}   # var_D0 per def-block
-    b = {126: 0x3101B616, 191: 0xEA67984D}   # var_C8 per def-block
+    a = {126: 0x500A02CF, 191: 0xA805A51A}  # var_D0 per def-block
+    b = {126: 0x3101B616, 191: 0xEA67984D}  # var_C8 per def-block
     out = fold_correlated_binop(a, b, operator.xor)
     assert isinstance(out, OneOf)
     assert out.values == frozenset({0x610BB4D9, 0x42623D57})
@@ -213,7 +214,10 @@ def test_fold_correlated_binop_mismatched_blocks_is_top():
 
 
 def test_fold_correlated_binop_nonconst_def_is_top():
-    assert fold_correlated_binop({126: None, 191: 2}, {126: 3, 191: 4}, operator.xor) is TOP
+    assert (
+        fold_correlated_binop({126: None, 191: 2}, {126: 3, 191: 4}, operator.xor)
+        is TOP
+    )
 
 
 def test_fold_correlated_binop_empty_is_top():

@@ -1,4 +1,5 @@
 """Live semantic oracle gate for ``tigress_flatten_indirect``."""
+
 from __future__ import annotations
 
 import json
@@ -37,9 +38,7 @@ def _diag_db_path(diag_conn, *, func_ea: int) -> Path:
     from d810.core.diag import find_latest_diag_db_path
 
     latest = find_latest_diag_db_path(func_ea)
-    assert latest is not None, (
-        "tigress_flatten_indirect oracle requires a diag DB path"
-    )
+    assert latest is not None, "tigress_flatten_indirect oracle requires a diag DB path"
     return latest
 
 

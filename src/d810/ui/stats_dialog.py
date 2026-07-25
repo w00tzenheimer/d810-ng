@@ -8,6 +8,7 @@ Follows the CTO function lister lifecycle pattern:
 - OnCreate attaches layout only
 - show() calls display_widget AFTER Show()
 """
+
 from __future__ import annotations
 
 from d810.core import typing
@@ -47,7 +48,9 @@ class StatsTreeWidget(QtWidgets.QTreeView):
         """Initialize tree view, model, proxy, and filter bar."""
         QtWidgets.QTreeView.__init__(self)
 
-        self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
         self.setSortingEnabled(False)  # enabled after populate
 
         # Generate source model (CTO pattern)
@@ -247,9 +250,9 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
                 self.tree.regex_box.stateChanged.disconnect()
                 self.tree.cs_box.stateChanged.disconnect()
                 self.tree.clear_btn.pressed.disconnect()
-                if hasattr(self, 'filter_menu'):
+                if hasattr(self, "filter_menu"):
                     pass  # QMenu signals auto-disconnect when parent is destroyed
-                if hasattr(self, 'add_menu'):
+                if hasattr(self, "add_menu"):
                     self.add_menu.aboutToShow.disconnect()
         except (RuntimeError, TypeError):
             pass  # Already disconnected or C++ object already deleted
@@ -372,7 +375,8 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
 
             # Right-align count column for numeric readability
             count_item.setTextAlignment(
-                QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
+                QtCore.Qt.AlignmentFlag.AlignRight
+                | QtCore.Qt.AlignmentFlag.AlignVCenter
             )
 
             items = [category_item, name_item, count_item]
@@ -406,7 +410,9 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
         # Add "Save for function" option
         action = self.add_menu.addAction("Save for function")
         action.triggered.connect(self._on_save_for_function)
-        inference_action = self.add_menu.addAction("Apply fired rules as active inference")
+        inference_action = self.add_menu.addAction(
+            "Apply fired rules as active inference"
+        )
         inference_action.triggered.connect(self._on_apply_inference_for_function)
         clear_inference_action = self.add_menu.addAction("Clear active inference")
         clear_inference_action.triggered.connect(self._on_clear_active_inference)
@@ -416,7 +422,10 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
         if self._func_ea is None:
             return
 
-        from d810.ui.stats_logic import get_fired_rule_names, save_fired_rules_for_function
+        from d810.ui.stats_logic import (
+            get_fired_rule_names,
+            save_fired_rules_for_function,
+        )
 
         # Get fired rules from stats
         fired_rule_names = get_fired_rule_names(self._stats)
@@ -433,7 +442,9 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
         )
 
         # Persist to storage and emit function-level cache invalidation
-        if hasattr(self._state, "manager") and hasattr(self._state.manager, "set_function_rule_override"):
+        if hasattr(self._state, "manager") and hasattr(
+            self._state.manager, "set_function_rule_override"
+        ):
             self._state.manager.set_function_rule_override(
                 function_addr=self._func_ea,
                 enabled_rules=func_rule_config.enabled_rules,
@@ -443,7 +454,9 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
 
         # Show confirmation
         func_name = self._func_name or f"sub_{self._func_ea:X}"
-        ida_kernwin.msg(f"d810-ng: Saved {len(fired_rule_names)} rules for {func_name}\n")
+        ida_kernwin.msg(
+            f"d810-ng: Saved {len(fired_rule_names)} rules for {func_name}\n"
+        )
 
     def _on_apply_inference_for_function(self) -> None:
         if self._func_ea is None:
@@ -456,7 +469,9 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
             return
         manager = getattr(self._state, "manager", None)
         if manager is None or not hasattr(manager, "set_active_rule_inference"):
-            ida_kernwin.warning("d810-ng manager does not support active inference application.")
+            ida_kernwin.warning(
+                "d810-ng manager does not support active inference application."
+            )
             return
         func_name = self._func_name or f"sub_{self._func_ea:X}"
         inference_name = f"fired_{func_name}_{self._func_ea:X}"
@@ -474,7 +489,9 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
     def _on_clear_active_inference(self) -> None:
         manager = getattr(self._state, "manager", None)
         if manager is None or not hasattr(manager, "clear_active_rule_inference"):
-            ida_kernwin.warning("d810-ng manager does not support clearing active inference.")
+            ida_kernwin.warning(
+                "d810-ng manager does not support clearing active inference."
+            )
             return
         manager.clear_active_rule_inference()
         ida_kernwin.msg("d810-ng: Cleared active inference\n")
@@ -512,6 +529,7 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
     def _build_context_menu(self, pos: typing.Any) -> None:
         """Build right-click context menu (stub for future expansion)."""
         pass
+
 
 # Stub classes when IDA is not available (for unit test imports)
 if not IDA_AVAILABLE:

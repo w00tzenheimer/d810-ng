@@ -3,6 +3,7 @@
 This module provides the foundation for the action framework, enabling
 auto-discovery of action handlers via the Registrant metaclass.
 """
+
 from __future__ import annotations
 
 from d810.core import typing

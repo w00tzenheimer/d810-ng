@@ -5,6 +5,7 @@ aligned terminal the return-slot's only reaching definition is the entry-default
 (state) write, while the real carrier (``v49`` = ``a5+0xD0``) still dominates --
 exactly the two facts the carrier-delivery fix queries.
 """
+
 from __future__ import annotations
 
 from d810.analyses.data_flow.configuration import Direction, FixpointConfiguration

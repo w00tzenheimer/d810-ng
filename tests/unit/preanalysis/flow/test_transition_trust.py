@@ -35,9 +35,7 @@ def test_typed_transition_trust_authorizes_explicit_conditional_bridge() -> None
         )
     )
 
-    result = classify_transition_trust_for_explicit_conditional_bridge(
-        transition
-    )
+    result = classify_transition_trust_for_explicit_conditional_bridge(transition)
 
     assert result.authorizes_explicit_conditional_bridge
     assert result.reason == "mop_tracker_path_constant_state_write"
@@ -54,15 +52,10 @@ def test_trusted_real_branch_ownership_authorizes_explicit_bridge() -> None:
         )
     )
 
-    result = classify_transition_trust_for_explicit_conditional_bridge(
-        transition
-    )
+    result = classify_transition_trust_for_explicit_conditional_bridge(transition)
 
     assert result.authorizes_explicit_conditional_bridge
-    assert (
-        result.trust_kind
-        == TransitionTrustKind.BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT
-    )
+    assert result.trust_kind == TransitionTrustKind.BRANCH_OWNERSHIP_REAL_DATA_DEPENDENT
 
 
 def test_nonsemantic_branch_ownership_does_not_authorize_bridge() -> None:
@@ -75,14 +68,11 @@ def test_nonsemantic_branch_ownership_does_not_authorize_bridge() -> None:
         )
     )
 
-    result = classify_transition_trust_for_explicit_conditional_bridge(
-        transition
-    )
+    result = classify_transition_trust_for_explicit_conditional_bridge(transition)
 
     assert not result.authorizes_explicit_conditional_bridge
     assert (
-        result.reason
-        == "branch_ownership_not_bridge_authority:OBFUSCATION_RESIDUE_ARM"
+        result.reason == "branch_ownership_not_bridge_authority:OBFUSCATION_RESIDUE_ARM"
     )
 
 
@@ -91,9 +81,7 @@ def test_provenance_tag_is_adapter_not_consumer_allowlist() -> None:
         provenance_kind="global_or_state_write",
     )
 
-    result = classify_transition_trust_for_explicit_conditional_bridge(
-        transition
-    )
+    result = classify_transition_trust_for_explicit_conditional_bridge(transition)
 
     assert result.authorizes_explicit_conditional_bridge
     assert result.trust_kind == TransitionTrustKind.DYNAMIC_STATE_WRITE
@@ -105,9 +93,7 @@ def test_dispatch_key_transform_shape_does_not_authorize_bridge() -> None:
         provenance_kind="derived_xor_dispatch_key",
     )
 
-    result = classify_transition_trust_for_explicit_conditional_bridge(
-        transition
-    )
+    result = classify_transition_trust_for_explicit_conditional_bridge(transition)
 
     assert not result.authorizes_explicit_conditional_bridge
     assert result.reason == "dispatch_key_transform_not_authority"
@@ -120,9 +106,7 @@ def test_unsupported_provenance_remains_diagnostic_only() -> None:
         provenance_kind="shape_only_bcf_guess",
     )
 
-    result = classify_transition_trust_for_explicit_conditional_bridge(
-        transition
-    )
+    result = classify_transition_trust_for_explicit_conditional_bridge(transition)
 
     assert not result.authorizes_explicit_conditional_bridge
     assert result.reason == "unsupported_provenance"

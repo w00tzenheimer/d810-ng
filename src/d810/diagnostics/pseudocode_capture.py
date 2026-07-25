@@ -91,8 +91,7 @@ def init_capture_db(db_path: Path | str) -> sqlite3.Connection:
         """
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_func_name "
-        "ON pseudocode_capture(function_name)"
+        "CREATE INDEX IF NOT EXISTS idx_func_name ON pseudocode_capture(function_name)"
     )
     conn.commit()
     return conn
@@ -105,7 +104,9 @@ def get_default_binary_name() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 def strip_colors(text: str | None) -> str:

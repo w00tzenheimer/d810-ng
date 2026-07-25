@@ -26,6 +26,7 @@ API deficiencies this layer documents (the lab's "which d810 rule/invariant shou
   instruction, so a block that held only the staging write does not collapse — a real DSE
   removal primitive is missing. We default to ``NopInstructions`` and flag the gap.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Iterable

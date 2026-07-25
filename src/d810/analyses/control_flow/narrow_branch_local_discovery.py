@@ -9,11 +9,14 @@ single-edge reconstruction rejects the edge but the per-arm shape is still safe.
 Pure discovery: flow-graph only used for `get_block(...)` structural queries.
 No IDA runtime calls.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Iterable
 
-from d810.analyses.control_flow.reconstruction_candidate_builder import ReconstructionCandidate
+from d810.analyses.control_flow.reconstruction_candidate_builder import (
+    ReconstructionCandidate,
+)
 
 
 def discover_narrow_branch_local_reconstruction_candidates(
@@ -35,7 +38,9 @@ def discover_narrow_branch_local_reconstruction_candidates(
         if target_entry is None or int(target_entry) < 0:
             continue
 
-        ordered_path = tuple(int(serial) for serial in (getattr(edge, "ordered_path", ()) or ()))
+        ordered_path = tuple(
+            int(serial) for serial in (getattr(edge, "ordered_path", ()) or ())
+        )
         if len(ordered_path) < 2:
             continue
 
@@ -43,14 +48,18 @@ def discover_narrow_branch_local_reconstruction_candidates(
         if source_anchor_block >= 0 and source_anchor_block in ordered_path:
             horizon_block = int(source_anchor_block)
         else:
-            horizon_block = int(getattr(getattr(edge, "source_key", None), "handler_serial", -1))
+            horizon_block = int(
+                getattr(getattr(edge, "source_key", None), "handler_serial", -1)
+            )
         if int(horizon_block) < 0:
             continue
 
         horizon_snapshot = flow_graph.get_block(int(horizon_block))
         if horizon_snapshot is None:
             continue
-        horizon_succs = tuple(int(succ) for succ in getattr(horizon_snapshot, "succs", ()) or ())
+        horizon_succs = tuple(
+            int(succ) for succ in getattr(horizon_snapshot, "succs", ()) or ()
+        )
         if int(getattr(horizon_snapshot, "nsucc", len(horizon_succs))) != 2:
             continue
         if int(horizon_block) not in ordered_path:
@@ -80,20 +89,23 @@ def discover_narrow_branch_local_reconstruction_candidates(
                 "observed_target_state",
                 getattr(edge, "target_state", None),
             )
-        synthetic_site = getattr(edge, "site", None) or type(
-            "_SyntheticStateWriteSite",
-            (),
-            {
-                "block_serial": int(ordered_path[-1]),
-                "state_value": (
-                    int(site_state_value) & 0xFFFFFFFF
-                    if site_state_value is not None
-                    else int(target_state) & 0xFFFFFFFF
-                ),
-                "insn_ea": 0,
-                "unsafe_trailing_insn_eas": (),
-            },
-        )()
+        synthetic_site = (
+            getattr(edge, "site", None)
+            or type(
+                "_SyntheticStateWriteSite",
+                (),
+                {
+                    "block_serial": int(ordered_path[-1]),
+                    "state_value": (
+                        int(site_state_value) & 0xFFFFFFFF
+                        if site_state_value is not None
+                        else int(target_state) & 0xFFFFFFFF
+                    ),
+                    "insn_ea": 0,
+                    "unsafe_trailing_insn_eas": (),
+                },
+            )()
+        )
         candidates.append(
             ReconstructionCandidate(
                 edge=edge,

@@ -27,7 +27,12 @@ from d810.analyses.control_flow.terminal_family import (
 
 
 class _DummyBlock:
-    def __init__(self, preds: tuple[int, ...], succs: tuple[int, ...], insn_snapshots: tuple[object, ...] = ()):
+    def __init__(
+        self,
+        preds: tuple[int, ...],
+        succs: tuple[int, ...],
+        insn_snapshots: tuple[object, ...] = (),
+    ):
         self.preds = preds
         self.succs = succs
         self.insn_snapshots = insn_snapshots
@@ -38,7 +43,9 @@ class _DummyBlock:
 class _DummyFlowGraph:
     def __init__(self, mapping: dict[int, tuple[tuple[int, ...], tuple[int, ...]]]):
         self.blocks = {
-            int(k): _DummyBlock(tuple(int(v) for v in preds), tuple(int(v) for v in succs))
+            int(k): _DummyBlock(
+                tuple(int(v) for v in preds), tuple(int(v) for v in succs)
+            )
             for k, (preds, succs) in mapping.items()
         }
 
@@ -94,9 +101,11 @@ class _DummyDag:
 
 class TestResolveTerminalSourceArmEntry:
     def test_skips_dispatcher_successor_when_source_is_multiway(self):
-        flow_graph = _DummyFlowGraph({
-            40: ((12,), (6, 90)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                40: ((12,), (6, 90)),
+            }
+        )
 
         assert (
             resolve_terminal_source_arm_entry(
@@ -111,16 +120,20 @@ class TestResolveTerminalSourceArmEntry:
 
 class TestProbeTerminalFamilySeed:
     def test_accepts_linear_terminal_family_seed(self):
-        base_flow_graph = _DummyFlowGraph({
-            40: ((12,), (90,)),
-            90: ((40,), (94,)),
-            94: ((90,), ()),
-        })
-        projected_flow_graph = _DummyFlowGraph({
-            40: ((12,), (90,)),
-            90: ((40,), (94,)),
-            94: ((90,), ()),
-        })
+        base_flow_graph = _DummyFlowGraph(
+            {
+                40: ((12,), (90,)),
+                90: ((40,), (94,)),
+                94: ((90,), ()),
+            }
+        )
+        projected_flow_graph = _DummyFlowGraph(
+            {
+                40: ((12,), (90,)),
+                90: ((40,), (94,)),
+                94: ((90,), ()),
+            }
+        )
 
         probe = probe_terminal_family_seed(
             TerminalFamilySeed(source_block=40, branch_arm=None, edge=None),
@@ -175,11 +188,13 @@ class TestCandidateSharedSuffixEntries:
 
 class TestSeedTerminalFamilyProbes:
     def test_collects_dag_and_projected_cfg_seed_origins(self):
-        flow_graph = _DummyFlowGraph({
-            40: ((12,), (90, 91)),
-            90: ((40,), ()),
-            91: ((40,), ()),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                40: ((12,), (90, 91)),
+                90: ((40,), ()),
+                91: ((40,), ()),
+            }
+        )
         edge = SimpleNamespace(
             kind=1,  # replaced below after import-time constant check
             source_anchor=SimpleNamespace(block_serial=40, branch_arm=1),
@@ -197,8 +212,7 @@ class TestSeedTerminalFamilyProbes:
         )
 
         by_key = {
-            (probe.seed.source_block, probe.seed.branch_arm): probe
-            for probe in probes
+            (probe.seed.source_block, probe.seed.branch_arm): probe for probe in probes
         }
         assert by_key[(40, 1)].seed_origins == ("dag_edge", "projected_cfg")
         assert by_key[(40, 0)].seed_origins == ("projected_cfg",)
@@ -206,10 +220,12 @@ class TestSeedTerminalFamilyProbes:
 
 class TestBuildTerminalFamilyCandidates:
     def test_deduplicates_candidates_by_source_arm_and_path(self):
-        flow_graph = _DummyFlowGraph({
-            90: ((40,), (94,)),
-            94: ((90,), ()),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                90: ((40,), (94,)),
+                94: ((90,), ()),
+            }
+        )
         seed = TerminalFamilySeed(source_block=40, branch_arm=0, edge=None)
         probe = TerminalFamilySeedProbe(
             seed=seed,
@@ -256,12 +272,16 @@ class TestTerminalValueSignatures:
         assert not is_state_var_dest(insn, 0x24)
 
     def test_terminal_source_signature_uses_canonical_varnodes(self):
-        assert terminal_varnode_source_signature(
-            Varnode(Space.CONST, 0x42, 4)
-        ) == ("const", 0x42)
-        assert terminal_varnode_source_signature(
-            Varnode(Space.TEMP, 17, 4)
-        ) == ("varnode", "t", 17, 4)
+        assert terminal_varnode_source_signature(Varnode(Space.CONST, 0x42, 4)) == (
+            "const",
+            0x42,
+        )
+        assert terminal_varnode_source_signature(Varnode(Space.TEMP, 17, 4)) == (
+            "varnode",
+            "t",
+            17,
+            4,
+        )
 
     def test_terminal_write_signature_uses_canonical_instruction(self):
         insn = Instruction(
@@ -291,7 +311,9 @@ class TestTerminalValueSignatures:
                 _mov(_const(0xAA), _stack(0x20), ea=0x1008),
             ),
         )
-        flow_graph = SimpleNamespace(get_block=lambda serial: block if int(serial) == 90 else None)
+        flow_graph = SimpleNamespace(
+            get_block=lambda serial: block if int(serial) == 90 else None
+        )
 
         chain = resolve_terminal_value_chain(
             flow_graph,

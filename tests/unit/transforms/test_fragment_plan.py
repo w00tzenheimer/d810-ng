@@ -433,9 +433,7 @@ def test_fragment_plan_rejects_direct_rewrite_outside_canonical_lowering() -> No
     ):
         replace(
             plan,
-            publication_purpose=(
-                FragmentPublicationPurpose.FRONTEND_NORMALIZATION
-            ),
+            publication_purpose=(FragmentPublicationPurpose.FRONTEND_NORMALIZATION),
             work_item_scope=FragmentWorkItemScope(
                 work_item_id="frontend-normalization:g1:direct",
                 selected_obligation_ids=("route@0x40BECC",),
@@ -549,9 +547,7 @@ def _same_ea_imported_conditional_plan(
     return FragmentPlan(
         plan_id="canonical-same-ea-split",
         atomic_group_id="canonical-same-ea-split:g1",
-        publication_purpose=(
-            FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
-        ),
+        publication_purpose=(FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING),
         native_key=NATIVE_KEY,
         blocks=(original, replacement, source, taken, fallthrough),
         roots=(replacement.block_id,),
@@ -1274,9 +1270,7 @@ def test_fragment_plan_requires_terminal_carrier_and_return_width_parity() -> No
     ):
         replace(
             plan,
-            terminal_returns=(
-                replace(plan.terminal_returns[0], return_width=8),
-            ),
+            terminal_returns=(replace(plan.terminal_returns[0], return_width=8),),
         )
 
 

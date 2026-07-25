@@ -214,7 +214,10 @@ _PYTHON_REWRITE_NEEDLES = tuple(
             *NAME_RENAMES,
             *CLI_RENAMES,
             *LITERAL_RENAMES,
-            *(original for original, _replacement in _EMBEDDED_CAMEL_IDENTIFIER_RENAMES),
+            *(
+                original
+                for original, _replacement in _EMBEDDED_CAMEL_IDENTIFIER_RENAMES
+            ),
             "Recon",
             "recon",
             *(f"DecompilationEvent.{name}" for name in EVENT_RENAMES),
@@ -937,10 +940,7 @@ def _scan_python_prose(
                     isinstance(value, str)
                     and (
                         value in MODULE_RENAMES
-                        or any(
-                            part in NAME_RENAMES
-                            for part in value.split(".")
-                        )
+                        or any(part in NAME_RENAMES for part in value.split("."))
                     )
                 )
                 if isinstance(value, str) and (

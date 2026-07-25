@@ -44,6 +44,7 @@ try:
         compute_fingerprint_py as cython_compute_fingerprint,
         match_pattern_nomut as cython_match_pattern_nomut,
     )
+
     HAS_CYTHON = True
 except ImportError:
     HAS_CYTHON = False
@@ -59,7 +60,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 def get_func_ea(name: str) -> int:
@@ -81,9 +84,7 @@ def gen_microcode_at_maturity(func_ea: int, maturity: int):
 
     mbr = ida_hexrays.mba_ranges_t(func)
     hf = ida_hexrays.hexrays_failure_t()
-    mba = ida_hexrays.gen_microcode(
-        mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, maturity
-    )
+    mba = ida_hexrays.gen_microcode(mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, maturity)
     return mba
 
 
@@ -162,10 +163,7 @@ def real_asts(libobfuscated_setup):
 
             asts = collect_real_asts_from_mba(mba)
             if len(asts) >= 3:
-                print(
-                    f"\n  Collected {len(asts)} ASTs "
-                    f"@ maturity {maturity}"
-                )
+                print(f"\n  Collected {len(asts)} ASTs @ maturity {maturity}")
                 return asts
         return None
 
@@ -206,15 +204,23 @@ class TestPatternFingerprint:
     @pytest.mark.ida_required
     def test_fingerprint_equality(self, libobfuscated_setup):
         """Two identical fingerprints should be equal."""
-        fp1 = PatternFingerprint(opcode_hash=0x123, depth=3, node_count=2, leaf_count=3, const_count=1)
-        fp2 = PatternFingerprint(opcode_hash=0x123, depth=3, node_count=2, leaf_count=3, const_count=1)
+        fp1 = PatternFingerprint(
+            opcode_hash=0x123, depth=3, node_count=2, leaf_count=3, const_count=1
+        )
+        fp2 = PatternFingerprint(
+            opcode_hash=0x123, depth=3, node_count=2, leaf_count=3, const_count=1
+        )
         assert fp1 == fp2
 
     @pytest.mark.ida_required
     def test_fingerprint_inequality_opcode_hash(self, libobfuscated_setup):
         """Different opcode_hash means different fingerprint."""
-        fp1 = PatternFingerprint(opcode_hash=0x123, depth=3, node_count=2, leaf_count=3, const_count=1)
-        fp2 = PatternFingerprint(opcode_hash=0x456, depth=3, node_count=2, leaf_count=3, const_count=1)
+        fp1 = PatternFingerprint(
+            opcode_hash=0x123, depth=3, node_count=2, leaf_count=3, const_count=1
+        )
+        fp2 = PatternFingerprint(
+            opcode_hash=0x456, depth=3, node_count=2, leaf_count=3, const_count=1
+        )
         assert fp1 != fp2
 
     @pytest.mark.ida_required
@@ -238,24 +244,34 @@ class TestPatternFingerprint:
         assert fp1.compatible_with(fp2) is False
 
     @pytest.mark.ida_required
-    def test_fingerprint_compatible_different_node_count_rejects(self, libobfuscated_setup):
+    def test_fingerprint_compatible_different_node_count_rejects(
+        self, libobfuscated_setup
+    ):
         """Different node count should reject."""
         fp1 = PatternFingerprint(depth=3, node_count=2, leaf_count=3, const_count=1)
         fp2 = PatternFingerprint(depth=3, node_count=3, leaf_count=3, const_count=1)
         assert fp1.compatible_with(fp2) is False
 
     @pytest.mark.ida_required
-    def test_fingerprint_compatible_leaf_const_swap_directional(self, libobfuscated_setup):
+    def test_fingerprint_compatible_leaf_const_swap_directional(
+        self, libobfuscated_setup
+    ):
         """Const_count directional: pattern cannot demand more constants than candidate."""
-        fp_more_const = PatternFingerprint(depth=3, node_count=2, leaf_count=2, const_count=2)
-        fp_less_const = PatternFingerprint(depth=3, node_count=2, leaf_count=3, const_count=1)
+        fp_more_const = PatternFingerprint(
+            depth=3, node_count=2, leaf_count=2, const_count=2
+        )
+        fp_less_const = PatternFingerprint(
+            depth=3, node_count=2, leaf_count=3, const_count=1
+        )
         # Pattern with fewer constants CAN match candidate with more
         assert fp_less_const.compatible_with(fp_more_const) is True
         # Pattern with more constants CANNOT match candidate with fewer
         assert fp_more_const.compatible_with(fp_less_const) is False
 
     @pytest.mark.ida_required
-    def test_fingerprint_compatible_different_total_operands_rejects(self, libobfuscated_setup):
+    def test_fingerprint_compatible_different_total_operands_rejects(
+        self, libobfuscated_setup
+    ):
         """Different total operand count should reject."""
         fp1 = PatternFingerprint(depth=3, node_count=2, leaf_count=2, const_count=1)
         fp2 = PatternFingerprint(depth=3, node_count=2, leaf_count=3, const_count=1)
@@ -503,9 +519,7 @@ class TestMatchPatternNomutReal:
         candidate_ast, _ = nodes_with_children[0]
 
         # Build a pattern matching the candidate's opcode
-        pattern = AstNode(
-            candidate_ast.opcode, AstLeaf("x_0"), AstLeaf("y_0")
-        )
+        pattern = AstNode(candidate_ast.opcode, AstLeaf("x_0"), AstLeaf("y_0"))
 
         bindings = MatchBindings()
         result = match_pattern_nomut(pattern, candidate_ast, bindings)
@@ -516,7 +530,9 @@ class TestMatchPatternNomutReal:
             binding_dict = bindings.to_dict()
             for name, mop in binding_dict.items():
                 assert mop is not None, f"Binding '{name}' should have a mop"
-                assert hasattr(mop, "t"), f"Binding '{name}' mop should have .t attribute"
+                assert hasattr(mop, "t"), (
+                    f"Binding '{name}' mop should have .t attribute"
+                )
 
     @pytest.mark.ida_required
     def test_bindings_reuse_with_real_asts(self, real_asts):
@@ -528,9 +544,7 @@ class TestMatchPatternNomutReal:
         bindings = MatchBindings()
 
         for candidate_ast, _ in nodes_with_children[:2]:
-            pattern = AstNode(
-                candidate_ast.opcode, AstLeaf("x_0"), AstLeaf("y_0")
-            )
+            pattern = AstNode(candidate_ast.opcode, AstLeaf("x_0"), AstLeaf("y_0"))
             result = match_pattern_nomut(pattern, candidate_ast, bindings)
             if result:
                 assert bindings.count >= 1
@@ -589,9 +603,7 @@ class TestNomutVsCloneEquivalenceReal:
         tested = 0
         for candidate_ast, _ in nodes_with_children[:5]:
             # Build a pattern from the candidate's opcode
-            pattern = AstNode(
-                candidate_ast.opcode, AstLeaf("x_0"), AstLeaf("y_0")
-            )
+            pattern = AstNode(candidate_ast.opcode, AstLeaf("x_0"), AstLeaf("y_0"))
 
             # Non-mutating match
             nomut_result = match_pattern_nomut(pattern, candidate_ast)
@@ -728,8 +740,10 @@ class TestOpcodeIndexedStorageReal:
         storage = OpcodeIndexedStorage()
         rules = []
         for i, ast in enumerate(by_opcode[multi_op][:3]):
+
             class DynRule:
                 pass
+
             rule = DynRule()
             rule.name = f"rule_{i}"
             storage.add_pattern(ast, rule)
@@ -916,8 +930,10 @@ class TestIntegrationRealPatterns:
         # Register patterns from the first few real ASTs
         registered = []
         for i, (ast, _) in enumerate(nodes_with_children[:5]):
+
             class PipelineRule:
                 pass
+
             rule = PipelineRule()
             rule.name = f"pipeline_rule_{i}"
             storage.add_pattern(ast, rule)
@@ -1100,9 +1116,7 @@ class TestCythonMatchMatchesPythonReal:
 
         tested = 0
         for candidate_ast, _ in nodes_with_children[:5]:
-            pattern = AstNode(
-                candidate_ast.opcode, AstLeaf("x_0"), AstLeaf("y_0")
-            )
+            pattern = AstNode(candidate_ast.opcode, AstLeaf("x_0"), AstLeaf("y_0"))
 
             py_result = match_pattern_nomut(pattern, candidate_ast)
             cy_result = cython_match_pattern_nomut(pattern, candidate_ast)
@@ -1147,9 +1161,7 @@ class TestCythonMatchMatchesPythonReal:
             pytest.skip("No AST nodes with children found")
 
         candidate_ast, _ = nodes_with_children[0]
-        pattern = AstNode(
-            candidate_ast.opcode, AstLeaf("x_0"), AstLeaf("y_0")
-        )
+        pattern = AstNode(candidate_ast.opcode, AstLeaf("x_0"), AstLeaf("y_0"))
 
         cb = CMatchBindings()
         result = cython_match_pattern_nomut(pattern, candidate_ast, cb)
@@ -1176,8 +1188,10 @@ class TestCythonOpcodeIndexedStorageReal:
         cy_storage = COpcodeIndexedStorage()
 
         for i, (ast, _) in enumerate(nodes):
+
             class StorageRule:
                 pass
+
             rule = StorageRule()
             rule.name = f"rule_{i}"
             py_storage.add_pattern(ast, rule)

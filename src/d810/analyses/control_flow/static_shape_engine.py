@@ -7,6 +7,7 @@ contract." It runs the EXACT same ranked ``resolve_dispatcher`` over
 into a ``RecoveredMachine`` tagged ``Soundness.PATTERN``. Behavior-neutral by
 construction: same chain, same ranking, same map; only the wrapper type differs.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

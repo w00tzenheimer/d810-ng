@@ -229,7 +229,11 @@ def apply_compile_safety_rewrites(lines: list[str]) -> list[str]:
                 line = f"{lhs}= (_QWORD)({rhs_expr.strip()}"
                 pending_qword_call_cast = True
 
-        if pending_qword_call_cast and line.strip().endswith(");") and not line.strip().endswith("));"):
+        if (
+            pending_qword_call_cast
+            and line.strip().endswith(");")
+            and not line.strip().endswith("));")
+        ):
             line = line.rsplit(");", 1)[0] + "));"
             pending_qword_call_cast = False
 
@@ -269,7 +273,9 @@ def apply_compile_safety_rewrites(lines: list[str]) -> list[str]:
             ),
             line,
         )
-        line = line.replace("SetThreadContext(hThread,", "SetThreadContext(qword_7FFB208C0058,")
+        line = line.replace(
+            "SetThreadContext(hThread,", "SetThreadContext(qword_7FFB208C0058,"
+        )
         line = _SEC_COOKIE_RE.sub("__security_cookie", line)
 
         rewritten.append(line)
@@ -851,7 +857,6 @@ def build_sample_header_comment(
         deobfs_applied = []
         opt_matches = metadata.get("optimizer_matches", {})
         if opt_matches:
-
             for name, count in sorted(opt_matches.items()):
                 deobfs_applied.append(f" *   {name}: {count} matches")
 
@@ -1268,9 +1273,7 @@ def _collect_ast_cast_edits(
     return edits
 
 
-def _apply_ast_typed_cast_rewrites(
-    content: str, tu: Any, preamble_len: int
-) -> str:
+def _apply_ast_typed_cast_rewrites(content: str, tu: Any, preamble_len: int) -> str:
     """Apply AST-driven cast rewrites for typed pointer/integer mismatches."""
     edits = _collect_ast_cast_edits(content, tu, preamble_len)
     if not edits:
@@ -1278,7 +1281,9 @@ def _apply_ast_typed_cast_rewrites(
     return _apply_edits(content, edits)
 
 
-def make_compilable(c_source: str, max_rounds: int = 5, idaapi_mod: Any | None = None) -> str:
+def make_compilable(
+    c_source: str, max_rounds: int = 5, idaapi_mod: Any | None = None
+) -> str:
     """Parse C source with clang and apply fixits until it compiles or max_rounds."""
     index = _get_clang_index(idaapi_mod)
 
@@ -1287,7 +1292,8 @@ def make_compilable(c_source: str, max_rounds: int = 5, idaapi_mod: Any | None =
     full_content = EXPORT_CLANG_PREAMBLE + "\n" + parse_content
 
     args = [
-        "-target", "x86_64-pc-windows-msvc",
+        "-target",
+        "x86_64-pc-windows-msvc",
         "-fms-extensions",
         "-fms-compatibility",
         "-w",
@@ -1333,7 +1339,9 @@ def make_compilable(c_source: str, max_rounds: int = 5, idaapi_mod: Any | None =
             if result.strip().startswith("/*"):
                 idx = result.find("*/")
                 if idx >= 0:
-                    result = result[: idx + 3] + "\n\n" + insert + result[idx + 3 :].lstrip()
+                    result = (
+                        result[: idx + 3] + "\n\n" + insert + result[idx + 3 :].lstrip()
+                    )
                 else:
                     result = insert + result
             else:

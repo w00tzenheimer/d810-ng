@@ -195,7 +195,9 @@ def plan_reconstruction_emission(
             ),
         )
 
-    via_pred = int(ordered_path[first_shared_index - 1]) if first_shared_index > 0 else None
+    via_pred = (
+        int(ordered_path[first_shared_index - 1]) if first_shared_index > 0 else None
+    )
     shared_block = int(ordered_path[first_shared_index])
     shared_snapshot = flow_graph.get_block(shared_block)
     if (

@@ -1,4 +1,5 @@
 """Tests for portable-FlowGraph dominator computation."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.dominator import compute_dominators, dominates

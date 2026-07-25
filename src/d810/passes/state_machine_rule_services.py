@@ -1,4 +1,5 @@
 """Generic rule-host proxy for state-machine family adapters."""
+
 from __future__ import annotations
 
 __all__ = ["RuleHostProxy", "StateMachineRuleServices"]

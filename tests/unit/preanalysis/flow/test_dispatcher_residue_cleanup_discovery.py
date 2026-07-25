@@ -82,7 +82,9 @@ def test_unreachable_soft_kill_discovery_preserves_reconstruction_live() -> None
     assert facts.protected == frozenset({4, 5, 6})
     assert facts.cleanup_candidates == frozenset({2, 3})
     assert [block.block_serial for block in facts.blocks] == [2]
-    assert [(r.block_serial, r.old_target, r.new_target) for r in facts.forward_redirects] == [
+    assert [
+        (r.block_serial, r.old_target, r.new_target) for r in facts.forward_redirects
+    ] == [
         (2, 3, 7),
     ]
 

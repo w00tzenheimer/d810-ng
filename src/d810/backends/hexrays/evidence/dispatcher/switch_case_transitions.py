@@ -1,4 +1,5 @@
 """Live switch-case transition adapter for switch-table dispatchers."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
@@ -83,7 +84,9 @@ def collect_switch_case_transition_facts_from_mba(
                 int(serial) for serial in getattr(path, "ordered_path", ()) or ()
             )
             if final_state is None:
-                returns.append(_return_value_for_path(mba, getattr(path, "ordered_path", ()) or ()))
+                returns.append(
+                    _return_value_for_path(mba, getattr(path, "ordered_path", ()) or ())
+                )
                 return_exits.append(None if exit_block is None else int(exit_block))
                 continue
             state_value = int(final_state) & 0xFFFFFFFFFFFFFFFF
@@ -103,7 +106,9 @@ def collect_switch_case_transition_facts_from_mba(
                 predicate_kind="live_mba_branch" if len(next_states) == 2 else None,
                 source_predicate=_has_live_conditional_branch(
                     mba,
-                    tuple(getattr(path, "ordered_path", ()) or () for path in path_results),
+                    tuple(
+                        getattr(path, "ordered_path", ()) or () for path in path_results
+                    ),
                     dispatch_map.dispatcher_blocks,
                 ),
                 payload={"runtime_source": "live_mba"},
@@ -125,7 +130,9 @@ def _unresolved_fact(
     reason: str,
     profile_name: str,
 ) -> SwitchCaseTransitionFact:
-    from d810.analyses.control_flow.switch_case_transition_analysis import _unresolved_fact as _pure
+    from d810.analyses.control_flow.switch_case_transition_analysis import (
+        _unresolved_fact as _pure,
+    )
 
     return _pure(
         dispatch_map=dispatch_map,
@@ -160,7 +167,9 @@ def _return_value_for_path(mba: object, ordered_path: tuple[int, ...]) -> int | 
         m_ret = ida_hexrays.m_ret
     except Exception:
         m_ret = None
-    from d810.backends.hexrays.evidence.condition_chain_analysis import _get_mop_const_value
+    from d810.backends.hexrays.evidence.condition_chain_analysis import (
+        _get_mop_const_value,
+    )
 
     for serial in reversed(tuple(int(value) for value in ordered_path)):
         blk = _get_block(mba, serial)
@@ -198,7 +207,9 @@ def _return_value_from_frontier_writer(
     except Exception:
         return None
 
-    from d810.backends.hexrays.evidence.condition_chain_analysis import _get_mop_const_value
+    from d810.backends.hexrays.evidence.condition_chain_analysis import (
+        _get_mop_const_value,
+    )
     from d810.backends.hexrays.evidence.dispatcher.return_frontier_carrier_audit import (
         _walk_to_return_writer,
     )

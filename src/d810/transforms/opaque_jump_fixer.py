@@ -25,6 +25,7 @@ Example:
     >>> mods[0].goto_target
     20
 """
+
 from __future__ import annotations
 
 from d810.transforms._base import FlowGraphTransform
@@ -81,6 +82,7 @@ class OpaqueJumpFixerPass(FlowGraphTransform):
         >>> mods[0].goto_target
         10
     """
+
     name = "opaque_jump_fixer"
     tags = frozenset({"deobfuscation", "jump"})
 

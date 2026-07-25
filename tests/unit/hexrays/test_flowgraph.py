@@ -2,6 +2,7 @@
 
 Tests the frozen dataclass IR for CFG snapshots without requiring IDA runtime.
 """
+
 from __future__ import annotations
 
 import logging
@@ -92,7 +93,7 @@ class TestBlockSnapshot:
             preds=(),
             flags=0,
             start_ea=0x1000,
-            insn_snapshots=()
+            insn_snapshots=(),
         )
         assert blk.serial == 0
         assert blk.block_type == 3
@@ -129,7 +130,7 @@ class TestBlockSnapshot:
             preds=(0,),
             flags=0,
             start_ea=0x2000,
-            insn_snapshots=()
+            insn_snapshots=(),
         )
         assert blk.nsucc == 2
         assert blk.npred == 1
@@ -143,7 +144,7 @@ class TestBlockSnapshot:
             preds=(3, 4),
             flags=0x10,
             start_ea=0x5000,
-            insn_snapshots=()
+            insn_snapshots=(),
         )
         r = repr(blk)
         assert "BlockSnapshot" in r
@@ -156,8 +157,13 @@ class TestBlockSnapshot:
     def test_immutability(self) -> None:
         """Test that BlockSnapshot is frozen (immutable)."""
         blk = BlockSnapshot(
-            serial=0, block_type=1, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=1,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         with pytest.raises(Exception):
             blk.serial = 99  # type: ignore
@@ -167,24 +173,39 @@ class TestBlockSnapshot:
         """Test that negative serial raises ValueError."""
         with pytest.raises(ValueError, match="serial must be non-negative"):
             BlockSnapshot(
-                serial=serial, block_type=1, succs=(), preds=(),
-                flags=0, start_ea=0x1000, insn_snapshots=()
+                serial=serial,
+                block_type=1,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(),
             )
 
     def test_negative_block_type_validation(self) -> None:
         """Test that a negative block_type still needs a semantic kind."""
         with pytest.raises(ValueError, match="block_type must be non-negative"):
             BlockSnapshot(
-                serial=0, block_type=-1, succs=(), preds=(),
-                flags=0, start_ea=0x1000, insn_snapshots=()
+                serial=0,
+                block_type=-1,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(),
             )
 
     @pytest.mark.parametrize("block_type", [7, 100])
     def test_raw_block_type_values_are_diagnostic(self, block_type: int) -> None:
         """Backend raw block type values are diagnostic, not Hex-Rays-limited."""
         blk = BlockSnapshot(
-            serial=0, block_type=block_type, succs=(), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=block_type,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         assert blk.block_type == block_type
         assert blk.raw_block_type == block_type
@@ -193,16 +214,26 @@ class TestBlockSnapshot:
         """Test that negative start_ea raises ValueError."""
         with pytest.raises(ValueError, match="start_ea must be non-negative"):
             BlockSnapshot(
-                serial=0, block_type=1, succs=(), preds=(),
-                flags=0, start_ea=-1, insn_snapshots=()
+                serial=0,
+                block_type=1,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=-1,
+                insn_snapshots=(),
             )
 
     @pytest.mark.parametrize("block_type", [0, 1, 2, 3, 4, 5, 6])
     def test_valid_block_types(self, block_type: int) -> None:
         """Test all valid block types (0-6)."""
         blk = BlockSnapshot(
-            serial=0, block_type=block_type, succs=(), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=block_type,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         assert blk.block_type == block_type
 
@@ -210,24 +241,39 @@ class TestBlockSnapshot:
         """Test that non-tuple succs raises TypeError."""
         with pytest.raises(TypeError, match="succs must be tuple"):
             BlockSnapshot(
-                serial=0, block_type=1, succs=[1],  # type: ignore
-                preds=(), flags=0, start_ea=0x1000, insn_snapshots=()
+                serial=0,
+                block_type=1,
+                succs=[1],  # type: ignore
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(),
             )
 
     def test_non_tuple_preds_validation(self) -> None:
         """Test that non-tuple preds raises TypeError."""
         with pytest.raises(TypeError, match="preds must be tuple"):
             BlockSnapshot(
-                serial=0, block_type=1, succs=(), preds=[0],  # type: ignore
-                flags=0, start_ea=0x1000, insn_snapshots=()
+                serial=0,
+                block_type=1,
+                succs=(),
+                preds=[0],  # type: ignore
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(),
             )
 
     def test_non_tuple_insn_snapshots_validation(self) -> None:
         """Test that non-tuple insn_snapshots raises TypeError."""
         with pytest.raises(TypeError, match="insn_snapshots must be tuple"):
             BlockSnapshot(
-                serial=0, block_type=1, succs=(), preds=(),
-                flags=0, start_ea=0x1000, insn_snapshots=[]  # type: ignore
+                serial=0,
+                block_type=1,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=[],  # type: ignore
             )
 
 
@@ -245,8 +291,13 @@ class TestPortableCFG:
     def test_single_block_cfg(self) -> None:
         """Test single-block CFG."""
         blk = BlockSnapshot(
-            serial=0, block_type=0, succs=(), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=0,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 1
@@ -257,9 +308,21 @@ class TestPortableCFG:
     def test_linear_cfg(self) -> None:
         """Test linear 3-block CFG (0 -> 1 -> 2)."""
         blocks = {
-            0: BlockSnapshot(0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 3, succs=(2,), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
-            2: BlockSnapshot(2, 2, succs=(), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()),
+            0: BlockSnapshot(
+                0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()
+            ),
+            1: BlockSnapshot(
+                1,
+                3,
+                succs=(2,),
+                preds=(0,),
+                flags=0,
+                start_ea=0x1100,
+                insn_snapshots=(),
+            ),
+            2: BlockSnapshot(
+                2, 2, succs=(), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()
+            ),
         }
         cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 3
@@ -273,10 +336,42 @@ class TestPortableCFG:
     def test_diamond_cfg(self) -> None:
         """Test diamond CFG (0 -> 1,2 -> 3)."""
         blocks = {
-            0: BlockSnapshot(0, 4, succs=(1, 2), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 3, succs=(3,), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
-            2: BlockSnapshot(2, 3, succs=(3,), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=()),
-            3: BlockSnapshot(3, 2, succs=(), preds=(1, 2), flags=0, start_ea=0x1300, insn_snapshots=()),
+            0: BlockSnapshot(
+                0,
+                4,
+                succs=(1, 2),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(),
+            ),
+            1: BlockSnapshot(
+                1,
+                3,
+                succs=(3,),
+                preds=(0,),
+                flags=0,
+                start_ea=0x1100,
+                insn_snapshots=(),
+            ),
+            2: BlockSnapshot(
+                2,
+                3,
+                succs=(3,),
+                preds=(0,),
+                flags=0,
+                start_ea=0x1200,
+                insn_snapshots=(),
+            ),
+            3: BlockSnapshot(
+                3,
+                2,
+                succs=(),
+                preds=(1, 2),
+                flags=0,
+                start_ea=0x1300,
+                insn_snapshots=(),
+            ),
         }
         cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 4
@@ -288,11 +383,39 @@ class TestPortableCFG:
     def test_complex_cfg_with_backedge(self) -> None:
         """Test complex 5-block CFG with loop (backedge 4 -> 1)."""
         blocks = {
-            0: BlockSnapshot(0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 4, succs=(2, 3), preds=(0, 4), flags=0, start_ea=0x1100, insn_snapshots=()),
-            2: BlockSnapshot(2, 3, succs=(4,), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()),
-            3: BlockSnapshot(3, 2, succs=(), preds=(1,), flags=0, start_ea=0x1300, insn_snapshots=()),
-            4: BlockSnapshot(4, 3, succs=(1,), preds=(2,), flags=0, start_ea=0x1400, insn_snapshots=()),
+            0: BlockSnapshot(
+                0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()
+            ),
+            1: BlockSnapshot(
+                1,
+                4,
+                succs=(2, 3),
+                preds=(0, 4),
+                flags=0,
+                start_ea=0x1100,
+                insn_snapshots=(),
+            ),
+            2: BlockSnapshot(
+                2,
+                3,
+                succs=(4,),
+                preds=(1,),
+                flags=0,
+                start_ea=0x1200,
+                insn_snapshots=(),
+            ),
+            3: BlockSnapshot(
+                3, 2, succs=(), preds=(1,), flags=0, start_ea=0x1300, insn_snapshots=()
+            ),
+            4: BlockSnapshot(
+                4,
+                3,
+                succs=(1,),
+                preds=(2,),
+                flags=0,
+                start_ea=0x1400,
+                insn_snapshots=(),
+            ),
         }
         cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
         assert cfg.num_blocks == 5
@@ -320,9 +443,21 @@ class TestPortableCFG:
     def test_as_adjacency_dict(self) -> None:
         """Test as_adjacency_dict conversion."""
         blocks = {
-            0: BlockSnapshot(0, 4, succs=(1, 2), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 2, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
-            2: BlockSnapshot(2, 2, succs=(), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=()),
+            0: BlockSnapshot(
+                0,
+                4,
+                succs=(1, 2),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(),
+            ),
+            1: BlockSnapshot(
+                1, 2, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()
+            ),
+            2: BlockSnapshot(
+                2, 2, succs=(), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=()
+            ),
         }
         cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
         adj = cfg.as_adjacency_dict()
@@ -334,8 +469,12 @@ class TestPortableCFG:
     def test_repr(self) -> None:
         """Test __repr__ output format."""
         blocks = {
-            0: BlockSnapshot(0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 2, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
+            0: BlockSnapshot(
+                0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()
+            ),
+            1: BlockSnapshot(
+                1, 2, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()
+            ),
         }
         cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0xDEADBEEF)
         r = repr(cfg)
@@ -357,13 +496,17 @@ class TestPortableCFG:
 
     def test_invalid_entry_serial_validation(self) -> None:
         """Test that non-existent entry_serial raises ValueError."""
-        blk = BlockSnapshot(0, 0, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
+        blk = BlockSnapshot(
+            0, 0, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()
+        )
         with pytest.raises(ValueError, match="entry_serial 99 not in blocks"):
             FlowGraph(blocks={0: blk}, entry_serial=99, func_ea=0x1000)
 
     def test_dangling_successor_warning(self, caplog) -> None:
         """Test that dangling successor references log warnings."""
-        blk = BlockSnapshot(0, 3, succs=(99,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
+        blk = BlockSnapshot(
+            0, 3, succs=(99,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()
+        )
         with caplog.at_level(logging.WARNING):
             cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         assert "non-existent successor 99" in caplog.text
@@ -371,7 +514,9 @@ class TestPortableCFG:
 
     def test_dangling_predecessor_warning(self, caplog) -> None:
         """Test that dangling predecessor references log warnings."""
-        blk = BlockSnapshot(0, 0, succs=(), preds=(99,), flags=0, start_ea=0x1000, insn_snapshots=())
+        blk = BlockSnapshot(
+            0, 0, succs=(), preds=(99,), flags=0, start_ea=0x1000, insn_snapshots=()
+        )
         with caplog.at_level(logging.WARNING):
             cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         assert "non-existent predecessor 99" in caplog.text
@@ -386,7 +531,9 @@ class TestPortableCFG:
 
     def test_equality(self) -> None:
         """Test equality comparison."""
-        blk = BlockSnapshot(0, 0, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
+        blk = BlockSnapshot(
+            0, 0, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()
+        )
         cfg1 = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         cfg2 = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         cfg3 = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x2000)
@@ -395,14 +542,24 @@ class TestPortableCFG:
 
     def test_blocks_immutable(self) -> None:
         """FlowGraph.blocks should not allow mutation after construction."""
-        blk = BlockSnapshot(serial=0, block_type=2, succs=(), preds=(), flags=0, start_ea=0x1000, insn_snapshots=())
+        blk = BlockSnapshot(
+            serial=0,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
+        )
         cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         with pytest.raises(TypeError):
             cfg.blocks[99] = blk  # type: ignore
 
     def test_metadata_immutable(self) -> None:
         """FlowGraph.metadata should not allow mutation after construction."""
-        cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000, metadata={"key": "value"})
+        cfg = FlowGraph(
+            blocks={}, entry_serial=0, func_ea=0x1000, metadata={"key": "value"}
+        )
         with pytest.raises(TypeError):
             cfg.metadata["new_key"] = "new_value"  # type: ignore
 
@@ -425,10 +582,42 @@ class TestPortableCFGIntegration:
         insn3 = InsnSnapshot(opcode=0x40, ea=0x1300, operands=())
 
         blocks = {
-            0: BlockSnapshot(0, 4, succs=(1, 2), preds=(), flags=0, start_ea=0x1000, insn_snapshots=(insn0,)),
-            1: BlockSnapshot(1, 3, succs=(3,), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=(insn1,)),
-            2: BlockSnapshot(2, 3, succs=(3,), preds=(0,), flags=0, start_ea=0x1200, insn_snapshots=(insn2,)),
-            3: BlockSnapshot(3, 2, succs=(), preds=(1, 2), flags=0, start_ea=0x1300, insn_snapshots=(insn3,)),
+            0: BlockSnapshot(
+                0,
+                4,
+                succs=(1, 2),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(insn0,),
+            ),
+            1: BlockSnapshot(
+                1,
+                3,
+                succs=(3,),
+                preds=(0,),
+                flags=0,
+                start_ea=0x1100,
+                insn_snapshots=(insn1,),
+            ),
+            2: BlockSnapshot(
+                2,
+                3,
+                succs=(3,),
+                preds=(0,),
+                flags=0,
+                start_ea=0x1200,
+                insn_snapshots=(insn2,),
+            ),
+            3: BlockSnapshot(
+                3,
+                2,
+                succs=(),
+                preds=(1, 2),
+                flags=0,
+                start_ea=0x1300,
+                insn_snapshots=(insn3,),
+            ),
         }
         cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
 
@@ -452,10 +641,30 @@ class TestPortableCFGIntegration:
         """Test loop with proper backedge tracking."""
         # Simple loop: 0 -> 1 -> 2 -> 1, 2 -> 3
         blocks = {
-            0: BlockSnapshot(0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 3, succs=(2,), preds=(0, 2), flags=0, start_ea=0x1100, insn_snapshots=()),
-            2: BlockSnapshot(2, 4, succs=(1, 3), preds=(1,), flags=0, start_ea=0x1200, insn_snapshots=()),
-            3: BlockSnapshot(3, 2, succs=(), preds=(2,), flags=0, start_ea=0x1300, insn_snapshots=()),
+            0: BlockSnapshot(
+                0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()
+            ),
+            1: BlockSnapshot(
+                1,
+                3,
+                succs=(2,),
+                preds=(0, 2),
+                flags=0,
+                start_ea=0x1100,
+                insn_snapshots=(),
+            ),
+            2: BlockSnapshot(
+                2,
+                4,
+                succs=(1, 3),
+                preds=(1,),
+                flags=0,
+                start_ea=0x1200,
+                insn_snapshots=(),
+            ),
+            3: BlockSnapshot(
+                3, 2, succs=(), preds=(2,), flags=0, start_ea=0x1300, insn_snapshots=()
+            ),
         }
         cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
 
@@ -473,9 +682,21 @@ class TestPortableCFGIntegration:
     def test_multi_entry_warning(self, caplog) -> None:
         """Test CFG with unreachable blocks (partial snapshot scenario)."""
         blocks = {
-            0: BlockSnapshot(0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()),
-            1: BlockSnapshot(1, 2, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()),
-            99: BlockSnapshot(99, 2, succs=(), preds=(88,), flags=0, start_ea=0x9900, insn_snapshots=()),
+            0: BlockSnapshot(
+                0, 3, succs=(1,), preds=(), flags=0, start_ea=0x1000, insn_snapshots=()
+            ),
+            1: BlockSnapshot(
+                1, 2, succs=(), preds=(0,), flags=0, start_ea=0x1100, insn_snapshots=()
+            ),
+            99: BlockSnapshot(
+                99,
+                2,
+                succs=(),
+                preds=(88,),
+                flags=0,
+                start_ea=0x9900,
+                insn_snapshots=(),
+            ),
         }
         with caplog.at_level(logging.WARNING):
             cfg = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)

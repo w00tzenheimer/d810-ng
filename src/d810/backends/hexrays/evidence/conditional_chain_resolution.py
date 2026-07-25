@@ -324,7 +324,8 @@ def collect_conditional_fork_resolution_candidates(
                 (
                     (int(from_state), int(to_state))
                     for transition in group_transitions
-                    if (from_state := getattr(transition, "from_state", None)) is not None
+                    if (from_state := getattr(transition, "from_state", None))
+                    is not None
                     and (to_state := getattr(transition, "to_state", None)) is not None
                 )
             )

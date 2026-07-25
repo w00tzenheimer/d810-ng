@@ -29,6 +29,7 @@ the conservative manager moved-symbol map. Example shape:
   "public_api_allowlist": ["D810State", "D810Manager", "d810_hooks_suppressed"]
 }
 """
+
 from __future__ import annotations
 
 import argparse
@@ -106,9 +107,8 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
             nested = dict(merged[key])
             for nested_key, nested_value in value.items():
-                if (
-                    isinstance(nested_value, dict)
-                    and isinstance(nested.get(nested_key), dict)
+                if isinstance(nested_value, dict) and isinstance(
+                    nested.get(nested_key), dict
                 ):
                     sub = dict(nested[nested_key])
                     sub.update(nested_value)
@@ -134,8 +134,7 @@ def load_manifest(
         raw = _deep_merge(raw, json.loads(path.read_text(encoding="utf-8")))
 
     module_renames = {
-        str(old): str(new)
-        for old, new in dict(raw.get("module_renames", {})).items()
+        str(old): str(new) for old, new in dict(raw.get("module_renames", {})).items()
     }
     symbol_imports = {
         str(module): {str(sym): str(dest) for sym, dest in dict(symbols).items()}
@@ -166,7 +165,9 @@ def load_manifest(
 
 
 def _ordered_module_renames(manifest: Manifest) -> list[tuple[str, str]]:
-    return sorted(manifest.module_renames.items(), key=lambda item: len(item[0]), reverse=True)
+    return sorted(
+        manifest.module_renames.items(), key=lambda item: len(item[0]), reverse=True
+    )
 
 
 def _configured_destinations(manifest: Manifest) -> set[str]:
@@ -183,9 +184,10 @@ def _destination_exists(root: Path, dotted: str) -> bool:
     if not parts or parts[0] != "d810":
         return False
     module_path = root / "src" / Path(*parts)
-    return module_path.with_suffix(".py").is_file() or (
-        module_path / "__init__.py"
-    ).is_file()
+    return (
+        module_path.with_suffix(".py").is_file()
+        or (module_path / "__init__.py").is_file()
+    )
 
 
 def missing_destinations(root: Path, manifest: Manifest) -> list[str]:
@@ -199,7 +201,7 @@ def missing_destinations(root: Path, manifest: Manifest) -> list[str]:
 def _rewrite_dotted_name(name: str, manifest: Manifest) -> str:
     for old, new in _ordered_module_renames(manifest):
         if name == old or name.startswith(old + "."):
-            return new + name[len(old):]
+            return new + name[len(old) :]
     return name
 
 
@@ -464,10 +466,7 @@ def collect_reference_hits(
     *,
     report_preserved_public_api: bool,
 ) -> list[ReferenceHit]:
-    module_patterns = {
-        old: _dotted_pattern(old)
-        for old in manifest.module_renames
-    }
+    module_patterns = {old: _dotted_pattern(old) for old in manifest.module_renames}
     import_symbol_patterns = {
         module: re.compile(
             r"\bfrom\s+"
@@ -486,7 +485,9 @@ def collect_reference_hits(
     hits: list[ReferenceHit] = []
     for path in iter_python_files(root, roots):
         rel = path.relative_to(root)
-        for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for line_no, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), 1
+        ):
             stripped = line.strip()
             for old, pattern in module_patterns.items():
                 if pattern.search(line):
@@ -577,8 +578,7 @@ def run_selftest() -> int:
     )
     src = "from d810.manager import Kept, Moved as Alias\n"
     expected = (
-        "from d810.manager import Kept\n"
-        "from d810.manager.moved import Moved as Alias\n"
+        "from d810.manager import Kept\nfrom d810.manager.moved import Moved as Alias\n"
     )
     got = rewrite_text(src, split_manifest, rewrite_text_refs=False).text
     good = got == expected
@@ -597,10 +597,9 @@ def run_selftest() -> int:
         report_manifest,
         report_preserved_public_api=False,
     )
-    good = (
-        "Moved" in quiet_symbols.get("d810.manager", set())
-        and "D810State" not in quiet_symbols.get("d810.manager", set())
-    )
+    good = "Moved" in quiet_symbols.get(
+        "d810.manager", set()
+    ) and "D810State" not in quiet_symbols.get("d810.manager", set())
     ok &= good
     print(f"[{'OK' if good else 'FAIL'}] preserved public API hidden by default")
 
@@ -733,7 +732,9 @@ def main() -> int:
     apply = bool(args.apply)
 
     if args.refresh_manager_reexports:
-        invalid = sorted(set(manifest.manager_reexports) - manifest.public_api_allowlist)
+        invalid = sorted(
+            set(manifest.manager_reexports) - manifest.public_api_allowlist
+        )
         if invalid:
             print(
                 "FATAL: manager_reexports contains non-allowlisted symbols: "
@@ -773,7 +774,11 @@ def main() -> int:
             return rc
 
     mode = "applied" if apply else "dry-run"
-    print(f"\n{mode}: {changed} file(s) would change" if not apply else f"\n{mode}: {changed} file(s) changed")
+    print(
+        f"\n{mode}: {changed} file(s) would change"
+        if not apply
+        else f"\n{mode}: {changed} file(s) changed"
+    )
     if parse_failed:
         print(f"parse fallback/skips: {parse_failed} file(s)")
 

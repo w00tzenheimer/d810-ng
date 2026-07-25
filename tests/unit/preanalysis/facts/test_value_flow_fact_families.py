@@ -1,4 +1,5 @@
 """Tests for concrete value-flow fact families."""
+
 from __future__ import annotations
 
 import pytest
@@ -89,14 +90,23 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
         *project_value_flow_facts((hodur_byte_store,)),
         *project_ollvm_value_flow_evidence((ollvm_output_store,)),
     )
-    observable = [fact for fact in projected if fact.kind == OBSERVABLE_MEMORY_DEF_FACT_TYPE]
+    observable = [
+        fact for fact in projected if fact.kind == OBSERVABLE_MEMORY_DEF_FACT_TYPE
+    ]
 
     assert len(observable) == 2
-    assert {
-        fact.payload["producer_kinds"][0] for fact in observable
-    } == {"TerminalByteEmitterFact", "OllvmValueFlowEvidence"}
-    assert all(production_value_flow_fact(fact, OBSERVABLE_MEMORY_DEF_FACT_TYPE) for fact in observable)
-    assert all(fact.payload["lifecycle_status"] == LIFECYCLE_PRODUCTION_PROVEN for fact in observable)
+    assert {fact.payload["producer_kinds"][0] for fact in observable} == {
+        "TerminalByteEmitterFact",
+        "OllvmValueFlowEvidence",
+    }
+    assert all(
+        production_value_flow_fact(fact, OBSERVABLE_MEMORY_DEF_FACT_TYPE)
+        for fact in observable
+    )
+    assert all(
+        fact.payload["lifecycle_status"] == LIFECYCLE_PRODUCTION_PROVEN
+        for fact in observable
+    )
     assert "capabilities" not in observable[0].payload
 
 
@@ -127,7 +137,11 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "upstream_writer_block_serial": 17,
                 "upstream_writer_insn_index": 2,
             },
-            {MATERIALIZATION_POINT_FACT_TYPE, MEMORY_USE_FACT_TYPE, RETURN_VALUE_FACT_TYPE},
+            {
+                MATERIALIZATION_POINT_FACT_TYPE,
+                MEMORY_USE_FACT_TYPE,
+                RETURN_VALUE_FACT_TYPE,
+            },
         ),
         (
             "ReturnFrontierFact",
@@ -146,7 +160,11 @@ def test_hodur_and_ollvm_emit_same_observable_store_fact_family() -> None:
                 "byte_index": 2,
                 "insn_index": 3,
             },
-            {OBSERVABLE_MEMORY_DEF_FACT_TYPE, POINTS_TO_FACT_TYPE, OBSERVABLE_OUTPUT_FACT_TYPE},
+            {
+                OBSERVABLE_MEMORY_DEF_FACT_TYPE,
+                POINTS_TO_FACT_TYPE,
+                OBSERVABLE_OUTPUT_FACT_TYPE,
+            },
         ),
         (
             "ByteEmitCorridorFact",
@@ -202,7 +220,9 @@ def test_projects_existing_source_fact_families_to_generic_families(
         assert "capabilities" not in projected_fact.payload
 
 
-def test_hodur_return_and_byte_evidence_project_to_standard_value_flow_families() -> None:
+def test_hodur_return_and_byte_evidence_project_to_standard_value_flow_families() -> (
+    None
+):
     """Hodur-backed producers already supply MemoryUse/Phi/PointsTo/ReturnValue."""
 
     return_slot = _fact(
@@ -302,17 +322,43 @@ def test_exact_arg_and_local_store_candidates_emit_two_store_families() -> None:
     assert OBSERVABLE_MEMORY_DEF_FACT_TYPE in by_kind
     assert SCALAR_PROMOTION_FACT_TYPE in by_kind
     assert OBSERVABLE_OUTPUT_FACT_TYPE in by_kind
-    assert production_value_flow_fact(by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE], OBSERVABLE_MEMORY_DEF_FACT_TYPE)
-    assert production_value_flow_fact(by_kind[SCALAR_PROMOTION_FACT_TYPE], SCALAR_PROMOTION_FACT_TYPE)
-    assert production_value_flow_fact(by_kind[OBSERVABLE_OUTPUT_FACT_TYPE], OBSERVABLE_OUTPUT_FACT_TYPE)
-    assert by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["source_identity"]["source_ea_hex"] == "0x000000018000f00d"
+    assert production_value_flow_fact(
+        by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE], OBSERVABLE_MEMORY_DEF_FACT_TYPE
+    )
+    assert production_value_flow_fact(
+        by_kind[SCALAR_PROMOTION_FACT_TYPE], SCALAR_PROMOTION_FACT_TYPE
+    )
+    assert production_value_flow_fact(
+        by_kind[OBSERVABLE_OUTPUT_FACT_TYPE], OBSERVABLE_OUTPUT_FACT_TYPE
+    )
+    assert (
+        by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["source_identity"][
+            "source_ea_hex"
+        ]
+        == "0x000000018000f00d"
+    )
     assert by_kind[SCALAR_PROMOTION_FACT_TYPE].payload["details"]["proof_family"] == (
         "observable_output_store_carrier_promotion"
     )
-    assert by_kind[OBSERVABLE_OUTPUT_FACT_TYPE].payload["observable_effect"] == "output_store"
-    assert by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["anchor_locator"]["requires_live_revalidation"] is True
-    assert by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["anchor_locator"]["instruction_text_sha1"]
-    assert by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["storage_overlap_proof"]["partial_overlap"] is False
+    assert (
+        by_kind[OBSERVABLE_OUTPUT_FACT_TYPE].payload["observable_effect"]
+        == "output_store"
+    )
+    assert (
+        by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["anchor_locator"][
+            "requires_live_revalidation"
+        ]
+        is True
+    )
+    assert by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["anchor_locator"][
+        "instruction_text_sha1"
+    ]
+    assert (
+        by_kind[OBSERVABLE_MEMORY_DEF_FACT_TYPE].payload["storage_overlap_proof"][
+            "partial_overlap"
+        ]
+        is False
+    )
 
 
 @pytest.mark.parametrize(
@@ -388,11 +434,16 @@ def test_ollvm_alias_expression_loop_and_store_proofs_emit_concrete_families() -
         source_ea=0x18000F300,
     )
 
-    kinds = {fact.kind for fact in project_ollvm_value_flow_evidence((
-        accumulator,
-        loop_index,
-        indirect_store,
-    ))}
+    kinds = {
+        fact.kind
+        for fact in project_ollvm_value_flow_evidence(
+            (
+                accumulator,
+                loop_index,
+                indirect_store,
+            )
+        )
+    }
 
     assert SYMBOLIC_EXPRESSION_FACT_TYPE in kinds
     assert SCALAR_REPLACEMENT_FACT_TYPE in kinds
@@ -519,8 +570,7 @@ def test_accumulator_scalarization_authority_is_named_by_proof_family() -> None:
 
     projected = project_ollvm_value_flow_evidence((accumulator,))
     scalarization = [
-        fact for fact in projected
-        if fact.kind == SCALAR_REPLACEMENT_FACT_TYPE
+        fact for fact in projected if fact.kind == SCALAR_REPLACEMENT_FACT_TYPE
     ]
 
     assert len(scalarization) == 1

@@ -25,6 +25,7 @@ llr-7ouc, and memory ``lattice_meet_vs_confluence_convention``.
 
 Portable: pure delegation to the two integer lattices -- no IDA, no z3.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

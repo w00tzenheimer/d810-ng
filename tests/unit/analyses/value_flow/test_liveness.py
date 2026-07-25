@@ -5,6 +5,7 @@ state variable is dead at the aligned terminal (so NOP-ing its entry-default
 write is sound) while it is live on the byte-processing path. Under the engine's
 reversed edge relation, ``out_states[node]`` is the block's live-IN.
 """
+
 from __future__ import annotations
 
 from d810.analyses.data_flow.configuration import Direction, FixpointConfiguration
@@ -42,7 +43,9 @@ def test_state_var_dead_at_aligned_terminal_live_on_byte_path():
     facts = {
         0: BlockLivenessFacts(defined=frozenset({"state", "v49", "ret"})),
         1: BlockLivenessFacts(used=frozenset({"ret"})),
-        2: BlockLivenessFacts(used=frozenset({"state", "ret"}), defined=frozenset({"ret"})),
+        2: BlockLivenessFacts(
+            used=frozenset({"state", "ret"}), defined=frozenset({"ret"})
+        ),
     }
     res = _run(succ, facts, exits=[1, 2], live_at_exit={"ret"})
 

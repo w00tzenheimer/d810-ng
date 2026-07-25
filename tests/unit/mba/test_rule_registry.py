@@ -22,11 +22,12 @@ class TestVerifiableRuleRegistrant:
 
     def test_verifiable_rule_has_registry(self):
         """Test that VerifiableRule has its own registry."""
-        assert hasattr(VerifiableRule, 'registry')
+        assert hasattr(VerifiableRule, "registry")
         assert isinstance(VerifiableRule.registry, dict)
 
     def test_automatic_registration(self):
         """Test that subclasses automatically register."""
+
         # Create a unique test hierarchy to avoid pollution
         class TestBase(VerifiableRule, Registrant):
             pass
@@ -44,6 +45,7 @@ class TestVerifiableRuleRegistrant:
 
     def test_iteration_over_registry(self):
         """Test iterating over registry yields classes."""
+
         # Create isolated hierarchy
         class IterTestBase(VerifiableRule, Registrant):
             pass
@@ -64,6 +66,7 @@ class TestVerifiableRuleRegistrant:
 
     def test_contains_check(self):
         """Test 'in' operator for registry values."""
+
         class ContainsTestBase(VerifiableRule, Registrant):
             pass
 
@@ -76,11 +79,12 @@ class TestVerifiableRuleRegistrant:
 
     def test_registry_len(self):
         """Test len() on registry."""
+
         class LenTestBase(VerifiableRule, Registrant):
             pass
 
         initial_count = len(LenTestBase.registry)
-        
+
         class LenRule(LenTestBase):
             PATTERN = x + y
             REPLACEMENT = y + x
@@ -90,13 +94,16 @@ class TestVerifiableRuleRegistrant:
 
     def test_hierarchical_scoping(self):
         """Test that intermediate base classes that inherit from Registrant get their own registries."""
+
         # These must ALSO inherit from Registrant to get separate registries
         class ArmRule(VerifiableRule, Registrant):
             """Base for ARM-specific rules."""
+
             pass
 
         class X86Rule(VerifiableRule, Registrant):
             """Base for X86-specific rules."""
+
             pass
 
         class ArmAdd(ArmRule):
@@ -105,7 +112,7 @@ class TestVerifiableRuleRegistrant:
             DESCRIPTION = "ARM add"
 
         class X86Add(X86Rule):
-            PATTERN = x - y  
+            PATTERN = x - y
             REPLACEMENT = x + (-y)
             DESCRIPTION = "X86 add"
 
@@ -131,6 +138,7 @@ class TestInstantiateAll:
 
     def test_instantiate_on_custom_hierarchy(self):
         """Test instantiate_all works on custom hierarchies."""
+
         class CustomBase(VerifiableRule, Registrant):
             pass
 

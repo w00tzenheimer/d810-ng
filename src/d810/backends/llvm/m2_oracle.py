@@ -1,4 +1,5 @@
 """IDA-free M2 oracle/drift DTOs and fixture-level checks."""
+
 from __future__ import annotations
 
 import re
@@ -253,9 +254,7 @@ def llvm_m2_post_d810_branchless_signature(ir_text: str) -> tuple[str, ...]:
     if state_initial_count:
         features.append(f"observable:state_sink:initial_k0:count={state_initial_count}")
     if state_terminal_count:
-        features.append(
-            f"observable:state_sink:terminal:count={state_terminal_count}"
-        )
+        features.append(f"observable:state_sink:terminal:count={state_terminal_count}")
     if return_phi_found:
         features.append("return:phi:odd_even")
     if return_constant_zero_found:
@@ -428,24 +427,22 @@ def _is_token_ref(value: str) -> bool:
 def _matches_add_token(expr: str, amount: str) -> bool:
     match = re.match(r"^add(?: \w+)* i32 (?P<lhs>%[-.\w]+), (?P<rhs>-?\d+)$", expr)
     return bool(
-        match
-        and _is_token_ref(match.group("lhs"))
-        and match.group("rhs") == amount
+        match and _is_token_ref(match.group("lhs")) and match.group("rhs") == amount
     )
 
 
 def _matches_and_token(expr: str, amount: str) -> bool:
     match = re.match(r"^and i32 (?P<lhs>%[-.\w]+), (?P<rhs>-?\d+)$", expr)
     return bool(
-        match
-        and _is_token_ref(match.group("lhs"))
-        and match.group("rhs") == amount
+        match and _is_token_ref(match.group("lhs")) and match.group("rhs") == amount
     )
 
 
 def _matches_xor_base(expr: str, base_values: set[str], amount: str) -> bool:
     match = re.match(r"^xor i32 (?P<lhs>%[-.\w]+), (?P<rhs>-?\d+)$", expr)
-    return bool(match and match.group("lhs") in base_values and match.group("rhs") == amount)
+    return bool(
+        match and match.group("lhs") in base_values and match.group("rhs") == amount
+    )
 
 
 def _low_bit_condition_predicate(expr: str, low_bit_values: set[str]) -> str:
@@ -526,11 +523,10 @@ def _matches_phi_with_labels(
         return False
     odd_labels = {value_blocks[value] for value in odd_values}
     even_labels = {value_blocks[value] for value in even_values}
-    return (
-        any(value in odd_values and label in odd_labels for value, label in incoming)
-        and any(
-            value in even_values and label in even_labels for value, label in incoming
-        )
+    return any(
+        value in odd_values and label in odd_labels for value, label in incoming
+    ) and any(
+        value in even_values and label in even_labels for value, label in incoming
     )
 
 

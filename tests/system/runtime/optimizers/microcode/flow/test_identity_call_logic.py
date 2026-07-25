@@ -3,6 +3,7 @@
 These tests cover only the pure-Python logic functions that don't depend on IDA.
 IDA-dependent functionality is tested in tests/system/runtime/test_identity_call.py.
 """
+
 import pytest
 
 from d810.optimizers.microcode.flow.identity_call import (
@@ -240,7 +241,11 @@ class TestTrampolineChainLogic:
         # Simulate the visited set logic (matches arch_utils.resolve_trampoline_chain)
         visited: set[int] = set()
         current = 0x1000
-        chain = [0x2000, 0x3000, 0x1000]  # After 0x1000, go to 0x2000, 0x3000, then cycle back
+        chain = [
+            0x2000,
+            0x3000,
+            0x1000,
+        ]  # After 0x1000, go to 0x2000, 0x3000, then cycle back
 
         max_depth = 10
         visited.add(current)  # Add initial

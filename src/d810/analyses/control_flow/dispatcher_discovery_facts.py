@@ -4,12 +4,16 @@ These facts describe reusable dispatcher evidence without naming the first
 obfuscator family that consumed it.  They are intentionally IDA-free: live
 microcode adapters must pass plain serials, state values, and dispatcher maps.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from d810.analyses.value_flow.observation import FactObservation
-from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PredecessorDispatcherTargetFact,
 )
@@ -272,7 +276,9 @@ def collect_state_dispatcher_discovery_facts(
 
     entry = int(state_dispatcher_map.dispatcher_entry_block)
     source = _source_name(state_dispatcher_map.router_kind)
-    dispatcher_blocks = tuple(sorted(int(block) for block in state_dispatcher_map.dispatcher_blocks))
+    dispatcher_blocks = tuple(
+        sorted(int(block) for block in state_dispatcher_map.dispatcher_blocks)
+    )
     handler_targets = tuple(
         sorted(
             {
@@ -292,7 +298,9 @@ def collect_state_dispatcher_discovery_facts(
             ),
             dispatcher_entry_serial=entry,
             dispatcher_blocks=dispatcher_blocks,
-            predecessor_serials=tuple(sorted(int(pred) for pred in predecessor_serials)),
+            predecessor_serials=tuple(
+                sorted(int(pred) for pred in predecessor_serials)
+            ),
             handler_targets=handler_targets,
             row_count=len(state_dispatcher_map.rows),
             dispatcher_source=source,
@@ -569,7 +577,11 @@ def _dispatcher_semantic_key(
     dispatcher_entry_serial: int | None,
     profile_name: str | None,
 ) -> str:
-    entry = "unknown" if dispatcher_entry_serial is None else str(int(dispatcher_entry_serial))
+    entry = (
+        "unknown"
+        if dispatcher_entry_serial is None
+        else str(int(dispatcher_entry_serial))
+    )
     if profile_name:
         return f"state_dispatcher:{profile_name}:entry={entry}"
     return f"state_dispatcher:entry={entry}"
@@ -581,7 +593,11 @@ def _fact_id(
     dispatcher_entry_serial: int | None,
     *suffixes: object,
 ) -> str:
-    entry = "unknown" if dispatcher_entry_serial is None else str(int(dispatcher_entry_serial))
+    entry = (
+        "unknown"
+        if dispatcher_entry_serial is None
+        else str(int(dispatcher_entry_serial))
+    )
     profile = profile_name or "generic"
     suffix = "".join(f":{item}" for item in suffixes)
     return f"{fact_type}:profile={profile}:entry={entry}{suffix}"

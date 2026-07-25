@@ -17,6 +17,7 @@ Rationale for source-level approach:
   - They run in O(ms) with zero IDA/mock dependencies.
   - Functional end-to-end coverage lives in ``tests/system/runtime/``.
 """
+
 from __future__ import annotations
 
 import pathlib

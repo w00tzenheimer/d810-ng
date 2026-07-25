@@ -1,4 +1,5 @@
 """Exceptions raised by the data-flow fixpoint machinery."""
+
 from __future__ import annotations
 
 
@@ -15,7 +16,9 @@ class FixpointDidNotConverge(Exception):
     instead.
     """
 
-    def __init__(self, iterations: int, max_iterations: int, message: str | None = None) -> None:
+    def __init__(
+        self, iterations: int, max_iterations: int, message: str | None = None
+    ) -> None:
         self.iterations = iterations
         self.max_iterations = max_iterations
         super().__init__(

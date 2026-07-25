@@ -15,6 +15,7 @@ no copies are made.
 
 Pure transform: no flow-graph access, no IDA calls.
 """
+
 from __future__ import annotations
 
 from d810.ir.state_edge_pair import state_edge_pair
@@ -23,7 +24,10 @@ from collections import defaultdict
 from dataclasses import dataclass
 from d810.core.typing import Iterable
 
-from d810.analyses.control_flow.preanalysis_dag_index import DagNodeMaps, build_dag_node_maps
+from d810.analyses.control_flow.preanalysis_dag_index import (
+    DagNodeMaps,
+    build_dag_node_maps,
+)
 from d810.analyses.control_flow.linearized_state_dag import LinearizedStateDag
 from d810.analyses.control_flow.reconstruction_discovery import (
     collect_boundary_protected_shared_blocks,
@@ -79,9 +83,7 @@ def build_reconstruction_discovery_indexes(
         pair = state_edge_pair(edge)
         if pair is None:
             continue
-        structured_region_source_blocks[pair].add(
-            int(edge.source_anchor.block_serial)
-        )
+        structured_region_source_blocks[pair].add(int(edge.source_anchor.block_serial))
 
     dispatcher_region: set[int] = set(dag.condition_chain_blocks)
     if dag.dispatcher_entry_serial >= 0:

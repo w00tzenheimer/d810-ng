@@ -1,4 +1,5 @@
 """Dependency diagnostics for BadWhileLoop copied side effects."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -7,6 +8,7 @@ from d810.evaluator.hexrays_microcode.definition_rescue_backend import (
     DefinitionRescueBackend,
     HexRaysDefinitionRescueBackend,
 )
+
 # Portable metadata pieces (key, alias, serialize/extract) live in portable-core so
 # that d810.passes / d810.transforms can consume diagnostics without importing this
 # live module's ida_hexrays-backed builder.  Re-exported below for back-compat.
@@ -49,9 +51,7 @@ def build_bad_while_loop_dependency_diagnostic(
 
     for index, ins in enumerate(raw_instructions):
         ins_uses, ins_defs = _collect_instruction_uses_defs(rule, ins)
-        missing_uses = [
-            used for used in ins_uses if not _mop_in_list(used, available)
-        ]
+        missing_uses = [used for used in ins_uses if not _mop_in_list(used, available)]
         missing_rows = [
             _build_missing_use_row(
                 mba=mba,
@@ -331,9 +331,7 @@ def _serialize_mop(mop: object, *, mba: object | None = None) -> dict[str, objec
             "stkoff": _optional_int(getattr(getattr(mop, "s", None), "off", None)),
             "size": size,
         }
-        start_ea = _optional_int(
-            getattr(getattr(mop, "s", None), "start_ea", None)
-        )
+        start_ea = _optional_int(getattr(getattr(mop, "s", None), "start_ea", None))
         if start_ea is not None:
             stack["start_ea"] = start_ea
         result["stack"] = stack

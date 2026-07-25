@@ -4,6 +4,7 @@ This module contains pure query functions that inspect control flow graph
 topology without modifying it. Split from cfg_utils.py as part of the
 CFG Pass Pipeline refactor (Phase 1).
 """
+
 from __future__ import annotations
 
 import ida_hexrays
@@ -23,7 +24,9 @@ def is_indirect_jump(blk: ida_hexrays.mblock_t) -> bool:
     return False
 
 
-def get_block_serials_by_address(mba: ida_hexrays.mbl_array_t, address: int) -> list[int]:
+def get_block_serials_by_address(
+    mba: ida_hexrays.mbl_array_t, address: int
+) -> list[int]:
     blk_serial_list = []
     for i in range(mba.qty):
         blk = mba.get_mblock(i)
@@ -32,7 +35,9 @@ def get_block_serials_by_address(mba: ida_hexrays.mbl_array_t, address: int) -> 
     return blk_serial_list
 
 
-def get_block_serials_by_address_range(mba: ida_hexrays.mbl_array_t, address: int) -> list[int]:
+def get_block_serials_by_address_range(
+    mba: ida_hexrays.mbl_array_t, address: int
+) -> list[int]:
     blk_serial_list = []
     for i in range(mba.qty):
         blk = mba.get_mblock(i)

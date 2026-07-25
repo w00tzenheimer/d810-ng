@@ -28,6 +28,7 @@ Backend-neutral: consumes a :class:`d810.ir.flowgraph.FlowGraph` snapshot and a
 ``fetch_initializer(addr, size)`` callable (the only live-IDB touch).  No IDA
 imports here.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -144,9 +145,7 @@ def _collect_block_facts(block: object) -> _BlockGlobalFacts:
     )
 
 
-def _entry_reachable(
-    serials, entry, succs_of, barrier_serials
-):
+def _entry_reachable(serials, entry, succs_of, barrier_serials):
     """Blocks reachable from ``entry`` once edges INTO any barrier are cut.
 
     The dispatcher entry is a *barrier*: a flattening loop routes every handler
@@ -316,6 +315,9 @@ def compute_initializer_stable_global_reads(
         logger.debug(
             "global_init_fold: %d initializer-stable global read site(s): %s",
             len(foldable),
-            {hex(ea): {hex(g): hex(v) for g, v in m.items()} for ea, m in foldable.items()},
+            {
+                hex(ea): {hex(g): hex(v) for g, v in m.items()}
+                for ea, m in foldable.items()
+            },
         )
     return foldable

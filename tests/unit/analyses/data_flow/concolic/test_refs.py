@@ -1,4 +1,5 @@
 """LocationRef / ValueRef portable references (ticket llr-xvkt)."""
+
 from __future__ import annotations
 
 from d810.analyses.data_flow.concolic.refs import (
@@ -17,7 +18,7 @@ def test_stack_and_reg_factories() -> None:
 
 def test_structural_equality_and_hashable() -> None:
     assert LocationRef.stack(0x10, 8) == LocationRef.stack(0x10, 8)
-    assert LocationRef.stack(0x10, 8) != LocationRef.reg(0x10, 8)   # kind differs
+    assert LocationRef.stack(0x10, 8) != LocationRef.reg(0x10, 8)  # kind differs
     assert LocationRef.stack(0x10, 8) != LocationRef.stack(0x10, 4)  # width differs
     # usable as a dict/set key (the store keys on it)
     keyed = {LocationRef.stack(0x10, 8): 1}

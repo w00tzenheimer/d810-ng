@@ -51,6 +51,7 @@ def snapshot_reconstruction_dag(
             observe_dag,
             observe_dag_local_facts,
         )
+
         snap_ref = request_capture_mba_snapshot(
             blocks=[],
             label=f"{strategy_name}_state_write_reconstruction_dag",
@@ -64,26 +65,51 @@ def snapshot_reconstruction_dag(
             dag_nodes = []
             for node in dag.nodes:
                 diagnostic_state = dag_node_diagnostic_state(node)
-                dag_nodes.append(DagNode(
-                    state=diagnostic_state,
-                    state_hex=f"0x{diagnostic_state & 0xFFFFFFFFFFFFFFFF:016x}",
-                    entry_block=int(node.entry_anchor),
-                    classification=str(node.kind.name) if hasattr(node.kind, "name") else str(node.kind),
-                    shared_suffix=_json.dumps(sorted(int(b) for b in node.shared_suffix_blocks)) if node.shared_suffix_blocks else None,
-                ))
+                dag_nodes.append(
+                    DagNode(
+                        state=diagnostic_state,
+                        state_hex=f"0x{diagnostic_state & 0xFFFFFFFFFFFFFFFF:016x}",
+                        entry_block=int(node.entry_anchor),
+                        classification=str(node.kind.name)
+                        if hasattr(node.kind, "name")
+                        else str(node.kind),
+                        shared_suffix=_json.dumps(
+                            sorted(int(b) for b in node.shared_suffix_blocks)
+                        )
+                        if node.shared_suffix_blocks
+                        else None,
+                    )
+                )
 
             dag_edges = []
             for eidx, edge in enumerate(dag.edges):
-                dag_edges.append(DagEdge(
-                    edge_id=eidx,
-                    source_state=int(edge.source_key.state_const) if edge.source_key.state_const is not None else None,
-                    target_state=int(edge.target_key.state_const) if edge.target_key is not None and edge.target_key.state_const is not None else None,
-                    edge_kind=str(edge.kind.name) if hasattr(edge.kind, "name") else str(edge.kind),
-                    source_block=int(edge.source_anchor.block_serial) if edge.source_anchor is not None else None,
-                    source_arm=edge.source_anchor.branch_arm if edge.source_anchor is not None else None,
-                    target_entry=int(edge.target_entry_anchor) if edge.target_entry_anchor is not None else None,
-                    ordered_path=_json.dumps([int(s) for s in edge.ordered_path]) if edge.ordered_path else "[]",
-                ))
+                dag_edges.append(
+                    DagEdge(
+                        edge_id=eidx,
+                        source_state=int(edge.source_key.state_const)
+                        if edge.source_key.state_const is not None
+                        else None,
+                        target_state=int(edge.target_key.state_const)
+                        if edge.target_key is not None
+                        and edge.target_key.state_const is not None
+                        else None,
+                        edge_kind=str(edge.kind.name)
+                        if hasattr(edge.kind, "name")
+                        else str(edge.kind),
+                        source_block=int(edge.source_anchor.block_serial)
+                        if edge.source_anchor is not None
+                        else None,
+                        source_arm=edge.source_anchor.branch_arm
+                        if edge.source_anchor is not None
+                        else None,
+                        target_entry=int(edge.target_entry_anchor)
+                        if edge.target_entry_anchor is not None
+                        else None,
+                        ordered_path=_json.dumps([int(s) for s in edge.ordered_path])
+                        if edge.ordered_path
+                        else "[]",
+                    )
+                )
 
             observe_dag(snap_ref, dag_nodes, dag_edges)
             observe_dag_local_facts(snap_ref, dag)
@@ -123,6 +149,7 @@ def snapshot_reconstruction_post_apply(
             observe_dag_local_facts,
             observe_modifications,
         )
+
         snap_ref = request_capture_mba_snapshot(
             blocks=[],
             label=f"{strategy_name}_state_write_reconstruction_post_apply",
@@ -136,26 +163,51 @@ def snapshot_reconstruction_post_apply(
             dag_nodes = []
             for node in dag.nodes:
                 diagnostic_state = dag_node_diagnostic_state(node)
-                dag_nodes.append(DagNode(
-                    state=diagnostic_state,
-                    state_hex=f"0x{diagnostic_state & 0xFFFFFFFFFFFFFFFF:016x}",
-                    entry_block=int(node.entry_anchor),
-                    classification=str(node.kind.name) if hasattr(node.kind, "name") else str(node.kind),
-                    shared_suffix=_json.dumps(sorted(int(b) for b in node.shared_suffix_blocks)) if node.shared_suffix_blocks else None,
-                ))
+                dag_nodes.append(
+                    DagNode(
+                        state=diagnostic_state,
+                        state_hex=f"0x{diagnostic_state & 0xFFFFFFFFFFFFFFFF:016x}",
+                        entry_block=int(node.entry_anchor),
+                        classification=str(node.kind.name)
+                        if hasattr(node.kind, "name")
+                        else str(node.kind),
+                        shared_suffix=_json.dumps(
+                            sorted(int(b) for b in node.shared_suffix_blocks)
+                        )
+                        if node.shared_suffix_blocks
+                        else None,
+                    )
+                )
 
             dag_edges = []
             for eidx, edge in enumerate(dag.edges):
-                dag_edges.append(DagEdge(
-                    edge_id=eidx,
-                    source_state=int(edge.source_key.state_const) if edge.source_key.state_const is not None else None,
-                    target_state=int(edge.target_key.state_const) if edge.target_key is not None and edge.target_key.state_const is not None else None,
-                    edge_kind=str(edge.kind.name) if hasattr(edge.kind, "name") else str(edge.kind),
-                    source_block=int(edge.source_anchor.block_serial) if edge.source_anchor is not None else None,
-                    source_arm=edge.source_anchor.branch_arm if edge.source_anchor is not None else None,
-                    target_entry=int(edge.target_entry_anchor) if edge.target_entry_anchor is not None else None,
-                    ordered_path=_json.dumps([int(s) for s in edge.ordered_path]) if edge.ordered_path else "[]",
-                ))
+                dag_edges.append(
+                    DagEdge(
+                        edge_id=eidx,
+                        source_state=int(edge.source_key.state_const)
+                        if edge.source_key.state_const is not None
+                        else None,
+                        target_state=int(edge.target_key.state_const)
+                        if edge.target_key is not None
+                        and edge.target_key.state_const is not None
+                        else None,
+                        edge_kind=str(edge.kind.name)
+                        if hasattr(edge.kind, "name")
+                        else str(edge.kind),
+                        source_block=int(edge.source_anchor.block_serial)
+                        if edge.source_anchor is not None
+                        else None,
+                        source_arm=edge.source_anchor.branch_arm
+                        if edge.source_anchor is not None
+                        else None,
+                        target_entry=int(edge.target_entry_anchor)
+                        if edge.target_entry_anchor is not None
+                        else None,
+                        ordered_path=_json.dumps([int(s) for s in edge.ordered_path])
+                        if edge.ordered_path
+                        else "[]",
+                    )
+                )
 
             observe_dag(snap_ref, dag_nodes, dag_edges)
             observe_dag_local_facts(snap_ref, dag)
@@ -177,16 +229,16 @@ def snapshot_reconstruction_post_apply(
                 # 1) source-of-edit candidates by field name
                 for src_attr in (
                     "from_serial",
-                    "src_block",          # EdgeRedirectViaPredSplit
-                    "source_block",       # RedirectGoto, RedirectBranch,
-                                          # ConvertToGoto, RemoveEdge,
-                                          # CreateConditionalRedirect,
-                                          # DuplicateBlock
-                    "source_serial",      # ReorderBlocks
-                    "pred_serial",        # InsertBlock
-                    "block_serial",       # NopInstructions, ZeroStateWrite,
-                                          # PromoteOperandToScalar
-                    "anchor_serial",      # PrivateTerminalSuffix
+                    "src_block",  # EdgeRedirectViaPredSplit
+                    "source_block",  # RedirectGoto, RedirectBranch,
+                    # ConvertToGoto, RemoveEdge,
+                    # CreateConditionalRedirect,
+                    # DuplicateBlock
+                    "source_serial",  # ReorderBlocks
+                    "pred_serial",  # InsertBlock
+                    "block_serial",  # NopInstructions, ZeroStateWrite,
+                    # PromoteOperandToScalar
+                    "anchor_serial",  # PrivateTerminalSuffix
                 ):
                     val = getattr(mod, src_attr, None)
                     if val is not None:
@@ -194,13 +246,13 @@ def snapshot_reconstruction_post_apply(
                         break
                 # 2) target-of-edit candidates by field name
                 for tgt_attr in (
-                    "new_target",         # RedirectGoto, RedirectBranch,
-                                          # EdgeRedirectViaPredSplit
-                    "goto_target",        # ConvertToGoto
-                    "conditional_target", # CreateConditionalRedirect
-                    "succ_serial",        # InsertBlock
-                    "target_block",       # DuplicateBlock
-                    "to_serial",          # RemoveEdge
+                    "new_target",  # RedirectGoto, RedirectBranch,
+                    # EdgeRedirectViaPredSplit
+                    "goto_target",  # ConvertToGoto
+                    "conditional_target",  # CreateConditionalRedirect
+                    "succ_serial",  # InsertBlock
+                    "target_block",  # DuplicateBlock
+                    "to_serial",  # RemoveEdge
                     "shared_entry_serial",  # PrivateTerminalSuffix
                 ):
                     val = getattr(mod, tgt_attr, None)
@@ -210,22 +262,24 @@ def snapshot_reconstruction_post_apply(
                 # 3) old-target candidates: explicit field, then fall through
                 #    to InsertBlock's old_target_serial alias.
                 for old_attr in (
-                    "old_target",         # EdgeRedirectViaPredSplit,
-                                          # RedirectBranch
+                    "old_target",  # EdgeRedirectViaPredSplit,
+                    # RedirectBranch
                     "old_target_serial",  # InsertBlock
                 ):
                     val = getattr(mod, old_attr, None)
                     if val is not None:
                         old_target = int(val)
                         break
-                mod_snapshots.append(Modification(
-                    mod_index=midx,
-                    mod_type=mod_type,
-                    source_block=source_block,
-                    target_block=target_block,
-                    old_target=old_target,
-                    status="emitted",
-                ))
+                mod_snapshots.append(
+                    Modification(
+                        mod_index=midx,
+                        mod_type=mod_type,
+                        source_block=source_block,
+                        target_block=target_block,
+                        old_target=old_target,
+                        status="emitted",
+                    )
+                )
 
             observe_modifications(snap_ref, mod_snapshots)
             if dag_frontier_closure_diagnostics:
@@ -256,12 +310,18 @@ def log_terminal_family_split_run(logger, *, run, mba) -> int:
                 list(probe.seed_origins),
                 probe.source_reachable,
                 probe.source_nsucc,
-                blk_label(mba, probe.arm_target) if probe.arm_target is not None else "None",
+                blk_label(mba, probe.arm_target)
+                if probe.arm_target is not None
+                else "None",
                 "projected_only" if probe.arm_target_projected_only else "base",
-                blk_label(mba, probe.family_entry) if probe.family_entry is not None else "None",
+                blk_label(mba, probe.family_entry)
+                if probe.family_entry is not None
+                else "None",
                 "projected_only" if probe.family_entry_projected_only else "base",
                 [blk_label(mba, serial) for serial in probe.path_projected_only_blocks],
-                blk_label(mba, probe.stop_block) if probe.stop_block is not None else "None",
+                blk_label(mba, probe.stop_block)
+                if probe.stop_block is not None
+                else "None",
                 probe.rejection_reason,
                 probe.path,
             )
@@ -305,9 +365,16 @@ def log_terminal_family_split_run(logger, *, run, mba) -> int:
                     if candidate_report.shared_suffix_entry is not None
                     else "None"
                 ),
-                blk_label(mba, candidate.writer_block) if candidate.writer_block is not None else "None",
-                blk_label(mba, candidate.materializer_block) if candidate.materializer_block is not None else "None",
-                [blk_label(mba, serial) for serial in candidate.materializer_chain_blocks],
+                blk_label(mba, candidate.writer_block)
+                if candidate.writer_block is not None
+                else "None",
+                blk_label(mba, candidate.materializer_block)
+                if candidate.materializer_block is not None
+                else "None",
+                [
+                    blk_label(mba, serial)
+                    for serial in candidate.materializer_chain_blocks
+                ],
                 blk_label(mba, candidate.stop_block),
                 candidate.value_family_signature,
                 candidate.path,
@@ -341,9 +408,16 @@ def log_terminal_family_split_run(logger, *, run, mba) -> int:
                 ),
                 blk_label(mba, candidate.family_entry),
                 blk_label(mba, int(suffix_serials[0])),
-                blk_label(mba, candidate.writer_block) if candidate.writer_block is not None else "None",
-                blk_label(mba, candidate.materializer_block) if candidate.materializer_block is not None else "None",
-                [blk_label(mba, serial) for serial in candidate.materializer_chain_blocks],
+                blk_label(mba, candidate.writer_block)
+                if candidate.writer_block is not None
+                else "None",
+                blk_label(mba, candidate.materializer_block)
+                if candidate.materializer_block is not None
+                else "None",
+                [
+                    blk_label(mba, serial)
+                    for serial in candidate.materializer_chain_blocks
+                ],
                 blk_label(mba, candidate.stop_block),
                 candidate.value_family_signature,
                 [hex(ea) for ea in candidate.lineage_eas],
@@ -448,12 +522,13 @@ def log_reconstruction_artifact_returns(
         )
     else:
         logger.info(
-            "RECON RETURN: NO artifact blocks found "
-            "(classifier returned empty set)",
+            "RECON RETURN: NO artifact blocks found (classifier returned empty set)",
         )
 
 
-def log_reconstruction_common_return_corridor(logger, *, common_return_corridor: set[int]) -> None:
+def log_reconstruction_common_return_corridor(
+    logger, *, common_return_corridor: set[int]
+) -> None:
     if common_return_corridor:
         logger.info(
             "RECON RETURN: common return corridor blocks: %s",
@@ -462,7 +537,10 @@ def log_reconstruction_common_return_corridor(logger, *, common_return_corridor:
 
 
 def log_reconstruction_preheader_bridge(logger, *, dag, preheader_bridge) -> None:
-    if preheader_bridge.modification is not None and preheader_bridge.resolved_target is not None:
+    if (
+        preheader_bridge.modification is not None
+        and preheader_bridge.resolved_target is not None
+    ):
         logger.info(
             "RECON BRIDGE: pre-header blk[%d] -> blk[%d]",
             dag.pre_header_serial,
@@ -519,8 +597,7 @@ def log_reconstruction_feeder_plan(logger, *, feeder_plan, fixpoint_feeder_plan)
 
     for entry in fixpoint_feeder_plan.log_entries:
         logger.debug(
-            "RECON FEEDER: fixpoint blk[%d] has no "
-            "last_write_site, skipping NOP",
+            "RECON FEEDER: fixpoint blk[%d] has no last_write_site, skipping NOP",
             entry.source_block,
         )
         logger.info(
@@ -609,7 +686,10 @@ def log_reconstruction_postprocess_result(logger, *, result, dag, mba) -> None:
     if result.initial_residual_dispatcher_preds:
         logger.info(
             "RECON DAG: preserving post-apply condition-chain cleanup because residual non-condition-chain dispatcher predecessors remain: %s",
-            [blk_label(mba, serial) for serial in result.initial_residual_dispatcher_preds],
+            [
+                blk_label(mba, serial)
+                for serial in result.initial_residual_dispatcher_preds
+            ],
         )
 
     if result.state_var_stkoff is not None:

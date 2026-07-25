@@ -76,7 +76,9 @@ class CaseTransition:
     def __post_init__(self) -> None:
         """Validate transition invariants."""
         if self.from_serial < 0:
-            raise ValueError(f"from_serial must be non-negative, got {self.from_serial}")
+            raise ValueError(
+                f"from_serial must be non-negative, got {self.from_serial}"
+            )
         if self.to_serial < 0:
             raise ValueError(f"to_serial must be non-negative, got {self.to_serial}")
 

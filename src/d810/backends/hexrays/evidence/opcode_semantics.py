@@ -1,4 +1,5 @@
 """Hex-Rays opcode-to-portable semantic label adapters."""
+
 from __future__ import annotations
 
 from d810.capabilities.providers import get_microcode_evidence

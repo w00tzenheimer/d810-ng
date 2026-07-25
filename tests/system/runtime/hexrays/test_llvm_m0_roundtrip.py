@@ -1,4 +1,5 @@
 """LLVM M0 hand lower-back proof against the restructuring-lab oracle."""
+
 from __future__ import annotations
 
 import json
@@ -65,7 +66,9 @@ class TestLLVMM0RoundTrip:
 
         print(f"\n=== LLVM M0 hand lower-back: applied={applied} error={error} ===")
         print(f"--- lowered ---\n{lowered}")
-        print(f"--- oracle ({artifact['d810_lower_back']['oracle_function']}) ---\n{oracle}")
+        print(
+            f"--- oracle ({artifact['d810_lower_back']['oracle_function']}) ---\n{oracle}"
+        )
         print(f"--- signature lowered ---\n{sig_lowered}")
         print(f"--- signature oracle  ---\n{sig_oracle}")
 

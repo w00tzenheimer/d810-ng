@@ -1,4 +1,5 @@
 """LLVM M2a stock opt pipeline probe over real Hex-Rays-lifted snapshots."""
+
 from __future__ import annotations
 
 import json
@@ -102,7 +103,9 @@ class TestLLVMM2StockOptPipeline:
         assert mba is not None
 
         flow_graph = lift_function(mba).flow_graph
-        lift = emit_flowgraph_to_llvm(flow_graph, function_name="lab_flat_branchless_m2a")
+        lift = emit_flowgraph_to_llvm(
+            flow_graph, function_name="lab_flat_branchless_m2a"
+        )
         assert lift.supported, [reason.reason for reason in lift.unsupported]
 
         optimized = run_llvm_opt_pipeline(
@@ -111,7 +114,9 @@ class TestLLVMM2StockOptPipeline:
             tmp_dir=tmp_path / "opt",
         )
         print("\n=== LLVM M2a stock opt pipeline ===")
-        print(f"pipeline: {optimized.pipeline.name} passes={optimized.pipeline.pass_spec}")
+        print(
+            f"pipeline: {optimized.pipeline.name} passes={optimized.pipeline.pass_spec}"
+        )
         print(
             "optimization: "
             f"status={optimized.status.value} "
@@ -184,7 +189,9 @@ class TestLLVMM2CustomPipelineComposition:
         assert mba is not None
 
         flow_graph = lift_function(mba).flow_graph
-        lift = emit_flowgraph_to_llvm(flow_graph, function_name="lab_flat_branchless_m2c")
+        lift = emit_flowgraph_to_llvm(
+            flow_graph, function_name="lab_flat_branchless_m2c"
+        )
         assert lift.supported, [reason.reason for reason in lift.unsupported]
 
         result = run_llvm_m2_pipeline(
@@ -329,10 +336,7 @@ class TestLLVMM2PipelineCensus:
             f"allocas={summary.before_alloca_total}->{summary.after_alloca_total}"
         )
         print(f"status_histogram={_histogram_summary(summary.status_histogram)}")
-        print(
-            "oracle_histogram="
-            f"{_histogram_summary(summary.oracle_status_histogram)}"
-        )
+        print(f"oracle_histogram={_histogram_summary(summary.oracle_status_histogram)}")
         print(f"collapse_histogram={_histogram_summary(summary.collapse_histogram)}")
 
         present_non_passed = [
@@ -676,9 +680,7 @@ def _lift_post_d810_branchless(func_ea) -> dict[str, object]:
                 )
                 box["ir_text"] = lift.ir_text
                 box["supported"] = lift.supported
-                box["unsupported"] = tuple(
-                    reason.reason for reason in lift.unsupported
-                )
+                box["unsupported"] = tuple(reason.reason for reason in lift.unsupported)
                 return box["applied"]
             except Exception as exc:  # noqa: BLE001
                 box["error"] = repr(exc)

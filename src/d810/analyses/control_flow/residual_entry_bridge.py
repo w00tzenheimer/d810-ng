@@ -1,4 +1,5 @@
 """Portable planning for a resolver-proven conditional entry bridge."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -121,9 +122,8 @@ def plan_residual_entry_bridge(
             return None
         selected_target = node.true_target_ea if branch else node.false_target_ea
         if int(selected_target) not in by_source:
-            if (
-                int(node.patch_window_end_ea) - int(node.source_block_ea)
-                < int(required_patch_size)
+            if int(node.patch_window_end_ea) - int(node.source_block_ea) < int(
+                required_patch_size
             ):
                 return None
             return ResidualEntryBridgePlan(

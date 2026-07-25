@@ -144,7 +144,9 @@ def test_get_function_results(temp_db):
 
         # Debug: print timestamps
         for r in results:
-            print(f"code_after: {r['code_after']}, timestamp: {r['timestamp']}, id: {r['id']}")
+            print(
+                f"code_after: {r['code_after']}, timestamp: {r['timestamp']}, id: {r['id']}"
+            )
 
         # Check ordering (newest first by ID, since timestamp may not be granular enough)
         # Results should be ordered by timestamp DESC, so newest (highest ID) first

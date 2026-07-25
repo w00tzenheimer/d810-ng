@@ -8,6 +8,7 @@ Pure-Python, no IDA.  Exercises :func:`run_fixpoint` with real
 - a bounded-counter domain that needs widening to converge (and provably
   does NOT converge without it).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -195,7 +196,9 @@ class TestWideningConvergence:
                 entry_nodes={0},
                 successors_of=succ,
                 predecessors_of=pred,
-                config=FixpointConfiguration(widening_threshold=10**9, max_iterations=20),
+                config=FixpointConfiguration(
+                    widening_threshold=10**9, max_iterations=20
+                ),
                 raise_on_nonconvergence=True,
             )
 

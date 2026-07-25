@@ -49,6 +49,7 @@ class CompiledRuleView:
         rule_count: Number of rules in the compiled view.
         compiled_at: Timestamp (time.monotonic()) when view was created.
     """
+
     generation: int
     allowed_opcodes: frozenset[int]
     rule_count: int
@@ -150,7 +151,7 @@ def signature_generator(ref_sig: tuple[str, ...]) -> typing.Iterator[tuple[str, 
     """Generate all possible wildcard variations of a signature tuple."""
     for i, x in enumerate(ref_sig):
         if x not in _SIG_GEN_TERMINALS:
-            for sig_suffix in signature_generator(ref_sig[i + 1:]):
+            for sig_suffix in signature_generator(ref_sig[i + 1 :]):
                 yield ref_sig[:i] + ("L",) + sig_suffix
     yield ref_sig
 
@@ -214,7 +215,9 @@ class PatternStorage(object):
             pattern_search_logger.debug("Searching for %s", pattern)
         return self.explore_one_level(pattern, 1)
 
-    def explore_one_level(self, searched_pattern: AstBase, cur_level: int) -> list[RulePatternInfo]:
+    def explore_one_level(
+        self, searched_pattern: AstBase, cur_level: int
+    ) -> list[RulePatternInfo]:
         # We need to check if searched_pattern is in self.next_layer_patterns
         # Easy solution: try/except self.next_layer_patterns[searched_pattern]
         # Problem is that known patterns may not exactly match the microcode instruction, e.g.
@@ -245,7 +248,9 @@ class PatternStorage(object):
         if nb_possible_signature < len(self.next_layer_patterns):
             # Method 1: Generate all possible wildcard variations and look them up
             if pattern_search_logger.debug_on:
-                pattern_search_logger.debug("  => Using method 1 (signature generation)")
+                pattern_search_logger.debug(
+                    "  => Using method 1 (signature generation)"
+                )
             for possible_sig in signature_generator(searched_sig):
                 pattern_storage = self.next_layer_patterns.get(possible_sig)
                 if pattern_storage is not None:
@@ -257,7 +262,9 @@ class PatternStorage(object):
                         )
                     matched_rule_pattern_info.extend(pattern_storage.rule_resolved)
                     matched_rule_pattern_info.extend(
-                        pattern_storage.explore_one_level(searched_pattern, cur_level + 1)
+                        pattern_storage.explore_one_level(
+                            searched_pattern, cur_level + 1
+                        )
                     )
         else:
             # Method 2: Iterate through stored patterns and check compatibility
@@ -273,7 +280,9 @@ class PatternStorage(object):
                         )
                     matched_rule_pattern_info.extend(pattern_storage.rule_resolved)
                     matched_rule_pattern_info.extend(
-                        pattern_storage.explore_one_level(searched_pattern, cur_level + 1)
+                        pattern_storage.explore_one_level(
+                            searched_pattern, cur_level + 1
+                        )
                     )
 
         return matched_rule_pattern_info
@@ -321,7 +330,9 @@ class PatternOptimizer(InstructionOptimizer):
         )
 
         if self._use_legacy_storage:
-            optimizer_logger.debug("PatternOptimizer: using legacy PatternStorage (D810_LEGACY_STORAGE=1)")
+            optimizer_logger.debug(
+                "PatternOptimizer: using legacy PatternStorage (D810_LEGACY_STORAGE=1)"
+            )
         else:
             optimizer_logger.debug("PatternOptimizer: using OpcodeIndexedStorage")
 
@@ -336,9 +347,13 @@ class PatternOptimizer(InstructionOptimizer):
         self._match_bindings = MatchBindings()
 
         if self._use_nomut_matching:
-            optimizer_logger.debug("PatternOptimizer: using non-mutating pattern matching (D810_NOMUT_MATCHING=1 opt-in)")
+            optimizer_logger.debug(
+                "PatternOptimizer: using non-mutating pattern matching (D810_NOMUT_MATCHING=1 opt-in)"
+            )
         else:
-            optimizer_logger.debug("PatternOptimizer: using legacy mutating pattern matching (default, nomut is opt-in)")
+            optimizer_logger.debug(
+                "PatternOptimizer: using legacy mutating pattern matching (default, nomut is opt-in)"
+            )
 
         # Optional fallback: if direct AST matching fails, try a def-use expanded
         # AST via MopTracker for opcodes where expressions are commonly split into
@@ -357,8 +372,12 @@ class PatternOptimizer(InstructionOptimizer):
         if verifiable_rules:
             for rule in verifiable_rules:
                 self._add_rule_internal(rule)
-            optimizer_logger.debug(f"PatternOptimizer initialized with {len(self.rules)} rules")
-            optimizer_logger.debug(f"Allowed root opcodes: {self._allowed_root_opcodes}")
+            optimizer_logger.debug(
+                f"PatternOptimizer initialized with {len(self.rules)} rules"
+            )
+            optimizer_logger.debug(
+                f"Allowed root opcodes: {self._allowed_root_opcodes}"
+            )
 
     @property
     def engine_info(self) -> dict:
@@ -375,7 +394,10 @@ class PatternOptimizer(InstructionOptimizer):
         Returns:
             CompiledRuleView: The current compiled view, either cached or freshly built.
         """
-        if self._compiled_view is None or self._compiled_view.generation != self._generation:
+        if (
+            self._compiled_view is None
+            or self._compiled_view.generation != self._generation
+        ):
             self._compiled_view = self._compile_rules()
         return self._compiled_view
 
@@ -417,11 +439,13 @@ class PatternOptimizer(InstructionOptimizer):
         self.rules.add(rule)
 
         # Register patterns if the rule has them
-        if not hasattr(rule, 'pattern_candidates'):
+        if not hasattr(rule, "pattern_candidates"):
             return True
         try:
             candidates = rule.pattern_candidates
-            optimizer_logger.debug(f"Rule {rule.name} has {len(candidates)} pattern candidates")
+            optimizer_logger.debug(
+                f"Rule {rule.name} has {len(candidates)} pattern candidates"
+            )
         except Exception as e:
             optimizer_logger.error(f"Rule {rule.name} pattern_candidates failed: {e}")
             return False
@@ -467,7 +491,7 @@ class PatternOptimizer(InstructionOptimizer):
         if not is_ok:
             return False
         # Register patterns (rule already added to self.rules by super())
-        if not hasattr(rule, 'pattern_candidates'):
+        if not hasattr(rule, "pattern_candidates"):
             return True
         for pattern in rule.pattern_candidates:
             if optimizer_logger.debug_on:
@@ -579,11 +603,15 @@ class PatternOptimizer(InstructionOptimizer):
             return None
         try:
             # Reuse the tracker-aware AST resolver already used by Z3 helpers.
-            from d810.evaluator.hexrays_microcode.def_search import recursively_resolve_ast
+            from d810.evaluator.hexrays_microcode.def_search import (
+                recursively_resolve_ast,
+            )
         except Exception:
             return None
         try:
-            resolved = recursively_resolve_ast(ast, blk, ins, depth=0, max_depth=6, cache={})
+            resolved = recursively_resolve_ast(
+                ast, blk, ins, depth=0, max_depth=6, cache={}
+            )
         except Exception:
             return None
         if resolved is None or resolved is ast:
@@ -637,10 +665,7 @@ class PatternOptimizer(InstructionOptimizer):
         scheduled_rule_names = scheduled_rule_names or frozenset()
         for i, rule_pattern_info in enumerate(all_matches):
             rule_name = str(rule_pattern_info.rule.name)
-            if (
-                allowed_rule_names is not None
-                and rule_name not in allowed_rule_names
-            ):
+            if allowed_rule_names is not None and rule_name not in allowed_rule_names:
                 continue
             # Per-rule maturity check (Gate 2)
             if (
@@ -819,7 +844,12 @@ def get_similar_opcode_operands(ast_node: AstNode) -> list[AstNode]:
         for leaf_ordering in all_add_ordering:
             ast_res.append(generate_ast(ida_hexrays.m_add, leaf_ordering))
         return ast_res
-    elif ast_node.opcode in [ida_hexrays.m_xor, ida_hexrays.m_or, ida_hexrays.m_and, ida_hexrays.m_mul]:
+    elif ast_node.opcode in [
+        ida_hexrays.m_xor,
+        ida_hexrays.m_or,
+        ida_hexrays.m_and,
+        ida_hexrays.m_mul,
+    ]:
         same_elts = get_opcode_operands(int(ast_node.opcode), ast_node)
         all_same_ordering = get_all_binary_tree_representation(same_elts)
         ast_res = []
@@ -839,9 +869,14 @@ def get_ast_variations_with_add_sub(
         if left.is_node() and right.is_node():
             left = typing.cast(AstNode, left)
             right = typing.cast(AstNode, right)
-            if (left.opcode == ida_hexrays.m_neg) and (right.opcode == ida_hexrays.m_neg):
+            if (left.opcode == ida_hexrays.m_neg) and (
+                right.opcode == ida_hexrays.m_neg
+            ):
                 possible_ast.append(
-                    AstNode(ida_hexrays.m_neg, AstNode(ida_hexrays.m_add, left.left, right.left))
+                    AstNode(
+                        ida_hexrays.m_neg,
+                        AstNode(ida_hexrays.m_add, left.left, right.left),
+                    )
                 )
         if right.is_node() and (right.opcode == ida_hexrays.m_neg):
             right = typing.cast(AstNode, right)
@@ -862,10 +897,12 @@ def ast_generator(ast_node: AstBase | None, excluded_opcodes=None) -> list[AstBa
             similar_ast_list = get_similar_opcode_operands(ast_node)
             for similar_ast in similar_ast_list:
                 sub_ast_left_list = ast_generator(
-                    similar_ast.left, excluded_opcodes=[ida_hexrays.m_add, ida_hexrays.m_sub]
+                    similar_ast.left,
+                    excluded_opcodes=[ida_hexrays.m_add, ida_hexrays.m_sub],
                 )
                 sub_ast_right_list = ast_generator(
-                    similar_ast.right, excluded_opcodes=[ida_hexrays.m_add, ida_hexrays.m_sub]
+                    similar_ast.right,
+                    excluded_opcodes=[ida_hexrays.m_add, ida_hexrays.m_sub],
                 )
                 for sub_ast_left in sub_ast_left_list:
                     for sub_ast_right in sub_ast_right_list:
@@ -875,7 +912,12 @@ def ast_generator(ast_node: AstBase | None, excluded_opcodes=None) -> list[AstBa
                             ida_hexrays.m_add, sub_ast_left, sub_ast_right
                         )
             return res_ast
-        if ast_node.opcode in [ida_hexrays.m_xor, ida_hexrays.m_or, ida_hexrays.m_and, ida_hexrays.m_mul]:
+        if ast_node.opcode in [
+            ida_hexrays.m_xor,
+            ida_hexrays.m_or,
+            ida_hexrays.m_and,
+            ida_hexrays.m_mul,
+        ]:
             similar_ast_list = get_similar_opcode_operands(ast_node)
             for similar_ast in similar_ast_list:
                 sub_ast_left_list = ast_generator(
@@ -893,7 +935,13 @@ def ast_generator(ast_node: AstBase | None, excluded_opcodes=None) -> list[AstBa
                                 int(ast_node.opcode), sub_ast_left, sub_ast_right
                             )
             return res_ast
-    if ast_node.opcode not in [ida_hexrays.m_add, ida_hexrays.m_sub, ida_hexrays.m_or, ida_hexrays.m_and, ida_hexrays.m_mul]:
+    if ast_node.opcode not in [
+        ida_hexrays.m_add,
+        ida_hexrays.m_sub,
+        ida_hexrays.m_or,
+        ida_hexrays.m_and,
+        ida_hexrays.m_mul,
+    ]:
         excluded_opcodes = []
     nb_operands = 0
     if ast_node.left is not None:

@@ -6,6 +6,7 @@ state, the branch is intra-handler work and the transition is unconditional --
 the detector must not emit conditional transitions for it (sub_7FFD
 STATE_37B42A40 / handler block 122 over-production).
 """
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph

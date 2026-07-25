@@ -8,6 +8,7 @@ Example:
     >>> # Before: if (cond) goto B else goto B
     >>> # After:  goto B
 """
+
 from __future__ import annotations
 
 from d810.transforms._base import FlowGraphTransform
@@ -45,6 +46,7 @@ class SimplifyIdenticalBranchPass(FlowGraphTransform):
         >>> mods[0].goto_target
         5
     """
+
     name = "simplify_identical_branch"
     tags = frozenset({"cleanup"})
 
@@ -76,7 +78,9 @@ class SimplifyIdenticalBranchPass(FlowGraphTransform):
         for serial, blk in cfg.blocks.items():
             # Check: 2-way block (nsucc == 2) with identical successors
             if len(blk.succs) == 2 and blk.succs[0] == blk.succs[1]:
-                mods.append(ConvertToGoto(block_serial=serial, goto_target=blk.succs[0]))
+                mods.append(
+                    ConvertToGoto(block_serial=serial, goto_target=blk.succs[0])
+                )
         return mods
 
 

@@ -1,4 +1,5 @@
 """Runtime tests for the live equality-chain dispatcher adapter."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace

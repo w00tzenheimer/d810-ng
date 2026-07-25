@@ -19,6 +19,7 @@ Example:
     >>> backend.verify(mba)
     True
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Any, Protocol, runtime_checkable

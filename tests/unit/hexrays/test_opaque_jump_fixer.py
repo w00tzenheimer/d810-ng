@@ -2,6 +2,7 @@
 
 This module tests the CFG-level jump fixing logic extracted from JumpFixer.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -34,8 +35,13 @@ class TestOpaqueJumpFixerPass:
     def test_empty_fixes_no_modifications(self):
         """Pass with empty fixes should return empty modification list."""
         blk = BlockSnapshot(
-            serial=0, block_type=4, succs=(5, 10), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=4,
+            succs=(5, 10),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={0: blk}, entry_serial=0, func_ea=0x1000)
         pass_instance = OpaqueJumpFixerPass(fixes={})
@@ -46,8 +52,13 @@ class TestOpaqueJumpFixerPass:
     def test_single_fix_emits_convert_to_goto(self):
         """Pass with single fix should emit one ConvertToGoto."""
         blk = BlockSnapshot(
-            serial=5, block_type=4, succs=(10, 20), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=5,
+            block_type=4,
+            succs=(10, 20),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={5: blk}, entry_serial=5, func_ea=0x1000)
         fixes = {5: 10}
@@ -62,20 +73,34 @@ class TestOpaqueJumpFixerPass:
     def test_multiple_fixes_emit_all_modifications(self):
         """Pass with multiple fixes should emit ConvertToGoto for each."""
         blk10 = BlockSnapshot(
-            serial=10, block_type=4, succs=(20, 30), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=10,
+            block_type=4,
+            succs=(20, 30),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk15 = BlockSnapshot(
-            serial=15, block_type=4, succs=(25, 35), preds=(),
-            flags=0, start_ea=0x2000, insn_snapshots=()
+            serial=15,
+            block_type=4,
+            succs=(25, 35),
+            preds=(),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(),
         )
         blk20 = BlockSnapshot(
-            serial=20, block_type=3, succs=(99,), preds=(10,),
-            flags=0, start_ea=0x3000, insn_snapshots=()
+            serial=20,
+            block_type=3,
+            succs=(99,),
+            preds=(10,),
+            flags=0,
+            start_ea=0x3000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(
-            blocks={10: blk10, 15: blk15, 20: blk20},
-            entry_serial=10, func_ea=0x1000
+            blocks={10: blk10, 15: blk15, 20: blk20}, entry_serial=10, func_ea=0x1000
         )
         fixes = {10: 20, 15: 25}
         pass_instance = OpaqueJumpFixerPass(fixes=fixes)
@@ -92,8 +117,13 @@ class TestOpaqueJumpFixerPass:
     def test_fix_for_nonexistent_block_skipped(self):
         """Fix referencing a block not in CFG should be skipped."""
         blk5 = BlockSnapshot(
-            serial=5, block_type=4, succs=(10, 20), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=5,
+            block_type=4,
+            succs=(10, 20),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
         # Fix references block 99 which doesn't exist
@@ -106,17 +136,24 @@ class TestOpaqueJumpFixerPass:
     def test_mixed_valid_and_invalid_fixes(self):
         """Mix of valid and invalid fixes should emit only valid ones."""
         blk5 = BlockSnapshot(
-            serial=5, block_type=4, succs=(10, 20), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=5,
+            block_type=4,
+            succs=(10, 20),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk10 = BlockSnapshot(
-            serial=10, block_type=3, succs=(99,), preds=(5,),
-            flags=0, start_ea=0x2000, insn_snapshots=()
+            serial=10,
+            block_type=3,
+            succs=(99,),
+            preds=(5,),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(),
         )
-        cfg = FlowGraph(
-            blocks={5: blk5, 10: blk10},
-            entry_serial=5, func_ea=0x1000
-        )
+        cfg = FlowGraph(blocks={5: blk5, 10: blk10}, entry_serial=5, func_ea=0x1000)
         # Fix for 5 is valid, fix for 99 is invalid
         fixes = {5: 10, 99: 100}
         pass_instance = OpaqueJumpFixerPass(fixes=fixes)
@@ -146,16 +183,31 @@ class TestOpaqueJumpFixerPass:
         """Pass should integrate with PassPipeline and InMemoryBackend."""
         # Create a simple CFG with one 2-way block
         blk0 = BlockSnapshot(
-            serial=0, block_type=4, succs=(1, 2), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=4,
+            succs=(1, 2),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x2000, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(),
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x3000, insn_snapshots=()
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x3000,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1, 2: blk2}
         backend = InMemoryBackend(blocks)
@@ -166,7 +218,7 @@ class TestOpaqueJumpFixerPass:
         pipeline = FlowGraphTransformPipeline(backend, [pass_instance])
 
         # Run pipeline
-        total_mods = pipeline.run(blocks, mutation_gateway = object())
+        total_mods = pipeline.run(blocks, mutation_gateway=object())
 
         # Verify result
         assert total_mods == 1
@@ -180,24 +232,49 @@ class TestOpaqueJumpFixerPass:
         """Pass should work correctly when combined with other transform."""
         # Create CFG with two opaque jumps
         blk0 = BlockSnapshot(
-            serial=0, block_type=4, succs=(1, 2), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=4,
+            succs=(1, 2),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=4, succs=(3, 4), preds=(0,),
-            flags=0, start_ea=0x2000, insn_snapshots=()
+            serial=1,
+            block_type=4,
+            succs=(3, 4),
+            preds=(0,),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(),
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=2, succs=(), preds=(0,),
-            flags=0, start_ea=0x3000, insn_snapshots=()
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x3000,
+            insn_snapshots=(),
         )
         blk3 = BlockSnapshot(
-            serial=3, block_type=2, succs=(), preds=(1,),
-            flags=0, start_ea=0x4000, insn_snapshots=()
+            serial=3,
+            block_type=2,
+            succs=(),
+            preds=(1,),
+            flags=0,
+            start_ea=0x4000,
+            insn_snapshots=(),
         )
         blk4 = BlockSnapshot(
-            serial=4, block_type=2, succs=(), preds=(1,),
-            flags=0, start_ea=0x5000, insn_snapshots=()
+            serial=4,
+            block_type=2,
+            succs=(),
+            preds=(1,),
+            flags=0,
+            start_ea=0x5000,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1, 2: blk2, 3: blk3, 4: blk4}
         backend = InMemoryBackend(blocks)
@@ -208,7 +285,7 @@ class TestOpaqueJumpFixerPass:
         pipeline = FlowGraphTransformPipeline(backend, [pass1, pass2])
 
         # Run pipeline
-        total_mods = pipeline.run(blocks, mutation_gateway = object())
+        total_mods = pipeline.run(blocks, mutation_gateway=object())
 
         # Verify both transform applied
         assert total_mods == 2
@@ -225,15 +302,20 @@ class TestOpaqueJumpFixerPass:
         pass_instance = OpaqueJumpFixerPass(fixes=None)
 
         assert pass_instance._fixes == {}
-        assert not pass_instance.is_applicable(FlowGraph(
-            blocks={}, entry_serial=0, func_ea=0x1000
-        ))
+        assert not pass_instance.is_applicable(
+            FlowGraph(blocks={}, entry_serial=0, func_ea=0x1000)
+        )
 
     def test_fix_pointing_to_same_block_allowed(self):
         """Fix where target equals source should be allowed (edge case)."""
         blk5 = BlockSnapshot(
-            serial=5, block_type=4, succs=(5, 10), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=5,
+            block_type=4,
+            succs=(5, 10),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(blocks={5: blk5}, entry_serial=5, func_ea=0x1000)
         # Self-loop fix (unusual but allowed by ConvertToGoto)

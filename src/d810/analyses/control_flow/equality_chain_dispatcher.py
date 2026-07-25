@@ -24,6 +24,7 @@ operand slots.  The live Hex-Rays adapter
 raw microcode into these portable ``InsnSnapshot`` / ``BlockSnapshot`` shapes
 before this extractor runs.
 """
+
 from __future__ import annotations
 
 from d810.core import logging
@@ -42,7 +43,9 @@ from d810.ir.storage_identity import (
 )
 from d810.ir.varnode import Space, Varnode
 
-logger = logging.getLogger("D810.analyses.control_flow.equality_chain_dispatcher", logging.INFO)
+logger = logging.getLogger(
+    "D810.analyses.control_flow.equality_chain_dispatcher", logging.INFO
+)
 
 
 def extract_state_dispatcher_map_from_mba(
@@ -61,7 +64,9 @@ def extract_state_dispatcher_map_from_mba(
     compare_blocks: set[int] = set()
     two_way_count = 0
     compare_count = 0
-    sample_two_way: list[tuple[int, object, object, object, int | None, tuple[int | None, int | None]]] = []
+    sample_two_way: list[
+        tuple[int, object, object, object, int | None, tuple[int | None, int | None]]
+    ] = []
     for serial, blk in _iter_blocks(mba, qty):
         if not _is_two_way_block(blk):
             continue
@@ -209,14 +214,10 @@ def extract_state_dispatcher_map_from_mba(
         dispatcher_entry_block=int(entry),
         dispatcher_blocks=frozenset(dispatcher_blocks),
         state_var_stkoff=(
-            state_var.offset
-            if state_var.kind is StorageIdentityKind.STACK
-            else None
+            state_var.offset if state_var.kind is StorageIdentityKind.STACK else None
         ),
         state_var_lvar_idx=(
-            state_var.offset
-            if state_var.kind is StorageIdentityKind.LVAR
-            else None
+            state_var.offset if state_var.kind is StorageIdentityKind.LVAR else None
         ),
         router_kind=RouterKind.CONDITION_CHAIN,
     )

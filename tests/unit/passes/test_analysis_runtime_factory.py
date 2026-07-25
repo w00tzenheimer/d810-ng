@@ -23,10 +23,12 @@ def test_build_analysis_runtime_bundle_registers_fact_collectors(tmp_path) -> No
 
     assert bundle is not None
     assert bundle.db_path == tmp_path / "d810_analysis.db"
-    assert tuple(
-        collector.name
-        for collector in bundle.preanalysis_runtime.phase._collectors
-    ) == DEFAULT_PREANALYSIS_COLLECTOR_NAMES
+    assert (
+        tuple(
+            collector.name for collector in bundle.preanalysis_runtime.phase._collectors
+        )
+        == DEFAULT_PREANALYSIS_COLLECTOR_NAMES
+    )
     fact_runtime = bundle.preanalysis_runtime._facts
     assert tuple(collector.name for collector in fact_runtime._collectors) == (
         DEFAULT_FACT_COLLECTOR_NAMES

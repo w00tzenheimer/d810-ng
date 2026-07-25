@@ -4,6 +4,7 @@ This module is deliberately portable and mutation-free.  It classifies only
 stable native-EA evidence; the IDA-backed probe binds those EAs to the current
 MBA and performs the actual graph edits.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -153,9 +154,9 @@ def expand_preopt_boundary_target_closure(
             )
         )
         if normalized:
-            range_candidates.setdefault(
-                int(transfer.target_eas[0]), set()
-            ).add(normalized)
+            range_candidates.setdefault(int(transfer.target_eas[0]), set()).add(
+                normalized
+            )
     handler_ranges = {
         target_ea: next(iter(candidates))
         for target_ea, candidates in range_candidates.items()
@@ -246,8 +247,7 @@ def exclude_direct_boundaries_with_conditional_source(
         row
         for row in direct
         if row.source_ea not in source_identity_by_ea
-        or int(source_identity_by_ea[row.source_ea])
-        not in conditional_identities
+        or int(source_identity_by_ea[row.source_ea]) not in conditional_identities
     )
 
 
@@ -267,23 +267,19 @@ def exclude_conflicting_direct_boundaries_by_source(
             continue
         rows_by_identity.setdefault(int(identity), set()).add(row)
     conflicting_identities = {
-        identity
-        for identity, rows in rows_by_identity.items()
-        if len(rows) > 1
+        identity for identity, rows in rows_by_identity.items() if len(rows) > 1
     }
     conflicts = tuple(
         sorted(
             int(row.source_ea)
             for row in direct
-            if source_identity_by_ea.get(int(row.source_ea))
-            in conflicting_identities
+            if source_identity_by_ea.get(int(row.source_ea)) in conflicting_identities
         )
     )
     selected = tuple(
         row
         for row in direct
-        if source_identity_by_ea.get(int(row.source_ea))
-        not in conflicting_identities
+        if source_identity_by_ea.get(int(row.source_ea)) not in conflicting_identities
     )
     return selected, conflicts
 
@@ -305,11 +301,9 @@ def _conditional_boundary(
         return None
     true_target_ea = int(transfer.true_target_ea)
     false_target_ea = int(transfer.false_target_ea)
-    if (
-        true_target_ea == false_target_ea
-        or {true_target_ea, false_target_ea}
-        != {int(target_ea) for target_ea in transfer.target_eas}
-    ):
+    if true_target_ea == false_target_ea or {true_target_ea, false_target_ea} != {
+        int(target_ea) for target_ea in transfer.target_eas
+    }:
         return None
     return PreoptConditionalIncomingBoundary(
         predicate_ea=int(transfer.source_jmp_ea),
@@ -348,9 +342,7 @@ def plan_preopt_incoming_boundaries(
     """Select only unambiguous resolver proofs that enter an imported union."""
     imported_targets = {int(target_ea) for target_ea in imported_target_eas}
     direct_by_source: dict[int, set[PreoptDirectIncomingBoundary]] = {}
-    conditional_by_source: dict[
-        int, set[PreoptConditionalIncomingBoundary]
-    ] = {}
+    conditional_by_source: dict[int, set[PreoptConditionalIncomingBoundary]] = {}
     incomplete_conditionals: set[int] = set()
 
     for transfer in transfers:
@@ -369,9 +361,7 @@ def plan_preopt_incoming_boundaries(
                 PreoptDirectIncomingBoundary(
                     source_ea=source_ea,
                     target_ea=int(transfer.target_eas[0]),
-                    state_constant=(
-                        int(transfer.selector_state_constant) & _MASK32
-                    ),
+                    state_constant=(int(transfer.selector_state_constant) & _MASK32),
                     state_register=int(transfer.selector_state_var_reg),
                 )
             )
@@ -398,9 +388,7 @@ def plan_preopt_incoming_boundaries(
                     PreoptIncomingBoundaryAbstentionReason.CONFLICTING_DIRECT_EVIDENCE,
                 )
             )
-    for source_ea in sorted(
-        set(conditional_by_source) | incomplete_conditionals
-    ):
+    for source_ea in sorted(set(conditional_by_source) | incomplete_conditionals):
         candidates = conditional_by_source.get(source_ea, set())
         if source_ea in incomplete_conditionals:
             reason = (
@@ -416,9 +404,7 @@ def plan_preopt_incoming_boundaries(
         abstentions.append(PreoptIncomingBoundaryAbstention(source_ea, reason))
 
     return PreoptIncomingBoundaryPlan(
-        direct=tuple(
-            sorted(direct, key=lambda row: (row.source_ea, row.target_ea))
-        ),
+        direct=tuple(sorted(direct, key=lambda row: (row.source_ea, row.target_ea))),
         conditional=tuple(
             sorted(
                 conditional,

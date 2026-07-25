@@ -146,10 +146,14 @@ def plan_residual_handoff(
     if context.mode == ResidualHandoffMode.PREFIX:
         for attempt in context.prefix_attempts:
             if attempt.branch_context is not None:
-                branch_plan = plan_residual_branch_anchor_handoff(attempt.branch_context)
+                branch_plan = plan_residual_branch_anchor_handoff(
+                    attempt.branch_context
+                )
                 if branch_plan.accepted:
                     if attempt.claimed_branch_target is not None:
-                        if int(attempt.claimed_branch_target) != int(attempt.prefix_target):
+                        if int(attempt.claimed_branch_target) != int(
+                            attempt.prefix_target
+                        ):
                             continue
                         return SelectionDecision(
                             accepted=True,

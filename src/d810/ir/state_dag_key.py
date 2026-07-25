@@ -8,6 +8,7 @@ same type without an upward import between those sibling portable-core packages.
 backwards compatibility with existing `from d810.analyses.control_flow.linearized_state_dag
 import StateDagNodeKey` call sites.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

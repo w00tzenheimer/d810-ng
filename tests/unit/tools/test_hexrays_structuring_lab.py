@@ -30,10 +30,10 @@ def test_registry_loads_initial_cases() -> None:
         "terminal_tail_split_guard",
         "terminal_tail_unique_continuation",
         "badwhile_direct_triangle_case",
-            "badwhile_trampoline_triangle_case",
-            "badwhile_duplicate_group_triangle",
-            "rhad_indirect_dispatch",
-        }
+        "badwhile_trampoline_triangle_case",
+        "badwhile_duplicate_group_triangle",
+        "rhad_indirect_dispatch",
+    }
 
 
 def test_command_rendering_includes_docker_dump_command() -> None:
@@ -54,8 +54,7 @@ def test_validate_cfg_command_rendering_is_separate_from_dump() -> None:
     assert "--hexrays-lab-case single_pred_chain_merge" in command
     assert "--hexrays-lab-function hexrays_lab_single_pred_chain_merge" in command
     assert (
-        "--hexrays-lab-output-json "
-        ".tmp/cfg_out/single_pred_chain_merge.json"
+        "--hexrays-lab-output-json .tmp/cfg_out/single_pred_chain_merge.json"
     ) in command
     assert "-o cfg_out/single_pred_chain_merge.txt" in command
 
@@ -100,8 +99,7 @@ def test_show_command_prints_multi_pred_observation(capsys) -> None:
     assert data["status"] == "observed"
     assert data["cfg_validation"]["status"] == "passed"
     assert (
-        data["observation_artifact"]
-        == "tools/hexrays_structuring_lab/observations/"
+        data["observation_artifact"] == "tools/hexrays_structuring_lab/observations/"
         "multi_pred_boundary_barrier.json"
     )
     assert data["cfg_validation"]["observed"]["boundary_serial"] == 7
@@ -117,8 +115,7 @@ def test_show_command_prints_side_effect_observation(capsys) -> None:
     assert data["status"] == "observed"
     assert data["cfg_validation"]["status"] == "passed"
     assert (
-        data["observation_artifact"]
-        == "tools/hexrays_structuring_lab/observations/"
+        data["observation_artifact"] == "tools/hexrays_structuring_lab/observations/"
         "side_effect_boundary_anchor.json"
     )
     assert data["cfg_validation"]["observed"]["boundary_serial"] == 7
@@ -130,13 +127,14 @@ def test_show_command_prints_side_effect_observation(capsys) -> None:
     )
     assert data["observation"]["from_block_count"] == 10
     assert data["observation"]["to_block_count"] == 5
-    assert (
-        data["observation_artifact_data"]["cfg_validation"]["boundary_call_targets"]
-        == [{
+    assert data["observation_artifact_data"]["cfg_validation"][
+        "boundary_call_targets"
+    ] == [
+        {
             "ea": "0x18000b000",
             "name": "hexrays_lab_boundary_anchor_helper",
-        }]
-    )
+        }
+    ]
 
 
 def test_show_command_prints_clean_fork_observation(capsys) -> None:
@@ -147,8 +145,7 @@ def test_show_command_prints_clean_fork_observation(capsys) -> None:
     assert data["status"] == "observed"
     assert data["cfg_validation"]["status"] == "passed"
     assert (
-        data["observation_artifact"]
-        == "tools/hexrays_structuring_lab/observations/"
+        data["observation_artifact"] == "tools/hexrays_structuring_lab/observations/"
         "clean_conditional_fork.json"
     )
     assert data["cfg_validation"]["observed"]["entry_serial"] == 1
@@ -177,21 +174,17 @@ def test_show_command_prints_conditional_shell_observation(capsys) -> None:
     assert data["status"] == "observed"
     assert data["cfg_validation"]["status"] == "passed"
     assert (
-        data["observation_artifact"]
-        == "tools/hexrays_structuring_lab/observations/"
+        data["observation_artifact"] == "tools/hexrays_structuring_lab/observations/"
         "conditional_shell_boundary.json"
     )
     assert data["cfg_validation"]["observed"]["shell_serial"] == 9
     assert data["cfg_validation"]["observed"]["boundary_serial"] == 6
-    assert (
-        data["cfg_validation"]["observed"][
-            "entry_to_shell_paths_relative_start_eas"
-        ]
-        == [
-            ["0x1b", "0x76"],
-            ["0x1d", "0x62", "0x76"],
-        ]
-    )
+    assert data["cfg_validation"]["observed"][
+        "entry_to_shell_paths_relative_start_eas"
+    ] == [
+        ["0x1b", "0x76"],
+        ["0x1d", "0x62", "0x76"],
+    ]
     assert data["cfg_validation"]["observed"]["shell_arm_paths_relative_start_eas"] == [
         ["0x84", "0x57", "0x41"],
         ["0x86", "0x41"],
@@ -216,7 +209,8 @@ def test_registry_observed_cases_keep_observations_in_artifacts() -> None:
 def test_case_hydration_loads_observation_artifact() -> None:
     registry = load_registry()
     case = next(
-        case for case in registry["cases"]
+        case
+        for case in registry["cases"]
         if case["id"] == "multi_pred_boundary_barrier"
     )
 
@@ -255,24 +249,30 @@ def test_matrix_hydrates_observed_outcomes() -> None:
 
 def test_matrix_rejects_invalid_artifact_outcome(tmp_path: Path) -> None:
     artifact = tmp_path / "bad_observation.json"
-    artifact.write_text(json.dumps({
-        "case_id": "bad_case",
-        "status": "observed",
-        "cfg_validation": {"status": "passed"},
-        "structuring_observation": {
-            "from_block_count": 1,
-            "to_block_count": 1,
-            "vanished_count": 0,
-            "outcome_class": "typo_class",
-        },
-    }))
+    artifact.write_text(
+        json.dumps(
+            {
+                "case_id": "bad_case",
+                "status": "observed",
+                "cfg_validation": {"status": "passed"},
+                "structuring_observation": {
+                    "from_block_count": 1,
+                    "to_block_count": 1,
+                    "vanished_count": 0,
+                    "outcome_class": "typo_class",
+                },
+            }
+        )
+    )
     registry = {
-        "cases": [{
-            "id": "bad_case",
-            "status": "observed",
-            "cfg_validation": {"status": "passed"},
-            "observation_artifact": str(artifact),
-        }],
+        "cases": [
+            {
+                "id": "bad_case",
+                "status": "observed",
+                "cfg_validation": {"status": "passed"},
+                "observation_artifact": str(artifact),
+            }
+        ],
     }
 
     try:
@@ -306,7 +306,8 @@ def test_compare_alias_prints_matrix_markdown(capsys) -> None:
 def test_registry_does_not_point_at_tmp_artifacts() -> None:
     registry = load_registry()
     tmp_paths = [
-        value for value in _json_strings(registry)
+        value
+        for value in _json_strings(registry)
         if value.startswith(".tmp/") or "/.tmp/" in value
     ]
     assert tmp_paths == []
@@ -332,17 +333,19 @@ def test_summarize_cli_json(tmp_path: Path, capsys) -> None:
     db = tmp_path / "diag.sqlite3"
     _create_merge_db(db)
 
-    rc = main([
-        "summarize",
-        "--db",
-        str(db),
-        "--from-label",
-        "post_apply",
-        "--to-label",
-        "post_d810",
-        "--format",
-        "json",
-    ])
+    rc = main(
+        [
+            "summarize",
+            "--db",
+            str(db),
+            "--from-label",
+            "post_apply",
+            "--to-label",
+            "post_d810",
+            "--format",
+            "json",
+        ]
+    )
 
     assert rc == 0
     data = json.loads(capsys.readouterr().out)
@@ -355,14 +358,18 @@ def test_summarize_includes_passed_cfg_validation(tmp_path: Path) -> None:
     db = tmp_path / "diag.sqlite3"
     validation = tmp_path / "cfg_validation.json"
     _create_merge_db(db)
-    validation.write_text(json.dumps({
-        "status": "passed",
-        "compiler_flags": ["-O0"],
-        "binary_hash": "sha256:abc",
-        "artifact_path": "validation/single_pred_chain_merge.json",
-        "expected": {"block_count": ">= 3"},
-        "observed": {"block_count": 4},
-    }))
+    validation.write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "compiler_flags": ["-O0"],
+                "binary_hash": "sha256:abc",
+                "artifact_path": "validation/single_pred_chain_merge.json",
+                "expected": {"block_count": ">= 3"},
+                "observed": {"block_count": 4},
+            }
+        )
+    )
 
     summary = build_summary(
         db,
@@ -398,13 +405,17 @@ def test_required_cfg_validation_rejects_failed_result(tmp_path: Path) -> None:
     db = tmp_path / "diag.sqlite3"
     validation = tmp_path / "cfg_validation.json"
     _create_merge_db(db)
-    validation.write_text(json.dumps({
-        "status": "failed",
-        "compiler_flags": ["-O0"],
-        "binary_hash": "sha256:def",
-        "expected": {"block_count": ">= 3"},
-        "observed": {"block_count": 1},
-    }))
+    validation.write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "compiler_flags": ["-O0"],
+                "binary_hash": "sha256:def",
+                "expected": {"block_count": ">= 3"},
+                "observed": {"block_count": 1},
+            }
+        )
+    )
 
     try:
         build_summary(
@@ -444,34 +455,16 @@ def _create_merge_db(path: Path) -> None:
         "INSERT INTO blocks VALUES "
         "(1, 20, 'BLT_1WAY', 1, 1, '[30]', '[10]', 2, '0x1010', '0x1018')"
     )
-    conn.execute(
-        "INSERT INTO instructions VALUES "
-        "(1, 10, 0, 4096, '0x1000', 'm_mov')"
-    )
-    conn.execute(
-        "INSERT INTO instructions VALUES "
-        "(1, 20, 0, 4112, '0x1010', 'm_add')"
-    )
-    conn.execute(
-        "INSERT INTO instructions VALUES "
-        "(1, 20, 1, 4116, '0x1014', 'm_goto')"
-    )
+    conn.execute("INSERT INTO instructions VALUES (1, 10, 0, 4096, '0x1000', 'm_mov')")
+    conn.execute("INSERT INTO instructions VALUES (1, 20, 0, 4112, '0x1010', 'm_add')")
+    conn.execute("INSERT INTO instructions VALUES (1, 20, 1, 4116, '0x1014', 'm_goto')")
     conn.execute(
         "INSERT INTO blocks VALUES "
         "(2, 10, 'BLT_1WAY', 0, 0, '[]', '[]', 3, '0x1000', '0x1018')"
     )
-    conn.execute(
-        "INSERT INTO instructions VALUES "
-        "(2, 10, 0, 4096, '0x1000', 'm_mov')"
-    )
-    conn.execute(
-        "INSERT INTO instructions VALUES "
-        "(2, 10, 1, 4112, '0x1010', 'm_add')"
-    )
-    conn.execute(
-        "INSERT INTO instructions VALUES "
-        "(2, 10, 2, 4116, '0x1014', 'm_goto')"
-    )
+    conn.execute("INSERT INTO instructions VALUES (2, 10, 0, 4096, '0x1000', 'm_mov')")
+    conn.execute("INSERT INTO instructions VALUES (2, 10, 1, 4112, '0x1010', 'm_add')")
+    conn.execute("INSERT INTO instructions VALUES (2, 10, 2, 4116, '0x1014', 'm_goto')")
     conn.commit()
     conn.close()
 

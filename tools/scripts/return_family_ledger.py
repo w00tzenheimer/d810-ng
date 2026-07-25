@@ -15,6 +15,7 @@ Use one of:
 The full implementation now lives in ``src/d810/diagnostics/return_ledger.py``
 with unit tests under ``tests/unit/diagnostics/test_return_ledger.py``.
 """
+
 from __future__ import annotations
 
 import sys

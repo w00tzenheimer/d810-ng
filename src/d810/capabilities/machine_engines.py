@@ -21,6 +21,7 @@ All cross-boundary types are the portable contract types (``FlowGraph``,
 ``DispatcherAnchors``, ``RecoveredMachine``) or ``Any`` for live operands, keeping the
 Protocol IDA-free (``portable-core-no-ida``).
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Any, Protocol

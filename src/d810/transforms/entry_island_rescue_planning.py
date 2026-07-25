@@ -93,7 +93,9 @@ def score_entry_island_rescue_option(
     candidate_mod = build_entry_island_rescue_modification(option, builder=builder)
 
     try:
-        patch_plan = compile_patch_plan(modifications + [candidate_mod], base_flow_graph)
+        patch_plan = compile_patch_plan(
+            modifications + [candidate_mod], base_flow_graph
+        )
         projected_flow_graph = project_post_state(base_flow_graph, patch_plan)
     except Exception:
         return None
@@ -106,10 +108,14 @@ def score_entry_island_rescue_option(
     if reachable_count_delta < 0:
         return None
 
-    preserved_old_target = 1 if (
-        option.old_target in baseline_reachable_blocks
-        and option.old_target in reachable_blocks
-    ) else 0
+    preserved_old_target = (
+        1
+        if (
+            option.old_target in baseline_reachable_blocks
+            and option.old_target in reachable_blocks
+        )
+        else 0
+    )
     mode_rank = 1 if option.via_pred is None else 0
     via_rank = int(option.via_pred) if option.via_pred is not None else -1
     score = (
@@ -170,17 +176,10 @@ def select_entry_island_rescue(
                 baseline_reachable_blocks=reachable_blocks,
                 compute_reachable_blocks=compute_reachable_blocks,
             )
-            if (
-                int(option.source_block) == 34
-                and int(option.lifted_entry) == 212
-            ):
+            if int(option.source_block) == 34 and int(option.lifted_entry) == 212:
                 logger.info(
                     "RECON DAG: rescue option probe 34->212 via_pred=%s scored=%s",
-                    (
-                        int(option.via_pred)
-                        if option.via_pred is not None
-                        else None
-                    ),
+                    (int(option.via_pred) if option.via_pred is not None else None),
                     scored[0] if scored is not None else None,
                 )
             if scored is None:
@@ -194,7 +193,11 @@ def select_entry_island_rescue(
             best_modification = candidate_mod
             best_projected_flow_graph = candidate_projected
 
-    if best_option is None or best_modification is None or best_projected_flow_graph is None:
+    if (
+        best_option is None
+        or best_modification is None
+        or best_projected_flow_graph is None
+    ):
         return EntryIslandRescueSelection(accepted=False)
 
     return EntryIslandRescueSelection(

@@ -4,6 +4,7 @@ Identifies at which pipeline stage each expected return site
 loses postdomination by a function exit, enabling precise
 diagnosis of structural quality regressions.
 """
+
 from __future__ import annotations
 
 from d810.core import logging
@@ -120,9 +121,7 @@ class ReturnFrontierAudit:
                     tree.postdominates(ex, site.origin_block) for ex in exits
                 )
 
-            classification = self._classify(
-                site, stage_name, is_reachable, is_postdom
-            )
+            classification = self._classify(site, stage_name, is_reachable, is_postdom)
 
             status = ReturnSiteStatus(
                 site=site,
@@ -266,9 +265,7 @@ class ReturnFrontierAudit:
         if not reachable:
             return f"blk[{site.origin_block}] not reachable from entry at {stage}"
         if not postdom:
-            return (
-                f"blk[{site.origin_block}] not postdominated by any exit at {stage}"
-            )
+            return f"blk[{site.origin_block}] not postdominated by any exit at {stage}"
         return ""
 
 

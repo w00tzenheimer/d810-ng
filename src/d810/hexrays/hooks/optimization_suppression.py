@@ -1,4 +1,5 @@
 """Scoped exclusion for nested Hex-Rays microcode generation."""
+
 from __future__ import annotations
 
 from contextlib import contextmanager

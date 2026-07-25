@@ -33,6 +33,7 @@ existing emit path unchanged. It is registered ONLY when the project config opts
 override a static win and is inert on every non-opted-in project (golden-safe; ticket
 llr-a93i, the "config-driven per project" decision).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -269,7 +270,9 @@ class EmulationDispatcherResolver:
         # Dominant self-update slot = the one self-updated in the MOST blocks (one block per
         # handler transition); shape-invariant for the equality / switch / XOR-masked machines
         # whose transitions ARE ``state OP #const`` (high_fan_in, switch_case_ollvm, abc_xor).
-        stkoff = max(per_block, key=lambda k: len(per_block[k][0])) if per_block else None
+        stkoff = (
+            max(per_block, key=lambda k: len(per_block[k][0])) if per_block else None
+        )
         handler_blocks: set[int] = set()
         var_size = 4
         state_mop: ida_hexrays.mop_t | None = None
@@ -487,7 +490,8 @@ class EmulationDispatcherResolver:
         if mop is not None and mop.t == ida_hexrays.mop_d and mop.d is not None:
             inner = mop.d
             if (
-                inner.opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds, ida_hexrays.m_low)
+                inner.opcode
+                in (ida_hexrays.m_xdu, ida_hexrays.m_xds, ida_hexrays.m_low)
                 and inner.l is not None
             ):
                 return inner.l
@@ -664,7 +668,9 @@ class EmulationDispatcherResolver:
         entry_blk = self.mba.get_mblock(int(entry))
         consts: set[int] = set()
         for i in range(entry_blk.npred()):
-            const = self._mov_const_to_stkoff(self.mba.get_mblock(entry_blk.pred(i)), stkoff)
+            const = self._mov_const_to_stkoff(
+                self.mba.get_mblock(entry_blk.pred(i)), stkoff
+            )
             if const is not None:
                 consts.add(const)
         if len(consts) == 1:
@@ -697,7 +703,10 @@ class EmulationDispatcherResolver:
                 if cur_blk.serial != disc.entry:
                     if self._writes_stkoff(cur_blk, disc.stkoff):
                         return int(cur_blk.serial)  # linear handler (writes state)
-                    if cur_blk.tail is not None and cur_blk.tail.opcode == ida_hexrays.m_ret:
+                    if (
+                        cur_blk.tail is not None
+                        and cur_blk.tail.opcode == ida_hexrays.m_ret
+                    ):
                         return int(cur_blk.serial)  # exit handler (returns)
                 if cur_ins is None:
                     return None
@@ -717,7 +726,9 @@ class EmulationDispatcherResolver:
                 if cur_blk is None:
                     return None
         except Exception:  # noqa: BLE001 — emulation failure means "cannot prove" -> abstain
-            logger.debug("emulation_dispatcher: handler emulation raised", exc_info=True)
+            logger.debug(
+                "emulation_dispatcher: handler emulation raised", exc_info=True
+            )
             return None
         return None
 
@@ -780,7 +791,11 @@ class EmulationDispatcherResolver:
         insn = blk.head
         while insn is not None:
             d = insn.d
-            if d is not None and d.t == ida_hexrays.mop_S and int(d.s.off) == int(stkoff):
+            if (
+                d is not None
+                and d.t == ida_hexrays.mop_S
+                and int(d.s.off) == int(stkoff)
+            ):
                 return True
             insn = insn.next
         return False

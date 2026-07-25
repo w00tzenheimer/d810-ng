@@ -56,8 +56,14 @@ def discover_libclang_candidates(
 
     # macOS app bundle fallbacks.
     if system == "Darwin":
-        add(pathlib.Path("/Applications/IDA Professional 9.2.app/Contents/MacOS") / lib_name)
-        add(pathlib.Path("/Applications/IDA Professional 9.1.app/Contents/MacOS") / lib_name)
+        add(
+            pathlib.Path("/Applications/IDA Professional 9.2.app/Contents/MacOS")
+            / lib_name
+        )
+        add(
+            pathlib.Path("/Applications/IDA Professional 9.1.app/Contents/MacOS")
+            / lib_name
+        )
         app_root = pathlib.Path("/Applications")
         if app_root.exists():
             for base in sorted(app_root.glob("IDA Professional *.app/Contents/MacOS")):

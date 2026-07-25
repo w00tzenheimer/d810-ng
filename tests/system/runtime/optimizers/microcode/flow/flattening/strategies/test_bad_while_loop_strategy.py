@@ -1,4 +1,5 @@
 """Runtime tests for the safe BadWhileLoop engine strategy subset."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -205,9 +206,12 @@ def test_bad_while_loop_strategy_is_metadata_driven() -> None:
         },
     )
 
-    assert strategy.is_applicable(
-        AnalysisSnapshot(mba=object(), flow_graph=cfg),
-    ) is True
+    assert (
+        strategy.is_applicable(
+            AnalysisSnapshot(mba=object(), flow_graph=cfg),
+        )
+        is True
+    )
 
 
 def test_bad_while_loop_strategy_ignores_follow_up_only_metadata() -> None:
@@ -419,7 +423,9 @@ def test_bad_while_loop_strategy_plans_redirects_and_conversions() -> None:
     ]
 
 
-def test_bad_while_loop_strategy_defers_duplicate_and_redirect_without_replay_proof() -> None:
+def test_bad_while_loop_strategy_defers_duplicate_and_redirect_without_replay_proof() -> (
+    None
+):
     cfg = FlowGraph(
         blocks={
             0: _block(0, (8, 9), (), block_type=4, start_ea=0x1000),
@@ -599,7 +605,9 @@ def test_bad_while_loop_strategy_plans_create_conditional_redirect() -> None:
     ]
 
 
-def test_bad_while_loop_strategy_rejects_conditional_duplicate_without_dispatcher_edge() -> None:
+def test_bad_while_loop_strategy_rejects_conditional_duplicate_without_dispatcher_edge() -> (
+    None
+):
     cfg = FlowGraph(
         blocks={
             0: _block(0, (7,), (), start_ea=0x1000),
@@ -626,9 +634,12 @@ def test_bad_while_loop_strategy_rejects_conditional_duplicate_without_dispatche
     )
 
     assert extract_bad_while_loop_edits(cfg) == ()
-    assert BadWhileLoopStrategy().plan(
-        AnalysisSnapshot(mba=object(), flow_graph=cfg),
-    ) is None
+    assert (
+        BadWhileLoopStrategy().plan(
+            AnalysisSnapshot(mba=object(), flow_graph=cfg),
+        )
+        is None
+    )
 
 
 def test_bad_while_loop_strategy_drops_invalid_metadata() -> None:
@@ -677,16 +688,21 @@ def test_bad_while_loop_strategy_drops_invalid_metadata() -> None:
     )
 
     assert extract_bad_while_loop_edits(cfg) == ()
-    assert BadWhileLoopStrategy().plan(
-        AnalysisSnapshot(mba=object(), flow_graph=cfg),
-    ) is None
+    assert (
+        BadWhileLoopStrategy().plan(
+            AnalysisSnapshot(mba=object(), flow_graph=cfg),
+        )
+        is None
+    )
 
 
 def test_build_bad_while_loop_modifications_emits_expected_shapes() -> None:
     modifications = build_bad_while_loop_modifications(
         (
             BadWhileLoopGotoRedirect(dispatcher_entry=2, from_serial=1, new_target=3),
-            BadWhileLoopGotoConversion(dispatcher_entry=2, block_serial=5, goto_target=4),
+            BadWhileLoopGotoConversion(
+                dispatcher_entry=2, block_serial=5, goto_target=4
+            ),
             BadWhileLoopDuplicateRedirect(
                 dispatcher_entry=2,
                 source_serial=6,

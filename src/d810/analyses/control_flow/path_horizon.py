@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import replace
 
 from d810.core import logging
-from d810.analyses.control_flow.linearized_state_dag import SemanticEdgeKind, StateDagEdge
+from d810.analyses.control_flow.linearized_state_dag import (
+    SemanticEdgeKind,
+    StateDagEdge,
+)
 from d810.analyses.control_flow.state_machine_analysis import (
     SnapshotConstantFixpointResult,
     StateWriteSite,

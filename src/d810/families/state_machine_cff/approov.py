@@ -26,6 +26,7 @@ is NOT on the live maturity-hook path (the live entry hardcodes ``HodurFamily()`
 today; the remaining cutover is wiring the live entry to ``select_family`` so abc on
 unflatten-portable routes here (production abc is unaffected — it runs via HCC).
 """
+
 from __future__ import annotations
 
 from d810.passes.pass_pipeline import (
@@ -63,10 +64,12 @@ emulation = CapabilityPolicy(required=frozenset({"live_mba", "emulation"}))
 
 # The table provenances THIS profile owns. A table-backed function is claimed here;
 # equality-chain (CONDITION_CHAIN) belongs to HodurFamily.
-_APPROOV_TABLE_PROVENANCES = frozenset({
-    TableProvenance.SWITCH,
-    TableProvenance.INDIRECT_JUMP_TABLE,
-})
+_APPROOV_TABLE_PROVENANCES = frozenset(
+    {
+        TableProvenance.SWITCH,
+        TableProvenance.INDIRECT_JUMP_TABLE,
+    }
+)
 
 
 class ApproovFamily(StateMachineCffFamily):

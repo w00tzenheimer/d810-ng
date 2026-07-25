@@ -9,6 +9,7 @@ projects it.  These suites live under ``tests/system/runtime`` (not
 ``tests/unit``) because they import that backend lifter; it is pure-Python
 (no ``ida_*``), so they still run offline without a live IDA.
 """
+
 import pytest
 
 from d810.backends.hexrays.diag_lifter import ensure_diag_lifter_registered

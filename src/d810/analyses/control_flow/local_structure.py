@@ -12,6 +12,7 @@ The edge classification is the textbook LLVM CFG edge typing: a 2-successor
 block's arms are FALLTHROUGH (arm 0) / TAKEN (arm 1); a >1-predecessor target is
 a JOIN; the shared epilogue and terminal exits are tagged first.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Callable, FrozenSet, Iterable

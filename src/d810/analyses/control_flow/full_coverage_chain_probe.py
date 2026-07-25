@@ -14,6 +14,7 @@ committing to an emission rewrite:
 
 Env-gated: ``D810_DIAG_FULL_COVERAGE_CHAIN=1``. No overhead when off.
 """
+
 from __future__ import annotations
 
 import os
@@ -47,7 +48,9 @@ def probe_enabled() -> bool:
 class FullCoverageChainSegment:
     """One segment in the full-coverage chain: either a single state or an SCC cycle."""
 
-    states: tuple[int, ...]  # state-constant values; len==1 for DAG leaves, >1 for SCC cycles
+    states: tuple[
+        int, ...
+    ]  # state-constant values; len==1 for DAG leaves, >1 for SCC cycles
     is_cycle: bool
     has_back_edge: bool
 
@@ -73,7 +76,9 @@ def build_state_adjacency(dag) -> dict[int, tuple[int, ...]]:
     states_seen: set[int] = set()
     for edge in getattr(dag, "edges", ()) or ():
         src_key = getattr(edge, "source_key", None)
-        src_state = getattr(src_key, "state_const", None) if src_key is not None else None
+        src_state = (
+            getattr(src_key, "state_const", None) if src_key is not None else None
+        )
         tgt_state = getattr(edge, "target_state", None)
         if src_state is None or tgt_state is None:
             continue
@@ -136,7 +141,9 @@ def compute_full_coverage_chain(dag) -> FullCoverageChainResult:
     )
 
 
-def log_chain_coverage(dag, *, context_label: str = "") -> FullCoverageChainResult | None:
+def log_chain_coverage(
+    dag, *, context_label: str = ""
+) -> FullCoverageChainResult | None:
     """Env-gated diagnostic logger for the SCC-based full-coverage chain.
 
     Returns the chain result if the probe is enabled, otherwise ``None``.

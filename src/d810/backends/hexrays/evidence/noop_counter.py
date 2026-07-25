@@ -3,6 +3,7 @@
 This rule serves as a smoke test for the ctree pipeline: it walks the
 ctree body and counts expression nodes, but returns 0 (no modifications).
 """
+
 from __future__ import annotations
 
 from d810.core import typing

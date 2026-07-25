@@ -1,4 +1,5 @@
 """Backend-agnostic IR for CFG snapshots (pure model layer)."""
+
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
@@ -80,7 +81,6 @@ class InsnKind(Enum):
 SnapshotStage = SnapshotForm
 
 
-
 class OperandKind(Enum):
     """Backend-neutral operand semantics used by CFG planning."""
 
@@ -117,11 +117,11 @@ class MopSnapshot:
     ``d810.hexrays.mutation.ir_translator``.
     """
 
-    t: int = -1                   # raw backend operand type; diagnostic only
+    t: int = -1  # raw backend operand type; diagnostic only
     size: int = 0
-    value: int | None = None      # mop_n: nnn.value
-    stkoff: int | None = None     # mop_S/mop_str: s.off
-    reg: int | None = None        # mop_r: r
+    value: int | None = None  # mop_n: nnn.value
+    stkoff: int | None = None  # mop_S/mop_str: s.off
+    reg: int | None = None  # mop_r: r
     block_ref: int | None = None  # mop_b: b (rich variant calls this ``block_num``)
     # E2a portable identity for dispatcher state-variable analysis.
     # Field names mostly match the rich
@@ -132,8 +132,8 @@ class MopSnapshot:
     # builds this type straight from the live ``mop.b``, so it never relies on
     # name parity for this field -- do NOT add a generic field-by-field copy
     # between the two variants without remapping ``block_ref`` <-> ``block_num``.
-    gaddr: int | None = None      # mop_v: g (global address)
-    lvar_off: int | None = None   # mop_l: l.off (offset *into* the lvar; usually 0)
+    gaddr: int | None = None  # mop_v: g (global address)
+    lvar_off: int | None = None  # mop_l: l.off (offset *into* the lvar; usually 0)
     # mop_l: the lvar's FRAME stack offset (``mba.vars[idx].location.stkoff()``),
     # captured once per function at lift (ticket llr-lxas S1).  This is the real
     # state-variable identity; ``lvar_off`` is the offset *within* the lvar and
@@ -184,9 +184,9 @@ class InsnSnapshot:
     # microcode text while their structural operands are being ported.
     display_text: str = ""
     # Rich typed operand fields (populated by capture_insn_snapshot).
-    l: MopSnapshot | None = None   # left operand
-    r: MopSnapshot | None = None   # right operand
-    d: MopSnapshot | None = None   # dest operand
+    l: MopSnapshot | None = None  # left operand
+    r: MopSnapshot | None = None  # right operand
+    d: MopSnapshot | None = None  # dest operand
     kind: InsnKind = InsnKind.UNKNOWN
     raw_opcode: int | None = None
     value_op_kind: ValueOpKind | None = None
@@ -216,7 +216,9 @@ class InsnSnapshot:
             object.__setattr__(self, "raw_opcode", int(self.opcode))
         if self.opcode < 0 and self.raw_opcode is not None:
             object.__setattr__(self, "opcode", int(self.raw_opcode))
-        object.__setattr__(self, "opcode_attrs", MappingProxyType(dict(self.opcode_attrs)))
+        object.__setattr__(
+            self, "opcode_attrs", MappingProxyType(dict(self.opcode_attrs))
+        )
         if self.value_op_kind is None:
             kind_to_value = {
                 InsnKind.MOV: ValueOpKind.MOVE,
@@ -279,11 +281,15 @@ class InsnSnapshot:
             if operand_sizes:
                 object.__setattr__(self, "compare_width", max(operand_sizes))
         if self.opcode < 0 and self.kind is InsnKind.UNKNOWN:
-            raise ValueError(f"InsnSnapshot: opcode must be non-negative, got {self.opcode}")
+            raise ValueError(
+                f"InsnSnapshot: opcode must be non-negative, got {self.opcode}"
+            )
         if self.ea < 0:
             raise ValueError(f"InsnSnapshot: ea must be non-negative, got {self.ea}")
         if not isinstance(self.operands, tuple):
-            raise TypeError(f"InsnSnapshot: operands must be tuple, got {type(self.operands)}")
+            raise TypeError(
+                f"InsnSnapshot: operands must be tuple, got {type(self.operands)}"
+            )
         if not isinstance(self.operand_slots, tuple):
             raise TypeError(
                 f"InsnSnapshot: operand_slots must be tuple, got {type(self.operand_slots)}"
@@ -322,15 +328,21 @@ class BlockSnapshot:
 
     def __post_init__(self) -> None:
         if self.serial < 0:
-            raise ValueError(f"BlockSnapshot: serial must be non-negative, got {self.serial}")
+            raise ValueError(
+                f"BlockSnapshot: serial must be non-negative, got {self.serial}"
+            )
         if self.raw_block_type is None and self.block_type >= 0:
             object.__setattr__(self, "raw_block_type", int(self.block_type))
         if self.block_type < 0 and self.raw_block_type is not None:
             object.__setattr__(self, "block_type", int(self.raw_block_type))
         if self.block_type < 0 and self.kind is BlockKind.UNKNOWN:
-            raise ValueError(f"BlockSnapshot: block_type must be non-negative, got {self.block_type}")
+            raise ValueError(
+                f"BlockSnapshot: block_type must be non-negative, got {self.block_type}"
+            )
         if self.start_ea < 0:
-            raise ValueError(f"BlockSnapshot: start_ea must be non-negative, got {self.start_ea}")
+            raise ValueError(
+                f"BlockSnapshot: start_ea must be non-negative, got {self.start_ea}"
+            )
         if self.native_start_ea is not None:
             native_start_ea = int(self.native_start_ea)
             if not 0 <= native_start_ea < 0xFFFFFFFFFFFFFFFF:
@@ -339,9 +351,13 @@ class BlockSnapshot:
                 )
             object.__setattr__(self, "native_start_ea", native_start_ea)
         if not isinstance(self.succs, tuple):
-            raise TypeError(f"BlockSnapshot: succs must be tuple, got {type(self.succs)}")
+            raise TypeError(
+                f"BlockSnapshot: succs must be tuple, got {type(self.succs)}"
+            )
         if not isinstance(self.preds, tuple):
-            raise TypeError(f"BlockSnapshot: preds must be tuple, got {type(self.preds)}")
+            raise TypeError(
+                f"BlockSnapshot: preds must be tuple, got {type(self.preds)}"
+            )
         if not isinstance(self.insn_snapshots, tuple):
             raise TypeError(
                 f"BlockSnapshot: insn_snapshots must be tuple, got {type(self.insn_snapshots)}"
@@ -401,7 +417,9 @@ class FlowGraph:
 
     def __post_init__(self) -> None:
         if self.func_ea < 0:
-            raise ValueError(f"PortableCFG: func_ea must be non-negative, got {self.func_ea}")
+            raise ValueError(
+                f"PortableCFG: func_ea must be non-negative, got {self.func_ea}"
+            )
 
         object.__setattr__(self, "blocks", MappingProxyType(dict(self.blocks)))
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
@@ -415,12 +433,16 @@ class FlowGraph:
             for succ in blk.succs:
                 if succ not in self.blocks:
                     logger.warning(
-                        "PortableCFG: block %s references non-existent successor %s", serial, succ
+                        "PortableCFG: block %s references non-existent successor %s",
+                        serial,
+                        succ,
                     )
             for pred in blk.preds:
                 if pred not in self.blocks:
                     logger.warning(
-                        "PortableCFG: block %s references non-existent predecessor %s", serial, pred
+                        "PortableCFG: block %s references non-existent predecessor %s",
+                        serial,
+                        pred,
                     )
 
     @property

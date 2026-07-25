@@ -1,4 +1,5 @@
 """Unit tests for terminal_return_proof -- types, topology layer, report."""
+
 from __future__ import annotations
 
 import pytest
@@ -10,8 +11,11 @@ from d810.evaluator.hexrays_microcode.terminal_return_proof import (
     TerminalReturnValueProof,
     prove_terminal_returns,
 )
-from d810.analyses.control_flow.terminal_return_audit import \
-    TerminalReturnSourceKind, TerminalReturnSiteAudit, TerminalReturnAuditReport
+from d810.analyses.control_flow.terminal_return_audit import (
+    TerminalReturnSourceKind,
+    TerminalReturnSiteAudit,
+    TerminalReturnAuditReport,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -107,19 +111,27 @@ class TestTerminalReturnProofReport:
     def test_proof_report_summary(self) -> None:
         proofs = (
             TerminalReturnValueProof(
-                handler_serial=1, carrier_kind="rax.8", def_sites=(),
-                ambiguous=False, topology_kind="direct_return",
+                handler_serial=1,
+                carrier_kind="rax.8",
+                def_sites=(),
+                ambiguous=False,
+                topology_kind="direct_return",
                 proof_layer_used=ProofLayer.TOPOLOGY,
             ),
             TerminalReturnValueProof(
-                handler_serial=2, carrier_kind="rax.8",
+                handler_serial=2,
+                carrier_kind="rax.8",
                 def_sites=(DefSiteLike(3, 0x200), DefSiteLike(4, 0x300)),
-                ambiguous=True, topology_kind="shared_epilogue",
+                ambiguous=True,
+                topology_kind="shared_epilogue",
                 proof_layer_used=ProofLayer.CHAIN_BACKED,
             ),
             TerminalReturnValueProof(
-                handler_serial=3, carrier_kind="rax.8", def_sites=(),
-                ambiguous=False, topology_kind="unreachable",
+                handler_serial=3,
+                carrier_kind="rax.8",
+                def_sites=(),
+                ambiguous=False,
+                topology_kind="unreachable",
                 proof_layer_used=ProofLayer.UNRESOLVED,
             ),
         )
@@ -166,7 +178,8 @@ class TestTopologyLayer:
 
     def test_topology_layer_resolves_direct_return_with_rax_write(self) -> None:
         audit = self._make_audit(
-            TerminalReturnSourceKind.DIRECT_RETURN, has_rax_write=True,
+            TerminalReturnSourceKind.DIRECT_RETURN,
+            has_rax_write=True,
         )
         # mba=None disables layers 2-4, so only topology can fire.
         report = prove_terminal_returns(mba=None, audit_report=audit)
@@ -178,7 +191,8 @@ class TestTopologyLayer:
 
     def test_unresolved_when_no_layers_match(self) -> None:
         audit = self._make_audit(
-            TerminalReturnSourceKind.UNREACHABLE, has_rax_write=None,
+            TerminalReturnSourceKind.UNREACHABLE,
+            has_rax_write=None,
         )
         report = prove_terminal_returns(mba=None, audit_report=audit)
         assert len(report.proofs) == 1
@@ -188,7 +202,8 @@ class TestTopologyLayer:
     def test_topology_requires_both_conditions(self) -> None:
         # has_rax_write=True but source_kind is SHARED_EPILOGUE -> topology won't fire.
         audit = self._make_audit(
-            TerminalReturnSourceKind.SHARED_EPILOGUE, has_rax_write=True,
+            TerminalReturnSourceKind.SHARED_EPILOGUE,
+            has_rax_write=True,
         )
         report = prove_terminal_returns(mba=None, audit_report=audit)
         proof = report.proofs[0]
@@ -197,7 +212,8 @@ class TestTopologyLayer:
     def test_topology_requires_rax_write_true(self) -> None:
         # source_kind=DIRECT_RETURN but has_rax_write=None -> topology won't fire.
         audit = self._make_audit(
-            TerminalReturnSourceKind.DIRECT_RETURN, has_rax_write=None,
+            TerminalReturnSourceKind.DIRECT_RETURN,
+            has_rax_write=None,
         )
         report = prove_terminal_returns(mba=None, audit_report=audit)
         proof = report.proofs[0]

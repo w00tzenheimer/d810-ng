@@ -5,8 +5,7 @@ import ida_hexrays
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir.mop_utils import mop_to_ast
-from d810.hexrays.ir.cfg_queries import (
-    is_conditional_jump)
+from d810.hexrays.ir.cfg_queries import is_conditional_jump
 from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.cfg_verify import is_resolver_proven_live_predicate
 from d810.hexrays.utils.hexrays_formatters import (
@@ -14,7 +13,10 @@ from d810.hexrays.utils.hexrays_formatters import (
     opcode_to_string,
     string_to_maturity,
 )
-from d810.optimizers.microcode.flow.handler import FlowOptimizationRule, FlowRulePriority
+from d810.optimizers.microcode.flow.handler import (
+    FlowOptimizationRule,
+    FlowRulePriority,
+)
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     ast_generator,
 )
@@ -38,13 +40,7 @@ def _block_has_side_effect_payload(
     *,
     required_constant_markers: tuple[str, ...] = (),
 ) -> bool:
-    side_effect_ops = {
-        op
-        for op in (
-            getattr(ida_hexrays, "m_stx", -1),
-        )
-        if op >= 0
-    }
+    side_effect_ops = {op for op in (getattr(ida_hexrays, "m_stx", -1),) if op >= 0}
     if not side_effect_ops:
         return False
     for insn in _iter_block_insns(blk):
@@ -70,7 +66,7 @@ def _discarded_corridor_has_side_effect_payload(
     max_depth: int,
     required_constant_markers: tuple[str, ...] = (),
 ) -> bool:
-    "Return whether the branch being removed owns local payload side effects.\n\n    JumpFixer normally treats Z3-proven opaque branches as disposable.  That is\n    fine for pure dispatcher-routing blocks, but OLLVM state-map lowering can\n    leave branch-local payload corridors behind: one arm may contain a memory\n    store that preanalysis has identified as semantic work.  If a later opaque fold\n    discards that arm, IDA DCE erases the payload and the final pseudocode looks\n    cleaner while no longer representing both semantic outcomes.  When\n    ``required_constant_markers`` is supplied, this guard preserves only stores\n    whose value expression carries one of those semantic constants; generic\n    stack-zeroing and local bookkeeping stores remain foldable.\n\n    Keep this bounded and local.  The guard looks only through a small corridor\n    rooted at the discarded successor and stops when it reaches the successor\n    chosen by the fold.  It is enabled by profile config rather than globally.\n    "
+    "Return whether the branch being removed owns local payload side effects.\n\n    JumpFixer normally treats Z3-proven opaque branches as disposable.  That is\n    fine for pure dispatcher-routing blocks, but OLLVM state-map lowering can\n    leave branch-local payload corridors behind: one arm may contain a memory\n    store that preanalysis has identified as semantic work.  If a later opaque fold\n    discards that arm, IDA DCE erases the payload and the final pseudocode looks\n    cleaner while no longer representing both semantic outcomes.  When\n    ``required_constant_markers`` is supplied, this guard preserves only stores\n    whose value expression carries one of those semantic constants; generic\n    stack-zeroing and local bookkeeping stores remain foldable.\n\n    Keep this bounded and local.  The guard looks only through a small corridor\n    rooted at the discarded successor and stops when it reaches the successor\n    chosen by the fold.  It is enabled by profile config rather than globally.\n"
 
     try:
         qty = int(getattr(mba, "qty", 0) or 0)
@@ -202,7 +198,11 @@ class JumpOptimizationRule(Registrant):
         return []
 
     def check_pattern_and_replace(
-        self, blk: ida_hexrays.mblock_t, instruction: ida_hexrays.minsn_t, left_ast: AstNode, right_ast: AstNode
+        self,
+        blk: ida_hexrays.mblock_t,
+        instruction: ida_hexrays.minsn_t,
+        left_ast: AstNode,
+        right_ast: AstNode,
     ):
         if instruction.opcode not in self.ORIGINAL_JUMP_OPCODES:
             return None
@@ -227,7 +227,10 @@ class JumpOptimizationRule(Registrant):
         return new_ins
 
     def get_replacement(
-        self, original_ins: ida_hexrays.minsn_t, left_candidate: AstNode, right_candidate: AstNode
+        self,
+        original_ins: ida_hexrays.minsn_t,
+        left_candidate: AstNode,
+        right_candidate: AstNode,
     ):
         new_left_mop = None
         new_right_mop = None
@@ -335,9 +338,7 @@ class JumpFixer(FlowOptimizationRule):
             constants = (constants,)
         try:
             self.preserve_z3_discarded_side_effect_constants = tuple(
-                str(constant).upper()
-                for constant in constants
-                if str(constant)
+                str(constant).upper() for constant in constants if str(constant)
             )
         except TypeError:
             self.preserve_z3_discarded_side_effect_constants = ()

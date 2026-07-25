@@ -67,10 +67,7 @@ class TestCachedBlockPath:
 
     def test_serials_caching(self):
         """Test that serials are cached."""
-        blocks = [
-            ImmutableBlockInfo(blk_serial=i, ins_list=())
-            for i in [5, 10, 15]
-        ]
+        blocks = [ImmutableBlockInfo(blk_serial=i, ins_list=()) for i in [5, 10, 15]]
         path = CachedBlockPath(blocks)
 
         # First access computes
@@ -110,8 +107,7 @@ class TestCachedBlockPath:
     def test_contains_serial(self):
         """Test O(1) serial membership check."""
         blocks = [
-            ImmutableBlockInfo(blk_serial=i, ins_list=())
-            for i in [5, 10, 15, 20]
+            ImmutableBlockInfo(blk_serial=i, ins_list=()) for i in [5, 10, 15, 20]
         ]
         path = CachedBlockPath(blocks)
 
@@ -192,4 +188,6 @@ class TestBenchmarks:
 
         # Immutable reference should be faster than shallow copy
         result = benchmark_block_info_copy(n_iterations=1000)
-        assert result["speedup_vs_shallow"] > 1.0, "Immutable ref should be faster than copy"
+        assert result["speedup_vs_shallow"] > 1.0, (
+            "Immutable ref should be faster than copy"
+        )

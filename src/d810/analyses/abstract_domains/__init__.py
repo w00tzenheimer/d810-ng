@@ -11,6 +11,7 @@ protocol, for the state-value resolver and the guard / opaque-predicate oracle:
 
 All portable (no IDA). Reference: LiSA ``it.unive.lisa.analysis.Lattice``.
 """
+
 from __future__ import annotations
 
 from d810.analyses.abstract_domains.protocol import AbstractDomain

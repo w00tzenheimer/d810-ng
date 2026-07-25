@@ -1,4 +1,5 @@
 "Selector for ``state_cfg_edge_alternate_correlations`` rows.\n\nResolves the ambiguity that the correlation substrate exposes when\nmultiple alternate edges overlap a collapsed source.  The selector is\n**observability-only**: it produces a ``selected``/``rejected``\ndecision per (collapsed_edge, alternate_edge) pair with a fact-backed\nreason; no preanalysis edge target selection or HCC behavior depends on the\noutput.\n\nSelection rule\n--------------\n\nFor a collapsed edge whose ``source_byte_index = N`` (cross-linked\nfrom ``TerminalByteEmitterFact.destination_block`` against the\ncollapsed source's owned blocks):\n\n* Bounded BFS from the alternate's ``target_state`` through\n  ``state_cfg_edges``, depth ``<= 2``.\n* If any reachable state's owned blocks contain a\n  ``corridor_role = terminal_tail``\n  ``TerminalByteEmitterFact`` destination with ``byte_index > N``,\n  mark **selected** and record the reached byte_index + state.\n* Otherwise:\n  - if all reachable states from the alternate have only\n    ``CONDITIONAL_RETURN`` outgoing edges, mark **rejected** with\n    reason ``early_return_arm_no_later_terminal_tail``.\n  - otherwise mark **rejected** with reason ``no_later_terminal_tail_within_depth``.\n\nWhen the source has no derivable byte_index (no terminal_tail emit\nfact for the source's blocks), no selection is recorded -- the\ncorrelation row is preserved but no decision is made.\n\nBounded BFS\n-----------\n\nDepth <= 2 means: the alternate's direct target state, then its\ndirect successors.  Two hops is sufficient for the byte5 -> byte6\ncase (target ``STATE_10743C4C`` -> ``STATE_6107F8EC`` is one hop).\nRecursive walking is explicitly out of scope.\n"
+
 from __future__ import annotations
 
 import json
@@ -93,9 +94,7 @@ def _state_owned_blocks(
         )
         .where(
             (StateCfgNodeBlock.snapshot == int(snapshot_id))
-            & StateCfgNodeBlock.role.in_(
-                ["owned", "exclusive", "shared_suffix"]
-            )
+            & StateCfgNodeBlock.role.in_(["owned", "exclusive", "shared_suffix"])
         )
         .tuples()
     )
@@ -120,9 +119,7 @@ def _state_byte_index(
     """
     blocks = state_owned.get(state_hex.lower(), set())
     indices = [
-        terminal_tail_blocks[blk]
-        for blk in blocks
-        if blk in terminal_tail_blocks
+        terminal_tail_blocks[blk] for blk in blocks if blk in terminal_tail_blocks
     ]
     if not indices:
         return None
@@ -143,11 +140,7 @@ def _state_owned_byte_indices(
     blk[217] in sub_7FFD3338C040).
     """
     blocks = state_owned.get(state_hex.lower(), set())
-    return {
-        terminal_tail_blocks[blk]
-        for blk in blocks
-        if blk in terminal_tail_blocks
-    }
+    return {terminal_tail_blocks[blk] for blk in blocks if blk in terminal_tail_blocks}
 
 
 def _outgoing_by_state(
@@ -183,11 +176,11 @@ def _bfs_for_terminal_tail(
     source_byte_index: int,
     max_depth: int,
 ) -> tuple[
-    bool,                     # found later-byte
-    int | None,               # reached byte_index
-    str | None,               # reached state hex
-    bool,                     # all-conditional-return-only flag
-    list[str],                # visited state list (for evidence)
+    bool,  # found later-byte
+    int | None,  # reached byte_index
+    str | None,  # reached state hex
+    bool,  # all-conditional-return-only flag
+    list[str],  # visited state list (for evidence)
 ]:
     """Bounded BFS through ``outgoing`` from ``start_state``.
 
@@ -209,9 +202,7 @@ def _bfs_for_terminal_tail(
         # source.  Use the *largest* matching index for the
         # ``reached_byte_index`` annotation (most informative), but
         # any match is sufficient for selection.
-        bi_set = _state_owned_byte_indices(
-            state, state_owned, terminal_tail_blocks
-        )
+        bi_set = _state_owned_byte_indices(state, state_owned, terminal_tail_blocks)
         later = {bi for bi in bi_set if bi > source_byte_index}
         if later:
             return True, max(later), state, False, visited_order
@@ -289,9 +280,7 @@ def select_alternate_edges(
         for state_hex in (collapsed_source_state, alt_source_state):
             if state_hex is None:
                 continue
-            bi = _state_byte_index(
-                str(state_hex), state_owned, terminal_tail_blocks
-            )
+            bi = _state_byte_index(str(state_hex), state_owned, terminal_tail_blocks)
             if bi is not None:
                 candidates.append(bi)
         source_byte_index = min(candidates) if candidates else None
@@ -330,15 +319,13 @@ def select_alternate_edges(
             )
             continue
 
-        found, reached_bi, reached_state, only_cond, visited = (
-            _bfs_for_terminal_tail(
-                start_state=str(alt_target_state),
-                state_owned=state_owned,
-                terminal_tail_blocks=terminal_tail_blocks,
-                outgoing=outgoing,
-                source_byte_index=int(source_byte_index),
-                max_depth=int(max_depth),
-            )
+        found, reached_bi, reached_state, only_cond, visited = _bfs_for_terminal_tail(
+            start_state=str(alt_target_state),
+            state_owned=state_owned,
+            terminal_tail_blocks=terminal_tail_blocks,
+            outgoing=outgoing,
+            source_byte_index=int(source_byte_index),
+            max_depth=int(max_depth),
         )
 
         if found:
@@ -382,8 +369,7 @@ def persist_alternate_selections(
     snapshot_ids = sorted({int(r[0]) for r in rows})
     for snap_id in snapshot_ids:
         conn.execute(
-            "DELETE FROM state_cfg_edge_alternate_selections "
-            "WHERE snapshot_id = ?",
+            "DELETE FROM state_cfg_edge_alternate_selections WHERE snapshot_id = ?",
             (snap_id,),
         )
     conn.executemany(

@@ -23,6 +23,7 @@ Usage:
     python tools/scripts/rename/dag_tables_to_state_cfg.py            # dry-run (show changes)
     python tools/scripts/rename/dag_tables_to_state_cfg.py --apply    # write files
 """
+
 from __future__ import annotations
 
 import argparse
@@ -54,7 +55,7 @@ def _rename_tokens(text: str) -> str:
     """Rename dag_* table tokens + idx_dag_ index prefix inside one string."""
     # Index names first (distinctive prefix; not word-bounded by design).
     text = text.replace("idx_dag_", "idx_state_cfg_")
-    return _TABLE_RE.sub(lambda m: "state_cfg_" + m.group(1)[len("dag_"):], text)
+    return _TABLE_RE.sub(lambda m: "state_cfg_" + m.group(1)[len("dag_") :], text)
 
 
 class _StringTableRenamer(cst.CSTTransformer):
@@ -114,7 +115,9 @@ ALLOWLIST = [
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--apply", action="store_true", help="write changes (default: dry-run)")
+    ap.add_argument(
+        "--apply", action="store_true", help="write changes (default: dry-run)"
+    )
     args = ap.parse_args()
 
     total = 0
@@ -141,7 +144,9 @@ def main() -> int:
             path.write_text(new_module.code)
 
     verb = "applied" if args.apply else "would change"
-    print(f"\n{verb} {total} string literal(s) across {len(ALLOWLIST)} candidate files.")
+    print(
+        f"\n{verb} {total} string literal(s) across {len(ALLOWLIST)} candidate files."
+    )
     if not args.apply:
         print("Re-run with --apply to write.")
     return 0

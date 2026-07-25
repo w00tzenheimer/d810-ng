@@ -79,7 +79,9 @@ class MopResolutionStrategy(Protocol):
     a concrete integer constant or ``None`` to defer to the next strategy.
     """
 
-    def resolve(self, mop: object, mba: object, blk_serial: int, environment: object) -> int | None:
+    def resolve(
+        self, mop: object, mba: object, blk_serial: int, environment: object
+    ) -> int | None:
         """Return constant value or None."""
         ...
 
@@ -97,7 +99,9 @@ class SCCPStrategy:
             return self._plain_fallback
         return self._cache
 
-    def resolve(self, mop: object, mba: object, blk_serial: int, environment: object) -> int | None:
+    def resolve(
+        self, mop: object, mba: object, blk_serial: int, environment: object
+    ) -> int | None:
         cache = self._get_cache()
         try:
             in_cache = mba in cache
@@ -129,12 +133,15 @@ class SCCPStrategy:
         result = cache.get(mba, {})
         if result:
             from d810.hexrays.expr.p_ast import get_mop_key
+
             val = result.get(get_mop_key(mop))
             if val is not None:
                 if emulator_log.debug_on:
                     emulator_log.debug(
                         "SCCP-HIT: blk=%d var=%s -> 0x%x",
-                        blk_serial, get_mop_key(mop), val,
+                        blk_serial,
+                        get_mop_key(mop),
+                        val,
                     )
                 return val
         return None
@@ -146,14 +153,23 @@ class DemandDrivenStrategy:
     def __init__(self) -> None:
         self._memo: dict[tuple, int | None] = {}
 
-    def resolve(self, mop: object, mba: object, blk_serial: int, environment: object) -> int | None:
+    def resolve(
+        self, mop: object, mba: object, blk_serial: int, environment: object
+    ) -> int | None:
         try:
-            _mod = importlib.import_module("d810.evaluator.hexrays_microcode.demand_eval")
+            _mod = importlib.import_module(
+                "d810.evaluator.hexrays_microcode.demand_eval"
+            )
             import ida_hexrays as _ihr
+
             if mop.t == _ihr.mop_r:
-                return _mod.resolve_variable_demand(mba, blk_serial, mop.t, mop.r, mop.size, self._memo)
+                return _mod.resolve_variable_demand(
+                    mba, blk_serial, mop.t, mop.r, mop.size, self._memo
+                )
             elif mop.t == _ihr.mop_S and mop.s is not None:
-                return _mod.resolve_variable_demand(mba, blk_serial, mop.t, mop.s.off, mop.size, self._memo)
+                return _mod.resolve_variable_demand(
+                    mba, blk_serial, mop.t, mop.s.off, mop.size, self._memo
+                )
         except Exception:
             pass
         return None
@@ -174,7 +190,9 @@ class TopoEvalStrategy:
             return self._plain_fallback
         return self._cache
 
-    def resolve(self, mop: object, mba: object, blk_serial: int, environment: object) -> int | None:
+    def resolve(
+        self, mop: object, mba: object, blk_serial: int, environment: object
+    ) -> int | None:
         cache = self._get_cache()
         try:
             in_cache = mba in cache
@@ -185,7 +203,9 @@ class TopoEvalStrategy:
 
         if not in_cache:
             try:
-                _mod = importlib.import_module("d810.evaluator.hexrays_microcode.topo_eval")
+                _mod = importlib.import_module(
+                    "d810.evaluator.hexrays_microcode.topo_eval"
+                )
                 cache[mba] = _mod.compute_block_environments(mba)
             except TypeError:
                 cache = {}
@@ -200,6 +220,7 @@ class TopoEvalStrategy:
         block_env = cache.get(mba, {}).get(blk_serial)
         if block_env:
             from d810.hexrays.expr.p_ast import get_mop_key
+
             return block_env.get(get_mop_key(mop))
         return None
 
@@ -435,7 +456,9 @@ class MicroCodeInterpreter(object):
         # Unknown architecture or segment — don't guess
         return None
 
-    def _resolve_mop_via_def_use(self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment) -> int | None:
+    def _resolve_mop_via_def_use(
+        self, mop: ida_hexrays.mop_t, environment: MicroCodeEnvironment
+    ) -> int | None:
         # Use cached value if available
         mop_key = get_mop_key(mop)
         if mop_key in self._def_use_cache:
@@ -460,12 +483,16 @@ class MicroCodeInterpreter(object):
         if mop.t == ida_hexrays.mop_r:
             reg_mreg = mop.r
             size = mop.size
-            blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else 0
+            blk_serial = (
+                environment.cur_blk.serial if environment.cur_blk is not None else 0
+            )
             defs = find_reaching_defs_for_reg(mba, blk_serial, reg_mreg, size)
         else:  # mop_S
             stkoff = mop.s.off
             size = mop.size
-            blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else 0
+            blk_serial = (
+                environment.cur_blk.serial if environment.cur_blk is not None else 0
+            )
             defs = find_reaching_defs_for_stkvar(mba, blk_serial, stkoff, size)
 
         # Handle multiple definitions (phi-node situations)
@@ -473,7 +500,8 @@ class MicroCodeInterpreter(object):
             if emulator_log.debug_on:
                 emulator_log.debug(
                     "DEF-USE-DIAG: blk=%d var=%s ndefs=0 (no reaching defs)",
-                    blk_serial, get_mop_key(mop),
+                    blk_serial,
+                    get_mop_key(mop),
                 )
             return None
         elif len(defs) > 1:
@@ -488,7 +516,10 @@ class MicroCodeInterpreter(object):
                 if emulator_log.debug_on:
                     emulator_log.debug(
                         "DEF-USE-DIAG: blk=%d var=%s ndefs=%d defs=%s (phi, giving up)",
-                        blk_serial, get_mop_key(mop), len(defs), defs[:3],
+                        blk_serial,
+                        get_mop_key(mop),
+                        len(defs),
+                        defs[:3],
                     )
                 return None
 
@@ -510,7 +541,7 @@ class MicroCodeInterpreter(object):
 
         # Insert cycle detection sentinel before recursive evaluation
         self._def_use_cache[mop_key] = None
-        
+
         # Save current environment flow context to restore later
         saved_cur_blk = environment.cur_blk
         saved_cur_ins = environment.cur_ins
@@ -520,14 +551,18 @@ class MicroCodeInterpreter(object):
         try:
             # Set the environment context to the defining instruction's block
             environment.set_cur_flow(blk, def_insn)
-            
+
             # Evaluate the defining instruction using the existing evaluator
             # This enables recursive constant folding through arbitrary def-use chains
             value = self._eval_instruction(def_insn, environment)
-            
+
             if value is not None:
                 # Mask the result to the destination size
-                res_mask = AND_TABLE[def_insn.d.size] if def_insn.d and def_insn.d.size else AND_TABLE[mop.size]
+                res_mask = (
+                    AND_TABLE[def_insn.d.size]
+                    if def_insn.d and def_insn.d.size
+                    else AND_TABLE[mop.size]
+                )
                 value = value & res_mask
                 self._def_use_cache[mop_key] = value
                 return value
@@ -536,7 +571,10 @@ class MicroCodeInterpreter(object):
                 if emulator_log.debug_on:
                     emulator_log.debug(
                         "DEF-USE-DIAG: blk=%d var=%s ndefs=1 def_site=blk%d@%#x eval=None (single def eval failed)",
-                        blk_serial, get_mop_key(mop), def_site.block_serial, def_site.ins_ea,
+                        blk_serial,
+                        get_mop_key(mop),
+                        def_site.block_serial,
+                        def_site.ins_ea,
                     )
                 if mop_key in self._def_use_cache:
                     del self._def_use_cache[mop_key]
@@ -546,7 +584,11 @@ class MicroCodeInterpreter(object):
             if emulator_log.debug_on:
                 emulator_log.debug(
                     "DEF-USE-DIAG: blk=%d var=%s ndefs=1 def_site=blk%d@%#x exc=%s",
-                    blk_serial, get_mop_key(mop), def_site.block_serial, def_site.ins_ea, e,
+                    blk_serial,
+                    get_mop_key(mop),
+                    def_site.block_serial,
+                    def_site.ins_ea,
+                    e,
                 )
             if mop_key in self._def_use_cache:
                 del self._def_use_cache[mop_key]
@@ -1174,7 +1216,9 @@ class MicroCodeInterpreter(object):
                     blk_serial = cur_blk.serial
                     for strategy in self._strategies:
                         try:
-                            value = strategy.resolve(mop, mba_ref, blk_serial, environment)
+                            value = strategy.resolve(
+                                mop, mba_ref, blk_serial, environment
+                            )
                             if value is not None:
                                 environment.define(mop, value)
                                 return value
@@ -1205,18 +1249,33 @@ class MicroCodeInterpreter(object):
                 if emulator_log.debug_on:
                     environment.dump(f"Environment when looking up {_name}")
                     try:
-                        blk_serial = environment.cur_blk.serial if environment.cur_blk is not None else -1
-                        mba = environment.cur_blk.mba if environment.cur_blk is not None else None
+                        blk_serial = (
+                            environment.cur_blk.serial
+                            if environment.cur_blk is not None
+                            else -1
+                        )
+                        mba = (
+                            environment.cur_blk.mba
+                            if environment.cur_blk is not None
+                            else None
+                        )
                         if mba is not None and blk_serial >= 0:
                             if mop.t == ida_hexrays.mop_r:
-                                defs = find_reaching_defs_for_reg(mba, blk_serial, mop.r, mop.size)
+                                defs = find_reaching_defs_for_reg(
+                                    mba, blk_serial, mop.r, mop.size
+                                )
                             elif mop.t == ida_hexrays.mop_S and mop.s is not None:
-                                defs = find_reaching_defs_for_stkvar(mba, blk_serial, mop.s.off, mop.size)
+                                defs = find_reaching_defs_for_stkvar(
+                                    mba, blk_serial, mop.s.off, mop.size
+                                )
                             else:
                                 defs = []
                             emulator_log.debug(
                                 "DEF-USE-DIAG: blk=%d var=%s ndefs=%d defs=%s",
-                                blk_serial, get_mop_key(mop), len(defs), defs[:3],
+                                blk_serial,
+                                get_mop_key(mop),
+                                len(defs),
+                                defs[:3],
                             )
                         else:
                             emulator_log.debug(
@@ -1224,13 +1283,17 @@ class MicroCodeInterpreter(object):
                                 get_mop_key(mop),
                             )
                     except Exception as exc:
-                        emulator_log.debug("DEF-USE-DIAG: failed to query chains: %s", exc)
+                        emulator_log.debug(
+                            "DEF-USE-DIAG: failed to query chains: %s", exc
+                        )
                 # Include vd stkoff and IDA stkoff for cross-referencing with disassembly
                 _detail = _name
                 if mop.t == ida_hexrays.mop_S and mop.s is not None:
                     vd_off = mop.s.off
                     try:
-                        mba_ref = environment.cur_blk.mba if environment.cur_blk else None
+                        mba_ref = (
+                            environment.cur_blk.mba if environment.cur_blk else None
+                        )
                         ida_off = mba_ref.stkoff_vd2ida(vd_off) if mba_ref else "?"
                         _detail = f"{_name} (vd_stkoff=0x{vd_off:X}, ida_stkoff=0x{ida_off:X})"
                     except Exception:
@@ -1392,6 +1455,7 @@ class MopMapping(typing.MutableMapping[ida_hexrays.mop_t, int]):
     Valid only during a single `search_backward()` or emulation pass. Do not
     cache MopMapping instances across multiple optimizer invocations.
     """
+
     def __init__(self):
         self.mops = []  # List of BorrowedMop - valid only during current emulation pass
         self.mops_values = []

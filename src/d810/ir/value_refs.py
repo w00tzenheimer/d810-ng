@@ -8,6 +8,7 @@ LS8 substrate front-load).
 Minimum viable scope: the reference families the recurrence / induction analyses
 need.  ``ValueRef`` is the closed union over them.  Extend on demand.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

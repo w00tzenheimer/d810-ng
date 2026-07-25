@@ -189,7 +189,9 @@ class MatchBinding:
 
     __slots__ = ("name", "mop", "dest_size", "ea")
 
-    def __init__(self, name: str, mop: object = None, dest_size: object = None, ea: object = None):
+    def __init__(
+        self, name: str, mop: object = None, dest_size: object = None, ea: object = None
+    ):
         self.name = name
         # Accept both MopSnapshot and raw mop_t; convert to snapshot to ensure safe storage
         if mop is None:
@@ -218,7 +220,14 @@ class MatchBindings:
 
     MAX_BINDINGS = 64
 
-    __slots__ = ("bindings", "count", "root_mop", "root_dst_mop", "root_dest_size", "root_ea")
+    __slots__ = (
+        "bindings",
+        "count",
+        "root_mop",
+        "root_dst_mop",
+        "root_dest_size",
+        "root_ea",
+    )
 
     def __init__(self):
         self.bindings: list[MatchBinding] = []
@@ -237,7 +246,9 @@ class MatchBindings:
         self.root_dest_size = None
         self.root_ea = None
 
-    def add(self, name: str, mop: object, dest_size: object = None, ea: object = None) -> bool:
+    def add(
+        self, name: str, mop: object, dest_size: object = None, ea: object = None
+    ) -> bool:
         """Add a binding. Returns False if capacity exceeded."""
         if self.count >= self.MAX_BINDINGS:
             return False
@@ -258,7 +269,7 @@ class MatchBindings:
         Assumes _check_binding_equalities has validated that duplicate
         names bind to equal mops, so last-wins dict construction is safe.
         """
-        return {b.name: b for b in self.bindings[:self.count]}
+        return {b.name: b for b in self.bindings[: self.count]}
 
 
 def match_pattern_nomut(
@@ -327,14 +338,18 @@ def _match_recursive(
                 # No is_constant method; try mop type check
                 try:
                     import ida_hexrays
-                    if hasattr(candidate.mop, 't') and candidate.mop.t != ida_hexrays.mop_n:
+
+                    if (
+                        hasattr(candidate.mop, "t")
+                        and candidate.mop.t != ida_hexrays.mop_n
+                    ):
                         return False
                 except ImportError:
                     pass
 
             expected = getattr(pattern, "expected_value", None)
             if expected is not None:
-                if candidate.mop is None or not hasattr(candidate.mop, 'nnn'):
+                if candidate.mop is None or not hasattr(candidate.mop, "nnn"):
                     return False
                 nnn = candidate.mop.nnn
                 if nnn is None or not hasattr(nnn, "value"):
@@ -423,20 +438,42 @@ def _check_binding_equalities(bindings: MatchBindings) -> bool:
                 if prev_snap.t == 0:  # mop_n
                     try:
                         import ida_hexrays
-                        if prev_snap.t == ida_hexrays.mop_n and prev_snap.value != curr_snap.value:
+
+                        if (
+                            prev_snap.t == ida_hexrays.mop_n
+                            and prev_snap.value != curr_snap.value
+                        ):
                             return False
                     except ImportError:
                         pass
                 else:
                     # For other types, compare the full cache key (minus size)
-                    prev_key = (prev_snap.t, prev_snap.valnum, prev_snap.value,
-                               prev_snap.reg, prev_snap.stkoff, prev_snap.gaddr,
-                               prev_snap.lvar_idx, prev_snap.lvar_off, prev_snap.block_num,
-                               prev_snap.helper_name, prev_snap.const_str)
-                    curr_key = (curr_snap.t, curr_snap.valnum, curr_snap.value,
-                               curr_snap.reg, curr_snap.stkoff, curr_snap.gaddr,
-                               curr_snap.lvar_idx, curr_snap.lvar_off, curr_snap.block_num,
-                               curr_snap.helper_name, curr_snap.const_str)
+                    prev_key = (
+                        prev_snap.t,
+                        prev_snap.valnum,
+                        prev_snap.value,
+                        prev_snap.reg,
+                        prev_snap.stkoff,
+                        prev_snap.gaddr,
+                        prev_snap.lvar_idx,
+                        prev_snap.lvar_off,
+                        prev_snap.block_num,
+                        prev_snap.helper_name,
+                        prev_snap.const_str,
+                    )
+                    curr_key = (
+                        curr_snap.t,
+                        curr_snap.valnum,
+                        curr_snap.value,
+                        curr_snap.reg,
+                        curr_snap.stkoff,
+                        curr_snap.gaddr,
+                        curr_snap.lvar_idx,
+                        curr_snap.lvar_off,
+                        curr_snap.block_num,
+                        curr_snap.helper_name,
+                        curr_snap.const_str,
+                    )
                     if prev_key != curr_key:
                         return False
         else:
@@ -450,7 +487,15 @@ class BindingsProxy:
     Wraps non-mutating match bindings so that update_leafs_mop() can read
     leaf mops by name without requiring a mutated pattern tree.
     """
-    __slots__ = ("leafs_by_name", "ea", "dst_mop", "dest_size", "mop", "is_candidate_ok")
+
+    __slots__ = (
+        "leafs_by_name",
+        "ea",
+        "dst_mop",
+        "dest_size",
+        "mop",
+        "is_candidate_ok",
+    )
 
     def __init__(self, bindings: MatchBindings) -> None:
         self.leafs_by_name = bindings.get_leafs_by_name()

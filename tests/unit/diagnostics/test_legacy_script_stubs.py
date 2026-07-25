@@ -6,6 +6,7 @@ The implementations these scripts used to host were migrated as part of
 the 2026-05-11 debug-tooling roadmap; see
 ``docs/debug-tooling-migration.md`` for the command map.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -25,6 +26,7 @@ def _subprocess_env() -> dict:
     """Inject the worktree's src/ into PYTHONPATH so the stub's
     forward-exec finds d810.diagnostics."""
     import os
+
     env = os.environ.copy()
     src = str(REPO_ROOT / "src")
     existing = env.get("PYTHONPATH", "")
@@ -50,7 +52,8 @@ def _subprocess_env() -> dict:
     ],
 )
 def test_wrapper_stub_emits_deprecation_notice_and_forwards_help(
-    script: str, diag_command: str,
+    script: str,
+    diag_command: str,
 ) -> None:
     """The wrapper stub must print a `[deprecated]` line on stderr and
     exec into ``python -m d810.diagnostics <subcommand> --help``."""
@@ -133,7 +136,9 @@ def test_return_family_ledger_stub_contains_no_legacy_implementation() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_residual_dispatcher_worksheet_stub_emits_deprecation_notice_and_forwards_help() -> None:
+def test_residual_dispatcher_worksheet_stub_emits_deprecation_notice_and_forwards_help() -> (
+    None
+):
     result = subprocess.run(
         [sys.executable, str(TOOLS / "residual_dispatcher_worksheet.py"), "--help"],
         capture_output=True,

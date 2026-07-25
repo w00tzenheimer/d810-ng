@@ -1,4 +1,5 @@
 """Acceptance tests that carrier-era compatibility shims are gone."""
+
 from __future__ import annotations
 
 import importlib.util

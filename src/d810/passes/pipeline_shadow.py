@@ -1,4 +1,5 @@
 """Shadow comparison helpers for optional PipelineConfig v2 cutover."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -79,8 +80,12 @@ def compare_pipeline_specs(
     return PipelineSpecComparison(
         left_pass_ids=left_ids,
         right_pass_ids=right_ids,
-        missing_pass_ids=tuple(pass_id for pass_id in right_ids if pass_id not in left_set),
-        extra_pass_ids=tuple(pass_id for pass_id in left_ids if pass_id not in right_set),
+        missing_pass_ids=tuple(
+            pass_id for pass_id in right_ids if pass_id not in left_set
+        ),
+        extra_pass_ids=tuple(
+            pass_id for pass_id in left_ids if pass_id not in right_set
+        ),
         pass_ids_match=left_ids == right_ids,
         configs_match=tuple(spec.config for spec in left)
         == tuple(spec.config for spec in right),

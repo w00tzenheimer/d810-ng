@@ -83,9 +83,11 @@ class _DummyDag:
 
 class TestPlanReconstructionReturnModifications:
     def test_wires_oneway_anchor_to_common_corridor_entry(self):
-        flow_graph = _DummyFlowGraph({
-            10: ((4,), (6,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                10: ((4,), (6,)),
+            }
+        )
         dag = _DummyDag(
             edges=(
                 _DummyEdge(
@@ -116,10 +118,12 @@ class TestPlanReconstructionReturnModifications:
         assert result.skipped_entries == ()
 
     def test_fallback_wires_intermediate_oneway_hop(self):
-        flow_graph = _DummyFlowGraph({
-            10: ((4,), (99,)),
-            20: ((10,), (30,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                10: ((4,), (99,)),
+                20: ((10,), (30,)),
+            }
+        )
         dag = _DummyDag(
             edges=(
                 _DummyEdge(
@@ -150,10 +154,12 @@ class TestPlanReconstructionReturnModifications:
         assert result.skipped_entries == ()
 
     def test_redirects_artifact_arm0_writer_instead_of_anchor(self):
-        flow_graph = _DummyFlowGraph({
-            10: ((4,), (40, 6)),
-            40: ((10,), (6,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                10: ((4,), (40, 6)),
+                40: ((10,), (6,)),
+            }
+        )
         dag = _DummyDag(
             edges=(
                 _DummyEdge(
@@ -184,10 +190,12 @@ class TestPlanReconstructionReturnModifications:
         assert result.skipped_entries == ()
 
     def test_does_not_redirect_artifact_to_global_corridor_off_path(self):
-        flow_graph = _DummyFlowGraph({
-            10: ((4,), (40, 6)),
-            40: ((10,), (50,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                10: ((4,), (40, 6)),
+                40: ((10,), (50,)),
+            }
+        )
         dag = _DummyDag(
             edges=(
                 _DummyEdge(
@@ -213,15 +221,19 @@ class TestPlanReconstructionReturnModifications:
 
         assert result.modifications == ()
         assert result.log_entries == ()
-        assert [(entry.source_block, entry.reason) for entry in result.skipped_entries] == [
+        assert [
+            (entry.source_block, entry.reason) for entry in result.skipped_entries
+        ] == [
             (40, "artifact_suffix_not_forward"),
         ]
 
     def test_preserves_oneway_terminal_stop_instead_of_common_corridor(self):
-        flow_graph = _DummyFlowGraph({
-            10: ((4,), (126,)),
-            126: ((10,), ()),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                10: ((4,), (126,)),
+                126: ((10,), ()),
+            }
+        )
         dag = _DummyDag(
             edges=(
                 _DummyEdge(
@@ -253,11 +265,13 @@ class TestPlanReconstructionReturnModifications:
         assert result.skipped_entries == ()
 
     def test_preserves_terminal_stop_arm_before_arm0_artifact_redirect(self):
-        flow_graph = _DummyFlowGraph({
-            24: ((18,), (34, 126)),
-            34: ((24,), (2,)),
-            126: ((24,), ()),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                24: ((18,), (34, 126)),
+                34: ((24,), (2,)),
+                126: ((24,), ()),
+            }
+        )
         dag = _DummyDag(
             edges=(
                 _DummyEdge(
@@ -289,10 +303,12 @@ class TestPlanReconstructionReturnModifications:
         assert result.skipped_entries == ()
 
     def test_does_not_redirect_deep_artifact_back_to_earlier_suffix_entry(self):
-        flow_graph = _DummyFlowGraph({
-            33: ((31,), (34, 35)),
-            34: ((33,), (2,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                33: ((31,), (34, 35)),
+                34: ((33,), (2,)),
+            }
+        )
         dag = _DummyDag(
             edges=(
                 _DummyEdge(
@@ -318,14 +334,18 @@ class TestPlanReconstructionReturnModifications:
 
         assert result.modifications == ()
         assert result.log_entries == ()
-        assert [(entry.source_block, entry.reason) for entry in result.skipped_entries] == [
+        assert [
+            (entry.source_block, entry.reason) for entry in result.skipped_entries
+        ] == [
             (34, "artifact_suffix_not_forward"),
         ]
 
     def test_skips_claimed_anchor(self):
-        flow_graph = _DummyFlowGraph({
-            10: ((4,), (6,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                10: ((4,), (6,)),
+            }
+        )
         dag = _DummyDag(
             edges=(
                 _DummyEdge(
@@ -351,6 +371,8 @@ class TestPlanReconstructionReturnModifications:
 
         assert result.modifications == ()
         assert result.log_entries == ()
-        assert [(entry.source_block, entry.reason) for entry in result.skipped_entries] == [
+        assert [
+            (entry.source_block, entry.reason) for entry in result.skipped_entries
+        ] == [
             (10, "anchor_claimed"),
         ]

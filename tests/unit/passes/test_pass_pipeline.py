@@ -1,4 +1,5 @@
 """Phase A pipeline-vocabulary conformance (pure-Python, no IDA)."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -51,8 +52,7 @@ def test_preserved_analyses():
     assert pp.PassResult().preserved.preserves("anything") is True  # default all
     assert pp.PassResult().preserved_explicit is False
     assert (
-        pp.PassResult(preserved=pp.PreservedAnalyses.none()).preserved_explicit
-        is True
+        pp.PassResult(preserved=pp.PreservedAnalyses.none()).preserved_explicit is True
     )
     assert pp.PreservedAnalyses.none().preserves("x") is False
     keep = pp.PreservedAnalyses.preserving({"dominators"})
@@ -172,13 +172,9 @@ def test_pass_spec_maturity_gates_are_explicit():
 def test_pipeline_config_roundtrip_preserves_contract_fields():
     config = pp.PipelineConfig(
         pass_id="recover_dispatcher",
-        maturity_gates=frozenset(
-            {IRMaturity.CALL_MODELED, IRMaturity.GLOBAL_ANALYZED}
-        ),
+        maturity_gates=frozenset({IRMaturity.CALL_MODELED, IRMaturity.GLOBAL_ANALYZED}),
         granularity=pp.PassGranularity.CFG,
-        requirements=pp.CapabilityPolicy(
-            required=frozenset({"emulation", "live_mba"})
-        ),
+        requirements=pp.CapabilityPolicy(required=frozenset({"emulation", "live_mba"})),
         analyses=pp.AnalysisContract(
             required=frozenset({"range_evidence"}),
             provided=frozenset({"recover_dispatcher"}),
@@ -207,9 +203,7 @@ def test_pipeline_config_roundtrip_preserves_native_pass_contract():
         requires=pp.PassRequires(
             capabilities=frozenset({"live_mba"}),
             analyses=frozenset({"def_use", "dominators"}),
-            evidence=frozenset(
-                {"state_variable_writes", "ir.memory_def.candidate"}
-            ),
+            evidence=frozenset({"state_variable_writes", "ir.memory_def.candidate"}),
             facts=pp.FactRequirement(
                 required=frozenset({"dispatcher_family"}),
                 optional=frozenset({"effect.memory_def.observable"}),
@@ -345,7 +339,10 @@ def test_pipeline_config_rejects_malformed_rule_selection_metadata(
         ({"pass": "x", "options": []}, "options"),
         ({"pass": "x", "options": {"": True}}, "options"),
         ({"pass": "x", "options": {1: True}}, "options"),
-        ({"pass": "x", "options": {"enabled_rules": object()}}, "options.enabled_rules"),
+        (
+            {"pass": "x", "options": {"enabled_rules": object()}},
+            "options.enabled_rules",
+        ),
     ],
 )
 def test_pipeline_config_rejects_malformed_pass_options_metadata(
@@ -628,7 +625,10 @@ def test_pipeline_config_keeps_legacy_maturity_null_endpoint_compatibility():
 @pytest.mark.parametrize(
     ("payload", "field_name"),
     [
-        ({"pass": "x", "requires": {"capabilities": "live_mba"}}, "requires.capabilities"),
+        (
+            {"pass": "x", "requires": {"capabilities": "live_mba"}},
+            "requires.capabilities",
+        ),
         ({"pass": "x", "requires": {"capabilities": [1]}}, "requires.capabilities"),
     ],
 )

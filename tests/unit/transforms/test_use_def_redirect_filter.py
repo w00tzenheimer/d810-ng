@@ -1,4 +1,5 @@
 """Portable tests for use-def-safe redirect filtering (no IDA)."""
+
 from __future__ import annotations
 
 from d810.capabilities.use_def_safety import SeveranceViolation

@@ -86,9 +86,7 @@ def test_imported_native_rebind_disambiguates_a_live_translation_clone() -> None
     assert native_rebound.status is RebindStatus.BOUND
     assert native_rebound.block is not None
     assert native_rebound.block.serial == 9
-    assert (
-        native_rebound.block.handle.provenance is BlockHandleProvenance.NATIVE
-    )
+    assert native_rebound.block.handle.provenance is BlockHandleProvenance.NATIVE
     rebound = index.rebind_imported_identity(handler)
     assert rebound.status is RebindStatus.BOUND
     assert rebound.block is not None
@@ -333,8 +331,7 @@ def test_live_mba_identity_scan_uses_imported_eas_without_reading_operands() -> 
         native_key=NATIVE_KEY,
     )
     assert (
-        index.handle_for_serial(0).provenance
-        is BlockHandleProvenance.IMPORTED_NATIVE
+        index.handle_for_serial(0).provenance is BlockHandleProvenance.IMPORTED_NATIVE
     )
 
 
@@ -396,10 +393,7 @@ def test_live_mba_identity_scan_restores_receipted_imported_block_range() -> Non
         native_key=NATIVE_KEY,
         exact_instruction_eas=(0x40C64B,),
     )
-    assert (
-        rebound.block.handle.provenance
-        is BlockHandleProvenance.IMPORTED_NATIVE
-    )
+    assert rebound.block.handle.provenance is BlockHandleProvenance.IMPORTED_NATIVE
 
 
 def test_region_rebind_keeps_overlapping_receipted_ranges_ambiguous() -> None:
@@ -477,10 +471,7 @@ def test_region_rebind_keeps_overlapping_receipted_ranges_ambiguous() -> None:
         exact_instruction_eas=(),
     )
 
-    assert (
-        index.rebind_region_entry(handler_region).status
-        is RebindStatus.AMBIGUOUS
-    )
+    assert index.rebind_region_entry(handler_region).status is RebindStatus.AMBIGUOUS
 
 
 def test_refresh_from_live_mba_accepts_newly_published_imported_origins() -> None:
@@ -517,7 +508,9 @@ def test_refresh_from_live_mba_accepts_newly_published_imported_origins() -> Non
         native_key=NATIVE_KEY,
     )
 
-    assert index.rebind_imported_identity(native_identity).status is RebindStatus.MISSING
+    assert (
+        index.rebind_imported_identity(native_identity).status is RebindStatus.MISSING
+    )
 
     index.refresh_from_mba(
         mba,
@@ -692,18 +685,12 @@ def test_region_exit_abstains_on_duplicate_latest_anchor() -> None:
         (NativeEaInterval(0x40E242, 0x40E280),), native_key=NATIVE_KEY
     )
 
-    assert (
-        index.rebind_region_exit(handler_region).status
-        is RebindStatus.AMBIGUOUS
-    )
+    assert index.rebind_region_exit(handler_region).status is RebindStatus.AMBIGUOUS
     handler_region = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x40E242, 0x40E280),), native_key=NATIVE_KEY
     )
 
-    assert (
-        index.rebind_region_entry(handler_region).status
-        is RebindStatus.AMBIGUOUS
-    )
+    assert index.rebind_region_entry(handler_region).status is RebindStatus.AMBIGUOUS
 
 
 def test_region_entry_rebinds_to_earliest_surviving_native_anchor() -> None:
@@ -975,18 +962,27 @@ def test_inserted_replacement_stages_one_proxy_and_shifts_transaction_view() -> 
     assert index.logical_proxy_for_handle(replacement) is original_proxy
     assert index.resolve(original).serial == 2
     assert index.resolve(later).serial == 5
-    assert index.resolve(
-        original,
-        transaction_id="inserted-replacement",
-    ).serial == 5
-    assert index.resolve(
-        later,
-        transaction_id="inserted-replacement",
-    ).serial == 6
-    assert index.resolve_logical_version(
-        original_proxy.resolve(),
-        transaction_id="inserted-replacement",
-    ).serial == 2
+    assert (
+        index.resolve(
+            original,
+            transaction_id="inserted-replacement",
+        ).serial
+        == 5
+    )
+    assert (
+        index.resolve(
+            later,
+            transaction_id="inserted-replacement",
+        ).serial
+        == 6
+    )
+    assert (
+        index.resolve_logical_version(
+            original_proxy.resolve(),
+            transaction_id="inserted-replacement",
+        ).serial
+        == 2
+    )
     assert staged.predecessor_version_id == original_proxy.resolve().version_id
 
     transitions = index.commit_proxy_transaction("inserted-replacement")
@@ -1027,9 +1023,7 @@ def test_reserved_synthetic_proxy_binds_only_when_insertion_is_realized() -> Non
     assert proxy is not None
     assert proxy.resolve() is None
     assert proxy.resolve(transaction_id=transaction_id) is staged
-    assert (
-        index.resolve_logical_version(staged, transaction_id=transaction_id) is None
-    )
+    assert index.resolve_logical_version(staged, transaction_id=transaction_id) is None
     assert index.logical_proxy_count == proxy_count + 1
 
     index.record_insert(
@@ -1075,10 +1069,13 @@ def test_inserted_replacement_abort_preserves_published_coordinates() -> None:
     )
     original_proxy = index.logical_proxy_for_handle(original)
     assert original_proxy is not None
-    assert index.resolve_logical_version(
-        original_proxy.resolve(),
-        transaction_id="abort-inserted-replacement",
-    ).serial == 3
+    assert (
+        index.resolve_logical_version(
+            original_proxy.resolve(),
+            transaction_id="abort-inserted-replacement",
+        ).serial
+        == 3
+    )
 
     discarded = index.abort_proxy_transaction("abort-inserted-replacement")
 

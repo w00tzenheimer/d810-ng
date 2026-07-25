@@ -269,7 +269,9 @@ class ImportRewriter(cst.CSTTransformer):
         module_code = cst.Module([]).code_for_node(updated_node.module)
         if module_code == IMPORT_OLD or module_code.startswith(IMPORT_OLD + "."):
             return updated_node.with_changes(
-                module=cst.parse_expression(module_code.replace(IMPORT_OLD, IMPORT_NEW, 1))
+                module=cst.parse_expression(
+                    module_code.replace(IMPORT_OLD, IMPORT_NEW, 1)
+                )
             )
         return updated_node
 
@@ -297,8 +299,11 @@ def rewrite_cfg_imports(root: Path, apply: bool) -> int:
         else:
             print(f"would rewrite {path}")
             diff = difflib.unified_diff(
-                src.splitlines(), out.splitlines(),
-                fromfile=str(path), tofile=str(path), lineterm=""
+                src.splitlines(),
+                out.splitlines(),
+                fromfile=str(path),
+                tofile=str(path),
+                lineterm="",
             )
             for line in diff:
                 print(line)
@@ -308,8 +313,18 @@ def rewrite_cfg_imports(root: Path, apply: bool) -> int:
 def write_templates(root: Path, apply: bool) -> None:
     targets = {
         root / "src" / "d810" / "cfg" / "portable_cfg.py": CFG_PORTABLE_CFG,
-        root / "src" / "d810" / "hexrays" / "ir" / "lift_portable_cfg.py": LIFT_PORTABLE_CFG,
-        root / "src" / "d810" / "hexrays" / "ir" / "portable_cfg.py": HEXRAYS_PORTABLE_CFG_SHIM,
+        root
+        / "src"
+        / "d810"
+        / "hexrays"
+        / "ir"
+        / "lift_portable_cfg.py": LIFT_PORTABLE_CFG,
+        root
+        / "src"
+        / "d810"
+        / "hexrays"
+        / "ir"
+        / "portable_cfg.py": HEXRAYS_PORTABLE_CFG_SHIM,
     }
     for path, content in targets.items():
         if apply:
@@ -323,7 +338,9 @@ def write_templates(root: Path, apply: bool) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path("."), help="Repository root")
-    parser.add_argument("--apply", action="store_true", help="Apply changes (default dry-run)")
+    parser.add_argument(
+        "--apply", action="store_true", help="Apply changes (default dry-run)"
+    )
     return parser.parse_args()
 
 

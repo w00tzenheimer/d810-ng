@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.transforms.graph_modification import GraphModification, RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    GraphModification,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.transforms.residual_handoff_modification_planning import (
     plan_residual_goto_emission,
     plan_residual_pred_split_emissions,
@@ -65,7 +69,9 @@ class ResidualDispatcherSourcePlan:
     rejection_reason: str = ""
 
 
-def _branch_anchor_modification(attempt: ResidualPrefixAttempt) -> GraphModification | None:
+def _branch_anchor_modification(
+    attempt: ResidualPrefixAttempt,
+) -> GraphModification | None:
     branch_context = attempt.branch_context
     if branch_context is None:
         return None
@@ -91,9 +97,15 @@ def _match_prefix_attempt(
             continue
         if int(attempt.prefix_target) != int(decision.prefix_target):
             continue
-        if decision.kind == ResidualHandoffMode.BRANCH_ANCHOR and attempt.branch_context is not None:
+        if (
+            decision.kind == ResidualHandoffMode.BRANCH_ANCHOR
+            and attempt.branch_context is not None
+        ):
             return attempt
-        if decision.kind == ResidualHandoffMode.PREFIX_PEEL and attempt.peel_context is not None:
+        if (
+            decision.kind == ResidualHandoffMode.PREFIX_PEEL
+            and attempt.peel_context is not None
+        ):
             return attempt
     return None
 
@@ -143,7 +155,9 @@ def _plan_prefix_result(
             owned_blocks=(branch_source,),
             owned_edges=((branch_source, prefix_target),),
             owned_transitions=(
-                (attempt.owned_transition,) if attempt.owned_transition is not None else ()
+                (attempt.owned_transition,)
+                if attempt.owned_transition is not None
+                else ()
             ),
             claimed_2way_updates=(
                 (((branch_source, int(decision.old_target)), prefix_target),)
@@ -168,7 +182,9 @@ def _plan_prefix_result(
         via_pred=via_pred,
         prefix_target=prefix_target,
         old_target=int(source_block),
-        via_pred_succs=tuple(int(succ) for succ in peel_context.peel_context.via_pred_succs),
+        via_pred_succs=tuple(
+            int(succ) for succ in peel_context.peel_context.via_pred_succs
+        ),
     )
     return ResidualDispatcherSourcePlan(
         accepted=True,
@@ -394,9 +410,7 @@ def apply_residual_dispatcher_source_plan(
             (int(pred_split_key[0]), int(pred_split_key[1]), int(pred_split_key[2]))
         )
     for prefix_key in source_plan.prefix_keys:
-        prefix_emitted.add(
-            (int(prefix_key[0]), int(prefix_key[1]), int(prefix_key[2]))
-        )
+        prefix_emitted.add((int(prefix_key[0]), int(prefix_key[1]), int(prefix_key[2])))
     if redirected_blocks is not None:
         for redirected_block in source_plan.redirect_blocks:
             redirected_blocks.add(int(redirected_block))

@@ -9,6 +9,7 @@ Three guarantees:
 3. The sealed matching-time checks route through the injected MopOpsProvider (the
    seal is real, not dead code) and degrade conservatively with no provider.
 """
+
 from __future__ import annotations
 
 import ast
@@ -28,7 +29,10 @@ def test_no_dynamic_imports_in_ir_expr() -> None:
             if not isinstance(node, ast.Call):
                 continue
             fn = node.func
-            if isinstance(fn, ast.Attribute) and fn.attr in {"import_module", "__import__"}:
+            if isinstance(fn, ast.Attribute) and fn.attr in {
+                "import_module",
+                "__import__",
+            }:
                 offenders.append(f"{py.name}:{node.lineno} importlib.{fn.attr}")
             if isinstance(fn, ast.Name) and fn.id == "__import__":
                 offenders.append(f"{py.name}:{node.lineno} __import__")
@@ -47,17 +51,17 @@ def test_ir_expr_loads_and_evaluates_without_ida() -> None:
         "sys.modules['idaapi'] = None\n"
         "import d810.ir.expr as E\n"
         "x, y = E.Var('x'), E.Var('y')\n"
-        "_ = (x | y) - (x & y)\n"        # full BV operator surface
-        "_ = (x == y)\n"                  # comparison -> ConstraintExpr
+        "_ = (x | y) - (x & y)\n"  # full BV operator surface
+        "_ = (x == y)\n"  # comparison -> ConstraintExpr
         "assert E.get_mop_ops() is None\n"
         "assert E.when.is_bnot('a', 'b')({}) is False\n"  # sealed check, no-provider fallback
         "assert 'ida_hexrays' not in [m for m, v in sys.modules.items() if v is not None]\n"
         "print('PORTABLE_OK')\n"
     )
-    r = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True
+    r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    assert r.returncode == 0, (
+        f"rc={r.returncode}\nstderr:\n{r.stderr}\nstdout:\n{r.stdout}"
     )
-    assert r.returncode == 0, f"rc={r.returncode}\nstderr:\n{r.stderr}\nstdout:\n{r.stdout}"
     assert "PORTABLE_OK" in r.stdout, r.stdout
 
 

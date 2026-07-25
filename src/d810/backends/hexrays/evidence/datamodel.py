@@ -6,6 +6,7 @@ detection logic so that unit tests can construct them without an IDA
 environment. The canonical model name is ``DispatcherStateMachine``; the
 historical ``HodurStateMachine`` name remains as a compatibility alias.
 """
+
 from __future__ import annotations
 from dataclasses import dataclass, field
 from d810.core.typing import TYPE_CHECKING

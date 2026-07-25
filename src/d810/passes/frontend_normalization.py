@@ -63,9 +63,7 @@ class ResolveNativeIndirectTransfers:
     name = "resolve_native_indirect_transfers"
 
     def run(self, ctx) -> PassResult:
-        provider = ctx.capabilities.optional(
-            FrontendNormalizationEvidenceCapability
-        )
+        provider = ctx.capabilities.optional(FrontendNormalizationEvidenceCapability)
         if provider is None:
             return PassResult()
         evidence = provider.evidence_for(int(ctx.source.func_ea))
@@ -137,9 +135,7 @@ class NormalizeComputedBranch:
                 }
             ),
             analysis_outputs={
-                FRONTEND_NORMALIZATION_PLAN_INTENT: (
-                    generation_plan.complete_plan
-                ),
+                FRONTEND_NORMALIZATION_PLAN_INTENT: (generation_plan.complete_plan),
             },
         )
 
@@ -164,9 +160,7 @@ def standard_frontend_normalization_passes() -> tuple[PassSpec, ...]:
             ),
             backend_route=BackendRoute.ANALYSIS_ONLY,
             contract=_contract(
-                outputs_evidence=frozenset(
-                    {NATIVE_INDIRECT_TRANSFER_EVIDENCE}
-                )
+                outputs_evidence=frozenset({NATIVE_INDIRECT_TRANSFER_EVIDENCE})
             ),
         ),
         PassSpec(
@@ -181,9 +175,7 @@ def standard_frontend_normalization_passes() -> tuple[PassSpec, ...]:
             ),
             backend_route=BackendRoute.ANALYSIS_ONLY,
             contract=_contract(
-                requires_analyses=frozenset(
-                    {FRONTEND_NORMALIZATION_EVIDENCE}
-                )
+                requires_analyses=frozenset({FRONTEND_NORMALIZATION_EVIDENCE})
             ),
         ),
         PassSpec(
@@ -196,14 +188,10 @@ def standard_frontend_normalization_passes() -> tuple[PassSpec, ...]:
                 required=frozenset({FRONTEND_NORMALIZATION_EVIDENCE}),
                 provided=frozenset({FRONTEND_NORMALIZATION_PLAN_INTENT}),
             ),
-            preservation=PreservedAnalyses.preserving(
-                preserve_frontend_evidence
-            ),
+            preservation=PreservedAnalyses.preserving(preserve_frontend_evidence),
             backend_route=BackendRoute.FRAGMENT_PUBLICATION,
             contract=_contract(
-                requires_analyses=frozenset(
-                    {FRONTEND_NORMALIZATION_EVIDENCE}
-                ),
+                requires_analyses=frozenset({FRONTEND_NORMALIZATION_EVIDENCE}),
                 preserves_analyses=preserve_frontend_evidence,
             ),
         ),

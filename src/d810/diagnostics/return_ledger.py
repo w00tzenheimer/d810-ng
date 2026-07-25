@@ -16,6 +16,7 @@ If you need to point this at a different function, parametrise those
 constants downstream; the helpers below accept the offsets explicitly
 where it makes sense so the public surface stays testable.
 """
+
 from __future__ import annotations
 
 import json
@@ -33,8 +34,8 @@ from d810.core.diag.models import Block, Instruction, Snapshot
 # Hardcoded stack offsets for sub_7FFD3338C040; preserved from the legacy
 # script to keep output bit-identical. Override by passing different values
 # to the helpers below if you need a different function.
-DEFAULT_RETURN_SLOT_STKOFF = 0x7F0   # 2032; %var_8.8
-DEFAULT_V660_STKOFF = 0x660           # 1632; auxiliary state slot
+DEFAULT_RETURN_SLOT_STKOFF = 0x7F0  # 2032; %var_8.8
+DEFAULT_V660_STKOFF = 0x660  # 1632; auxiliary state slot
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +77,8 @@ class AfterReturn:
 
 
 def pick_snapshot(
-    conn: sqlite3.Connection, snapshot_id: int | None = None,
+    conn: sqlite3.Connection,
+    snapshot_id: int | None = None,
 ) -> int:
     """Pick the snapshot to inspect.
 
@@ -93,9 +95,7 @@ def pick_snapshot(
     if snapshot_id is not None:
         return snapshot_id
     rows = list(
-        Snapshot.select(
-            Snapshot.id, Snapshot.label, Snapshot.block_count
-        )
+        Snapshot.select(Snapshot.id, Snapshot.label, Snapshot.block_count)
         .order_by(Snapshot.id)
         .tuples()
     )
@@ -115,9 +115,7 @@ def pick_snapshot(
 def list_snapshots(conn: sqlite3.Connection) -> list[tuple[int, str, int]]:
     """Return ``(id, label, block_count)`` for every snapshot in the DB."""
     rows = (
-        Snapshot.select(
-            Snapshot.id, Snapshot.label, Snapshot.block_count
-        )
+        Snapshot.select(Snapshot.id, Snapshot.label, Snapshot.block_count)
         .order_by(Snapshot.id)
         .tuples()
     )
@@ -173,10 +171,7 @@ def query_return_slot_writers(
             Instruction.src_l_value_hex,
             fn.substr(Instruction.dstr, 1, 160),
         )
-        .where(
-            (Instruction.snapshot == sid)
-            & (Instruction.dest_stkoff == dest_stkoff)
-        )
+        .where((Instruction.snapshot == sid) & (Instruction.dest_stkoff == dest_stkoff))
         .order_by(Instruction.block_serial)
         .tuples()
     )
@@ -201,9 +196,7 @@ def query_v660_writers(
 ) -> dict[int, str]:
     """Constant-valued writes to the v660 auxiliary slot."""
     rows = (
-        Instruction.select(
-            Instruction.block_serial, Instruction.src_l_value_hex
-        )
+        Instruction.select(Instruction.block_serial, Instruction.src_l_value_hex)
         .where(
             (Instruction.snapshot == sid)
             & (Instruction.dest_stkoff == dest_stkoff)
@@ -268,8 +261,15 @@ def _expand_block(
         for p in preds:
             families.extend(
                 _expand_block(
-                    p, chain, blocks, writers, v660_map, reachable, is_pts,
-                    depth=depth + 1, max_depth=max_depth,
+                    p,
+                    chain,
+                    blocks,
+                    writers,
+                    v660_map,
+                    reachable,
+                    is_pts,
+                    depth=depth + 1,
+                    max_depth=max_depth,
                 )
             )
         return families
@@ -278,8 +278,15 @@ def _expand_block(
         parent = preds[0]
         if parent in writers or parent in v660_map:
             return _expand_block(
-                parent, chain, blocks, writers, v660_map, reachable, is_pts,
-                depth=depth + 1, max_depth=max_depth,
+                parent,
+                chain,
+                blocks,
+                writers,
+                v660_map,
+                reachable,
+                is_pts,
+                depth=depth + 1,
+                max_depth=max_depth,
             )
 
     return [
@@ -318,16 +325,26 @@ def trace_return_paths(
             root = pred_preds[0]
             paths.extend(
                 _expand_block(
-                    root, [pred_serial, stop["serial"]],
-                    blocks, writers, v660_map, reachable, is_pts,
+                    root,
+                    [pred_serial, stop["serial"]],
+                    blocks,
+                    writers,
+                    v660_map,
+                    reachable,
+                    is_pts,
                 )
             )
         else:
             for feeder_serial in pred_preds:
                 paths.extend(
                     _expand_block(
-                        feeder_serial, [pred_serial, stop["serial"]],
-                        blocks, writers, v660_map, reachable, is_pts,
+                        feeder_serial,
+                        [pred_serial, stop["serial"]],
+                        blocks,
+                        writers,
+                        v660_map,
+                        reachable,
+                        is_pts,
                     )
                 )
     return paths
@@ -429,9 +446,7 @@ def render_text(
     ]
     if stop is not None:
         out.append(f"BLT_STOP: blk[{stop['serial']}]  preds={stop['preds']}")
-    out.append(
-        f"Return-slot writers (dest=0x7F0): blk{sorted(writers.keys())}"
-    )
+    out.append(f"Return-slot writers (dest=0x7F0): blk{sorted(writers.keys())}")
     out.append(f"v660 writers (dest=0x660): {v660_map}")
     out.append("")
     out.append(f"--- {len(live_paths)} Live Return Paths ---")
@@ -464,13 +479,10 @@ def render_text(
     out.append(f"AFTER returns: {len(after_returns)}")
     gap = len(live_paths) - len(after_returns)
     if gap > 0:
-        out.append(
-            f"Gap: {gap} live paths > AFTER returns (merge at decompiler)"
-        )
+        out.append(f"Gap: {gap} live paths > AFTER returns (merge at decompiler)")
     elif gap < 0:
         out.append(
-            f"Gap: {-gap} AFTER returns > live paths"
-            f" (bifurcation at multi-pred block)"
+            f"Gap: {-gap} AFTER returns > live paths (bifurcation at multi-pred block)"
         )
     else:
         out.append("Gap: 0 (exact match)")
@@ -564,10 +576,7 @@ def run_ledger(
             return "\n".join(lines) + "\n"
         sid = pick_snapshot(conn, snapshot_id)
         label_row = (
-            Snapshot.select(Snapshot.label)
-            .where(Snapshot.id == sid)
-            .tuples()
-            .first()
+            Snapshot.select(Snapshot.label).where(Snapshot.id == sid).tuples().first()
         )
         snap_label = str(label_row[0]) if label_row else ""
         blocks = query_blocks(conn, sid)

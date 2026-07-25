@@ -33,6 +33,7 @@ provenance walk, and no ``getattr`` on a snapshot remains.
 :func:`~d810.ir.varnode.varnode_from_mop_snapshot` first, so the operand-identity
 unit tests that call these helpers with a duck-typed mop keep their behavior.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.instruction_semantics import (

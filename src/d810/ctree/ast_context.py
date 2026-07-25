@@ -5,6 +5,7 @@ which is needed for safe instruction removal.
 
 Ported from herast (herast/tree/ast_context.py).
 """
+
 from __future__ import annotations
 
 import idaapi

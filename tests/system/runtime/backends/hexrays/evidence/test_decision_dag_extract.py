@@ -7,6 +7,7 @@ dispatcher condition-chain path so routing matches ``.tmp/condition_chain_trace.
 
 IDA-dependent (reads ``ida_hexrays`` constants) -> system/runtime, not a unit.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace

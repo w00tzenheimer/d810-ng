@@ -19,7 +19,9 @@ from d810.mba.dsl import Var, SymbolicExpression
 _COMMUTATIVE_OPS = {"add", "mul", "and", "or", "xor"}
 
 
-def _generate_commutative_permutations(expr: SymbolicExpression) -> List[SymbolicExpression]:
+def _generate_commutative_permutations(
+    expr: SymbolicExpression,
+) -> List[SymbolicExpression]:
     """Generate all commutative permutations of a SymbolicExpression."""
     # Note: is_variable() and is_constant() are methods, not properties
     if expr.is_variable() or expr.is_constant():
@@ -29,8 +31,7 @@ def _generate_commutative_permutations(expr: SymbolicExpression) -> List[Symboli
     if expr.right is None:
         left_perms = _generate_commutative_permutations(expr.left)
         return [
-            SymbolicExpression(expr.operation, left=lp, right=None)
-            for lp in left_perms
+            SymbolicExpression(expr.operation, left=lp, right=None) for lp in left_perms
         ]
 
     # Binary operations
@@ -92,7 +93,7 @@ def test_permutation_nested():
 
     print(f"\nGenerated {len(perms)} permutations for (x & y) + (x ^ y):")
     for i, p in enumerate(perms):
-        print(f"  {i+1}. {p}")
+        print(f"  {i + 1}. {p}")
 
 
 def test_permutation_deeply_nested():
@@ -135,15 +136,15 @@ def test_egglog_verification():
     # Nested commutative equivalences
     assert verify_pattern_equivalence(
         (x & y) + (x ^ y),
-        (x ^ y) + (x & y)  # top-level + commuted
+        (x ^ y) + (x & y),  # top-level + commuted
     )
     assert verify_pattern_equivalence(
         (x & y) + (x ^ y),
-        (y & x) + (x ^ y)  # inner & commuted
+        (y & x) + (x ^ y),  # inner & commuted
     )
     assert verify_pattern_equivalence(
         (x & y) + (x ^ y),
-        (y ^ x) + (y & x)  # fully commuted
+        (y ^ x) + (y & x),  # fully commuted
     )
 
     print("\nAll egglog equivalences verified!")
@@ -296,7 +297,7 @@ def test_full_pattern_generation_pipeline():
 
     print(f"\nFull pipeline: {len(verified)} patterns verified equivalent")
     for i, p in enumerate(verified):
-        print(f"  {i+1}. {p}")
+        print(f"  {i + 1}. {p}")
 
 
 if __name__ == "__main__":

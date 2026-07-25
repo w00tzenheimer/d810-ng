@@ -38,18 +38,18 @@ def clean_text(txt: str) -> str:
         "•": "*",
         "◦": "*",
         # Math / logic operators
-        "≡": "==",   # U+2261 IDENTICAL TO → ==
-        "−": "-",    # U+2212 MINUS SIGN → -
-        "×": "*",    # U+00D7 MULTIPLICATION SIGN → *
-        "●": "*",    # U+25CF BLACK CIRCLE → *
-        "✗": "x",   # U+2717 BALLOT X → x
-        "≥": ">=",   # U+2265 GREATER-THAN OR EQUAL TO → >=
-        "≤": "<=",   # U+2264 LESS-THAN OR EQUAL TO → <=
-        "≠": "!=",   # U+2260 NOT EQUAL TO → !=
-        "¬": "~",    # U+00AC NOT SIGN → ~
-        "∈": "in",   # U+2208 ELEMENT OF → in
+        "≡": "==",  # U+2261 IDENTICAL TO → ==
+        "−": "-",  # U+2212 MINUS SIGN → -
+        "×": "*",  # U+00D7 MULTIPLICATION SIGN → *
+        "●": "*",  # U+25CF BLACK CIRCLE → *
+        "✗": "x",  # U+2717 BALLOT X → x
+        "≥": ">=",  # U+2265 GREATER-THAN OR EQUAL TO → >=
+        "≤": "<=",  # U+2264 LESS-THAN OR EQUAL TO → <=
+        "≠": "!=",  # U+2260 NOT EQUAL TO → !=
+        "¬": "~",  # U+00AC NOT SIGN → ~
+        "∈": "in",  # U+2208 ELEMENT OF → in
         "∀": "for all",  # U+2200 FOR ALL → for all
-        "∃": "exists",   # U+2203 THERE EXISTS → exists
+        "∃": "exists",  # U+2203 THERE EXISTS → exists
     }
     for uni, ascii_ in replacements.items():
         txt = txt.replace(uni, ascii_)

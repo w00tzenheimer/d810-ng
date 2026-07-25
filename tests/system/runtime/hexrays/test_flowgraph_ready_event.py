@@ -59,8 +59,7 @@ class TestDecompilationEventValues:
         the regression cover against accidental string-value drift
         (subscribers / logs may match by value)."""
         assert (
-            DecompilationEvent.SESSION_STARTED.value
-            == "decompilation.session.started"
+            DecompilationEvent.SESSION_STARTED.value == "decompilation.session.started"
         )
         assert (
             DecompilationEvent.SESSION_FINISHED.value
@@ -75,8 +74,7 @@ class TestDecompilationEventValues:
             == "decompilation.post_d810.capture"
         )
         assert (
-            DecompilationEvent.FLOWGRAPH_READY.value
-            == "decompilation.flowgraph.ready"
+            DecompilationEvent.FLOWGRAPH_READY.value == "decompilation.flowgraph.ready"
         )
 
     def test_flowgraph_ready_is_registered(self) -> None:
@@ -187,6 +185,7 @@ class TestProducerHelper:
         and (after the E2b refactor) sources maturity entirely from
         the lifter's ``FlowGraph.metadata``.  The stub's ``maturity``
         is read by the lift-failure fallback path."""
+
         class _StubMba:
             pass
 
@@ -329,9 +328,7 @@ class TestProducerHelper:
         assert payload["flow_graph"] is sentinel_flow_graph
         assert payload["snapshot"] is snapshot
 
-    def test_helper_payload_mirrors_flow_graph_metadata(
-        self, monkeypatch
-    ) -> None:
+    def test_helper_payload_mirrors_flow_graph_metadata(self, monkeypatch) -> None:
         """E2b convention pin: ``maturity`` and ``maturity_name`` in
         the event payload come from ``flow_graph.metadata`` -- the
         lifter is the single source of truth, the event is NOT an
@@ -377,10 +374,7 @@ class TestProducerHelper:
         # Strict mirror -- if the helper ever forks the convention,
         # one of these assertions fails.
         assert payload["maturity"] == fake_flow_graph.metadata["maturity"]
-        assert (
-            payload["maturity_name"]
-            == fake_flow_graph.metadata["maturity_name"]
-        )
+        assert payload["maturity_name"] == fake_flow_graph.metadata["maturity_name"]
         # Sanity: the stub's ``maturity`` (14) is intentionally
         # *different* from the metadata's ``maturity`` (999).  The
         # payload tracks the metadata, NOT the stub's attribute.
@@ -398,9 +392,7 @@ class TestProducerHelper:
             called[0] = True
             return self._fake_flow_graph()
 
-        monkeypatch.setattr(
-            lifecycle, "lift_mba_to_flowgraph", fake_lift
-        )
+        monkeypatch.setattr(lifecycle, "lift_mba_to_flowgraph", fake_lift)
 
         stub = self._stub_mba()
         # Should not raise, should not even invoke the lift.
@@ -423,9 +415,7 @@ class TestProducerHelper:
         def failing_lift(mba):
             raise RuntimeError("simulated lift failure")
 
-        monkeypatch.setattr(
-            lifecycle, "lift_mba_to_flowgraph", failing_lift
-        )
+        monkeypatch.setattr(lifecycle, "lift_mba_to_flowgraph", failing_lift)
 
         emitter: EventEmitter[DecompilationEvent] = EventEmitter()
         received: list[dict[str, object]] = []
@@ -449,12 +439,8 @@ class TestProducerHelper:
         from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
         from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 
-        instr_src = inspect.getsource(
-            InstructionOptimizerManager.log_info_on_input
-        )
-        block_src = inspect.getsource(
-            BlockOptimizerManager.log_info_on_input
-        )
+        instr_src = inspect.getsource(InstructionOptimizerManager.log_info_on_input)
+        block_src = inspect.getsource(BlockOptimizerManager.log_info_on_input)
 
         assert "_emit_flowgraph_ready_event" in instr_src, (
             "InstructionOptimizerManager.log_info_on_input no longer "

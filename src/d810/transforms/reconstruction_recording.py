@@ -9,6 +9,7 @@ Emitters/strategy call `ledger.record_accept(candidate, ...)` once per
 successful candidate instead of threading three loose collections through
 every function in the recording chain.
 """
+
 from __future__ import annotations
 
 from collections import Counter, defaultdict
@@ -31,6 +32,7 @@ class RoundAcceptLedger:
     threads through every emitter/helper. The ledger owns them so the strategy
     can pass a single handle instead of three kwargs.
     """
+
     accepted_metadata: list[dict[str, int | str | None]] = field(default_factory=list)
     structured_region_accepted_counts: Counter[str] = field(default_factory=Counter)
     structured_region_accepted_pairs: dict[str, set[tuple[int, int]]] = field(

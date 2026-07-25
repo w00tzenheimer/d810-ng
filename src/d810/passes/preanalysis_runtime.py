@@ -4,6 +4,7 @@ This runtime owns the stage-local collector phase and maturity-fact runtime.
 It accepts only portable targets and provider metadata; it never derives
 consumer hints, activates rules, or mutates microcode.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -100,9 +101,7 @@ class PreanalysisRuntime:
 
     phase: PreanalysisPhase
     store: PreanalysisStore
-    fact_sink: FactObservationSink = field(
-        default_factory=CoreFactObservationSink
-    )
+    fact_sink: FactObservationSink = field(default_factory=CoreFactObservationSink)
     _facts: PreanalysisFactRuntime = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -213,9 +212,7 @@ class PreanalysisRuntime:
         if mappings:
             self.fact_sink.observe_fact_mapping(snapshot, int(func_ea), mappings)
         if conflicts:
-            self.fact_sink.observe_fact_conflict(
-                snapshot, int(func_ea), conflicts
-            )
+            self.fact_sink.observe_fact_conflict(snapshot, int(func_ea), conflicts)
 
 
 __all__ = [

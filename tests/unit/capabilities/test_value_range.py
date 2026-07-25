@@ -1,4 +1,5 @@
 """Portable contract tests for ValRangeCapability + ValRange (no IDA)."""
+
 from __future__ import annotations
 
 from d810.capabilities import ValRange, ValRangeCapability

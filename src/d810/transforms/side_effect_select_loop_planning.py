@@ -1,7 +1,12 @@
 """CFG planning for side_effect_select_loop facts."""
+
 from __future__ import annotations
 
-from d810.transforms.graph_modification import DuplicateBlock, GraphModification, RedirectGoto
+from d810.transforms.graph_modification import (
+    DuplicateBlock,
+    GraphModification,
+    RedirectGoto,
+)
 from d810.core.typing import Protocol, Sequence
 
 

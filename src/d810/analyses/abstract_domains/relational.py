@@ -15,6 +15,7 @@ is a backend change behind :class:`RelationalDomain` — not an architecture
 change. We do NOT ship a per-variable "box" mislabelled as relational, because a
 silent under-pruner is worse than an honest ``UNKNOWN``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -28,9 +29,9 @@ __all__ = ["Satisfiability", "LinearConstraint", "RelationalDomain", "NullRelati
 class Satisfiability(Enum):
     """LiSA-style three-valued guard verdict (``BaseNonRelationalValueDomain``)."""
 
-    SATISFIED = "satisfied"        # guard is a tautology  -> unconditional edge
+    SATISFIED = "satisfied"  # guard is a tautology  -> unconditional edge
     NOT_SATISFIED = "unsatisfied"  # guard is a contradiction -> drop the arm
-    UNKNOWN = "unknown"            # both feasible -> a real conditional
+    UNKNOWN = "unknown"  # both feasible -> a real conditional
 
 
 @dataclass(frozen=True, slots=True)

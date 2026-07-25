@@ -24,6 +24,7 @@ Reuses, rather than re-mints:
 * :func:`d810.analyses.data_flow.run_fixpoint` -- the proven monotone worklist
   (widening, convergence guard, per-edge ``assume`` seam).
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.deffai.analysis import (

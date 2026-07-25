@@ -640,7 +640,6 @@ class Z3MopProver:
         # If mop is resolvable and we have context, try to find its definition
         if ast is None or (hasattr(ast, "is_leaf") and ast.is_leaf() and is_resolvable):
             if blk is not None and ins is not None:
-
                 resolved_ast = _resolve_mop_to_ast(mop, blk, ins)
                 if resolved_ast is not None:
                     ast = resolved_ast
@@ -653,7 +652,6 @@ class Z3MopProver:
 
         # Recursively resolve any register/stack leaves in the AST
         if ast is not None and blk is not None and ins is not None:
-
             ast = _recursively_resolve_ast(ast, blk, ins)
             if logger.debug_on:
                 logger.debug("is_always_zero: After recursive resolution: %s", ast)
@@ -751,7 +749,6 @@ class Z3MopProver:
 
         # Recursively resolve any register/stack leaves in the AST
         if ast is not None and blk is not None and ins is not None:
-
             ast = _recursively_resolve_ast(ast, blk, ins)
             if logger.debug_on:
                 logger.debug("is_always_nonzero: After recursive resolution: %s", ast)

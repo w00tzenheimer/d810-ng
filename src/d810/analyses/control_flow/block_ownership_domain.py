@@ -30,6 +30,7 @@ Read-off (:func:`block_owners`) is over the **OUT-state**, not the IN-state:
 identical either way; the OUT-state is the one that is correct for *all three*
 block classes.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -72,9 +73,7 @@ class BlockOwnershipDomain:
     def bottom(self) -> frozenset[int]:
         return frozenset()
 
-    def confluence(
-        self, left: frozenset[int], right: frozenset[int]
-    ) -> frozenset[int]:
+    def confluence(self, left: frozenset[int], right: frozenset[int]) -> frozenset[int]:
         # Confluence is union: a block reachable from either region is owned by
         # both, so the shared epilogue emerges as a lattice join.
         return left | right
@@ -127,7 +126,9 @@ def analyze_block_ownership(
     )
 
 
-def block_owners(result: FixpointResult[frozenset[int]]) -> Mapping[int, frozenset[int]]:
+def block_owners(
+    result: FixpointResult[frozenset[int]],
+) -> Mapping[int, frozenset[int]]:
     """The owner map: block serial -> the handler-entry set that owns it.
 
     Read off the OUT-state (see the module docstring on the IN-vs-OUT choice).

@@ -1,4 +1,5 @@
 """Post-apply helpers for Hodur-compatible family runtime paths."""
+
 from __future__ import annotations
 
 from d810.core.typing import Any
@@ -77,7 +78,8 @@ def collect_post_apply_condition_chain_cleanup_blockers(
     pipeline: list[PlanFragment],
     results: list[StageResult],
     *,
-    live_residual_dispatcher_preds_by_strategy: dict[str, tuple[int, ...]] | None = None,
+    live_residual_dispatcher_preds_by_strategy: dict[str, tuple[int, ...]]
+    | None = None,
 ) -> dict[str, tuple[int, ...]]:
     """Return strategy blockers that must prevent post-apply condition-chain cleanup."""
     blockers: dict[str, tuple[int, ...]] = {}
@@ -89,7 +91,9 @@ def collect_post_apply_condition_chain_cleanup_blockers(
             continue
         if fragment.metadata.get("allow_post_apply_condition_chain_cleanup", True):
             continue
-        cleanup_reason = fragment.metadata.get("post_apply_condition_chain_cleanup_reason")
+        cleanup_reason = fragment.metadata.get(
+            "post_apply_condition_chain_cleanup_reason"
+        )
         group_name = fragment.metadata.get("post_apply_condition_chain_cleanup_group")
         if isinstance(group_name, str):
             residual_source = live_residual_dispatcher_preds_by_strategy.get(

@@ -1,4 +1,5 @@
 """Module-level owner for pass registries and per-function pass managers."""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -133,7 +134,10 @@ class ModulePassManager:
         pipeline_registry = None
         pipeline_v2_specs = None
         require_shadow_match = require_pipeline_v2_shadow_match
-        if require_pipeline_v2_shadow_match and pipeline_mode is PipelineV2Mode.CONFIG_V2:
+        if (
+            require_pipeline_v2_shadow_match
+            and pipeline_mode is PipelineV2Mode.CONFIG_V2
+        ):
             raise PipelineConfigError(
                 "require_pipeline_v2_shadow_match conflicts with "
                 "pipeline_v2_mode='config-v2'"

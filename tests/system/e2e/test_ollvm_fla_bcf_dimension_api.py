@@ -148,7 +148,9 @@ def _print_selected_microcode_blocks(cfunc, block_serials: tuple[int, ...]) -> N
     data = mba_to_dict(cfunc.mba, func_name=OLLVM_FLA_BCF_FUNCTION)
     wanted = {int(serial) for serial in block_serials}
     print("\n=== OLLVM_FLA_BCF SELECTED MICROCODE BEGIN ===", flush=True)
-    print(f"maturity={data.get('maturity')} blocks={data.get('num_blocks')}", flush=True)
+    print(
+        f"maturity={data.get('maturity')} blocks={data.get('num_blocks')}", flush=True
+    )
     for blk in data.get("blocks", ()):
         serial = int(blk["serial"])
         if serial not in wanted:
@@ -203,7 +205,10 @@ def ollvm_fla_bcf_database():
         idaapi.auto_wait()
         print("[ollvm_fla_bcf] IDA auto-analysis finished", flush=True)
     else:
-        print("[ollvm_fla_bcf] using pre-analyzed database; skipping auto_wait()", flush=True)
+        print(
+            "[ollvm_fla_bcf] using pre-analyzed database; skipping auto_wait()",
+            flush=True,
+        )
     data_perms = _make_data_segment_readonly()
     print(f"[ollvm_fla_bcf] .data permissions old/new: {data_perms}", flush=True)
     yield {
@@ -250,7 +255,9 @@ class TestOllvmFlaBcfDimensionApi:
                 state.start_d810()
                 print(f"[ollvm_fla_bcf] decompiling with {project_name}", flush=True)
                 cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
-                print(f"[ollvm_fla_bcf] decompile result: {cfunc is not None}", flush=True)
+                print(
+                    f"[ollvm_fla_bcf] decompile result: {cfunc is not None}", flush=True
+                )
                 fired_rules = set(state.stats.get_fired_rule_names())
                 block_rules_fired = {
                     name

@@ -6685,7 +6685,7 @@ def test_stack_carried_state_selector_lowers_at_handler_consumer(_seam) -> None:
             false_target_serial=22,
             true_target_serial=21,
             proof_id=(
-                "stack_carried_state_selector:" "source_ea=0x1280:store_ea=0x40D269"
+                "stack_carried_state_selector:source_ea=0x1280:store_ea=0x40D269"
             ),
             reason="resolver_proven_stack_carried_state_selector",
         )
@@ -7284,7 +7284,7 @@ def test_stack_carried_state_selector_lowers_at_handler_consumer(_seam) -> None:
             false_target_serial=22,
             true_target_serial=21,
             proof_id=(
-                "stack_carried_state_selector:" "source_ea=0x1280:store_ea=0x40D269"
+                "stack_carried_state_selector:source_ea=0x1280:store_ea=0x40D269"
             ),
             reason="resolver_proven_stack_carried_state_selector",
         )
@@ -7856,9 +7856,7 @@ def test_folded_imported_stack_selector_bypasses_converged_indirect_router(
             ),
             false_target_serial=22,
             true_target_serial=21,
-            proof_id=(
-                "stack_carried_state_selector:" "source_ea=0x1280:store_ea=0x1103"
-            ),
+            proof_id=("stack_carried_state_selector:source_ea=0x1280:store_ea=0x1103"),
             reason="resolver_proven_stack_carried_state_selector",
         )
     ]
@@ -7904,9 +7902,7 @@ def test_folded_imported_stack_selector_bypasses_converged_indirect_router(
             ),
             false_target_serial=22,
             true_target_serial=21,
-            proof_id=(
-                "stack_carried_state_selector:" "source_ea=0x1280:store_ea=0x1103"
-            ),
+            proof_id=("stack_carried_state_selector:source_ea=0x1280:store_ea=0x1103"),
             reason="resolver_proven_stack_carried_state_selector",
         )
     ]

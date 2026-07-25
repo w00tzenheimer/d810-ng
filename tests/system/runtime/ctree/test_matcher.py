@@ -4,6 +4,7 @@ Tests Matcher walking AST and collecting matches, Scheme pairing
 pattern with handler, exception handling in scheme handlers, and
 lifecycle hooks (on_tree_iteration_start/end).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -46,6 +47,7 @@ class MockNode:
 
 def _register_mock_ops():
     from d810.ctree import ast_iteration
+
     if _MOCK_BLOCK_OP not in ast_iteration.op2func:
         ast_iteration.op2func[_MOCK_BLOCK_OP] = lambda x: tuple(x._children)
 
@@ -65,6 +67,7 @@ def _make_block(name: str, *children: MockNode) -> MockNode:
 # Mock ASTContext for Matcher (lightweight, no cfunc)
 # ---------------------------------------------------------------------------
 
+
 class MockASTContext:
     """Lightweight mock for ASTContext. The Matcher needs it for check_schemes."""
 
@@ -81,6 +84,7 @@ class MockASTContext:
 # ---------------------------------------------------------------------------
 # Concrete pattern that matches specific nodes
 # ---------------------------------------------------------------------------
+
 
 class NamePat(BasePat):
     """Pattern that matches MockNodes by name."""
@@ -101,6 +105,7 @@ class NamePat(BasePat):
 # ---------------------------------------------------------------------------
 # Test Scheme
 # ---------------------------------------------------------------------------
+
 
 class TestScheme:
     def test_default_handler_returns_none(self):
@@ -139,6 +144,7 @@ class TestScheme:
 # Custom scheme subclass for testing
 # ---------------------------------------------------------------------------
 
+
 class CollectorScheme(Scheme):
     """Records matched items for testing."""
 
@@ -172,6 +178,7 @@ class ErrorScheme(Scheme):
 # ---------------------------------------------------------------------------
 # Test Matcher
 # ---------------------------------------------------------------------------
+
 
 class TestMatcher:
     def test_matcher_stores_schemes(self):

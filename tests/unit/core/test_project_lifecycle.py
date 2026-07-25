@@ -67,7 +67,9 @@ def test_preanalysis_fact_collector_registration_callbacks_are_keyed_and_isolate
 
     register_preanalysis_fact_collector_registration_handler("failing", failing_handler)
     register_preanalysis_fact_collector_registration_handler("profile", first_handler)
-    register_preanalysis_fact_collector_registration_handler("profile", replacement_handler)
+    register_preanalysis_fact_collector_registration_handler(
+        "profile", replacement_handler
+    )
 
     emit_preanalysis_fact_collector_registration(
         runtime=runtime,

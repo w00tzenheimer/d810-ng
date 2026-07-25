@@ -14,6 +14,7 @@ else:
     from d810.optimizers.microcode.flow.constant_prop import global_const_inline  # noqa: F401
     from d810.optimizers.microcode.flow.flattening import mba_state_preconditioner  # noqa: F401
     from d810.optimizers.microcode.flow.flattening import unflattener_cleanup_family  # noqa: F401
+
     # NOTE: the standalone ``EmulatedDispatcherUnflattener`` RULE has been
     # retired and its source module deleted (tickets llr-i80t / llr-qbqb): no
     # production conf/*.json activated it, and the concolic reduced-product leg

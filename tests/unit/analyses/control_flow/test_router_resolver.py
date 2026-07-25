@@ -5,6 +5,7 @@ coverage (condition-chain range default; exact map wins on strict range collapse
 and a configured RouterKind pins a provider regardless of coverage (falling back
 to detection only when the pinned kind is unavailable).
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.interval_map import interval_dispatcher_from_state_map
@@ -89,7 +90,9 @@ def test_configured_kind_forces_exact_over_winning_range_router() -> None:
         state_to_handler={1: 10, 3: 30},
         dispatcher_entry=ENTRY,
     )
-    chosen = select_router(default_resolvers(), ctx, configured_kind=RouterKind.EQUALITY_CHAIN)
+    chosen = select_router(
+        default_resolvers(), ctx, configured_kind=RouterKind.EQUALITY_CHAIN
+    )
     assert chosen is not range_router and handler_coverage(chosen, ENTRY) == 2
 
 
@@ -114,7 +117,9 @@ def test_configured_kind_prefers_noncollapsed_condition_chain() -> None:
         dispatcher_entry=ENTRY,
     )
     assert (
-        select_router(default_resolvers(), ctx, configured_kind=RouterKind.CONDITION_CHAIN)
+        select_router(
+            default_resolvers(), ctx, configured_kind=RouterKind.CONDITION_CHAIN
+        )
         is range_router
     )
 
@@ -135,7 +140,9 @@ def test_configured_kind_absent_falls_back_to_detection() -> None:
 # -- candidate router_kind + abstention ----------------------------------------
 def test_exact_kind_is_switch_with_default_else_equality_chain() -> None:
     with_default = ExactMapRouterResolver().applies_to(
-        RouterResolutionContext(state_to_handler={1: 10}, default_target=99, dispatcher_entry=ENTRY)
+        RouterResolutionContext(
+            state_to_handler={1: 10}, default_target=99, dispatcher_entry=ENTRY
+        )
     )
     no_default = ExactMapRouterResolver().applies_to(
         RouterResolutionContext(state_to_handler={1: 10}, dispatcher_entry=ENTRY)
@@ -155,7 +162,9 @@ def test_providers_abstain_when_inputs_missing() -> None:
 def test_condition_chain_candidate_is_ranked_evidence_not_a_bool() -> None:
     range_router = _router({1: 10, 3: 30})
     cand = ConditionChainRangeRouterResolver().applies_to(
-        RouterResolutionContext(condition_chain_router=range_router, dispatcher_entry=ENTRY)
+        RouterResolutionContext(
+            condition_chain_router=range_router, dispatcher_entry=ENTRY
+        )
     )
     assert cand.router_kind is RouterKind.CONDITION_CHAIN
     assert cand.confidence == 2.0  # coverage as the ranking signal

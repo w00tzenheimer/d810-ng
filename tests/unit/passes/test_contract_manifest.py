@@ -1,4 +1,5 @@
 """Native pass-contract manifest export tests."""
+
 from __future__ import annotations
 
 from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
@@ -192,9 +193,7 @@ def test_pass_preflight_manifest_preserves_contract_shape_and_adds_status_only()
     plain_manifest = pass_contract_manifest(spec)
 
     assert {
-        key: value
-        for key, value in manifest.items()
-        if key != "preflight"
+        key: value for key, value in manifest.items() if key != "preflight"
     } == plain_manifest
     assert manifest["preflight"] == {
         "satisfied": False,
@@ -221,9 +220,7 @@ def test_pipeline_preflight_manifest_preserves_spec_order():
                 pass_id=spec.pass_id,
                 satisfied=True,
                 declared_output_facts=tuple(sorted(spec.contract.outputs.facts)),
-                declared_output_evidence=tuple(
-                    sorted(spec.contract.outputs.evidence)
-                ),
+                declared_output_evidence=tuple(sorted(spec.contract.outputs.evidence)),
             )
             for spec in specs
         ),

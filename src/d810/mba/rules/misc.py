@@ -41,6 +41,7 @@ class WeirdRule1(VerifiableRule):
 
     Complex algebraic identity involving subtraction and bitwise OR.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = x - (x | y)
@@ -55,6 +56,7 @@ class WeirdRule2(VerifiableRule):
 
     Distributive property with bitwise operations.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (TWO * x) - (x & ~y)
@@ -69,10 +71,11 @@ class WeirdRule3(VerifiableRule):
 
     Negative factorization with bitwise operations.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & ~y) - (TWO * x)
-    REPLACEMENT = -((x + (x & y)))
+    REPLACEMENT = -(x + (x & y))
 
     DESCRIPTION = "Simplify (x & ~y) - 2*x to -(x + (x & y))"
     REFERENCE = "Negative factorization"
@@ -83,14 +86,13 @@ class WeirdRule4(VerifiableRule):
 
     Requires bnot_x_1 is bitwise NOT of x_1.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x & bnot_y) - (x & y)
     REPLACEMENT = (x ^ y) - y
 
-    CONSTRAINTS = [
-        bnot_y == ~y
-    ]
+    CONSTRAINTS = [bnot_y == ~y]
 
     DESCRIPTION = "Simplify (x & ~y) - (x & y) to (x ^ y) - y"
     REFERENCE = "XOR extraction from masked subtraction"
@@ -102,15 +104,13 @@ class WeirdRule5(VerifiableRule):
     Highly complex three-variable identity with NOT, OR, AND operations.
     This is one of the most complex algebraic simplifications in d810.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = ((bnot_x | (bnot_y & z)) + (x + (y & z))) - z
     REPLACEMENT = x | (y | ~z)
 
-    CONSTRAINTS = [
-        bnot_x == ~x,
-        bnot_y == ~y
-    ]
+    CONSTRAINTS = [bnot_x == ~x, bnot_y == ~y]
 
     DESCRIPTION = "Complex 3-variable identity to OR form"
     REFERENCE = "Advanced Boolean algebra"
@@ -121,6 +121,7 @@ class WeirdRule6(VerifiableRule):
 
     Algebraic conversion to XOR form.
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x | y) + (x & ~y)

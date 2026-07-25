@@ -1,4 +1,5 @@
 "Single-hop condition-chain resolution for ``StateTransitionAnchorFact`` enrichment.\n\nThis module composes three already-persisted observations to enrich\nLOCOPT-pre transition facts with the immediate post-dispatcher target:\n\n1. ``StateTransitionAnchorFact`` -- captures source state const +\n   LOCOPT-pre transit chain.\n2. The condition-chain interval-dispatcher rows persisted in the diag DB\n   (one-hop interval lookup ``state_const -> handler block``).\n3. ``StateWriteAnchorFact`` at the resolved handler block at LOCOPT-pre\n   (gives the next state constant when the handler has a canonical\n   state-write).\n\nAll three exist already; this module composes them.  No preanalysis or HCC\nbehavior depends on the result; the enrichment lives in a dedicated\n``state_transition_condition_chain_resolutions`` table.\n\nResolution rules\n----------------\n\n* For each LOCOPT-pre ``StateTransitionAnchorFact`` whose\n  ``successor_kind`` is ``branch`` AND whose ``transit_blocks`` chain\n  ends at the dispatcher head (the condition-chain interval dispatcher's most\n  common target, by frequency), the resolver consults the condition-chain interval rows and\n  records the single-hop target handler block + that block's first\n  canonical state-write const at LOCOPT-pre, if any.\n* When ``successor_kind`` is ``direct`` / ``transit`` / ``loop`` /\n  ``exit`` / ``unresolved``, no condition-chain resolution is performed and the\n  reason column records why.\n* The resolver mirrors :func:`d810.analyses.control_flow.condition_chain_model.resolve_target_via_condition_chain`\n  semantics for the interval lookup.\n\nThe ``condition_chain_resolution_maturity`` column records which maturity provided\nthe condition-chain data (always ``MMAT_GLBOPT1`` today; left as a column so the\nschema can accommodate later sources without migration).\n"
+
 from __future__ import annotations
 
 import json
@@ -10,9 +11,7 @@ from d810.core.diag.models import ConditionChainIntervalDispatcherRow, FactObser
 from d810.core.typing import Iterable
 
 
-_CONDITION_CHAIN_LOG_RE = re.compile(
-    r"INTERVAL_DISPATCHER_ROWS:\s*(\[.*\])"
-)
+_CONDITION_CHAIN_LOG_RE = re.compile(r"INTERVAL_DISPATCHER_ROWS:\s*(\[.*\])")
 
 
 @dataclass(frozen=True)
@@ -52,7 +51,9 @@ class ConditionChainResolution:
         )
 
 
-def parse_condition_chain_intervals(payload_json: str) -> tuple[ConditionChainInterval, ...]:
+def parse_condition_chain_intervals(
+    payload_json: str,
+) -> tuple[ConditionChainInterval, ...]:
     """Parse ``INTERVAL_DISPATCHER_ROWS`` JSON into typed intervals."""
     rows = json.loads(payload_json)
     out: list[ConditionChainInterval] = []
@@ -67,7 +68,9 @@ def parse_condition_chain_intervals(payload_json: str) -> tuple[ConditionChainIn
     return tuple(out)
 
 
-def parse_latest_condition_chain_intervals_from_log(log_path: str) -> tuple[ConditionChainInterval, ...]:
+def parse_latest_condition_chain_intervals_from_log(
+    log_path: str,
+) -> tuple[ConditionChainInterval, ...]:
     """Return the LAST (latest) ``INTERVAL_DISPATCHER_ROWS`` row set
     from a d810 log file.
 
@@ -98,7 +101,9 @@ def load_latest_condition_chain_intervals_from_db(
     """
     if snapshot_id is None:
         row = (
-            ConditionChainIntervalDispatcherRow.select(ConditionChainIntervalDispatcherRow.snapshot)
+            ConditionChainIntervalDispatcherRow.select(
+                ConditionChainIntervalDispatcherRow.snapshot
+            )
             .group_by(ConditionChainIntervalDispatcherRow.snapshot)
             .order_by(ConditionChainIntervalDispatcherRow.snapshot.desc())
             .limit(1)
@@ -173,7 +178,10 @@ def _select_locopt_state_const_at_block(
             continue
         if int(payload.get("block_serial", -1)) != int(block_serial):
             continue
-        if str(payload.get("state_var_stkoff_hex", "")).lower() != canonical_stkoff_hex.lower():
+        if (
+            str(payload.get("state_var_stkoff_hex", "")).lower()
+            != canonical_stkoff_hex.lower()
+        ):
             continue
         const = payload.get("state_const_u64")
         if const is None:
@@ -208,9 +216,7 @@ def resolve_state_transition_facts(
     No recursive walking; single-hop interval resolution only.
     """
     fact_rows = (
-        FactObservation.select(
-            FactObservation.fact_id, FactObservation.payload
-        )
+        FactObservation.select(FactObservation.fact_id, FactObservation.payload)
         .where(
             (FactObservation.kind == "StateTransitionAnchorFact")
             & (FactObservation.snapshot == int(locopt_snapshot_id))
@@ -231,11 +237,7 @@ def resolve_state_transition_facts(
         successor_kind = payload.get("successor_kind")
         canonical_stkoff_hex = str(payload.get("state_var_stkoff_hex", ""))
 
-        if (
-            source_block is None
-            or source_const is None
-            or source_const_hex is None
-        ):
+        if source_block is None or source_const is None or source_const_hex is None:
             continue
 
         if successor_kind != "branch":
@@ -273,9 +275,7 @@ def resolve_state_transition_facts(
             )
             continue
 
-        target_block = resolve_via_intervals(
-            range_intervals, int(source_const)
-        )
+        target_block = resolve_via_intervals(range_intervals, int(source_const))
         if target_block is None:
             resolutions.append(
                 ConditionChainResolution(

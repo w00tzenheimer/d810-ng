@@ -1,4 +1,5 @@
 """Utility metrics functions for the shared unflattening engine."""
+
 from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING

@@ -26,9 +26,9 @@ class TestTransactionPhases:
         )
 
     def test_projected_before_live_pre_check(self) -> None:
-        assert TRANSACTION_PHASES.index("projected_contract") < TRANSACTION_PHASES.index(
-            "live_pre_check"
-        )
+        assert TRANSACTION_PHASES.index(
+            "projected_contract"
+        ) < TRANSACTION_PHASES.index("live_pre_check")
 
     def test_rollback_phases_at_end(self) -> None:
         idx_restore = TRANSACTION_PHASES.index("rollback_restore")
@@ -152,13 +152,16 @@ class TestLazyImportFromPackage:
 
     def test_import_classify_failure(self) -> None:
         from d810.passes.transaction_policy import classify_failure as cf
+
         assert callable(cf)
 
     def test_import_transaction_phases(self) -> None:
         from d810.passes.transaction_policy import TRANSACTION_PHASES as tp
+
         assert isinstance(tp, list)
         assert len(tp) == 9
 
     def test_import_failure_classification(self) -> None:
         from d810.passes.transaction_policy import FailureClassification as fc
+
         assert fc is FailureClassification

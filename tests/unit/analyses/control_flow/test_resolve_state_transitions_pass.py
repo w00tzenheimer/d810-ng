@@ -3,6 +3,7 @@
 Locks the composition (facts_from_validated_view -> resolve_state_transitions_with_dispatcher_map)
 and the seam-pending behavior (no dispatcher map -> explicit unresolved, never silent drop).
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace

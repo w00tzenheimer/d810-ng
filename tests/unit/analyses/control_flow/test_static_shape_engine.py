@@ -4,6 +4,7 @@ The behavior-neutrality proof at the unit level: the engine's
 ``.recover(g).to_state_dispatcher_map()`` byte-equals ``build_dispatch_map_any_kind(g)``
 on every fixture (same ``default + extra`` resolver chain, same ranking, same map).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -126,7 +127,9 @@ def _eq_cmp(state_stkoff: int, const: int, taken: int) -> InsnSnapshot:
     return _insn(
         kind=InsnKind.COND_JUMP,
         branch_predicate=PredicateKind.EQ,
-        left=_mop(kind=OperandKind.STACK, stkoff=state_stkoff, stack_refs=(state_stkoff,)),
+        left=_mop(
+            kind=OperandKind.STACK, stkoff=state_stkoff, stack_refs=(state_stkoff,)
+        ),
         right=_mop(kind=OperandKind.NUMBER, value=const),
         dest=_mop(kind=OperandKind.BLOCK, block_ref=taken),
     )

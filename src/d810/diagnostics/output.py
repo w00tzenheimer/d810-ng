@@ -1,4 +1,5 @@
 """CLI report output helpers for diagnostics commands."""
+
 from __future__ import annotations
 
 import argparse

@@ -98,11 +98,9 @@ def prove_exact_unsigned_range(
         ):
             return None
         if (
-            required_lo is not None
-            and _has_values_below(observed, width, required_lo)
+            required_lo is not None and _has_values_below(observed, width, required_lo)
         ) or (
-            required_hi is not None
-            and _has_values_above(observed, width, required_hi)
+            required_hi is not None and _has_values_above(observed, width, required_hi)
         ):
             return None
         is_singleton, value = observed.cvt_to_single_value()

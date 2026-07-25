@@ -1,4 +1,5 @@
 "Classify CFG back-edges as real-loop iteration vs spurious round-trip.\n\nCompanion to ``d810.analyses.control_flow.scc``: SCCs identify cycles, this module\nclassifies the cycle-closing edges.\n\nDefinitions\n-----------\nA back-edge ``(src, tgt)`` in a strongly-connected component is\n**real-loop** when ``src`` mutates a variable that ``tgt`` reads in its\ntail predicate. The mutation is the iteration update; the read is the\nloop test. This is what compilers emit for ``while``/``for``/``do-while``.\n\nA back-edge is **spurious** when no overlap exists. The cycle is closing\nbut no iteration is happening \u2014 typical of OLLVM dispatcher state-machine\nresidue that survived preanalysis-DAG-level unflattening: a \"redo with new\nstate\" jump where ``src`` does not actually change anything ``tgt`` tests.\n\nThe classifier is **strictly local** \u2014 it compares ``src``'s writes to\n``tgt``'s predicate read-set without walking the full SCC. This keeps the\nalgorithm O(1) per edge and pure-Python. Multi-step write chains\n(e.g. ``A`` writes carrier, ``A \u2192 B \u2192 tgt`` and ``B`` is the back-edge\nsource) are intentionally classified as ``UNKNOWN`` and left to a\ndownstream pass that does full reaching-def analysis.\n\nToken convention\n----------------\nVariables are represented as ``%var_HEX`` strings, matching the\n``dstr`` rendering used by ``loop_carrier.py``. The\n``parse_var_tokens(text)`` helper extracts them from a ``dstr``-like\nstring. Consumers that have access to typed operands can populate the\nwrite/read maps directly without going through the regex helper.\n"
+
 from __future__ import annotations
 
 import re
@@ -169,10 +170,7 @@ def log_classifications(
     """
     real = [c for c in classifications if c.is_real_loop]
     spurious = [c for c in classifications if c.is_spurious]
-    unknown = [
-        c for c in classifications
-        if c.classification is BackedgeClass.UNKNOWN
-    ]
+    unknown = [c for c in classifications if c.classification is BackedgeClass.UNKNOWN]
     logger.info(
         "back-edge classification: real=%d spurious=%d unknown=%d",
         len(real),

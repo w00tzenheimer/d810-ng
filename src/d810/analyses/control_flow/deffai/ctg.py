@@ -28,6 +28,7 @@ refiner).  A multi-member ``next_states`` is the **fork** -- multiple ``ctx'``.
 
 Portable-core: no IDA imports.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

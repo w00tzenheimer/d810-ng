@@ -4,6 +4,7 @@ Covers the priority ordering of bucket assignment and the
 formatting/no-DB fallback path. DB-side joins are exercised by an
 in-memory SQLite fixture.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -122,10 +123,7 @@ def test_payload_filter_wins_when_dropped_at_payload_stage():
 
 def test_corridor_filter_also_maps_to_payload_or_intermediate_bucket():
     row = _row(4, first_dropped_stage="corridor_filter")
-    assert (
-        classify(row, _empty_evidence(4)).bucket
-        == "payload_or_intermediate_filter"
-    )
+    assert classify(row, _empty_evidence(4)).bucket == "payload_or_intermediate_filter"
 
 
 def test_region_table_merge_loss_when_accepted_via_fallback_without_raw_candidate():
@@ -285,38 +283,112 @@ def in_memory_db() -> sqlite3.Connection:
     """
     db = make_bound_diag_db()
     Snapshot.insert(
-        id=7, label="GLBOPT1_post_d810", func_ea_hex="0x0", func_ea_i64=0,
-        maturity="MMAT_GLBOPT1", phase="unknown", block_count=0, timestamp=0.0,
+        id=7,
+        label="GLBOPT1_post_d810",
+        func_ea_hex="0x0",
+        func_ea_i64=0,
+        maturity="MMAT_GLBOPT1",
+        phase="unknown",
+        block_count=0,
+        timestamp=0.0,
     ).execute()
     # byte's block 100 owned by state A; A has neighbors B, C
-    StateCfgNode.insert_many([
-        dict(snapshot=7, state_hex="0xa", state_i64=10, entry_block=200,
-             classification="EXACT", shared_suffix=None),
-        dict(snapshot=7, state_hex="0xb", state_i64=11, entry_block=201,
-             classification="EXACT", shared_suffix=None),
-        dict(snapshot=7, state_hex="0xc", state_i64=12, entry_block=202,
-             classification="EXACT", shared_suffix=None),
-    ]).execute()
-    StateCfgNodeBlock.insert_many([
-        dict(snapshot=7, state_hex="0xa", entry_block=200, block_serial=100,
-             block_index=0, role="owned"),
-        dict(snapshot=7, state_hex="0xb", entry_block=201, block_serial=101,
-             block_index=0, role="owned"),
-        dict(snapshot=7, state_hex="0xc", entry_block=202, block_serial=102,
-             block_index=0, role="owned"),
-    ]).execute()
-    StateCfgEdge.insert_many([
-        dict(snapshot=7, edge_id=0, source_state_hex="0xb", source_state_i64=11,
-             target_state_hex="0xa", target_state_i64=10, edge_kind="TRANSITION",
-             source_block=11, source_arm=None, target_entry=200, ordered_path=""),
-        dict(snapshot=7, edge_id=1, source_state_hex="0xa", source_state_i64=10,
-             target_state_hex="0xc", target_state_i64=12, edge_kind="TRANSITION",
-             source_block=10, source_arm=None, target_entry=202, ordered_path=""),
-    ]).execute()
+    StateCfgNode.insert_many(
+        [
+            dict(
+                snapshot=7,
+                state_hex="0xa",
+                state_i64=10,
+                entry_block=200,
+                classification="EXACT",
+                shared_suffix=None,
+            ),
+            dict(
+                snapshot=7,
+                state_hex="0xb",
+                state_i64=11,
+                entry_block=201,
+                classification="EXACT",
+                shared_suffix=None,
+            ),
+            dict(
+                snapshot=7,
+                state_hex="0xc",
+                state_i64=12,
+                entry_block=202,
+                classification="EXACT",
+                shared_suffix=None,
+            ),
+        ]
+    ).execute()
+    StateCfgNodeBlock.insert_many(
+        [
+            dict(
+                snapshot=7,
+                state_hex="0xa",
+                entry_block=200,
+                block_serial=100,
+                block_index=0,
+                role="owned",
+            ),
+            dict(
+                snapshot=7,
+                state_hex="0xb",
+                entry_block=201,
+                block_serial=101,
+                block_index=0,
+                role="owned",
+            ),
+            dict(
+                snapshot=7,
+                state_hex="0xc",
+                entry_block=202,
+                block_serial=102,
+                block_index=0,
+                role="owned",
+            ),
+        ]
+    ).execute()
+    StateCfgEdge.insert_many(
+        [
+            dict(
+                snapshot=7,
+                edge_id=0,
+                source_state_hex="0xb",
+                source_state_i64=11,
+                target_state_hex="0xa",
+                target_state_i64=10,
+                edge_kind="TRANSITION",
+                source_block=11,
+                source_arm=None,
+                target_entry=200,
+                ordered_path="",
+            ),
+            dict(
+                snapshot=7,
+                edge_id=1,
+                source_state_hex="0xa",
+                source_state_i64=10,
+                target_state_hex="0xc",
+                target_state_i64=12,
+                edge_kind="TRANSITION",
+                source_block=10,
+                source_arm=None,
+                target_entry=202,
+                ordered_path="",
+            ),
+        ]
+    ).execute()
     # region feature value names blk[101] => B is admitted, A and C are not
     RegionShapeFeature.insert(
-        func_ea_hex="f", func_ea_i64=1, snapshot_id=7, source="D810",
-        region="h1", feature="members", value_text="blk[101]", evidence_json="{}",
+        func_ea_hex="f",
+        func_ea_i64=1,
+        snapshot_id=7,
+        source="D810",
+        region="h1",
+        feature="members",
+        value_text="blk[101]",
+        evidence_json="{}",
     ).execute()
     return db.connection()
 

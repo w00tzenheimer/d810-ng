@@ -1,4 +1,5 @@
 "Strongly-connected component analysis over a live microcode CFG.\n\nMicrocode-level analog of ``preanalysis.flow.scc_analysis.compute_state_sccs``.\n``compute_state_sccs`` operates on the preanalysis ``LinearizedStateDag``; this\nmodule operates on the live ``mba_t`` block graph after D810 has applied\nits modifications, where the residual SCCs are the structural artifact\nthat prevent IDA's structurer from rendering clean ``while``/``do-while``\nloops.\n\nThe Tarjan implementation mirrors ``DispatchRegionDetector.tarjan_scc``\nin the preanalysis layer (the layered architecture forbids ``cfg`` from\nimporting ``preanalysis``). Doctests on ``_tarjan_scc`` match the canonical\nversion exactly so any drift is caught. No IDA dependency: every entry\npoint takes a plain ``dict[int, tuple[int, ...]]`` successor map. The\ncaller (Hex-Rays backend) is responsible for lifting a live ``mba_t``\ninto that portable map before calling ``compute_live_cfg_sccs``.\n"
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ logger = getLogger(__name__)
 
 
 def _tarjan_scc(adj: dict[int, tuple[int, ...]]) -> list[frozenset[int]]:
-    "Tarjan SCC over an integer adjacency map.\n\n    Pure-Python, no dependencies. Mirrors\n    ``d810.analyses.control_flow.dispatch_region.DispatchRegionDetector.tarjan_scc``\n    intentionally \u2014 the layered architecture forbids ``cfg`` from\n    importing ``preanalysis``. The doctests below match the canonical version\n    bit-for-bit so any drift is caught immediately.\n\n    Returns SCCs in reverse-topological order (Tarjan's standard output).\n\n    >>> _tarjan_scc({0: (1,), 1: (0,)})\n    [frozenset({0, 1})]\n    >>> _tarjan_scc({0: (1,), 1: (2,), 2: ()})\n    [frozenset({2}), frozenset({1}), frozenset({0})]\n    "
+    "Tarjan SCC over an integer adjacency map.\n\n    Pure-Python, no dependencies. Mirrors\n    ``d810.analyses.control_flow.dispatch_region.DispatchRegionDetector.tarjan_scc``\n    intentionally \u2014 the layered architecture forbids ``cfg`` from\n    importing ``preanalysis``. The doctests below match the canonical version\n    bit-for-bit so any drift is caught immediately.\n\n    Returns SCCs in reverse-topological order (Tarjan's standard output).\n\n    >>> _tarjan_scc({0: (1,), 1: (0,)})\n    [frozenset({0, 1})]\n    >>> _tarjan_scc({0: (1,), 1: (2,), 2: ()})\n    [frozenset({2}), frozenset({1}), frozenset({0})]\n"
     # Delegates to the canonical lowest-layer implementation
     # (``d810.ir.directed_graph.tarjan_scc``). The algorithm previously lived
     # here verbatim only because no shared home below ``analyses`` existed;
@@ -93,10 +94,7 @@ def compute_live_cfg_sccs(
     for scc_id, idx_set in enumerate(raw_sccs):
         member = frozenset(int(b) for b in idx_set)
         cyclic_edges = frozenset(
-            (src, tgt)
-            for src in member
-            for tgt in adj.get(src, ())
-            if tgt in member
+            (src, tgt) for src in member for tgt in adj.get(src, ()) if tgt in member
         )
         if len(member) == 1:
             only = next(iter(member))

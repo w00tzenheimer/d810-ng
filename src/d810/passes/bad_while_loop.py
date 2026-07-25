@@ -1,4 +1,5 @@
 """Shared helpers and engine strategy wrapper for safe BadWhileLoop cleanup."""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
@@ -687,6 +688,7 @@ def collect_live_bad_while_loop_analysis(
     legacy unflattener through the cleanup-family backend.
     """
     return BadWhileLoopAnalysis(edits=(), follow_up=())
+
 
 def collect_live_bad_while_loop_edits(
     mba: object,

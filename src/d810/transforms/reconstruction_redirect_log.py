@@ -25,6 +25,7 @@ separate redirect path may emit the same edge, or a downstream Hex-Rays
 pass may merge/delete either end of the edge. Use the diag DB to
 distinguish "attempted" from "final topology changed".
 """
+
 from __future__ import annotations
 
 from d810.core import logging

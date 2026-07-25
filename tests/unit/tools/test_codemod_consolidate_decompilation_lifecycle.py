@@ -332,9 +332,7 @@ def test_plain_text_terminology_rewrite_is_not_toml_specific(tmp_path: Path) -> 
     rewrites = mod._rewrite_candidates([docs])
 
     assert len(rewrites) == 1
-    assert rewrites[0][1].text == (
-        "d810-preanalysis = historical command spelling\n"
-    )
+    assert rewrites[0][1].text == ("d810-preanalysis = historical command spelling\n")
     assert docs.read_text(encoding="utf-8") == source
 
 
@@ -441,7 +439,9 @@ reconstruction_result = reconcile_inputs()
         "NORMALIZED_RECON_CFG_SCOPE",
     }
     assert all(candidate.rewriteable for candidate in candidates)
-    assert mod.rewrite_text(source).text == """class _AnalysisOutcomeLike:
+    assert (
+        mod.rewrite_text(source).text
+        == """class _AnalysisOutcomeLike:
     pass
 
 class TestPreanalysisPhaseRuntime:
@@ -460,6 +460,7 @@ NORMALIZED_PREANALYSIS_CFG_SCOPE = "normalized_preanalysis_cfg_fact"
 D810_RECON_SKIP_PRIMARY = "reconstruction experiment"
 reconstruction_result = reconcile_inputs()
 """
+    )
 
 
 def test_rewrite_text_does_not_skip_uppercase_embedded_lifecycle_constant() -> None:

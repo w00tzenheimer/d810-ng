@@ -140,9 +140,9 @@ def test_or_mba_rule_1_pattern_generation():
     egraph.register(commuted)
     egraph.run(10)
 
-    assert (
-        egraph.check(eq(base).to(commuted)) is None
-    ), f"\nx FAILED: Could not verify equivalence!"
+    assert egraph.check(eq(base).to(commuted)) is None, (
+        f"\nx FAILED: Could not verify equivalence!"
+    )
     print("\n* VERIFIED: (x & y) + (x ^ y) == (x ^ y) + (x & y)")
 
 
@@ -167,9 +167,9 @@ def test_nested_commutativity():
     egraph.register(nested_commuted)
     egraph.run(10)
 
-    assert (
-        egraph.check(eq(base).to(nested_commuted)) is None
-    ), f"\nx FAILED: Could not verify equivalence!"
+    assert egraph.check(eq(base).to(nested_commuted)) is None, (
+        f"\nx FAILED: Could not verify equivalence!"
+    )
     print("* VERIFIED: (x & y) + (x ^ y) == (y & x) + (x ^ y)")
 
 
@@ -194,9 +194,9 @@ def test_full_permutation():
     egraph.register(fully_permuted)
     egraph.run(10)
 
-    assert (
-        egraph.check(eq(base).to(fully_permuted)) is None
-    ), f"\nx FAILED: Could not verify equivalence!"
+    assert egraph.check(eq(base).to(fully_permuted)) is None, (
+        f"\nx FAILED: Could not verify equivalence!"
+    )
     print("* VERIFIED: (x & y) + (x ^ y) == (y ^ x) + (y & x)")
 
 
@@ -243,9 +243,9 @@ def test_xor_not_equivalence():
     egraph.register(form2)
     egraph.run(10)
 
-    assert (
-        egraph.check(eq(form1).to(form2)) is None
-    ), f"\nx FAILED: Could not verify x ^ ~y == ~(x ^ y)!"
+    assert egraph.check(eq(form1).to(form2)) is None, (
+        f"\nx FAILED: Could not verify x ^ ~y == ~(x ^ y)!"
+    )
     print("* VERIFIED: x ^ ~y == ~(x ^ y)")
 
 
@@ -269,7 +269,9 @@ def test_xor_not_equivalence_from_module():
     form2 = ~(x ^ y)
 
     result = verify_pattern_equivalence(form1, form2)
-    assert result, f"\nx FAILED: verify_pattern_equivalence returned False for x ^ ~y == ~(x ^ y)"
+    assert result, (
+        f"\nx FAILED: verify_pattern_equivalence returned False for x ^ ~y == ~(x ^ y)"
+    )
     print("* VERIFIED: verify_pattern_equivalence(x ^ ~y, ~(x ^ y)) == True")
 
 
@@ -284,7 +286,9 @@ if __name__ == "__main__":
     results.append(("Nested commutativity", test_nested_commutativity()))
     results.append(("Full permutation", test_full_permutation()))
     results.append(("XOR-NOT equivalence", test_xor_not_equivalence()))
-    results.append(("XOR-NOT equivalence (module)", test_xor_not_equivalence_from_module()))
+    results.append(
+        ("XOR-NOT equivalence (module)", test_xor_not_equivalence_from_module())
+    )
 
     print("\n" + "=" * 60)
     print("Summary")

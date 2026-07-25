@@ -438,7 +438,9 @@ def cmd_dump(args: argparse.Namespace) -> None:
         }
         requested_human_maturity = None
         if args.human_microcode:
-            requested_human_maturity = maturity_map[args.human_microcode_maturity.upper()]
+            requested_human_maturity = maturity_map[
+                args.human_microcode_maturity.upper()
+            ]
         requested_debug_maturity = (
             requested_human_maturity
             if requested_human_maturity is not None
@@ -553,7 +555,9 @@ def cmd_dump(args: argparse.Namespace) -> None:
                                 maturity=None,
                             )
                             if report is None:
-                                print("[no terminal return audit available in preanalysis store]")
+                                print(
+                                    "[no terminal return audit available in preanalysis store]"
+                                )
                             else:
                                 print(report.format())
             print("=" * 88)
@@ -585,10 +589,7 @@ def cmd_list(args: argparse.Namespace) -> None:
             print(f"No capture rows in {db_path}")
             return
 
-        print(
-            f"{'Function':<40} {'Changed':<10} {'Address':<18} "
-            f"{'Rules (sample)'}"
-        )
+        print(f"{'Function':<40} {'Changed':<10} {'Address':<18} {'Rules (sample)'}")
         print("-" * 100)
         for row in rows:
             rules = json.loads(row["rules_fired"]) if row["rules_fired"] else []
@@ -684,16 +685,32 @@ def cmd_diff(args: argparse.Namespace) -> None:
 
             if args.summary:
                 rules = json.loads(row["rules_fired"]) if row["rules_fired"] else []
-                before_len = len(strip_colors(row["code_before"]).splitlines()) if row["code_before"] else 0
-                after_len = len(strip_colors(row["code_after"]).splitlines()) if row["code_after"] else 0
+                before_len = (
+                    len(strip_colors(row["code_before"]).splitlines())
+                    if row["code_before"]
+                    else 0
+                )
+                after_len = (
+                    len(strip_colors(row["code_after"]).splitlines())
+                    if row["code_after"]
+                    else 0
+                )
                 print(f"Changed: {bool(row['code_changed'])}")
                 print(f"Lines: {before_len} -> {after_len}")
                 print(f"Rules fired: {len(rules)}")
                 continue
 
             if args.compact:
-                before_len = len(strip_colors(row["code_before"]).splitlines()) if row["code_before"] else 0
-                after_len = len(strip_colors(row["code_after"]).splitlines()) if row["code_after"] else 0
+                before_len = (
+                    len(strip_colors(row["code_before"]).splitlines())
+                    if row["code_before"]
+                    else 0
+                )
+                after_len = (
+                    len(strip_colors(row["code_after"]).splitlines())
+                    if row["code_after"]
+                    else 0
+                )
                 print(f"Code size: {before_len} lines -> {after_len} lines")
                 continue
 
@@ -768,10 +785,7 @@ def cmd_summary(args: argparse.Namespace) -> None:
 
         print("-" * 120)
         pct = (total_changed / total_funcs * 100.0) if total_funcs else 0.0
-        print(
-            f"\nTotal: {total_funcs} functions, "
-            f"{total_changed} changed ({pct:.0f}%)"
-        )
+        print(f"\nTotal: {total_funcs} functions, {total_changed} changed ({pct:.0f}%)")
     finally:
         conn.close()
 
@@ -829,8 +843,7 @@ def cmd_pytest_results(args: argparse.Namespace) -> None:
     with TestResultQuery(DB_PATH) as query:
         functions = query.list_functions()
         print(
-            f"{'Function':<40} {'Suites':<3} {'Runs':<5} "
-            f"{'Passed':<6} {'Test Suites'}"
+            f"{'Function':<40} {'Suites':<3} {'Runs':<5} {'Passed':<6} {'Test Suites'}"
         )
         print("=" * 100)
         for func in functions:
@@ -953,10 +966,7 @@ def build_parser() -> argparse.ArgumentParser:
             "GLBOPT3",
             "LVARS",
         ),
-        help=(
-            "Microcode maturity to use with --human-microcode "
-            "(default: GLBOPT1)."
-        ),
+        help=("Microcode maturity to use with --human-microcode (default: GLBOPT1)."),
     )
     p_dump.add_argument(
         "--terminal-return-valranges",

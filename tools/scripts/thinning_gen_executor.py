@@ -9,6 +9,7 @@ serially, one gate-verified commit per slice, halt-on-red. Per-slice gate is FAS
 Usage:  pyenv exec python tools/scripts/thinning_gen_executor.py D
         -> writes .tmp/thinning/executor_phase_D.js
 """
+
 from __future__ import annotations
 
 import json

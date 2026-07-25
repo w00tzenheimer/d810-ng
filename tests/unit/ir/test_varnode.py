@@ -1,4 +1,5 @@
 """Unit tests for the portable Varnode spine."""
+
 from __future__ import annotations
 
 import dataclasses

@@ -13,6 +13,7 @@ invoked — it returns a conservative default. This replaces the
 ``importlib.import_module("d810.hexrays...")`` dodge that silently bypassed the
 ``mba-core-no-hexrays`` / ``portable-core-no-ida`` *static* contracts.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Protocol, runtime_checkable

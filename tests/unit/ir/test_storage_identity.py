@@ -1,4 +1,5 @@
 """Unit tests for the portable storage identity boundary."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -58,15 +59,22 @@ def test_storage_identity_is_frozen_hashable_and_size_agnostic() -> None:
 
 
 def test_storage_identity_preserves_legacy_key_prefixes() -> None:
-    assert storage_identity_key(StorageIdentity(StorageIdentityKind.REGISTER, 3)) == "r3"
+    assert (
+        storage_identity_key(StorageIdentity(StorageIdentityKind.REGISTER, 3)) == "r3"
+    )
     assert storage_identity_key(StorageIdentity(StorageIdentityKind.STACK, 64)) == "S64"
-    assert storage_identity_key(StorageIdentity(StorageIdentityKind.GLOBAL, 0x1400)) == "v5120"
+    assert (
+        storage_identity_key(StorageIdentity(StorageIdentityKind.GLOBAL, 0x1400))
+        == "v5120"
+    )
     assert storage_identity_key(StorageIdentity(StorageIdentityKind.LVAR, 8)) == "l8"
     assert storage_identity_key(None) is None
 
 
 def test_storage_identity_offset_zero_for_missing_identity() -> None:
-    assert storage_identity_offset(StorageIdentity(StorageIdentityKind.REGISTER, 3)) == 3
+    assert (
+        storage_identity_offset(StorageIdentity(StorageIdentityKind.REGISTER, 3)) == 3
+    )
     assert storage_identity_offset(None) == 0
 
 

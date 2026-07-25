@@ -7,6 +7,7 @@ admission gate and rejection axes called out in the next-slice plan
 (``arm_known``-only; reject ambiguous, multi-pred target, side effects, and
 non-2-way predecessor shapes).
 """
+
 from __future__ import annotations
 
 from d810.transforms.fix_predecessor_planning import (

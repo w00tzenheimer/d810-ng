@@ -12,6 +12,7 @@ Validates that:
 5. Backward compat: when no DagAuthority is present, no audit records
    are produced and no summary is emitted.
 """
+
 from __future__ import annotations
 
 from d810.transforms.graph_modification import (
@@ -72,13 +73,11 @@ def _stub_authority(
                 return DagDecision.gap("unknown_source")
             if src_int in disagree:
                 canonical = disagree[src_int]
-                new_tgt = (
-                    getattr(mod, "new_target", None)
-                    or getattr(mod, "goto_target", None)
+                new_tgt = getattr(mod, "new_target", None) or getattr(
+                    mod, "goto_target", None
                 )
                 return DagDecision.refuse(
-                    f"DAG_DISAGREEMENT:{src_int}->"
-                    f"{{planner={new_tgt},dag={canonical}}}"
+                    f"DAG_DISAGREEMENT:{src_int}->{{planner={new_tgt},dag={canonical}}}"
                 )
             if src_int in allow:
                 return DagDecision.allow(target_entry_anchor=allow[src_int])
@@ -320,9 +319,7 @@ class TestSummaryFormat:
                 planner_target=2,
                 dag_target=11,
                 phase="post_apply_filter",
-                decision_reason=(
-                    "DAG_DISAGREEMENT:76->{planner=2,dag=11}"
-                ),
+                decision_reason=("DAG_DISAGREEMENT:76->{planner=2,dag=11}"),
             ),
         )
         summary = _format_dag_audit_summary(records)
@@ -434,8 +431,7 @@ class TestSummaryFormat:
                 dag_target=100 + i,
                 phase="post_apply_filter",
                 decision_reason=(
-                    f"DAG_DISAGREEMENT:{10 + i}->"
-                    f"{{planner=2,dag={100 + i}}}"
+                    f"DAG_DISAGREEMENT:{10 + i}->{{planner=2,dag={100 + i}}}"
                 ),
             )
             for i in range(7)
@@ -592,47 +588,58 @@ class TestEngineDagConformanceGate:
         from d810.transforms.dag_authority import (
             DagDecision,
         )
+
         class _Authority:
             def permits(self, mod):
                 return DagDecision.refuse(
                     f"DAG_DISAGREEMENT:{src}->"
                     f"{{planner={getattr(mod, 'new_target', None)},dag={dag_target}}}"
                 )
+
         return _Authority()
 
     def _stub_authority_allow_all(self):
         from d810.transforms.dag_authority import (
             DagDecision,
         )
+
         class _Authority:
             def permits(self, mod):
                 return DagDecision.allow(
                     target_entry_anchor=getattr(mod, "new_target", None)
                     or getattr(mod, "goto_target", None),
                 )
+
         return _Authority()
 
     def _stub_authority_gap_all(self):
         from d810.transforms.dag_authority import (
             DagDecision,
         )
+
         class _Authority:
             def permits(self, mod):
                 return DagDecision.gap("unknown_source")
+
         return _Authority()
 
-    def _make_fragment(self, *, strategy_name: str = "any_strategy",
-                       modifications=None, metadata=None) -> PlanFragment:
+    def _make_fragment(
+        self, *, strategy_name: str = "any_strategy", modifications=None, metadata=None
+    ) -> PlanFragment:
         return PlanFragment(
             strategy_name=strategy_name,
             family="direct",
             ownership=OwnershipScope(
-                blocks=frozenset(), edges=frozenset(), transitions=frozenset(),
+                blocks=frozenset(),
+                edges=frozenset(),
+                transitions=frozenset(),
             ),
             prerequisites=[],
             expected_benefit=BenefitMetrics(
-                handlers_resolved=0, transitions_resolved=0,
-                blocks_freed=0, conflict_density=0.0,
+                handlers_resolved=0,
+                transitions_resolved=0,
+                blocks_freed=0,
+                conflict_density=0.0,
             ),
             risk_score=0.0,
             metadata=metadata if metadata is not None else {},

@@ -1,4 +1,5 @@
 """Runtime checks for the live residual-entry bridge recognizer."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -39,7 +40,9 @@ def _reg(number):
 
 
 def _stack(offset, size=4):
-    return SimpleNamespace(t=ida_hexrays.mop_S, s=SimpleNamespace(off=offset), size=size)
+    return SimpleNamespace(
+        t=ida_hexrays.mop_S, s=SimpleNamespace(off=offset), size=size
+    )
 
 
 def _number(value):
@@ -83,25 +86,45 @@ def _block_instructions(block):
 
 def _bridge_mba(*, predicate=None, store_destination=None):
     predicate = predicate if predicate is not None else _stack(0x20)
-    store_destination = store_destination if store_destination is not None else _stack(0x80)
+    store_destination = (
+        store_destination if store_destination is not None else _stack(0x80)
+    )
     return _mba(
         {
             0: _Block(
                 [
                     _insn(ida_hexrays.m_mov, 0x0F0, left=_number(0x20), d=_reg(8)),
-                    _insn(ida_hexrays.m_mov, 0x0F4, left=_number(0x10), d=_reg(STATE_REGISTER)),
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x0F4,
+                        left=_number(0x10),
+                        d=_reg(STATE_REGISTER),
+                    ),
                     _insn(
                         ida_hexrays.m_jnz,
                         0x100,
                         left=predicate,
                         r=_number(0),
                         d=SimpleNamespace(b=2),
-                    )
+                    ),
                 ],
                 [1, 2],
             ),
-            1: _Block([_insn(ida_hexrays.m_mov, 0x110, left=_reg(8), d=_reg(STATE_REGISTER))], [2]),
-            2: _Block([_insn(ida_hexrays.m_mov, 0x120, left=_reg(STATE_REGISTER), d=store_destination)], []),
+            1: _Block(
+                [_insn(ida_hexrays.m_mov, 0x110, left=_reg(8), d=_reg(STATE_REGISTER))],
+                [2],
+            ),
+            2: _Block(
+                [
+                    _insn(
+                        ida_hexrays.m_mov,
+                        0x120,
+                        left=_reg(STATE_REGISTER),
+                        d=store_destination,
+                    )
+                ],
+                [],
+            ),
         }
     )
 
@@ -125,7 +148,9 @@ def test_abstains_when_predicate_is_not_a_direct_frame_operand():
 
 
 def test_abstains_when_merge_store_is_not_a_direct_stack_cell():
-    assert recognize_residual_entry_bridge(_bridge_mba(store_destination=_reg(4))) is None
+    assert (
+        recognize_residual_entry_bridge(_bridge_mba(store_destination=_reg(4))) is None
+    )
 
 
 def _preoptimized_bridge_mba(
@@ -205,9 +230,7 @@ def _preoptimized_bridge_mba(
 
 
 def test_recognizes_preoptimized_setz_lnot_cmov_lowering_without_cfg_edges():
-    result = recognize_preoptimized_residual_entry_bridge(
-        _preoptimized_bridge_mba()
-    )
+    result = recognize_preoptimized_residual_entry_bridge(_preoptimized_bridge_mba())
 
     assert result is not None
     assert result.predicate_ea == 0x100
@@ -609,11 +632,14 @@ def test_recognizes_import_owned_opaque_jcnd_with_exact_state_arms():
     )
     state_targets = {0xA5A94B86: 0x3000, 0x304E8694: 0x4000}
 
-    assert recognize_conditional_handler_bridges(
-        mba,
-        state_register=STATE_REGISTER,
-        state_targets=state_targets,
-    ) == ()
+    assert (
+        recognize_conditional_handler_bridges(
+            mba,
+            state_register=STATE_REGISTER,
+            state_targets=state_targets,
+        )
+        == ()
+    )
 
     (result,) = recognize_conditional_handler_bridges(
         mba,
@@ -647,8 +673,11 @@ def test_predicate_arm_reaches_route_ea_through_bounded_microcode_path():
 
 
 def test_conditional_handler_bridge_abstains_without_both_state_targets():
-    assert recognize_conditional_handler_bridges(
-        _handler_bridge_mba(),
-        state_register=STATE_REGISTER,
-        state_targets={0xA5A94B86: 0x3000},
-    ) == ()
+    assert (
+        recognize_conditional_handler_bridges(
+            _handler_bridge_mba(),
+            state_register=STATE_REGISTER,
+            state_targets={0xA5A94B86: 0x3000},
+        )
+        == ()
+    )

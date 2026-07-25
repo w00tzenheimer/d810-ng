@@ -34,6 +34,7 @@ on ``dstr`` text, the known ``project_diag_instruction`` ``m_call`` ->
 ``InsnKind`` gap does NOT affect this collector: call carriers are recognised
 purely by their rendered text, not by call semantics.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -118,14 +119,16 @@ OLLVM_CARRIER_PROFILE_MODULE = __name__
 OLLVM_CARRIER_PROFILE_NAME = "ollvm_carrier"
 _OLLVM_CARRIER_REGISTRATION_HANDLER = "ollvm_carrier_fact_collectors"
 
-_TARGET_MATURITIES = frozenset({
-    IRMaturity.LOCAL_OPTIMIZED,
-    IRMaturity.CALL_MODELED,
-    IRMaturity.GLOBAL_ANALYZED,
-    IRMaturity.GLOBAL_OPTIMIZED,
-    IRMaturity.STRUCTURED,
-    IRMaturity.VARIABLE_RECOVERED,
-})
+_TARGET_MATURITIES = frozenset(
+    {
+        IRMaturity.LOCAL_OPTIMIZED,
+        IRMaturity.CALL_MODELED,
+        IRMaturity.GLOBAL_ANALYZED,
+        IRMaturity.GLOBAL_OPTIMIZED,
+        IRMaturity.STRUCTURED,
+        IRMaturity.VARIABLE_RECOVERED,
+    }
+)
 
 _VAR_TOKEN_RE = re.compile(r"(?:%var_[0-9A-Fa-f]+|v\d+)")
 _ARG_MOVE_RE = re.compile(
@@ -329,7 +332,8 @@ def _canonical_token(token: str | None) -> str | None:
 
 def _tokens(text: str) -> tuple[str, ...]:
     return tuple(
-        token for token in (
+        token
+        for token in (
             _canonical_token(match.group(0)) for match in _VAR_TOKEN_RE.finditer(text)
         )
         if token is not None
@@ -590,24 +594,27 @@ def _structural_accumulator_hit(
     target_token = _render_stack_token(target_off)
     details: dict[str, Any] = {"store_kind": "self_update"}
     if has_mul5:
-        operand_tokens = {
-            _render_stack_token(off) for off in signature.stack_offsets
-        }
+        operand_tokens = {_render_stack_token(off) for off in signature.stack_offsets}
         target_base = local_pointer_base.get(target_token)
-        same_base_aliases = tuple(sorted(
-            token for token in operand_tokens
-            if (
-                token != target_token
-                and target_base is not None
-                and local_pointer_base.get(token) == target_base
+        same_base_aliases = tuple(
+            sorted(
+                token
+                for token in operand_tokens
+                if (
+                    token != target_token
+                    and target_base is not None
+                    and local_pointer_base.get(token) == target_base
+                )
             )
-        ))
-        details.update({
-            "multiply_add_operand_tokens": tuple(sorted(operand_tokens)),
-            "multiply_add_base_token": target_base,
-            "multiply_add_same_base_alias_tokens": same_base_aliases,
-            "same_carrier_alias_proof": bool(same_base_aliases),
-        })
+        )
+        details.update(
+            {
+                "multiply_add_operand_tokens": tuple(sorted(operand_tokens)),
+                "multiply_add_base_token": target_base,
+                "multiply_add_same_base_alias_tokens": same_base_aliases,
+                "same_carrier_alias_proof": bool(same_base_aliases),
+            }
+        )
     return _CarrierHit(
         role="ACCUMULATOR_CARRIER",
         token=target_token,
@@ -617,7 +624,9 @@ def _structural_accumulator_hit(
     )
 
 
-def _iter_carrier_hits(instructions: tuple[_OllvmCarrierInsn, ...]) -> Iterable[_CarrierHit]:
+def _iter_carrier_hits(
+    instructions: tuple[_OllvmCarrierInsn, ...],
+) -> Iterable[_CarrierHit]:
     (
         output_pointer_aliases,
         local_pointer_aliases,
@@ -732,9 +741,7 @@ def _iter_carrier_hits(instructions: tuple[_OllvmCarrierInsn, ...]) -> Iterable[
             # carries the full multiply-add structure that lives in ``dstr``.
             # Exactly one ``ACCUMULATOR_CARRIER`` hit is emitted per instruction.
             if isinstance(insn.src_l_expr, (Add, Sub, And, Mul)):
-                accumulator_hit = _structural_accumulator_hit(
-                    insn, local_pointer_base
-                )
+                accumulator_hit = _structural_accumulator_hit(insn, local_pointer_base)
                 if accumulator_hit is not None:
                     yield accumulator_hit
             else:
@@ -746,20 +753,27 @@ def _iter_carrier_hits(instructions: tuple[_OllvmCarrierInsn, ...]) -> Iterable[
                     details: dict[str, Any] = {"store_kind": "self_update"}
                     if "#5.4*" in dstr:
                         target_base = local_pointer_base.get(target)
-                        same_base_aliases = tuple(sorted(
-                            token for token in set(all_tokens[:-1])
-                            if (
-                                token != target
-                                and target_base is not None
-                                and local_pointer_base.get(token) == target_base
+                        same_base_aliases = tuple(
+                            sorted(
+                                token
+                                for token in set(all_tokens[:-1])
+                                if (
+                                    token != target
+                                    and target_base is not None
+                                    and local_pointer_base.get(token) == target_base
+                                )
                             )
-                        ))
-                        details.update({
-                            "multiply_add_operand_tokens": tuple(sorted(set(all_tokens[:-1]))),
-                            "multiply_add_base_token": target_base,
-                            "multiply_add_same_base_alias_tokens": same_base_aliases,
-                            "same_carrier_alias_proof": bool(same_base_aliases),
-                        })
+                        )
+                        details.update(
+                            {
+                                "multiply_add_operand_tokens": tuple(
+                                    sorted(set(all_tokens[:-1]))
+                                ),
+                                "multiply_add_base_token": target_base,
+                                "multiply_add_same_base_alias_tokens": same_base_aliases,
+                                "same_carrier_alias_proof": bool(same_base_aliases),
+                            }
+                        )
                     yield _CarrierHit(
                         role="ACCUMULATOR_CARRIER",
                         token=target,
@@ -899,19 +913,21 @@ class OllvmCarrierProfileFactCollector:
     """Profile-local collector that publishes raw and projected OLLVM facts."""
 
     name = "OllvmCarrierProfileFactCollector"
-    fact_kinds = frozenset({
-        "OllvmValueFlowEvidence",
-        OBSERVABLE_MEMORY_DEF_FACT_TYPE,
-        SCALAR_PROMOTION_FACT_TYPE,
-        MUST_ALIAS_FACT_TYPE,
-        MAY_ALIAS_FACT_TYPE,
-        SCALAR_REPLACEMENT_FACT_TYPE,
-        SYMBOLIC_EXPRESSION_FACT_TYPE,
-        LOOP_PREDICATE_VALUE_FACT_TYPE,
-        CALL_RETURN_VALUE_FACT_TYPE,
-        OBSERVABLE_OUTPUT_FACT_TYPE,
-        POINTS_TO_FACT_TYPE,
-    })
+    fact_kinds = frozenset(
+        {
+            "OllvmValueFlowEvidence",
+            OBSERVABLE_MEMORY_DEF_FACT_TYPE,
+            SCALAR_PROMOTION_FACT_TYPE,
+            MUST_ALIAS_FACT_TYPE,
+            MAY_ALIAS_FACT_TYPE,
+            SCALAR_REPLACEMENT_FACT_TYPE,
+            SYMBOLIC_EXPRESSION_FACT_TYPE,
+            LOOP_PREDICATE_VALUE_FACT_TYPE,
+            CALL_RETURN_VALUE_FACT_TYPE,
+            OBSERVABLE_OUTPUT_FACT_TYPE,
+            POINTS_TO_FACT_TYPE,
+        }
+    )
     maturities = _TARGET_MATURITIES
 
     def __init__(
@@ -1004,9 +1020,7 @@ class OllvmCarrierBranchOwnershipOracle:
         if not tail_tokens:
             return None
 
-        password_matches = tuple(
-            sorted(tail_tokens & self._password_predicate_tokens)
-        )
+        password_matches = tuple(sorted(tail_tokens & self._password_predicate_tokens))
         if password_matches:
             return self._replace_proof(
                 proof,
@@ -1044,17 +1058,19 @@ class OllvmCarrierBranchOwnershipOracle:
         edge: object,
     ) -> BranchOwnershipProof:
         evidence = dict(proof.evidence)
-        evidence.update({
-            "predicate_ownership_kind": (
-                PredicateOwnershipKind.REAL_DATA_DEPENDENT.value
-            ),
-            "predicate_ownership_reason": reason,
-            "carrier_kind": carrier_kind,
-            "expression_class": expression_class,
-            "predicate_tokens": predicate_tokens,
-            "tail_text": tail_text,
-            "via_pred": _path_predecessor(edge, proof.source_block),
-        })
+        evidence.update(
+            {
+                "predicate_ownership_kind": (
+                    PredicateOwnershipKind.REAL_DATA_DEPENDENT.value
+                ),
+                "predicate_ownership_reason": reason,
+                "carrier_kind": carrier_kind,
+                "expression_class": expression_class,
+                "predicate_tokens": predicate_tokens,
+                "tail_text": tail_text,
+                "via_pred": _path_predecessor(edge, proof.source_block),
+            }
+        )
         return BranchOwnershipProof(
             proof_id=proof.proof_id,
             proof_kind=BranchOwnershipProofKind.REAL_DATA_DEPENDENT,
@@ -1284,57 +1300,65 @@ def _project_ollvm_oracle_fact(
         )
 
     if role == "ARG_OUTPUT_POINTER":
-        return (_ollvm_exact_fact(
-            observation,
-            exact=exact,
-            kind=POINTS_TO_FACT_TYPE,
-            semantic_key=f"output_pointer:token:{token}",
-            expression_class="argument_output_pointer",
-            observable_effect="output_buffer_pointer",
-            proof_family="argument_output_pointer_identity",
-            producer_ids=producer_ids,
-            role=role,
-        ),)
+        return (
+            _ollvm_exact_fact(
+                observation,
+                exact=exact,
+                kind=POINTS_TO_FACT_TYPE,
+                semantic_key=f"output_pointer:token:{token}",
+                expression_class="argument_output_pointer",
+                observable_effect="output_buffer_pointer",
+                proof_family="argument_output_pointer_identity",
+                producer_ids=producer_ids,
+                role=role,
+            ),
+        )
 
     if role == "INDIRECT_STORE_CANDIDATE":
-        return (_ollvm_exact_fact(
-            observation,
-            exact=exact,
-            kind=SCALAR_PROMOTION_FACT_TYPE,
-            semantic_key=f"carrier_store_promotion:token:{token}",
-            expression_class="carrier_store_promotion_proof",
-            observable_effect="output_store",
-            proof_family="observable_carrier_store",
-            producer_ids=producer_ids,
-            role=role,
-        ),)
+        return (
+            _ollvm_exact_fact(
+                observation,
+                exact=exact,
+                kind=SCALAR_PROMOTION_FACT_TYPE,
+                semantic_key=f"carrier_store_promotion:token:{token}",
+                expression_class="carrier_store_promotion_proof",
+                observable_effect="output_store",
+                proof_family="observable_carrier_store",
+                producer_ids=producer_ids,
+                role=role,
+            ),
+        )
 
     if role == "LOOP_INDEX_CARRIER":
-        return (_ollvm_exact_fact(
-            observation,
-            exact=exact,
-            kind=LOOP_PREDICATE_VALUE_FACT_TYPE,
-            semantic_key=f"loop_predicate:token:{token}",
-            expression_class="loop_predicate_carrier_proof",
-            observable_effect="none",
-            proof_family="local_loop_predicate_carrier",
-            producer_ids=producer_ids,
-            role=role,
-            extra_details=_ollvm_local_scalarization_details(payload),
-        ),)
+        return (
+            _ollvm_exact_fact(
+                observation,
+                exact=exact,
+                kind=LOOP_PREDICATE_VALUE_FACT_TYPE,
+                semantic_key=f"loop_predicate:token:{token}",
+                expression_class="loop_predicate_carrier_proof",
+                observable_effect="none",
+                proof_family="local_loop_predicate_carrier",
+                producer_ids=producer_ids,
+                role=role,
+                extra_details=_ollvm_local_scalarization_details(payload),
+            ),
+        )
 
     if role == "PASSWORD_COMPARE_RESULT":
-        return (_ollvm_exact_fact(
-            observation,
-            exact=exact,
-            kind=CALL_RETURN_VALUE_FACT_TYPE,
-            semantic_key=f"call_result:token:{token}",
-            expression_class="call_result",
-            observable_effect="branch_predicate",
-            proof_family="call_result_predicate_carrier",
-            producer_ids=producer_ids,
-            role=role,
-        ),)
+        return (
+            _ollvm_exact_fact(
+                observation,
+                exact=exact,
+                kind=CALL_RETURN_VALUE_FACT_TYPE,
+                semantic_key=f"call_result:token:{token}",
+                expression_class="call_result",
+                observable_effect="branch_predicate",
+                proof_family="call_result_predicate_carrier",
+                producer_ids=producer_ids,
+                role=role,
+            ),
+        )
 
     if role == "ACCUMULATOR_CARRIER":
         facts = []
@@ -1347,42 +1371,46 @@ def _project_ollvm_oracle_fact(
             local_details.get("local_base_token") is not None
             or local_details.get("multiply_add_base_token") is not None
         ):
-            facts.append(_ollvm_exact_fact(
-                observation,
-                exact=exact,
-                kind=SCALAR_REPLACEMENT_FACT_TYPE,
-                semantic_key=f"local_storage_scalarization:token:{token}",
-                expression_class="local_storage_scalarization_proof",
-                observable_effect="none",
-                proof_family="local_expression_storage_scalarization",
-                producer_ids=producer_ids,
-                role=role,
-                extra_details=local_details,
-            ))
-        facts.extend([
-            _ollvm_exact_fact(
-                observation,
-                exact=exact,
-                kind=SYMBOLIC_EXPRESSION_FACT_TYPE,
-                semantic_key=f"expression_carrier:token:{token}",
-                expression_class="semantic_expression_carrier_proof",
-                observable_effect="none",
-                proof_family="local_alias_expression_carrier",
-                producer_ids=producer_ids,
-                role=role,
-            ),
-            _ollvm_exact_fact(
-                observation,
-                exact=exact,
-                kind=SCALAR_PROMOTION_FACT_TYPE,
-                semantic_key=f"carrier_store_promotion:token:{token}",
-                expression_class="carrier_store_promotion_proof",
-                observable_effect="carrier_store",
-                proof_family="semantic_expression_store_promotion",
-                producer_ids=producer_ids,
-                role=role,
-            ),
-        ])
+            facts.append(
+                _ollvm_exact_fact(
+                    observation,
+                    exact=exact,
+                    kind=SCALAR_REPLACEMENT_FACT_TYPE,
+                    semantic_key=f"local_storage_scalarization:token:{token}",
+                    expression_class="local_storage_scalarization_proof",
+                    observable_effect="none",
+                    proof_family="local_expression_storage_scalarization",
+                    producer_ids=producer_ids,
+                    role=role,
+                    extra_details=local_details,
+                )
+            )
+        facts.extend(
+            [
+                _ollvm_exact_fact(
+                    observation,
+                    exact=exact,
+                    kind=SYMBOLIC_EXPRESSION_FACT_TYPE,
+                    semantic_key=f"expression_carrier:token:{token}",
+                    expression_class="semantic_expression_carrier_proof",
+                    observable_effect="none",
+                    proof_family="local_alias_expression_carrier",
+                    producer_ids=producer_ids,
+                    role=role,
+                ),
+                _ollvm_exact_fact(
+                    observation,
+                    exact=exact,
+                    kind=SCALAR_PROMOTION_FACT_TYPE,
+                    semantic_key=f"carrier_store_promotion:token:{token}",
+                    expression_class="carrier_store_promotion_proof",
+                    observable_effect="carrier_store",
+                    proof_family="semantic_expression_store_promotion",
+                    producer_ids=producer_ids,
+                    role=role,
+                ),
+            ]
+        )
         alias = _ollvm_same_carrier_alias_fact(
             observation,
             exact=exact,
@@ -1550,7 +1578,8 @@ def _ollvm_local_scalarization_details(payload: JsonMapping) -> JsonMapping:
     if multiply_base is not None:
         details["multiply_add_base_token"] = multiply_base
     aliases = tuple(
-        alias for alias in (
+        alias
+        for alias in (
             _canonical_token(str(raw_alias))
             for raw_alias in (payload.get("multiply_add_same_base_alias_tokens") or ())
         )
@@ -1619,7 +1648,8 @@ def _ollvm_overlap_proof(
     local_base = _canonical_token(str(details.get("local_base_token") or ""))
     multiply_base = _canonical_token(str(details.get("multiply_add_base_token") or ""))
     alias_tokens = tuple(
-        alias for alias in (
+        alias
+        for alias in (
             _canonical_token(str(raw_alias))
             for raw_alias in (
                 details.get("alias_tokens")

@@ -11,6 +11,7 @@ DU graph (those whole-function sources are exercised by the e2e pipeline).
 IDA-dependent: the fold reads real ``ida_hexrays`` mop/opcode constants, so the
 fixtures are ``SimpleNamespace`` shims shaped like ``mop_t`` / ``minsn_t``.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -79,9 +80,7 @@ def test_local_only_fold_leaves_cross_block_operand_top():
     mba = _mba_with_block(insn)
     # No resolver -> operand is ⊤ -> not provably constant (S3: AbstractValue Top).
     assert (
-        fold_block_state_write(
-            mba=mba, block_serial=0, state_var_stkoff=_STATE_OFF
-        )
+        fold_block_state_write(mba=mba, block_serial=0, state_var_stkoff=_STATE_OFF)
         is TOP
     )
 

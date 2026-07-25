@@ -14,6 +14,7 @@ must not return any false positives for these codes.  If a future Cython
 implementation starts covering a mapped code, this test will surface the
 overlap automatically.
 """
+
 from __future__ import annotations
 
 import json
@@ -176,7 +177,9 @@ class _ExtMBA:
 
 
 def _linear_mba(qty: int, default_type: int | None = None) -> tuple[_MBA, list[_Block]]:
-    block_type = int(default_type if default_type is not None else getattr(_HR, "BLT_0WAY"))
+    block_type = int(
+        default_type if default_type is not None else getattr(_HR, "BLT_0WAY")
+    )
     blocks = [_Block(i, block_type=block_type) for i in range(qty)]
     for i, blk in enumerate(blocks):
         blk.prevb = blocks[i - 1] if i > 0 else None
@@ -210,6 +213,7 @@ def _load_matrix() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Corruption factories — one per mapped code
 # ---------------------------------------------------------------------------
+
 
 def _corrupt_50840(mba: _MBA) -> _MBA:
     """nextb->prevb mismatch: block[1].prevb set to None."""
@@ -263,7 +267,9 @@ def _corrupt_50854(_ignored: Any) -> _MBA:
     mba, blocks = _linear_mba(4)
     blocks[1].type = int(getattr(_HR, "BLT_1WAY"))
     blocks[1].succset = _Vec([0])
-    blocks[1].tail = _Insn(int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=0))
+    blocks[1].tail = _Insn(
+        int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=0)
+    )
     blocks[1]._call_block = True
     return mba
 
@@ -273,7 +279,9 @@ def _corrupt_50855(_ignored: Any) -> _MBA:
     mba, blocks = _linear_mba(3)
     blocks[1].type = int(getattr(_HR, "BLT_NWAY"))
     blocks[1].succset = _Vec([2])
-    blocks[1].tail = _Insn(int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=2))
+    blocks[1].tail = _Insn(
+        int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=2)
+    )
     return mba
 
 
@@ -282,7 +290,9 @@ def _corrupt_50856(_ignored: Any) -> _MBA:
     mba, blocks = _linear_mba(4)
     blocks[1].type = int(getattr(_HR, "BLT_2WAY"))
     blocks[1].succset = _Vec([2])
-    blocks[1].tail = _Insn(int(getattr(_HR, "m_jnz")), d=_Mop(int(getattr(_HR, "mop_b")), b=3))
+    blocks[1].tail = _Insn(
+        int(getattr(_HR, "m_jnz")), d=_Mop(int(getattr(_HR, "mop_b")), b=3)
+    )
     return mba
 
 
@@ -318,7 +328,9 @@ def _corrupt_50860(_ignored: Any) -> _MBA:
     mba, blocks = _linear_mba(3)
     blocks[1].type = int(getattr(_HR, "BLT_1WAY"))
     blocks[1].succset = _Vec([0])
-    blocks[1].tail = _Insn(int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=2))
+    blocks[1].tail = _Insn(
+        int(getattr(_HR, "m_goto")), l=_Mop(int(getattr(_HR, "mop_b")), b=2)
+    )
     return mba
 
 
@@ -367,16 +379,26 @@ def _corrupt_50865(_ignored: Any) -> _ExtMBA:
 def _corrupt_50869(_ignored: Any) -> _ExtMBA:
     """start >= end for non-fake block."""
     blk0 = _ExtBlock(0, block_type=int(getattr(_HR, "BLT_0WAY")))
-    blk1 = _ExtBlock(1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401010, end=0x401000)
-    blk2 = _ExtBlock(2, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401020, end=0x401030)
+    blk1 = _ExtBlock(
+        1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401010, end=0x401000
+    )
+    blk2 = _ExtBlock(
+        2, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401020, end=0x401030
+    )
     return _ExtMBA([blk0, blk1, blk2], entry_ea=0x401000)
 
 
 def _corrupt_50870(_ignored: Any) -> _ExtMBA:
     """Block outside function boundaries (starts before entry_ea)."""
-    blk0 = _ExtBlock(0, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401000, end=0x401010)
-    blk1 = _ExtBlock(1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x400000, end=0x401010)
-    blk2 = _ExtBlock(2, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401010, end=0x401020)
+    blk0 = _ExtBlock(
+        0, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401000, end=0x401010
+    )
+    blk1 = _ExtBlock(
+        1, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x400000, end=0x401010
+    )
+    blk2 = _ExtBlock(
+        2, block_type=int(getattr(_HR, "BLT_0WAY")), start=0x401010, end=0x401020
+    )
     return _ExtMBA([blk0, blk1, blk2], entry_ea=0x401000)
 
 
@@ -394,7 +416,9 @@ def _corrupt_51814(_ignored: Any) -> _ExtMBA:
     """Entry/exit/extern blocks not empty (entry block has instructions)."""
     m_nop = int(getattr(_HR, "m_nop"))
     head0 = _make_chain(m_nop)
-    blk0 = _ExtBlock(0, block_type=int(getattr(_HR, "BLT_0WAY")), head=head0, tail_insn=_Insn(m_nop))
+    blk0 = _ExtBlock(
+        0, block_type=int(getattr(_HR, "BLT_0WAY")), head=head0, tail_insn=_Insn(m_nop)
+    )
     blk1 = _ExtBlock(1, block_type=int(getattr(_HR, "BLT_0WAY")), head=None)
     blk2 = _ExtBlock(2, block_type=int(getattr(_HR, "BLT_0WAY")), head=None)
     return _ExtMBA([blk0, blk1, blk2])
@@ -477,6 +501,7 @@ _PARAMETRIZE_ARGS = _build_parametrize_args()
 # Parametrized differential parity test
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "code,violation_name,checker,corrupt_fn",
     _PARAMETRIZE_ARGS,
@@ -524,6 +549,7 @@ def test_parity_mapped_code_triggers_violation(
 # ---------------------------------------------------------------------------
 # Parity dashboard test
 # ---------------------------------------------------------------------------
+
 
 def test_parity_dashboard() -> None:
     """Print a parity coverage summary and assert no code is unmapped."""

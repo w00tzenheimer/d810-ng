@@ -1,4 +1,5 @@
 """Shadow parsing helpers for optional PipelineConfig v2 project config."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -53,9 +54,7 @@ def pipeline_v2_shadow_match_required(project_config) -> bool:
         return False
     value = config["require_pipeline_v2_shadow_match"]
     if not isinstance(value, bool):
-        raise PipelineConfigError(
-            "require_pipeline_v2_shadow_match must be a boolean"
-        )
+        raise PipelineConfigError("require_pipeline_v2_shadow_match must be a boolean")
     return value
 
 

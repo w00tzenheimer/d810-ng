@@ -16,6 +16,7 @@ gap); ``meet`` and ``widen`` are sound (``meet`` over-approximates the
 intersection so ``assume`` never drops a feasible value; ``widen`` jumps to ⊤
 when the arc grows, guaranteeing termination). Portable: pure integer, no IDA.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

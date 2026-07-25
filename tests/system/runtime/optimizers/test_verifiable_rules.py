@@ -49,7 +49,8 @@ def test_registry_is_populated():
 def _get_correct_rules():
     """Get rules that are expected to be mathematically correct."""
     return [
-        r for r in get_all_rules()
+        r
+        for r in get_all_rules()
         if not getattr(r, "KNOWN_INCORRECT", False)
         and not getattr(r, "SKIP_VERIFICATION", False)
     ]

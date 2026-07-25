@@ -1,4 +1,5 @@
 """Tests for exact state dispatcher rows."""
+
 from __future__ import annotations
 
 from d810.capabilities.dispatcher import RouterKind

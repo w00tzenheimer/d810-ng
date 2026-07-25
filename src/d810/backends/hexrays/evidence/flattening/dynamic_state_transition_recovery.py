@@ -17,7 +17,9 @@ from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
     recognize_derived_xor_dispatcher_model,
     recognize_global_or_state_write_transition,
 )
-from d810.backends.hexrays.evidence.condition_chain_analysis import _detect_state_var_stkoff
+from d810.backends.hexrays.evidence.condition_chain_analysis import (
+    _detect_state_var_stkoff,
+)
 from d810.analyses.control_flow.transition_builder import (
     StateHandler,
     StateTransition,
@@ -25,7 +27,8 @@ from d810.analyses.control_flow.transition_builder import (
 )
 
 logger = logging.getLogger(
-    "D810.backends.hexrays.evidence.flattening.dynamic_state_transition_recovery", logging.INFO
+    "D810.backends.hexrays.evidence.flattening.dynamic_state_transition_recovery",
+    logging.INFO,
 )
 
 
@@ -100,7 +103,7 @@ def recover_dynamic_state_write_transitions(
     state_var_stkoff: int | None,
     known_states: Iterable[int],
 ) -> TransitionResult:
-    "Add guarded transitions recovered from dynamic state-carrier writes.\n\n    The condition-chain walker can miss handlers that compute the next dispatcher state\n    through writable storage.  The Approov VM sample has this form:\n    ``global |= STATE; state_var = global``.  Since the previous global value\n    is not proven here, the recovered edge is marked conditional/advisory and\n    carries provenance back to the handler block rather than pretending to be\n    an unconditional state write.\n\n    Derived-XOR dispatchers use the same enrichment workflow but with a\n    different state space:\n\n    1. Recognize the dispatcher expression ``key = low8(carrier) ^ K``.\n    2. Derive the initial dispatcher state from the preheader carrier write.\n    3. Convert each handler-side ``carrier ^= C`` into\n       ``next_key = current_key ^ (C & 0xff)``.\n    4. Store those edges as ``StateTransition`` objects with\n       ``provenance_kind == \"derived_xor_dispatch_key\"``.\n\n    The emulated-dispatcher lowerer intentionally requires that provenance\n    before it emits redirects, and generic cleanup/FCP rules use the same\n    recognizer as an ownership signal.  Future dispatcher families should\n    follow this pattern: recover evidence into preanalysis first, tag the provenance,\n    then make lowering consume the tagged transitions instead of rewriting\n    pseudocode or teaching a generic rule to guess the derived state.\n    "
+    'Add guarded transitions recovered from dynamic state-carrier writes.\n\n    The condition-chain walker can miss handlers that compute the next dispatcher state\n    through writable storage.  The Approov VM sample has this form:\n    ``global |= STATE; state_var = global``.  Since the previous global value\n    is not proven here, the recovered edge is marked conditional/advisory and\n    carries provenance back to the handler block rather than pretending to be\n    an unconditional state write.\n\n    Derived-XOR dispatchers use the same enrichment workflow but with a\n    different state space:\n\n    1. Recognize the dispatcher expression ``key = low8(carrier) ^ K``.\n    2. Derive the initial dispatcher state from the preheader carrier write.\n    3. Convert each handler-side ``carrier ^= C`` into\n       ``next_key = current_key ^ (C & 0xff)``.\n    4. Store those edges as ``StateTransition`` objects with\n       ``provenance_kind == "derived_xor_dispatch_key"``.\n\n    The emulated-dispatcher lowerer intentionally requires that provenance\n    before it emits redirects, and generic cleanup/FCP rules use the same\n    recognizer as an ownership signal.  Future dispatcher families should\n    follow this pattern: recover evidence into preanalysis first, tag the provenance,\n    then make lowering consume the tagged transitions instead of rewriting\n    pseudocode or teaching a generic rule to guess the derived state.\n'
 
     known_state_set = {int(value) & 0xFFFFFFFF for value in known_states}
     if not known_state_set or not transition_result.handlers:
@@ -124,9 +127,8 @@ def recover_dynamic_state_write_transitions(
                 int(dispatcher_entry_serial),
                 diag=False,
             )
-            if (
-                _detected_stkoff is not None
-                and int(_detected_stkoff) == int(state_var_stkoff)
+            if _detected_stkoff is not None and int(_detected_stkoff) == int(
+                state_var_stkoff
             ):
                 state_var_lvar_idx = detected_lvar_idx
         except Exception:
@@ -164,7 +166,10 @@ def recover_dynamic_state_write_transitions(
         for state_value, handler in sorted(cloned_handlers.items()):
             if not _handler_needs_dynamic_recovery(handler):
                 continue
-            if flow_graph is not None and flow_graph.get_block(handler.check_block) is None:
+            if (
+                flow_graph is not None
+                and flow_graph.get_block(handler.check_block) is None
+            ):
                 continue
 
             evidence = recognize_global_or_state_write_transition(
@@ -196,7 +201,8 @@ def recover_dynamic_state_write_transitions(
                 continue
             if any(
                 transition.is_conditional
-                and (transition.to_state & 0xFFFFFFFF) == (evidence.target_state & 0xFFFFFFFF)
+                and (transition.to_state & 0xFFFFFFFF)
+                == (evidence.target_state & 0xFFFFFFFF)
                 for transition in handler.transitions
             ):
                 continue
@@ -278,7 +284,10 @@ def recover_dynamic_state_write_transitions(
         for state_value, handler in sorted(cloned_handlers.items()):
             if not _handler_needs_dynamic_recovery(handler):
                 continue
-            if flow_graph is not None and flow_graph.get_block(handler.check_block) is None:
+            if (
+                flow_graph is not None
+                and flow_graph.get_block(handler.check_block) is None
+            ):
                 continue
             before = len(transitions)
             if _append_derived_transition(
@@ -324,7 +333,9 @@ def recover_dynamic_state_write_transitions(
                 and transition.from_state is not None
             }
             candidate_initial_states = sorted(
-                int(state) for state in derived_from_states if int(state) not in incoming_states
+                int(state)
+                for state in derived_from_states
+                if int(state) not in incoming_states
             )
             if len(candidate_initial_states) == 1:
                 derived_initial_state = candidate_initial_states[0]

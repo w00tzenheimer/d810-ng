@@ -7,6 +7,7 @@ Thin wrappers around ``mblock_t`` liveness attributes (``dead_at_start``,
 All functions are READ-ONLY: they materialise cached internal structures
 but do not mutate instructions, blocks, or CFG edges.
 """
+
 from __future__ import annotations
 
 import ida_hexrays
@@ -35,9 +36,7 @@ def ensure_lists_ready(blk: ida_hexrays.mblock_t) -> None:
 # ---------------------------------------------------------------------------
 
 
-def is_dead_at_entry(
-    blk: ida_hexrays.mblock_t, mop: ida_hexrays.mop_t
-) -> bool:
+def is_dead_at_entry(blk: ida_hexrays.mblock_t, mop: ida_hexrays.mop_t) -> bool:
     """Check if *mop* is dead at block entry (in ``blk.dead_at_start``).
 
     Calls ``make_lists_ready()`` first. Builds an ``mlist_t`` for *mop*
@@ -58,9 +57,7 @@ def is_dead_at_entry(
     return blk.dead_at_start.has_common(ml)
 
 
-def is_defined_not_used(
-    blk: ida_hexrays.mblock_t, mop: ida_hexrays.mop_t
-) -> bool:
+def is_defined_not_used(blk: ida_hexrays.mblock_t, mop: ida_hexrays.mop_t) -> bool:
     """Check if *mop* is defined but not used within this block (in ``blk.dnu``).
 
     Builds an ``mlist_t`` for *mop*, checks ``has_common`` with ``dnu``.

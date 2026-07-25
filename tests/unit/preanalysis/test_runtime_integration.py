@@ -1,4 +1,5 @@
 """Unit tests for consumer analysis and rule-scope delivery."""
+
 from __future__ import annotations
 
 from types import MappingProxyType
@@ -24,7 +25,9 @@ _MATURITY = 5
 _SENTINEL_TARGET = object()
 
 
-def _phase(level: int = _MATURITY, friendly: str | None = None) -> ProviderPhaseSnapshot:
+def _phase(
+    level: int = _MATURITY, friendly: str | None = None
+) -> ProviderPhaseSnapshot:
     return ProviderPhaseSnapshot(
         provider_name="hexrays_microcode",
         provider_level=level,
@@ -155,7 +158,9 @@ def test_apply_to_rule_scope_fresh_analysis() -> None:
     mock_store.load_hints.assert_called_once_with(func_ea=_FUNC_EA)
     mock_phase.run_microcode_collectors.assert_not_called()
     mock_analysis.interpret.assert_called_once_with(
-        func_ea=_FUNC_EA, results=results, store=mock_store,
+        func_ea=_FUNC_EA,
+        results=results,
+        store=mock_store,
     )
     mock_rule_scope.apply_hints.assert_called_once_with(hints)
 
@@ -220,9 +225,7 @@ def test_outcome_records_source_correctly() -> None:
 
     # --- "analyzed" ---
     mock_store.load_hints.return_value = None
-    mock_store.load_all_preanalysis_results.return_value = [
-        _make_preanalysis_result()
-    ]
+    mock_store.load_all_preanalysis_results.return_value = [_make_preanalysis_result()]
     mock_analysis.interpret.return_value = hints
     mock_rule_scope.apply_hints.return_value = apply_result
 

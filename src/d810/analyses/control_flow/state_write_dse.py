@@ -13,6 +13,7 @@ state-variable name is not derivable from the stack offset (IDA names slots by
 frame position, not offset), so it is *inferred* from the assignment lines whose
 right-hand side is a known dispatcher state constant.
 """
+
 from __future__ import annotations
 
 import re

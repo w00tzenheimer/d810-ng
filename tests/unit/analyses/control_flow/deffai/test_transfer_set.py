@@ -5,6 +5,7 @@ join; the 2-way ``select``/``cmov`` fork yielding ``{a,b}`` on the merge; per-ar
 ``assume`` pruning an infeasible value to ⊥; the ``switch_cases`` jtbl fan-out;
 and ⊤-degradation past the product cap.  No IDA -- the scalar fold is injected.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -85,9 +86,7 @@ def test_singleton_fold_parity_with_scalar_evaluator():
     in_reg = {}
     out_stk, out_reg = EVAL(blk, dict(in_stk), dict(in_reg), STATE_OFF)
 
-    in_store = PowersetStore.of(
-        {LocationRef.stack(0x40, 8): StateValue.of(7)}
-    )
+    in_store = PowersetStore.of({LocationRef.stack(0x40, 8): StateValue.of(7)})
     out = _transfer(blk, in_store)[1]
     # Every scalar out-cell appears as a singleton in the set out-store.
     for off, val in out_stk.items():

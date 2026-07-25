@@ -12,6 +12,7 @@ canonical-Instruction readers shared with ``side_effect_select_loop`` and live i
 ``operand_slots`` walk, no ``getattr`` on a snapshot, and no raw ``insn.l`` /
 ``insn.r`` / ``insn.d`` slot read remains in this module.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -137,9 +138,7 @@ def _coerce_edge_proof(item: object) -> SelectorShellEdgeProof | None:
             old_target=int(item["old_target"]),
             new_target=int(item["new_target"]),
             ordered_path=tuple(int(s) for s in item.get("ordered_path", ())),
-            artifact_blocks=frozenset(
-                int(s) for s in item.get("artifact_blocks", ())
-            ),
+            artifact_blocks=frozenset(int(s) for s in item.get("artifact_blocks", ())),
             proof_kind=str(item.get("proof_kind", "constant_selector_path")),
         )
     except (KeyError, TypeError, ValueError):
@@ -162,9 +161,7 @@ def _coerce_fact(item: object) -> SelectorShellFact | None:
         return SelectorShellFact(
             header_block=int(item["header_block"]),
             semantic_target=int(item["semantic_target"]),
-            artifact_blocks=frozenset(
-                int(s) for s in item.get("artifact_blocks", ())
-            ),
+            artifact_blocks=frozenset(int(s) for s in item.get("artifact_blocks", ())),
             edge_proofs=edge_proofs,
             proof_sources=tuple(str(s) for s in item.get("proof_sources", ())),
         )

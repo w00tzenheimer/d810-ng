@@ -13,6 +13,7 @@ typename, typecheck, resolve_forward_ref, lazy_type, CombineMeta, async_await,
 coroutine, type aliases) live in core.descriptors and are re-exported here for
 backward compatibility.
 """
+
 import collections
 import dataclasses
 import functools
@@ -313,7 +314,6 @@ class SingletonMeta(type):
                     instance = type.__call__(cls, *args, **kwargs)
                     SingletonMeta._instances[cls] = instance
         return cast(T, SingletonMeta._instances[cls])
-
 
     @classmethod
     def _reset_for_test(cls, target_cls: type) -> None:

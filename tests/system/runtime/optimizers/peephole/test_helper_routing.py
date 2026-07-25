@@ -10,6 +10,7 @@ top level; we therefore mock that module so the import succeeds without an IDA
 installation.  The actual ``check_and_replace`` methods are NOT exercised here
 (they require live ``minsn_t`` objects); only the registry wiring is tested.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -35,10 +36,19 @@ class TestHelperRoutingViaRegistry:
         """Looking up an unregistered name returns None."""
         assert _RotateHelper.lookup("__NONEXISTENT_HELPER__") is None
 
-    @pytest.mark.parametrize("helper_name", [
-        "__ROL1__", "__ROL2__", "__ROL4__", "__ROL8__",
-        "__ROR1__", "__ROR2__", "__ROR4__", "__ROR8__",
-    ])
+    @pytest.mark.parametrize(
+        "helper_name",
+        [
+            "__ROL1__",
+            "__ROL2__",
+            "__ROL4__",
+            "__ROL8__",
+            "__ROR1__",
+            "__ROR2__",
+            "__ROR4__",
+            "__ROR8__",
+        ],
+    )
     def test_all_rotate_helpers_present(self, helper_name: str) -> None:
         """The class registry is pre-populated with all 8 ROL/ROR helpers."""
         fn = _RotateHelper.lookup(helper_name)
@@ -51,6 +61,7 @@ class TestHelperRoutingViaRegistry:
         Verified via source-level grep so no IDA runtime is required.
         """
         import pathlib
+
         src = pathlib.Path(
             "src/d810/optimizers/microcode/instructions/peephole/fold_rotatehelper.py"
         ).read_text()
@@ -64,6 +75,7 @@ class TestHelperRoutingViaRegistry:
     def test_constant_call_imports_rotate_helper(self) -> None:
         """constant_call.py source uses _RotateHelper.lookup, not bits directly."""
         import pathlib
+
         src = pathlib.Path(
             "src/d810/optimizers/microcode/instructions/peephole/constant_call.py"
         ).read_text()
@@ -77,6 +89,7 @@ class TestHelperRoutingViaRegistry:
     def test_p_ast_does_not_import_rotate_helpers(self) -> None:
         """p_ast.py source must not contain the dead _rotate_helpers import."""
         import pathlib
+
         src = pathlib.Path("src/d810/hexrays/expr/p_ast.py").read_text()
         assert "from d810.core import bits as _rotate_helpers" not in src, (
             "p_ast.py must not contain 'from d810.core import bits as _rotate_helpers'"

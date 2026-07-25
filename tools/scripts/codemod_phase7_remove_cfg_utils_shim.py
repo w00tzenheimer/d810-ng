@@ -70,7 +70,9 @@ SYMBOL_TO_MODULE: dict[str, str] = {
 
 class CfgUtilsImportSplitter(cst.CSTTransformer):
     def leave_SimpleStatementLine(
-        self, original_node: cst.SimpleStatementLine, updated_node: cst.SimpleStatementLine
+        self,
+        original_node: cst.SimpleStatementLine,
+        updated_node: cst.SimpleStatementLine,
     ) -> cst.BaseStatement | cst.FlattenSentinel[cst.BaseStatement]:
         if len(updated_node.body) != 1:
             return updated_node

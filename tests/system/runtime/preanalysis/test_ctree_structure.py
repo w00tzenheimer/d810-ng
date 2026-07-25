@@ -3,6 +3,7 @@
 Uses a stub cfunc-like object - no real IDA dependency for the logic layer.
 The collector only walks the cfunc using duck-typed access.
 """
+
 from __future__ import annotations
 from dataclasses import dataclass, field
 from d810.core.typing import Any
@@ -14,10 +15,12 @@ from d810.analyses.control_flow.ctree_structure import CtreeStructureCollector
 # Minimal stub cfunc tree  (no IDA imports needed)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class StubCItem:
     """Stub citem_t-like node."""
-    op: int                          # e.g. cot_asg=51, cif=1, cswitch=14, cgoto=17
+
+    op: int  # e.g. cot_asg=51, cif=1, cswitch=14, cgoto=17
     children: list["StubCItem"] = field(default_factory=list)
 
     def __iter__(self):
@@ -51,11 +54,14 @@ def _make_nested_if_stub() -> StubCItem:
 
 def _make_goto_stub() -> StubCItem:
     """Two goto statements in a flat block."""
-    return StubCItem(op=_CIT_BLOCK, children=[
-        StubCItem(op=_CIT_GOTO),
-        StubCItem(op=_CIT_GOTO),
-        StubCItem(op=_CIT_BLOCK),
-    ])
+    return StubCItem(
+        op=_CIT_BLOCK,
+        children=[
+            StubCItem(op=_CIT_GOTO),
+            StubCItem(op=_CIT_GOTO),
+            StubCItem(op=_CIT_BLOCK),
+        ],
+    )
 
 
 class StubCfunc:

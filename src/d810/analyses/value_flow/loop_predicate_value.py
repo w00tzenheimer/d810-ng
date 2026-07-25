@@ -7,6 +7,7 @@ This is the canonical serialized ``FactObservation.kind`` value. The
 diagnostic alias registry maps the historical ``LoopPredicateCarrierFact``
 string to this family.
 """
+
 from __future__ import annotations
 
 LOOP_PREDICATE_VALUE_FACT_TYPE = "LoopPredicateValueFact"

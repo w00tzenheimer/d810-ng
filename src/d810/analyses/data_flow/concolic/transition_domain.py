@@ -18,6 +18,7 @@ supplied as plain data, exactly like ``StateTransitionDomain``'s ``state_writes`
 Run via :func:`d810.analyses.data_flow.run_fixpoint`.  Ticket llr-mauq.  Portable:
 no IDA, no z3.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Mapping, Protocol, TypeVar

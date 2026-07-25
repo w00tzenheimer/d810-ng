@@ -42,7 +42,9 @@ _EXPORT_IDA = (
 _PIP_INSTALL = f"{_VENV_PIP} install -e .[dev] -q"
 _SPEEDUPS = f"{_VENV_PYTHON} -m d810.speedups.install"
 _PYTEST_SYSTEM = f"{_VENV_PYTHON} -m pytest tests/system -v"
-_PYTEST_DUMP = f"{_VENV_PYTHON} -m pytest -s tests/system/e2e/test_dump_function_pseudocode.py"
+_PYTEST_DUMP = (
+    f"{_VENV_PYTHON} -m pytest -s tests/system/e2e/test_dump_function_pseudocode.py"
+)
 _WORK_TMP = f"{_WORK}/.tmp"
 
 
@@ -59,7 +61,11 @@ def get_repo_root() -> Path:
             timeout=10,
         )
         return Path(out.stdout.strip()).resolve()
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+    except (
+        subprocess.CalledProcessError,
+        FileNotFoundError,
+        subprocess.TimeoutExpired,
+    ):
         pass
     print("ERROR: Not inside a git repo and D810_REPO_ROOT not set.", file=sys.stderr)
     sys.exit(1)
@@ -302,13 +308,39 @@ def main() -> int:
         default=None,
         help="For compose: idapro-tests or idapro-tests-9.2. For system: not used (use --worktree).",
     )
-    parser.add_argument("--worktree", "-w", metavar="REL", help="Worktree path under WORKTREE_ROOT")
-    parser.add_argument("--function", "-f", metavar="NAME", help="--dump-function-pseudocode (dump only)")
-    parser.add_argument("--maturity", "-m", metavar="LIST", help="--dump-microcode-maturity (dump only)")
-    parser.add_argument("--project", "-p", metavar="NAME", help="--dump-project (dump only)")
-    parser.add_argument("--out", "-o", metavar="FILE", help="Redirect dump output to .tmp/FILE (dump only)")
-    parser.add_argument("--logs", "-l", action="store_true", help="Mount .tmp/logs at /root/.idapro/logs")
-    parser.add_argument("extra", nargs="*", default=[], help="Extra args for pytest (dump only; put after --)")
+    parser.add_argument(
+        "--worktree", "-w", metavar="REL", help="Worktree path under WORKTREE_ROOT"
+    )
+    parser.add_argument(
+        "--function",
+        "-f",
+        metavar="NAME",
+        help="--dump-function-pseudocode (dump only)",
+    )
+    parser.add_argument(
+        "--maturity", "-m", metavar="LIST", help="--dump-microcode-maturity (dump only)"
+    )
+    parser.add_argument(
+        "--project", "-p", metavar="NAME", help="--dump-project (dump only)"
+    )
+    parser.add_argument(
+        "--out",
+        "-o",
+        metavar="FILE",
+        help="Redirect dump output to .tmp/FILE (dump only)",
+    )
+    parser.add_argument(
+        "--logs",
+        "-l",
+        action="store_true",
+        help="Mount .tmp/logs at /root/.idapro/logs",
+    )
+    parser.add_argument(
+        "extra",
+        nargs="*",
+        default=[],
+        help="Extra args for pytest (dump only; put after --)",
+    )
 
     args = parser.parse_args()
     if extra_pytest:
@@ -323,7 +355,10 @@ def main() -> int:
     if args.command in ("unit", "integration", "all"):
         service = args.service_or_worktree or "idapro-tests"
         if service not in ("idapro-tests", "idapro-tests-9.2"):
-            print("ERROR: Invalid service. Must be 'idapro-tests' or 'idapro-tests-9.2'", file=sys.stderr)
+            print(
+                "ERROR: Invalid service. Must be 'idapro-tests' or 'idapro-tests-9.2'",
+                file=sys.stderr,
+            )
             return 1
         return compose_mode(repo_root, args.command, service)
 

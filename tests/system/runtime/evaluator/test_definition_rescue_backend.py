@@ -55,7 +55,4 @@ def test_lookup_sccp_stkvar_uses_hexrays_stack_key() -> None:
         (ida_hexrays.mop_S, 4, 0x7BC): 0x4C77464F,
     }
 
-    assert (
-        backend.lookup_sccp_stkvar(overlay, stkoff=0x7BC, size=4)
-        == 0x4C77464F
-    )
+    assert backend.lookup_sccp_stkvar(overlay, stkoff=0x7BC, size=4) == 0x4C77464F

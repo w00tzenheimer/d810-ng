@@ -1,4 +1,5 @@
 "Per-round discovery-context publisher for the unflattening engine.\n\nThis module publishes a single read-only bundle of classification facts that\nevery preanalysis-consuming strategy needs on a per-round basis. It is **classification\nonly**: no ``ModificationBuilder`` calls, no appends to a ``modifications`` list,\nno flow-graph mutation. The resulting :class:`PreanalysisRoundDiscoveryContext` is\nbuilt once per ``(func_ea, maturity, pass_number)`` in Hodur's family adapter\nand attached to ``AnalysisSnapshot`` as the canonical round-level classification\nview; the engine stays pure-Python because all preanalysis types are imported under\n``TYPE_CHECKING`` only.\n\nLayer: ``d810.analyses.control_flow`` (portable-core analyses). It composes\nexisting preanalysis helpers \u2014 it does **not** re-derive anything. In particular\n:func:`build_reconstruction_discovery_indexes` is wrapped verbatim; the\ndispatcher region, shared-suffix sets, node maps, and structured-region data\nall come straight out of the chunk-6 bundle.\n"
+
 from __future__ import annotations
 
 import time
@@ -15,7 +16,9 @@ from d810.analyses.control_flow.linearized_state_dag import (
     build_linearized_state_program,
     build_live_linearized_state_dag_from_graph,
 )
-from d810.analyses.control_flow.persisted_preanalysis_dag import store_persisted_preanalysis_dag
+from d810.analyses.control_flow.persisted_preanalysis_dag import (
+    store_persisted_preanalysis_dag,
+)
 from d810.analyses.control_flow.reconstruction_discovery_indexes import (
     build_reconstruction_discovery_indexes,
 )
@@ -115,9 +118,7 @@ class PreanalysisRoundDiscoveryContext:
     # Convenience projections of ``indexes`` — exposed explicitly because they
     # are the most-queried facts and every consumer wants them as frozensets.
     shared_suffix_blocks: frozenset[int] = field(default_factory=frozenset)
-    corrected_boundary_shared_blocks: frozenset[int] = field(
-        default_factory=frozenset
-    )
+    corrected_boundary_shared_blocks: frozenset[int] = field(default_factory=frozenset)
     node_by_key: dict = field(default_factory=dict)
 
     # Typed node-local DAG facts for planner logic. This deliberately mirrors
@@ -336,7 +337,6 @@ def build_round_discovery_context(
         return_frontier_artifact_priors=return_frontier_artifact_priors,
         round_id=round_id,
     )
-
 
 
 def pass_entry_guard(snapshot, *, reason: str) -> bool:

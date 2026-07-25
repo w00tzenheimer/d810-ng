@@ -19,6 +19,7 @@ value.  A stack operand whose offset is unknown projects to a
 imprecision is explicit rather than dropped.  Callers consume only the half
 they need.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -42,7 +43,12 @@ from d810.ir.instructions import (
     InstructionMemoryAccessKind,
     InstructionSwitchCase,
 )
-from d810.ir.locations import RegisterLocation, StackSlot, StorageLocation, WeakStackSlot
+from d810.ir.locations import (
+    RegisterLocation,
+    StackSlot,
+    StorageLocation,
+    WeakStackSlot,
+)
 from d810.ir.semantics import ControlTransferKind, OperationKind
 from d810.ir.statements import Assignment, ConditionalBranch
 from d810.ir.value_refs import DefinitionRef
@@ -125,7 +131,9 @@ def _address_const_values_from_mop(
         values.append(int(mop.value))
     child_in_address = in_address or mop.kind is OperandKind.ADDRESS
     for child in (mop.sub_l, mop.sub_r, *mop.args):
-        values.extend(_address_const_values_from_mop(child, in_address=child_in_address))
+        values.extend(
+            _address_const_values_from_mop(child, in_address=child_in_address)
+        )
     return tuple(dict.fromkeys(values))
 
 
@@ -189,11 +197,7 @@ class _VarnodeProjector:
         if mop is None:
             return ()
         if mop.kind is OperandKind.ARG_LIST:
-            return tuple(
-                node
-                for arg in mop.args
-                for node in self.input_nodes(arg)
-            )
+            return tuple(node for arg in mop.args for node in self.input_nodes(arg))
         if mop.kind is OperandKind.SUBINSN:
             nodes: list[Varnode] = []
             temp = self.one(mop)
@@ -252,11 +256,7 @@ class _SequenceProjector:
 
     def input_nodes(self, mop: MopSnapshot | None) -> tuple[Varnode, ...]:
         if mop is not None and mop.kind is OperandKind.ARG_LIST:
-            return tuple(
-                node
-                for arg in mop.args
-                for node in self.input_nodes(arg)
-            )
+            return tuple(node for arg in mop.args for node in self.input_nodes(arg))
         vn = self.one(mop)
         return (vn,) if vn is not None else ()
 
@@ -284,7 +284,9 @@ class _SequenceProjector:
         if not inputs:
             inputs = _stack_ref_nodes(mop)
         attrs = _instruction_attrs(self._parent)
-        attrs["nested_sub_kind"] = mop.sub_kind.value if mop.sub_kind is not None else None
+        attrs["nested_sub_kind"] = (
+            mop.sub_kind.value if mop.sub_kind is not None else None
+        )
         attrs["nested_sub_value_op_kind"] = (
             mop.sub_value_op_kind.value if mop.sub_value_op_kind is not None else None
         )
@@ -315,7 +317,9 @@ class _SequenceProjector:
         return max(child_sizes) if child_sizes else 0
 
 
-def _source_operands_for_instruction(insn: InsnSnapshot) -> tuple[MopSnapshot | None, ...]:
+def _source_operands_for_instruction(
+    insn: InsnSnapshot,
+) -> tuple[MopSnapshot | None, ...]:
     if insn.control_transfer_kind is ControlTransferKind.CONDITIONAL_BRANCH:
         return (insn.l, insn.r)
     if insn.control_transfer_kind is ControlTransferKind.TABLE_BRANCH:
@@ -338,7 +342,9 @@ def _source_operands_for_instruction(insn: InsnSnapshot) -> tuple[MopSnapshot | 
     return (insn.l, insn.r)
 
 
-def _instruction_result(insn: InsnSnapshot, projector: _VarnodeProjector) -> Varnode | None:
+def _instruction_result(
+    insn: InsnSnapshot, projector: _VarnodeProjector
+) -> Varnode | None:
     if insn.control_transfer_kind is not None:
         return None
     if insn.value_op_kind is ValueOpKind.STORE:
@@ -348,7 +354,11 @@ def _instruction_result(insn: InsnSnapshot, projector: _VarnodeProjector) -> Var
         or insn.predicate_kind is not None
         or insn.call_kind is not None
     ):
-        if insn.call_kind is not None and insn.d is not None and insn.d.kind is OperandKind.ARG_LIST:
+        if (
+            insn.call_kind is not None
+            and insn.d is not None
+            and insn.d.kind is OperandKind.ARG_LIST
+        ):
             return None
         return projector.one(insn.d)
     return None
@@ -382,7 +392,9 @@ def _first_varnode(
     return None
 
 
-def _call_args_from(insn: InsnSnapshot, projector: _VarnodeProjector) -> tuple[Varnode, ...]:
+def _call_args_from(
+    insn: InsnSnapshot, projector: _VarnodeProjector
+) -> tuple[Varnode, ...]:
     args: list[Varnode] = []
     for mop in (insn.r, insn.d):
         if mop is None or mop.kind is not OperandKind.ARG_LIST:
@@ -403,7 +415,9 @@ def _instruction_control(
             target=_block_target_from(insn.d),
         )
     if transfer is ControlTransferKind.TABLE_BRANCH:
-        return InstructionControl(transfer=transfer, switch_cases=_switch_cases_from(insn))
+        return InstructionControl(
+            transfer=transfer, switch_cases=_switch_cases_from(insn)
+        )
     if transfer is ControlTransferKind.GOTO:
         return InstructionControl(transfer=transfer, target=_block_target_from(insn.l))
     if transfer is ControlTransferKind.INDIRECT_BRANCH:
@@ -576,9 +590,7 @@ class InstructionProjection:
         )
 
     @classmethod
-    def from_flowgraph(
-        cls, graph: FlowGraph
-    ) -> Mapping[int, tuple[Instruction, ...]]:
+    def from_flowgraph(cls, graph: FlowGraph) -> Mapping[int, tuple[Instruction, ...]]:
         """Canonical portable instruction stream keyed by block serial."""
         return MappingProxyType(
             {serial: cls.from_block(block) for serial, block in graph.blocks.items()}
@@ -635,7 +647,9 @@ def _value_of(mop: MopSnapshot | None) -> ExprRef | None:
             return None
         return node(left=left, right=right)
     location = _location_of(mop)
-    return Move(source=DefinitionRef(location=location)) if location is not None else None
+    return (
+        Move(source=DefinitionRef(location=location)) if location is not None else None
+    )
 
 
 def project_operand_expr(mop: MopSnapshot | None) -> ExprRef | None:
@@ -675,7 +689,9 @@ def project_assignment(insn: InsnSnapshot) -> Assignment | None:
         return None
     value = _value_of(insn.l)
     target_location = _location_of(insn.d)
-    target = DefinitionRef(location=target_location) if target_location is not None else None
+    target = (
+        DefinitionRef(location=target_location) if target_location is not None else None
+    )
     if value is None and target is None:
         return None
     return Assignment(target=target, value=value)
@@ -798,9 +814,15 @@ def operand_stack_refs(
     operands that reference several stack slots.  Empty set for an absent slot.
     """
     return (
-        frozenset(int(off) for off in (insn.l.stack_refs if insn.l is not None else ())),
-        frozenset(int(off) for off in (insn.r.stack_refs if insn.r is not None else ())),
-        frozenset(int(off) for off in (insn.d.stack_refs if insn.d is not None else ())),
+        frozenset(
+            int(off) for off in (insn.l.stack_refs if insn.l is not None else ())
+        ),
+        frozenset(
+            int(off) for off in (insn.r.stack_refs if insn.r is not None else ())
+        ),
+        frozenset(
+            int(off) for off in (insn.d.stack_refs if insn.d is not None else ())
+        ),
     )
 
 
@@ -848,4 +870,3 @@ def project_conditional_branch(
         taken=taken,
         fallthrough=fallthrough,
     )
-

@@ -49,7 +49,11 @@ def _iter_python_files(paths: tuple[str, ...]) -> tuple[Path, ...]:
                 files.append(path)
             continue
         for candidate in path.rglob("*.py"):
-            rel_parts = candidate.relative_to(root).parts if candidate.is_absolute() else candidate.parts
+            rel_parts = (
+                candidate.relative_to(root).parts
+                if candidate.is_absolute()
+                else candidate.parts
+            )
             if any(part in SKIP_DIRS for part in rel_parts):
                 continue
             files.append(candidate)
@@ -59,7 +63,10 @@ def _iter_python_files(paths: tuple[str, ...]) -> tuple[Path, ...]:
 def _run_vermin(paths: tuple[str, ...], *, target: str) -> int:
     vermin = shutil.which("vermin")
     if vermin is None:
-        print("error: vermin is not installed; run `python -m pip install -e .[dev]`", file=sys.stderr)
+        print(
+            "error: vermin is not installed; run `python -m pip install -e .[dev]`",
+            file=sys.stderr,
+        )
         return 127
 
     cmd = [
@@ -106,7 +113,9 @@ def _candidate_interpreters(
 
 def _interpreter_version(command: tuple[str, ...]) -> tuple[int, int] | None:
     code = "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-    proc = subprocess.run([*command, "-c", code], text=True, capture_output=True, check=False)
+    proc = subprocess.run(
+        [*command, "-c", code], text=True, capture_output=True, check=False
+    )
     if proc.returncode != 0:
         return None
     try:
@@ -193,7 +202,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--python310",
         dest="syntax_python",
-        default=os.environ.get("D810_PYTHON_SYNTAX") or os.environ.get("D810_PYTHON310"),
+        default=os.environ.get("D810_PYTHON_SYNTAX")
+        or os.environ.get("D810_PYTHON310"),
         help="Python interpreter command for parser syntax checks",
     )
     parser.add_argument(
@@ -217,7 +227,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.skip_vermin:
         results.append(_run_vermin(paths, target=args.target))
     if not args.skip_syntax:
-        results.append(_run_supported_python_syntax_check(paths, interpreter=args.syntax_python))
+        results.append(
+            _run_supported_python_syntax_check(paths, interpreter=args.syntax_python)
+        )
     return 1 if any(result != 0 for result in results) else 0
 
 

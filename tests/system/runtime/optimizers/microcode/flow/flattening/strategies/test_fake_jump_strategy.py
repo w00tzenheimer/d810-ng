@@ -1,4 +1,5 @@
 """Runtime tests for the first engine-native FakeJump wrapper."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -70,7 +71,11 @@ def _rich_block(
         block_type=(
             block_type
             if block_type is not None
-            else 4 if len(succs) == 2 else 1 if len(succs) == 1 else 2
+            else 4
+            if len(succs) == 2
+            else 1
+            if len(succs) == 1
+            else 2
         ),
         succs=succs,
         preds=preds,
@@ -196,9 +201,12 @@ def test_fake_jump_strategy_is_metadata_driven() -> None:
         func_ea=0x1000,
         metadata={FAKE_JUMP_FIXES_METADATA_KEY: {2: {5: 10, 6: 20}}},
     )
-    assert strategy.is_applicable(
-        AnalysisSnapshot(mba=object(), flow_graph=cfg),
-    ) is True
+    assert (
+        strategy.is_applicable(
+            AnalysisSnapshot(mba=object(), flow_graph=cfg),
+        )
+        is True
+    )
 
 
 def test_extract_fake_jump_fixes_keeps_per_predecessor_decisions() -> None:
@@ -396,9 +404,12 @@ def test_fake_jump_strategy_drops_invalid_targets_and_non_legacy_shapes() -> Non
 
     fixes = extract_fake_jump_fixes(cfg)
     assert fixes == ()
-    assert FakeJumpStrategy().plan(
-        AnalysisSnapshot(mba=object(), flow_graph=cfg),
-    ) is None
+    assert (
+        FakeJumpStrategy().plan(
+            AnalysisSnapshot(mba=object(), flow_graph=cfg),
+        )
+        is None
+    )
 
 
 def test_fake_jump_strategy_drops_self_loop_redirects() -> None:
@@ -415,9 +426,12 @@ def test_fake_jump_strategy_drops_self_loop_redirects() -> None:
     )
 
     assert extract_fake_jump_fixes(cfg) == ()
-    assert FakeJumpStrategy().plan(
-        AnalysisSnapshot(mba=object(), flow_graph=cfg),
-    ) is None
+    assert (
+        FakeJumpStrategy().plan(
+            AnalysisSnapshot(mba=object(), flow_graph=cfg),
+        )
+        is None
+    )
 
 
 def test_build_fake_jump_modifications_emits_legacy_redirect_shape() -> None:

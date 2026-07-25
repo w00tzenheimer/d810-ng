@@ -4,6 +4,7 @@ This mirrors the sub7FFD region oracle pattern: hardcoded REF facts live in
 test support, D810 facts are normalized from diagnostic artifacts, and the
 diff is read-only. This module must not become production unflattening policy.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -258,10 +259,7 @@ def d810_features(inputs: D810SemanticInputs) -> tuple[SemanticFeature, ...]:
     final_xor_present = (
         "389047233" in pseudocode
         or "0x173063C1" in pseudocode
-        or (
-            "0xE8CF9C3E" in pseudocode
-            and "0x173063C3" in pseudocode
-        )
+        or ("0xE8CF9C3E" in pseudocode and "0x173063C3" in pseudocode)
     )
     features: list[SemanticFeature] = [
         SemanticFeature(

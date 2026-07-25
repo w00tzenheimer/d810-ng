@@ -1,4 +1,5 @@
 """Canonical dispatcher transition report model and rendering helpers."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,7 +12,9 @@ from d810.analyses.control_flow.transition_analysis import (
     HandlerTransitionObservation,
     build_transition_analysis_from_graph,
 )
-from d810.analyses.control_flow.transition_condition_chain_adapter import analyze_condition_chain_dispatcher
+from d810.analyses.control_flow.transition_condition_chain_adapter import (
+    analyze_condition_chain_dispatcher,
+)
 from d810.analyses.control_flow.transition_builder import TransitionResult
 
 
@@ -315,7 +318,8 @@ def transition_report_from_dict(
             handler_serial=int(path_payload["handler_serial"]),
             chain=tuple(int(v) for v in path_payload.get("chain", [])),
             next_state=(
-                None if path_payload.get("next_state") is None
+                None
+                if path_payload.get("next_state") is None
                 else int(path_payload["next_state"])
             ),
             conditional_states=tuple(
@@ -329,21 +333,25 @@ def transition_report_from_dict(
         rows.append(
             TransitionRow(
                 state_const=(
-                    None if row_map.get("state_const") is None
+                    None
+                    if row_map.get("state_const") is None
                     else int(row_map["state_const"])
                 ),
                 state_range_lo=(
-                    None if row_map.get("state_range_lo") is None
+                    None
+                    if row_map.get("state_range_lo") is None
                     else int(row_map["state_range_lo"])
                 ),
                 state_range_hi=(
-                    None if row_map.get("state_range_hi") is None
+                    None
+                    if row_map.get("state_range_hi") is None
                     else int(row_map["state_range_hi"])
                 ),
                 handler_serial=int(row_map["handler_serial"]),
                 kind=TransitionKind[str(row_map["kind"])],
                 next_state=(
-                    None if row_map.get("next_state") is None
+                    None
+                    if row_map.get("next_state") is None
                     else int(row_map["next_state"])
                 ),
                 conditional_states=tuple(
@@ -360,19 +368,23 @@ def transition_report_from_dict(
     return DispatcherTransitionReport(
         dispatcher_entry_serial=int(payload["dispatcher_entry_serial"]),
         state_var_stkoff=(
-            None if payload.get("state_var_stkoff") is None
+            None
+            if payload.get("state_var_stkoff") is None
             else int(payload["state_var_stkoff"])
         ),
         state_var_lvar_idx=(
-            None if payload.get("state_var_lvar_idx") is None
+            None
+            if payload.get("state_var_lvar_idx") is None
             else int(payload["state_var_lvar_idx"])
         ),
         pre_header_serial=(
-            None if payload.get("pre_header_serial") is None
+            None
+            if payload.get("pre_header_serial") is None
             else int(payload["pre_header_serial"])
         ),
         initial_state=(
-            None if payload.get("initial_state") is None
+            None
+            if payload.get("initial_state") is None
             else int(payload["initial_state"])
         ),
         handler_state_map={
@@ -386,7 +398,9 @@ def transition_report_from_dict(
             )
             for serial, values in dict(payload.get("handler_range_map", {})).items()
         },
-        condition_chain_blocks=tuple(int(v) for v in payload.get("condition_chain_blocks", [])),
+        condition_chain_blocks=tuple(
+            int(v) for v in payload.get("condition_chain_blocks", [])
+        ),
         rows=tuple(rows),
         summary=TransitionSummary(
             handlers_total=int(summary_payload["handlers_total"]),

@@ -25,9 +25,9 @@ MOP_R = 1
 BLT_STOP = 1
 KNOWN_IMPOSSIBLE_CONSTANT = 0xC5FB34A1D9A6E315
 KNOWN_IMPOSSIBLE_PRIORS = (
-    ReturnFrontierArtifactPriors.from_known_impossible_return_constants((
-        KNOWN_IMPOSSIBLE_CONSTANT,
-    ))
+    ReturnFrontierArtifactPriors.from_known_impossible_return_constants(
+        (KNOWN_IMPOSSIBLE_CONSTANT,)
+    )
 )
 
 
@@ -349,24 +349,32 @@ def test_writer_carrier_identity_lvar_index_is_none_on_portable_path() -> None:
 
 def test_state_variable_return_writer_predicate() -> None:
     writer = _xdu_state_to_return_slot()
-    assert facts_mod._writer_is_state_variable_return_writer(
-        writer, state_var_stkoff=0x3C
-    ) is True
+    assert (
+        facts_mod._writer_is_state_variable_return_writer(writer, state_var_stkoff=0x3C)
+        is True
+    )
     # dst == state_var is not a state-variable return writer.
     same = _mov_stack(0x3C, dst_stkoff=0x3C)
-    assert facts_mod._writer_is_state_variable_return_writer(
-        same, state_var_stkoff=0x3C
-    ) is False
+    assert (
+        facts_mod._writer_is_state_variable_return_writer(same, state_var_stkoff=0x3C)
+        is False
+    )
 
 
 def test_insn_references_carrier_by_stack_offset() -> None:
     insn = _mov_stack(0x3C, dst_stkoff=0x7F0)
-    assert facts_mod._insn_references_carrier(
-        insn, carrier_lvar_idx=None, carrier_stkoff=0x3C
-    ) is True
-    assert facts_mod._insn_references_carrier(
-        insn, carrier_lvar_idx=None, carrier_stkoff=0x40
-    ) is False
+    assert (
+        facts_mod._insn_references_carrier(
+            insn, carrier_lvar_idx=None, carrier_stkoff=0x3C
+        )
+        is True
+    )
+    assert (
+        facts_mod._insn_references_carrier(
+            insn, carrier_lvar_idx=None, carrier_stkoff=0x40
+        )
+        is False
+    )
 
 
 def test_carrier_return_writer_emits_stack_carrier_fact() -> None:
@@ -379,7 +387,4 @@ def test_carrier_return_writer_emits_stack_carrier_fact() -> None:
     assert len(facts) == 1
     assert facts[0].carrier_lvar_idx is None
     assert facts[0].carrier_stkoff == 0x3C
-    assert (
-        facts[0].classification
-        == ReturnFrontierCarrierClassification.RETURN_CARRIER
-    )
+    assert facts[0].classification == ReturnFrontierCarrierClassification.RETURN_CARRIER

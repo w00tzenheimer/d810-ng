@@ -1,4 +1,5 @@
 """State-machine CFF family compatibility exports for the native pass spine."""
+
 from __future__ import annotations
 
 from d810.passes.state_machine_spine import (

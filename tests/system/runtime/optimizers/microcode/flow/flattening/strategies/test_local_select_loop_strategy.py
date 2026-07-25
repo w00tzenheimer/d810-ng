@@ -1,4 +1,5 @@
 """Runtime tests for local constant-select loop cleanup."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -12,7 +13,11 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.transforms.graph_modification import ConvertToGoto, RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    ConvertToGoto,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.transforms.snapshot import (
     AnalysisSnapshot,
 )
@@ -391,9 +396,7 @@ def test_collect_local_select_loop_fixes_proves_one_iteration_shell() -> None:
 
 
 def test_collect_local_select_loop_fixes_accepts_widened_previous_copy() -> None:
-    assert collect_local_select_loop_fixes(
-        _select_loop_cfg(widened_previous=True)
-    ) == (
+    assert collect_local_select_loop_fixes(_select_loop_cfg(widened_previous=True)) == (
         LocalSelectLoopFix(
             init_block=17,
             init_old_target=20,
@@ -406,7 +409,9 @@ def test_collect_local_select_loop_fixes_accepts_widened_previous_copy() -> None
     )
 
 
-def test_collect_local_select_loop_fixes_proves_dispatch_only_convergence_loop() -> None:
+def test_collect_local_select_loop_fixes_proves_dispatch_only_convergence_loop() -> (
+    None
+):
     assert collect_local_select_loop_fixes(_convergence_loop_cfg()) == (
         LocalSelectConvergenceLoopFix(
             init_block=18,

@@ -3,6 +3,7 @@
 This module is maintained as a compatibility re-export layer.
 The action classes are implemented in d810.ui.actions.
 """
+
 from __future__ import annotations
 
 from d810.core import typing

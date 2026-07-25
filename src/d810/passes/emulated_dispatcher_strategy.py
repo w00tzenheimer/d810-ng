@@ -1,4 +1,5 @@
 """Engine strategy for the extracted emulated-dispatcher family path."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -33,8 +34,12 @@ from d810.core.typing import cast
 
 EMULATED_DISPATCHER_METADATA_KEY = "emulated_dispatcher"
 EMULATED_DISPATCHER_MODIFICATIONS_KEY = "emulated_dispatcher_modifications"
-EMULATED_DISPATCHER_FALLBACK_MODIFICATIONS_KEY = "emulated_dispatcher_fallback_modifications"
-EMULATED_DISPATCHER_LOOP_RECOVERY_MODIFICATIONS_KEY = "emulated_dispatcher_loop_recovery_modifications"
+EMULATED_DISPATCHER_FALLBACK_MODIFICATIONS_KEY = (
+    "emulated_dispatcher_fallback_modifications"
+)
+EMULATED_DISPATCHER_LOOP_RECOVERY_MODIFICATIONS_KEY = (
+    "emulated_dispatcher_loop_recovery_modifications"
+)
 EMULATED_DISPATCHER_CANDIDATE_RECORDS_KEY = "emulated_dispatcher_candidate_records"
 EMULATED_DISPATCHER_PHASE_ARTIFACT_KEY = "emulated_dispatcher_phase_artifact"
 EMULATED_DISPATCHER_PHASE_CONTEXT_KEY = "emulated_dispatcher_phase_context"
@@ -336,7 +341,11 @@ def _is_valid_emulated_dispatcher_modification(
     mod: GraphModification,
 ) -> bool:
     if isinstance(mod, RedirectGoto):
-        return mod.from_serial in cfg.blocks and mod.new_target in cfg.blocks and mod.from_serial != mod.new_target
+        return (
+            mod.from_serial in cfg.blocks
+            and mod.new_target in cfg.blocks
+            and mod.from_serial != mod.new_target
+        )
     if isinstance(mod, RedirectBranch):
         return (
             mod.from_serial in cfg.blocks
@@ -347,7 +356,11 @@ def _is_valid_emulated_dispatcher_modification(
             and mod.old_target in cfg.blocks[mod.from_serial].succs
         )
     if isinstance(mod, ConvertToGoto):
-        return mod.block_serial in cfg.blocks and mod.goto_target in cfg.blocks and mod.block_serial != mod.goto_target
+        return (
+            mod.block_serial in cfg.blocks
+            and mod.goto_target in cfg.blocks
+            and mod.block_serial != mod.goto_target
+        )
     if isinstance(mod, CreateConditionalRedirect):
         return (
             mod.source_block in cfg.blocks
@@ -391,9 +404,15 @@ def _is_valid_emulated_dispatcher_modification(
             return False
         if mod.target_block is not None and mod.target_block not in cfg.blocks:
             return False
-        if mod.conditional_target is not None and mod.conditional_target not in cfg.blocks:
+        if (
+            mod.conditional_target is not None
+            and mod.conditional_target not in cfg.blocks
+        ):
             return False
-        if mod.fallthrough_target is not None and mod.fallthrough_target not in cfg.blocks:
+        if (
+            mod.fallthrough_target is not None
+            and mod.fallthrough_target not in cfg.blocks
+        ):
             return False
         return True
     if isinstance(mod, (PrivateTerminalSuffix, PrivateTerminalSuffixGroup)):
@@ -401,7 +420,11 @@ def _is_valid_emulated_dispatcher_modification(
     if isinstance(mod, ExitPathLoweringGroup):
         return True
     if isinstance(mod, ReorderBlocks):
-        mentioned = set(mod.dfs_block_order) | set(mod.non_2way_serials) | set(mod.two_way_serials)
+        mentioned = (
+            set(mod.dfs_block_order)
+            | set(mod.non_2way_serials)
+            | set(mod.two_way_serials)
+        )
         return all(serial in cfg.blocks for serial in mentioned)
     return False
 
@@ -410,7 +433,9 @@ def _normalize_emulated_dispatcher_modifications(
     cfg: FlowGraph,
     raw: tuple[GraphModification, ...],
 ) -> tuple[GraphModification, ...]:
-    return tuple(mod for mod in raw if _is_valid_emulated_dispatcher_modification(cfg, mod))
+    return tuple(
+        mod for mod in raw if _is_valid_emulated_dispatcher_modification(cfg, mod)
+    )
 
 
 def _build_ownership(
@@ -506,7 +531,11 @@ class DispatcherLoopRecoveryStrategy:
 
     def is_applicable(self, snapshot) -> bool:
         observation = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
-        if observation is None or not observation.detected or not observation.planning_ready:
+        if (
+            observation is None
+            or not observation.detected
+            or not observation.planning_ready
+        ):
             return False
         if observation.selected_lowering_mode != "dispatcher_loop_recovery":
             return False
@@ -557,11 +586,17 @@ class EmulatedDispatcherStrategy:
 
     def is_applicable(self, snapshot) -> bool:
         observation = extract_emulated_dispatcher_metadata(snapshot.flow_graph)
-        if observation is None or not observation.detected or not observation.planning_ready:
+        if (
+            observation is None
+            or not observation.detected
+            or not observation.planning_ready
+        ):
             return False
         if observation.selected_lowering_mode == "dispatcher_loop_recovery":
             return False
-        return bool(_extract_selected_emulated_dispatcher_modifications(snapshot.flow_graph))
+        return bool(
+            _extract_selected_emulated_dispatcher_modifications(snapshot.flow_graph)
+        )
 
     def plan(self, snapshot):
         observation = extract_emulated_dispatcher_metadata(snapshot.flow_graph)

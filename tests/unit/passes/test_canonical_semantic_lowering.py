@@ -338,11 +338,7 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
 
     class _FrontendProvider:
         def evidence_for(self, function_ea: int):
-            return (
-                frontend_evidence
-                if int(function_ea) == graph.func_ea
-                else None
-            )
+            return frontend_evidence if int(function_ea) == graph.func_ea else None
 
     class _PlanProvider:
         def plan_for(self, function_ea: int, evidence_generation: int):
@@ -401,9 +397,7 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
     result = LowerCanonicalSemanticFragment().run(context)
 
     assert result.fragment_plan == expected_plan
-    composition_calls = [
-        call for call in calls if call[0] == "composition"
-    ]
+    composition_calls = [call for call in calls if call[0] == "composition"]
     assert len(composition_calls) == 1
     assert calls[0] == ("plan", graph.func_ea, candidate.generation)
     assert calls[1][0:4] == (
@@ -463,7 +457,4 @@ def test_semantic_evidence_spine_declares_fragment_publication_authority() -> No
     )
     assert specs[-1].pass_factory is LowerCanonicalSemanticFragment
     assert specs[-1].backend_route is BackendRoute.FRAGMENT_PUBLICATION
-    assert (
-        BOUND_CANONICAL_SEMANTIC_EVIDENCE
-        not in specs[-1].analyses.required
-    )
+    assert BOUND_CANONICAL_SEMANTIC_EVIDENCE not in specs[-1].analyses.required

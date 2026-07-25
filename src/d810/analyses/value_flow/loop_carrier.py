@@ -21,6 +21,7 @@ fields loop_carrier reads (``dest_stkoff`` / ``dest_temp`` / ``src_temps`` /
 There is no meta-less fallback -- every production fact target is a canonical
 ``FlowGraph``.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -195,7 +196,9 @@ def _expanded_source_stkoffs(
         for temp in insn.src_temps
         for offset in temp_source_stkoffs.get((int(insn.block_serial), int(temp)), ())
     )
-    return _merge_stkoffs(tuple(int(offset) for offset in insn.source_stkoffs), temp_sources)
+    return _merge_stkoffs(
+        tuple(int(offset) for offset in insn.source_stkoffs), temp_sources
+    )
 
 
 def _source_identities(
@@ -214,13 +217,17 @@ def _temp_source_stkoff_lookup(
 ) -> dict[tuple[int, int], tuple[int, ...]]:
     """Return source-stack identities for temp-producing canonical records."""
     lookup: dict[tuple[int, int], tuple[int, ...]] = {}
-    ordered = sorted(instructions, key=lambda insn: (int(insn.block_serial), int(insn.insn_index)))
+    ordered = sorted(
+        instructions, key=lambda insn: (int(insn.block_serial), int(insn.insn_index))
+    )
     for insn in ordered:
         if insn.dest_temp is None:
             continue
-        lookup[(int(insn.block_serial), int(insn.dest_temp))] = _expanded_source_stkoffs(
-            insn,
-            lookup,
+        lookup[(int(insn.block_serial), int(insn.dest_temp))] = (
+            _expanded_source_stkoffs(
+                insn,
+                lookup,
+            )
         )
     return lookup
 
@@ -248,7 +255,9 @@ def _all_block_serials(target: Any) -> tuple[int, ...]:
 
 
 def _succs_by_block(target: Any) -> dict[int, tuple[int, ...]]:
-    return {serial: _block_succs(target, serial) for serial in _all_block_serials(target)}
+    return {
+        serial: _block_succs(target, serial) for serial in _all_block_serials(target)
+    }
 
 
 def _strongly_connected_components(
@@ -295,7 +304,9 @@ def _candidate_carriers_for_predicate(
             for source_identity in _source_identities(writer, temp_source_stkoffs):
                 if source_identity == predicate_var:
                     continue
-                readers_by_source_identity.setdefault(source_identity, []).append(writer)
+                readers_by_source_identity.setdefault(source_identity, []).append(
+                    writer
+                )
 
     candidates: list[_CarrierCandidate] = []
     for identity, readers in sorted(
@@ -387,7 +398,9 @@ class LoopPredicateValueFactCollector:
                 continue
             writers_by_dest_identity.setdefault(identity, []).append(insn)
         for writers in writers_by_dest_identity.values():
-            writers.sort(key=lambda item: (int(item.block_serial), int(item.insn_index)))
+            writers.sort(
+                key=lambda item: (int(item.block_serial), int(item.insn_index))
+            )
 
         block_start_ea = _block_start_ea_lookup(target)
         observations: list[FactObservation] = []
@@ -418,7 +431,9 @@ class LoopPredicateValueFactCollector:
                 writer_blocks = tuple(
                     sorted({int(writer.block_serial) for writer in candidate.writers})
                 )
-                in_loop_blocks = tuple(block for block in writer_blocks if block in component)
+                in_loop_blocks = tuple(
+                    block for block in writer_blocks if block in component
+                )
                 outside_loop_blocks = tuple(
                     block for block in writer_blocks if block not in component
                 )
@@ -431,7 +446,12 @@ class LoopPredicateValueFactCollector:
 
                 predicate_ea = _instruction_anchor_ea(insn, block_start_ea)
                 reader_blocks = tuple(
-                    sorted({int(reader.block_serial) for reader in candidate.source_readers})
+                    sorted(
+                        {
+                            int(reader.block_serial)
+                            for reader in candidate.source_readers
+                        }
+                    )
                 )
                 carrier_stkoff = _carrier_stkoff(candidate.writers)
                 semantic_key = (

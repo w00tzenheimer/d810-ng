@@ -11,6 +11,7 @@ INERT IN P1: no production call site invokes this yet (the orchestrator that doe
 is P4 llr-1d8u). It is importable + unit-tested now, exactly like
 ``passes/unflatten/state_machine.py`` shipped its passes additively.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -7,6 +7,7 @@ role classifications into a deterministic, bisectable slice order. ``stays``-rol
 InstCombine rule registry the shell keeps) are excluded from slices and reported under
 ``retained``.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -63,7 +64,9 @@ def build_slice_dag(rows: list[dict], *, anchor: str) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("classification_json", help="path to classification rows JSON (list)")
+    ap.add_argument(
+        "classification_json", help="path to classification rows JSON (list)"
+    )
     ap.add_argument("--anchor", required=True)
     ap.add_argument("-o", "--out", required=True, help="path to write backbone.json")
     args = ap.parse_args()

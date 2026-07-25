@@ -29,6 +29,7 @@ class _StubRule:
 
 class _ConcreteOptimizer(InstructionOptimizer):
     """Concrete subclass for testing (InstructionOptimizer is generic)."""
+
     RULE_CLASSES = [object]  # Accept any rule via isinstance
 
     def add_rule(self, rule):
@@ -51,7 +52,10 @@ def test_maturity_gate_blocks_optimizer_at_wrong_maturity():
         maturities=[ida_hexrays.MMAT_GENERATED, ida_hexrays.MMAT_PREOPTIMIZED],
         stats=stats,
     )
-    rule = _StubRule("EarlyRule", maturities=[ida_hexrays.MMAT_GENERATED, ida_hexrays.MMAT_PREOPTIMIZED])
+    rule = _StubRule(
+        "EarlyRule",
+        maturities=[ida_hexrays.MMAT_GENERATED, ida_hexrays.MMAT_PREOPTIMIZED],
+    )
     opt.add_rule(rule)
 
     blk = _make_blk(ida_hexrays.MMAT_LOCOPT)
@@ -67,7 +71,11 @@ def test_maturity_gate_allows_optimizer_at_correct_maturity():
     """Layer 1: optimizer passes through at correct maturity."""
     stats = OptimizationStatistics()
     opt = _ConcreteOptimizer(
-        maturities=[ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1],
+        maturities=[
+            ida_hexrays.MMAT_LOCOPT,
+            ida_hexrays.MMAT_CALLS,
+            ida_hexrays.MMAT_GLBOPT1,
+        ],
         stats=stats,
     )
     rule = _StubRule("LocoptRule")
@@ -292,11 +300,11 @@ def test_block_adapter_rebuilds_flow_context_for_new_evidence_generation() -> No
     manager._function_priors_provider = None
     manager._attach_hint_summary = lambda _context: None
     bindings = []
-    manager._bind_resolver_session_state = (
-        lambda context, mba: bindings.append(("state", context, mba))
+    manager._bind_resolver_session_state = lambda context, mba: bindings.append(
+        ("state", context, mba)
     )
-    manager._bind_mutation_gateway_port = (
-        lambda context, mba: bindings.append(("gateway", context, mba))
+    manager._bind_mutation_gateway_port = lambda context, mba: bindings.append(
+        ("gateway", context, mba)
     )
     mba = SimpleNamespace(
         entry_ea=0x40D200,
@@ -369,11 +377,11 @@ def test_block_adapter_rebuilds_flow_context_for_new_mba_address() -> None:
     manager._function_priors_provider = None
     manager._attach_hint_summary = lambda _context: None
     bindings = []
-    manager._bind_resolver_session_state = (
-        lambda context, mba: bindings.append(("state", context, mba))
+    manager._bind_resolver_session_state = lambda context, mba: bindings.append(
+        ("state", context, mba)
     )
-    manager._bind_mutation_gateway_port = (
-        lambda context, mba: bindings.append(("gateway", context, mba))
+    manager._bind_mutation_gateway_port = lambda context, mba: bindings.append(
+        ("gateway", context, mba)
     )
     first_mba = SimpleNamespace(
         entry_ea=0x40D200,
@@ -466,7 +474,9 @@ def test_active_optimizer_list_filters_by_maturity():
     mgr._rule_scope_service = None
     mgr._rule_scope_project_name = ""
     mgr._rule_scope_idb_key = ""
-    mgr.analyzer = SimpleNamespace(set_maturity=lambda m: None, analyze=lambda blk, ins: None)
+    mgr.analyzer = SimpleNamespace(
+        set_maturity=lambda m: None, analyze=lambda blk, ins: None
+    )
     mgr.event_emitter = None
     mgr.dump_intermediate_microcode = False
     mgr.stats = None
@@ -487,7 +497,9 @@ def test_active_optimizer_list_filters_by_maturity():
     # Now call optimize - only locopt_opt should be called
     mgr.optimize(blk, ins)
 
-    assert early_opt.calls == 0, f"EarlyOpt was called {early_opt.calls} times at LOCOPT"
+    assert early_opt.calls == 0, (
+        f"EarlyOpt was called {early_opt.calls} times at LOCOPT"
+    )
     assert locopt_opt.calls == 1, f"LocoptOpt was not called at LOCOPT"
 
 
@@ -505,7 +517,9 @@ def test_instruction_optimizer_abstains_during_scoped_suppression():
     mgr._rule_scope_service = None
     mgr._rule_scope_project_name = ""
     mgr._rule_scope_idb_key = ""
-    mgr.analyzer = SimpleNamespace(set_maturity=lambda m: None, analyze=lambda blk, ins: None)
+    mgr.analyzer = SimpleNamespace(
+        set_maturity=lambda m: None, analyze=lambda blk, ins: None
+    )
     mgr.event_emitter = None
     mgr.dump_intermediate_microcode = False
     mgr.stats = None
@@ -609,7 +623,9 @@ class _FakeMop:
 class _FakeInsForFold:
     """Minimal instruction stub for FoldReadonlyDataRule pre-check tests."""
 
-    def __init__(self, opcode: int, l_type: int, r_type: int, d_type: int = ida_hexrays.mop_r):
+    def __init__(
+        self, opcode: int, l_type: int, r_type: int, d_type: int = ida_hexrays.mop_r
+    ):
         self.opcode = opcode
         self.ea = 0x1000
         self.l = _FakeMop(l_type)

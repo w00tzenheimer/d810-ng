@@ -4,6 +4,7 @@ Adapters that own a concrete analysis provider, such as Hex-Rays microcode or
 ctree, translate provider-specific phase numbers into this small contract before
 calling provider-neutral layers.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -58,7 +59,6 @@ def provider_phase_snapshot_from_level(
     return ProviderPhaseSnapshot(
         provider_name=provider_name,
         provider_level=level,
-        friendly_provider_level=provider_label
-        or mmat_name(level, numbering=numbering),
+        friendly_provider_level=provider_label or mmat_name(level, numbering=numbering),
         ir_maturity=ir_maturity,
     )

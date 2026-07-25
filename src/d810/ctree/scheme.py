@@ -5,6 +5,7 @@ the match context and returns an ``ASTPatch`` (or ``None``).
 
 Ported from herast (herast/tree/scheme.py).
 """
+
 from __future__ import annotations
 
 from d810.core import typing
@@ -41,9 +42,7 @@ class Scheme:
         self.patterns: tuple[BasePat, ...] = patterns
         self.stype: Scheme.SchemeType = scheme_type
 
-    def on_matched_item(
-        self, item: typing.Any, ctx: MatchContext
-    ) -> ASTPatch | None:
+    def on_matched_item(self, item: typing.Any, ctx: MatchContext) -> ASTPatch | None:
         """Callback for successful match.
 
         Override in subclasses to implement AST modification or

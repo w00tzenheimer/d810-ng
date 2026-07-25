@@ -1,4 +1,5 @@
 """Pure tests for neutral cleanup evidence adapters."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -194,7 +195,9 @@ def test_duplicate_candidate_validates_but_requires_replay_or_corridor_proof() -
         build_dispatcher_cleanup_modification(candidate)
 
 
-def test_side_effect_replay_candidate_validates_lowers_and_compiles_to_patch_insert() -> None:
+def test_side_effect_replay_candidate_validates_lowers_and_compiles_to_patch_insert() -> (
+    None
+):
     body = _side_effect_body()
     candidate = bad_while_loop_side_effect_replay_candidate(
         dispatcher_entry=2,
@@ -225,18 +228,26 @@ def test_side_effect_replay_candidate_validates_lowers_and_compiles_to_patch_ins
 
     patch_plan = compile_patch_plan([modification], _duplicate_cfg())
     assert any(isinstance(step, PatchInsertBlock) for step in patch_plan.steps)
-    assert not any(step.__class__.__name__ == "LegacyBlockOperation" for step in patch_plan.steps)
+    assert not any(
+        step.__class__.__name__ == "LegacyBlockOperation" for step in patch_plan.steps
+    )
 
 
-def test_duplicate_group_replay_candidate_validates_lowers_and_compiles_to_composite_patch() -> None:
+def test_duplicate_group_replay_candidate_validates_lowers_and_compiles_to_composite_patch() -> (
+    None
+):
     left_body = _side_effect_body()
     right_body = _side_effect_body()
     candidate = bad_while_loop_duplicate_group_replay_candidate(
         dispatcher_entry=2,
         source_serial=5,
         per_pred_replays=(
-            CleanupPerPredReplay(pred_serial=8, target_serial=3, captured_body=left_body),
-            CleanupPerPredReplay(pred_serial=9, target_serial=4, captured_body=right_body),
+            CleanupPerPredReplay(
+                pred_serial=8, target_serial=3, captured_body=left_body
+            ),
+            CleanupPerPredReplay(
+                pred_serial=9, target_serial=4, captured_body=right_body
+            ),
         ),
         dispatcher_internal_serials=(2,),
     )
@@ -248,20 +259,30 @@ def test_duplicate_group_replay_candidate_validates_lowers_and_compiles_to_compo
         exit_shape=CleanupExitShape.SHARED_ONE_WAY_BY_PRED_WITH_REPLAY,
         rewrite_intent=CleanupRewriteIntent.DUPLICATE_REPLAY_AND_REDIRECT,
         per_pred_replays=(
-            CleanupPerPredReplay(pred_serial=8, target_serial=3, captured_body=left_body),
-            CleanupPerPredReplay(pred_serial=9, target_serial=4, captured_body=right_body),
+            CleanupPerPredReplay(
+                pred_serial=8, target_serial=3, captured_body=left_body
+            ),
+            CleanupPerPredReplay(
+                pred_serial=9, target_serial=4, captured_body=right_body
+            ),
         ),
         dispatcher_internal_serials=(2,),
     )
-    assert validate_duplicate_group_replay_candidate(_duplicate_cfg(), candidate) is True
+    assert (
+        validate_duplicate_group_replay_candidate(_duplicate_cfg(), candidate) is True
+    )
 
     modification = build_dispatcher_cleanup_modification(candidate)
     assert modification == DuplicateReplayAndRedirect(
         source_serial=5,
         dispatcher_entry=2,
         per_pred_replays=(
-            DuplicateReplayEntry(pred_serial=8, target_serial=3, captured_body=left_body),
-            DuplicateReplayEntry(pred_serial=9, target_serial=4, captured_body=right_body),
+            DuplicateReplayEntry(
+                pred_serial=8, target_serial=3, captured_body=left_body
+            ),
+            DuplicateReplayEntry(
+                pred_serial=9, target_serial=4, captured_body=right_body
+            ),
         ),
     )
 
@@ -275,13 +296,19 @@ def test_duplicate_group_replay_candidate_validates_lowers_and_compiles_to_compo
     ]
 
 
-def test_duplicate_group_replay_candidate_rejects_partial_calls_and_conditional_targets() -> None:
+def test_duplicate_group_replay_candidate_rejects_partial_calls_and_conditional_targets() -> (
+    None
+):
     valid = bad_while_loop_duplicate_group_replay_candidate(
         dispatcher_entry=2,
         source_serial=5,
         per_pred_replays=(
-            CleanupPerPredReplay(pred_serial=8, target_serial=3, captured_body=_side_effect_body()),
-            CleanupPerPredReplay(pred_serial=9, target_serial=4, captured_body=_side_effect_body()),
+            CleanupPerPredReplay(
+                pred_serial=8, target_serial=3, captured_body=_side_effect_body()
+            ),
+            CleanupPerPredReplay(
+                pred_serial=9, target_serial=4, captured_body=_side_effect_body()
+            ),
         ),
         dispatcher_internal_serials=(2,),
     )
@@ -291,7 +318,9 @@ def test_duplicate_group_replay_candidate_rejects_partial_calls_and_conditional_
         dispatcher_entry=2,
         source_serial=5,
         per_pred_replays=(
-            CleanupPerPredReplay(pred_serial=8, target_serial=3, captured_body=_side_effect_body()),
+            CleanupPerPredReplay(
+                pred_serial=8, target_serial=3, captured_body=_side_effect_body()
+            ),
         ),
         dispatcher_internal_serials=(2,),
     )
@@ -301,7 +330,9 @@ def test_duplicate_group_replay_candidate_rejects_partial_calls_and_conditional_
         dispatcher_entry=2,
         source_serial=5,
         per_pred_replays=(
-            CleanupPerPredReplay(pred_serial=8, target_serial=3, captured_body=_side_effect_body()),
+            CleanupPerPredReplay(
+                pred_serial=8, target_serial=3, captured_body=_side_effect_body()
+            ),
             CleanupPerPredReplay(
                 pred_serial=9,
                 target_serial=4,
@@ -313,19 +344,22 @@ def test_duplicate_group_replay_candidate_rejects_partial_calls_and_conditional_
     assert with_call is None
 
     conditional_target_cfg = _duplicate_cfg()
-    assert validate_duplicate_group_replay_candidate(
-        FlowGraph(
-            blocks={
-                **conditional_target_cfg.blocks,
-                4: _block(4, (6, 7), (2, 5), block_type=2),
-                6: _block(6, (), (4,), block_type=0),
-                7: _block(7, (), (4,), block_type=0),
-            },
-            entry_serial=conditional_target_cfg.entry_serial,
-            func_ea=conditional_target_cfg.func_ea,
-        ),
-        valid,
-    ) is False
+    assert (
+        validate_duplicate_group_replay_candidate(
+            FlowGraph(
+                blocks={
+                    **conditional_target_cfg.blocks,
+                    4: _block(4, (6, 7), (2, 5), block_type=2),
+                    6: _block(6, (), (4,), block_type=0),
+                    7: _block(7, (), (4,), block_type=0),
+                },
+                entry_serial=conditional_target_cfg.entry_serial,
+                func_ea=conditional_target_cfg.func_ea,
+            ),
+            valid,
+        )
+        is False
+    )
 
 
 def test_trampoline_isolation_candidate_validates_lowers_and_compiles() -> None:
@@ -345,10 +379,13 @@ def test_trampoline_isolation_candidate_validates_lowers_and_compiles() -> None:
         rewrite_intent=CleanupRewriteIntent.TRAMPOLINE_ISOLATION,
         dispatcher_internal_serials=(2,),
     )
-    assert validate_trampoline_isolation_candidate(
-        _conditional_redirect_cfg(),
-        candidate,
-    ) is True
+    assert (
+        validate_trampoline_isolation_candidate(
+            _conditional_redirect_cfg(),
+            candidate,
+        )
+        is True
+    )
 
     modification = build_dispatcher_cleanup_modification(candidate)
     assert modification == InsertBlock(
@@ -425,7 +462,9 @@ def test_conditional_redirect_explainer_classifies_safe_shape_and_round_trips() 
     assert extract_conditional_redirect_proofs(cfg) == (proof,)
 
 
-def test_conditional_redirect_explainer_reports_proof_gap_for_missing_tail_target() -> None:
+def test_conditional_redirect_explainer_reports_proof_gap_for_missing_tail_target() -> (
+    None
+):
     edit = BadWhileLoopConditionalRedirect(
         dispatcher_entry=2,
         source_serial=1,
@@ -489,10 +528,7 @@ def test_conditional_cleanup_validation_accepts_only_safe_shapes() -> None:
         func_ea=0x1000,
     )
 
-    assert (
-        validate_conditional_duplicate_cleanup_edit(duplicate_cfg, duplicate)
-        is True
-    )
+    assert validate_conditional_duplicate_cleanup_edit(duplicate_cfg, duplicate) is True
     assert (
         validate_conditional_duplicate_cleanup_edit(
             FlowGraph(
@@ -518,10 +554,13 @@ def test_conditional_cleanup_validation_accepts_only_safe_shapes() -> None:
         dispatcher_internal_serials=(2,),
         copied_side_effects_absent=True,
     )
-    assert validate_conditional_redirect_cleanup_edit(
-        _conditional_redirect_cfg(),
-        redirect,
-    ) is True
+    assert (
+        validate_conditional_redirect_cleanup_edit(
+            _conditional_redirect_cfg(),
+            redirect,
+        )
+        is True
+    )
     assert (
         validate_conditional_redirect_cleanup_edit(
             _conditional_redirect_cfg(ref_tail_target=4),
@@ -768,9 +807,7 @@ def test_bad_while_loop_follow_up_reclassifier_uses_modern_target_evidence() -> 
     range_rows = reclassify_bad_while_loop_follow_ups(
         follow_up,
         _conditional_redirect_cfg(),
-        range_intervals=(
-            SimpleNamespace(lo=0x100, hi=0x200, target_block=12),
-        ),
+        range_intervals=(SimpleNamespace(lo=0x100, hi=0x200, target_block=12),),
         state_constants_by_source={1: 0x123},
     )
     assert range_rows[0].bucket is (

@@ -1,4 +1,5 @@
 """Backend-neutral semantic-reference label indexing helpers."""
+
 from __future__ import annotations
 
 import re

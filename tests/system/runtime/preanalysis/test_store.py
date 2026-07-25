@@ -2,7 +2,11 @@ from __future__ import annotations
 import time
 from types import MappingProxyType
 import pytest
-from d810.analyses.control_flow.models import CandidateFlag, PreanalysisResult, DeobfuscationHints
+from d810.analyses.control_flow.models import (
+    CandidateFlag,
+    PreanalysisResult,
+    DeobfuscationHints,
+)
 from d810.passes.store import PreanalysisStore
 
 
@@ -15,7 +19,9 @@ def store(tmp_path):
 
 @pytest.fixture
 def sample_result() -> PreanalysisResult:
-    flag = CandidateFlag(kind="flattened_switch", block_serial=3, confidence=0.9, detail="hi")
+    flag = CandidateFlag(
+        kind="flattened_switch", block_serial=3, confidence=0.9, detail="hi"
+    )
     return PreanalysisResult(
         collector_name="CFGShapeCollector",
         func_ea=0x401000,
@@ -75,12 +81,20 @@ class TestPreanalysisStoreSaveLoad:
 
     def test_multiple_collectors_same_maturity(self, store):
         r1 = PreanalysisResult(
-            collector_name="CFGShapeCollector", func_ea=0x401000, maturity=5,
-            timestamp=time.time(), metrics=MappingProxyType({"a": 1}), candidates=(),
+            collector_name="CFGShapeCollector",
+            func_ea=0x401000,
+            maturity=5,
+            timestamp=time.time(),
+            metrics=MappingProxyType({"a": 1}),
+            candidates=(),
         )
         r2 = PreanalysisResult(
-            collector_name="OpcodeDistributionCollector", func_ea=0x401000, maturity=5,
-            timestamp=time.time(), metrics=MappingProxyType({"b": 2}), candidates=(),
+            collector_name="OpcodeDistributionCollector",
+            func_ea=0x401000,
+            maturity=5,
+            timestamp=time.time(),
+            metrics=MappingProxyType({"b": 2}),
+            candidates=(),
         )
         store.save_preanalysis_result(r1)
         store.save_preanalysis_result(r2)
@@ -92,8 +106,12 @@ class TestPreanalysisStoreSaveLoad:
     def test_load_all_for_func(self, store):
         for maturity in (5, 10, 15):
             r = PreanalysisResult(
-                collector_name="CFGShapeCollector", func_ea=0x401000, maturity=maturity,
-                timestamp=time.time(), metrics=MappingProxyType({"m": maturity}), candidates=(),
+                collector_name="CFGShapeCollector",
+                func_ea=0x401000,
+                maturity=maturity,
+                timestamp=time.time(),
+                metrics=MappingProxyType({"m": maturity}),
+                candidates=(),
             )
             store.save_preanalysis_result(r)
         all_results = store.load_all_preanalysis_results(func_ea=0x401000)

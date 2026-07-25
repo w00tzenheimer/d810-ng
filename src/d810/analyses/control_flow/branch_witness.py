@@ -26,6 +26,7 @@ canonical :func:`~d810.ir.insn_projection.project_instruction`:
 
 Block topology stays direct on the typed ``FlowGraph`` / ``BlockSnapshot``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -111,10 +112,9 @@ class BranchWitnessMap:
         state_u = int(state) & 0xFFFFFFFF
         compare_i = int(compare_block)
         for row in self.rows:
-            if (
-                (int(row.state) & 0xFFFFFFFF) == state_u
-                and int(row.compare_block) == compare_i
-            ):
+            if (int(row.state) & 0xFFFFFFFF) == state_u and int(
+                row.compare_block
+            ) == compare_i:
                 return row
         return None
 
@@ -142,8 +142,7 @@ class EmulationBranchWitnessCapability(Protocol):
         compare_block: int,
         state: int,
         state_var_stkoff: int | None,
-    ) -> ExactBranchWitness | BranchWitnessAbstain:
-        ...
+    ) -> ExactBranchWitness | BranchWitnessAbstain: ...
 
 
 def _int_or_none(value: object) -> int | None:
@@ -327,7 +326,11 @@ def static_witness_for_state(
 
     const, state_slot_index = _block_compare_operands(block)
     row_const = _int_or_none(row.compare_const)
-    if const is None or row_const is None or (int(const) & 0xFFFFFFFF) != (row_const & 0xFFFFFFFF):
+    if (
+        const is None
+        or row_const is None
+        or (int(const) & 0xFFFFFFFF) != (row_const & 0xFFFFFFFF)
+    ):
         return BranchWitnessAbstain("state_constant_mismatch")
 
     if (

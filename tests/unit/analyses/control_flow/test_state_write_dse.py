@@ -1,4 +1,5 @@
 """Tests for render-level dead dispatcher-state-write elimination."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.state_write_dse import (

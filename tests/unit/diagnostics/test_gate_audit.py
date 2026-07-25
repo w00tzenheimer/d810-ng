@@ -1,4 +1,5 @@
 """Tests for the gate-audit diag subcommand."""
+
 from __future__ import annotations
 
 import json
@@ -43,9 +44,7 @@ def test_gate_accounting_pattern_tracks_pass_fail_bypass() -> None:
 
 
 def test_safeguard_rejection_increments_counts_and_emits_failed_event() -> None:
-    s = _scan(
-        "Safeguard gate rejected stage s1: 0 passed, 1 failed, 0 bypassed"
-    )
+    s = _scan("Safeguard gate rejected stage s1: 0 passed, 1 failed, 0 bypassed")
     assert (s.passed, s.failed, s.bypassed) == (0, 1, 0)
     assert s.events[0].source == "safeguard"
     assert "stage s1" in s.events[0].reason
@@ -79,9 +78,7 @@ def test_preconditioner_bypass_unknown_reason_is_untracked() -> None:
 
 
 def test_gate_skipped_is_distinct_from_bypassed() -> None:
-    s = _scan(
-        "Gate skipped [maturity_filter]: FixPred at maturity 16 not in scope"
-    )
+    s = _scan("Gate skipped [maturity_filter]: FixPred at maturity 16 not in scope")
     assert s.skipped == 1
     assert s.bypassed == 0
     assert s.events[0].source == "gate_skip"
@@ -166,23 +163,25 @@ def test_scan_log_directory_empty_returns_empty_summary(tmp_path: Path) -> None:
 
 
 def test_provenance_detail_extracts_gate_decisions() -> None:
-    payload = json.dumps({
-        "rows": [
-            {
-                "strategy_name": "FixPred",
-                "gate_accounting": [
-                    {"verdict": "passed", "reason": "ok"},
-                    {"verdict": "bypassed", "reason": "config_disabled"},
-                ],
-            },
-            {
-                "strategy_name": "BarRule",
-                "gate_accounting": [
-                    {"verdict": "FAILED", "reason": "predicate"},
-                ],
-            },
-        ]
-    })
+    payload = json.dumps(
+        {
+            "rows": [
+                {
+                    "strategy_name": "FixPred",
+                    "gate_accounting": [
+                        {"verdict": "passed", "reason": "ok"},
+                        {"verdict": "bypassed", "reason": "config_disabled"},
+                    ],
+                },
+                {
+                    "strategy_name": "BarRule",
+                    "gate_accounting": [
+                        {"verdict": "FAILED", "reason": "predicate"},
+                    ],
+                },
+            ]
+        }
+    )
     events = _parse_provenance_detail_gate_decisions(payload)
     assert len(events) == 3
     assert events[0].verdict == "PASSED"
@@ -254,7 +253,8 @@ def test_run_audit_returns_zero_when_no_bypasses(tmp_path: Path) -> None:
 
 def test_run_audit_returns_one_on_untracked_bypass(tmp_path: Path) -> None:
     _write_log(
-        tmp_path, "bad.log",
+        tmp_path,
+        "bad.log",
         "Gate bypassed [some_unknown_thing]: Rule\n",
     )
     text, rc = run_audit(tmp_path)
@@ -264,7 +264,8 @@ def test_run_audit_returns_one_on_untracked_bypass(tmp_path: Path) -> None:
 
 def test_run_audit_strict_mode_fails_on_any_bypass(tmp_path: Path) -> None:
     _write_log(
-        tmp_path, "strict.log",
+        tmp_path,
+        "strict.log",
         "Gate bypassed [config_disabled]: Rule\n",
     )
     text, rc_default = run_audit(tmp_path)
@@ -276,7 +277,8 @@ def test_run_audit_strict_mode_fails_on_any_bypass(tmp_path: Path) -> None:
 
 def test_run_audit_json_mode_emits_dict(tmp_path: Path) -> None:
     _write_log(
-        tmp_path, "json.log",
+        tmp_path,
+        "json.log",
         "Gate accounting: 1 passed, 0 failed, 1 bypassed\n",
     )
     text, rc = run_audit(tmp_path, as_json=True)
@@ -296,7 +298,9 @@ def test_run_audit_missing_path_returns_one_with_message(tmp_path: Path) -> None
 
 
 def test_run_audit_accepts_single_log_file(tmp_path: Path) -> None:
-    log = _write_log(tmp_path, "d810.log", "Gate accounting: 2 passed, 0 failed, 0 bypassed\n")
+    log = _write_log(
+        tmp_path, "d810.log", "Gate accounting: 2 passed, 0 failed, 0 bypassed\n"
+    )
     text, rc = run_audit(log)
     assert rc == 0
     assert "Passed:                 2" in text

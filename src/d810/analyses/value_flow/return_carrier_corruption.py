@@ -44,6 +44,7 @@ Hex-Rays evidence adapter, exactly like :mod:`d810.analyses.value_flow.liveness`
 and :mod:`d810.analyses.value_flow.reaching_defs`. The proof itself is pure data
 so it is unit-testable without IDA.
 """
+
 from __future__ import annotations
 
 import enum
@@ -131,7 +132,9 @@ class CarrierCorruptionProof:
     @property
     def reason(self) -> str:
         carriers = ",".join(str(b) for b in self.dominating_carrier_blocks)
-        val = "" if self.target.const_value is None else f"#{self.target.const_value:#x} "
+        val = (
+            "" if self.target.const_value is None else f"#{self.target.const_value:#x} "
+        )
         return (
             f"drop {val}@blk{self.target.block} ea={self.target.ea:#x}: "
             f"ssa{{{self.target.ssa}}} has 0 uses; "

@@ -1,4 +1,5 @@
 """LS12 C1: structural tests for the explicit lowering-mode vocabulary."""
+
 from __future__ import annotations
 
 from d810.transforms import LoweringMode as LoweringModeFacade

@@ -1,4 +1,5 @@
 "Preanalysis-domain diagnostic capture facade and event API.\n\nRuntime preanalysis code constructs ``*Observed`` events (frozen dataclasses)\nand calls ``observe_*`` helpers that publish them on the\n:mod:`d810.core.observability` bus. A backend subscriber listens via\nthe abstract observability interface; preanalysis never imports the backend.\n\nEvent names follow the past-tense ``<thing>Observed`` convention.\nEmit helpers follow the ``observe_<thing>`` convention.\n\nRead-side queries that drive runtime behaviour should consume\nin-memory fact views or runtime evidence directly, not diagnostic\nsubscribers or SQLite sinks.\n\nSee:\n    docs/diag-observability-boundary.md\n"
+
 from __future__ import annotations
 
 from d810.core.observability import (
@@ -6,6 +7,7 @@ from d810.core.observability import (
     emit as _emit,
     has_subscribers as _has_subscribers,
 )
+
 # Event dataclasses live under d810.core.observability_events so a
 # backend subscriber can listen without an upward import
 # (layered-architecture forbids d810.core importing from d810.preanalysis).
@@ -54,11 +56,13 @@ def observe_dag(
     edges,
 ) -> None:
     """Publish a :class:`DagObserved` event."""
-    _emit(DagObserved(
-        snapshot=snapshot,
-        nodes=tuple(nodes),
-        edges=tuple(edges),
-    ))
+    _emit(
+        DagObserved(
+            snapshot=snapshot,
+            nodes=tuple(nodes),
+            edges=tuple(edges),
+        )
+    )
 
 
 def observe_dag_frontier_closure_diagnostics(
@@ -66,10 +70,12 @@ def observe_dag_frontier_closure_diagnostics(
     rows,
 ) -> None:
     """Publish DAG-frontier closure verifier diagnostics."""
-    _emit(DagFrontierClosureDiagnosticsObserved(
-        snapshot=snapshot,
-        rows=tuple(rows),
-    ))
+    _emit(
+        DagFrontierClosureDiagnosticsObserved(
+            snapshot=snapshot,
+            rows=tuple(rows),
+        )
+    )
 
 
 def observe_condition_chain_interval_dispatcher(
@@ -80,15 +86,18 @@ def observe_condition_chain_interval_dispatcher(
     rows,
 ) -> None:
     """Publish recovered condition-chain interval-dispatcher rows."""
-    _emit(ConditionChainIntervalDispatcherObserved(
-        func_ea=int(func_ea),
-        maturity=str(maturity),
-        dispatcher_entry_block=(
-            int(dispatcher_entry_block)
-            if dispatcher_entry_block is not None else None
-        ),
-        rows=tuple(rows),
-    ))
+    _emit(
+        ConditionChainIntervalDispatcherObserved(
+            func_ea=int(func_ea),
+            maturity=str(maturity),
+            dispatcher_entry_block=(
+                int(dispatcher_entry_block)
+                if dispatcher_entry_block is not None
+                else None
+            ),
+            rows=tuple(rows),
+        )
+    )
 
 
 def observe_state_dispatcher_rows(
@@ -100,16 +109,19 @@ def observe_state_dispatcher_rows(
     rows,
 ) -> None:
     """Publish exact state-dispatcher rows."""
-    _emit(StateDispatcherRowsObserved(
-        func_ea=int(func_ea),
-        maturity=str(maturity),
-        dispatcher_entry_block=(
-            int(dispatcher_entry_block)
-            if dispatcher_entry_block is not None else None
-        ),
-        dispatcher_kind=str(dispatcher_kind),
-        rows=tuple(rows),
-    ))
+    _emit(
+        StateDispatcherRowsObserved(
+            func_ea=int(func_ea),
+            maturity=str(maturity),
+            dispatcher_entry_block=(
+                int(dispatcher_entry_block)
+                if dispatcher_entry_block is not None
+                else None
+            ),
+            dispatcher_kind=str(dispatcher_kind),
+            rows=tuple(rows),
+        )
+    )
 
 
 def observe_state_transition_dispatch_resolutions(
@@ -117,10 +129,12 @@ def observe_state_transition_dispatch_resolutions(
     rows,
 ) -> None:
     """Publish exact state-dispatcher transition resolution rows."""
-    _emit(StateTransitionDispatchResolutionsObserved(
-        snapshot=snapshot,
-        rows=tuple(rows),
-    ))
+    _emit(
+        StateTransitionDispatchResolutionsObserved(
+            snapshot=snapshot,
+            rows=tuple(rows),
+        )
+    )
 
 
 def observe_switch_case_transition_facts(
@@ -128,10 +142,12 @@ def observe_switch_case_transition_facts(
     rows,
 ) -> None:
     """Publish switch-table case transition facts."""
-    _emit(SwitchCaseTransitionFactsObserved(
-        snapshot=snapshot,
-        rows=tuple(rows),
-    ))
+    _emit(
+        SwitchCaseTransitionFactsObserved(
+            snapshot=snapshot,
+            rows=tuple(rows),
+        )
+    )
 
 
 def observe_branch_ownership_proofs(
@@ -139,10 +155,12 @@ def observe_branch_ownership_proofs(
     rows,
 ) -> None:
     """Publish conditional branch ownership proof rows."""
-    _emit(BranchOwnershipProofsObserved(
-        snapshot=snapshot,
-        rows=tuple(rows),
-    ))
+    _emit(
+        BranchOwnershipProofsObserved(
+            snapshot=snapshot,
+            rows=tuple(rows),
+        )
+    )
 
 
 def observe_branch_witness_decisions(
@@ -151,10 +169,12 @@ def observe_branch_witness_decisions(
     rows,
 ) -> None:
     """Publish branch-witness projection decision rows."""
-    _emit(BranchWitnessDecisionsObserved(
-        func_ea=int(func_ea),
-        rows=tuple(rows),
-    ))
+    _emit(
+        BranchWitnessDecisionsObserved(
+            func_ea=int(func_ea),
+            rows=tuple(rows),
+        )
+    )
 
 
 def observe_exit_path_shortcut_decisions(
@@ -163,10 +183,12 @@ def observe_exit_path_shortcut_decisions(
     rows,
 ) -> None:
     """Publish exit-path shortcut/liveness decision rows."""
-    _emit(ExitPathShortcutDecisionsObserved(
-        func_ea=int(func_ea),
-        rows=tuple(rows),
-    ))
+    _emit(
+        ExitPathShortcutDecisionsObserved(
+            func_ea=int(func_ea),
+            rows=tuple(rows),
+        )
+    )
 
 
 def observe_dag_local_facts(snapshot: SnapshotRef, dag: Any) -> None:
@@ -180,11 +202,13 @@ def observe_fact_observation(
     observations,
 ) -> None:
     """Publish a :class:`FactObservationsObserved` event."""
-    _emit(FactObservationsObserved(
-        snapshot=snapshot,
-        func_ea=int(func_ea),
-        observations=tuple(observations),
-    ))
+    _emit(
+        FactObservationsObserved(
+            snapshot=snapshot,
+            func_ea=int(func_ea),
+            observations=tuple(observations),
+        )
+    )
 
 
 def observe_fact_mapping(
@@ -193,11 +217,13 @@ def observe_fact_mapping(
     mappings,
 ) -> None:
     """Publish a :class:`FactMappingsObserved` event."""
-    _emit(FactMappingsObserved(
-        snapshot=snapshot,
-        func_ea=int(func_ea),
-        mappings=tuple(mappings),
-    ))
+    _emit(
+        FactMappingsObserved(
+            snapshot=snapshot,
+            func_ea=int(func_ea),
+            mappings=tuple(mappings),
+        )
+    )
 
 
 def observe_fact_consumer(
@@ -206,11 +232,13 @@ def observe_fact_consumer(
     consumers,
 ) -> None:
     """Publish a :class:`FactConsumersObserved` event."""
-    _emit(FactConsumersObserved(
-        snapshot=snapshot,
-        func_ea=int(func_ea),
-        consumers=tuple(consumers),
-    ))
+    _emit(
+        FactConsumersObserved(
+            snapshot=snapshot,
+            func_ea=int(func_ea),
+            consumers=tuple(consumers),
+        )
+    )
 
 
 def observe_fact_conflict(
@@ -219,11 +247,13 @@ def observe_fact_conflict(
     conflicts,
 ) -> None:
     """Publish a :class:`FactConflictsObserved` event."""
-    _emit(FactConflictsObserved(
-        snapshot=snapshot,
-        func_ea=int(func_ea),
-        conflicts=tuple(conflicts),
-    ))
+    _emit(
+        FactConflictsObserved(
+            snapshot=snapshot,
+            func_ea=int(func_ea),
+            conflicts=tuple(conflicts),
+        )
+    )
 
 
 def observe_modifications(
@@ -231,10 +261,12 @@ def observe_modifications(
     modifications,
 ) -> None:
     """Publish a :class:`ModificationsObserved` event."""
-    _emit(ModificationsObserved(
-        snapshot=snapshot,
-        modifications=tuple(modifications),
-    ))
+    _emit(
+        ModificationsObserved(
+            snapshot=snapshot,
+            modifications=tuple(modifications),
+        )
+    )
 
 
 def observe_rendered_program(snapshot: SnapshotRef, program: Any) -> None:
@@ -252,18 +284,20 @@ def observe_reachability(
     claimed_sources=(),
 ) -> None:
     """Publish a :class:`ReachabilityObserved` event."""
-    _emit(ReachabilityObserved(
-        snapshot=snapshot,
-        all_serials=frozenset(all_serials),
-        reachable=frozenset(reachable),
-        condition_chain_serials=frozenset(condition_chain_serials),
-        gutted=frozenset(gutted),
-        claimed_sources=frozenset(claimed_sources),
-    ))
+    _emit(
+        ReachabilityObserved(
+            snapshot=snapshot,
+            all_serials=frozenset(all_serials),
+            reachable=frozenset(reachable),
+            condition_chain_serials=frozenset(condition_chain_serials),
+            gutted=frozenset(gutted),
+            claimed_sources=frozenset(claimed_sources),
+        )
+    )
 
 
 def diagnostics_enabled() -> bool:
-    "Cheap predicate: is any preanalysis-event subscriber installed?\n\n    Useful for callers that want to skip expensive payload construction\n    when no diag subscriber is present. The bus catches subscriber\n    exceptions either way, so calling :func:`observe_*` without a\n    subscriber is a no-op, just slightly wasteful.\n    "
+    "Cheap predicate: is any preanalysis-event subscriber installed?\n\n    Useful for callers that want to skip expensive payload construction\n    when no diag subscriber is present. The bus catches subscriber\n    exceptions either way, so calling :func:`observe_*` without a\n    subscriber is a no-op, just slightly wasteful.\n"
     return any(
         _has_subscribers(t)
         for t in (

@@ -10,6 +10,7 @@ the vendor's re-optimization, per unflatten / the LLVM AnalysisManager invalidat
 re-lifts only after semantic postvalidation commits. The class structurally
 satisfies both portable backend protocols without importing either upward.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.graph_checks import (
@@ -83,9 +84,7 @@ class HexRaysMutationBackend:
         return DeferredGraphModifier(
             live_source,
             mutation_gateway=gateway,
-            semantic_native_body_materializer=(
-                self._semantic_native_body_materializer
-            ),
+            semantic_native_body_materializer=(self._semantic_native_body_materializer),
         )
 
     def capabilities(self) -> frozenset[str]:

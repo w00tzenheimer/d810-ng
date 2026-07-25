@@ -7,6 +7,7 @@ read side; portable passes only ever see ``flow_graph``.
 Structurally satisfies the ``FunctionSource`` protocol (``passes.pass_pipeline``) without importing
 it (that would be an upward layer edge); duck-typing is enough.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -37,7 +38,9 @@ class HexRaysFunctionSource:
         return self._mba
 
 
-def lift_function(mba: idaapi.mba_t, maturity: object | None = None) -> HexRaysFunctionSource:
+def lift_function(
+    mba: idaapi.mba_t, maturity: object | None = None
+) -> HexRaysFunctionSource:
     """Lift a live ``mba_t`` into a unflatten ``FunctionSource`` (portable FlowGraph + opaque live mba)."""
     translator = IDAIRTranslator()
     return HexRaysFunctionSource(_mba=mba, _flow_graph=translator.lift(mba))

@@ -3,6 +3,7 @@
 Covers the pure ``extract_after_pseudocode`` / ``render_after_pseudocode``
 helpers plus the end-to-end CLI invocation with synthetic dump text.
 """
+
 from __future__ import annotations
 
 import subprocess

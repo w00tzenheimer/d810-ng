@@ -12,6 +12,7 @@ converts those modification intents into an ordered plan made of:
 This lets callers reason about block creation explicitly and reject fragile live
 allocation paths before mutating the backend state.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -36,6 +37,7 @@ class ExecutionPolicy(str, Enum):
     STRICT = "strict"
     NOP_CLEANUP_RELAXED = "nop_cleanup_relaxed"
     NOP_MERGE_BLOCKS_RELAXED = "nop_merge_blocks_relaxed"
+
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.transforms.graph_modification import (
@@ -193,6 +195,7 @@ class PatchNopInstructions:
 @dataclass(frozen=True)
 class PatchZeroStateWrite:
     """Zero the source operand of a state variable write instruction."""
+
     block_serial: int
     insn_ea: int
 
@@ -203,6 +206,7 @@ class PatchZeroStateWrite:
 @dataclass(frozen=True)
 class PatchPromoteOperandToScalar:
     """Promote a fused sub-instruction operand into a fresh kreg standalone insn."""
+
     block_serial: int
     host_ea: int
     host_opcode: int
@@ -644,7 +648,9 @@ class PatchReorderBlocks:
     """Reorder handler blocks by copying them in DFS order to end of MBA."""
 
     dfs_block_order: tuple[int, ...]
-    non_2way_serials: tuple[int, ...] = ()  # dfs_block_order minus BLT_2WAY blocks; for projector
+    non_2way_serials: tuple[
+        int, ...
+    ] = ()  # dfs_block_order minus BLT_2WAY blocks; for projector
     two_way_serials: tuple[int, ...] = ()
     # old_serial -> new_concrete_serial mapping, populated after relocation
     old_to_new: tuple[tuple[int, int], ...] = ()
@@ -735,11 +741,15 @@ class PatchPlan:
 
     @property
     def concrete_operations(self) -> tuple[PatchOperation, ...]:
-        return tuple(step for step in self.steps if not isinstance(step, LegacyBlockOperation))
+        return tuple(
+            step for step in self.steps if not isinstance(step, LegacyBlockOperation)
+        )
 
     @property
     def legacy_block_operations(self) -> tuple[LegacyBlockOperation, ...]:
-        return tuple(step for step in self.steps if isinstance(step, LegacyBlockOperation))
+        return tuple(
+            step for step in self.steps if isinstance(step, LegacyBlockOperation)
+        )
 
     @property
     def contains_block_creation(self) -> bool:
@@ -877,9 +887,12 @@ class _PendingExitPathLoweringGroup:
 @dataclass(frozen=True)
 class _PendingReorderBlocks:
     """Pre-resolution ReorderBlocks with virtual block IDs (not yet concrete serials)."""
+
     dfs_block_order: tuple[int, ...]
     non_2way_serials: tuple[int, ...]
-    virtual_ids: tuple[VirtualBlockId, ...]  # one per block in non_2way_serials, in order
+    virtual_ids: tuple[
+        VirtualBlockId, ...
+    ]  # one per block in non_2way_serials, in order
     two_way_serials: tuple[int, ...] = ()
     two_way_virtual_id_pairs: tuple[tuple[VirtualBlockId, VirtualBlockId], ...] = ()
 
@@ -903,13 +916,17 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
     )
 
 
-def _rewrite_block_ref(block_ref: PatchBlockRef, relocation_map: PatchRelocationMap) -> PatchBlockRef:
+def _rewrite_block_ref(
+    block_ref: PatchBlockRef, relocation_map: PatchRelocationMap
+) -> PatchBlockRef:
     if isinstance(block_ref, VirtualBlockId):
         return block_ref
     return relocation_map.rewrite_serial(block_ref)
 
 
-def _rewrite_edge_ref(edge: PatchEdgeRef, relocation_map: PatchRelocationMap) -> PatchEdgeRef:
+def _rewrite_edge_ref(
+    edge: PatchEdgeRef, relocation_map: PatchRelocationMap
+) -> PatchEdgeRef:
     return PatchEdgeRef(
         source=_rewrite_block_ref(edge.source, relocation_map),
         target=_rewrite_block_ref(edge.target, relocation_map),
@@ -998,8 +1015,7 @@ def _build_relocation_map(
 
     stop_serial_before = max(cfg.blocks)
     assigned_serials = tuple(
-        (spec.block_id, stop_serial_before + idx)
-        for idx, spec in enumerate(new_blocks)
+        (spec.block_id, stop_serial_before + idx) for idx, spec in enumerate(new_blocks)
     )
     stop_serial_after = stop_serial_before + len(new_blocks)
 
@@ -1009,22 +1025,28 @@ def _build_relocation_map(
             rewritten_edges.append(
                 (
                     spec.incoming_edge,
-                    _rewrite_edge_ref(spec.incoming_edge, PatchRelocationMap(
-                        assigned_serials=assigned_serials,
-                        stop_serial_before=stop_serial_before,
-                        stop_serial_after=stop_serial_after,
-                    )),
+                    _rewrite_edge_ref(
+                        spec.incoming_edge,
+                        PatchRelocationMap(
+                            assigned_serials=assigned_serials,
+                            stop_serial_before=stop_serial_before,
+                            stop_serial_after=stop_serial_after,
+                        ),
+                    ),
                 )
             )
         for edge in spec.outgoing_edges:
             rewritten_edges.append(
                 (
                     edge,
-                    _rewrite_edge_ref(edge, PatchRelocationMap(
-                        assigned_serials=assigned_serials,
-                        stop_serial_before=stop_serial_before,
-                        stop_serial_after=stop_serial_after,
-                    )),
+                    _rewrite_edge_ref(
+                        edge,
+                        PatchRelocationMap(
+                            assigned_serials=assigned_serials,
+                            stop_serial_before=stop_serial_before,
+                            stop_serial_after=stop_serial_after,
+                        ),
+                    ),
                 )
             )
 
@@ -1261,7 +1283,10 @@ def _compile_clone_conditional_as_goto_from_branch_arm_step(
             f"CloneConditionalAsGotoFromBranchArm pred_arm=1 but pred branch target is "
             f"{pred_branch_target}, not source {modification.source_block}"
         )
-    if modification.pred_arm == 0 and modification.source_block != pred_fallthrough_target:
+    if (
+        modification.pred_arm == 0
+        and modification.source_block != pred_fallthrough_target
+    ):
         raise ValueError(
             f"CloneConditionalAsGotoFromBranchArm pred_arm=0 but pred fallthrough is "
             f"{pred_fallthrough_target}, not source {modification.source_block}"
@@ -1356,7 +1381,9 @@ def _compile_legacy_block_step(
                 incoming_edge=incoming_edge,
                 outgoing_edges=outgoing_edges,
             )
-            return LegacyBlockOperation(modification=modification, block_id=block_id), spec
+            return LegacyBlockOperation(
+                modification=modification, block_id=block_id
+            ), spec
 
         case InsertBlock(
             pred_serial=pred,
@@ -1375,10 +1402,14 @@ def _compile_legacy_block_step(
                 instructions=insns,
                 captured_body=captured_body,
             )
-            return LegacyBlockOperation(modification=modification, block_id=block_id), spec
+            return LegacyBlockOperation(
+                modification=modification, block_id=block_id
+            ), spec
 
         case _:
-            raise TypeError(f"Unsupported block-creating modification: {type(modification).__name__}")
+            raise TypeError(
+                f"Unsupported block-creating modification: {type(modification).__name__}"
+            )
 
 
 def _compile_duplicate_block_step(
@@ -1467,9 +1498,13 @@ def _compile_duplicate_block_step(
                 block_id=fallthrough_block_id,
                 kind="duplicate_block_fallthrough",
                 template_block=modification.source_block,
-                incoming_edge=PatchEdgeRef(source=block_id, target=fallthrough_block_id),
+                incoming_edge=PatchEdgeRef(
+                    source=block_id, target=fallthrough_block_id
+                ),
                 outgoing_edges=(
-                    PatchEdgeRef(source=fallthrough_block_id, target=fallthrough_target),
+                    PatchEdgeRef(
+                        source=fallthrough_block_id, target=fallthrough_target
+                    ),
                 ),
             )
         )
@@ -1561,9 +1596,7 @@ def _compile_edge_split_corridor_step(
         )
     if modification.source_new_target is not None:
         if modification.source_new_target == modification.src_block:
-            raise ValueError(
-                "EdgeRedirectViaPredSplit source target would self-loop"
-            )
+            raise ValueError("EdgeRedirectViaPredSplit source target would self-loop")
         if cfg.get_block(modification.source_new_target) is None:
             raise ValueError(
                 f"EdgeRedirectViaPredSplit source target {modification.source_new_target} not found"
@@ -1619,12 +1652,17 @@ def _compile_duplicate_replay_and_redirect_step(
         raise ValueError(
             f"DuplicateReplayAndRedirect dispatcher {modification.dispatcher_entry} not found"
         )
-    if source_block.nsucc != 1 or source_block.succs[0] != modification.dispatcher_entry:
+    if (
+        source_block.nsucc != 1
+        or source_block.succs[0] != modification.dispatcher_entry
+    ):
         raise ValueError(
             "DuplicateReplayAndRedirect requires source to be one-way to dispatcher"
         )
     if len(modification.per_pred_replays) < 2:
-        raise ValueError("DuplicateReplayAndRedirect requires at least two predecessors")
+        raise ValueError(
+            "DuplicateReplayAndRedirect requires at least two predecessors"
+        )
 
     source_preds = set(source_block.preds)
     seen_preds: set[int] = set()
@@ -1655,7 +1693,9 @@ def _compile_duplicate_replay_and_redirect_step(
             modification.source_serial,
             modification.dispatcher_entry,
         }:
-            raise ValueError("DuplicateReplayAndRedirect target loops through cleanup source")
+            raise ValueError(
+                "DuplicateReplayAndRedirect target loops through cleanup source"
+            )
         if target_block.nsucc > 1:
             raise ValueError("DuplicateReplayAndRedirect target requires trampoline")
         if (
@@ -1667,10 +1707,14 @@ def _compile_duplicate_replay_and_redirect_step(
             )
 
         replay_ids.append(allocator.alloc("duplicate_replay_insert"))
-        clone_ids.append(None if index == 0 else allocator.alloc("duplicate_replay_clone"))
+        clone_ids.append(
+            None if index == 0 else allocator.alloc("duplicate_replay_clone")
+        )
 
     if seen_preds != source_preds:
-        raise ValueError("DuplicateReplayAndRedirect must cover every source predecessor")
+        raise ValueError(
+            "DuplicateReplayAndRedirect must cover every source predecessor"
+        )
 
     specs: list[PatchBlockSpec] = []
     for entry, replay_id, clone_id in zip(
@@ -1689,7 +1733,9 @@ def _compile_duplicate_replay_and_redirect_step(
                     source=replay_source,
                     target=modification.dispatcher_entry,
                 ),
-                outgoing_edges=(PatchEdgeRef(source=replay_id, target=entry.target_serial),),
+                outgoing_edges=(
+                    PatchEdgeRef(source=replay_id, target=entry.target_serial),
+                ),
                 captured_body=entry.captured_body,
             )
         )
@@ -1725,7 +1771,19 @@ def _compile_duplicate_replay_and_redirect_step(
 
 
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingEdgeSplitCorridor | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingDuplicateReplayAndRedirect | _PendingCloneConditionalAsGoto | _PendingCloneConditionalAsGotoFromBranchArm | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingExitPathLoweringGroup | _PendingReorderBlocks,
+    step: PatchStep
+    | _PendingEdgeSplitTrampoline
+    | _PendingEdgeSplitCorridor
+    | _PendingConditionalRedirect
+    | _PendingInsertBlock
+    | _PendingDuplicateBlock
+    | _PendingDuplicateReplayAndRedirect
+    | _PendingCloneConditionalAsGoto
+    | _PendingCloneConditionalAsGotoFromBranchArm
+    | _PendingPrivateTerminalSuffix
+    | _PendingPrivateTerminalSuffixGroup
+    | _PendingExitPathLoweringGroup
+    | _PendingReorderBlocks,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -1845,7 +1903,9 @@ def _finalize_step(
             fallthrough_block_id=fallthrough_block_id,
         ):
             assigned_serial = relocation_map.assigned_serial_for(block_id)
-            fallthrough_serial = relocation_map.assigned_serial_for(fallthrough_block_id)
+            fallthrough_serial = relocation_map.assigned_serial_for(
+                fallthrough_block_id
+            )
             if assigned_serial is None:
                 raise ValueError(f"Missing assigned serial for {block_id}")
             if fallthrough_serial is None:
@@ -1864,7 +1924,9 @@ def _finalize_step(
                     if old_target is None
                     else relocation_map.rewrite_serial(old_target)
                 ),
-                instructions=_rewrite_instruction_snapshots(instructions, relocation_map),
+                instructions=_rewrite_instruction_snapshots(
+                    instructions, relocation_map
+                ),
             )
 
         case _PendingInsertBlock(
@@ -1912,9 +1974,13 @@ def _finalize_step(
                 raise ValueError(f"Missing assigned serial for {block_id}")
             fallthrough_serial = None
             if fallthrough_block_id is not None:
-                fallthrough_serial = relocation_map.assigned_serial_for(fallthrough_block_id)
+                fallthrough_serial = relocation_map.assigned_serial_for(
+                    fallthrough_block_id
+                )
                 if fallthrough_serial is None:
-                    raise ValueError(f"Missing assigned serial for {fallthrough_block_id}")
+                    raise ValueError(
+                        f"Missing assigned serial for {fallthrough_block_id}"
+                    )
             return PatchDuplicateBlock(
                 block_id=block_id,
                 assigned_serial=assigned_serial,
@@ -1922,7 +1988,8 @@ def _finalize_step(
                 pred_serial=pred,
                 pred_redirect_kind=pred_redirect_kind,
                 source_successors=tuple(
-                    relocation_map.rewrite_serial(serial) for serial in source_successors
+                    relocation_map.rewrite_serial(serial)
+                    for serial in source_successors
                 ),
                 target_serial=(
                     relocation_map.rewrite_serial(target)
@@ -1969,7 +2036,9 @@ def _finalize_step(
                 finalized_replays.append(
                     PatchDuplicateReplayEntry(
                         pred_serial=entry.pred_serial,
-                        target_serial=relocation_map.rewrite_serial(entry.target_serial),
+                        target_serial=relocation_map.rewrite_serial(
+                            entry.target_serial
+                        ),
                         replay_block_id=replay_id,
                         replay_serial=replay_serial,
                         captured_body=entry.captured_body,
@@ -2044,8 +2113,7 @@ def _finalize_step(
                     for serial in source_successors
                 ),
                 pred_successors=tuple(
-                    relocation_map.rewrite_serial(serial)
-                    for serial in pred_successors
+                    relocation_map.rewrite_serial(serial) for serial in pred_successors
                 ),
                 pred_branch_target_serial=relocation_map.rewrite_serial(
                     pred_branch_target
@@ -2169,12 +2237,15 @@ def _finalize_step(
             )
             # DIAG: verify 2WAY serials match relocation map
             import logging as _diag_logging
+
             _diag_lg = _diag_logging.getLogger("D810.diag.plan")
             for _old, _new in old_to_new_pairs:
                 if _old in set(two_way):
                     _diag_lg.warning(
                         "DIAG _finalize 2WAY old=%d copy_serial=%d stop_before=%s",
-                        _old, _new, relocation_map.stop_serial_before,
+                        _old,
+                        _new,
+                        relocation_map.stop_serial_before,
                     )
             return _result
 
@@ -2251,13 +2322,17 @@ def compile_patch_plan(
                 )
 
             case ConvertToGoto(block_serial=serial, goto_target=target):
-                raw_steps.append(PatchConvertToGoto(block_serial=serial, goto_target=target))
+                raw_steps.append(
+                    PatchConvertToGoto(block_serial=serial, goto_target=target)
+                )
 
             case RemoveEdge(from_serial=src, to_serial=dst):
                 raw_steps.append(PatchRemoveEdge(from_serial=src, to_serial=dst))
 
             case NopInstructions(block_serial=serial, insn_eas=eas):
-                raw_steps.append(PatchNopInstructions(block_serial=serial, insn_eas=eas))
+                raw_steps.append(
+                    PatchNopInstructions(block_serial=serial, insn_eas=eas)
+                )
 
             case ZeroStateWrite(block_serial=serial, insn_ea=ea):
                 raw_steps.append(PatchZeroStateWrite(block_serial=serial, insn_ea=ea))
@@ -2268,12 +2343,14 @@ def compile_patch_plan(
                 host_opcode=opcode,
                 operand_side=side,
             ):
-                raw_steps.append(PatchPromoteOperandToScalar(
-                    block_serial=serial,
-                    host_ea=host_ea,
-                    host_opcode=opcode,
-                    operand_side=side,
-                ))
+                raw_steps.append(
+                    PatchPromoteOperandToScalar(
+                        block_serial=serial,
+                        host_ea=host_ea,
+                        host_opcode=opcode,
+                        operand_side=side,
+                    )
+                )
 
             case LowerConditionalStateTransition(
                 source_serial=src,
@@ -2290,54 +2367,62 @@ def compile_patch_plan(
                 false_state_write_ea=false_state_write_ea,
                 true_state_write_ea=true_state_write_ea,
             ):
-                raw_steps.append(PatchLowerConditionalStateTransition(
-                    source_serial=src,
-                    old_dispatcher_serial=dispatcher,
-                    rewrite_from_ea=ea,
-                    condition_operand=condition,
-                    false_target_serial=false_target,
-                    true_target_serial=true_target,
-                    proof_id=proof_id,
-                    state_register=state_register,
-                    state_size=state_size,
-                    false_state=false_state,
-                    true_state=true_state,
-                    false_state_write_ea=false_state_write_ea,
-                    true_state_write_ea=true_state_write_ea,
-                ))
+                raw_steps.append(
+                    PatchLowerConditionalStateTransition(
+                        source_serial=src,
+                        old_dispatcher_serial=dispatcher,
+                        rewrite_from_ea=ea,
+                        condition_operand=condition,
+                        false_target_serial=false_target,
+                        true_target_serial=true_target,
+                        proof_id=proof_id,
+                        state_register=state_register,
+                        state_size=state_size,
+                        false_state=false_state,
+                        true_state=true_state,
+                        false_state_write_ea=false_state_write_ea,
+                        true_state_write_ea=true_state_write_ea,
+                    )
+                )
 
             case NormalizeNWayDispatcherExit(
                 block_serial=serial,
                 dispatcher_entry_serial=dispatcher,
                 keep_target_serial=keep,
             ):
-                raw_steps.append(PatchNormalizeNWayDispatcherExit(
-                    block_serial=serial,
-                    dispatcher_entry_serial=dispatcher,
-                    keep_target_serial=keep,
-                ))
+                raw_steps.append(
+                    PatchNormalizeNWayDispatcherExit(
+                        block_serial=serial,
+                        dispatcher_entry_serial=dispatcher,
+                        keep_target_serial=keep,
+                    )
+                )
 
             case BypassDispatcherTrampoline(
                 source_serial=src,
                 trampoline_serial=trampoline,
                 target_serial=target,
             ):
-                raw_steps.append(PatchBypassDispatcherTrampoline(
-                    source_serial=src,
-                    trampoline_serial=trampoline,
-                    target_serial=target,
-                ))
+                raw_steps.append(
+                    PatchBypassDispatcherTrampoline(
+                        source_serial=src,
+                        trampoline_serial=trampoline,
+                        target_serial=target,
+                    )
+                )
 
             case CanonicalizeJumpTableCaseOverlap(
                 jtbl_serial=serial,
                 retarget_map=retarget_map,
                 deduplicate=deduplicate,
             ):
-                raw_steps.append(PatchCanonicalizeJumpTableCaseOverlap(
-                    jtbl_serial=serial,
-                    retarget_map=retarget_map,
-                    deduplicate=deduplicate,
-                ))
+                raw_steps.append(
+                    PatchCanonicalizeJumpTableCaseOverlap(
+                        jtbl_serial=serial,
+                        retarget_map=retarget_map,
+                        deduplicate=deduplicate,
+                    )
+                )
 
             case ScalarizeLocalAliasAccess(
                 block_serial=serial,
@@ -2348,15 +2433,17 @@ def compile_patch_plan(
                 host_text_sha1=host_text_sha1,
                 value_size=value_size,
             ):
-                raw_steps.append(PatchScalarizeLocalAliasAccess(
-                    block_serial=serial,
-                    host_ea=host_ea,
-                    host_opcode=opcode,
-                    alias_token=alias,
-                    base_token=base,
-                    host_text_sha1=host_text_sha1,
-                    value_size=value_size,
-                ))
+                raw_steps.append(
+                    PatchScalarizeLocalAliasAccess(
+                        block_serial=serial,
+                        host_ea=host_ea,
+                        host_opcode=opcode,
+                        alias_token=alias,
+                        base_token=base,
+                        host_text_sha1=host_text_sha1,
+                        value_size=value_size,
+                    )
+                )
 
             case RetargetOutputStore(
                 block_serial=serial,
@@ -2367,15 +2454,17 @@ def compile_patch_plan(
                 host_text_sha1=host_text_sha1,
                 value_size=value_size,
             ):
-                raw_steps.append(PatchRetargetOutputStore(
-                    block_serial=serial,
-                    host_ea=host_ea,
-                    host_opcode=opcode,
-                    alias_token=alias,
-                    output_token=output,
-                    host_text_sha1=host_text_sha1,
-                    value_size=value_size,
-                ))
+                raw_steps.append(
+                    PatchRetargetOutputStore(
+                        block_serial=serial,
+                        host_ea=host_ea,
+                        host_opcode=opcode,
+                        alias_token=alias,
+                        output_token=output,
+                        host_text_sha1=host_text_sha1,
+                        value_size=value_size,
+                    )
+                )
 
             case PhaseCycleLowering(
                 header_entries=header_entries,
@@ -2389,18 +2478,20 @@ def compile_patch_plan(
                 state_roles=state_roles,
                 reason=reason,
             ):
-                raw_steps.append(PatchPhaseCycleLowering(
-                    header_entries=header_entries,
-                    header_target=header_target,
-                    body_entries=body_entries,
-                    body_target=body_target,
-                    next_phase_entries=next_phase_entries,
-                    next_phase_target=next_phase_target,
-                    terminal_entries=terminal_entries,
-                    terminal_target=terminal_target,
-                    state_roles=state_roles,
-                    reason=reason,
-                ))
+                raw_steps.append(
+                    PatchPhaseCycleLowering(
+                        header_entries=header_entries,
+                        header_target=header_target,
+                        body_entries=body_entries,
+                        body_target=body_target,
+                        next_phase_entries=next_phase_entries,
+                        next_phase_target=next_phase_target,
+                        terminal_entries=terminal_entries,
+                        terminal_target=terminal_target,
+                        state_roles=state_roles,
+                        reason=reason,
+                    )
+                )
 
             case EdgeRedirectViaPredSplit(
                 src_block=src,
@@ -2433,7 +2524,9 @@ def compile_patch_plan(
                     )
                 )
                 raw_steps.append(
-                    _PendingEdgeSplitTrampoline(modification=modification, block_id=block_id)
+                    _PendingEdgeSplitTrampoline(
+                        modification=modification, block_id=block_id
+                    )
                 )
 
             case CreateConditionalRedirect(
@@ -2447,9 +2540,13 @@ def compile_patch_plan(
                     block_id = allocator.alloc("conditional_redirect")
                     outgoing_edges = [PatchEdgeRef(source=block_id, target=conditional)]
                     if fallthrough != conditional:
-                        outgoing_edges.append(PatchEdgeRef(source=block_id, target=fallthrough))
+                        outgoing_edges.append(
+                            PatchEdgeRef(source=block_id, target=fallthrough)
+                        )
                     raw_steps.append(
-                        LegacyBlockOperation(modification=modification, block_id=block_id)
+                        LegacyBlockOperation(
+                            modification=modification, block_id=block_id
+                        )
                     )
                     new_blocks.append(
                         PatchBlockSpec(
@@ -2462,7 +2559,9 @@ def compile_patch_plan(
                     )
                 else:
                     block_id = allocator.alloc("conditional_redirect")
-                    fallthrough_block_id = allocator.alloc("conditional_redirect_fallthrough")
+                    fallthrough_block_id = allocator.alloc(
+                        "conditional_redirect_fallthrough"
+                    )
                     new_blocks.append(
                         PatchBlockSpec(
                             block_id=block_id,
@@ -2512,7 +2611,9 @@ def compile_patch_plan(
             ):
                 effective_old_target = succ if old_target is None else old_target
                 if cfg is None:
-                    legacy_step, spec = _compile_legacy_block_step(modification, allocator)
+                    legacy_step, spec = _compile_legacy_block_step(
+                        modification, allocator
+                    )
                     raw_steps.append(legacy_step)
                     new_blocks.append(spec)
                 else:
@@ -2525,18 +2626,24 @@ def compile_patch_plan(
                                 source=pred,
                                 target=effective_old_target,
                             ),
-                            outgoing_edges=(PatchEdgeRef(source=block_id, target=succ),),
+                            outgoing_edges=(
+                                PatchEdgeRef(source=block_id, target=succ),
+                            ),
                             instructions=insns,
                             captured_body=captured_body,
                         )
                     )
                     raw_steps.append(
-                        _PendingInsertBlock(modification=modification, block_id=block_id)
+                        _PendingInsertBlock(
+                            modification=modification, block_id=block_id
+                        )
                     )
 
             case DuplicateBlock():
                 if cfg is None:
-                    legacy_step, spec = _compile_legacy_block_step(modification, allocator)
+                    legacy_step, spec = _compile_legacy_block_step(
+                        modification, allocator
+                    )
                     raw_steps.append(legacy_step)
                     new_blocks.append(spec)
                 else:
@@ -2546,7 +2653,9 @@ def compile_patch_plan(
                         allocator,
                     )
                     if compiled_duplicate is None:
-                        legacy_step, spec = _compile_legacy_block_step(modification, allocator)
+                        legacy_step, spec = _compile_legacy_block_step(
+                            modification, allocator
+                        )
                         raw_steps.append(legacy_step)
                         new_blocks.append(spec)
                     else:
@@ -2560,10 +2669,12 @@ def compile_patch_plan(
                         "compile_patch_plan requires FlowGraph context for "
                         "DuplicateReplayAndRedirect"
                     )
-                pending_step, replay_specs = _compile_duplicate_replay_and_redirect_step(
-                    modification,
-                    cfg,
-                    allocator,
+                pending_step, replay_specs = (
+                    _compile_duplicate_replay_and_redirect_step(
+                        modification,
+                        cfg,
+                        allocator,
+                    )
                 )
                 raw_steps.append(pending_step)
                 new_blocks.extend(replay_specs)
@@ -2605,7 +2716,9 @@ def compile_patch_plan(
                 suffix_serials=suffix,
             ):
                 if not suffix:
-                    raise ValueError("PrivateTerminalSuffix requires non-empty suffix_serials")
+                    raise ValueError(
+                        "PrivateTerminalSuffix requires non-empty suffix_serials"
+                    )
                 clone_ids: list[VirtualBlockId] = []
                 for idx, suffix_serial in enumerate(suffix):
                     clone_id = allocator.alloc(f"private_suffix_a{anchor}")
@@ -2617,7 +2730,9 @@ def compile_patch_plan(
                             namespace=f"private_suffix_a{anchor}",
                             ordinal=clone_id.ordinal + 1,
                         )
-                        outgoing = (PatchEdgeRef(source=clone_id, target=next_clone_id),)
+                        outgoing = (
+                            PatchEdgeRef(source=clone_id, target=next_clone_id),
+                        )
                     else:
                         outgoing = ()
                     # First clone gets incoming from anchor
@@ -2647,7 +2762,9 @@ def compile_patch_plan(
                 suffix_serials=suffix,
             ):
                 if not suffix:
-                    raise ValueError("PrivateTerminalSuffixGroup requires non-empty suffix_serials")
+                    raise ValueError(
+                        "PrivateTerminalSuffixGroup requires non-empty suffix_serials"
+                    )
                 per_anchor_clone_ids: list[tuple[VirtualBlockId, ...]] = []
                 for anchor in anchors:
                     anchor_clone_ids: list[VirtualBlockId] = []
@@ -2659,7 +2776,9 @@ def compile_patch_plan(
                                 namespace=f"private_suffix_g_a{anchor}",
                                 ordinal=clone_id.ordinal + 1,
                             )
-                            outgoing = (PatchEdgeRef(source=clone_id, target=next_clone_id),)
+                            outgoing = (
+                                PatchEdgeRef(source=clone_id, target=next_clone_id),
+                            )
                         else:
                             outgoing = ()
                         incoming = None
@@ -2752,43 +2871,52 @@ def compile_patch_plan(
             ):
                 # Allocate one VirtualBlockId per non-2way block that will be copied
                 virtual_ids = tuple(
-                    allocator.alloc(f"reorder_copy_{old}")
-                    for old in non_2way
+                    allocator.alloc(f"reorder_copy_{old}") for old in non_2way
                 )
                 # Register PatchBlockSpec entries so _build_relocation_map assigns concrete serials
                 for vid, old_serial in zip(virtual_ids, non_2way):
-                    new_blocks.append(PatchBlockSpec(
-                        block_id=vid,
-                        kind="reorder_block_copy",
-                        template_block=old_serial,
-                    ))
+                    new_blocks.append(
+                        PatchBlockSpec(
+                            block_id=vid,
+                            kind="reorder_block_copy",
+                            template_block=old_serial,
+                        )
+                    )
 
                 two_way_pairs: list[tuple[VirtualBlockId, VirtualBlockId]] = []
                 for old_serial in two_way:
                     copy_vid = allocator.alloc(f"reorder_2way_copy_{old_serial}")
                     tramp_vid = allocator.alloc(f"reorder_2way_tramp_{old_serial}")
-                    new_blocks.append(PatchBlockSpec(
-                        block_id=copy_vid,
-                        kind="reorder_block_2way_copy",
-                        template_block=old_serial,
-                    ))
-                    new_blocks.append(PatchBlockSpec(
-                        block_id=tramp_vid,
-                        kind="reorder_block_2way_trampoline",
-                        template_block=old_serial,
-                    ))
+                    new_blocks.append(
+                        PatchBlockSpec(
+                            block_id=copy_vid,
+                            kind="reorder_block_2way_copy",
+                            template_block=old_serial,
+                        )
+                    )
+                    new_blocks.append(
+                        PatchBlockSpec(
+                            block_id=tramp_vid,
+                            kind="reorder_block_2way_trampoline",
+                            template_block=old_serial,
+                        )
+                    )
                     two_way_pairs.append((copy_vid, tramp_vid))
 
-                raw_steps.append(_PendingReorderBlocks(
-                    dfs_block_order=order,
-                    non_2way_serials=non_2way,
-                    virtual_ids=virtual_ids,
-                    two_way_serials=two_way,
-                    two_way_virtual_id_pairs=tuple(two_way_pairs),
-                ))
+                raw_steps.append(
+                    _PendingReorderBlocks(
+                        dfs_block_order=order,
+                        non_2way_serials=non_2way,
+                        virtual_ids=virtual_ids,
+                        two_way_serials=two_way,
+                        two_way_virtual_id_pairs=tuple(two_way_pairs),
+                    )
+                )
 
             case _:
-                raise TypeError(f"Unsupported GraphModification: {type(modification).__name__}")
+                raise TypeError(
+                    f"Unsupported GraphModification: {type(modification).__name__}"
+                )
 
     relocation_map = _build_relocation_map(new_blocks, cfg)
     steps = tuple(_finalize_step(step, relocation_map) for step in raw_steps)

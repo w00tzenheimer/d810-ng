@@ -1,4 +1,5 @@
 """Generic CALLS-maturity preanalysis event dispatcher."""
+
 from __future__ import annotations
 
 from collections.abc import Callable, MutableMapping

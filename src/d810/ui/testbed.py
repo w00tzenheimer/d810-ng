@@ -43,11 +43,11 @@ if _is_dark_theme():
     # Dark mode - bright colors
     COLORS = {
         "default": "#CCCCCC",
-        "running": "#42A5F5",   # bright cyan
-        "pass": "#66BB6A",      # bright green
-        "fail": "#EF5350",      # bright red
-        "error": "#FF7043",     # orange-red
-        "skip": "#9E9E9E",      # gray
+        "running": "#42A5F5",  # bright cyan
+        "pass": "#66BB6A",  # bright green
+        "fail": "#EF5350",  # bright red
+        "error": "#FF7043",  # orange-red
+        "skip": "#9E9E9E",  # gray
         "info_log": "#B0B0B0",
         "success_log": "#66BB6A",
         "error_log": "#EF5350",
@@ -57,11 +57,11 @@ else:
     # Light mode - darker colors
     COLORS = {
         "default": "#333333",
-        "running": "#1565C0",   # dark blue
-        "pass": "#2E7D32",      # dark green
-        "fail": "#C62828",      # dark red
-        "error": "#BF360C",     # dark orange
-        "skip": "#757575",      # dark gray
+        "running": "#1565C0",  # dark blue
+        "pass": "#2E7D32",  # dark green
+        "fail": "#C62828",  # dark red
+        "error": "#BF360C",  # dark orange
+        "skip": "#757575",  # dark gray
         "info_log": "#616161",
         "success_log": "#2E7D32",
         "error_log": "#C62828",
@@ -543,7 +543,6 @@ class PyUnitTestRunnerWrapper(runner.TextTestRunner):
 
 
 class PyUnitTestResult(runner.TextTestResult, PyUnitUiMixin):
-
     def __init__(self, stream: UiStream, descriptions: bool, verbosity: int):
         self.Cls = self.__class__
         super().__init__(stream, descriptions, verbosity)
@@ -889,7 +888,9 @@ class UnitTestTreeView(QtWidgets.QTreeWidget):
 
         # Show only last 2 path components in the tree, full path as tooltip
         path_obj = Path(start_dir)
-        display_name = "/".join(path_obj.parts[-2:]) if len(path_obj.parts) >= 2 else start_dir
+        display_name = (
+            "/".join(path_obj.parts[-2:]) if len(path_obj.parts) >= 2 else start_dir
+        )
         self._root_test_item = QtWidgets.QTreeWidgetItem(self, [display_name])
         self._root_test_item.setToolTip(0, start_dir)  # Full path as tooltip
         self._root_test_item.setData(

@@ -7,6 +7,7 @@ portable read-off producer -- a translation of the legacy ``_build_local_edges``
 / ``_classify_local_edge_kind`` that reads off the region topology + the
 owner-set shared/terminal sets, emitting the CANONICAL types.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.linearized_state_dag import (
@@ -28,9 +29,7 @@ def _topo(succ):
 def test_one_segment_per_owned_block_with_segment_id():
     succ = {10: [11], 11: []}
     s_of, p_of = _topo(succ)
-    segs, _ = build_local_structure(
-        (10, 11), successors_of=s_of, predecessors_of=p_of
-    )
+    segs, _ = build_local_structure((10, 11), successors_of=s_of, predecessors_of=p_of)
     assert [(s.segment_id, s.blocks) for s in segs] == [
         ("blk[10]", (10,)),
         ("blk[11]", (11,)),
@@ -46,7 +45,9 @@ def test_branch_segment_and_fallthrough_taken_edges():
     )
     kind_by_id = {s.segment_id: s.kind for s in segs}
     assert kind_by_id["blk[10]"] is LocalSegmentKind.BRANCH
-    e = {(x.source_segment_id, x.target_segment_id, x.kind, x.branch_arm) for x in edges}
+    e = {
+        (x.source_segment_id, x.target_segment_id, x.kind, x.branch_arm) for x in edges
+    }
     assert ("blk[10]", "blk[11]", LocalEdgeKind.FALLTHROUGH, 0) in e
     assert ("blk[10]", "blk[12]", LocalEdgeKind.TAKEN, 1) in e
 
@@ -99,9 +100,7 @@ def test_edges_only_within_owned_blocks():
     # 10 -> 20 leaves the owned set (back to dispatcher) -> no local edge for it.
     succ = {10: [11, 20], 11: []}
     s_of, p_of = _topo(succ)
-    _, edges = build_local_structure(
-        (10, 11), successors_of=s_of, predecessors_of=p_of
-    )
+    _, edges = build_local_structure((10, 11), successors_of=s_of, predecessors_of=p_of)
     targets = {x.target_segment_id for x in edges}
     assert "blk[20]" not in targets
 
@@ -109,7 +108,11 @@ def test_edges_only_within_owned_blocks():
 def test_deterministic_and_deduped():
     succ = {10: [11, 12], 11: [13], 12: [13], 13: []}
     s_of, p_of = _topo(succ)
-    segs1, edges1 = build_local_structure((13, 12, 11, 10), successors_of=s_of, predecessors_of=p_of)
-    segs2, edges2 = build_local_structure((10, 11, 12, 13), successors_of=s_of, predecessors_of=p_of)
+    segs1, edges1 = build_local_structure(
+        (13, 12, 11, 10), successors_of=s_of, predecessors_of=p_of
+    )
+    segs2, edges2 = build_local_structure(
+        (10, 11, 12, 13), successors_of=s_of, predecessors_of=p_of
+    )
     assert [s.segment_id for s in segs1] == [s.segment_id for s in segs2]
     assert edges1 == edges2

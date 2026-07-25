@@ -1,4 +1,5 @@
 "Read-only branch ownership proofs for state-machine reconstruction.\n\nThis module classifies conditional state-machine edges as semantic source\ncontrol flow, opaque/BCF residue, or unresolved evidence.  It deliberately\ndoes not build graph modifications.  CFG lowering may consume trusted proof\nrows later, but preanalysis owns producing and explaining the proof.\n"
+
 from __future__ import annotations
 
 import json
@@ -12,7 +13,7 @@ _MASK64 = 0xFFFFFFFFFFFFFFFF
 
 
 class BranchOwnershipProofKind(str, Enum):
-    "Semantic ownership classification for one conditional branch arm.\n\n    These values describe the *meaning of one observed branch arm*, not the\n    graph edit to perform.  Keep that separation intact:\n\n    - Semantic-edge authority means a consumer may preserve the arm as source\n      program control flow or use it as an explicit state-DAG bridge.\n    - Nonsemantic-rewrite authority means a consumer may remove, retarget, or\n      bypass the arm after matching exact edge identity.\n    - Diagnostic-only authority means the row explains why no mutation is\n      allowed.\n\n    ``REAL_DATA_DEPENDENT``\n        The arm is controlled by real program data, such as password/input\n        bytes, an API result, or another value that belongs to the source\n        program.  This is semantic program structure.  A trusted proof may\n        authorize explicit DAG bridging/preservation.  It must not authorize\n        branch removal.\n\n    ``OPAQUE_ALWAYS_TRUE`` / ``OPAQUE_ALWAYS_FALSE``\n        The predicate outcome is proven constant under the relevant path\n        constraints and this row identifies the arm selected by that constant\n        outcome.  This is predicate authority only: it does not prove that the\n        selected arm is semantic, nor that a CFG rewrite may remove it.  The\n        complementary non-selected arm should be represented separately as\n        ``OBFUSCATION_RESIDUE_ARM`` when preanalysis can identify it.\n\n    ``EQUIVALENT_STATE_ARMS``\n        Both conditional arms resolve to the same semantic state/handler, so\n        the branch is not a meaningful source-level fork even if both CFG arms\n        are reachable.  This is useful for simplification diagnostics and\n        possible coalescing, but it is not enough by itself to delete one arm\n        unless a later consumer also proves the exact rewrite shape.\n\n    ``OBFUSCATION_RESIDUE_ARM``\n        The arm reaches a state-machine state that exists only as obfuscation\n        residue: for example a BCF false arm, selector backedge, dispatcher\n        residue state, or opaque branch target that should not appear as\n        recovered source control flow.  A trusted proof may authorize\n        nonsemantic branch rewrite after exact edge matching.  It must not\n        authorize semantic DAG bridging.\n\n    ``TERMINAL_RETURN_FRONTIER``\n        The arm identifies a return/exit frontier.  This is terminal ownership\n        evidence for return-frontier handling.  It is not opaque-branch proof\n        and does not authorize deleting a sibling arm.\n\n    ``UNRESOLVED``\n        Preanalysis saw a conditional arm but no trusted oracle classified it.  This\n        row is diagnostics only.  No CFG mutation or semantic bridge may be\n        justified from it.\n    "
+    "Semantic ownership classification for one conditional branch arm.\n\n    These values describe the *meaning of one observed branch arm*, not the\n    graph edit to perform.  Keep that separation intact:\n\n    - Semantic-edge authority means a consumer may preserve the arm as source\n      program control flow or use it as an explicit state-DAG bridge.\n    - Nonsemantic-rewrite authority means a consumer may remove, retarget, or\n      bypass the arm after matching exact edge identity.\n    - Diagnostic-only authority means the row explains why no mutation is\n      allowed.\n\n    ``REAL_DATA_DEPENDENT``\n        The arm is controlled by real program data, such as password/input\n        bytes, an API result, or another value that belongs to the source\n        program.  This is semantic program structure.  A trusted proof may\n        authorize explicit DAG bridging/preservation.  It must not authorize\n        branch removal.\n\n    ``OPAQUE_ALWAYS_TRUE`` / ``OPAQUE_ALWAYS_FALSE``\n        The predicate outcome is proven constant under the relevant path\n        constraints and this row identifies the arm selected by that constant\n        outcome.  This is predicate authority only: it does not prove that the\n        selected arm is semantic, nor that a CFG rewrite may remove it.  The\n        complementary non-selected arm should be represented separately as\n        ``OBFUSCATION_RESIDUE_ARM`` when preanalysis can identify it.\n\n    ``EQUIVALENT_STATE_ARMS``\n        Both conditional arms resolve to the same semantic state/handler, so\n        the branch is not a meaningful source-level fork even if both CFG arms\n        are reachable.  This is useful for simplification diagnostics and\n        possible coalescing, but it is not enough by itself to delete one arm\n        unless a later consumer also proves the exact rewrite shape.\n\n    ``OBFUSCATION_RESIDUE_ARM``\n        The arm reaches a state-machine state that exists only as obfuscation\n        residue: for example a BCF false arm, selector backedge, dispatcher\n        residue state, or opaque branch target that should not appear as\n        recovered source control flow.  A trusted proof may authorize\n        nonsemantic branch rewrite after exact edge matching.  It must not\n        authorize semantic DAG bridging.\n\n    ``TERMINAL_RETURN_FRONTIER``\n        The arm identifies a return/exit frontier.  This is terminal ownership\n        evidence for return-frontier handling.  It is not opaque-branch proof\n        and does not authorize deleting a sibling arm.\n\n    ``UNRESOLVED``\n        Preanalysis saw a conditional arm but no trusted oracle classified it.  This\n        row is diagnostics only.  No CFG mutation or semantic bridge may be\n        justified from it.\n"
 
     REAL_DATA_DEPENDENT = "REAL_DATA_DEPENDENT"
     OPAQUE_ALWAYS_TRUE = "OPAQUE_ALWAYS_TRUE"
@@ -23,11 +24,13 @@ class BranchOwnershipProofKind(str, Enum):
     UNRESOLVED = "UNRESOLVED"
 
 
-TRUSTED_OPAQUE_PROVENANCE_KINDS = frozenset({
-    "ollvm_bcf_opaque_predicate",
-    "opaque_bcf_branch",
-    "proven_opaque_predicate",
-})
+TRUSTED_OPAQUE_PROVENANCE_KINDS = frozenset(
+    {
+        "ollvm_bcf_opaque_predicate",
+        "opaque_bcf_branch",
+        "proven_opaque_predicate",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,13 +198,12 @@ def collect_branch_ownership_proofs(
     dag: object,
     dispatch_map: StateDispatcherMap | None = None,
     dispatcher_entry_block: int | None = None,
-    trusted_opaque_provenance_kinds: frozenset[str] = (
-        TRUSTED_OPAQUE_PROVENANCE_KINDS
-    ),
+    trusted_opaque_provenance_kinds: frozenset[str] = (TRUSTED_OPAQUE_PROVENANCE_KINDS),
     proof_refiner: Callable[
         [BranchOwnershipProof, object],
         BranchOwnershipProof | None,
-    ] | None = None,
+    ]
+    | None = None,
 ) -> tuple[BranchOwnershipProof, ...]:
     """Collect diagnostics-only ownership proofs for conditional DAG edges.
 
@@ -293,9 +295,7 @@ def collect_branch_ownership_proofs(
                 "edge_index": edge_index,
                 "edge_kind": edge_kind,
                 "provenance_kind": provenance_kind,
-                "outgoing_count": len(
-                    outgoing_by_source.get(source_state, ())
-                ),
+                "outgoing_count": len(outgoing_by_source.get(source_state, ())),
             },
         )
         if proof_refiner is not None:
@@ -360,7 +360,8 @@ def _append_terminal_selector_backedge_residue_proofs(
             continue
 
         terminal_frontiers = tuple(
-            existing for existing in proofs
+            existing
+            for existing in proofs
             if (
                 existing.trusted
                 and existing.source_state == source_state
@@ -379,22 +380,24 @@ def _append_terminal_selector_backedge_residue_proofs(
 
         target_incoming = tuple(incoming_by_target.get(target_state, ()))
         incoming_sources = {
-            _edge_state(getattr(edge, "source_key", None))
-            for edge in target_incoming
+            _edge_state(getattr(edge, "source_key", None)) for edge in target_incoming
         }
         evidence = dict(proof.evidence)
-        evidence.update({
-            "opaque_selected_proof_id": proof.proof_id,
-            "terminal_frontier_proof_ids": tuple(
-                terminal.proof_id for terminal in terminal_frontiers
-            ),
-            "payload_backedge_source_state": int(target_state) & _MASK64,
-            "payload_backedge_target_state": int(source_state) & _MASK64,
-            "payload_incoming_count": len(target_incoming),
-            "payload_outgoing_count": len(target_outgoing),
-        })
+        evidence.update(
+            {
+                "opaque_selected_proof_id": proof.proof_id,
+                "terminal_frontier_proof_ids": tuple(
+                    terminal.proof_id for terminal in terminal_frontiers
+                ),
+                "payload_backedge_source_state": int(target_state) & _MASK64,
+                "payload_backedge_target_state": int(source_state) & _MASK64,
+                "payload_incoming_count": len(target_incoming),
+                "payload_outgoing_count": len(target_outgoing),
+            }
+        )
         external_incoming_edges = tuple(
-            edge for edge in target_incoming
+            edge
+            for edge in target_incoming
             if not _proof_matches_edge_identity(proof, edge)
         )
         external_residue_proofs: list[BranchOwnershipProof] = []
@@ -403,31 +406,33 @@ def _append_terminal_selector_backedge_residue_proofs(
         unproven_external_edges = 0
         for incoming_edge in external_incoming_edges:
             matching_proofs = tuple(
-                existing for existing in proofs
+                existing
+                for existing in proofs
                 if _proof_matches_edge_identity(existing, incoming_edge)
             )
             semantic_proofs = tuple(
-                existing for existing in matching_proofs
+                existing
+                for existing in matching_proofs
                 if existing.authorizes_semantic_branch_bridge
             )
             if semantic_proofs:
                 external_semantic_proofs.extend(semantic_proofs)
                 continue
             residue_proofs = tuple(
-                existing for existing in matching_proofs
+                existing
+                for existing in matching_proofs
                 if existing.authorizes_nonsemantic_branch_rewrite
             )
             if residue_proofs:
                 external_residue_proofs.extend(residue_proofs)
                 continue
             materialization_veto_proofs = tuple(
-                existing for existing in matching_proofs
+                existing
+                for existing in matching_proofs
                 if existing.vetoes_fallback_refinement
             )
             if materialization_veto_proofs:
-                external_materialization_veto_proofs.extend(
-                    materialization_veto_proofs
-                )
+                external_materialization_veto_proofs.extend(materialization_veto_proofs)
                 continue
             else:
                 unproven_external_edges += 1
@@ -440,7 +445,8 @@ def _append_terminal_selector_backedge_residue_proofs(
             or unproven_external_edges
         ):
             evidence["payload_incoming_source_states"] = tuple(
-                _hex_state(source) for source in sorted(
+                _hex_state(source)
+                for source in sorted(
                     source for source in incoming_sources if source is not None
                 )
             )
@@ -474,22 +480,24 @@ def _append_terminal_selector_backedge_residue_proofs(
                 reason = (
                     "terminal_selector_backedge_requires_side_effect_materialization"
                 )
-            added.append(BranchOwnershipProof(
-                proof_id=f"{proof.proof_id}:terminal_selector_backedge_blocked",
-                proof_kind=BranchOwnershipProofKind.UNRESOLVED,
-                trusted=False,
-                reason=reason,
-                source_block=proof.source_block,
-                branch_arm=proof.branch_arm,
-                source_state=proof.source_state,
-                target_state=proof.target_state,
-                target_entry=proof.target_entry,
-                predicate_block=proof.predicate_block,
-                dispatcher_entry_block=proof.dispatcher_entry_block,
-                oracle_kind="branch_ownership_terminal_selector_backedge",
-                evidence=evidence,
-                payload=dict(proof.payload),
-            ))
+            added.append(
+                BranchOwnershipProof(
+                    proof_id=f"{proof.proof_id}:terminal_selector_backedge_blocked",
+                    proof_kind=BranchOwnershipProofKind.UNRESOLVED,
+                    trusted=False,
+                    reason=reason,
+                    source_block=proof.source_block,
+                    branch_arm=proof.branch_arm,
+                    source_state=proof.source_state,
+                    target_state=proof.target_state,
+                    target_entry=proof.target_entry,
+                    predicate_block=proof.predicate_block,
+                    dispatcher_entry_block=proof.dispatcher_entry_block,
+                    oracle_kind="branch_ownership_terminal_selector_backedge",
+                    evidence=evidence,
+                    payload=dict(proof.payload),
+                )
+            )
             continue
 
         if external_residue_proofs:
@@ -503,31 +511,33 @@ def _append_terminal_selector_backedge_residue_proofs(
                 for edge in external_incoming_edges
             }
             evidence["payload_incoming_source_states"] = tuple(
-                _hex_state(source) for source in sorted(
-                    source for source in external_incoming_sources
-                    if source is not None
+                _hex_state(source)
+                for source in sorted(
+                    source for source in external_incoming_sources if source is not None
                 )
             )
         else:
             evidence["payload_private_to_selector"] = True
             evidence["requires_cfg_split"] = False
 
-        added.append(BranchOwnershipProof(
-            proof_id=f"{proof.proof_id}:terminal_selector_backedge_residue",
-            proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
-            trusted=True,
-            reason="opaque_selected_terminal_selector_backedge_residue",
-            source_block=proof.source_block,
-            branch_arm=proof.branch_arm,
-            source_state=proof.source_state,
-            target_state=proof.target_state,
-            target_entry=proof.target_entry,
-            predicate_block=proof.predicate_block,
-            dispatcher_entry_block=proof.dispatcher_entry_block,
-            oracle_kind="branch_ownership_terminal_selector_backedge",
-            evidence=evidence,
-            payload=dict(proof.payload),
-        ))
+        added.append(
+            BranchOwnershipProof(
+                proof_id=f"{proof.proof_id}:terminal_selector_backedge_residue",
+                proof_kind=BranchOwnershipProofKind.OBFUSCATION_RESIDUE_ARM,
+                trusted=True,
+                reason="opaque_selected_terminal_selector_backedge_residue",
+                source_block=proof.source_block,
+                branch_arm=proof.branch_arm,
+                source_state=proof.source_state,
+                target_state=proof.target_state,
+                target_entry=proof.target_entry,
+                predicate_block=proof.predicate_block,
+                dispatcher_entry_block=proof.dispatcher_entry_block,
+                oracle_kind="branch_ownership_terminal_selector_backedge",
+                evidence=evidence,
+                payload=dict(proof.payload),
+            )
+        )
 
     if not added:
         return proofs
@@ -636,16 +646,20 @@ def _edge_provenance_kind(edge: object) -> str | None:
     ]
     metadata = getattr(edge, "metadata", None)
     if isinstance(metadata, dict):
-        candidates.extend((
-            metadata.get("opaque_branch_provenance_kind"),
-            metadata.get("provenance_kind"),
-        ))
+        candidates.extend(
+            (
+                metadata.get("opaque_branch_provenance_kind"),
+                metadata.get("provenance_kind"),
+            )
+        )
     source_anchor = getattr(edge, "source_anchor", None)
     if source_anchor is not None:
-        candidates.extend((
-            getattr(source_anchor, "opaque_branch_provenance_kind", None),
-            getattr(source_anchor, "provenance_kind", None),
-        ))
+        candidates.extend(
+            (
+                getattr(source_anchor, "opaque_branch_provenance_kind", None),
+                getattr(source_anchor, "provenance_kind", None),
+            )
+        )
     for candidate in candidates:
         if candidate is not None:
             return str(candidate)

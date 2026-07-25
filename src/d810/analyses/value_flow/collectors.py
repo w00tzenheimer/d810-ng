@@ -6,6 +6,7 @@ facts-package dissolution (llr-mdz2); the concrete
 collectors live in their ``d810.analyses.value_flow.*`` /
 ``d810.analyses.control_flow.*`` modules and are re-exported here.
 """
+
 from __future__ import annotations
 
 from d810.analyses.value_flow.induction_carrier import (

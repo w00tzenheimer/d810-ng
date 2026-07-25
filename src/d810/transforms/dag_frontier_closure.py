@@ -5,6 +5,7 @@ are only the verifier.  This module detects projected CFG SCCs that merge
 distinct DAG SCCs without DAG mutual reachability, then closes the first
 violating frontier with a DAG-proven redirect.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict, deque
@@ -470,8 +471,7 @@ def _build_indexes(dag: object) -> _DagIndexes:
     for succs in dag_succs.values():
         scc_ids.update(succs)
     reachability = {
-        scc_id: frozenset(_reachable_sccs(scc_id, dag_succs))
-        for scc_id in scc_ids
+        scc_id: frozenset(_reachable_sccs(scc_id, dag_succs)) for scc_id in scc_ids
     }
     choices_by_anchor = {
         key: tuple(_dedupe_choices(value))
@@ -479,8 +479,7 @@ def _build_indexes(dag: object) -> _DagIndexes:
     }
     return _DagIndexes(
         block_to_sccs={
-            block: frozenset(sccs)
-            for block, sccs in block_to_sccs_mut.items()
+            block: frozenset(sccs) for block, sccs in block_to_sccs_mut.items()
         },
         scc_reachability=reachability,
         choices_by_anchor=choices_by_anchor,
@@ -546,7 +545,9 @@ def _edge_kind_name(edge: object) -> str:
     return text.rsplit(".", 1)[-1]
 
 
-def _edge_frontier_targets(edge: object, source_block: int) -> tuple[tuple[int, bool], ...]:
+def _edge_frontier_targets(
+    edge: object, source_block: int
+) -> tuple[tuple[int, bool], ...]:
     targets: list[tuple[int, bool]] = []
     ordered_path = tuple(
         int(block) for block in (getattr(edge, "ordered_path", ()) or ())
@@ -629,7 +630,7 @@ def _find_semantic_scc_leaks(
                 continue
         dag_scc_ids = sorted(scc_to_blocks)
         for left_idx, left in enumerate(dag_scc_ids):
-            for right in dag_scc_ids[left_idx + 1:]:
+            for right in dag_scc_ids[left_idx + 1 :]:
                 if (
                     include_noncyclic_bridges
                     and left not in indexes.cyclic_scc_ids
@@ -652,9 +653,7 @@ def _find_semantic_scc_leaks(
                         allowed_blocks=blocks,
                     )
                     if path:
-                        leaks.append(
-                            SemanticSccLeak(blocks, right, left, tuple(path))
-                        )
+                        leaks.append(SemanticSccLeak(blocks, right, left, tuple(path)))
                     continue
                 if right_reaches_left and not left_reaches_right:
                     path = _shortest_path(
@@ -664,9 +663,7 @@ def _find_semantic_scc_leaks(
                         allowed_blocks=blocks,
                     )
                     if path:
-                        leaks.append(
-                            SemanticSccLeak(blocks, left, right, tuple(path))
-                        )
+                        leaks.append(SemanticSccLeak(blocks, left, right, tuple(path)))
                     continue
                 # No DAG order between the components: either CFG direction is
                 # illegal. Pick the shorter witness path for deterministic
@@ -732,12 +729,15 @@ def _select_frontier_action(
     frontier_blocks: set[int],
     base_flow_graph: object,
     range_interval_rows: tuple[_RangeIntervalFrontierRow, ...],
-) -> tuple[
-    list[object],
-    object | None,
-    object | None,
-    ResolvedFrontier | None,
-] | None:
+) -> (
+    tuple[
+        list[object],
+        object | None,
+        object | None,
+        ResolvedFrontier | None,
+    ]
+    | None
+):
     for leak in sorted(leaks, key=lambda item: (len(item.path), item.path)):
         path = leak.path
         if len(path) < 2:
@@ -823,12 +823,15 @@ def _select_dispatcher_state_residue_action(
     dispatcher_serial: int,
     base_flow_graph: object,
     range_interval_rows: tuple[_RangeIntervalFrontierRow, ...],
-) -> tuple[
-    list[object],
-    object | None,
-    object | None,
-    ResolvedFrontier | None,
-] | None:
+) -> (
+    tuple[
+        list[object],
+        object | None,
+        object | None,
+        ResolvedFrontier | None,
+    ]
+    | None
+):
     if not range_interval_rows:
         return None
     dispatcher_serial = int(dispatcher_serial)
@@ -940,12 +943,15 @@ def _select_shared_condition_entry_clone_action(
     current_modifications: list[object],
     dispatcher_serial: int,
     base_flow_graph: object,
-) -> tuple[
-    list[object],
-    object | None,
-    object | None,
-    ResolvedFrontier | None,
-] | None:
+) -> (
+    tuple[
+        list[object],
+        object | None,
+        object | None,
+        ResolvedFrontier | None,
+    ]
+    | None
+):
     """Clone shared condition entries that are DAG-backed but structurally fused.
 
     This is a structuring repair, not a semantic-SCC rewrite.  It handles the
@@ -1346,9 +1352,7 @@ def _leak_diagnostic_rows(
             FrontierClosureDiagnosticRow(
                 kind=kind,
                 reason="semantic_scc_leak",
-                source_block=(
-                    int(source_block) if source_block is not None else None
-                ),
+                source_block=(int(source_block) if source_block is not None else None),
                 observed_target=(
                     int(observed_target) if observed_target is not None else None
                 ),
@@ -1409,7 +1413,8 @@ def _choices_for_observed_edge(
     if any(choice.is_path_step for choice in matching_choices):
         return ()
     choices = [
-        choice for choice in raw_choices
+        choice
+        for choice in raw_choices
         if int(choice.target_block) != int(observed_target)
     ]
     if matching_choices:
@@ -1509,7 +1514,9 @@ def _range_interval_proven_frontier_choice(
         return None
     if not interval_rows:
         return None
-    alternate_succs = tuple(int(succ) for succ in succs if int(succ) != int(observed_target))
+    alternate_succs = tuple(
+        int(succ) for succ in succs if int(succ) != int(observed_target)
+    )
     if len(alternate_succs) != 1:
         return None
     candidate = int(alternate_succs[0])
@@ -1550,9 +1557,7 @@ def _range_interval_proven_frontier_choice(
         "observed": int(observed_target),
         "candidate": int(candidate),
         "singleton_interval": _interval_payload(singleton),
-        "observed_sibling_intervals": [
-            _interval_payload(row) for row in sibling_rows
-        ],
+        "observed_sibling_intervals": [_interval_payload(row) for row in sibling_rows],
     }
     return _FrontierChoice(
         source_block=int(source),
@@ -1755,9 +1760,7 @@ def _coerce_range_interval_rows(
         try:
             out.append(
                 _RangeIntervalFrontierRow(
-                    snapshot_id=(
-                        int(snapshot_id) if snapshot_id is not None else None
-                    ),
+                    snapshot_id=(int(snapshot_id) if snapshot_id is not None else None),
                     row_index=int(row_index) if row_index is not None else None,
                     lo=_parse_int(lo),
                     hi=_parse_int(hi),
@@ -1781,7 +1784,9 @@ def _parse_int(value: object) -> int:
     return int(value)  # type: ignore[arg-type]
 
 
-def _load_latest_range_interval_rows(flow_graph: object) -> tuple[_RangeIntervalFrontierRow, ...]:
+def _load_latest_range_interval_rows(
+    flow_graph: object,
+) -> tuple[_RangeIntervalFrontierRow, ...]:
     try:
         from d810.core.observability import get_active_diag_conn
     except Exception:
@@ -1973,9 +1978,7 @@ def _leak_scc_contains_edge(
     block = flow_graph.get_block(int(source))
     if block is None:
         return False
-    return int(target) in {
-        int(succ) for succ in (getattr(block, "succs", ()) or ())
-    }
+    return int(target) in {int(succ) for succ in (getattr(block, "succs", ()) or ())}
 
 
 def _redirect_info(mod: object) -> tuple[int, int, int] | None:

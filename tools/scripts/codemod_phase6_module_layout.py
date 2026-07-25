@@ -72,7 +72,9 @@ class RenameTransformer(cst.CSTTransformer):
         module_code = cst.Module([]).code_for_node(module)
         new_module_code = rewrite_dotted_name(module_code)
         if new_module_code != module_code:
-            return updated_node.with_changes(module=cst.parse_expression(new_module_code))
+            return updated_node.with_changes(
+                module=cst.parse_expression(new_module_code)
+            )
         return updated_node
 
 

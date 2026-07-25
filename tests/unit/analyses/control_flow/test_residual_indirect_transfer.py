@@ -1,4 +1,5 @@
 """Tests for conservative residual microcode indirect-transfer proof."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -59,9 +60,12 @@ def test_validates_register_selected_two_way_residual_targets():
 
 
 def test_abstains_without_exactly_one_selector_storage_identity():
-    assert validate_residual_transfer(
-        _candidate(selector_stack_offset=None, selector_register=None)
-    ) is None
+    assert (
+        validate_residual_transfer(
+            _candidate(selector_stack_offset=None, selector_register=None)
+        )
+        is None
+    )
 
 
 def test_uses_proven_x86_address_width_for_additive_target_wraparound():
@@ -79,9 +83,7 @@ def test_uses_proven_x86_address_width_for_additive_target_wraparound():
     assert proof is not None
     assert proof.true_target_ea == 0x40B9A6
     assert proof.false_target_ea == 0x40A5F0
-    assert validate_residual_transfer(
-        _candidate(selector_register=3)
-    ) is None
+    assert validate_residual_transfer(_candidate(selector_register=3)) is None
 
 
 def test_stack_state_proof_routes_prologue_arms_through_recovered_dispatcher():
@@ -125,6 +127,9 @@ def test_stack_state_proof_abstains_on_missing_or_ambiguous_state_route():
     )
 
     assert validate_stack_state_transfer(candidate) is None
-    assert validate_stack_state_transfer(
-        replace(candidate, state_targets=((1, 0x6000), (1, 0x6004), (2, 0x7000)))
-    ) is None
+    assert (
+        validate_stack_state_transfer(
+            replace(candidate, state_targets=((1, 0x6000), (1, 0x6004), (2, 0x7000)))
+        )
+        is None
+    )

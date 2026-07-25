@@ -4,6 +4,7 @@ These tests verify the business logic of context menu actions without
 requiring IDA Pro or Qt. The logic is separated into a pure-Python module
 for testability.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -317,7 +318,9 @@ class TestFormatStatsForDisplay:
         lines = formatted.split("\n")
 
         # Find optimizer section
-        opt_start = next(i for i, line in enumerate(lines) if "Optimizer matches:" in line)
+        opt_start = next(
+            i for i, line in enumerate(lines) if "Optimizer matches:" in line
+        )
         assert "AOptimizer" in lines[opt_start + 1]
         assert "ZOptimizer" in lines[opt_start + 2]
 
@@ -359,7 +362,9 @@ class TestFormatStatsForDisplay:
             "total_cycles_detected": 0,
         }
 
-        formatted = format_stats_for_display(stats, func_ea=0x401000, func_name="sub_401000")
+        formatted = format_stats_for_display(
+            stats, func_ea=0x401000, func_name="sub_401000"
+        )
 
         assert "Function: sub_401000 (0x401000)" in formatted
 

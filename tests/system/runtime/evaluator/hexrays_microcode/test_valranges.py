@@ -3,6 +3,7 @@
 These tests verify the dump-stable formatting of the structured evaluator API
 without requiring IDA/Hex-Rays.
 """
+
 from __future__ import annotations
 
 from d810.evaluator.hexrays_microcode.valranges import (

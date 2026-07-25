@@ -1,4 +1,5 @@
 """IDA-free model objects for maturity-lifecycle facts."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -48,7 +49,11 @@ class FactMapping:
     def __post_init__(self) -> None:
         for field_name in ("source_fact_id", "source_maturity", "target_maturity"):
             _require_text(field_name, getattr(self, field_name))
-        status = self.status if isinstance(self.status, FactStatus) else FactStatus(str(self.status))
+        status = (
+            self.status
+            if isinstance(self.status, FactStatus)
+            else FactStatus(str(self.status))
+        )
         object.__setattr__(self, "status", status)
         object.__setattr__(self, "confidence", _validate_confidence(self.confidence))
         object.__setattr__(self, "payload", _json_mapping(self.payload))
@@ -180,9 +185,7 @@ class ValidatedFactView:
         carry forward into the active set via the lifecycle's rank filter.
         """
         return tuple(
-            obs
-            for obs in self.active_observations
-            if obs.kind == "FoldedLoopGuardFact"
+            obs for obs in self.active_observations if obs.kind == "FoldedLoopGuardFact"
         )
 
     def state_transitions_for_source_block(

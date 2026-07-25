@@ -28,6 +28,7 @@ The guard scenario every case builds is the folded counted-loop shape:
 The two state-const writes (exit + body) to the same stack slot are what
 ``_canonical_state_stkoff`` keys on (it requires >= 2).
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -78,7 +79,9 @@ def _cfg_temp_dest(size: int = 4) -> MopSnapshot:
     return MopSnapshot(kind=OperandKind.STACK, stkoff=0x200, size=size)
 
 
-def _cfg_subinsn(kind: InsnKind, left: MopSnapshot, right: MopSnapshot, size: int = 4) -> MopSnapshot:
+def _cfg_subinsn(
+    kind: InsnKind, left: MopSnapshot, right: MopSnapshot, size: int = 4
+) -> MopSnapshot:
     return MopSnapshot(
         kind=OperandKind.SUBINSN,
         sub_kind=kind,
@@ -105,9 +108,7 @@ def _cfg_insn(
         ea=ea,
         operands=tuple(op for op in (l, r, d) if op is not None),
         operand_slots=tuple(
-            (slot, op)
-            for slot, op in (("l", l), ("r", r), ("d", d))
-            if op is not None
+            (slot, op) for slot, op in (("l", l), ("r", r), ("d", d)) if op is not None
         ),
         display_text=display_text,
         l=l,

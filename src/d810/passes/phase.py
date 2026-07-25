@@ -6,6 +6,7 @@ to the appropriate maturities. Results are persisted via ``PreanalysisStore``.
 No IDA imports at module level - collectors that need IDA guard their own
 imports. This module is fully unit-testable.
 """
+
 from __future__ import annotations
 
 from d810.core.logging import getLogger
@@ -33,6 +34,7 @@ class PreanalysisCollector(Protocol):
         maturities: Set of maturity levels at which this collector fires.
         level: ``"microcode"`` or ``"ctree"``.
     """
+
     name: str
     maturities: frozenset[int] | None
     level: str
@@ -156,15 +158,15 @@ class PreanalysisPhase:
             try:
                 result = self._collect(collector, target, context)
                 writer = get_preanalysis_writer(self._store.db_path)
-                writer.submit(
-                    lambda store, r=result: store.save_preanalysis_result(r)
-                )
+                writer.submit(lambda store, r=result: store.save_preanalysis_result(r))
                 writer.flush()
                 results.append(result)
             except Exception:
                 logger.exception(
                     "PreanalysisCollector '%s' failed at func=0x%x maturity=%s",
-                    collector.name, func_ea, maturity_text,
+                    collector.name,
+                    func_ea,
+                    maturity_text,
                 )
 
         fired_maturities.add(provider_level)
@@ -204,7 +206,9 @@ class PreanalysisPhase:
             except Exception:
                 logger.exception(
                     "PreanalysisCollector '%s' (ctree) failed at func=0x%x maturity=%s",
-                    collector.name, func_ea, maturity_text,
+                    collector.name,
+                    func_ea,
+                    maturity_text,
                 )
 
         fired_maturities.add(ctree_key)

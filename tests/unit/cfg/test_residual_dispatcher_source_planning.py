@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from d810.transforms.graph_modification import EdgeRedirectViaPredSplit, RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    EdgeRedirectViaPredSplit,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.transforms.lowering_selector import (
     PredecessorPeelContext,
     ResidualBranchAnchorContext,
@@ -293,7 +297,9 @@ class TestPlanResidualDispatcherSource:
             redirected_blocks=redirected_blocks,
         )
 
-        assert modifications == [RedirectGoto(from_serial=14, old_target=6, new_target=18)]
+        assert modifications == [
+            RedirectGoto(from_serial=14, old_target=6, new_target=18)
+        ]
         assert claimed_1way == {14: 18}
         assert claimed_2way == {(12, 14): 20}
         assert emitted == {(14, 18)}

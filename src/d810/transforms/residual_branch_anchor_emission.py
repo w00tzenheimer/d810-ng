@@ -4,7 +4,10 @@ from dataclasses import dataclass
 
 from d810.core.typing import Mapping
 
-from d810.transforms.lowering_selector import resolve_redirect_old_target, target_reaches_source_ignoring_blocks
+from d810.transforms.lowering_selector import (
+    resolve_redirect_old_target,
+    target_reaches_source_ignoring_blocks,
+)
 from d810.transforms.residual_handoff_modification_planning import (
     apply_residual_branch_anchor_emission_plan,
     plan_residual_branch_anchor_emission,
@@ -56,7 +59,9 @@ def execute_residual_branch_anchor_handoff(
     if branch_block is None:
         return ResidualBranchAnchorExecutionResult(accepted=False)
 
-    branch_succs = tuple(int(succ) for succ in tuple(getattr(branch_block, "succs", ())))
+    branch_succs = tuple(
+        int(succ) for succ in tuple(getattr(branch_block, "succs", ()))
+    )
     old_target = resolve_redirect_old_target(
         branch_source,
         source_succs=tuple(context.block_succ_map.get(branch_source, ())),
@@ -74,13 +79,13 @@ def execute_residual_branch_anchor_handoff(
         source_is_conditional_branch=(
             context.edge.source_anchor.kind.name == "CONDITIONAL_BRANCH"
         ),
-        condition_chain_blocks=set(int(block) for block in context.condition_chain_blocks),
+        condition_chain_blocks=set(
+            int(block) for block in context.condition_chain_blocks
+        ),
         dispatcher_region=set(int(block) for block in context.ignored_blocks),
     )
     decision = plan_residual_branch_anchor_emission(
-        is_conditional_branch_source=(
-            source_anchor.kind.name == "CONDITIONAL_BRANCH"
-        ),
+        is_conditional_branch_source=(source_anchor.kind.name == "CONDITIONAL_BRANCH"),
         branch_source=branch_source,
         source_block=int(context.source_block),
         via_pred=int(context.via_pred),
@@ -89,7 +94,9 @@ def execute_residual_branch_anchor_handoff(
         old_target=int(old_target),
         ordered_path=tuple(int(node) for node in context.edge.ordered_path),
         dispatcher_serial=int(context.dispatcher_serial),
-        condition_chain_blocks=frozenset(int(block) for block in context.condition_chain_blocks),
+        condition_chain_blocks=frozenset(
+            int(block) for block in context.condition_chain_blocks
+        ),
         target_reaches_branch=target_reaches_source_ignoring_blocks(
             context.projected_flow_graph,
             target_entry=int(context.prefix_target),
@@ -101,7 +108,10 @@ def execute_residual_branch_anchor_handoff(
         ),
         claimed_branch_target=state.claimed_2way.get((branch_source, int(old_target))),
         owned_transition=(
-            (context.edge.source_key.state_const, context.edge.target_state & 0xFFFFFFFF)
+            (
+                context.edge.source_key.state_const,
+                context.edge.target_state & 0xFFFFFFFF,
+            )
             if context.edge.source_key.state_const is not None
             and context.edge.target_state is not None
             else None
@@ -165,7 +175,9 @@ def emit_residual_branch_anchor_handoff(
             via_pred=int(via_pred),
             prefix_target=int(prefix_target),
             projected_flow_graph=projected_flow_graph,
-            condition_chain_blocks=frozenset(int(block) for block in condition_chain_blocks),
+            condition_chain_blocks=frozenset(
+                int(block) for block in condition_chain_blocks
+            ),
             dispatcher_serial=int(dispatcher_serial),
             block_succ_map=builder.block_succ_map,
             ignored_blocks=frozenset(int(block) for block in ignored_blocks),

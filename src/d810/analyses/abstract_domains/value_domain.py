@@ -15,6 +15,7 @@ next-state writes.
 
 Portable, no IDA.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Generic, Optional, Protocol, TypeVar, runtime_checkable
@@ -62,17 +63,13 @@ class _BaseValueDomain(Generic[D]):
     def to_const(self, element: D) -> Optional[int]:
         return element.to_const()  # type: ignore[attr-defined]
 
-    def _fold_binary(
-        self, op: BinaryOp, left: D, right: D, width: int
-    ) -> Optional[D]:
+    def _fold_binary(self, op: BinaryOp, left: D, right: D, width: int) -> Optional[D]:
         lc, rc = self.to_const(left), self.to_const(right)
         if lc is not None and rc is not None:
             return self.const(eval_const_binary(op, lc, rc, width), width)  # type: ignore[attr-defined]
         return None
 
-    def satisfies(
-        self, op: CompareOp, left: D, right: D, width: int
-    ) -> Satisfiability:
+    def satisfies(self, op: CompareOp, left: D, right: D, width: int) -> Satisfiability:
         lc, rc = self.to_const(left), self.to_const(right)
         if lc is not None and rc is not None:
             return (

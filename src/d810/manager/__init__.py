@@ -1,4 +1,5 @@
 """Public manager API and manager-local orchestration helpers."""
+
 from __future__ import annotations
 
 __all__ = [

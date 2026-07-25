@@ -1,4 +1,5 @@
 """Plan a resolver-evidenced native semantic closure."""
+
 from __future__ import annotations
 
 from collections import deque
@@ -100,10 +101,14 @@ class ResolverProvenHandlerEntry:
             for native_range in owned_native_ranges
         ):
             raise TypeError("handler entry ownership requires native ranges")
-        if owned_native_ranges and sum(
-            int(native_range.start_ea) <= entry_ea < int(native_range.end_ea)
-            for native_range in owned_native_ranges
-        ) != 1:
+        if (
+            owned_native_ranges
+            and sum(
+                int(native_range.start_ea) <= entry_ea < int(native_range.end_ea)
+                for native_range in owned_native_ranges
+            )
+            != 1
+        ):
             raise ValueError(
                 "range-owned handler entry must belong to exactly one native range"
             )
@@ -292,8 +297,7 @@ def plan_native_generation_ranges(
             int(native_range.end_ea),
         )
         split_ranges.extend(
-            NativeRange(start_ea, end_ea)
-            for start_ea, end_ea in zip(cuts, cuts[1:])
+            NativeRange(start_ea, end_ea) for start_ea, end_ea in zip(cuts, cuts[1:])
         )
     required_roots = tuple(
         native_range
@@ -336,9 +340,7 @@ def plan_native_semantic_closure(
 ) -> NativeSemanticClosure:
     """Build a native closure without crossing an unproven control-flow edge."""
 
-    definitions_by_dependency: dict[
-        int, set[ResolverProvenDependencyDefinition]
-    ] = {}
+    definitions_by_dependency: dict[int, set[ResolverProvenDependencyDefinition]] = {}
     for definition in definitions:
         definitions_by_dependency.setdefault(definition.dependency_ea, set()).add(
             definition
@@ -490,9 +492,7 @@ def plan_native_semantic_closure(
                 continue
             pending.append(defining_block_ea)
 
-    included_blocks = tuple(
-        cfg.blocks_by_ea[entry_ea] for entry_ea in sorted(included)
-    )
+    included_blocks = tuple(cfg.blocks_by_ea[entry_ea] for entry_ea in sorted(included))
     return NativeSemanticClosure(
         included_block_eas=tuple(sorted(included)),
         native_ranges=_merge_ranges(included_blocks),

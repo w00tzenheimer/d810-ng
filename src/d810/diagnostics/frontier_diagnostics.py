@@ -1,4 +1,5 @@
 """Query DAG-frontier closure diagnostics from the diag DB."""
+
 from __future__ import annotations
 
 import argparse
@@ -11,7 +12,6 @@ from pathlib import Path
 from d810.core.diag import read_diag_db
 from d810.core.diag.models import Snapshot, StateCfgFrontierClosureDiagnostic
 from d810.diagnostics.output import add_output_argument, get_output, write_output
-
 
 
 def _loads_json_list(text: str | None) -> list[int]:
@@ -39,35 +39,28 @@ def load_frontier_diagnostics(
     kind: str | None = "unresolved",
 ) -> list[dict[str, object]]:
     d = StateCfgFrontierClosureDiagnostic
-    query = (
-        d.select(
-            d.snapshot.alias("snapshot_id"),
-            Snapshot.func_ea_hex,
-            Snapshot.label,
-            Snapshot.maturity,
-            Snapshot.phase,
-            d.kind,
-            d.reason,
-            d.source_block,
-            d.observed_target,
-            d.branch_arm,
-            d.from_dag_scc,
-            d.to_dag_scc,
-            d.candidate_targets_json,
-            d.path_json,
-            d.cfg_scc_size,
-            d.payload_json,
-        )
-        .join(Snapshot, on=(Snapshot.id == d.snapshot))
-    )
+    query = d.select(
+        d.snapshot.alias("snapshot_id"),
+        Snapshot.func_ea_hex,
+        Snapshot.label,
+        Snapshot.maturity,
+        Snapshot.phase,
+        d.kind,
+        d.reason,
+        d.source_block,
+        d.observed_target,
+        d.branch_arm,
+        d.from_dag_scc,
+        d.to_dag_scc,
+        d.candidate_targets_json,
+        d.path_json,
+        d.cfg_scc_size,
+        d.payload_json,
+    ).join(Snapshot, on=(Snapshot.id == d.snapshot))
     if snapshot_id is not None:
         query = query.where(d.snapshot == int(snapshot_id))
     if kind:
-        kinds = tuple(
-            item.strip()
-            for item in str(kind).split(",")
-            if item.strip()
-        )
+        kinds = tuple(item.strip() for item in str(kind).split(",") if item.strip())
         if len(kinds) == 1:
             query = query.where(d.kind == kinds[0])
         elif kinds:
@@ -82,24 +75,26 @@ def load_frontier_diagnostics(
     )
     rows: list[dict[str, object]] = []
     for row in query.dicts():
-        rows.append({
-            "snapshot_id": int(row["snapshot_id"]),
-            "func_ea_hex": row["func_ea_hex"],
-            "label": row["label"],
-            "maturity": row["maturity"],
-            "phase": row["phase"],
-            "kind": row["kind"],
-            "reason": row["reason"],
-            "source_block": row["source_block"],
-            "observed_target": row["observed_target"],
-            "branch_arm": row["branch_arm"],
-            "from_dag_scc": row["from_dag_scc"],
-            "to_dag_scc": row["to_dag_scc"],
-            "candidate_targets": _loads_json_list(row["candidate_targets_json"]),
-            "path": _loads_json_list(row["path_json"]),
-            "cfg_scc_size": row["cfg_scc_size"],
-            "payload": _loads_json_object(row["payload_json"]),
-        })
+        rows.append(
+            {
+                "snapshot_id": int(row["snapshot_id"]),
+                "func_ea_hex": row["func_ea_hex"],
+                "label": row["label"],
+                "maturity": row["maturity"],
+                "phase": row["phase"],
+                "kind": row["kind"],
+                "reason": row["reason"],
+                "source_block": row["source_block"],
+                "observed_target": row["observed_target"],
+                "branch_arm": row["branch_arm"],
+                "from_dag_scc": row["from_dag_scc"],
+                "to_dag_scc": row["to_dag_scc"],
+                "candidate_targets": _loads_json_list(row["candidate_targets_json"]),
+                "path": _loads_json_list(row["path_json"]),
+                "cfg_scc_size": row["cfg_scc_size"],
+                "payload": _loads_json_object(row["payload_json"]),
+            }
+        )
     return rows
 
 
@@ -139,9 +134,9 @@ def _payload_suffix(payload: object) -> str:
 def format_frontier_diagnostics(rows: list[dict[str, object]]) -> str:
     if not rows:
         return "(no DAG frontier closure diagnostics)\n"
-    grouped: dict[tuple[object, object, object, object, object], list[dict[str, object]]] = (
-        defaultdict(list)
-    )
+    grouped: dict[
+        tuple[object, object, object, object, object], list[dict[str, object]]
+    ] = defaultdict(list)
     for row in rows:
         key = (
             row["snapshot_id"],
@@ -155,12 +150,11 @@ def format_frontier_diagnostics(rows: list[dict[str, object]]) -> str:
     lines: list[str] = []
     for key in sorted(grouped, key=lambda item: int(item[0])):
         snap_id, func_ea, label, maturity, phase = key
-        lines.append(
-            f"## snapshot {snap_id} {func_ea} {label} [{maturity}/{phase}]"
-        )
+        lines.append(f"## snapshot {snap_id} {func_ea} {label} [{maturity}/{phase}]")
         for row in grouped[key]:
             candidates = ",".join(
-                str(v) for v in row["candidate_targets"]  # type: ignore[index]
+                str(v)
+                for v in row["candidate_targets"]  # type: ignore[index]
             )
             path = ",".join(str(v) for v in row["path"])  # type: ignore[index]
             lines.append(
@@ -200,8 +194,7 @@ def register_parser(subparsers) -> None:
         "--kind",
         default="unresolved,resolved",
         help=(
-            "Filter by diagnostic kind, comma-separated "
-            "(default: unresolved,resolved)."
+            "Filter by diagnostic kind, comma-separated (default: unresolved,resolved)."
         ),
     )
     parser.add_argument(

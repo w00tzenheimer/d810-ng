@@ -1,4 +1,5 @@
 """Read-only transition facts for switch-table state-machine case bodies."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -76,7 +77,9 @@ class SwitchCaseTransitionFact:
         if self.exit_block is not None:
             payload.setdefault("exit_block", self.exit_block)
         if self.ordered_path:
-            payload.setdefault("ordered_path", tuple(int(serial) for serial in self.ordered_path))
+            payload.setdefault(
+                "ordered_path", tuple(int(serial) for serial in self.ordered_path)
+            )
         if self.proof is not None:
             payload.setdefault("proof_id", self.proof.proof_id)
             payload.setdefault("proof_reason", self.proof.reason)
@@ -122,45 +125,53 @@ def collect_switch_case_transition_facts(
     for row in dispatch_map.rows:
         state = int(row.state_const)
         if row.row_kind != "handler":
-            facts.append(_diagnostic_fact(
-                dispatch_map=dispatch_map,
-                state=state,
-                row_kind=row.row_kind,
-                target_block=int(row.target_block),
-                reason=f"switch_row_{row.row_kind}",
-                profile_name=profile_name,
-            ))
+            facts.append(
+                _diagnostic_fact(
+                    dispatch_map=dispatch_map,
+                    state=state,
+                    row_kind=row.row_kind,
+                    target_block=int(row.target_block),
+                    reason=f"switch_row_{row.row_kind}",
+                    profile_name=profile_name,
+                )
+            )
             continue
         body = body_by_state.get(state)
         if body is None:
-            facts.append(_unresolved_fact(
-                dispatch_map=dispatch_map,
-                state=state,
-                case_entry_block=int(row.target_block),
-                reason="case_body_missing",
-                profile_name=profile_name,
-            ))
+            facts.append(
+                _unresolved_fact(
+                    dispatch_map=dispatch_map,
+                    state=state,
+                    case_entry_block=int(row.target_block),
+                    reason="case_body_missing",
+                    profile_name=profile_name,
+                )
+            )
             continue
-        facts.extend(_facts_for_body(
-            dispatch_map=dispatch_map,
-            body=body,
-            visible_states=visible_states,
-            profile_name=profile_name,
-        ))
+        facts.extend(
+            _facts_for_body(
+                dispatch_map=dispatch_map,
+                body=body,
+                visible_states=visible_states,
+                profile_name=profile_name,
+            )
+        )
 
     if dispatch_map.default_target_block is not None:
-        facts.append(SwitchCaseTransitionFact(
-            fact_id=f"{profile_name}:switch_default:target={dispatch_map.default_target_block}",
-            transition_kind=SwitchCaseTransitionKind.DIAGNOSTIC,
-            source_state=None,
-            case_entry_block=None,
-            state_var_stkoff=dispatch_map.state_var_stkoff,
-            state_var_lvar_idx=dispatch_map.state_var_lvar_idx,
-            reason=dispatch_map.default_row_kind or "dispatcher_default",
-            row_kind=dispatch_map.default_row_kind,
-            target_block=dispatch_map.default_target_block,
-            payload={"profile_name": profile_name},
-        ))
+        facts.append(
+            SwitchCaseTransitionFact(
+                fact_id=f"{profile_name}:switch_default:target={dispatch_map.default_target_block}",
+                transition_kind=SwitchCaseTransitionKind.DIAGNOSTIC,
+                source_state=None,
+                case_entry_block=None,
+                state_var_stkoff=dispatch_map.state_var_stkoff,
+                state_var_lvar_idx=dispatch_map.state_var_lvar_idx,
+                reason=dispatch_map.default_row_kind or "dispatcher_default",
+                row_kind=dispatch_map.default_row_kind,
+                target_block=dispatch_map.default_target_block,
+                payload={"profile_name": profile_name},
+            )
+        )
     return tuple(facts)
 
 
@@ -205,86 +216,97 @@ def _facts_for_body(
         next_state = writes[0]
         kind = (
             SwitchCaseTransitionKind.DIRECT
-            if next_state in visible_states else SwitchCaseTransitionKind.UNRESOLVED
+            if next_state in visible_states
+            else SwitchCaseTransitionKind.UNRESOLVED
         )
-        return (SwitchCaseTransitionFact(
-            fact_id=f"{profile_name}:case={state}:direct",
-            transition_kind=kind,
-            source_state=state,
-            case_entry_block=entry_block,
-            next_states=(next_state,),
-            state_var_stkoff=dispatch_map.state_var_stkoff,
-            state_var_lvar_idx=dispatch_map.state_var_lvar_idx,
-            reason=(
-                "direct_case_transition"
-                if next_state in visible_states else "direct_target_not_in_switch_rows"
+        return (
+            SwitchCaseTransitionFact(
+                fact_id=f"{profile_name}:case={state}:direct",
+                transition_kind=kind,
+                source_state=state,
+                case_entry_block=entry_block,
+                next_states=(next_state,),
+                state_var_stkoff=dispatch_map.state_var_stkoff,
+                state_var_lvar_idx=dispatch_map.state_var_lvar_idx,
+                reason=(
+                    "direct_case_transition"
+                    if next_state in visible_states
+                    else "direct_target_not_in_switch_rows"
+                ),
+                exit_block=_state_write_exit_block(body, 0),
+                ordered_path=_state_write_ordered_path(body, 0),
+                payload=dict(body.payload),
             ),
-            exit_block=_state_write_exit_block(body, 0),
-            ordered_path=_state_write_ordered_path(body, 0),
-            payload=dict(body.payload),
-        ),)
+        )
     if len(writes) == 2:
         valid_targets = all(value in visible_states for value in writes)
         real_predicate = bool(body.source_predicate)
         proof_kind = (
             BranchOwnershipProofKind.REAL_DATA_DEPENDENT
-            if valid_targets and real_predicate else BranchOwnershipProofKind.UNRESOLVED
+            if valid_targets and real_predicate
+            else BranchOwnershipProofKind.UNRESOLVED
         )
         trusted = proof_kind == BranchOwnershipProofKind.REAL_DATA_DEPENDENT
         reason = (
             "conditional_case_transition_source_predicate"
-            if trusted else "conditional_case_transition_unresolved"
+            if trusted
+            else "conditional_case_transition_unresolved"
         )
-        return (SwitchCaseTransitionFact(
-            fact_id=f"{profile_name}:case={state}:conditional",
-            transition_kind=(
-                SwitchCaseTransitionKind.CONDITIONAL
-                if trusted else SwitchCaseTransitionKind.UNRESOLVED
-            ),
-            source_state=state,
-            case_entry_block=entry_block,
-            next_states=writes,
-            state_var_stkoff=dispatch_map.state_var_stkoff,
-            state_var_lvar_idx=dispatch_map.state_var_lvar_idx,
-            proof=BranchOwnershipProof(
-                proof_id=f"{profile_name}:case={state}:conditional",
-                proof_kind=proof_kind,
-                trusted=trusted,
-                reason=reason,
+        return (
+            SwitchCaseTransitionFact(
+                fact_id=f"{profile_name}:case={state}:conditional",
+                transition_kind=(
+                    SwitchCaseTransitionKind.CONDITIONAL
+                    if trusted
+                    else SwitchCaseTransitionKind.UNRESOLVED
+                ),
                 source_state=state,
-                source_block=entry_block,
-                predicate_block=entry_block,
-                dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
-                oracle_kind="switch_case_branch_ownership",
-                evidence={
-                    "predicate_kind": body.predicate_kind,
-                    "targets_visible": valid_targets,
-                    "source_predicate": real_predicate,
+                case_entry_block=entry_block,
+                next_states=writes,
+                state_var_stkoff=dispatch_map.state_var_stkoff,
+                state_var_lvar_idx=dispatch_map.state_var_lvar_idx,
+                proof=BranchOwnershipProof(
+                    proof_id=f"{profile_name}:case={state}:conditional",
+                    proof_kind=proof_kind,
+                    trusted=trusted,
+                    reason=reason,
+                    source_state=state,
+                    source_block=entry_block,
+                    predicate_block=entry_block,
+                    dispatcher_entry_block=dispatch_map.dispatcher_entry_block,
+                    oracle_kind="switch_case_branch_ownership",
+                    evidence={
+                        "predicate_kind": body.predicate_kind,
+                        "targets_visible": valid_targets,
+                        "source_predicate": real_predicate,
+                    },
+                ),
+                reason=reason,
+                exit_block=_state_write_exit_block(body, 0),
+                ordered_path=_state_write_ordered_path(body, 0),
+                payload={
+                    "arm_exit_blocks": tuple(
+                        _state_write_exit_block(body, index)
+                        for index in range(len(writes))
+                    ),
+                    "arm_ordered_paths": tuple(
+                        _state_write_ordered_path(body, index)
+                        for index in range(len(writes))
+                    ),
+                    **dict(body.payload),
                 },
             ),
-            reason=reason,
-            exit_block=_state_write_exit_block(body, 0),
-            ordered_path=_state_write_ordered_path(body, 0),
-            payload={
-                "arm_exit_blocks": tuple(
-                    _state_write_exit_block(body, index)
-                    for index in range(len(writes))
-                ),
-                "arm_ordered_paths": tuple(
-                    _state_write_ordered_path(body, index)
-                    for index in range(len(writes))
-                ),
-                **dict(body.payload),
-            },
-        ),)
-    return (_unresolved_fact(
-        dispatch_map=dispatch_map,
-        state=state,
-        case_entry_block=entry_block,
-        reason="case_body_state_write_count_unresolved",
-        profile_name=profile_name,
-        payload={"state_write_count": len(writes), **dict(body.payload)},
-    ),)
+        )
+    return (
+        _unresolved_fact(
+            dispatch_map=dispatch_map,
+            state=state,
+            case_entry_block=entry_block,
+            reason="case_body_state_write_count_unresolved",
+            profile_name=profile_name,
+            payload={"state_write_count": len(writes), **dict(body.payload)},
+        ),
+    )
 
 
 def _diagnostic_fact(

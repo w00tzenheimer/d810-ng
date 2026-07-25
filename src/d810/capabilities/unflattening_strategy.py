@@ -21,6 +21,7 @@ the ``d810.optimizers.microcode.flow.flattening.engine`` high layer import
 them DOWNWARD from here.  ``d810.families.state_machine_cff.protocols``
 keeps a back-compat re-export.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Any, Protocol, runtime_checkable

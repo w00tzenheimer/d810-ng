@@ -11,6 +11,7 @@ contract:
 * ``acyclic_view`` returns a topo-orderable view **only** for acyclic graphs,
   and ``None`` otherwise -- so ``topo_order`` is unreachable on a cyclic graph.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable

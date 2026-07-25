@@ -9,6 +9,7 @@ This codemod updates hodur package to re-export from the new base locations:
 Default mode is dry-run. Use --apply to write changes.
 Run with `pyenv exec` to use the project interpreter.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -188,7 +189,9 @@ def main() -> int:
 
     # Step 1: Update hodur/strategy.py
     print("\nStep 1: Update hodur/strategy.py")
-    strategy_path = root / "src/d810/optimizers/microcode/flow/flattening/hodur/strategy.py"
+    strategy_path = (
+        root / "src/d810/optimizers/microcode/flow/flattening/hodur/strategy.py"
+    )
     create_or_update_file(strategy_path, HODUR_STRATEGY_INIT, dry_run)
 
     # Step 2: Update hodur/provenance.py
@@ -200,7 +203,9 @@ def main() -> int:
 
     # Step 3: Update hodur/planner.py imports
     print("\nStep 3: Update hodur/planner.py imports")
-    planner_path = root / "src/d810/optimizers/microcode/flow/flattening/hodur/planner.py"
+    planner_path = (
+        root / "src/d810/optimizers/microcode/flow/flattening/hodur/planner.py"
+    )
     update_imports_in_file(
         planner_path,
         "from d810.optimizers.microcode.flow.flattening.hodur.provenance import",

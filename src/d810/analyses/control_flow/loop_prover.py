@@ -43,10 +43,13 @@ logger = getLogger("D810.loop_prover")
 # Try to import Z3, fall back to simple comparison if unavailable
 try:
     import z3
+
     Z3_AVAILABLE = True
 except (ImportError, AttributeError, OSError) as e:
     Z3_AVAILABLE = False
-    logger.warning("Z3 import failed (%s). Using simple comparison for loop proving.", e)
+    logger.warning(
+        "Z3 import failed (%s). Using simple comparison for loop proving.", e
+    )
 
 
 @dataclass
@@ -61,6 +64,7 @@ class SingleIterationLoop:
         bit_width: Bit width of the loop variable (default 64)
         proven: Whether Z3 has proven this is single-iteration
     """
+
     block_serial: int
     init_value: int
     check_value: int
@@ -99,8 +103,8 @@ def prove_single_iteration_simple(
     Returns:
         True if provably single-iteration
     """
-    enters = (init_value == check_value)
-    exits_after_one = (update_value != check_value)
+    enters = init_value == check_value
+    exits_after_one = update_value != check_value
     return enters and exits_after_one
 
 
@@ -140,30 +144,34 @@ def prove_single_iteration_z3(
     # Check 1: First iteration enters (init == check must be true)
     s1 = z3.Solver()
     s1.add(init_bv != check_bv)
-    first_enters = (s1.check() == z3.unsat)  # UNSAT means init == check
+    first_enters = s1.check() == z3.unsat  # UNSAT means init == check
 
     if not first_enters:
         logger.debug(
             "Loop does not enter: init=%s != check=%s",
-            hex(init_value), hex(check_value)
+            hex(init_value),
+            hex(check_value),
         )
         return False
 
     # Check 2: Second iteration exits (update == check must be false)
     s2 = z3.Solver()
     s2.add(update_bv == check_bv)
-    second_exits = (s2.check() == z3.unsat)  # UNSAT means update != check
+    second_exits = s2.check() == z3.unsat  # UNSAT means update != check
 
     if not second_exits:
         logger.debug(
             "Loop does not exit after one iteration: update=%s == check=%s",
-            hex(update_value), hex(check_value)
+            hex(update_value),
+            hex(check_value),
         )
         return False
 
     logger.debug(
         "Z3 proved single-iteration: init=%s, check=%s, update=%s",
-        hex(init_value), hex(check_value), hex(update_value)
+        hex(init_value),
+        hex(check_value),
+        hex(update_value),
     )
     return True
 
@@ -200,7 +208,9 @@ def prove_single_iteration(
         # Returns True
     """
     if use_z3 and Z3_AVAILABLE:
-        return prove_single_iteration_z3(init_value, check_value, update_value, bit_width)
+        return prove_single_iteration_z3(
+            init_value, check_value, update_value, bit_width
+        )
     return prove_single_iteration_simple(init_value, check_value, update_value)
 
 
@@ -224,6 +234,7 @@ class SingleIterationLoopTracker:
         for loop in tracker.get_proven_loops():
             schedule_cleanup(loop)
     """
+
     loops: list[SingleIterationLoop] = field(default_factory=list)
 
     def record_loop(

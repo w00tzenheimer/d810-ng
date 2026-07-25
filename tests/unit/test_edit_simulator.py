@@ -657,9 +657,7 @@ class TestModificationProjection:
                 flags=0,
                 start_ea=0,
                 insn_snapshots=(),
-                kind=(
-                    BlockKind.ONE_WAY if len(succs) == 1 else BlockKind.ZERO_WAY
-                ),
+                kind=(BlockKind.ONE_WAY if len(succs) == 1 else BlockKind.ZERO_WAY),
                 tail_kind=(InsnKind.GOTO if len(succs) == 1 else InsnKind.NOP),
             )
 
@@ -726,9 +724,7 @@ class TestModificationProjection:
                 flags=0,
                 start_ea=0,
                 insn_snapshots=(),
-                kind=(
-                    BlockKind.ONE_WAY if len(succs) == 1 else BlockKind.ZERO_WAY
-                ),
+                kind=(BlockKind.ONE_WAY if len(succs) == 1 else BlockKind.ZERO_WAY),
                 tail_kind=(InsnKind.GOTO if len(succs) == 1 else InsnKind.NOP),
             )
 
@@ -878,9 +874,7 @@ class TestModificationProjection:
 class TestProjectCumulativeState:
     """Tests for project_cumulative_state -- cumulative CFG projection."""
 
-    def _make_cfg(
-        self, adj: dict[int, list[int]], entry: int = 0
-    ) -> FlowGraph:
+    def _make_cfg(self, adj: dict[int, list[int]], entry: int = 0) -> FlowGraph:
         """Build a FlowGraph from an adjacency dict."""
         blocks: dict[int, BlockSnapshot] = {}
         preds_map: dict[int, list[int]] = {s: [] for s in adj}
@@ -911,7 +905,9 @@ class TestProjectCumulativeState:
         result_standard = project_post_state(cfg, plan)
         result_cumulative = project_cumulative_state(cfg, plan)
 
-        assert result_standard.as_adjacency_dict() == result_cumulative.as_adjacency_dict()
+        assert (
+            result_standard.as_adjacency_dict() == result_cumulative.as_adjacency_dict()
+        )
         assert result_standard.entry_serial == result_cumulative.entry_serial
 
     def test_cumulative_chaining_two_plans(self):
@@ -919,7 +915,8 @@ class TestProjectCumulativeState:
         cfg = self._make_cfg({0: [1], 1: [2], 2: [3], 3: []})
 
         plan1 = compile_patch_plan(
-            [RedirectGoto(from_serial=0, old_target=1, new_target=2)], cfg,
+            [RedirectGoto(from_serial=0, old_target=1, new_target=2)],
+            cfg,
         )
         cumulative1 = project_cumulative_state(cfg, plan1)
 
@@ -928,7 +925,8 @@ class TestProjectCumulativeState:
         assert adj1[1] == [2]
 
         plan2 = compile_patch_plan(
-            [RedirectGoto(from_serial=1, old_target=2, new_target=3)], cumulative1,
+            [RedirectGoto(from_serial=1, old_target=2, new_target=3)],
+            cumulative1,
         )
         cumulative2 = project_cumulative_state(cumulative1, plan2)
 

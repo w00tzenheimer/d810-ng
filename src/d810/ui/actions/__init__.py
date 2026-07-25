@@ -23,6 +23,7 @@ Example:
 
     The action class is registered in D810ActionHandler.registry when defined.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -50,6 +51,7 @@ def load_builtin_actions() -> None:
     """Import built-in action modules to populate D810ActionHandler.registry."""
     for module_name in _BUILTIN_ACTION_MODULES:
         importlib.import_module(f"{__name__}.{module_name}")
+
 
 # Export public API
 __all__ = ["D810ActionHandler", "load_builtin_actions"]

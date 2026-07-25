@@ -8,6 +8,7 @@ This is the canonical serialized ``FactObservation.kind`` value. The
 diagnostic alias registry maps the historical ``TerminalMaterializationFact``
 string to this family.
 """
+
 from __future__ import annotations
 
 MATERIALIZATION_POINT_FACT_TYPE = "MaterializationPointFact"

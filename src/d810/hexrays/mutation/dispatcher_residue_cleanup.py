@@ -1,4 +1,5 @@
 """Hex-Rays materialization for dispatcher cleanup plans."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -158,8 +159,7 @@ def apply_dispatcher_residue_cleanup_plan(
             serial,
             keep_serial,
             description=(
-                "dispatcher residue cleanup: convert "
-                f"{serial} to goto {keep_serial}"
+                f"dispatcher residue cleanup: convert {serial} to goto {keep_serial}"
             ),
         )
         conversion_candidates.append(serial)
@@ -204,8 +204,7 @@ def apply_dispatcher_residue_cleanup_plan(
         )
         for succ_serial in succ_serials:
             if not any(
-                int(disp_blk.succ(i)) == succ_serial
-                for i in range(disp_blk.nsucc())
+                int(disp_blk.succ(i)) == succ_serial for i in range(disp_blk.nsucc())
             ):
                 continue
             outgoing_batch.queue_remove_edge(
@@ -281,8 +280,7 @@ def apply_unreachable_region_cleanup_plan(
                 serial,
                 ea,
                 description=(
-                    "unreachable region cleanup: nop "
-                    f"{hex(ea)} in block {serial}"
+                    f"unreachable region cleanup: nop {hex(ea)} in block {serial}"
                 ),
             )
 

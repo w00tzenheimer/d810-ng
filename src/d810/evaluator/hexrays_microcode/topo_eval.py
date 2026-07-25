@@ -12,6 +12,7 @@ Returns ``dict[int, dict[tuple, int]]`` mapping block serial to a dict of
 at block entry. Suitable as ``const_in_states`` for Strategy 2 in the
 emulator.
 """
+
 from __future__ import annotations
 
 from d810.core.logging import getLogger
@@ -65,9 +66,7 @@ def _compute_block_environments_impl(
 
     qty: int = mba.qty  # type: ignore[attr-defined]
     if qty > _MAX_BLOCKS:
-        logger.info(
-            "topo_eval: skipping (%d blocks > %d limit)", qty, _MAX_BLOCKS
-        )
+        logger.info("topo_eval: skipping (%d blocks > %d limit)", qty, _MAX_BLOCKS)
         return {}
 
     # ------------------------------------------------------------------ RPO
@@ -105,14 +104,17 @@ def _compute_block_environments_impl(
 
         # Strip conflicts to get clean IN map.
         clean_in: dict[tuple, int] = {
-            k: v for k, v in in_env_map.items() if v is not _CONFLICT  # type: ignore[arg-type]
+            k: v
+            for k, v in in_env_map.items()
+            if v is not _CONFLICT  # type: ignore[arg-type]
         }
         in_envs[blk_serial] = clean_in
 
         # ----- Seed MicroCodeEnvironment with IN values -----
         env = MicroCodeEnvironment()
         interpreter = MicroCodeInterpreter(
-            global_environment=env, symbolic_mode=False,
+            global_environment=env,
+            symbolic_mode=False,
             const_in_states={},  # empty to prevent recursive topo_eval
         )
         _seed_environment(env, clean_in, blk, ida_hexrays)

@@ -23,6 +23,7 @@ Co-located in ``analyses/data_flow/concolic`` for S3 because it references
 layer up and imports this downward.  Ticket llr-iqm3 / epic llr-7ouc.  Portable:
 no IDA, no z3.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -19,13 +19,7 @@ RESOLVER_STATE_PATH = (
     / "jumps"
     / "resolver_session_state.py"
 )
-LIFECYCLE_PATH = (
-    REPO_ROOT
-    / "src"
-    / "d810"
-    / "manager"
-    / "decompilation_lifecycle.py"
-)
+LIFECYCLE_PATH = REPO_ROOT / "src" / "d810" / "manager" / "decompilation_lifecycle.py"
 COMPUTED_GOTO_RESOLVER_PATH = (
     REPO_ROOT
     / "src"
@@ -101,9 +95,7 @@ REMOVED_RESOLVER_MUTATION_APIS = frozenset(
 
 
 def _referenced_identifiers(tree: ast.AST) -> set[str]:
-    identifiers = {
-        node.id for node in ast.walk(tree) if isinstance(node, ast.Name)
-    }
+    identifiers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     identifiers.update(
         node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
     )
@@ -399,9 +391,8 @@ def test_production_terminal_carrier_capture_has_no_legacy_template_authority() 
         MANAGER_PATH.read_text(encoding="utf-8"),
         filename=str(MANAGER_PATH),
     )
-    assert (
-        "prepare_terminal_return_carrier_templates"
-        not in _referenced_identifiers(manager_tree)
+    assert "prepare_terminal_return_carrier_templates" not in _referenced_identifiers(
+        manager_tree
     )
 
 

@@ -8,6 +8,7 @@ This is the canonical serialized ``FactObservation.kind`` value. The
 diagnostic alias registry maps the historical ``GenericInductionCarrierFact``
 string to this family.
 """
+
 from __future__ import annotations
 
 INDUCTION_VARIABLE_FACT_TYPE = "InductionVariableFact"

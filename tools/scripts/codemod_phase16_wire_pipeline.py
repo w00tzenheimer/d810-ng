@@ -11,6 +11,7 @@ This is the final integration step that makes everything work together.
 Default mode is dry-run. Use --apply to write changes.
 Run with `pyenv exec` to use the project interpreter.
 """
+
 from __future__ import annotations
 
 import argparse

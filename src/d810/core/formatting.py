@@ -9,6 +9,7 @@ import graph.
 ``d810.core.diag.formatting`` is a thin re-export of this module for
 back-compat with existing callers.
 """
+
 from __future__ import annotations
 
 

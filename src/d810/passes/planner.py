@@ -28,6 +28,7 @@ for the flow-context consumer.
 #   - Unflattener orchestrator CONSUMES: pipeline + results; only updates
 #     provenance lifecycle phases (APPLIED, GATE_FAILED, BYPASSED).
 """
+
 from __future__ import annotations
 
 import enum
@@ -35,8 +36,7 @@ from copy import copy
 from dataclasses import dataclass, replace
 from d810.core.typing import TYPE_CHECKING
 
-from d810.analyses.control_flow.terminal_return_audit import \
-    TerminalReturnSourceKind
+from d810.analyses.control_flow.terminal_return_audit import TerminalReturnSourceKind
 from d810.core.logging import getLogger
 from d810.analyses.control_flow.provenance import (
     DagDisagreementRecord,
@@ -213,7 +213,7 @@ def _derive_terminal_return_risk(audit: object | None) -> float:
 
 @dataclass(frozen=True)
 class HintAdjustment:
-    "Score adjustment produced by preanalysis hint analysis.\n\n    Attributes:\n        score_delta: Additive adjustment to the fragment's composite score.\n        reasons: Human-readable reasons for the adjustment.\n    "
+    "Score adjustment produced by preanalysis hint analysis.\n\n    Attributes:\n        score_delta: Additive adjustment to the fragment's composite score.\n        reasons: Human-readable reasons for the adjustment.\n"
 
     score_delta: float = 0.0
     reasons: tuple[str, ...] = ()
@@ -222,7 +222,7 @@ class HintAdjustment:
 def compute_hint_adjustment(
     fragment: PlanFragment, signals: PlannerHintSignals
 ) -> HintAdjustment:
-    "Compute a score adjustment for *fragment* based on preanalysis *signals*.\n\n    This is a pure function with no side effects.\n\n    Args:\n        fragment: The plan fragment to evaluate.\n        signals: Normalized preanalysis signals.\n\n    Returns:\n        A :class:`HintAdjustment` with the cumulative score delta and reasons.\n    "
+    "Compute a score adjustment for *fragment* based on preanalysis *signals*.\n\n    This is a pure function with no side effects.\n\n    Args:\n        fragment: The plan fragment to evaluate.\n        signals: Normalized preanalysis signals.\n\n    Returns:\n        A :class:`HintAdjustment` with the cumulative score delta and reasons.\n"
     delta = 0.0
     reasons: list[str] = []
 
@@ -411,6 +411,7 @@ def _log_planner_ctx_conflicts(
     # Import locally — graph_modification lives in cfg and would be a
     # heavy top-level dependency for a diagnostic helper.
     from d810.transforms.graph_modification import RedirectGoto
+
     conflicts: list[str] = []
     for mod in fragment.modifications:
         if not isinstance(mod, RedirectGoto):
@@ -422,9 +423,7 @@ def _log_planner_ctx_conflicts(
         if prior_tgt == int(mod.new_target):
             # Not a conflict — same target, strategies agree.
             continue
-        conflicts.append(
-            f"src={src} prior_tgt={prior_tgt} new_tgt={mod.new_target}"
-        )
+        conflicts.append(f"src={src} prior_tgt={prior_tgt} new_tgt={mod.new_target}")
     if conflicts:
         log.warning(
             "PLANNER_CTX_CONFLICT: strategy %r emitted %d redirect(s) "
@@ -439,10 +438,11 @@ _SUB7FFD3338C040_ENTRY_EA = 0x180012B60
 
 
 def _corridor_seed_data_for_snapshot(snapshot: AnalysisSnapshot) -> tuple:
-    "Return function-specific CorridorSpliceData for the snapshot.\n\n    uee-7wcd seed registry.  Keyed off ``mba.entry_ea``.  Today's only\n    registered corridor is sub_7FFD3338C040's poll-corridor splice\n    (shared_block=45, base_target=126, clone_source=122,\n    clone_target=180).  Returns an empty tuple when the function has\n    no registered corridor.\n\n    Until preanalysis analysis can derive corridor patterns directly, this\n    seed registry is the canonical source of corridor data for the\n    DAG arbiter.\n    "
+    "Return function-specific CorridorSpliceData for the snapshot.\n\n    uee-7wcd seed registry.  Keyed off ``mba.entry_ea``.  Today's only\n    registered corridor is sub_7FFD3338C040's poll-corridor splice\n    (shared_block=45, base_target=126, clone_source=122,\n    clone_target=180).  Returns an empty tuple when the function has\n    no registered corridor.\n\n    Until preanalysis analysis can derive corridor patterns directly, this\n    seed registry is the canonical source of corridor data for the\n    DAG arbiter.\n"
     from d810.transforms.dag_authority import (
         CorridorSpliceData,
     )
+
     mba = getattr(snapshot, "mba", None)
     if mba is None:
         return ()
@@ -464,7 +464,7 @@ def _corridor_seed_data_for_snapshot(snapshot: AnalysisSnapshot) -> tuple:
 
 
 def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
-    "Construct the DAG-as-arbiter for this pipeline run, or None.\n\n    Phase 2 of uee-jrgq.  Reads the preanalysis DAG off ``snapshot.discovery``\n    if present; returns ``None`` when no discovery context is available\n    (legacy / non-Hodur families that haven't built a LinearizedStateDag\n    yet).  Built once per ``UnflatteningPlanner.plan()`` call.\n\n    Per the deferral decision (mem_52073043), per-round rederivation is\n    intentionally deferred \u2014 the same authority is threaded through\n    every cumulative-view rebuild within this plan() invocation.\n    "
+    "Construct the DAG-as-arbiter for this pipeline run, or None.\n\n    Phase 2 of uee-jrgq.  Reads the preanalysis DAG off ``snapshot.discovery``\n    if present; returns ``None`` when no discovery context is available\n    (legacy / non-Hodur families that haven't built a LinearizedStateDag\n    yet).  Built once per ``UnflatteningPlanner.plan()`` call.\n\n    Per the deferral decision (mem_52073043), per-round rederivation is\n    intentionally deferred \u2014 the same authority is threaded through\n    every cumulative-view rebuild within this plan() invocation.\n"
     discovery = getattr(snapshot, "discovery", None)
     if discovery is None:
         return None
@@ -477,6 +477,7 @@ def _build_dag_authority(snapshot: AnalysisSnapshot) -> "DagAuthority | None":
     from d810.transforms.dag_authority import (
         DagAuthority,
     )
+
     # uee-7wcd: seed function-specific corridor data based on
     # ``mba.entry_ea``.  Currently only sub_7FFD3338C040 has a
     # registered corridor; new entries can be added here when other
@@ -547,10 +548,7 @@ def _format_dag_audit_summary(
     if not records:
         return ""
 
-    disagreements = [
-        r for r in records
-        if not r.decision_reason.startswith("DAG_GAP:")
-    ]
+    disagreements = [r for r in records if not r.decision_reason.startswith("DAG_GAP:")]
     gaps = [r for r in records if r.decision_reason.startswith("DAG_GAP:")]
 
     by_planner: dict[str, list[DagDisagreementRecord]] = {}
@@ -572,12 +570,12 @@ def _format_dag_audit_summary(
         )
         for planner_name, planner_records in ordered:
             details = "; ".join(
-                _format_disagreement_detail(r)
-                for r in planner_records[:5]
+                _format_disagreement_detail(r) for r in planner_records[:5]
             )
             suffix = (
                 f" (+{len(planner_records) - 5} more)"
-                if len(planner_records) > 5 else ""
+                if len(planner_records) > 5
+                else ""
             )
             lines.append(
                 f"    {planner_name}: {len(planner_records)} "
@@ -597,25 +595,23 @@ def _format_disagreement_detail(record: DagDisagreementRecord) -> str:
     planner_tgt_str = (
         str(record.planner_target) if record.planner_target is not None else "?"
     )
-    dag_tgt_str = (
-        str(record.dag_target) if record.dag_target is not None else "?"
-    )
-    return (
-        f"blk[{record.source_block}]->{planner_tgt_str} vs DAG={dag_tgt_str}"
-    )
+    dag_tgt_str = str(record.dag_target) if record.dag_target is not None else "?"
+    return f"blk[{record.source_block}]->{planner_tgt_str} vs DAG={dag_tgt_str}"
 
 
 @dataclass
 class PipelinePolicy:
     """Policy for strategy selection and ordering."""
 
-    direct_coverage_threshold: float = 0.8  # block fallbacks if direct covers this fraction
+    direct_coverage_threshold: float = (
+        0.8  # block fallbacks if direct covers this fraction
+    )
     max_risk_score: float = 0.7  # reject fragments above this risk
     allow_fallback_families: bool = True
 
 
 class UnflatteningPlanner:
-    "Selects, orders, and arbitrates strategy fragments.\n\n    As a lifecycle consumer, the planner receives a :class:`PlannerInputs`\n    envelope containing preanalysis artifacts (handler transitions, return\n    frontier, terminal return audit) and derives :class:`PlannerHintSignals`\n    to bias fragment scoring.  The outcome layer --\n    :class:`PipelineProvenance` -- records every accept/reject decision\n    with full audit trail, closing the lifecycle loop.\n\n    **Hint persistence:** ``PlannerHintSignals`` remain ephemeral \u2014\n    see :class:`~d810.analyses.control_flow.provenance.PlannerInputs`\n    for rationale.  Persist only if a concrete need appears (offline\n    audit, cross-pass caching, or a second planner consumer).\n    "
+    "Selects, orders, and arbitrates strategy fragments.\n\n    As a lifecycle consumer, the planner receives a :class:`PlannerInputs`\n    envelope containing preanalysis artifacts (handler transitions, return\n    frontier, terminal return audit) and derives :class:`PlannerHintSignals`\n    to bias fragment scoring.  The outcome layer --\n    :class:`PipelineProvenance` -- records every accept/reject decision\n    with full audit trail, closing the lifecycle loop.\n\n    **Hint persistence:** ``PlannerHintSignals`` remain ephemeral \u2014\n    see :class:`~d810.analyses.control_flow.provenance.PlannerInputs`\n    for rationale.  Persist only if a concrete need appears (offline\n    audit, cross-pass caching, or a second planner consumer).\n"
 
     def __init__(self, policy: PipelinePolicy | None = None):
         self.policy = policy or PipelinePolicy()
@@ -626,7 +622,7 @@ class UnflatteningPlanner:
         strategies: list[UnflatteningStrategy],
         inputs: PlannerInputs | None = None,
     ) -> tuple[list[PlanFragment], PipelineProvenance]:
-        "Poll strategies, collect fragments, and compose the pipeline.\n\n        This is the primary public API. It owns:\n        1. Strategy polling (``is_applicable`` + ``plan``).\n        2. Fragment collection.\n        3. Pipeline composition via :meth:`compose_pipeline`.\n        4. Provenance generation (including INAPPLICABLE/CRASHED records).\n\n        Args:\n            snapshot: Read-only view of the current function's analysis state.\n            strategies: Ordered list of strategy instances to poll.\n            inputs: Structured envelope with preanalysis artifacts and handler count.\n\n        Returns:\n            A tuple of (ordered pipeline, complete provenance ledger).\n        "
+        "Poll strategies, collect fragments, and compose the pipeline.\n\n        This is the primary public API. It owns:\n        1. Strategy polling (``is_applicable`` + ``plan``).\n        2. Fragment collection.\n        3. Pipeline composition via :meth:`compose_pipeline`.\n        4. Provenance generation (including INAPPLICABLE/CRASHED records).\n\n        Args:\n            snapshot: Read-only view of the current function's analysis state.\n            strategies: Ordered list of strategy instances to poll.\n            inputs: Structured envelope with preanalysis artifacts and handler count.\n\n        Returns:\n            A tuple of (ordered pipeline, complete provenance ledger).\n"
         fragments: list[PlanFragment] = []
         pre_planner_records: list[DecisionRecord] = []
 
@@ -641,13 +637,15 @@ class UnflatteningPlanner:
 
         for strategy in strategies:
             if not strategy.is_applicable(snapshot):
-                pre_planner_records.append(DecisionRecord(
-                    strategy_name=strategy.name,
-                    family=strategy.family,
-                    phase=DecisionPhase.INAPPLICABLE,
-                    reason_code=DecisionReasonCode.REJECTED_INAPPLICABLE,
-                    reason="is_applicable returned False",
-                ))
+                pre_planner_records.append(
+                    DecisionRecord(
+                        strategy_name=strategy.name,
+                        family=strategy.family,
+                        phase=DecisionPhase.INAPPLICABLE,
+                        reason_code=DecisionReasonCode.REJECTED_INAPPLICABLE,
+                        reason="is_applicable returned False",
+                    )
+                )
                 continue
             # Build the cumulative planner-context view from prior fragments'
             # metadata and inject it onto the snapshot. This is what lets a
@@ -656,7 +654,8 @@ class UnflatteningPlanner:
             # Rebuilt every iteration because fragments accumulates; cost is
             # O(n) in prior contributions, trivially cheap at realistic sizes.
             cumulative_view = CumulativePlannerView.compile(
-                fragments, dag_authority=dag_authority,
+                fragments,
+                dag_authority=dag_authority,
             )
             try:
                 snapshot_for_strategy = replace(
@@ -664,7 +663,9 @@ class UnflatteningPlanner:
                 )
             except TypeError:
                 snapshot_for_strategy = copy(snapshot)
-                setattr(snapshot_for_strategy, "cumulative_planner_view", cumulative_view)
+                setattr(
+                    snapshot_for_strategy, "cumulative_planner_view", cumulative_view
+                )
             try:
                 fragment = strategy.plan(snapshot_for_strategy)
                 if fragment is not None:
@@ -677,17 +678,21 @@ class UnflatteningPlanner:
                         fragment.metadata.setdefault("lowering_mode", _lowering_mode)
             except Exception as e:
                 logger.warning(
-                    "Strategy %s crashed: %s", strategy.name, e,
+                    "Strategy %s crashed: %s",
+                    strategy.name,
+                    e,
                     exc_info=True,
                 )
-                pre_planner_records.append(DecisionRecord(
-                    strategy_name=strategy.name,
-                    family=strategy.family,
-                    phase=DecisionPhase.CRASHED,
-                    reason_code=DecisionReasonCode.REJECTED_CRASHED,
-                    reason=f"plan() raised: {e}",
-                    notes=str(e),
-                ))
+                pre_planner_records.append(
+                    DecisionRecord(
+                        strategy_name=strategy.name,
+                        family=strategy.family,
+                        phase=DecisionPhase.CRASHED,
+                        reason_code=DecisionReasonCode.REJECTED_CRASHED,
+                        reason=f"plan() raised: {e}",
+                        notes=str(e),
+                    )
+                )
                 continue
             if isinstance(fragment, list):
                 for frag in fragment:
@@ -702,7 +707,8 @@ class UnflatteningPlanner:
                         logger.info(
                             "Planner: injected %d NOP'd state values from "
                             "strategy '%s' into snapshot",
-                            len(nsv), frag.strategy_name,
+                            len(nsv),
+                            frag.strategy_name,
                         )
                 if strategy.name in (
                     "direct_handler_linearization",
@@ -718,7 +724,8 @@ class UnflatteningPlanner:
                         snapshot = replace(
                             snapshot,
                             lfg_redirected_blocks=(
-                                frozenset(snapshot.lfg_redirected_blocks) | frozenset(lfg_src)
+                                frozenset(snapshot.lfg_redirected_blocks)
+                                | frozenset(lfg_src)
                             ),
                         )
                         logger.info(
@@ -737,7 +744,8 @@ class UnflatteningPlanner:
                 # etc.) get DAG-disagreement filtering here that they
                 # would otherwise bypass.
                 fragment = _apply_engine_dag_conformance_gate(
-                    fragment, cumulative_view,
+                    fragment,
+                    cumulative_view,
                 )
                 fragments.append(fragment)
                 # Extract nop_state_values from fragment metadata
@@ -748,7 +756,8 @@ class UnflatteningPlanner:
                     logger.info(
                         "Planner: injected %d NOP'd state values from "
                         "strategy '%s' into snapshot",
-                        len(nsv), fragment.strategy_name,
+                        len(nsv),
+                        fragment.strategy_name,
                     )
                 # Inject lfg_redirected_blocks from LFG fragment's
                 # ownership edges so backward_pred skips blocks that
@@ -763,7 +772,8 @@ class UnflatteningPlanner:
                         snapshot = replace(
                             snapshot,
                             lfg_redirected_blocks=(
-                                frozenset(snapshot.lfg_redirected_blocks) | frozenset(lfg_src)
+                                frozenset(snapshot.lfg_redirected_blocks)
+                                | frozenset(lfg_src)
                             ),
                         )
                         logger.info(
@@ -773,13 +783,15 @@ class UnflatteningPlanner:
                             fragment.strategy_name,
                         )
             else:
-                pre_planner_records.append(DecisionRecord(
-                    strategy_name=strategy.name,
-                    family=strategy.family,
-                    phase=DecisionPhase.INAPPLICABLE,
-                    reason_code=DecisionReasonCode.REJECTED_EMPTY,
-                    reason="applicable but produced no fragment",
-                ))
+                pre_planner_records.append(
+                    DecisionRecord(
+                        strategy_name=strategy.name,
+                        family=strategy.family,
+                        phase=DecisionPhase.INAPPLICABLE,
+                        reason_code=DecisionReasonCode.REJECTED_EMPTY,
+                        reason="applicable but produced no fragment",
+                    )
+                )
 
         # Compose pipeline from collected fragments
         pipeline, provenance = self.compose_pipeline(
@@ -825,7 +837,7 @@ class UnflatteningPlanner:
         *,
         inputs: PlannerInputs | None = None,
     ) -> tuple[list[PlanFragment], PipelineProvenance]:
-        "Full pipeline: filter -> policy -> resolve conflicts -> order.\n\n        Args:\n            fragments: Candidate plan fragments from strategies.\n            inputs: Structured envelope with preanalysis artifacts and handler count.\n\n        Returns:\n            A tuple of (ordered pipeline, provenance ledger).\n        "
+        "Full pipeline: filter -> policy -> resolve conflicts -> order.\n\n        Args:\n            fragments: Candidate plan fragments from strategies.\n            inputs: Structured envelope with preanalysis artifacts and handler count.\n\n        Returns:\n            A tuple of (ordered pipeline, provenance ledger).\n"
         if inputs is not None:
             effective_total_handlers = inputs.total_handlers
             input_summary = inputs.to_input_summary()
@@ -853,12 +865,14 @@ class UnflatteningPlanner:
         filtered: list[PlanFragment] = []
         for f in fragments:
             if f.is_empty():
-                rows.append(self._record(
-                    f,
-                    phase=DecisionPhase.INAPPLICABLE,
-                    reason_code=DecisionReasonCode.REJECTED_EMPTY,
-                    reason="fragment has no modifications",
-                ))
+                rows.append(
+                    self._record(
+                        f,
+                        phase=DecisionPhase.INAPPLICABLE,
+                        reason_code=DecisionReasonCode.REJECTED_EMPTY,
+                        reason="fragment has no modifications",
+                    )
+                )
             else:
                 filtered.append(f)
 
@@ -866,15 +880,17 @@ class UnflatteningPlanner:
         risk_passed: list[PlanFragment] = []
         for f in filtered:
             if f.risk_score > self.policy.max_risk_score:
-                rows.append(self._record(
-                    f,
-                    phase=DecisionPhase.POLICY_FILTERED,
-                    reason_code=DecisionReasonCode.REJECTED_RISK,
-                    reason=(
-                        f"risk_score={f.risk_score:.2f} > "
-                        f"threshold={self.policy.max_risk_score:.2f}"
-                    ),
-                ))
+                rows.append(
+                    self._record(
+                        f,
+                        phase=DecisionPhase.POLICY_FILTERED,
+                        reason_code=DecisionReasonCode.REJECTED_RISK,
+                        reason=(
+                            f"risk_score={f.risk_score:.2f} > "
+                            f"threshold={self.policy.max_risk_score:.2f}"
+                        ),
+                    )
+                )
             else:
                 risk_passed.append(f)
 
@@ -895,10 +911,12 @@ class UnflatteningPlanner:
                 fragment=f,
                 base_score=f.expected_benefit.composite_score(),
                 hint_adjustment=hint_adjustments.get(
-                    f.strategy_name, HintAdjustment(),
+                    f.strategy_name,
+                    HintAdjustment(),
                 ),
                 effective_score=effective_scores.get(
-                    f.strategy_name, f.expected_benefit.composite_score(),
+                    f.strategy_name,
+                    f.expected_benefit.composite_score(),
                 ),
             )
             for f in risk_passed
@@ -906,7 +924,9 @@ class UnflatteningPlanner:
 
         # --- Gate 3: Policy gate (coverage threshold drops fallbacks) ---
         accepted_candidates = self._apply_policy_with_provenance_candidates(
-            candidates, effective_total_handlers, rows,
+            candidates,
+            effective_total_handlers,
+            rows,
         )
 
         # --- Gate 4: Conflict resolution (greedy independent set) ---
@@ -914,7 +934,9 @@ class UnflatteningPlanner:
         conflicts = self.find_conflicts(accepted_fragments)
         if conflicts:
             accepted_candidates = self._resolve_conflicts_candidates(
-                accepted_candidates, conflicts, rows,
+                accepted_candidates,
+                conflicts,
+                rows,
             )
 
         # --- Gate 5: Selection (surviving candidates) ---
@@ -923,10 +945,7 @@ class UnflatteningPlanner:
             decision = PlannerDecision(
                 candidate=c,
                 reason=PlannerDecisionReason.ACCEPTED,
-                detail=(
-                    f"composite_score={c.base_score:.1f}, "
-                    f"selected into pipeline"
-                ),
+                detail=(f"composite_score={c.base_score:.1f}, selected into pipeline"),
             )
             rows.append(decision.to_decision_record())
 
@@ -963,7 +982,9 @@ class UnflatteningPlanner:
 
         while remaining:
             ready = [
-                f for f in remaining if all(p in resolved_names for p in f.prerequisites)
+                f
+                for f in remaining
+                if all(p in resolved_names for p in f.prerequisites)
             ]
             if not ready:
                 ready = remaining  # cycle or unmet prereqs — add by score
@@ -1066,9 +1087,7 @@ class UnflatteningPlanner:
                 decision = PlannerDecision(
                     candidate=c,
                     reason=PlannerDecisionReason.REJECTED_CONFLICT,
-                    detail=(
-                        f"ownership conflict: {len(overlap_blocks)} shared blocks"
-                    ),
+                    detail=(f"ownership conflict: {len(overlap_blocks)} shared blocks"),
                 )
                 rows.append(decision.to_decision_record())
         return accepted
@@ -1093,7 +1112,9 @@ class UnflatteningPlanner:
         overlap_transitions = set(candidate.ownership.transitions)
         overlapping_accepted: list[PlannerCandidate] = []
         for accepted_candidate in accepted:
-            if candidate.ownership.blocks.isdisjoint(accepted_candidate.ownership.blocks):
+            if candidate.ownership.blocks.isdisjoint(
+                accepted_candidate.ownership.blocks
+            ):
                 continue
             overlapping_accepted.append(accepted_candidate)
             if candidate.ownership.edges & accepted_candidate.ownership.edges:
@@ -1130,7 +1151,8 @@ class UnflatteningPlanner:
 
         while remaining:
             ready = [
-                c for c in remaining
+                c
+                for c in remaining
                 if all(p in resolved_names for p in c.prerequisites)
             ]
             if not ready:

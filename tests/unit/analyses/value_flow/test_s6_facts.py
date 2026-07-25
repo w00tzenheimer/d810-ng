@@ -1,5 +1,6 @@
 """Tests for LS8 S6 value-flow facts: strength_reduction / memory_access /
 range_proof. Pure-Python, no IDA."""
+
 from __future__ import annotations
 
 import dataclasses

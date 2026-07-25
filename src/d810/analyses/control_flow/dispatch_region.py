@@ -33,7 +33,9 @@ class DispatchRegionDetector:
     """
 
     @staticmethod
-    def detect(adj: dict[int, tuple[int, ...]], dispatcher_serial: int) -> frozenset[int]:
+    def detect(
+        adj: dict[int, tuple[int, ...]], dispatcher_serial: int
+    ) -> frozenset[int]:
         """Return the set of block serials in the dispatch region.
 
         The dispatch region is the Strongly Connected Component containing

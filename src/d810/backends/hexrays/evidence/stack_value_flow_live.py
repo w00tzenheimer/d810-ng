@@ -13,6 +13,7 @@ carrier, the real carrier such as ``a5+0xD0``, and the dispatcher state var). A
 location is *defined*/​*used* by an instruction iff IDA's def/use ``mlist_t``
 ``has_common`` its interval -- the same membership test ``liveness.py`` uses.
 """
+
 from __future__ import annotations
 
 import ida_hexrays

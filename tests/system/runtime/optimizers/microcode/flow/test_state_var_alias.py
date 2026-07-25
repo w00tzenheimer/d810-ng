@@ -100,7 +100,7 @@ class TestStateVarAliasExpander:
         state_var = VarRef("reg", 0, 8)
         assignments = [
             Assignment(5, state_var, 0x42),  # state_var = 0x42
-            Assignment(7, state_var, 0x100), # state_var = 0x100
+            Assignment(7, state_var, 0x100),  # state_var = 0x100
         ]
 
         aliases = StateVarAliasExpander.expand(assignments, state_var)
@@ -129,7 +129,7 @@ class TestStateVarAliasExpander:
         reg2 = VarRef("reg", 2, 8)
         assignments = [
             Assignment(5, state_var, reg1),  # state_var = reg1
-            Assignment(7, reg1, reg2),       # reg1 = reg2
+            Assignment(7, reg1, reg2),  # reg1 = reg2
         ]
 
         aliases = StateVarAliasExpander.expand(assignments, state_var)
@@ -180,9 +180,9 @@ class TestStateVarAliasExpander:
 
         assignments = [
             Assignment(10, state_var, r1),  # state_var = r1
-            Assignment(20, r1, r2),         # r1 = r2
-            Assignment(30, r2, r3),         # r2 = r3
-            Assignment(40, r3, r4),         # r3 = r4
+            Assignment(20, r1, r2),  # r1 = r2
+            Assignment(30, r2, r3),  # r2 = r3
+            Assignment(40, r3, r4),  # r3 = r4
         ]
 
         aliases = StateVarAliasExpander.expand(assignments, state_var)
@@ -231,8 +231,8 @@ class TestStateVarAliasExpander:
         assignments = [
             Assignment(5, state_var, r1),  # state_var = r1
             Assignment(7, state_var, r2),  # state_var = r2
-            Assignment(9, r1, r3),         # r1 = r3
-            Assignment(11, r2, r3),        # r2 = r3
+            Assignment(9, r1, r3),  # r1 = r3
+            Assignment(11, r2, r3),  # r2 = r3
         ]
 
         aliases = StateVarAliasExpander.expand(assignments, state_var)
@@ -247,8 +247,8 @@ class TestStateVarAliasExpander:
         stack_slot = VarRef("stack", -8, 8)
 
         assignments = [
-            Assignment(5, state_var, reg1),       # state_var = reg1
-            Assignment(7, reg1, stack_slot),      # reg1 = [rsp-8]
+            Assignment(5, state_var, reg1),  # state_var = reg1
+            Assignment(7, reg1, stack_slot),  # reg1 = [rsp-8]
         ]
 
         aliases = StateVarAliasExpander.expand(assignments, state_var)
@@ -297,7 +297,7 @@ class TestGetStateWrites:
         """Blocks that write constants to state var aliases."""
         state_var = VarRef("reg", 0, 8)
         assignments = [
-            Assignment(5, state_var, 0x42),   # Block 5 writes 0x42
+            Assignment(5, state_var, 0x42),  # Block 5 writes 0x42
             Assignment(7, state_var, 0x100),  # Block 7 writes 0x100
         ]
         aliases = frozenset([state_var])
@@ -328,7 +328,7 @@ class TestGetStateWrites:
         reg1 = VarRef("reg", 1, 8)
         assignments = [
             Assignment(5, state_var, reg1),  # state_var = reg1 (reg1 is alias)
-            Assignment(7, reg1, 0x42),       # reg1 = 0x42 (write through alias)
+            Assignment(7, reg1, 0x42),  # reg1 = 0x42 (write through alias)
         ]
         aliases = frozenset([state_var, reg1])
 
@@ -342,7 +342,7 @@ class TestGetStateWrites:
         """Multiple constant writes in the same block."""
         state_var = VarRef("reg", 0, 8)
         assignments = [
-            Assignment(5, state_var, 0x42),   # First write
+            Assignment(5, state_var, 0x42),  # First write
             Assignment(5, state_var, 0x100),  # Second write (same block)
         ]
         aliases = frozenset([state_var])
@@ -357,7 +357,7 @@ class TestGetStateWrites:
         state_var = VarRef("reg", 0, 8)
         other_var = VarRef("reg", 1, 8)
         assignments = [
-            Assignment(5, state_var, 0x42),   # Write to alias
+            Assignment(5, state_var, 0x42),  # Write to alias
             Assignment(7, other_var, 0x100),  # Write to non-alias (ignored)
         ]
         aliases = frozenset([state_var])

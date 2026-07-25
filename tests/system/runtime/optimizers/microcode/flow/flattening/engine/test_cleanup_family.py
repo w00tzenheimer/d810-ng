@@ -1,4 +1,5 @@
 """Tests for the generic non-Hodur cleanup family pilot."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -305,9 +306,7 @@ def _fake_mba() -> SimpleNamespace:
 
 def test_simple_cleanup_family_registers_cleanup_strategies() -> None:
     empty_graph = FlowGraph(blocks={}, entry_serial=0, func_ea=0)
-    family = SimpleFlatteningCleanupFamily(
-        cfg_translator=_FakeTranslator(empty_graph)
-    )
+    family = SimpleFlatteningCleanupFamily(cfg_translator=_FakeTranslator(empty_graph))
 
     assert family.name == "simple_flattening_cleanup"
     assert [strategy.name for strategy in family.strategies] == [
@@ -417,9 +416,7 @@ def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
 
     assert detection.fake_jump_fixes == (fake_jump_fix,)
     assert detection.single_iteration_fixes == (single_iteration_fix,)
-    assert detection.bad_while_loop_edits == (
-        bad_while_loop_edit,
-    )
+    assert detection.bad_while_loop_edits == (bad_while_loop_edit,)
     assert detection.bad_while_loop_deferred_edits == (
         safe_bad_while_loop_duplicate,
         unsafe_bad_while_loop_duplicate,
@@ -737,9 +734,7 @@ def test_live_cleanup_backend_promotes_direct_side_effect_replay_only(
         unsafe_follow_up,
         duplicate_group_follow_up,
     )
-    assert detection.bad_while_loop_dependency_diagnostics == (
-        dependency_diagnostic,
-    )
+    assert detection.bad_while_loop_dependency_diagnostics == (dependency_diagnostic,)
     assert detection.detected is True
     assert "side_effect_capture" in calls["bad_while_loop"][1]
 
@@ -984,31 +979,31 @@ def test_simple_cleanup_family_selects_and_plans_conditional_cleanup_edits() -> 
 
     fragment = BadWhileLoopStrategy().plan(snapshot)
     assert fragment is not None
-    assert DuplicateBlock(
-        source_block=6,
-        target_block=None,
-        pred_serial=8,
-        conditional_target=3,
-        fallthrough_target=4,
-    ) in fragment.modifications
-    assert CreateConditionalRedirect(
-        source_block=1,
-        ref_block=12,
-        conditional_target=3,
-        fallthrough_target=4,
-        old_target_serial=2,
-    ) in fragment.modifications
+    assert (
+        DuplicateBlock(
+            source_block=6,
+            target_block=None,
+            pred_serial=8,
+            conditional_target=3,
+            fallthrough_target=4,
+        )
+        in fragment.modifications
+    )
+    assert (
+        CreateConditionalRedirect(
+            source_block=1,
+            ref_block=12,
+            conditional_target=3,
+            fallthrough_target=4,
+            old_target_serial=2,
+        )
+        in fragment.modifications
+    )
 
     patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
     assert any(isinstance(step, PatchDuplicateBlock) for step in patch_plan.steps)
-    assert any(
-        isinstance(step, PatchConditionalRedirect)
-        for step in patch_plan.steps
-    )
-    assert not any(
-        isinstance(step, LegacyBlockOperation)
-        for step in patch_plan.steps
-    )
+    assert any(isinstance(step, PatchConditionalRedirect) for step in patch_plan.steps)
+    assert not any(isinstance(step, LegacyBlockOperation) for step in patch_plan.steps)
 
 
 def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
@@ -1061,8 +1056,7 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
         )
     )
     family = SimpleFlatteningCleanupFamily(
-        backend=backend,
-        cfg_translator=_FakeTranslator(_cleanup_flow_graph())
+        backend=backend, cfg_translator=_FakeTranslator(_cleanup_flow_graph())
     )
 
     mba = _fake_mba()
@@ -1077,9 +1071,7 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
     assert extract_bad_while_loop_follow_up(snapshot.flow_graph) == (
         bad_while_loop_follow_up
     )
-    assert extract_tail_goto_merge_candidates(snapshot.flow_graph) == (
-        tail_goto_merge,
-    )
+    assert extract_tail_goto_merge_candidates(snapshot.flow_graph) == (tail_goto_merge,)
     assert snapshot.state_machine is None
     assert snapshot.state_summary == StateModelSummary(
         state_constants=frozenset(),
@@ -1267,10 +1259,7 @@ def test_simple_cleanup_family_selects_and_plans_direct_side_effect_replay() -> 
 
     patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
     assert any(isinstance(step, PatchInsertBlock) for step in patch_plan.steps)
-    assert not any(
-        isinstance(step, LegacyBlockOperation)
-        for step in patch_plan.steps
-    )
+    assert not any(isinstance(step, LegacyBlockOperation) for step in patch_plan.steps)
 
 
 def test_simple_cleanup_family_selects_and_plans_duplicate_group_replay() -> None:
@@ -1325,19 +1314,14 @@ def test_simple_cleanup_family_selects_and_plans_duplicate_group_replay() -> Non
     assert modification.source_serial == 50
     assert modification.dispatcher_entry == 41
     assert [
-        (row.pred_serial, row.target_serial)
-        for row in modification.per_pred_replays
+        (row.pred_serial, row.target_serial) for row in modification.per_pred_replays
     ] == [(51, 42), (52, 43)]
 
     patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
     assert any(
-        isinstance(step, PatchDuplicateReplayAndRedirect)
-        for step in patch_plan.steps
+        isinstance(step, PatchDuplicateReplayAndRedirect) for step in patch_plan.steps
     )
-    assert not any(
-        isinstance(step, LegacyBlockOperation)
-        for step in patch_plan.steps
-    )
+    assert not any(isinstance(step, LegacyBlockOperation) for step in patch_plan.steps)
 
 
 def test_simple_cleanup_family_selects_trampoline_isolation_candidate() -> None:
@@ -1375,9 +1359,7 @@ def test_simple_cleanup_family_selects_trampoline_isolation_candidate() -> None:
     assert metadata.collected_bad_while_loop_trampoline_isolation_candidates == 1
     assert metadata.selected_bad_while_loop_trampoline_isolation_candidates == 1
     assert metadata.bad_while_loop_follow_up_reclassifications == 1
-    assert extract_trampoline_isolation_candidates(snapshot.flow_graph) == (
-        candidate,
-    )
+    assert extract_trampoline_isolation_candidates(snapshot.flow_graph) == (candidate,)
     assert snapshot.flow_graph.metadata[CLEANUP_TRAMPOLINE_ISOLATION_METADATA_KEY] == (
         candidate,
     )
@@ -1389,9 +1371,7 @@ def test_simple_cleanup_family_selects_trampoline_isolation_candidate() -> None:
     )
     assert reclassifications[0].proof_state is CleanupProofState.PROVEN
     assert (
-        snapshot.flow_graph.metadata[
-            CLEANUP_FOLLOW_UP_RECLASSIFICATION_METADATA_KEY
-        ]
+        snapshot.flow_graph.metadata[CLEANUP_FOLLOW_UP_RECLASSIFICATION_METADATA_KEY]
         != []
     )
 
@@ -1408,13 +1388,12 @@ def test_simple_cleanup_family_selects_trampoline_isolation_candidate() -> None:
 
     patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
     assert any(isinstance(step, PatchInsertBlock) for step in patch_plan.steps)
-    assert not any(
-        isinstance(step, LegacyBlockOperation)
-        for step in patch_plan.steps
-    )
+    assert not any(isinstance(step, LegacyBlockOperation) for step in patch_plan.steps)
 
 
-def test_simple_cleanup_family_carries_dependency_diagnostics_without_planning() -> None:
+def test_simple_cleanup_family_carries_dependency_diagnostics_without_planning() -> (
+    None
+):
     diagnostic = {
         "dispatcher_entry": 41,
         "source_serial": 40,
@@ -1504,8 +1483,7 @@ def test_simple_cleanup_family_defers_unsafe_bad_while_loop_edits() -> None:
         )
     )
     family = SimpleFlatteningCleanupFamily(
-        backend=backend,
-        cfg_translator=_FakeTranslator(_cleanup_flow_graph())
+        backend=backend, cfg_translator=_FakeTranslator(_cleanup_flow_graph())
     )
 
     detection = family.detect(_fake_mba())
@@ -1520,9 +1498,8 @@ def test_simple_cleanup_family_defers_unsafe_bad_while_loop_edits() -> None:
     )
     assert snapshot.flow_graph.metadata[BAD_WHILE_LOOP_EDITS_METADATA_KEY] == []
     assert snapshot.flow_graph.metadata[BAD_WHILE_LOOP_FOLLOW_UP_METADATA_KEY] != []
-    assert (
-        extract_conditional_redirect_proofs(snapshot.flow_graph)
-        == (conditional_proof,)
+    assert extract_conditional_redirect_proofs(snapshot.flow_graph) == (
+        conditional_proof,
     )
     assert (
         snapshot.flow_graph.metadata[CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY]
@@ -1546,8 +1523,7 @@ def test_simple_cleanup_family_records_backend_errors() -> None:
         )
     )
     family = SimpleFlatteningCleanupFamily(
-        backend=backend,
-        cfg_translator=_FakeTranslator(_cleanup_flow_graph())
+        backend=backend, cfg_translator=_FakeTranslator(_cleanup_flow_graph())
     )
 
     detection = family.detect(_fake_mba())
@@ -1666,7 +1642,9 @@ def test_cleanup_unflattener_uses_shared_runtime(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(shell_module, "plan_family_pipeline", _plan_family_pipeline)
-    monkeypatch.setattr(shell_module, "execute_family_pipeline", _execute_family_pipeline)
+    monkeypatch.setattr(
+        shell_module, "execute_family_pipeline", _execute_family_pipeline
+    )
 
     rule = SimpleFlatteningCleanupUnflattener()
     rule._family = _FakeFamily()

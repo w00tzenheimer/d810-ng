@@ -22,6 +22,7 @@ shape a production fact target ever is) is projected via
 flat fallback was removed (S11) -- it was unreachable by any real source once
 every production fact target became a canonical ``FlowGraph``.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -315,7 +316,9 @@ def _guard_from_instruction(insn: _TerminalInsn) -> _GuardView | None:
             )
     if counter is None:
         return None
-    predicate = insn.predicate_kind.value if insn.predicate_kind is not None else "guard"
+    predicate = (
+        insn.predicate_kind.value if insn.predicate_kind is not None else "guard"
+    )
     condition = str(
         _attr(insn, "guard_condition", "condition_signature")
         or f"{counter} {predicate} {byte_index}"
@@ -391,7 +394,9 @@ def _guard_for_block(block: _BlockView) -> _GuardView | None:
     return None
 
 
-def _block_metadata(target: Any) -> dict[int, tuple[int | None, tuple[int, ...], tuple[int, ...]]]:
+def _block_metadata(
+    target: Any,
+) -> dict[int, tuple[int | None, tuple[int, ...], tuple[int, ...]]]:
     metadata: dict[int, tuple[int | None, tuple[int, ...], tuple[int, ...]]] = {}
     blocks = getattr(target, "blocks", target)
     block_iter = blocks.values() if isinstance(blocks, Mapping) else blocks
@@ -498,7 +503,9 @@ def _branch_takes_nonzero(insn: _TerminalInsn) -> bool:
     return insn.predicate_kind in {PredicateKind.NE, PredicateKind.TRUTHY}
 
 
-def _continuation_edge_for_return(block: _BlockView, return_edge: int | None) -> int | None:
+def _continuation_edge_for_return(
+    block: _BlockView, return_edge: int | None
+) -> int | None:
     if not block.succs:
         return None
     if return_edge is None:
@@ -572,8 +579,12 @@ class TerminalByteEmitterFactCollector:
 
                 destination = _memory_destination_signature(insn)
                 source = _source_byte_signature(insn, block)
-                counter = guard.counter_signature if guard is not None else "unknown-counter"
-                guard_condition = guard.condition if guard is not None else "unknown-guard"
+                counter = (
+                    guard.counter_signature if guard is not None else "unknown-counter"
+                )
+                guard_condition = (
+                    guard.condition if guard is not None else "unknown-guard"
+                )
                 if byte_index != 0 and counter != "unknown-counter":
                     store_counters.add(counter)
                 dedupe = (
@@ -613,12 +624,10 @@ class TerminalByteEmitterFactCollector:
             if counter not in store_counters:
                 continue
             semantic_key = (
-                "terminal_byte_emitter:byte_index=0:"
-                f"dest=guard-only:counter={counter}"
+                f"terminal_byte_emitter:byte_index=0:dest=guard-only:counter={counter}"
             )
             mop_signature = (
-                "terminal_byte_emit:byte=0:"
-                f"dest=guard-only:counter={counter}"
+                f"terminal_byte_emit:byte=0:dest=guard-only:counter={counter}"
             )
             dedupe = (block.serial, guard.insn.insn_index, semantic_key)
             if dedupe in seen:
@@ -696,8 +705,7 @@ class TerminalByteEmitterFactCollector:
                     source_block=block.serial,
                     source_ea=insn.ea,
                     block_fingerprint=(
-                        f"blk[{block.serial}].{insn.insn_index}:"
-                        f"{insn.opcode_name}"
+                        f"blk[{block.serial}].{insn.insn_index}:{insn.opcode_name}"
                     ),
                     mop_signature=mop_signature,
                     payload={

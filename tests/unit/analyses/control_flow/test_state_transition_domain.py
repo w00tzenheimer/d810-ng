@@ -12,6 +12,7 @@ CENTRAL §11.3-11.4: the lattice is the literal LiSA ``NonRedundantPowerset`` /
 ``d810.analyses.data_flow.run_fixpoint`` engine (same as ``ReachingDefinitions``
 in ``test_worklist_solver.py``).
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.state_transition_domain import (
@@ -91,12 +92,12 @@ class TestStateValueLattice:
     def test_leq_is_the_lattice_order(self) -> None:
         bottom, top = StateValue.bottom(), StateValue.top()
         one, onetwo = StateValue.of(1), StateValue.of_many([1, 2])
-        assert bottom.leq(one)          # ⊥ below everything
-        assert one.leq(onetwo)          # subset
-        assert one.leq(top)             # everything below ⊤
-        assert one.leq(one)             # reflexive
-        assert not onetwo.leq(one)      # superset not below subset
-        assert not top.leq(one)         # ⊤ not below a proper element
+        assert bottom.leq(one)  # ⊥ below everything
+        assert one.leq(onetwo)  # subset
+        assert one.leq(top)  # everything below ⊤
+        assert one.leq(one)  # reflexive
+        assert not onetwo.leq(one)  # superset not below subset
+        assert not top.leq(one)  # ⊤ not below a proper element
 
     def test_equality_and_hashing(self) -> None:
         assert StateValue.of(1) == StateValue.of(1)

@@ -5,6 +5,7 @@ Lives in ``d810.capabilities`` (layer below cfg/analyses).
 ``capabilities -> ir`` is the only legal structural dependency (precedent:
 ``capabilities/use_def_safety.py``).
 """
+
 from __future__ import annotations
 
 import enum

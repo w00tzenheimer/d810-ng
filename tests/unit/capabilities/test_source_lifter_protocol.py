@@ -3,6 +3,7 @@
 Pure-Python, no IDA. The no-capabilities->cfg upward edge is proven by
 lint-imports; here we check Protocol conformance + registry behavior.
 """
+
 from __future__ import annotations
 
 import pytest

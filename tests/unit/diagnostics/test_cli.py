@@ -1,4 +1,5 @@
 """Tests for the ``python -m d810.diagnostics`` CLI entry point."""
+
 from __future__ import annotations
 from d810.core.diag import create_diag_database, diag_models_on
 
@@ -26,7 +27,13 @@ from d810.core.diag.snapshot import (
     snapshot_fact_observations,
     snapshot_state_dispatcher_rows,
 )
-from d810.analyses.value_flow.facts import FactConflict, FactConsumerRecord, FactMapping, FactObservation, FactStatus
+from d810.analyses.value_flow.facts import (
+    FactConflict,
+    FactConsumerRecord,
+    FactMapping,
+    FactObservation,
+    FactStatus,
+)
 from tests.unit.core.diag.fixtures import create_sub_7ffd_scenario
 
 
@@ -62,19 +69,23 @@ class TestChainCommand:
         capsys: pytest.CaptureFixture,
     ):
         output = tmp_path / "chain.txt"
-        rc = main([
-            "chain",
-            "--db",
-            str(loaded_db_path),
-            "--output",
-            str(output),
-            "131",
-        ])
+        rc = main(
+            [
+                "chain",
+                "--db",
+                str(loaded_db_path),
+                "--output",
+                str(output),
+                "131",
+            ]
+        )
         assert rc == 0
         assert capsys.readouterr().out == ""
         assert "blk[131]@0x180014852" in output.read_text()
 
-    def test_chain_shows_hop_ok(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
+    def test_chain_shows_hop_ok(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ):
         rc = main(["chain", "--db", str(loaded_db_path), "131", "174"])
         assert rc == 0
         out = capsys.readouterr().out
@@ -148,9 +159,7 @@ class TestBlockCommand:
         out = capsys.readouterr().out
         assert "instructions" in out
 
-    def test_block_not_found(
-        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
-    ):
+    def test_block_not_found(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
         rc = main(["block", "--db", str(loaded_db_path), "9999"])
         assert rc == 0
         out = capsys.readouterr().out
@@ -166,9 +175,7 @@ class TestBlockCommand:
 
 
 class TestReturnPathsCommand:
-    def test_return_paths(
-        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
-    ):
+    def test_return_paths(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
         rc = main(["return-paths", "--db", str(loaded_db_path)])
         assert rc == 0
         out = capsys.readouterr().out
@@ -329,7 +336,9 @@ class TestRenderedProgramCommand:
         assert "state_family" in out
         assert "handler=blk[136]" in out
 
-    def test_program_variants(self, loaded_db_path: Path, capsys: pytest.CaptureFixture):
+    def test_program_variants(
+        self, loaded_db_path: Path, capsys: pytest.CaptureFixture
+    ):
         rc = main(["program-variants", "--db", str(loaded_db_path)])
         assert rc == 0
         out = capsys.readouterr().out
@@ -352,7 +361,9 @@ class TestStateLocalCommand:
 
 
 class TestStateTransitionConditionChainResolutionsCommand:
-    def _make_condition_chain_resolution_db_and_log(self, tmp_path: Path) -> tuple[Path, Path]:
+    def _make_condition_chain_resolution_db_and_log(
+        self, tmp_path: Path
+    ) -> tuple[Path, Path]:
         db_path = tmp_path / "condition_chain.sqlite3"
         log_path = tmp_path / "d810.log"
         transition_payload = {
@@ -375,50 +386,52 @@ class TestStateTransitionConditionChainResolutionsCommand:
                 id=1,
                 label="maturity_MMAT_LOCOPT_pre_d810",
                 func_ea_hex="0x180012df0",
-                func_ea_i64=0x180012df0,
+                func_ea_i64=0x180012DF0,
                 maturity="MMAT_LOCOPT",
                 phase="pre_d810",
                 block_count=0,
                 timestamp=0.0,
             ).execute()
-            FactObservationModel.insert_many([
-                {
-                    "snapshot": 1,
-                    "func_ea_hex": "0x180012df0",
-                    "func_ea_i64": 0x180012df0,
-                    "fact_id": "state_transition_anchor:test",
-                    "kind": "StateTransitionAnchorFact",
-                    "semantic_key": "state_transition_anchor:test",
-                    "maturity": "MMAT_LOCOPT",
-                    "phase": "pre_d810",
-                    "confidence": 0.9,
-                    "source_block": 100,
-                    "source_ea_hex": None,
-                    "source_ea_i64": None,
-                    "block_fingerprint": None,
-                    "mop_signature": None,
-                    "payload": json.dumps(transition_payload),
-                    "evidence": "[]",
-                },
-                {
-                    "snapshot": 1,
-                    "func_ea_hex": "0x180012df0",
-                    "func_ea_i64": 0x180012df0,
-                    "fact_id": "state_write_anchor:test",
-                    "kind": "StateWriteAnchorFact",
-                    "semantic_key": "state_write_anchor:test",
-                    "maturity": "MMAT_LOCOPT",
-                    "phase": "pre_d810",
-                    "confidence": 0.9,
-                    "source_block": 7,
-                    "source_ea_hex": None,
-                    "source_ea_i64": None,
-                    "block_fingerprint": None,
-                    "mop_signature": None,
-                    "payload": json.dumps(write_payload),
-                    "evidence": "[]",
-                },
-            ]).execute()
+            FactObservationModel.insert_many(
+                [
+                    {
+                        "snapshot": 1,
+                        "func_ea_hex": "0x180012df0",
+                        "func_ea_i64": 0x180012DF0,
+                        "fact_id": "state_transition_anchor:test",
+                        "kind": "StateTransitionAnchorFact",
+                        "semantic_key": "state_transition_anchor:test",
+                        "maturity": "MMAT_LOCOPT",
+                        "phase": "pre_d810",
+                        "confidence": 0.9,
+                        "source_block": 100,
+                        "source_ea_hex": None,
+                        "source_ea_i64": None,
+                        "block_fingerprint": None,
+                        "mop_signature": None,
+                        "payload": json.dumps(transition_payload),
+                        "evidence": "[]",
+                    },
+                    {
+                        "snapshot": 1,
+                        "func_ea_hex": "0x180012df0",
+                        "func_ea_i64": 0x180012DF0,
+                        "fact_id": "state_write_anchor:test",
+                        "kind": "StateWriteAnchorFact",
+                        "semantic_key": "state_write_anchor:test",
+                        "maturity": "MMAT_LOCOPT",
+                        "phase": "pre_d810",
+                        "confidence": 0.9,
+                        "source_block": 7,
+                        "source_ea_hex": None,
+                        "source_ea_i64": None,
+                        "block_fingerprint": None,
+                        "mop_signature": None,
+                        "payload": json.dumps(write_payload),
+                        "evidence": "[]",
+                    },
+                ]
+            ).execute()
         conn = db.connection()
         conn.close()
         log_path.write_text(
@@ -431,13 +444,15 @@ class TestStateTransitionConditionChainResolutionsCommand:
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         db_path, log_path = self._make_condition_chain_resolution_db_and_log(tmp_path)
-        rc = main([
-            "state-transition-condition-chain-resolutions",
-            "--db",
-            str(db_path),
-            "--condition-chain-log",
-            str(log_path),
-        ])
+        rc = main(
+            [
+                "state-transition-condition-chain-resolutions",
+                "--db",
+                str(db_path),
+                "--condition-chain-log",
+                str(log_path),
+            ]
+        )
 
         assert rc == 0
         out = capsys.readouterr().out
@@ -463,11 +478,13 @@ class TestStateTransitionConditionChainResolutionsCommand:
         )
         conn.close()
 
-        rc = main([
-            "state-transition-condition-chain-resolutions",
-            "--db",
-            str(db_path),
-        ])
+        rc = main(
+            [
+                "state-transition-condition-chain-resolutions",
+                "--db",
+                str(db_path),
+            ]
+        )
 
         assert rc == 0
         out = capsys.readouterr().out
@@ -485,14 +502,16 @@ class TestStateTransitionConditionChainResolutionsCommand:
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         db_path, log_path = self._make_condition_chain_resolution_db_and_log(tmp_path)
-        rc = main([
-            "state-transition-condition-chain-resolutions",
-            "--db",
-            str(db_path),
-            "--condition-chain-log",
-            str(log_path),
-            "--no-persist",
-        ])
+        rc = main(
+            [
+                "state-transition-condition-chain-resolutions",
+                "--db",
+                str(db_path),
+                "--condition-chain-log",
+                str(log_path),
+                "--no-persist",
+            ]
+        )
 
         assert rc == 0
         out = capsys.readouterr().out
@@ -517,28 +536,30 @@ class TestStateTransitionDispatchResolutionsCommand:
         }
         db = create_diag_database(str(db_path))
         with diag_models_on(db):
-            Snapshot.insert_many([
-                {
-                    "id": 1,
-                    "label": "MMAT_LOCOPT_pre_d810",
-                    "func_ea_hex": "0x180012df0",
-                    "func_ea_i64": 0x180012df0,
-                    "maturity": "MMAT_LOCOPT",
-                    "phase": "pre_d810",
-                    "block_count": 0,
-                    "timestamp": 0.0,
-                },
-                {
-                    "id": 2,
-                    "label": "MMAT_GLBOPT1_post_d810",
-                    "func_ea_hex": "0x180012df0",
-                    "func_ea_i64": 0x180012df0,
-                    "maturity": "MMAT_GLBOPT1",
-                    "phase": "post_d810",
-                    "block_count": 0,
-                    "timestamp": 1.0,
-                },
-            ]).execute()
+            Snapshot.insert_many(
+                [
+                    {
+                        "id": 1,
+                        "label": "MMAT_LOCOPT_pre_d810",
+                        "func_ea_hex": "0x180012df0",
+                        "func_ea_i64": 0x180012DF0,
+                        "maturity": "MMAT_LOCOPT",
+                        "phase": "pre_d810",
+                        "block_count": 0,
+                        "timestamp": 0.0,
+                    },
+                    {
+                        "id": 2,
+                        "label": "MMAT_GLBOPT1_post_d810",
+                        "func_ea_hex": "0x180012df0",
+                        "func_ea_i64": 0x180012DF0,
+                        "maturity": "MMAT_GLBOPT1",
+                        "phase": "post_d810",
+                        "block_count": 0,
+                        "timestamp": 1.0,
+                    },
+                ]
+            ).execute()
             FactObservationModel.insert(
                 snapshot=1,
                 func_ea_hex="0x180012df0",
@@ -574,11 +595,13 @@ class TestStateTransitionDispatchResolutionsCommand:
     ) -> None:
         db_path = self._make_dispatch_resolution_db(tmp_path)
 
-        rc = main([
-            "state-transition-dispatch-resolutions",
-            "--db",
-            str(db_path),
-        ])
+        rc = main(
+            [
+                "state-transition-dispatch-resolutions",
+                "--db",
+                str(db_path),
+            ]
+        )
 
         assert rc == 0
         out = capsys.readouterr().out
@@ -664,13 +687,15 @@ class TestFactCommands:
         self, loaded_db_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         self._load_fact_rows(loaded_db_path)
-        rc = main([
-            "fact-observations",
-            "--db",
-            str(loaded_db_path),
-            "--kind",
-            "InductionCarrierFact",
-        ])
+        rc = main(
+            [
+                "fact-observations",
+                "--db",
+                str(loaded_db_path),
+                "--kind",
+                "InductionCarrierFact",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "induction:loop-a" in out
@@ -699,14 +724,16 @@ class TestFactCommands:
         )
         conn.close()
 
-        rc = main([
-            "fact-observations",
-            "--db",
-            str(loaded_db_path),
-            "--kind",
-            "InductionCarrierFact",
-            "--all-snapshots",
-        ])
+        rc = main(
+            [
+                "fact-observations",
+                "--db",
+                str(loaded_db_path),
+                "--kind",
+                "InductionCarrierFact",
+                "--all-snapshots",
+            ]
+        )
 
         assert rc == 0
         out = capsys.readouterr().out
@@ -718,14 +745,16 @@ class TestFactCommands:
         self, loaded_db_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         self._load_fact_rows(loaded_db_path)
-        rc = main([
-            "fact-mappings",
-            "--db",
-            str(loaded_db_path),
-            "--status",
-            "REMAPPED",
-            "--json",
-        ])
+        rc = main(
+            [
+                "fact-mappings",
+                "--db",
+                str(loaded_db_path),
+                "--status",
+                "REMAPPED",
+                "--json",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert '"source_fact_id": "induction:loop-a"' in out
@@ -735,24 +764,28 @@ class TestFactCommands:
         self, loaded_db_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
         self._load_fact_rows(loaded_db_path)
-        rc = main([
-            "fact-consumers",
-            "--db",
-            str(loaded_db_path),
-            "--decision",
-            "protected",
-        ])
+        rc = main(
+            [
+                "fact-consumers",
+                "--db",
+                str(loaded_db_path),
+                "--decision",
+                "protected",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "hodur.hcc" in out
 
-        rc = main([
-            "fact-conflicts",
-            "--db",
-            str(loaded_db_path),
-            "--conflict-kind",
-            "overlap",
-        ])
+        rc = main(
+            [
+                "fact-conflicts",
+                "--db",
+                str(loaded_db_path),
+                "--conflict-kind",
+                "overlap",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "same byte corridor" in out
@@ -762,13 +795,15 @@ class TestFactCommands:
     ) -> None:
         self._load_fact_rows(loaded_db_path)
 
-        rc = main([
-            "fact-trace",
-            "--db",
-            str(loaded_db_path),
-            "--semantic-key",
-            "loop:a",
-        ])
+        rc = main(
+            [
+                "fact-trace",
+                "--db",
+                str(loaded_db_path),
+                "--semantic-key",
+                "loop:a",
+            ]
+        )
 
         assert rc == 0
         out = capsys.readouterr().out
@@ -784,17 +819,19 @@ class TestFactCommands:
     ) -> None:
         self._load_fact_rows(loaded_db_path)
 
-        rc = main([
-            "fact-diff",
-            "--db",
-            str(loaded_db_path),
-            "--from-maturity",
-            "MMAT_LOCOPT",
-            "--to-maturity",
-            "MMAT_GLBOPT1",
-            "--kind",
-            "InductionCarrierFact",
-        ])
+        rc = main(
+            [
+                "fact-diff",
+                "--db",
+                str(loaded_db_path),
+                "--from-maturity",
+                "MMAT_LOCOPT",
+                "--to-maturity",
+                "MMAT_GLBOPT1",
+                "--kind",
+                "InductionCarrierFact",
+            ]
+        )
 
         assert rc == 0
         out = capsys.readouterr().out
@@ -866,19 +903,21 @@ class TestFactCommands:
         )
         conn.close()
 
-        rc = main([
-            "fact-diff",
-            "--db",
-            str(loaded_db_path),
-            "--from-maturity",
-            "MMAT_LOCOPT",
-            "--to-maturity",
-            "MMAT_GLBOPT1",
-            "--kind",
-            "InductionCarrierFact",
-            "--semantic-key",
-            "loop:cross-map",
-        ])
+        rc = main(
+            [
+                "fact-diff",
+                "--db",
+                str(loaded_db_path),
+                "--from-maturity",
+                "MMAT_LOCOPT",
+                "--to-maturity",
+                "MMAT_GLBOPT1",
+                "--kind",
+                "InductionCarrierFact",
+                "--semantic-key",
+                "loop:cross-map",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "induction:shared-map" in out
@@ -886,34 +925,38 @@ class TestFactCommands:
         assert "REMAPPED" not in out
         assert "132" not in out
 
-        rc = main([
-            "fact-trace",
-            "--db",
-            str(loaded_db_path),
-            "--kind",
-            "InductionCarrierFact",
-            "--semantic-key",
-            "loop:cross-map",
-        ])
+        rc = main(
+            [
+                "fact-trace",
+                "--db",
+                str(loaded_db_path),
+                "--kind",
+                "InductionCarrierFact",
+                "--semantic-key",
+                "loop:cross-map",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "induction:shared-map" in out
         assert "REMAPPED" not in out
         assert "132" not in out
 
-        rc = main([
-            "fact-diff",
-            "--db",
-            str(loaded_db_path),
-            "--from-maturity",
-            "MMAT_LOCOPT",
-            "--to-maturity",
-            "MMAT_GLBOPT1",
-            "--kind",
-            "InductionCarrierFact",
-            "--semantic-key",
-            "loop:cross-active",
-        ])
+        rc = main(
+            [
+                "fact-diff",
+                "--db",
+                str(loaded_db_path),
+                "--from-maturity",
+                "MMAT_LOCOPT",
+                "--to-maturity",
+                "MMAT_GLBOPT1",
+                "--kind",
+                "InductionCarrierFact",
+                "--semantic-key",
+                "loop:cross-active",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "induction:shared-active" in out
@@ -929,8 +972,17 @@ class TestFactCommands:
 class TestSubprocess:
     def test_cli_chain_subprocess(self, loaded_db_path: Path):
         result = subprocess.run(
-            [sys.executable, "-m", "d810.diagnostics", "chain",
-             "--db", str(loaded_db_path), "131", "174", "176"],
+            [
+                sys.executable,
+                "-m",
+                "d810.diagnostics",
+                "chain",
+                "--db",
+                str(loaded_db_path),
+                "131",
+                "174",
+                "176",
+            ],
             capture_output=True,
             text=True,
             env={"PYTHONPATH": str(Path(__file__).resolve().parents[3] / "src")},

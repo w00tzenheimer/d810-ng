@@ -6,6 +6,7 @@ collector never touches a live ``mba_t``/``mblock_t`` (ticket llr-zeyu).
 
 Maturities fired: MMAT_CALLS (3), MMAT_PREOPTIMIZED (5).
 """
+
 from __future__ import annotations
 
 import time
@@ -25,7 +26,9 @@ _MMAT_PREOPTIMIZED = 5
 _HIGH_INDEGREE_THRESHOLD = 3
 
 
-def _collect_from_portable_cfg(target) -> tuple[set[int], dict[int, tuple[int, ...]], dict[int, set[int]]]:
+def _collect_from_portable_cfg(
+    target,
+) -> tuple[set[int], dict[int, tuple[int, ...]], dict[int, set[int]]]:
     """Extract nodes/succs/preds from a portable FlowGraph."""
     nodes: set[int] = set(target.blocks.keys())
     succs: dict[int, tuple[int, ...]] = {}
@@ -131,7 +134,7 @@ class CFGShapeCollector:
         func_ea: int | None = None,
         **legacy_fields: object,
     ) -> PreanalysisResult:
-        "Collect CFG shape metrics.\n\n        :param target: portable ``d810.ir`` ``FlowGraph``.\n        :param func_ea: Function effective address.\n        :param maturity: Current maturity level.\n        :return: Frozen ``PreanalysisResult`` with CFG shape metrics.\n        "
+        "Collect CFG shape metrics.\n\n        :param target: portable ``d810.ir`` ``FlowGraph``.\n        :param func_ea: Function effective address.\n        :param maturity: Current maturity level.\n        :return: Frozen ``PreanalysisResult`` with CFG shape metrics.\n"
         context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,
@@ -145,23 +148,29 @@ class CFGShapeCollector:
         max_in_degree = max((len(p) for p in preds.values()), default=0)
         score = _flattening_score(entry, nodes, succs, preds)
 
-        metrics = MappingProxyType({
-            "block_count": block_count,
-            "edge_count": edge_count,
-            "max_in_degree": max_in_degree,
-            "flattening_score": score,
-        })
+        metrics = MappingProxyType(
+            {
+                "block_count": block_count,
+                "edge_count": edge_count,
+                "max_in_degree": max_in_degree,
+                "flattening_score": score,
+            }
+        )
 
         candidates: list[CandidateFlag] = []
         if max_in_degree >= _HIGH_INDEGREE_THRESHOLD:
             # Find block(s) with the highest in-degree
             hub_serial = max(nodes, key=lambda n: len(preds.get(n, set())))
-            candidates.append(CandidateFlag(
-                kind="high_indegree_block",
-                block_serial=hub_serial,
-                confidence=min(1.0, (max_in_degree - _HIGH_INDEGREE_THRESHOLD + 1) * 0.2),
-                detail=f"block {hub_serial} has {max_in_degree} predecessors",
-            ))
+            candidates.append(
+                CandidateFlag(
+                    kind="high_indegree_block",
+                    block_serial=hub_serial,
+                    confidence=min(
+                        1.0, (max_in_degree - _HIGH_INDEGREE_THRESHOLD + 1) * 0.2
+                    ),
+                    detail=f"block {hub_serial} has {max_in_degree} predecessors",
+                )
+            )
 
         return PreanalysisResult(
             collector_name=self.name,

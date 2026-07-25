@@ -15,16 +15,22 @@ Coverage:
 IDA note: deferred_events.py is pure Python (no IDA imports), so these tests
 run entirely in the unit test environment with no mocking required.
 """
+
 from __future__ import annotations
 
 import pytest
 
-from d810.hexrays.mutation.deferred_events import DeferredEvent, DeferredEventPayload, EventEmitter
+from d810.hexrays.mutation.deferred_events import (
+    DeferredEvent,
+    DeferredEventPayload,
+    EventEmitter,
+)
 
 
 # ---------------------------------------------------------------------------
 # DeferredEvent enum
 # ---------------------------------------------------------------------------
+
 
 class TestDeferredEvent:
     """Verify the enum has all required lifecycle events."""
@@ -61,8 +67,8 @@ class TestDeferredEvent:
 # EventEmitter: basic subscribe / emit
 # ---------------------------------------------------------------------------
 
-class TestEventEmitter:
 
+class TestEventEmitter:
     def test_subscribe_and_receive(self):
         emitter = EventEmitter()
         received = []
@@ -82,10 +88,12 @@ class TestEventEmitter:
         received_a = []
         received_b = []
 
-        emitter.subscribe(DeferredEvent.DEFERRED_QUEUE_ADDED,
-                          lambda p: received_a.append(p))
-        emitter.subscribe(DeferredEvent.DEFERRED_APPLY_STARTED,
-                          lambda p: received_b.append(p))
+        emitter.subscribe(
+            DeferredEvent.DEFERRED_QUEUE_ADDED, lambda p: received_a.append(p)
+        )
+        emitter.subscribe(
+            DeferredEvent.DEFERRED_APPLY_STARTED, lambda p: received_b.append(p)
+        )
 
         emitter.emit(DeferredEvent.DEFERRED_QUEUE_ADDED, {"e": "A"})
         emitter.emit(DeferredEvent.DEFERRED_APPLY_FINISHED, {"e": "unrelated"})
@@ -98,8 +106,12 @@ class TestEventEmitter:
         emitter = EventEmitter()
         log = []
 
-        emitter.subscribe(DeferredEvent.DEFERRED_MOD_APPLIED, lambda p: log.append("first"))
-        emitter.subscribe(DeferredEvent.DEFERRED_MOD_APPLIED, lambda p: log.append("second"))
+        emitter.subscribe(
+            DeferredEvent.DEFERRED_MOD_APPLIED, lambda p: log.append("first")
+        )
+        emitter.subscribe(
+            DeferredEvent.DEFERRED_MOD_APPLIED, lambda p: log.append("second")
+        )
 
         emitter.emit(DeferredEvent.DEFERRED_MOD_APPLIED, {})
 
@@ -159,6 +171,7 @@ class TestEventEmitter:
 # ---------------------------------------------------------------------------
 # Event emission order - success path (simulated)
 # ---------------------------------------------------------------------------
+
 
 class TestEventEmissionOrder:
     """Verify expected event ordering using a recording emitter."""
@@ -229,6 +242,7 @@ class TestEventEmissionOrder:
 # ---------------------------------------------------------------------------
 # Payload schema validation
 # ---------------------------------------------------------------------------
+
 
 class TestPayloadSchema:
     """Verify required fields are present and primitives-only."""
@@ -325,6 +339,7 @@ class TestPayloadSchema:
 # Quarantine behaviour (pure Python, no IDA)
 # ---------------------------------------------------------------------------
 
+
 class _FakeQuarantineTarget:
     """Minimal stub that replicates the quarantine logic from
     the deferred verification consumer without importing IDA.
@@ -351,20 +366,23 @@ class _FakeQuarantineTarget:
 
 
 class TestQuarantineBehaviour:
-
     def test_verify_failed_sets_quarantine(self):
         target = _FakeQuarantineTarget(func_ea=0x1000)
         emitter = EventEmitter()
-        emitter.subscribe(DeferredEvent.DEFERRED_VERIFY_FAILED,
-                          target._on_deferred_verify_failed)
+        emitter.subscribe(
+            DeferredEvent.DEFERRED_VERIFY_FAILED, target._on_deferred_verify_failed
+        )
 
         assert not target._is_function_quarantined()
 
-        emitter.emit(DeferredEvent.DEFERRED_VERIFY_FAILED, {
-            "function_ea": 0x1000,
-            "maturity": 3,
-            "optimizer_name": "TestRule",
-        })
+        emitter.emit(
+            DeferredEvent.DEFERRED_VERIFY_FAILED,
+            {
+                "function_ea": 0x1000,
+                "maturity": 3,
+                "optimizer_name": "TestRule",
+            },
+        )
 
         assert target._is_function_quarantined()
 
@@ -373,26 +391,32 @@ class TestQuarantineBehaviour:
         target_b = _FakeQuarantineTarget(func_ea=0x2000)
 
         emitter = EventEmitter()
-        emitter.subscribe(DeferredEvent.DEFERRED_VERIFY_FAILED,
-                          target_a._on_deferred_verify_failed)
-        emitter.subscribe(DeferredEvent.DEFERRED_VERIFY_FAILED,
-                          target_b._on_deferred_verify_failed)
+        emitter.subscribe(
+            DeferredEvent.DEFERRED_VERIFY_FAILED, target_a._on_deferred_verify_failed
+        )
+        emitter.subscribe(
+            DeferredEvent.DEFERRED_VERIFY_FAILED, target_b._on_deferred_verify_failed
+        )
 
         # Only 0x1000 fails
-        emitter.emit(DeferredEvent.DEFERRED_VERIFY_FAILED, {
-            "function_ea": 0x1000,
-            "maturity": 3,
-        })
+        emitter.emit(
+            DeferredEvent.DEFERRED_VERIFY_FAILED,
+            {
+                "function_ea": 0x1000,
+                "maturity": 3,
+            },
+        )
 
-        assert target_a._is_function_quarantined()      # 0x1000 quarantined
+        assert target_a._is_function_quarantined()  # 0x1000 quarantined
         assert not target_b._is_function_quarantined()  # 0x2000 not quarantined
 
     def test_quarantine_none_ea_is_ignored(self):
         """Payloads with function_ea=None must not quarantine anything."""
         target = _FakeQuarantineTarget(func_ea=0)
         emitter = EventEmitter()
-        emitter.subscribe(DeferredEvent.DEFERRED_VERIFY_FAILED,
-                          target._on_deferred_verify_failed)
+        emitter.subscribe(
+            DeferredEvent.DEFERRED_VERIFY_FAILED, target._on_deferred_verify_failed
+        )
 
         emitter.emit(DeferredEvent.DEFERRED_VERIFY_FAILED, {"function_ea": None})
 
@@ -402,8 +426,9 @@ class TestQuarantineBehaviour:
         """function_ea=0 is BADADDR sentinel and must not be quarantined."""
         target = _FakeQuarantineTarget(func_ea=0)
         emitter = EventEmitter()
-        emitter.subscribe(DeferredEvent.DEFERRED_VERIFY_FAILED,
-                          target._on_deferred_verify_failed)
+        emitter.subscribe(
+            DeferredEvent.DEFERRED_VERIFY_FAILED, target._on_deferred_verify_failed
+        )
 
         emitter.emit(DeferredEvent.DEFERRED_VERIFY_FAILED, {"function_ea": 0})
 
@@ -418,8 +443,9 @@ class TestQuarantineBehaviour:
         """Duplicate verify-failure events for same function are idempotent."""
         target = _FakeQuarantineTarget(func_ea=0x5000)
         emitter = EventEmitter()
-        emitter.subscribe(DeferredEvent.DEFERRED_VERIFY_FAILED,
-                          target._on_deferred_verify_failed)
+        emitter.subscribe(
+            DeferredEvent.DEFERRED_VERIFY_FAILED, target._on_deferred_verify_failed
+        )
 
         for _ in range(5):
             emitter.emit(DeferredEvent.DEFERRED_VERIFY_FAILED, {"function_ea": 0x5000})

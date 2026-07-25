@@ -201,8 +201,7 @@ def load_function_analysis_priors_from_config(
             raw_priors.get("known_impossible_return_constants", ()),
         )
         artifact_priors = (
-            ReturnFrontierArtifactPriors
-            .from_known_impossible_return_constants(
+            ReturnFrontierArtifactPriors.from_known_impossible_return_constants(
                 _coerce_prior_constants(constants)
             )
         )

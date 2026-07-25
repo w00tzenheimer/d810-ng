@@ -14,6 +14,7 @@ merge where only one side defines a cell cannot prove anything about it.
 Immutable (copy-on-write): :meth:`assign` / :meth:`join` / :meth:`widen` return
 new stores.  Ticket llr-xvkt / epic llr-7ouc.  Portable: no IDA, no z3.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -55,9 +56,7 @@ class ConcolicStore:
 
     def is_concrete_enough(self, locs: Iterable[LocationRef]) -> bool:
         """``True`` iff every queried location holds a ``CONCRETE`` value."""
-        return all(
-            self.eval(loc).status is PrecisionStatus.CONCRETE for loc in locs
-        )
+        return all(self.eval(loc).status is PrecisionStatus.CONCRETE for loc in locs)
 
     # -- internal ----------------------------------------------------------
     def _merge(self, other: "ConcolicStore", *, widen: bool) -> "ConcolicStore":

@@ -3,6 +3,7 @@
 Exercises the portable driver with injected null deps + the real HodurFamily passes:
 detect -> pipeline_for -> validate_capabilities -> pass.run -> (apply on non-empty plan).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -75,8 +76,13 @@ from d810.transforms.fragment_plan import (
 _GRAPH = FlowGraph(
     blocks={
         0: BlockSnapshot(
-            serial=0, block_type=1, succs=(), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=(),
+            serial=0,
+            block_type=1,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
     },
     entry_serial=0,
@@ -188,9 +194,7 @@ class _MutatingPass:
     name = "mutating"
 
     def run(self, ctx) -> PassResult:
-        return PassResult(
-            rewrite_plan=PatchPlan(planner_modifications=(object(),))
-        )
+        return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
 
 
 def _fragment_identity(start_ea: int) -> StableBlockIdentity:
@@ -394,8 +398,12 @@ def test_run_pipeline_runs_all_five_passes_no_apply_on_empty_plans():
     backend = _Backend()
     facts = AnalysisManager(_GRAPH)
     out = run_pipeline(
-        source=_Src(), family=_MatchingHodur(), backend=backend,
-        facts=facts, project_config=None, maturity=None,
+        source=_Src(),
+        family=_MatchingHodur(),
+        backend=backend,
+        facts=facts,
+        project_config=None,
+        maturity=None,
     )
     # skeleton transforms emit empty plans -> backend.apply never called, graph unchanged.
     assert backend.applied == 0
@@ -407,8 +415,12 @@ def test_run_pipeline_does_not_record_empty_run_later_requests():
     facts = AnalysisManager(_GRAPH)
     scheduler = _RecordingScheduler()
     run_pipeline(
-        source=_Src(), family=_MatchingHodur(), backend=backend,
-        facts=facts, project_config=None, maturity=IRMaturity.CANONICAL,
+        source=_Src(),
+        family=_MatchingHodur(),
+        backend=backend,
+        facts=facts,
+        project_config=None,
+        maturity=IRMaturity.CANONICAL,
         scheduler=scheduler,
     )
     assert scheduler.requests == []
@@ -417,7 +429,9 @@ def test_run_pipeline_does_not_record_empty_run_later_requests():
 def test_default_safety_policy_still_reaches_backend_for_specs_without_native_safety():
     backend = _Backend()
 
-    _run_specs((PassSpec("mutating", _MutatingPass, no_caps, default),), backend=backend)
+    _run_specs(
+        (PassSpec("mutating", _MutatingPass, no_caps, default),), backend=backend
+    )
 
     assert backend.safety_policies == [SafetyPolicy()]
 
@@ -553,7 +567,9 @@ def test_real_lower_contract_native_safety_reaches_backend():
         contract=standard_state_machine_passes()[3].contract,
     )
 
-    _run_specs((spec,), facts=facts, backend=backend, maturity=IRMaturity.GLOBAL_ANALYZED)
+    _run_specs(
+        (spec,), facts=facts, backend=backend, maturity=IRMaturity.GLOBAL_ANALYZED
+    )
 
     assert backend.safety_policies == [
         SafetyPolicy(name="golden", golden_required=True)
@@ -563,14 +579,19 @@ def test_real_lower_contract_native_safety_reaches_backend():
 def test_run_pipeline_no_match_is_a_noop():
     backend = _Backend()
     out = run_pipeline(
-        source=_Src(), family=HodurFamily(), backend=backend,  # detect() -> None
-        facts=_Facts(), project_config=None, maturity=None,
+        source=_Src(),
+        family=HodurFamily(),
+        backend=backend,  # detect() -> None
+        facts=_Facts(),
+        project_config=None,
+        maturity=None,
     )
     assert backend.applied == 0 and out is _GRAPH
 
 
 def test_run_pipeline_applies_nonempty_plan_and_invalidates():
     """A pass that emits a real plan drives backend.apply + facts.invalidate + re-context."""
+
     class _Mutator:
         name = "mutate"
 
@@ -591,8 +612,12 @@ def test_run_pipeline_applies_nonempty_plan_and_invalidates():
 
     backend, facts = _Backend(), _Facts()
     out = run_pipeline(
-        source=_Src(), family=_OneShot(), backend=backend,
-        facts=facts, project_config=None, maturity=None,
+        source=_Src(),
+        family=_OneShot(),
+        backend=backend,
+        facts=facts,
+        project_config=None,
+        maturity=None,
     )
     assert backend.applied == 1
     assert facts.invalidations == 1
@@ -627,8 +652,11 @@ def test_missing_required_analysis_raises_contract_error():
 
     with pytest.raises(AnalysisContractError, match="missing required analyses"):
         run_pipeline(
-            source=_Src(), family=_OneShot(), backend=_Backend(),
-            facts=AnalysisManager(_GRAPH), project_config=None,
+            source=_Src(),
+            family=_OneShot(),
+            backend=_Backend(),
+            facts=AnalysisManager(_GRAPH),
+            project_config=None,
             maturity=IRMaturity.CANONICAL,
         )
 
@@ -664,8 +692,11 @@ def test_required_analysis_present_runs():
     facts.put_analysis("domtree", "D")
 
     out = run_pipeline(
-        source=_Src(), family=_OneShot(), backend=_Backend(),
-        facts=facts, project_config=None,
+        source=_Src(),
+        family=_OneShot(),
+        backend=_Backend(),
+        facts=facts,
+        project_config=None,
         maturity=IRMaturity.CANONICAL,
     )
 
@@ -707,8 +738,11 @@ def test_required_analysis_provider_runs():
     )
 
     out = run_pipeline(
-        source=_Src(), family=_OneShot(), backend=_Backend(),
-        facts=facts, project_config=None,
+        source=_Src(),
+        family=_OneShot(),
+        backend=_Backend(),
+        facts=facts,
+        project_config=None,
         maturity=IRMaturity.CANONICAL,
     )
 
@@ -728,9 +762,7 @@ def test_native_contract_required_analysis_missing_raises_contract_error():
         _NeedsDomtree,
         no_caps,
         default,
-        contract=PassContract(
-            requires=PassRequires(analyses=frozenset({"domtree"}))
-        ),
+        contract=PassContract(requires=PassRequires(analyses=frozenset({"domtree"}))),
     )
 
     with pytest.raises(PassContractError, match="analyses") as exc:
@@ -882,9 +914,7 @@ def test_native_contract_required_analysis_provider_runs():
         _NeedsDomtree,
         no_caps,
         default,
-        contract=PassContract(
-            requires=PassRequires(analyses=frozenset({"domtree"}))
-        ),
+        contract=PassContract(requires=PassRequires(analyses=frozenset({"domtree"}))),
     )
     facts = AnalysisManager(
         _GRAPH,
@@ -1679,7 +1709,9 @@ def test_native_contract_invalidation_drops_fact_while_preserving_analysis():
 
     facts = AnalysisManager(_GRAPH)
     facts.put_analysis("dominators", "D")
-    facts.put_fact("state_transition", type("_Fact", (), {"kind": "state_transition"})())
+    facts.put_fact(
+        "state_transition", type("_Fact", (), {"kind": "state_transition"})()
+    )
     specs = (
         PassSpec(
             "mutator",
@@ -2078,8 +2110,11 @@ def test_declared_analysis_output_is_visible_to_later_pass():
             )
 
     run_pipeline(
-        source=_Src(), family=_TwoPasses(), backend=_Backend(),
-        facts=AnalysisManager(_GRAPH), project_config=None,
+        source=_Src(),
+        family=_TwoPasses(),
+        backend=_Backend(),
+        facts=AnalysisManager(_GRAPH),
+        project_config=None,
         maturity=IRMaturity.CANONICAL,
     )
 
@@ -2098,14 +2133,15 @@ def test_undeclared_analysis_output_is_rejected():
             return object()
 
         def pipeline_for(self, match, context):
-            return (
-                PassSpec("publish_domtree", _PublishDomtree, no_caps, default),
-            )
+            return (PassSpec("publish_domtree", _PublishDomtree, no_caps, default),)
 
     with pytest.raises(AnalysisContractError, match="undeclared analyses"):
         run_pipeline(
-            source=_Src(), family=_OneShot(), backend=_Backend(),
-            facts=AnalysisManager(_GRAPH), project_config=None,
+            source=_Src(),
+            family=_OneShot(),
+            backend=_Backend(),
+            facts=AnalysisManager(_GRAPH),
+            project_config=None,
             maturity=IRMaturity.CANONICAL,
         )
 
@@ -2140,8 +2176,11 @@ def test_analysis_only_pass_with_empty_plan_succeeds():
     facts = AnalysisManager(_GRAPH)
 
     out = run_pipeline(
-        source=_Src(), family=_OneShot(), backend=_Backend(),
-        facts=facts, project_config=None,
+        source=_Src(),
+        family=_OneShot(),
+        backend=_Backend(),
+        facts=facts,
+        project_config=None,
         maturity=IRMaturity.CANONICAL,
     )
 
@@ -2184,8 +2223,11 @@ def test_analysis_only_pass_with_rewrite_plan_fails_before_apply():
 
     with pytest.raises(BackendRouteError, match="analysis-only pass"):
         run_pipeline(
-            source=_Src(), family=_OneShot(), backend=backend,
-            facts=facts, project_config=None,
+            source=_Src(),
+            family=_OneShot(),
+            backend=backend,
+            facts=facts,
+            project_config=None,
             maturity=IRMaturity.CANONICAL,
         )
 
@@ -2357,8 +2399,11 @@ def test_mutation_backend_pass_with_rewrite_plan_still_applies():
     backend, facts = _Backend(), _Facts()
 
     out = run_pipeline(
-        source=_Src(), family=_OneShot(), backend=backend,
-        facts=facts, project_config=None,
+        source=_Src(),
+        family=_OneShot(),
+        backend=backend,
+        facts=facts,
+        project_config=None,
         maturity=IRMaturity.CANONICAL,
     )
 
@@ -2401,8 +2446,11 @@ def test_noop_backend_apply_preserves_analysis_epoch():
     facts = AnalysisManager(_GRAPH)
     facts.put_analysis("recover_dispatcher", "R")
     out = run_pipeline(
-        source=_Src(), family=_TwoPasses(), backend=_NoopBackend(),
-        facts=facts, project_config=None,
+        source=_Src(),
+        family=_TwoPasses(),
+        backend=_NoopBackend(),
+        facts=facts,
+        project_config=None,
         maturity=IRMaturity.CANONICAL,
     )
 
@@ -2437,8 +2485,11 @@ def test_spec_preservation_applies_when_result_omits_preservation():
     facts = _Facts()
 
     run_pipeline(
-        source=_Src(), family=_OneShot(), backend=_Backend(),
-        facts=facts, project_config=None,
+        source=_Src(),
+        family=_OneShot(),
+        backend=_Backend(),
+        facts=facts,
+        project_config=None,
         maturity=IRMaturity.CANONICAL,
     )
 
@@ -2475,8 +2526,11 @@ def test_result_preservation_overrides_spec_default():
     facts = _Facts()
 
     run_pipeline(
-        source=_Src(), family=_OneShot(), backend=_Backend(),
-        facts=facts, project_config=None,
+        source=_Src(),
+        family=_OneShot(),
+        backend=_Backend(),
+        facts=facts,
+        project_config=None,
         maturity=IRMaturity.CANONICAL,
     )
 
@@ -2507,20 +2561,25 @@ def test_run_pipeline_records_pass_result_run_later_requests():
 
     scheduler = _RecordingScheduler()
     out = run_pipeline(
-        source=_Src(), family=_OneShot(), backend=_Backend(),
-        facts=_Facts(), project_config=None,
+        source=_Src(),
+        family=_OneShot(),
+        backend=_Backend(),
+        facts=_Facts(),
+        project_config=None,
         maturity=IRMaturity.CANONICAL,
         scheduler=scheduler,
     )
 
     assert out is _GRAPH
-    assert scheduler.requests == [{
-        "func_ea": 0x1000,
-        "pass_id": "ask_later",
-        "current_maturity": IRMaturity.CANONICAL,
-        "run_later": request,
-        "domain": RunLaterDomain.PIPELINE_PASS,
-    }]
+    assert scheduler.requests == [
+        {
+            "func_ea": 0x1000,
+            "pass_id": "ask_later",
+            "current_maturity": IRMaturity.CANONICAL,
+            "run_later": request,
+            "domain": RunLaterDomain.PIPELINE_PASS,
+        }
+    ]
 
 
 def test_run_pipeline_drains_pipeline_domain_into_worklist_without_duplicate():
@@ -2558,21 +2617,30 @@ def test_run_pipeline_drains_pipeline_domain_into_worklist_without_duplicate():
 
     scheduler = PassScheduler()
     run_pipeline(
-        source=_Src(), family=_OneShot(), backend=_Backend(),
-        facts=_Facts(), project_config=None,
+        source=_Src(),
+        family=_OneShot(),
+        backend=_Backend(),
+        facts=_Facts(),
+        project_config=None,
         maturity=IRMaturity.CANONICAL,
         scheduler=scheduler,
     )
 
     assert calls == [IRMaturity.CANONICAL]
-    assert scheduler.drain(
-        func_ea=0x1000,
-        current_maturity=IRMaturity.GLOBAL_ANALYZED,
-    ) == ()
+    assert (
+        scheduler.drain(
+            func_ea=0x1000,
+            current_maturity=IRMaturity.GLOBAL_ANALYZED,
+        )
+        == ()
+    )
 
     run_pipeline(
-        source=_Src(), family=_OneShot(), backend=_Backend(),
-        facts=_Facts(), project_config=None,
+        source=_Src(),
+        family=_OneShot(),
+        backend=_Backend(),
+        facts=_Facts(),
+        project_config=None,
         maturity=IRMaturity.GLOBAL_ANALYZED,
         scheduler=scheduler,
     )
@@ -2581,11 +2649,14 @@ def test_run_pipeline_drains_pipeline_domain_into_worklist_without_duplicate():
         IRMaturity.CANONICAL,
         IRMaturity.GLOBAL_ANALYZED,
     ]
-    assert scheduler.drain(
-        func_ea=0x1000,
-        current_maturity=IRMaturity.GLOBAL_ANALYZED,
-        domain=RunLaterDomain.PIPELINE_PASS,
-    ) == ()
+    assert (
+        scheduler.drain(
+            func_ea=0x1000,
+            current_maturity=IRMaturity.GLOBAL_ANALYZED,
+            domain=RunLaterDomain.PIPELINE_PASS,
+        )
+        == ()
+    )
 
 
 def test_run_pipeline_scheduled_worklist_pass_dedupes_at_normal_position():
@@ -2627,18 +2698,24 @@ def test_run_pipeline_scheduled_worklist_pass_dedupes_at_normal_position():
     )
 
     run_pipeline(
-        source=_Src(), family=_TwoPasses(), backend=_Backend(),
-        facts=_Facts(), project_config=None,
+        source=_Src(),
+        family=_TwoPasses(),
+        backend=_Backend(),
+        facts=_Facts(),
+        project_config=None,
         maturity=IRMaturity.GLOBAL_ANALYZED,
         scheduler=scheduler,
     )
 
     assert calls == ["first", "second"]
-    assert scheduler.drain(
-        func_ea=0x1000,
-        current_maturity=IRMaturity.GLOBAL_ANALYZED,
-        domain=RunLaterDomain.PIPELINE_PASS,
-    ) == ()
+    assert (
+        scheduler.drain(
+            func_ea=0x1000,
+            current_maturity=IRMaturity.GLOBAL_ANALYZED,
+            domain=RunLaterDomain.PIPELINE_PASS,
+        )
+        == ()
+    )
 
 
 def test_run_pipeline_replay_after_pipeline_policy_is_explicit_opt_in():
@@ -2686,18 +2763,24 @@ def test_run_pipeline_replay_after_pipeline_policy_is_explicit_opt_in():
     )
 
     run_pipeline(
-        source=_Src(), family=_TwoPasses(), backend=_Backend(),
-        facts=_Facts(), project_config=None,
+        source=_Src(),
+        family=_TwoPasses(),
+        backend=_Backend(),
+        facts=_Facts(),
+        project_config=None,
         maturity=IRMaturity.GLOBAL_ANALYZED,
         scheduler=scheduler,
     )
 
     assert calls == ["first", "second", "second"]
-    assert scheduler.drain(
-        func_ea=0x1000,
-        current_maturity=IRMaturity.GLOBAL_ANALYZED,
-        domain=RunLaterDomain.PIPELINE_PASS,
-    ) == ()
+    assert (
+        scheduler.drain(
+            func_ea=0x1000,
+            current_maturity=IRMaturity.GLOBAL_ANALYZED,
+            domain=RunLaterDomain.PIPELINE_PASS,
+        )
+        == ()
+    )
 
 
 def test_validate_capabilities_fails_loud_on_missing():
@@ -2737,22 +2820,33 @@ def test_approov_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):
         return lambda graph: _FakeMap(source, table_provenance)
 
     # Switch-table and indirect-jump are CLAIMED (truthy map returned).
-    monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind",
-                        _stub(RouterKind.TABLE, TableProvenance.SWITCH))
+    monkeypatch.setattr(
+        approov_pipeline,
+        "build_dispatch_map_any_kind",
+        _stub(RouterKind.TABLE, TableProvenance.SWITCH),
+    )
     assert fam.detect(_GRAPH, frozenset()) is not None
-    monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind",
-                        _stub(
-                            RouterKind.TABLE,
-                            TableProvenance.INDIRECT_JUMP_TABLE,
-                        ))
+    monkeypatch.setattr(
+        approov_pipeline,
+        "build_dispatch_map_any_kind",
+        _stub(
+            RouterKind.TABLE,
+            TableProvenance.INDIRECT_JUMP_TABLE,
+        ),
+    )
     assert fam.detect(_GRAPH, frozenset()) is not None
 
     # Equality-chain belongs to HodurFamily -> ApproovFamily must NOT claim it.
-    monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind",
-                        _stub(RouterKind.CONDITION_CHAIN))
+    monkeypatch.setattr(
+        approov_pipeline,
+        "build_dispatch_map_any_kind",
+        _stub(RouterKind.CONDITION_CHAIN),
+    )
     assert fam.detect(_GRAPH, frozenset()) is None
     # Front-end found nothing -> None.
-    monkeypatch.setattr(approov_pipeline, "build_dispatch_map_any_kind", lambda graph: None)
+    monkeypatch.setattr(
+        approov_pipeline, "build_dispatch_map_any_kind", lambda graph: None
+    )
     assert fam.detect(_GRAPH, frozenset()) is None
 
 
@@ -2801,11 +2895,12 @@ def test_approov_pipeline_for_indirect_is_emulation_gated():
     assert effective_safety_policy(
         by_name["cleanup_residual_dispatcher"]
     ) == SafetyPolicy(name="golden", golden_required=True)
-    assert by_name["lower_state_machine"].pass_factory().configured_kind == RouterKind.TABLE
     assert (
-        by_name["lower_state_machine"]
-        .pass_factory()
-        .configured_table_provenance
+        by_name["lower_state_machine"].pass_factory().configured_kind
+        == RouterKind.TABLE
+    )
+    assert (
+        by_name["lower_state_machine"].pass_factory().configured_table_provenance
         is TableProvenance.INDIRECT_JUMP_TABLE
     )
 
@@ -2830,22 +2925,33 @@ def test_tigress_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):
         return lambda graph: _FakeMap(source, table_provenance)
 
     # Switch-table and indirect-jump are CLAIMED (truthy map returned).
-    monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind",
-                        _stub(RouterKind.TABLE, TableProvenance.SWITCH))
+    monkeypatch.setattr(
+        tigress_pipeline,
+        "build_dispatch_map_any_kind",
+        _stub(RouterKind.TABLE, TableProvenance.SWITCH),
+    )
     assert fam.detect(_GRAPH, frozenset()) is not None
-    monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind",
-                        _stub(
-                            RouterKind.TABLE,
-                            TableProvenance.INDIRECT_JUMP_TABLE,
-                        ))
+    monkeypatch.setattr(
+        tigress_pipeline,
+        "build_dispatch_map_any_kind",
+        _stub(
+            RouterKind.TABLE,
+            TableProvenance.INDIRECT_JUMP_TABLE,
+        ),
+    )
     assert fam.detect(_GRAPH, frozenset()) is not None
 
     # Equality-chain belongs to HodurFamily -> TigressFamily must NOT claim it.
-    monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind",
-                        _stub(RouterKind.CONDITION_CHAIN))
+    monkeypatch.setattr(
+        tigress_pipeline,
+        "build_dispatch_map_any_kind",
+        _stub(RouterKind.CONDITION_CHAIN),
+    )
     assert fam.detect(_GRAPH, frozenset()) is None
     # Front-end found nothing -> None.
-    monkeypatch.setattr(tigress_pipeline, "build_dispatch_map_any_kind", lambda graph: None)
+    monkeypatch.setattr(
+        tigress_pipeline, "build_dispatch_map_any_kind", lambda graph: None
+    )
     assert fam.detect(_GRAPH, frozenset()) is None
 
 
@@ -2893,11 +2999,12 @@ def test_tigress_pipeline_for_indirect_is_emulation_gated():
     assert effective_safety_policy(
         by_name["cleanup_residual_dispatcher"]
     ) == SafetyPolicy(name="golden", golden_required=True)
-    assert by_name["lower_state_machine"].pass_factory().configured_kind == RouterKind.TABLE
     assert (
-        by_name["lower_state_machine"]
-        .pass_factory()
-        .configured_table_provenance
+        by_name["lower_state_machine"].pass_factory().configured_kind
+        == RouterKind.TABLE
+    )
+    assert (
+        by_name["lower_state_machine"].pass_factory().configured_table_provenance
         is TableProvenance.INDIRECT_JUMP_TABLE
     )
 

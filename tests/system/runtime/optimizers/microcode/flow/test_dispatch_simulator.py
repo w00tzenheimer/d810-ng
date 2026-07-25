@@ -313,8 +313,6 @@ class TestSimulateWithDefault:
         assert trans_map[0x999] == 99
 
 
-
-
 class TestSimulateEmptyInputs:
     """Test simulate() with various empty input combinations."""
 

@@ -1,4 +1,5 @@
 """MicrocodeEvidenceProvider seam: registration, fail-loud, accessor round-trip."""
+
 from __future__ import annotations
 
 from types import SimpleNamespace

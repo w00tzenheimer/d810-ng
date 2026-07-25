@@ -94,12 +94,12 @@ class Interval:
 class NodeKind(Enum):
     """Kind of node in the recovered condition-chain comparison tree."""
 
-    JBE = auto()     # unsigned <=  (yes branch taken when state <= imm)
-    JA = auto()      # unsigned >   (yes branch taken when state >  imm)
-    JB = auto()      # unsigned <   (yes branch taken when state <  imm)
-    JAE = auto()     # unsigned >=  (yes branch taken when state >= imm)
-    JZ = auto()      # equals       (yes branch when state == imm; target on equality)
-    JNZ = auto()     # not-equals   (yes branch when state != imm; target on equality)
+    JBE = auto()  # unsigned <=  (yes branch taken when state <= imm)
+    JA = auto()  # unsigned >   (yes branch taken when state >  imm)
+    JB = auto()  # unsigned <   (yes branch taken when state <  imm)
+    JAE = auto()  # unsigned >=  (yes branch taken when state >= imm)
+    JZ = auto()  # equals       (yes branch when state == imm; target on equality)
+    JNZ = auto()  # not-equals   (yes branch when state != imm; target on equality)
     TARGET = auto()  # leaf node carrying a handler target
 
 
@@ -249,11 +249,15 @@ def emit_dispatch_intervals(
                     _dfs(node.yes, remainder)
                 elif remainder:
                     for iv in remainder:
-                        out.append(EmittedRange(iv, node.block_serial, "INTERVAL_DEFAULT"))
+                        out.append(
+                            EmittedRange(iv, node.block_serial, "INTERVAL_DEFAULT")
+                        )
                     logger.info(
                         "JNZ node imm=0x%X: yes child is None, emitting %d "
                         "INTERVAL_DEFAULT remainder intervals → blk_serial=%d",
-                        k, len(remainder), node.block_serial,
+                        k,
+                        len(remainder),
+                        node.block_serial,
                     )
 
             case NodeKind.JZ:
@@ -272,11 +276,15 @@ def emit_dispatch_intervals(
                     _dfs(node.no, remainder2)
                 elif remainder2:
                     for iv in remainder2:
-                        out.append(EmittedRange(iv, node.block_serial, "INTERVAL_DEFAULT"))
+                        out.append(
+                            EmittedRange(iv, node.block_serial, "INTERVAL_DEFAULT")
+                        )
                     logger.info(
                         "JZ node imm=0x%X: no child is None, emitting %d "
                         "INTERVAL_DEFAULT remainder intervals → blk_serial=%d",
-                        k, len(remainder2), node.block_serial,
+                        k,
+                        len(remainder2),
+                        node.block_serial,
                     )
 
     def _recurse_child(
@@ -298,7 +306,9 @@ def emit_dispatch_intervals(
             logger.info(
                 "%s child is None, emitting %d INTERVAL_DEFAULT "
                 "intervals → blk_serial=%d",
-                label, len(valid), parent.block_serial,
+                label,
+                len(valid),
+                parent.block_serial,
             )
 
     initial = [domain]
@@ -327,9 +337,7 @@ def sort_and_validate(items: list[EmittedRange]) -> list[EmittedRange]:
     for i in range(len(sorted_items) - 1):
         a = sorted_items[i].interval
         b = sorted_items[i + 1].interval
-        assert a.hi <= b.lo, (
-            f"Overlapping intervals detected: {a} vs {b}"
-        )
+        assert a.hi <= b.lo, f"Overlapping intervals detected: {a} vs {b}"
     return sorted_items
 
 
@@ -415,9 +423,7 @@ class IntervalDispatcher:
         for i in range(len(self._rows) - 1):
             a = self._rows[i]
             b = self._rows[i + 1]
-            assert a.hi <= b.lo, (
-                f"IntervalDispatcher: overlapping rows {a} and {b}"
-            )
+            assert a.hi <= b.lo, f"IntervalDispatcher: overlapping rows {a} and {b}"
         self._starts: list[int] = [r.lo for r in self._rows]
         # When the default is known structurally (e.g. an equality-chain
         # ``StateDispatcherMap`` whose no-match fall-through is the shared
@@ -472,15 +478,19 @@ class IntervalDispatcher:
     def to_json(self) -> str:
         """Serialize rows as JSON for log diagnostics."""
         import json
+
         return json.dumps(
-            [{"lo": f"0x{r.lo:X}", "hi": f"0x{r.hi:X}", "target": r.target}
-             for r in self._rows],
+            [
+                {"lo": f"0x{r.lo:X}", "hi": f"0x{r.hi:X}", "target": r.target}
+                for r in self._rows
+            ],
         )
 
     @classmethod
     def from_json(cls, data: str) -> "IntervalDispatcher":
         """Reconstruct from JSON string (for offline inspection)."""
         import json
+
         rows_raw = json.loads(data)
         rows = [
             IntervalRow(lo=int(r["lo"], 16), hi=int(r["hi"], 16), target=r["target"])
@@ -573,11 +583,7 @@ class IntervalDispatcher:
         Returns:
             Dict mapping exact state int to target int.
         """
-        return {
-            row.lo: row.target
-            for row in self._rows
-            if row.hi - row.lo == 1
-        }
+        return {row.lo: row.target for row in self._rows if row.hi - row.lo == 1}
 
     def to_handler_range_map(
         self,

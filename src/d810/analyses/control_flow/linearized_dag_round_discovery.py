@@ -133,9 +133,7 @@ _SUB7FFD_7C2C0220_CORRIDOR_REGION_STATES = (
 _SUB7FFD_7C2C0220_CORRIDOR_REGION_LABELS = tuple(
     f"STATE_{state:08X}" for state in _SUB7FFD_7C2C0220_CORRIDOR_REGION_STATES
 )
-_SUB7FFD_7C2C0220_CORRIDOR_REGION_EXITS = (
-    0x4E69F350,
-)
+_SUB7FFD_7C2C0220_CORRIDOR_REGION_EXITS = (0x4E69F350,)
 _SUB7FFD_10743C4C_BRANCH_REGION_NAME = "sub7ffd_10743c4c_branch_region"
 _SUB7FFD_10743C4C_BRANCH_REGION_STATES = (
     0x4E69F350,
@@ -155,7 +153,9 @@ _SUB7FFD_10743C4C_BRANCH_REGION_EXITS = (
 )
 _STATE_LABEL_HEX_RE = re.compile(r"STATE_([0-9A-Fa-f]{8})")
 _STATE_SUFFIX_HEX_RE = re.compile(r"_s([0-9A-Fa-f]{8})(?:_|$)")
-_STATE_LABEL_PREFIX_RE = re.compile(r"^STATE_([0-9A-Fa-f]{8})(?:(_fallback))?(?:__.+)?$")
+_STATE_LABEL_PREFIX_RE = re.compile(
+    r"^STATE_([0-9A-Fa-f]{8})(?:(_fallback))?(?:__.+)?$"
+)
 _RAW_STATE_LABEL_PREFIX_RE = re.compile(
     r"^0x([0-9A-Fa-f]{8})(?:(_fallback))?(?:__.+)?$"
 )
@@ -232,7 +232,9 @@ def _resolve_semantic_alias_state_for_selected_entry(
         entry_anchor = getattr(node, "entry_anchor", None)
         if entry_anchor is not None:
             blocks.add(int(entry_anchor))
-        blocks.update(int(block) for block in (getattr(node, "exclusive_blocks", ()) or ()))
+        blocks.update(
+            int(block) for block in (getattr(node, "exclusive_blocks", ()) or ())
+        )
         blocks.update(int(block) for block in (getattr(node, "owned_blocks", ()) or ()))
         blocks.update(
             int(block)
@@ -258,14 +260,17 @@ def _resolve_semantic_alias_state_for_selected_entry(
         outgoing_count = sum(
             1
             for edge in getattr(dag, "edges", ()) or ()
-            if getattr(getattr(edge, "source_key", None), "state_const", None) is not None
+            if getattr(getattr(edge, "source_key", None), "state_const", None)
+            is not None
             and (int(edge.source_key.state_const) & 0xFFFFFFFF) == candidate_state
             and getattr(edge, "target_state", None) is not None
         )
         score = (
             outgoing_count,
             1 if state_label.endswith("_fallback") else 0,
-            1 if int(getattr(node, "entry_anchor", -1)) == int(selected_entry_anchor) else 0,
+            1
+            if int(getattr(node, "entry_anchor", -1)) == int(selected_entry_anchor)
+            else 0,
             -candidate_state,
         )
         if best_match is None or score > best_match:
@@ -380,13 +385,9 @@ def _normalize_region_exit_state_via_owned_entry(
         if entry_anchor is not None:
             blocks.add(int(entry_anchor))
         blocks.update(
-            int(block)
-            for block in (getattr(node, "exclusive_blocks", ()) or ())
+            int(block) for block in (getattr(node, "exclusive_blocks", ()) or ())
         )
-        blocks.update(
-            int(block)
-            for block in (getattr(node, "owned_blocks", ()) or ())
-        )
+        blocks.update(int(block) for block in (getattr(node, "owned_blocks", ()) or ()))
         blocks.update(
             int(block)
             for segment in (getattr(node, "local_segments", ()) or ())
@@ -429,7 +430,8 @@ def _normalize_region_exit_state_via_owned_entry(
         candidate_outgoing_count = sum(
             1
             for edge in getattr(dag, "edges", ()) or ()
-            if getattr(getattr(edge, "source_key", None), "state_const", None) is not None
+            if getattr(getattr(edge, "source_key", None), "state_const", None)
+            is not None
             and (int(edge.source_key.state_const) & 0xFFFFFFFF) == candidate_state
             and getattr(edge, "target_state", None) is not None
         )
@@ -442,10 +444,14 @@ def _normalize_region_exit_state_via_owned_entry(
             if entry_anchor is not None and int(entry_anchor) in raw_entry_candidates
             else 0
         )
-        exclusive_shared = 1 if any(
-            int(block) in raw_entry_candidates
-            for block in (getattr(node, "exclusive_blocks", ()) or ())
-        ) else 0
+        exclusive_shared = (
+            1
+            if any(
+                int(block) in raw_entry_candidates
+                for block in (getattr(node, "exclusive_blocks", ()) or ())
+            )
+            else 0
+        )
         score = (
             candidate_outgoing_count,
             fallback_suffix,
@@ -501,7 +507,10 @@ def _canonicalize_alias_exit_regions(
             tuple(int(state) & 0xFFFFFFFF for state in region.exit_state_values),
             semantic_reference_program=semantic_reference_program,
         )
-        if region_name.startswith("sub7ffd_exit_state_region_") and len(state_values) == 1:
+        if (
+            region_name.startswith("sub7ffd_exit_state_region_")
+            and len(state_values) == 1
+        ):
             normalized_entry_state = _normalize_region_exit_state_via_owned_entry(
                 dag,
                 entry_state,
@@ -544,9 +553,22 @@ def _discover_sub7ffd_region(
     dag_state_values = {
         int(value) & 0xFFFFFFFF
         for value in (
-            *(int(getattr(node.key, "state_const", 0)) for node in getattr(dag, "nodes", ()) if getattr(getattr(node, "key", None), "state_const", None) is not None),
-            *(int(getattr(edge.source_key, "state_const", 0)) for edge in getattr(dag, "edges", ()) if getattr(getattr(edge, "source_key", None), "state_const", None) is not None),
-            *(int(getattr(edge, "target_state", 0)) for edge in getattr(dag, "edges", ()) if getattr(edge, "target_state", None) is not None),
+            *(
+                int(getattr(node.key, "state_const", 0))
+                for node in getattr(dag, "nodes", ())
+                if getattr(getattr(node, "key", None), "state_const", None) is not None
+            ),
+            *(
+                int(getattr(edge.source_key, "state_const", 0))
+                for edge in getattr(dag, "edges", ())
+                if getattr(getattr(edge, "source_key", None), "state_const", None)
+                is not None
+            ),
+            *(
+                int(getattr(edge, "target_state", 0))
+                for edge in getattr(dag, "edges", ())
+                if getattr(edge, "target_state", None) is not None
+            ),
         )
     }
     internal_state_edges = tuple(
@@ -575,7 +597,9 @@ def _discover_sub7ffd_region(
         )
         derived_edges = []
         for source_state, target_state in zip(region_states, region_states[1:]):
-            successor_states = semantic_successors.get(int(source_state) & 0xFFFFFFFF, ())
+            successor_states = semantic_successors.get(
+                int(source_state) & 0xFFFFFFFF, ()
+            )
             if (int(target_state) & 0xFFFFFFFF) not in successor_states:
                 continue
             derived_edges.append(
@@ -616,8 +640,14 @@ def _discover_sub7ffd_region(
             state_markers_present,
             dag_states_present,
             sorted(label for label in region_labels if label not in labels),
-            [f"0x{state:08X}" for state in sorted(required_state_markers - state_markers)],
-            [f"0x{state:08X}" for state in sorted(required_state_markers - dag_state_values)],
+            [
+                f"0x{state:08X}"
+                for state in sorted(required_state_markers - state_markers)
+            ],
+            [
+                f"0x{state:08X}"
+                for state in sorted(required_state_markers - dag_state_values)
+            ],
             [f"0x{src:08X}->0x{dst:08X}" for src, dst in internal_state_edges],
         )
         return None
@@ -678,7 +708,8 @@ def _discover_single_state_exit_region(
             *(
                 int(getattr(edge.source_key, "state_const", 0))
                 for edge in getattr(dag, "edges", ())
-                if getattr(getattr(edge, "source_key", None), "state_const", None) is not None
+                if getattr(getattr(edge, "source_key", None), "state_const", None)
+                is not None
             ),
             *(
                 int(getattr(edge, "target_state", 0))
@@ -792,8 +823,7 @@ def discover_structured_dag_regions(
         regions.append(branch_follow_region)
 
     discovered_entry_states = {
-        int(region.entry_state) & 0xFFFFFFFF
-        for region in regions
+        int(region.entry_state) & 0xFFFFFFFF for region in regions
     }
     covered_region_states = {
         int(state) & 0xFFFFFFFF
@@ -880,7 +910,9 @@ def build_linearized_dag_round_summary(
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
         handler_range_map=handler_range_map or {},
-        condition_chain_blocks=tuple(sorted(int(block) for block in condition_chain_blocks)),
+        condition_chain_blocks=tuple(
+            sorted(int(block) for block in condition_chain_blocks)
+        ),
         diagnostics=tuple(diagnostics or ()),
         dispatcher=dispatcher,
         mba=mba,
@@ -906,13 +938,13 @@ def build_linearized_dag_round_summary(
         pre_header_serial=pre_header_serial,
         initial_state=initial_state,
         handler_range_map=handler_range_map or {},
-        condition_chain_blocks=tuple(sorted(int(block) for block in condition_chain_blocks)),
+        condition_chain_blocks=tuple(
+            sorted(int(block) for block in condition_chain_blocks)
+        ),
         diagnostics=tuple(diagnostics or ()),
     )
     report_exit_handlers = {
-        row.handler_serial
-        for row in dag_report.rows
-        if row.kind == TransitionKind.EXIT
+        row.handler_serial for row in dag_report.rows if row.kind == TransitionKind.EXIT
     }
     nonterminal_source_handlers = {
         edge.source_key.handler_serial
@@ -1002,7 +1034,9 @@ def build_linearized_dag_round_summary(
         semantic_reference_program=semantic_reference_program,
         structured_regions=structured_regions,
         plannable_edges=plannable_edges,
-        report_exit_handlers=frozenset(int(handler) for handler in report_exit_handlers),
+        report_exit_handlers=frozenset(
+            int(handler) for handler in report_exit_handlers
+        ),
         report_exit_owned_blocks=frozenset(
             int(block) for block in report_exit_owned_blocks
         ),

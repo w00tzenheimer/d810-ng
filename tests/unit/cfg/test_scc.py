@@ -1,4 +1,5 @@
 """Tests for live-CFG SCC analysis."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.scc import (
@@ -37,9 +38,7 @@ class TestComputeLiveCfgSccs:
         # ENTRY -> 1 -> 2 -> 1 (cycle) -> 3 -> EXIT
         # Mirrors REF's blk[9]/blk[10] equivalent structure where the
         # head-byte 2-stride loop has body and test in different blocks.
-        sccs = compute_live_cfg_sccs(
-            {0: (1,), 1: (2,), 2: (1, 3), 3: ()}
-        )
+        sccs = compute_live_cfg_sccs({0: (1,), 1: (2,), 2: (1, 3), 3: ()})
         cyclic = nontrivial_sccs(sccs)
         assert len(cyclic) == 1
         scc = cyclic[0]
@@ -51,9 +50,7 @@ class TestComputeLiveCfgSccs:
     def test_diamond_is_fully_acyclic(self) -> None:
         # 0 -> 1 -> 3
         #  \-> 2 -> 3
-        sccs = compute_live_cfg_sccs(
-            {0: (1, 2), 1: (3,), 2: (3,), 3: ()}
-        )
+        sccs = compute_live_cfg_sccs({0: (1, 2), 1: (3,), 2: (3,), 3: ()})
         assert nontrivial_sccs(sccs) == ()
         assert len(sccs) == 4
         assert all(s.size == 1 and not s.has_self_loop for s in sccs)
@@ -61,9 +58,7 @@ class TestComputeLiveCfgSccs:
     def test_two_disjoint_self_loops(self) -> None:
         # Mirrors REF GLBOPT1 shape: 2 isolated self-loops + acyclic body.
         # ENTRY -> 1 (self-loop) -> 2 -> 3 (self-loop) -> 4 -> EXIT
-        sccs = compute_live_cfg_sccs(
-            {0: (1,), 1: (1, 2), 2: (3,), 3: (3, 4), 4: ()}
-        )
+        sccs = compute_live_cfg_sccs({0: (1,), 1: (1, 2), 2: (3,), 3: (3, 4), 4: ()})
         cyclic = nontrivial_sccs(sccs)
         assert len(cyclic) == 2
         loops = sorted(cyclic, key=lambda s: min(s.blocks))
@@ -97,9 +92,7 @@ class TestComputeLiveCfgSccs:
         assert (4, 5) not in scc.cyclic_edges
 
     def test_cyclic_edges_excludes_exits(self) -> None:
-        sccs = compute_live_cfg_sccs(
-            {0: (1,), 1: (1, 2), 2: ()}
-        )
+        sccs = compute_live_cfg_sccs({0: (1,), 1: (1, 2), 2: ()})
         cyclic = nontrivial_sccs(sccs)
         assert len(cyclic) == 1
         # Self-loop edge is the only cyclic edge; the exit edge to blk[2]
@@ -135,16 +128,22 @@ class TestComputeLiveCfgSccs:
 class TestCfgSccDataclass:
     def test_is_cyclic_inverse_of_is_trivial(self) -> None:
         scc = CfgSCC(
-            scc_id=0, blocks=frozenset({0}), cyclic_edges=frozenset(),
-            has_self_loop=False, is_trivial=True,
+            scc_id=0,
+            blocks=frozenset({0}),
+            cyclic_edges=frozenset(),
+            has_self_loop=False,
+            is_trivial=True,
         )
         assert scc.is_cyclic is False
         assert scc.size == 1
 
     def test_self_loop_singleton_is_cyclic(self) -> None:
         scc = CfgSCC(
-            scc_id=0, blocks=frozenset({5}), cyclic_edges=frozenset({(5, 5)}),
-            has_self_loop=True, is_trivial=False,
+            scc_id=0,
+            blocks=frozenset({5}),
+            cyclic_edges=frozenset({(5, 5)}),
+            has_self_loop=True,
+            is_trivial=False,
         )
         assert scc.is_cyclic is True
         assert scc.size == 1

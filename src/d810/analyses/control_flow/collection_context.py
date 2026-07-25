@@ -1,4 +1,5 @@
 """Shared context for control-flow reconnaissance collectors."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -43,9 +44,7 @@ def coerce_preanalysis_collection_context(
         raise TypeError("func_ea is required when context is not provided")
     if provider_phase is None:
         if legacy_level is None:
-            raise TypeError(
-                "provider_phase is required when context is not provided"
-            )
+            raise TypeError("provider_phase is required when context is not provided")
         provider_phase = provider_phase_snapshot_from_level(int(legacy_level))
     return PreanalysisCollectionContext(
         func_ea=int(func_ea),

@@ -41,8 +41,7 @@ def test_rewrite_text_splits_mixed_hexrays_hooks_import() -> None:
 
     assert result.changed
     assert (
-        "from d810.hexrays.hooks.optblock_adapter import "
-        "BlockOptimizerManager as BOM"
+        "from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager as BOM"
     ) in result.text
     assert (
         "from d810.hexrays.hooks.optinsn_adapter import "
@@ -60,10 +59,7 @@ def test_rewrite_text_splits_mixed_hexrays_hooks_import() -> None:
 
 def test_rewrite_text_keeps_hexrays_decompilation_hook_owner() -> None:
     mod = _load_module()
-    source = (
-        "from d810.hexrays.hooks.hexrays_hooks import "
-        "HexraysDecompilationHook\n"
-    )
+    source = "from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook\n"
 
     result = mod.rewrite_text(source)
 
@@ -82,8 +78,7 @@ def test_rewrite_text_updates_fully_qualified_moved_symbols() -> None:
     result = mod.rewrite_text(source)
 
     assert (
-        "d810.hexrays.hooks.optinsn_adapter.InstructionOptimizerManager"
-        in result.text
+        "d810.hexrays.hooks.optinsn_adapter.InstructionOptimizerManager" in result.text
     )
     assert "d810.hexrays.hooks.hexrays_hooks.HexraysDecompilationHook" in result.text
 
@@ -106,12 +101,10 @@ def test_rewrite_text_handles_hooks_module_alias_access() -> None:
     assert result.changed
     assert "from d810.hexrays.hooks import hexrays_hooks" in result.text
     assert (
-        "from d810.hexrays.hooks.optinsn_adapter import "
-        "InstructionOptimizerManager"
+        "from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager"
     ) in result.text
     assert (
-        "from d810.hexrays.hooks.optblock_adapter import "
-        "BlockOptimizerManager"
+        "from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager"
     ) in result.text
     assert "hexrays_hooks.InstructionOptimizerManager" not in result.text
     assert "hexrays_hooks.BlockOptimizerManager" not in result.text
@@ -133,8 +126,7 @@ def test_rewrite_text_preserves_hooks_module_import_alias() -> None:
     assert result.changed
     assert "from d810.hexrays.hooks import hexrays_hooks as hh" in result.text
     assert (
-        "from d810.hexrays.hooks.optinsn_adapter import "
-        "InstructionOptimizerManager"
+        "from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager"
     ) in result.text
     assert "hh.InstructionOptimizerManager" not in result.text
     assert "src = InstructionOptimizerManager.log_info_on_input" in result.text

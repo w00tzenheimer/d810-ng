@@ -1,4 +1,5 @@
 """Unit tests for GateOperationMode contract."""
+
 from __future__ import annotations
 
 import pytest

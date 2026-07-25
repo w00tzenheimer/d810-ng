@@ -19,6 +19,7 @@ function.  The asserted edge set is the sub_7FFD corpus:
 * ``⊤`` -> one ``UNRESOLVED`` edge (no invented target).
 * ``Guarded[(g, c)]`` -> the emitted edge carries the guard ``g``.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.comparison_dispatcher_model import (
@@ -190,9 +191,7 @@ def test_shared_oneof_sink_emits_both_edges():
     view = explore(
         [_site(60, sv, st)],
         model=_FakeModel(),
-        resolve_state=_resolver(
-            {(sv, st): OneOf.of([_STATE_41FB, _STATE_71E2])}
-        ),
+        resolve_state=_resolver({(sv, st): OneOf.of([_STATE_41FB, _STATE_71E2])}),
     )
     assert len(view.resolved) == 2 and not view.unresolved
     targets = {e.to_serial for e in view.resolved}
@@ -221,9 +220,7 @@ def test_guarded_case_carries_the_guard():
     view = explore(
         [_site(120, sv, st)],
         model=_FakeModel(),
-        resolve_state=_resolver(
-            {(sv, st): Guarded(((guard, Const(_STATE_41FB, 4)),))}
-        ),
+        resolve_state=_resolver({(sv, st): Guarded(((guard, Const(_STATE_41FB, 4)),))}),
     )
     assert len(view.resolved) == 1
     edge = view.resolved[0]

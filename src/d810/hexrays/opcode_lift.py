@@ -1,4 +1,5 @@
 """Hex-Rays opcode lift table for portable operation vocabulary."""
+
 from __future__ import annotations
 
 import ida_hexrays

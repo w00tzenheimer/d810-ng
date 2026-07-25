@@ -11,6 +11,7 @@ Covers:
 - Mode 1 regression: replay the sub_7FFD blk[76] pattern and assert
   a second-pass planner sees the prior linearization
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -31,6 +32,7 @@ from d810.transforms.planner_context import (
 # ---------------------------------------------------------------------------
 # Fake fragment shim — enough surface to feed CumulativePlannerView.compile.
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class _FakeFragment:
@@ -63,18 +65,27 @@ def _frag_with(contribution: PlannerContextContribution | None) -> _FakeFragment
 # Value types
 # ---------------------------------------------------------------------------
 
+
 class TestValueTypes:
     def test_linearization_decision_is_hashable(self) -> None:
-        d1 = LinearizationDecision(src=76, tgt=11, reason="residual", strategy="srw", round_index=0)
-        d2 = LinearizationDecision(src=76, tgt=11, reason="residual", strategy="srw", round_index=0)
+        d1 = LinearizationDecision(
+            src=76, tgt=11, reason="residual", strategy="srw", round_index=0
+        )
+        d2 = LinearizationDecision(
+            src=76, tgt=11, reason="residual", strategy="srw", round_index=0
+        )
         # Frozen + slots + hashable -> equal instances collapse into the
         # same set entry. This is what lets CumulativePlannerView dedupe.
         assert hash(d1) == hash(d2)
         assert {d1, d2} == {d1}
 
     def test_state_write_neutralization_is_hashable(self) -> None:
-        n1 = StateWriteNeutralization(src=76, original_state_constant=0x63B2C08B, strategy="srw", round_index=0)
-        n2 = StateWriteNeutralization(src=76, original_state_constant=0x63B2C08B, strategy="srw", round_index=0)
+        n1 = StateWriteNeutralization(
+            src=76, original_state_constant=0x63B2C08B, strategy="srw", round_index=0
+        )
+        n2 = StateWriteNeutralization(
+            src=76, original_state_constant=0x63B2C08B, strategy="srw", round_index=0
+        )
         assert {n1, n2} == {n1}
 
     def test_contribution_defaults_are_empty(self) -> None:
@@ -93,6 +104,7 @@ class TestValueTypes:
 # CumulativePlannerView queries
 # ---------------------------------------------------------------------------
 
+
 class TestCumulativeViewQueries:
     def test_is_linearized_false_when_empty(self) -> None:
         view = CumulativePlannerView.empty()
@@ -102,7 +114,9 @@ class TestCumulativeViewQueries:
         assert view.is_claimed(76) is False
 
     def test_is_linearized_detects_matching_src(self) -> None:
-        d = LinearizationDecision(src=76, tgt=11, reason="residual_handoff", strategy="srw", round_index=0)
+        d = LinearizationDecision(
+            src=76, tgt=11, reason="residual_handoff", strategy="srw", round_index=0
+        )
         view = CumulativePlannerView(
             linearization_decisions=frozenset({d}),
             neutralized_state_writes=frozenset(),
@@ -112,8 +126,12 @@ class TestCumulativeViewQueries:
         assert view.is_linearized(77) is False
 
     def test_linearization_target_for_prefers_earliest_round(self) -> None:
-        d_round_1 = LinearizationDecision(src=76, tgt=11, reason="residual_handoff", strategy="srw", round_index=1)
-        d_round_0 = LinearizationDecision(src=76, tgt=42, reason="lfg_preheader", strategy="lfg", round_index=0)
+        d_round_1 = LinearizationDecision(
+            src=76, tgt=11, reason="residual_handoff", strategy="srw", round_index=1
+        )
+        d_round_0 = LinearizationDecision(
+            src=76, tgt=42, reason="lfg_preheader", strategy="lfg", round_index=0
+        )
         view = CumulativePlannerView(
             linearization_decisions=frozenset({d_round_1, d_round_0}),
             neutralized_state_writes=frozenset(),
@@ -124,7 +142,9 @@ class TestCumulativeViewQueries:
         assert view.linearization_target_for(76) == 42
 
     def test_original_state_for_returns_pre_neutralization_constant(self) -> None:
-        n = StateWriteNeutralization(src=76, original_state_constant=0x63B2C08B, strategy="srw", round_index=0)
+        n = StateWriteNeutralization(
+            src=76, original_state_constant=0x63B2C08B, strategy="srw", round_index=0
+        )
         view = CumulativePlannerView(
             linearization_decisions=frozenset(),
             neutralized_state_writes=frozenset({n}),
@@ -147,6 +167,7 @@ class TestCumulativeViewQueries:
 # CumulativePlannerView.compile
 # ---------------------------------------------------------------------------
 
+
 class TestCumulativeViewCompile:
     def test_empty_fragment_list_yields_empty_view(self) -> None:
         view = CumulativePlannerView.compile([])
@@ -167,16 +188,26 @@ class TestCumulativeViewCompile:
 
     def test_fragments_with_wrong_type_under_planner_ctx_are_skipped(self) -> None:
         # Defensive: a dict under the planner_ctx key should not break compile.
-        frag = _FakeFragment(metadata={PLANNER_CTX_METADATA_KEY: {"not": "a contribution"}})
+        frag = _FakeFragment(
+            metadata={PLANNER_CTX_METADATA_KEY: {"not": "a contribution"}}
+        )
         view = CumulativePlannerView.compile([frag])
         assert view == CumulativePlannerView.empty()
 
     def test_aggregates_across_multiple_fragments(self) -> None:
-        d1 = LinearizationDecision(src=76, tgt=11, reason="residual_handoff", strategy="srw", round_index=0)
-        n1 = StateWriteNeutralization(src=76, original_state_constant=0x63B2C08B, strategy="srw", round_index=0)
-        d2 = LinearizationDecision(src=54, tgt=100, reason="dag_bridge", strategy="srw", round_index=0)
+        d1 = LinearizationDecision(
+            src=76, tgt=11, reason="residual_handoff", strategy="srw", round_index=0
+        )
+        n1 = StateWriteNeutralization(
+            src=76, original_state_constant=0x63B2C08B, strategy="srw", round_index=0
+        )
+        d2 = LinearizationDecision(
+            src=54, tgt=100, reason="dag_bridge", strategy="srw", round_index=0
+        )
 
-        frag_a = _frag_with(_contribution(lins=(d1,), neuts=(n1,), claimed=frozenset({76})))
+        frag_a = _frag_with(
+            _contribution(lins=(d1,), neuts=(n1,), claimed=frozenset({76}))
+        )
         frag_b = _frag_with(_contribution(lins=(d2,), claimed=frozenset({54})))
         frag_c = _frag_with(None)  # no contribution — still aggregated cleanly
 
@@ -186,7 +217,9 @@ class TestCumulativeViewCompile:
         assert view.claimed_sources == frozenset({76, 54})
 
     def test_duplicate_decisions_dedupe_via_frozenset(self) -> None:
-        d = LinearizationDecision(src=76, tgt=11, reason="residual_handoff", strategy="srw", round_index=0)
+        d = LinearizationDecision(
+            src=76, tgt=11, reason="residual_handoff", strategy="srw", round_index=0
+        )
         frag_a = _frag_with(_contribution(lins=(d,)))
         frag_b = _frag_with(_contribution(lins=(d,)))
         view = CumulativePlannerView.compile([frag_a, frag_b])
@@ -197,25 +230,39 @@ class TestCumulativeViewCompile:
 # Mode 1 regression scenario
 # ---------------------------------------------------------------------------
 
+
 class TestMode1Regression:
     """Replay the sub_7FFD blk[76] pattern in pure-Python and assert a
     second-pass planner using the view refuses to emit a reverse redirect.
     """
 
-    def test_second_pass_observes_linearization_and_skips_reverse_redirect(self) -> None:
+    def test_second_pass_observes_linearization_and_skips_reverse_redirect(
+        self,
+    ) -> None:
         # Round 0: SRW linearizes blk[76] from dispatcher (2) to handler (11),
         # and neutralizes its state write (original was 0x63B2C08B).
-        first_pass = _frag_with(_contribution(
-            lins=(LinearizationDecision(
-                src=76, tgt=11, reason="residual_handoff",
-                strategy="srw", round_index=0,
-            ),),
-            neuts=(StateWriteNeutralization(
-                src=76, original_state_constant=0x63B2C08B,
-                strategy="srw", round_index=0,
-            ),),
-            claimed=frozenset({76}),
-        ))
+        first_pass = _frag_with(
+            _contribution(
+                lins=(
+                    LinearizationDecision(
+                        src=76,
+                        tgt=11,
+                        reason="residual_handoff",
+                        strategy="srw",
+                        round_index=0,
+                    ),
+                ),
+                neuts=(
+                    StateWriteNeutralization(
+                        src=76,
+                        original_state_constant=0x63B2C08B,
+                        strategy="srw",
+                        round_index=0,
+                    ),
+                ),
+                claimed=frozenset({76}),
+            )
+        )
 
         # Engine compiles cumulative view before round 1 strategy runs.
         view = CumulativePlannerView.compile([first_pass])
@@ -238,12 +285,22 @@ class TestMode1Regression:
     def test_second_pass_can_recover_original_state_constant(self) -> None:
         # A later strategy that wants to reason about the original handler
         # exit (before ZeroStateWrite neutralized it) can retrieve it.
-        view = CumulativePlannerView.compile([_frag_with(_contribution(
-            neuts=(StateWriteNeutralization(
-                src=76, original_state_constant=0x63B2C08B,
-                strategy="srw", round_index=0,
-            ),),
-        ))])
+        view = CumulativePlannerView.compile(
+            [
+                _frag_with(
+                    _contribution(
+                        neuts=(
+                            StateWriteNeutralization(
+                                src=76,
+                                original_state_constant=0x63B2C08B,
+                                strategy="srw",
+                                round_index=0,
+                            ),
+                        ),
+                    )
+                )
+            ]
+        )
         assert view.original_state_for(76) == 0x63B2C08B
 
 

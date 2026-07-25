@@ -1,4 +1,5 @@
 """ConcolicStore: LocationRef -> ConcolicValue, missing key => TOP (ticket llr-xvkt)."""
+
 from __future__ import annotations
 
 from d810.analyses.data_flow.concolic.refs import LocationRef
@@ -23,14 +24,14 @@ def test_assign_then_eval() -> None:
 def test_assign_is_copy_on_write() -> None:
     base = ConcolicStore()
     s = base.assign(LOC_A, ConcolicValue.of(5, W))
-    assert base.eval(LOC_A).status is PrecisionStatus.TOP   # original untouched
+    assert base.eval(LOC_A).status is PrecisionStatus.TOP  # original untouched
     assert s.eval(LOC_A).concrete == 5
 
 
 def test_is_concrete_enough() -> None:
     s = ConcolicStore().assign(LOC_A, ConcolicValue.of(5, W))
     assert s.is_concrete_enough([LOC_A])
-    assert not s.is_concrete_enough([LOC_B])           # unset cell -> TOP
+    assert not s.is_concrete_enough([LOC_B])  # unset cell -> TOP
     assert not s.is_concrete_enough([LOC_A, LOC_B])
 
 
@@ -52,8 +53,8 @@ def test_join_key_on_only_one_side_is_top() -> None:
     s1 = ConcolicStore().assign(LOC_A, ConcolicValue.of(5, W))
     s2 = ConcolicStore().assign(LOC_B, ConcolicValue.of(9, W))
     merged = s1.join(s2)
-    assert merged.eval(LOC_A).status is PrecisionStatus.TOP   # only in s1
-    assert merged.eval(LOC_B).status is PrecisionStatus.TOP   # only in s2
+    assert merged.eval(LOC_A).status is PrecisionStatus.TOP  # only in s1
+    assert merged.eval(LOC_B).status is PrecisionStatus.TOP  # only in s2
     assert not merged.is_concrete_enough([LOC_A])
 
 

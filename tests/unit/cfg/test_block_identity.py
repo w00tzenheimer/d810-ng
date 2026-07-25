@@ -29,9 +29,7 @@ def _graph() -> FlowGraph:
                 preds=(33,),
                 flags=0,
                 start_ea=0x18001304A,
-                insn_snapshots=(
-                    InsnSnapshot(opcode=3, ea=0x18001304A, operands=()),
-                ),
+                insn_snapshots=(InsnSnapshot(opcode=3, ea=0x18001304A, operands=()),),
             ),
         },
         entry_serial=33,
@@ -44,9 +42,7 @@ def test_block_identity_labels_include_ea_and_context():
     graph = _graph()
 
     assert block_label(graph, 33) == "blk[33]@0x18001340f"
-    assert edge_label(graph, 33, 24) == (
-        "blk[33]@0x18001340f -> blk[24]@0x18001304a"
-    )
+    assert edge_label(graph, 33, 24) == ("blk[33]@0x18001340f -> blk[24]@0x18001304a")
     assert flow_graph_context_label(graph) == (
         "maturity=MMAT_GLBOPT1 snapshot=8 phase=post_apply"
     )
@@ -55,6 +51,4 @@ def test_block_identity_labels_include_ea_and_context():
 def test_block_identity_fingerprint_uses_instruction_ea_and_opcode():
     graph = _graph()
 
-    assert block_fingerprint(graph, 33) == (
-        "fp=[0x18001340f:op1,0x180013421:op2]"
-    )
+    assert block_fingerprint(graph, 33) == ("fp=[0x18001340f:op1,0x180013421:op2]")

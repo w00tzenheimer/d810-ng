@@ -9,6 +9,7 @@ operands are known, which is the OLLVM next-state case.
 
 Pure integer, portable, no IDA.
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -36,8 +37,8 @@ class BinaryOp(Enum):
 
 
 class UnaryOp(Enum):
-    NOT = "not"   # bitwise complement
-    NEG = "neg"   # two's-complement negation
+    NOT = "not"  # bitwise complement
+    NEG = "neg"  # two's-complement negation
 
 
 class CompareOp(Enum):

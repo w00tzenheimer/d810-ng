@@ -16,6 +16,7 @@ Sample requirements:
     contain such patterns.  These tests are structured and ready to run
     once an appropriate sample is added.
 """
+
 from __future__ import annotations
 
 import os
@@ -33,7 +34,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +98,7 @@ INDIRECT_CALL_CASES = [
 def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     """Setup fixture for libobfuscated tests -- runs once per class."""
     import idaapi
+
     if not idaapi.init_hexrays_plugin():
         pytest.skip("Hex-Rays decompiler plugin not available")
     return ida_database
@@ -113,9 +117,7 @@ class TestIndirectCallResolver:
     binary_name = _get_default_binary()
 
     @pytest.mark.ida_required
-    @pytest.mark.parametrize(
-        "case", INDIRECT_CALL_CASES, ids=lambda c: c.test_id
-    )
+    @pytest.mark.parametrize("case", INDIRECT_CALL_CASES, ids=lambda c: c.test_id)
     def test_indirect_call_resolver(
         self,
         case,
@@ -141,6 +143,7 @@ class TestIndirectCallResolver:
 # Attribute and constant verification tests
 # ---------------------------------------------------------------------------
 
+
 class TestIndirectCallResolverAttributes:
     """Verify IndirectCallResolver class attributes with real IDA constants."""
 
@@ -155,6 +158,7 @@ class TestIndirectCallResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
+
         assert "indirect call" in IndirectCallResolver.DESCRIPTION.lower()
 
     @pytest.mark.ida_required
@@ -162,6 +166,7 @@ class TestIndirectCallResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
+
         assert IndirectCallResolver.USES_DEFERRED_CFG is True
 
     @pytest.mark.ida_required
@@ -169,6 +174,7 @@ class TestIndirectCallResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
+
         assert IndirectCallResolver.MAX_TABLE_ENTRIES == 512
 
     @pytest.mark.ida_required
@@ -176,6 +182,7 @@ class TestIndirectCallResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
+
         assert IndirectCallResolver.DEFAULT_ENTRY_SIZE == 8
 
     @pytest.mark.ida_required
@@ -183,6 +190,7 @@ class TestIndirectCallResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
+
         assert IndirectCallResolver.MIN_SUB_OFFSET == 0x10000
 
     @pytest.mark.ida_required
@@ -190,6 +198,7 @@ class TestIndirectCallResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
+
         assert IndirectCallResolver.MAX_SUB_OFFSET == 0x1000000
 
     @pytest.mark.ida_required
@@ -198,6 +207,7 @@ class TestIndirectCallResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_call import (
             IndirectCallResolver,
         )
+
         assert isinstance(IndirectCallResolver.SAFE_MATURITIES, list)
         for mat in IndirectCallResolver.SAFE_MATURITIES:
             assert isinstance(mat, int)
@@ -207,6 +217,7 @@ class TestIndirectCallResolverAttributes:
 # Module-level constant tests
 # ---------------------------------------------------------------------------
 
+
 class TestModuleConstants:
     """Verify module-level constants with real IDA imports."""
 
@@ -215,19 +226,25 @@ class TestModuleConstants:
     @pytest.mark.ida_required
     def test_max_table_entries_module_level(self, libobfuscated_setup):
         from d810.optimizers.microcode.flow.jumps.indirect_call import MAX_TABLE_ENTRIES
+
         assert MAX_TABLE_ENTRIES == 512
 
     @pytest.mark.ida_required
     def test_default_entry_size_module_level(self, libobfuscated_setup):
-        from d810.optimizers.microcode.flow.jumps.indirect_call import DEFAULT_ENTRY_SIZE
+        from d810.optimizers.microcode.flow.jumps.indirect_call import (
+            DEFAULT_ENTRY_SIZE,
+        )
+
         assert DEFAULT_ENTRY_SIZE == 8
 
     @pytest.mark.ida_required
     def test_min_sub_offset_module_level(self, libobfuscated_setup):
         from d810.optimizers.microcode.flow.jumps.indirect_call import MIN_SUB_OFFSET
+
         assert MIN_SUB_OFFSET == 0x10000
 
     @pytest.mark.ida_required
     def test_max_sub_offset_module_level(self, libobfuscated_setup):
         from d810.optimizers.microcode.flow.jumps.indirect_call import MAX_SUB_OFFSET
+
         assert MAX_SUB_OFFSET == 0x1000000

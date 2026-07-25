@@ -36,9 +36,7 @@ def collect_unique_interval_handler_backfills(
 
     existing_handler_serials = set(int(serial) for serial in handler_state_map.keys())
     target_freq: dict[int, int] = Counter(
-        int(row.target)
-        for row in rows
-        if getattr(row, "target", None) is not None
+        int(row.target) for row in rows if getattr(row, "target", None) is not None
     )
 
     backfills: list[IntervalHandlerBackfill] = []

@@ -1,4 +1,5 @@
 """Materialization-capture backend for Hodur handler-chain composition."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -108,12 +109,10 @@ class HexRaysHandlerChainMaterializationCaptureBackend:
                 kind="missing_block",
                 abort_reason="block_dead",
             )
-        backend_result = (
-            self._capture_backend.capture_block_composable_instructions_v2(
-                block,
-                state_var_stkoff=state_var_stkoff,
-                byte_evidence_eas=byte_evidence_eas,
-            )
+        backend_result = self._capture_backend.capture_block_composable_instructions_v2(
+            block,
+            state_var_stkoff=state_var_stkoff,
+            byte_evidence_eas=byte_evidence_eas,
         )
         snapshots = (
             self._capture_backend.snapshots_from_body(backend_result.body)
@@ -211,9 +210,7 @@ class HexRaysHandlerChainMaterializationCaptureBackend:
         )
 
 
-DEFAULT_HODUR_HANDLER_CHAIN_MATERIALIZATION_CAPTURE_BACKEND: HandlerChainMaterializationCaptureBackend = (
-    HexRaysHandlerChainMaterializationCaptureBackend()
-)
+DEFAULT_HODUR_HANDLER_CHAIN_MATERIALIZATION_CAPTURE_BACKEND: HandlerChainMaterializationCaptureBackend = HexRaysHandlerChainMaterializationCaptureBackend()
 
 
 __all__ = [

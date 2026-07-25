@@ -107,10 +107,13 @@ def test_find_cover_regions_excludes_self_and_matches_source_in_region_anchors()
 def test_yes_handlers_subclass_conflict_without_cover():
     info = _info(head=10, anchors=(10,), source=50)
 
-    assert classify_yes_handlers_subclass(
-        self_info=info,
-        raw_region_table=(info,),
-    ) == "CONFLICT"
+    assert (
+        classify_yes_handlers_subclass(
+            self_info=info,
+            raw_region_table=(info,),
+        )
+        == "CONFLICT"
+    )
 
 
 def test_yes_handlers_subclass_conflict_with_multiple_covers():
@@ -118,20 +121,26 @@ def test_yes_handlers_subclass_conflict_with_multiple_covers():
     cover_a = _info(head=20, anchors=(20, 50), composed=True)
     cover_b = _info(head=30, anchors=(30, 50), composed=True)
 
-    assert classify_yes_handlers_subclass(
-        self_info=info,
-        raw_region_table=(info, cover_a, cover_b),
-    ) == "CONFLICT"
+    assert (
+        classify_yes_handlers_subclass(
+            self_info=info,
+            raw_region_table=(info, cover_a, cover_b),
+        )
+        == "CONFLICT"
+    )
 
 
 def test_yes_handlers_subclass_conflict_when_cover_not_composed():
     info = _info(head=10, anchors=(10,), source=50)
     cover = _info(head=20, anchors=(20, 50), composed=False)
 
-    assert classify_yes_handlers_subclass(
-        self_info=info,
-        raw_region_table=(info, cover),
-    ) == "CONFLICT"
+    assert (
+        classify_yes_handlers_subclass(
+            self_info=info,
+            raw_region_table=(info, cover),
+        )
+        == "CONFLICT"
+    )
 
 
 def test_yes_handlers_subclass_conflict_on_cover_splice_source_collision():
@@ -139,20 +148,26 @@ def test_yes_handlers_subclass_conflict_on_cover_splice_source_collision():
     cover = _info(head=20, anchors=(20, 50), source=70, composed=True)
     collision = _info(head=30, anchors=(30,), source=70)
 
-    assert classify_yes_handlers_subclass(
-        self_info=info,
-        raw_region_table=(info, cover, collision),
-    ) == "CONFLICT"
+    assert (
+        classify_yes_handlers_subclass(
+            self_info=info,
+            raw_region_table=(info, cover, collision),
+        )
+        == "CONFLICT"
+    )
 
 
 def test_yes_handlers_subclass_conflict_on_handler_overlap():
     info = _info(head=10, anchors=(10, 20), source=50)
     cover = _info(head=20, anchors=(20, 50), composed=True)
 
-    assert classify_yes_handlers_subclass(
-        self_info=info,
-        raw_region_table=(info, cover),
-    ) == "CONFLICT"
+    assert (
+        classify_yes_handlers_subclass(
+            self_info=info,
+            raw_region_table=(info, cover),
+        )
+        == "CONFLICT"
+    )
 
 
 def test_yes_handlers_subclass_fusable_linear_when_cover_exits_to_self_head():
@@ -164,10 +179,13 @@ def test_yes_handlers_subclass_fusable_linear_when_cover_exits_to_self_head():
         composed=True,
     )
 
-    assert classify_yes_handlers_subclass(
-        self_info=info,
-        raw_region_table=(info, cover),
-    ) == "FUSABLE_LINEAR"
+    assert (
+        classify_yes_handlers_subclass(
+            self_info=info,
+            raw_region_table=(info, cover),
+        )
+        == "FUSABLE_LINEAR"
+    )
 
 
 def test_yes_handlers_subclass_not_fusable_branch_when_cover_exits_elsewhere():
@@ -179,7 +197,10 @@ def test_yes_handlers_subclass_not_fusable_branch_when_cover_exits_elsewhere():
         composed=True,
     )
 
-    assert classify_yes_handlers_subclass(
-        self_info=info,
-        raw_region_table=(info, cover),
-    ) == "NOT_FUSABLE_BRANCH"
+    assert (
+        classify_yes_handlers_subclass(
+            self_info=info,
+            raw_region_table=(info, cover),
+        )
+        == "NOT_FUSABLE_BRANCH"
+    )

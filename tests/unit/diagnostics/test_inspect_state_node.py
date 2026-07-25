@@ -5,6 +5,7 @@ Covers the pure helpers (``normalize_state``,
 ``extract_after_lines``) with synthetic SQLite + dump text fixtures, and
 the end-to-end CLI invocation against an on-disk fixture DB.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -128,7 +129,9 @@ def test_find_semantic_context_clamps_start_to_one():
     clamp to 1 — not 0 or negative."""
     db = _make_conn()
     _insert_lines(
-        db, 12, "semantic_reference_like",
+        db,
+        12,
+        "semantic_reference_like",
         [(1, "STATE_DEADBEEF first"), (2, "next"), (3, "third")],
     )
     out = find_semantic_context(db.connection(), 12, "DEADBEEF", context=5)
@@ -204,10 +207,10 @@ def test_matching_after_lines_returns_empty_when_no_hits():
 def test_matching_after_lines_dedupes_overlapping_windows():
     """Two close hits with overlapping windows must not duplicate lines."""
     after = [
-        "STATE_A",   # line 1
-        "between",   # line 2
-        "STATE_A",   # line 3 (hit again)
-        "tail",      # line 4
+        "STATE_A",  # line 1
+        "between",  # line 2
+        "STATE_A",  # line 3 (hit again)
+        "tail",  # line 4
     ]
     rows = matching_after_lines(after, tokens=("STATE_A",), context=1)
     assert [n for n, _ in rows] == [1, 2, 3, 4]
@@ -266,7 +269,9 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
 
 
 def test_cli_prints_semantic_context_for_known_state(fixture_db: Path):
-    result = _run_cli("--db", str(fixture_db), "--state", "0x5FE86821", "--context", "1")
+    result = _run_cli(
+        "--db", str(fixture_db), "--state", "0x5FE86821", "--context", "1"
+    )
     assert result.returncode == 0, result.stderr
     assert "semantic_reference_like snapshot 5" in result.stdout
     assert "STATE_5FE86821" in result.stdout
@@ -280,15 +285,20 @@ def test_cli_reports_no_match_for_unknown_state(fixture_db: Path):
 
 
 def test_cli_correlates_against_dump_after_region(
-    fixture_db: Path, tmp_path: Path,
+    fixture_db: Path,
+    tmp_path: Path,
 ):
     dump = tmp_path / "dump.txt"
     dump.write_text("\n".join(SAMPLE_DUMP) + "\n")
     result = _run_cli(
-        "--db", str(fixture_db),
-        "--state", "0x5FE86821",
-        "--dump", str(dump),
-        "--context", "1",
+        "--db",
+        str(fixture_db),
+        "--state",
+        "0x5FE86821",
+        "--dump",
+        str(dump),
+        "--context",
+        "1",
     )
     assert result.returncode == 0, result.stderr
     assert "AFTER matches for 0x5FE86821" in result.stdout

@@ -24,7 +24,14 @@ from d810.transforms.exit_path_effect_emission import (
 
 
 class _FakeFlowBlock:
-    def __init__(self, serial: int, succs: tuple[int, ...], preds: tuple[int, ...], *, tail_opcode=None):
+    def __init__(
+        self,
+        serial: int,
+        succs: tuple[int, ...],
+        preds: tuple[int, ...],
+        *,
+        tail_opcode=None,
+    ):
         self.serial = serial
         self.succs = succs
         self.preds = preds
@@ -313,7 +320,9 @@ def test_state_exit_path_effect_lowering_rejects_non_state_terminal_guard():
 
     plan = plan_state_exit_path_effect_lowerings(
         flow_graph=flow_graph,
-        modifications=(RedirectGoto(from_serial=7, old_target=dispatcher, new_target=8),),
+        modifications=(
+            RedirectGoto(from_serial=7, old_target=dispatcher, new_target=8),
+        ),
         dispatcher_entry_serial=dispatcher,
         state_var_stkoff=state_stkoff,
     )

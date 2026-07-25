@@ -3,6 +3,7 @@
 The candidate -> GraphModification lowering is already covered in transforms.cleanup_evidence; here
 we lock the pass contract: no candidates -> empty plan, and candidates flow into planner_modifications.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -3,6 +3,7 @@
 Pure-Python, no IDA: the registry holds opaque callables, so it is fully
 unit-testable. Backends supply real Hex-Rays callables at runtime.
 """
+
 from __future__ import annotations
 
 import dataclasses

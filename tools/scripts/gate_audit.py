@@ -11,6 +11,7 @@ same argument shape. To use the new command directly:
 The full implementation now lives in ``src/d810/diagnostics/gate_audit.py``
 with unit tests under ``tests/unit/diagnostics/test_gate_audit.py``.
 """
+
 from __future__ import annotations
 
 import os

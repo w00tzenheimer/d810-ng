@@ -21,6 +21,7 @@ idiom of the existing canonical collector suites
    is read by ``_byte_index_from_instruction``) must yield a byte-emit fact whose
    ``semantic_key`` / payload pin that byte index.
 """
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import (

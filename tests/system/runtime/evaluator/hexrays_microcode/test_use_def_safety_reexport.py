@@ -20,6 +20,7 @@ Lives under ``tests/system/runtime/`` (not ``tests/unit/``) because
 the back-compat shim imports live ``ida_hexrays``; unit tests cannot
 import the HR side per the project's pytest constraints.
 """
+
 from __future__ import annotations
 
 from d810.capabilities.use_def_safety import (

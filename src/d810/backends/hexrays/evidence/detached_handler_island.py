@@ -1,4 +1,5 @@
 """Recognize one detached call-bearing state handler from native boundaries."""
+
 from __future__ import annotations
 
 import ida_hexrays
@@ -63,10 +64,10 @@ def recognize_detached_handler_island(
     if decoded is None:
         return None
     call, size = decoded
-    if (
-        _mnemonic(cursor) != "call"
-        or call.ops[0].type not in {idaapi.o_near, idaapi.o_far}
-    ):
+    if _mnemonic(cursor) != "call" or call.ops[0].type not in {
+        idaapi.o_near,
+        idaapi.o_far,
+    }:
         return None
     call_target_ea = int(call.ops[0].addr)
     cursor += size
@@ -114,10 +115,10 @@ def recognize_detached_handler_island(
         return None
     branch, size = decoded
     branch_mnemonic = _mnemonic(cursor)
-    if (
-        branch_mnemonic not in {"jz", "je", "jnz", "jne"}
-        or branch.ops[0].type not in {idaapi.o_near, idaapi.o_far}
-    ):
+    if branch_mnemonic not in {"jz", "je", "jnz", "jne"} or branch.ops[0].type not in {
+        idaapi.o_near,
+        idaapi.o_far,
+    }:
         return None
     condition_code = 4 if branch_mnemonic in {"jz", "je"} else 5
     detached_end_ea = cursor + size

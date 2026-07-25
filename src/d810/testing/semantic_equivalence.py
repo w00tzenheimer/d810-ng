@@ -16,6 +16,7 @@ Scope: single ``int``-argument reference functions (the dispatcher-pattern
 family in ``samples/src/c/dispatcher_patterns.c``).  Multi-argument references
 are a future extension.
 """
+
 from __future__ import annotations
 
 import re
@@ -82,7 +83,7 @@ def extract_reference_body(source_text: str, function: str) -> str | None:
         elif source_text[j] == "}":
             depth -= 1
             if depth == 0:
-                return source_text[m.start(): j + 1]
+                return source_text[m.start() : j + 1]
     return None
 
 
@@ -157,7 +158,10 @@ def check_semantic_equivalence(
         return None, "no C compiler available"
     ref_body = extract_reference_body(reference_source, function)
     if ref_body is None:
-        return False, f"reference function 'int {function}(int input)' not found in source"
+        return (
+            False,
+            f"reference function 'int {function}(int input)' not found in source",
+        )
     deob_body = pseudocode_to_c_function(after, function)
     program = build_equivalence_program(ref_body, deob_body, lo=lo, hi=hi)
     with tempfile.TemporaryDirectory() as tmp:
@@ -170,7 +174,10 @@ def check_semantic_equivalence(
             text=True,
         )
         if compiled.returncode != 0:
-            return False, f"compile failed: {compiled.stderr[-600:]}\n--- program ---\n{program}"
+            return (
+                False,
+                f"compile failed: {compiled.stderr[-600:]}\n--- program ---\n{program}",
+            )
         run = subprocess.run([str(binary)], capture_output=True, text=True)
         out = (run.stdout or "").strip()
         ok = "SEMANTIC_OK" in out and run.returncode == 0
@@ -193,9 +200,7 @@ def assert_semantic_equivalence(
     mismatch, a compile failure, or a missing reference.
     """
     source_text = _repo_path(reference_source_path).read_text(errors="replace")
-    ok, detail = check_semantic_equivalence(
-        after, function, source_text, lo=lo, hi=hi
-    )
+    ok, detail = check_semantic_equivalence(after, function, source_text, lo=lo, hi=hi)
     if ok is None:
         raise SemanticOracleUnavailable(detail)
     if not ok:

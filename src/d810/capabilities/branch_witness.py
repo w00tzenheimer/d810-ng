@@ -1,4 +1,5 @@
 """Capability boundary for exact branch-arm witnesses."""
+
 from __future__ import annotations
 
 from d810.core.typing import Protocol

@@ -33,6 +33,7 @@ importing it at runtime, so it is referenced here only under ``TYPE_CHECKING``
 This module must stay IDA-free (``portable-core-no-ida``): it imports only
 ``Protocol``, ``FlowGraph``, and (type-checking only) the result type.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING, Protocol, runtime_checkable

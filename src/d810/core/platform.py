@@ -52,6 +52,7 @@ def detect_file_format() -> FileFormat:
     """
     try:
         import idaapi
+
         # Use idaapi shim - works across IDA versions
         filetype = idaapi.inf_get_filetype()
 
@@ -181,9 +182,7 @@ def resolve_arch_config(config: dict, file_format: FileFormat | None = None) -> 
             override = config[key]
             if isinstance(override, dict):
                 result.update(override)
-                logger.debug(
-                    "Applied arch-specific config for '%s': %s", key, override
-                )
+                logger.debug("Applied arch-specific config for '%s': %s", key, override)
             break  # Only apply the most specific override
 
     return result

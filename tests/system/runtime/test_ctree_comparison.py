@@ -27,6 +27,7 @@ import pytest
 try:
     import idaapi
     import idc
+
     _IDA_AVAILABLE = True
 except Exception:
     _IDA_AVAILABLE = False
@@ -82,9 +83,7 @@ def _pseudocode_text(cfunc) -> str:
 # Test class — mirrors structure of other runtime tests
 # ---------------------------------------------------------------------------
 
-pytestmark = pytest.mark.skipif(
-    not _IDA_AVAILABLE, reason="IDA Pro not available"
-)
+pytestmark = pytest.mark.skipif(not _IDA_AVAILABLE, reason="IDA Pro not available")
 
 
 class TestCtreeComparison:
@@ -206,9 +205,7 @@ class TestCtreeComparison:
     # Test 4: ctree call count >= libclang call count (the headline)
     # ------------------------------------------------------------------
 
-    def test_ctree_calls_exceed_libclang(
-        self, libobfuscated_setup, code_comparator
-    ):
+    def test_ctree_calls_exceed_libclang(self, libobfuscated_setup, code_comparator):
         """Ctree call count is >= libclang call count on a function with sub_* calls.
 
         Motivation: libclang in C++ mode drops calls to undeclared functions
@@ -239,9 +236,7 @@ class TestCtreeComparison:
             strict_inequality_expected = False
 
         if func_ea == idaapi.BADADDR:
-            pytest.skip(
-                "Neither hodur_func nor test_chained_add found in this binary"
-            )
+            pytest.skip("Neither hodur_func nor test_chained_add found in this binary")
 
         cfunc = _decompile(func_ea)
         rendered = _pseudocode_text(cfunc)

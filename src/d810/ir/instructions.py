@@ -8,6 +8,7 @@ Statement-level views such as :class:`d810.ir.statements.Assignment` and
 :class:`d810.ir.statements.ConditionalBranch` remain separate projections over
 the same source snapshot.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping

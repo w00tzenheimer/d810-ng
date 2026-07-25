@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"Triage llr-zeyu live-object-access sites by migration shape.\n\nRead-only.  For every portable-core file that the gate flags, classify HOW the\nlive access can be removed, so the burn-down can be ordered safest-first:\n\n  DUAL_PATH   - has an ``if hasattr(target,\"blocks\")`` (or ``_from_flowgraph``\n                / ``_from_mba``) fork: the live branch is dead in production\n                (collectors get a FlowGraph via FLOWGRAPH_READY).  Safe delete.\n  COLLECTOR   - defines ``def collect(self, target, ...)`` and is registered as\n                a PreanalysisCollector: receives a FlowGraph at runtime, so live\n                calls are convertible to BlockSnapshot fields.\n  HELPER      - a free function / method taking ``mba`` from a HIGH caller;\n                needs caller-contract analysis before converting.\n\nRun from anywhere (absolute paths dodge the cwd-reset hook):\n    python3 tools/scripts/triage_live_object_sites.py [--root <worktree>]\n"
+'Triage llr-zeyu live-object-access sites by migration shape.\n\nRead-only.  For every portable-core file that the gate flags, classify HOW the\nlive access can be removed, so the burn-down can be ordered safest-first:\n\n  DUAL_PATH   - has an ``if hasattr(target,"blocks")`` (or ``_from_flowgraph``\n                / ``_from_mba``) fork: the live branch is dead in production\n                (collectors get a FlowGraph via FLOWGRAPH_READY).  Safe delete.\n  COLLECTOR   - defines ``def collect(self, target, ...)`` and is registered as\n                a PreanalysisCollector: receives a FlowGraph at runtime, so live\n                calls are convertible to BlockSnapshot fields.\n  HELPER      - a free function / method taking ``mba`` from a HIGH caller;\n                needs caller-contract analysis before converting.\n\nRun from anywhere (absolute paths dodge the cwd-reset hook):\n    python3 tools/scripts/triage_live_object_sites.py [--root <worktree>]\n'
+
 from __future__ import annotations
 
 import argparse
@@ -13,19 +14,29 @@ LIVE = [
     re.compile(r"\.get_mblock\s*\("),
     re.compile(r"\.nsucc\s*\(\)"),
     re.compile(r"\.npred\s*\(\)"),
-    re.compile(r"\.succ\s*\([^)]"),   # .succ(i) call, not .succs
-    re.compile(r"\.pred\s*\([^)]"),   # .pred(i) call, not .preds
+    re.compile(r"\.succ\s*\([^)]"),  # .succ(i) call, not .succs
+    re.compile(r"\.pred\s*\([^)]"),  # .pred(i) call, not .preds
     re.compile(r"\.succset\b"),
     re.compile(r"\.predset\b"),
 ]
 
-DUAL = re.compile(r'hasattr\([^,]+,\s*"blocks"\)|_extract_from_flowgraph|'
-                  r'_from_flowgraph|_extract_from_mba|_from_mba|'
-                  r'isinstance\([^,]+,\s*FlowGraph\)')
+DUAL = re.compile(
+    r'hasattr\([^,]+,\s*"blocks"\)|_extract_from_flowgraph|'
+    r"_from_flowgraph|_extract_from_mba|_from_mba|"
+    r"isinstance\([^,]+,\s*FlowGraph\)"
+)
 COLLECTOR = re.compile(r"def collect\(self, target")
 
-PORTABLE_CORE = ("ir", "analyses", "transforms", "capabilities", "support",
-                 "core", "passes", "families")
+PORTABLE_CORE = (
+    "ir",
+    "analyses",
+    "transforms",
+    "capabilities",
+    "support",
+    "core",
+    "passes",
+    "families",
+)
 
 
 def iter_py(root: pathlib.Path):
@@ -59,11 +70,14 @@ def main() -> int:
         shape = "DUAL_PATH" if is_dual else ("COLLECTOR" if is_coll else "HELPER")
         rows.append((shape, hits, rel))
 
-    rows.sort(key=lambda r: ({"DUAL_PATH": 0, "COLLECTOR": 1, "HELPER": 2}[r[0]],
-                             -r[1], r[2]))
+    rows.sort(
+        key=lambda r: ({"DUAL_PATH": 0, "COLLECTOR": 1, "HELPER": 2}[r[0]], -r[1], r[2])
+    )
     total = sum(r[1] for r in rows)
-    print(f"# triage: {len(rows)} files / {total} live-access hits "
-          f"(gate counts method-call+attr forms only)\n")
+    print(
+        f"# triage: {len(rows)} files / {total} live-access hits "
+        f"(gate counts method-call+attr forms only)\n"
+    )
     cur = None
     for shape, hits, rel in rows:
         if shape != cur:

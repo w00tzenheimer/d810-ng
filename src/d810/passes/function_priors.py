@@ -1,15 +1,20 @@
 """Function-scoped analysis priors supplied by tests, projects, or callers."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from d810.analyses.control_flow.return_frontier_artifacts import ReturnFrontierArtifactPriors
-from d810.analyses.control_flow.terminal_tail_priors import TerminalTailCascadeEgressPriors
+from d810.analyses.control_flow.return_frontier_artifacts import (
+    ReturnFrontierArtifactPriors,
+)
+from d810.analyses.control_flow.terminal_tail_priors import (
+    TerminalTailCascadeEgressPriors,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class FunctionAnalysisPriors:
-    "Typed caller knowledge for one function.\n\n    These are not optimizer decisions and not family-specific configuration.\n    They are explicit facts supplied by the harness/project layer when it knows\n    something preanalysis cannot infer safely from the current microcode alone.\n    "
+    "Typed caller knowledge for one function.\n\n    These are not optimizer decisions and not family-specific configuration.\n    They are explicit facts supplied by the harness/project layer when it knows\n    something preanalysis cannot infer safely from the current microcode alone.\n"
 
     return_frontier_artifacts: ReturnFrontierArtifactPriors = field(
         default_factory=ReturnFrontierArtifactPriors
@@ -34,9 +39,7 @@ class FunctionAnalysisPriors:
             return self
         return FunctionAnalysisPriors(
             return_frontier_artifacts=(
-                self.return_frontier_artifacts.merge(
-                    other.return_frontier_artifacts
-                )
+                self.return_frontier_artifacts.merge(other.return_frontier_artifacts)
             ),
             terminal_tail_cascade_egress=(
                 self.terminal_tail_cascade_egress.merge(

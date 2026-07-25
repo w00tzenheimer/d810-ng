@@ -15,6 +15,7 @@ Metrics produced:
 Candidates:
     - ``"high_opcode_dominance"`` when top_opcode_ratio > 0.5
 """
+
 from __future__ import annotations
 
 import time
@@ -66,22 +67,26 @@ class OpcodeDistributionCollector:
         else:
             top_opcode, top_count, top_ratio = -1, 0, 0.0
 
-        metrics = MappingProxyType({
-            "total_insns": total,
-            "unique_opcodes": unique,
-            "top_opcode": top_opcode,
-            "top_opcode_count": top_count,
-            "top_opcode_ratio": top_ratio,
-        })
+        metrics = MappingProxyType(
+            {
+                "total_insns": total,
+                "unique_opcodes": unique,
+                "top_opcode": top_opcode,
+                "top_opcode_count": top_count,
+                "top_opcode_ratio": top_ratio,
+            }
+        )
 
         candidates: list[CandidateFlag] = []
         if top_ratio > _DOMINANCE_THRESHOLD and total > 0:
-            candidates.append(CandidateFlag(
-                kind="high_opcode_dominance",
-                block_serial=-1,
-                confidence=min(1.0, top_ratio),
-                detail=f"opcode {top_opcode} dominates {top_ratio:.1%} of {total} insns",
-            ))
+            candidates.append(
+                CandidateFlag(
+                    kind="high_opcode_dominance",
+                    block_serial=-1,
+                    confidence=min(1.0, top_ratio),
+                    detail=f"opcode {top_opcode} dominates {top_ratio:.1%} of {total} insns",
+                )
+            )
 
         return PreanalysisResult(
             collector_name=self.name,

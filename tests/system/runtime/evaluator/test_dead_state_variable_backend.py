@@ -4,7 +4,9 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
-from d810.evaluator.hexrays_microcode import dead_state_variable_backend as backend_module
+from d810.evaluator.hexrays_microcode import (
+    dead_state_variable_backend as backend_module,
+)
 from d810.evaluator.hexrays_microcode.chains import DefSite, UseSite
 from d810.evaluator.hexrays_microcode.dead_state_variable_backend import (
     HexRaysDeadStateVariableEvidenceBackend,
@@ -162,10 +164,12 @@ def test_collect_allows_non_state_destination_copy_when_defs_are_state_constants
         l=_stkvar(0x3C),
         d=_stkvar(0x80, size=8),
     )
-    mba = _Mba({
-        5: _Block(def_insn),
-        9: _Block(use_insn),
-    })
+    mba = _Mba(
+        {
+            5: _Block(def_insn),
+            9: _Block(use_insn),
+        }
+    )
     monkeypatch.setattr(
         backend_module,
         "find_all_uses_of_stkvar",

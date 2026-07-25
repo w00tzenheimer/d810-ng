@@ -91,28 +91,35 @@ TransactionPhase = Literal[
 ]
 
 # Phases that operate before any live MBA mutation.
-_PRE_MUTATION_PHASES: frozenset[str] = frozenset({
-    "semantic_preflight",
-    "projected_contract",
-    "live_pre_check",
-    "lowering",
-})
+_PRE_MUTATION_PHASES: frozenset[str] = frozenset(
+    {
+        "semantic_preflight",
+        "projected_contract",
+        "live_pre_check",
+        "lowering",
+    }
+)
 
 # Phases where live MBA state has been mutated and rollback is required on failure.
-_LIVE_MUTATION_PHASES: frozenset[str] = frozenset({
-    "backend_apply",
-    "post_apply_contract",
-    "native_verify",
-})
+_LIVE_MUTATION_PHASES: frozenset[str] = frozenset(
+    {
+        "backend_apply",
+        "post_apply_contract",
+        "native_verify",
+    }
+)
 
 # Phases in the rollback/recovery path itself.
-_ROLLBACK_PHASES: frozenset[str] = frozenset({
-    "rollback_restore",
-    "rollback_verification",
-})
+_ROLLBACK_PHASES: frozenset[str] = frozenset(
+    {
+        "rollback_restore",
+        "rollback_verification",
+    }
+)
 
 
 # -- Failure classification --------------------------------------------------
+
 
 @dataclass(frozen=True)
 class FailureClassification:
@@ -171,8 +178,7 @@ def classify_failure(
     """
     if phase not in frozenset(TRANSACTION_PHASES):
         raise ValueError(
-            f"Unknown transaction phase: {phase!r}. "
-            f"Valid phases: {TRANSACTION_PHASES}"
+            f"Unknown transaction phase: {phase!r}. Valid phases: {TRANSACTION_PHASES}"
         )
 
     if phase in _PRE_MUTATION_PHASES:
@@ -200,7 +206,9 @@ def classify_failure(
             phase=phase,
             rollback_needed=False,
             quarantine=True,
-            tag="rollback_failed" if phase == "rollback_restore" else "rollback_verify_failed",
+            tag="rollback_failed"
+            if phase == "rollback_restore"
+            else "rollback_verify_failed",
             error=error,
         )
 

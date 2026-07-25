@@ -1,4 +1,5 @@
 """Structured transition evidence for the PREOPT union-region experiment."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -92,9 +93,7 @@ def select_replay_transition_manifest(
         rows: tuple[PreoptTransitionManifestRow, ...],
     ) -> tuple[int, int, int]:
         semantic_keys = {
-            key
-            for row in rows
-            if (key := _replay_semantic_key(row)) is not None
+            key for row in rows if (key := _replay_semantic_key(row)) is not None
         }
         capture_index = max(int(row.capture_index) for row in rows)
         return len(semantic_keys), capture_index, len(rows)
@@ -149,15 +148,11 @@ def plan_preopt_manifest_boundaries(
         abstentions.append(
             PreoptManifestBoundaryAbstention(
                 source_ea=source_ea,
-                reason=(
-                    PreoptManifestBoundaryAbstentionReason.CONFLICTING_TRANSITIONS
-                ),
+                reason=(PreoptManifestBoundaryAbstentionReason.CONFLICTING_TRANSITIONS),
             )
         )
     return PreoptManifestBoundaryPlan(
-        direct=tuple(
-            sorted(direct, key=lambda row: (row.source_ea, row.target_ea))
-        ),
+        direct=tuple(sorted(direct, key=lambda row: (row.source_ea, row.target_ea))),
         abstentions=tuple(abstentions),
     )
 
@@ -229,11 +224,7 @@ def build_transition_manifest(
             continue
         proof = transition.proof
         proof_kind = "unattributed" if proof is None else str(proof.kind)
-        reason = (
-            proof_kind
-            if proof is None or not proof.reason
-            else str(proof.reason)
-        )
+        reason = proof_kind if proof is None or not proof.reason else str(proof.reason)
         rows.append(
             PreoptTransitionManifestRow(
                 capture_index=int(capture_index),
@@ -245,9 +236,7 @@ def build_transition_manifest(
                     state_var_reg,
                 ),
                 via_block_serial=(
-                    None
-                    if transition.via_block is None
-                    else int(transition.via_block)
+                    None if transition.via_block is None else int(transition.via_block)
                 ),
                 via_block_ea=_optional_block_anchor_ea(
                     graph,
@@ -280,11 +269,7 @@ def build_transition_manifest(
                 ),
                 proof_kind=proof_kind,
                 trusted=False if proof is None else bool(proof.trusted),
-                status=(
-                    "unresolved"
-                    if transition.next_state is None
-                    else "resolved"
-                ),
+                status=("unresolved" if transition.next_state is None else "resolved"),
                 reason=reason,
             )
         )
@@ -401,9 +386,7 @@ def load_transition_manifest(
             via_block_serial=None if row[4] is None else int(row[4]),
             via_block_ea=None if row[5] is None else int(row[5]),
             next_state=None if row[6] is None else int(row[6]),
-            target_handler_serial=(
-                None if row[7] is None else int(row[7])
-            ),
+            target_handler_serial=(None if row[7] is None else int(row[7])),
             target_handler_ea=None if row[8] is None else int(row[8]),
             is_return=bool(row[9]),
             branch_arm=None if row[10] is None else int(row[10]),

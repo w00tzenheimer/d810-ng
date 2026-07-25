@@ -1,4 +1,5 @@
 """In-memory transition resolution through exact state-dispatcher maps."""
+
 from __future__ import annotations
 
 import enum
@@ -59,9 +60,7 @@ def rebind_state_write_anchors(
     for anchor in anchors:
         if anchor.instruction_ea is None:
             continue
-        block_serial = block_serial_for_instruction_ea(
-            int(anchor.instruction_ea)
-        )
+        block_serial = block_serial_for_instruction_ea(int(anchor.instruction_ea))
         if block_serial is None:
             continue
         current = StateWriteAnchor(
@@ -135,7 +134,11 @@ def _select_state_write(
         return exact
     if state_var_stkoff is not None:
         return lookup.get((int(block_serial), None))
-    for (candidate_block, _candidate_stkoff, _candidate_reg), state_const in lookup.items():
+    for (
+        candidate_block,
+        _candidate_stkoff,
+        _candidate_reg,
+    ), state_const in lookup.items():
         if candidate_block == int(block_serial):
             return state_const
     return None
@@ -221,10 +224,7 @@ def _fold_corridor_state_write(
     _write_block, site = folded
     candidate = int(site.state_value) & 0xFFFFFFFF
     known_states = set(dispatch_map.state_to_handler().keys())
-    if (
-        dispatch_map.resolve_target(candidate) is not None
-        or candidate in known_states
-    ):
+    if dispatch_map.resolve_target(candidate) is not None or candidate in known_states:
         return candidate
     return None
 
@@ -350,12 +350,8 @@ def facts_from_validated_view(
                         source_state_const_hex=_maybe_str(
                             payload.get("source_state_const_hex")
                         ),
-                        successor_kind=str(
-                            payload.get("successor_kind", "branch")
-                        ),
-                        state_var_stkoff=_maybe_int(
-                            payload.get("state_var_stkoff")
-                        ),
+                        successor_kind=str(payload.get("successor_kind", "branch")),
+                        state_var_stkoff=_maybe_int(payload.get("state_var_stkoff")),
                         state_var_reg=_maybe_int(payload.get("state_var_reg")),
                     )
                 )
@@ -373,9 +369,7 @@ def facts_from_validated_view(
                     StateWriteAnchor(
                         block_serial=int(block_serial),
                         state_const=int(state_const),
-                        state_var_stkoff=_maybe_int(
-                            payload.get("state_var_stkoff")
-                        ),
+                        state_var_stkoff=_maybe_int(payload.get("state_var_stkoff")),
                         state_var_reg=_maybe_int(payload.get("state_var_reg")),
                         instruction_ea=_maybe_int(payload.get("instruction_ea")),
                     )

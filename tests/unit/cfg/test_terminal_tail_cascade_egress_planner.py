@@ -1,4 +1,5 @@
 """Tests for read-only terminal-tail cascade egress planning."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -100,7 +101,9 @@ class TestTerminalTailCascadeEgressPlanner:
             91: _block(91, ()),
         }
         sites = [
-            _site(0, 0, continuation=1, return_edge=20, role="guard_only", opcode="op_43"),
+            _site(
+                0, 0, continuation=1, return_edge=20, role="guard_only", opcode="op_43"
+            ),
             _site(1, 1, continuation=90, return_edge=11),
             _site(2, 2, continuation=90, return_edge=12),
             _site(3, 3, continuation=90, return_edge=13),
@@ -152,7 +155,11 @@ class TestTerminalTailCascadeEgressPlanner:
         )
         plan = TerminalTailCascadeEgressPlanner(
             blocks,
-            [noisy_counter_store, real_byte_store, _site(2, 2, continuation=None, return_edge=None)],
+            [
+                noisy_counter_store,
+                real_byte_store,
+                _site(2, 2, continuation=None, return_edge=None),
+            ],
         ).build_plan()
 
         assert plan.rows[1].explicit_store
@@ -192,7 +199,10 @@ class TestTerminalTailCascadeEgressPlanner:
         plan = TerminalTailCascadeEgressPlanner(blocks, sites).build_plan()
 
         assert plan.rows[3].intended_target == 3
-        assert plan.rows[3].reason == "next_byte_emit_resolves_to_same_block_split_required"
+        assert (
+            plan.rows[3].reason
+            == "next_byte_emit_resolves_to_same_block_split_required"
+        )
         assert not plan.rows[3].removes_from_scc
 
     def test_tail_branch_target_overrides_swapped_fact_edges(self) -> None:
@@ -452,7 +462,10 @@ class TestTerminalTailCascadeEgressPlanner:
         rendered = format_cascade_egress_plan(plan)
 
         assert "Terminal tail cascade egress plan" in rendered
-        assert "| byte | source block | current continuation | intended target |" in rendered
+        assert (
+            "| byte | source block | current continuation | intended target |"
+            in rendered
+        )
         assert "state verdict" in rendered
         assert "terminal_byte_has_no_next_emit_target" in rendered
 

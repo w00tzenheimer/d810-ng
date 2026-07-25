@@ -1,4 +1,5 @@
 "State-transition anchor fact collector.\n\nThis collector observes LOCOPT-time state-machine transitions before\nIDA's MMAT_CALLS pass folds transit-state chains into direct writes.\n\nFor each ``mov #const, %var_<canonical_state_var>`` write at block B,\nthe collector walks B's direct successors to find the next block that\nwrites the same state variable, and records the implied transition.\n\nThis is the natural follow-up to :class:`StateWriteAnchorFactCollector`:\nanchors record per-block constants; transitions record the chain edges\nbetween those constants.  Preanalysis's eventual fact-backed correction will\ncompare LOCOPT-time transition graphs against GLBOPT1's reconstructed\nDAG and detect collapses that erased terminal-tail conditional returns\n(the byte5 chain ``STATE_385BBE2D -> STATE_10743C4C -> STATE_6107F8EC``\nis the motivating example: at LOCOPT the chain is encoded in pre-fold\nstate constants; by GLBOPT1 it has been collapsed to a single direct\nwrite of the eventually-reaching successor's constant).\n\nObservability-only: the collector never modifies microcode and has no\ninfluence on planning or CFG mutation.\n\nllr-3b41 S11 -- canonical-only.  A collector-local source iterator routes a\nmeta-rich :class:`~d810.ir.flowgraph.FlowGraph` block (the only shape a\nproduction fact target ever is) through ``InstructionProjection.from_block``,\nand an offline diag row carrying a parseable ``meta`` operand tree through the\nSAME canonical :func:`~d810.ir.insn_projection.project_diag_instruction`\nprojection.  ``dest_stkoff`` is read off the canonical ``Instruction.result``\nand ``src_l_value`` off the first canonical input, so a transition is anchored\non recovered stack/const semantics.  There is no meta-less fallback -- every\nproduction fact target is a canonical ``FlowGraph``.\n"
+
 from __future__ import annotations
 
 from collections import Counter
@@ -351,9 +352,7 @@ class StateTransitionAnchorFactCollector:
 
         instructions_by_block: dict[int, list[_StateTransitionInsn]] = {}
         for insn in instructions:
-            instructions_by_block.setdefault(
-                int(insn.block_serial), []
-            ).append(insn)
+            instructions_by_block.setdefault(int(insn.block_serial), []).append(insn)
         for items in instructions_by_block.values():
             items.sort(key=lambda i: int(i.insn_index))
 
@@ -369,9 +368,7 @@ class StateTransitionAnchorFactCollector:
                 continue
 
             source_block = int(insn.block_serial)
-            source_const = (
-                int(insn.src_l_value or 0) & 0xFFFFFFFFFFFFFFFF
-            )
+            source_const = int(insn.src_l_value or 0) & 0xFFFFFFFFFFFFFFFF
             anchor_ea = _instruction_anchor_ea(insn, block_start_ea)
             if anchor_ea is None:
                 continue
@@ -411,9 +408,7 @@ class StateTransitionAnchorFactCollector:
                 "source_instruction_ea_hex": (
                     f"0x{int(anchor_ea) & 0xFFFFFFFFFFFFFFFF:016x}"
                 ),
-                "state_var_stkoff": (
-                    storage_offset if storage_kind == "stk" else None
-                ),
+                "state_var_stkoff": (storage_offset if storage_kind == "stk" else None),
                 "state_var_stkoff_hex": (
                     f"0x{storage_offset:x}" if storage_kind == "stk" else None
                 ),
@@ -447,8 +442,7 @@ class StateTransitionAnchorFactCollector:
                     source_block=source_block,
                     source_ea=int(anchor_ea),
                     block_fingerprint=(
-                        f"blk[{source_block}].{int(insn.insn_index)}:"
-                        f"{insn.opcode_name}"
+                        f"blk[{source_block}].{int(insn.insn_index)}:{insn.opcode_name}"
                     ),
                     mop_signature=(
                         f"state_transition:0x{source_const:08x}->"

@@ -1,4 +1,5 @@
 """Terminal-byte evidence helpers derived from validated fact observations."""
+
 from __future__ import annotations
 
 __all__ = ["collect_terminal_tail_byte_source_eas"]
@@ -28,9 +29,8 @@ def collect_terminal_tail_byte_source_eas(snapshot: object) -> frozenset[int]:
     or ``validated_fact_view`` with ``active_observations``. No Hex-Rays
     objects are inspected here.
     """
-    fact_view = (
-        getattr(snapshot, "diagnostic_fact_view", None)
-        or getattr(snapshot, "validated_fact_view", None)
+    fact_view = getattr(snapshot, "diagnostic_fact_view", None) or getattr(
+        snapshot, "validated_fact_view", None
     )
     if fact_view is None:
         return frozenset()

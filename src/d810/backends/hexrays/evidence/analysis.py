@@ -48,7 +48,9 @@ from d810.hexrays.utils.hexrays_helpers import (
 from d810.backends.hexrays.evidence.datamodel import (
     DispatcherStateMachine,
 )
-from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
+from d810.analyses.control_flow.condition_chain_model import (
+    ConditionChainAnalysisResult,
+)
 from d810.backends.hexrays.evidence.dispatcher.dispatcher_history import (
     DispatcherAnalysis,
     analyze_dispatcher_live,
@@ -118,10 +120,8 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
-def _live_mop_matches_snapshot_key(
-    mop: "ida_hexrays.mop_t", key: str | None
-) -> bool:
-    "Return ``True`` if ``mop`` produces the given snapshot key.\n\n    Mirrors ``d810.ir.mop_identity.mop_snapshot_key`` on the live\n    side so the dispatcher-cache's portable state-variable identity\n    (held as a ``MopSnapshot``) can be matched against the live\n    operands in hodur's local ``state_check_blocks`` without holding\n    a live ``mop_t`` reference inside ``StateVariableCandidate``.\n\n    Inlined rather than imported from a shared helper because the\n    only equivalent on the live side lives in\n    ``preanalysis/flow/dispatcher_detection._build_state_var_snapshot``\n    (private) and the matching logic itself is one ``if``/``elif``\n    cascade -- not worth a cross-module dependency.\n    "
+def _live_mop_matches_snapshot_key(mop: "ida_hexrays.mop_t", key: str | None) -> bool:
+    "Return ``True`` if ``mop`` produces the given snapshot key.\n\n    Mirrors ``d810.ir.mop_identity.mop_snapshot_key`` on the live\n    side so the dispatcher-cache's portable state-variable identity\n    (held as a ``MopSnapshot``) can be matched against the live\n    operands in hodur's local ``state_check_blocks`` without holding\n    a live ``mop_t`` reference inside ``StateVariableCandidate``.\n\n    Inlined rather than imported from a shared helper because the\n    only equivalent on the live side lives in\n    ``preanalysis/flow/dispatcher_detection._build_state_var_snapshot``\n    (private) and the matching logic itself is one ``if``/``elif``\n    cascade -- not worth a cross-module dependency.\n"
     if key is None or mop is None:
         return False
     t = mop.t
@@ -252,9 +252,7 @@ class HodurStateMachineDetector:
                         _, candidate = extract_num_mop(blk.tail)
                         if candidate is None:
                             continue
-                        if _live_mop_matches_snapshot_key(
-                            candidate, cached_key
-                        ):
+                        if _live_mop_matches_snapshot_key(candidate, cached_key):
                             state_var = ida_hexrays.mop_t(candidate)
                             if unflat_logger.debug_on:
                                 unflat_logger.debug(
@@ -1075,17 +1073,14 @@ class HodurStateMachineDetector:
                     "BINOP_RESOLVE_FAIL: ea=0x%x opcode=%d "
                     "l_type=%d l_val=%s r_type=%d r_val=%s "
                     "stk_map={%s} reg_map={%s}",
-                    insn.ea, opcode,
-                    l_type, "None" if lv is None else hex(lv),
-                    r_type, "None" if rv is None else hex(rv),
-                    ", ".join(
-                        "%s: %s" % (hex(k), hex(v))
-                        for k, v in stk_map.items()
-                    ),
-                    ", ".join(
-                        "%s: %s" % (hex(k), hex(v))
-                        for k, v in reg_map.items()
-                    ),
+                    insn.ea,
+                    opcode,
+                    l_type,
+                    "None" if lv is None else hex(lv),
+                    r_type,
+                    "None" if rv is None else hex(rv),
+                    ", ".join("%s: %s" % (hex(k), hex(v)) for k, v in stk_map.items()),
+                    ", ".join("%s: %s" % (hex(k), hex(v)) for k, v in reg_map.items()),
                 )
 
         if result is not None and self._mops_match_state_var(dst, state_var):
@@ -1231,19 +1226,14 @@ class HodurStateMachineDetector:
 
                         # Enqueue deeper successors if within depth limit
                         if cur_depth + 1 < _MAX_TAIL_CHASE_DEPTH:
-                            chase_frontier.append(
-                                (succ_serial, cur_depth + 1)
-                            )
+                            chase_frontier.append((succ_serial, cur_depth + 1))
 
                 if to_state is None and chased_blocks:
                     handler_entry = (
-                        handler.handler_blocks[0]
-                        if handler.handler_blocks
-                        else -1
+                        handler.handler_blocks[0] if handler.handler_blocks else -1
                     )
                     unflat_logger.info(
-                        "TAIL_CHASE_FAILED: state=0x%X entry_blk=%d "
-                        "chased_blocks=%s",
+                        "TAIL_CHASE_FAILED: state=0x%X entry_blk=%d chased_blocks=%s",
                         K,
                         handler_entry,
                         chased_blocks,
@@ -1295,9 +1285,7 @@ class HodurStateMachineDetector:
                     else "type=%d" % state_var.t
                 )
                 handler_entry = (
-                    handler.handler_blocks[0]
-                    if handler.handler_blocks
-                    else -1
+                    handler.handler_blocks[0] if handler.handler_blocks else -1
                 )
                 unflat_logger.info(
                     "UNRESOLVED_DIAG: state=0x%X entry_blk=%d "
@@ -1308,12 +1296,8 @@ class HodurStateMachineDetector:
                     handler_entry,
                     [s for s in handler.handler_blocks],
                     sv_stkoff,
-                    ", ".join(
-                        "0x%X: 0x%X" % (k, v) for k, v in stk_map.items()
-                    ),
-                    ", ".join(
-                        "%d: 0x%X" % (k, v) for k, v in reg_map.items()
-                    ),
+                    ", ".join("0x%X: 0x%X" % (k, v) for k, v in stk_map.items()),
+                    ", ".join("%d: 0x%X" % (k, v) for k, v in reg_map.items()),
                 )
 
         # --- Supplemental provenance pass for already-resolved handlers ---
@@ -1369,15 +1353,9 @@ class HodurStateMachineDetector:
             # we continue exploring to find ALL intermediate state_var values.
             if mba is not None:
                 handler_block_set = set(handler_blks)
-                last_serial = (
-                    handler_blks[-1]
-                    if handler_blks
-                    else handler.check_block
-                )
+                last_serial = handler_blks[-1] if handler_blks else handler.check_block
 
-                sup_chase_frontier: list[tuple[int, int]] = [
-                    (last_serial, 0)
-                ]
+                sup_chase_frontier: list[tuple[int, int]] = [(last_serial, 0)]
                 sup_chased_visited: set[int] = set(handler_block_set)
                 sup_chased_visited.add(last_serial)
                 _MAX_SUP_TAIL_CHASE_DEPTH = 5
@@ -1411,9 +1389,7 @@ class HodurStateMachineDetector:
 
                         # Enqueue deeper successors if within depth
                         if cur_depth + 1 < _MAX_SUP_TAIL_CHASE_DEPTH:
-                            sup_chase_frontier.append(
-                                (succ_serial, cur_depth + 1)
-                            )
+                            sup_chase_frontier.append((succ_serial, cur_depth + 1))
 
             # Emit supplemental transitions for intermediate values that
             # match a known handler state but differ from the BFS result.
@@ -1555,10 +1531,7 @@ class HodurStateMachineDetector:
             const_val: int | None = None
 
             # Case 1: Direct literal constant (m_mov #imm, state_var)
-            if (
-                target_insn.l is not None
-                and target_insn.l.t == ida_hexrays.mop_n
-            ):
+            if target_insn.l is not None and target_insn.l.t == ida_hexrays.mop_n:
                 const_val = int(target_insn.l.nnn.value) & 0xFFFFFFFF
 
             # Case 2: Binary op with two resolvable operands
@@ -1634,7 +1607,9 @@ class HodurStateMachineDetector:
 
                         if pred_from is None and range_evidence is not None:
                             # BFS backward walk through condition-chain provenance (depth 4)
-                            pp_condition_chain_node_map = range_evidence.condition_chain_blocks
+                            pp_condition_chain_node_map = (
+                                range_evidence.condition_chain_blocks
+                            )
                             pp_condition_chain_hsm = range_evidence.handler_state_map
                             pp_condition_chain_frontier: set[int] = {pred_serial}
                             pp_visited_condition_chain: set[int] = set()
@@ -1646,8 +1621,11 @@ class HodurStateMachineDetector:
                                     if pp_blk_serial in pp_visited_condition_chain:
                                         continue
                                     pp_visited_condition_chain.add(pp_blk_serial)
-                                    pp_resolved = pp_condition_chain_node_map.resolve_state(
-                                        pp_blk_serial, pp_condition_chain_hsm,
+                                    pp_resolved = (
+                                        pp_condition_chain_node_map.resolve_state(
+                                            pp_blk_serial,
+                                            pp_condition_chain_hsm,
+                                        )
                                     )
                                     if pp_resolved is not None:
                                         pred_from = pp_resolved
@@ -1659,13 +1637,20 @@ class HodurStateMachineDetector:
                                         if pp_blk_obj is not None:
                                             for pp_p_raw in pp_blk_obj.predset:
                                                 pp_p_int = int(pp_p_raw)
-                                                if pp_p_int not in pp_visited_condition_chain:
-                                                    pp_next_condition_chain_frontier.add(pp_p_int)
+                                                if (
+                                                    pp_p_int
+                                                    not in pp_visited_condition_chain
+                                                ):
+                                                    pp_next_condition_chain_frontier.add(
+                                                        pp_p_int
+                                                    )
                                     except (AttributeError, RuntimeError):
                                         pass
                                 if pp_condition_chain_resolved:
                                     break
-                                pp_condition_chain_frontier = pp_next_condition_chain_frontier
+                                pp_condition_chain_frontier = (
+                                    pp_next_condition_chain_frontier
+                                )
                             if pred_from is not None and unflat_logger.debug_on:
                                 unflat_logger.debug(
                                     "UD_CHAIN_DIAG: condition-chain provenance resolved "
@@ -1790,7 +1775,8 @@ class HodurStateMachineDetector:
                             continue
                         visited_condition_chain.add(blk_serial)
                         resolved = condition_chain_node_map.resolve_state(
-                            blk_serial, condition_chain_hsm,
+                            blk_serial,
+                            condition_chain_hsm,
                         )
                         if resolved is not None:
                             from_state = resolved
@@ -1829,8 +1815,7 @@ class HodurStateMachineDetector:
                 new_transitions.append(transition)
                 if unflat_logger.debug_on:
                     unflat_logger.debug(
-                        "UD_CHAIN: blk[%d] writes 0x%X — "
-                        "emitting with from_state=None",
+                        "UD_CHAIN: blk[%d] writes 0x%X — emitting with from_state=None",
                         def_site.block_serial,
                         const_val,
                     )
@@ -1863,9 +1848,7 @@ class HodurStateMachineDetector:
             )
 
         # --- Diagnostic: why are uncovered handler targets still uncovered? ---
-        covered_targets: set[int] = {
-            t.to_state for t in self.state_machine.transitions
-        }
+        covered_targets: set[int] = {t.to_state for t in self.state_machine.transitions}
         for t in new_transitions:
             covered_targets.add(t.to_state)
 
@@ -1955,18 +1938,14 @@ class HodurStateMachineDetector:
                                     and ds_insn2.l is not None
                                     and ds_insn2.l.t != ida_hexrays.mop_n
                                 ):
-                                    per_pred = (
-                                        self._resolve_operand_constants_per_pred(
-                                            mba,
-                                            ds.block_serial,
-                                            ds_insn2.l,
-                                        )
+                                    per_pred = self._resolve_operand_constants_per_pred(
+                                        mba,
+                                        ds.block_serial,
+                                        ds_insn2.l,
                                     )
                                     for ps, pc in per_pred.items():
                                         if pc == target_state:
-                                            fs2: int | None = (
-                                                block_to_handler.get(ps)
-                                            )
+                                            fs2: int | None = block_to_handler.get(ps)
                                             if fs2 is None:
                                                 try:
                                                     visited_d2 = {ps}
@@ -1974,29 +1953,25 @@ class HodurStateMachineDetector:
                                                     for _dd2 in range(4):
                                                         next_fd2: list[int] = []
                                                         for cd2 in frontier_d2:
-                                                            cd2_blk = (
-                                                                mba.get_mblock(cd2)
+                                                            cd2_blk = mba.get_mblock(
+                                                                cd2
                                                             )
                                                             if cd2_blk is None:
                                                                 continue
-                                                            for pp_raw in (
-                                                                cd2_blk.predset
-                                                            ):
+                                                            for (
+                                                                pp_raw
+                                                            ) in cd2_blk.predset:
                                                                 pp = int(pp_raw)
-                                                                if (
-                                                                    pp in visited_d2
-                                                                ):
+                                                                if pp in visited_d2:
                                                                     continue
                                                                 visited_d2.add(pp)
                                                                 if (
                                                                     pp
                                                                     in block_to_handler
                                                                 ):
-                                                                    fs2 = (
-                                                                        block_to_handler[
-                                                                            pp
-                                                                        ]
-                                                                    )
+                                                                    fs2 = block_to_handler[
+                                                                        pp
+                                                                    ]
                                                                     break
                                                                 next_fd2.append(pp)
                                                             if fs2 is not None:
@@ -2027,9 +2002,7 @@ class HodurStateMachineDetector:
                                                 target_state,
                                                 ps,
                                                 ds.block_serial,
-                                                hex(fs2)
-                                                if fs2 is not None
-                                                else "None",
+                                                hex(fs2) if fs2 is not None else "None",
                                                 reason2,
                                             )
                                             found = True
@@ -2099,10 +2072,7 @@ class HodurStateMachineDetector:
                 rd_insn = rd_blk.head
                 while rd_insn is not None:
                     if rd_insn.ea == rd.ins_ea:
-                        if (
-                            rd_insn.l is not None
-                            and rd_insn.l.t == ida_hexrays.mop_n
-                        ):
+                        if rd_insn.l is not None and rd_insn.l.t == ida_hexrays.mop_n:
                             val = int(rd_insn.l.nnn.value) & 0xFFFFFFFF
                             resolved_constants.add(val)
                         break
@@ -2167,9 +2137,7 @@ class HodurStateMachineDetector:
             # Scan predecessor for defs of the temp variable
             defs: list[DefSite] = []
             if mop.t == ida_hexrays.mop_r:
-                defs = _scan_block_for_reg_defs(
-                    mba, pred_serial, mop.r, mop.size
-                )
+                defs = _scan_block_for_reg_defs(mba, pred_serial, mop.r, mop.size)
             elif mop.t == ida_hexrays.mop_S:
                 defs = _scan_block_for_stkvar_defs(
                     mba, pred_serial, mop.s.off, mop.size
@@ -2188,9 +2156,7 @@ class HodurStateMachineDetector:
                     continue
                 inner_pred = inner_preds[0]
                 if mop.t == ida_hexrays.mop_r:
-                    defs = _scan_block_for_reg_defs(
-                        mba, inner_pred, mop.r, mop.size
-                    )
+                    defs = _scan_block_for_reg_defs(mba, inner_pred, mop.r, mop.size)
                 elif mop.t == ida_hexrays.mop_S:
                     defs = _scan_block_for_stkvar_defs(
                         mba, inner_pred, mop.s.off, mop.size
@@ -2209,10 +2175,7 @@ class HodurStateMachineDetector:
             rd_insn = rd_blk.head
             while rd_insn is not None:
                 if rd_insn.ea == last_def.ins_ea:
-                    if (
-                        rd_insn.l is not None
-                        and rd_insn.l.t == ida_hexrays.mop_n
-                    ):
+                    if rd_insn.l is not None and rd_insn.l.t == ida_hexrays.mop_n:
                         val = int(rd_insn.l.nnn.value) & 0xFFFFFFFF
                         result[pred_serial] = val
                     break
@@ -2253,7 +2216,9 @@ class HodurStateMachineDetector:
 
         try:
             successors = {
-                blk_serial: [int(succ) for succ in self.mba.get_mblock(blk_serial).succset]
+                blk_serial: [
+                    int(succ) for succ in self.mba.get_mblock(blk_serial).succset
+                ]
                 for blk_serial in range(self.mba.qty)
             }
             dom_tree = compute_dom_tree(successors, entry=0)
@@ -2339,7 +2304,8 @@ class HodurStateMachineDetector:
             # Log provenance summary when multiple state writes were seen
             if len(provenance_steps) > 1:
                 emitted_targets = {
-                    v for _, v in provenance_steps
+                    v
+                    for _, v in provenance_steps
                     if v in self.state_machine.state_constants and v != state_val
                 }
                 unflat_logger.debug(
@@ -2347,10 +2313,7 @@ class HodurStateMachineDetector:
                     state_val,
                     len(provenance_steps),
                     len(emitted_targets),
-                    [
-                        "(blk[%d]=0x%X)" % (bs, val)
-                        for bs, val in provenance_steps
-                    ],
+                    ["(blk[%d]=0x%X)" % (bs, val) for bs, val in provenance_steps],
                 )
 
         unflat_logger.info(
@@ -2418,14 +2381,19 @@ class HodurStateMachineDetector:
                 if sv.t == ida_hexrays.mop_S:
                     stkoff_for_condition_chain = sv.s.off
             try:
-                from d810.backends.hexrays.evidence.condition_chain_analysis import analyze_condition_chain_dispatcher
+                from d810.backends.hexrays.evidence.condition_chain_analysis import (
+                    analyze_condition_chain_dispatcher,
+                )
 
                 raw_condition_chain = analyze_condition_chain_dispatcher(
                     self.mba,
                     dispatcher_entry_serial=entry_serial,
                     state_var_stkoff=stkoff_for_condition_chain,
                 )
-                if raw_condition_chain is not None and len(raw_condition_chain.handler_state_map) > 0:
+                if (
+                    raw_condition_chain is not None
+                    and len(raw_condition_chain.handler_state_map) > 0
+                ):
                     self.range_evidence = raw_condition_chain
                     unflat_logger.debug(
                         "condition-chain analysis computed for UD chain fallback: "
@@ -2442,7 +2410,8 @@ class HodurStateMachineDetector:
         for iteration in range(_UD_CHAIN_MAX_ITERATIONS):
             try:
                 ud_transitions = self._discover_transitions_via_ud_chains(
-                    self.mba, range_evidence=self.range_evidence,
+                    self.mba,
+                    range_evidence=self.range_evidence,
                 )
             except Exception:
                 unflat_logger.debug(
@@ -2454,8 +2423,7 @@ class HodurStateMachineDetector:
             for ut in ud_transitions:
                 self.state_machine.add_transition(ut)
             unflat_logger.info(
-                "UD chain discovery iteration %d: found %d new transitions "
-                "(total %d)",
+                "UD chain discovery iteration %d: found %d new transitions (total %d)",
                 iteration,
                 len(ud_transitions),
                 len(self.state_machine.transitions),

@@ -13,6 +13,7 @@ so the fixtures are ``SimpleNamespace`` shims shaped like ``mop_t`` / ``minsn_t`
 
 IDA-dependent (reads ``ida_hexrays`` constants) -> system/runtime, not a unit.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -39,7 +40,9 @@ def _mop_S(off: int, size: int = _W):
 
 
 def _mop_n(value: int, size: int = _W):
-    return SimpleNamespace(t=ida_hexrays.mop_n, nnn=SimpleNamespace(value=value), size=size)
+    return SimpleNamespace(
+        t=ida_hexrays.mop_n, nnn=SimpleNamespace(value=value), size=size
+    )
 
 
 def _mop_d(sub_insn, size: int = _W):
@@ -116,9 +119,7 @@ def test_value_set_resolver_non_const_def_falls_back_to_top():
         _insn(ida_hexrays.m_mov, d=_mop_S(_STATE_OFF), l=_mop_S(_SRC_OFF))
     )
     def_a = _block(_insn(ida_hexrays.m_mov, d=_mop_S(_SRC_OFF), l=_mop_n(_A)))
-    def_nonconst = _block(
-        _insn(ida_hexrays.m_mov, d=_mop_S(_SRC_OFF), l=_mop_S(0x999))
-    )
+    def_nonconst = _block(_insn(ida_hexrays.m_mov, d=_mop_S(_SRC_OFF), l=_mop_S(0x999)))
     mba = _mba({195: state_write_blk, 194: def_a, 51: def_nonconst})
 
     v = resolve_state_write_value_set(

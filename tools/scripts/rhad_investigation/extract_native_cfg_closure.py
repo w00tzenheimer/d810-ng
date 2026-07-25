@@ -6,6 +6,7 @@ walks direct x86 control flow in a neighboring-tool-patched binary so imported
 microcode can be compared beyond IDA's original function boundary.  Unknown
 indirect transfers are explicit cut points; no edge is guessed.
 """
+
 from __future__ import annotations
 
 import argparse

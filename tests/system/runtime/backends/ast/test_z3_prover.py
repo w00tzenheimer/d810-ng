@@ -1,16 +1,19 @@
 """Unit tests for Z3MopProver API surface."""
+
 from types import SimpleNamespace
 
 import pytest
 
 try:
     import z3
+
     Z3_AVAILABLE = True
 except ImportError:
     Z3_AVAILABLE = False
 
 try:
     import ida_hexrays
+
     IDA_AVAILABLE = True
 except ImportError:
     IDA_AVAILABLE = False
@@ -23,51 +26,61 @@ class TestZ3MopProverAPI:
 
     def test_prover_instantiation_no_context(self):
         from d810.backends.ast.z3 import Z3MopProver
+
         prover = Z3MopProver()
         assert prover is not None
 
     def test_prover_instantiation_with_context(self):
         from d810.backends.ast.z3 import Z3MopProver
+
         prover = Z3MopProver(blk=None, ins=None)
         assert prover is not None
 
     def test_prover_has_are_equal(self):
         from d810.backends.ast.z3 import Z3MopProver
+
         prover = Z3MopProver()
-        assert callable(getattr(prover, 'are_equal', None))
+        assert callable(getattr(prover, "are_equal", None))
 
     def test_prover_has_are_unequal(self):
         from d810.backends.ast.z3 import Z3MopProver
+
         prover = Z3MopProver()
-        assert callable(getattr(prover, 'are_unequal', None))
+        assert callable(getattr(prover, "are_unequal", None))
 
     def test_prover_has_is_always_zero(self):
         from d810.backends.ast.z3 import Z3MopProver
+
         prover = Z3MopProver()
-        assert callable(getattr(prover, 'is_always_zero', None))
+        assert callable(getattr(prover, "is_always_zero", None))
 
     def test_prover_has_is_always_nonzero(self):
         from d810.backends.ast.z3 import Z3MopProver
+
         prover = Z3MopProver()
-        assert callable(getattr(prover, 'is_always_nonzero', None))
+        assert callable(getattr(prover, "is_always_nonzero", None))
 
     def test_prover_has_prove_equivalence(self):
         from d810.backends.ast.z3 import Z3MopProver
+
         prover = Z3MopProver()
-        assert callable(getattr(prover, 'prove_equivalence', None))
+        assert callable(getattr(prover, "prove_equivalence", None))
 
     def test_prover_has_clear_caches(self):
         from d810.backends.ast.z3 import Z3MopProver
+
         prover = Z3MopProver()
-        assert callable(getattr(prover, 'clear_caches', None))
+        assert callable(getattr(prover, "clear_caches", None))
 
     def test_prover_none_mops_are_equal_returns_false(self):
         from d810.backends.ast.z3 import Z3MopProver
+
         prover = Z3MopProver()
         assert prover.are_equal(None, None) is False
 
     def test_prover_none_mop_is_always_zero_returns_false(self):
         from d810.backends.ast.z3 import Z3MopProver
+
         prover = Z3MopProver()
         assert prover.is_always_zero(None) is False
 
@@ -139,9 +152,7 @@ class TestZ3MopProverAPI:
         b = _StubMop("zero")  # the #0 constant compared against
 
         # Keep cache keys stable + cheap for the stubs (avoid SWIG hashing).
-        monkeypatch.setattr(
-            z3mod, "structural_mop_hash", lambda m, _d: hash(m._ident)
-        )
+        monkeypatch.setattr(z3mod, "structural_mop_hash", lambda m, _d: hash(m._ident))
         # Simulate one operand failing AST conversion (the load) -> single expr,
         # exactly as ``ldx`` does ("unsupported root opcode" -> 1 of 2 converted).
         monkeypatch.setattr(

@@ -1,4 +1,5 @@
 """Backend-neutral semantic-region materialization contracts."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

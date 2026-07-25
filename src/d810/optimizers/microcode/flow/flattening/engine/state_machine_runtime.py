@@ -1,4 +1,5 @@
 """Runtime facade for profile-driven state-machine unflattening families."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

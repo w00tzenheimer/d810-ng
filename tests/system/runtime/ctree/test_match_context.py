@@ -2,6 +2,7 @@
 
 Tests variable binding storage and equivalence checking without IDA.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -21,6 +22,7 @@ class MockItem:
 
 class MockPat:
     """Minimal mock for a pattern (used as MatchContext.pattern)."""
+
     pass
 
 
@@ -77,6 +79,7 @@ class TestMatchContext:
 # equal_effect. We mock this path by temporarily setting idaapi.
 # -------------------------------------------------------------------------
 
+
 class MockVarRef:
     """Mock for the v attribute on cot_var items, holding an idx."""
 
@@ -118,8 +121,8 @@ class TestMatchContextCotVar:
             item3 = MockCotVarItem(idx=7)  # different idx
 
             assert ctx.bind_item("v", item1) is True
-            assert ctx.bind_item("v", item2) is True   # same v.idx
-            assert ctx.bind_item("v", item3) is False   # different v.idx
+            assert ctx.bind_item("v", item2) is True  # same v.idx
+            assert ctx.bind_item("v", item3) is False  # different v.idx
         finally:
             mc_mod.idaapi = orig_idaapi
 

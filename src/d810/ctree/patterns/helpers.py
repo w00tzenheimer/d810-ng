@@ -5,6 +5,7 @@ Provides ``IntPat``, ``StringPat``, ``StructFieldAccessPat``,
 
 Ported from herast (herast/tree/patterns/helpers.py).
 """
+
 from __future__ import annotations
 
 import idaapi

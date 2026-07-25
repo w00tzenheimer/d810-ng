@@ -67,7 +67,9 @@ def test_verify_projected_returns_empty_on_success(monkeypatch: pytest.MonkeyPat
         entry_serial=0,
         func_ea=0,
     )
-    monkeypatch.setattr(edit_simulator, "project_post_state", lambda *_a, **_k: clean_cfg)
+    monkeypatch.setattr(
+        edit_simulator, "project_post_state", lambda *_a, **_k: clean_cfg
+    )
 
     result = contract.verify_projected(clean_cfg, PatchPlan())
     assert result == ()
@@ -102,14 +104,18 @@ def test_verify_projected_raises_on_violation(monkeypatch: pytest.MonkeyPatch):
         entry_serial=0,
         func_ea=0,
     )
-    monkeypatch.setattr(edit_simulator, "project_post_state", lambda *_a, **_k: broken_cfg)
+    monkeypatch.setattr(
+        edit_simulator, "project_post_state", lambda *_a, **_k: broken_cfg
+    )
 
     with pytest.raises(CfgContractViolationError) as exc_info:
         contract.verify_projected(broken_cfg, PatchPlan())
 
     assert exc_info.value.phase == "projected"
     assert len(exc_info.value.violations) > 0
-    assert any(v.code == "CFG_50858_SUCC_PRED_MISMATCH" for v in exc_info.value.violations)
+    assert any(
+        v.code == "CFG_50858_SUCC_PRED_MISMATCH" for v in exc_info.value.violations
+    )
 
 
 def test_check_projected_runs_virtual_cfg_invariants(monkeypatch: pytest.MonkeyPatch):
@@ -141,7 +147,9 @@ def test_check_projected_runs_virtual_cfg_invariants(monkeypatch: pytest.MonkeyP
         func_ea=0,
     )
 
-    monkeypatch.setattr(edit_simulator, "project_post_state", lambda *_a, **_k: projected_cfg)
+    monkeypatch.setattr(
+        edit_simulator, "project_post_state", lambda *_a, **_k: projected_cfg
+    )
 
     violations = contract.check_projected(projected_cfg, PatchPlan())
 

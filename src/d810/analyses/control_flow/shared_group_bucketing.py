@@ -8,12 +8,15 @@ single-edge emitter, not the shared-group path.
 
 Pure transform: no flow-graph access, no IDA calls.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
 from d810.core.typing import Iterable
 
-from d810.analyses.control_flow.reconstruction_candidate_builder import ReconstructionCandidate
+from d810.analyses.control_flow.reconstruction_candidate_builder import (
+    ReconstructionCandidate,
+)
 
 
 SharedGroupBucketMap = dict[int, list[ReconstructionCandidate]]

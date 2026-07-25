@@ -189,7 +189,9 @@ def test_m0_fixture_optimizes_to_checked_in_after_when_opt_available():
 
     fixture_dir = Path("tools/llvm_m0_roundtrip/fixtures")
     before = (fixture_dir / "lab_flat_branchless.before.ll").read_text(encoding="utf-8")
-    expected = (fixture_dir / "lab_flat_branchless.after.ll").read_text(encoding="utf-8")
+    expected = (fixture_dir / "lab_flat_branchless.after.ll").read_text(
+        encoding="utf-8"
+    )
 
     result = run_llvm_opt_pipeline(before, opt_path=opt)
 

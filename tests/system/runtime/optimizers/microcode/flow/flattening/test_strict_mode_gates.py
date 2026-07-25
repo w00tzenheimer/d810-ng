@@ -275,7 +275,9 @@ class TestFlowGateDecisionDeniedHasReason:
     """When a gate denies, the reason string must be non-empty."""
 
     def test_failed_verdict_with_reason(self) -> None:
-        d = _make_decision(verdict=GateVerdict.FAILED, reason="no dispatcher candidates")
+        d = _make_decision(
+            verdict=GateVerdict.FAILED, reason="no dispatcher candidates"
+        )
         assert d.reason
         assert len(d.reason) > 0
 
@@ -302,22 +304,34 @@ class TestGateAccountingNoSilentBypass:
 
     def test_realistic_gate_sequence_all_reasons_present(self) -> None:
         acct = GateAccounting()
-        acct = acct.add(_make_decision(
-            gate_name="ep1", verdict=GateVerdict.PASSED,
-            reason="switch-table dispatcher",
-        ))
-        acct = acct.add(_make_decision(
-            gate_name="ep3", verdict=GateVerdict.BYPASSED,
-            reason="collect-only bypass: no strong dispatcher",
-        ))
-        acct = acct.add(_make_decision(
-            gate_name="ep4", verdict=GateVerdict.SKIPPED,
-            reason="preconditioner disabled by config",
-        ))
-        acct = acct.add(_make_decision(
-            gate_name="ep5", verdict=GateVerdict.FAILED,
-            reason="max dispatcher predecessors 1 < 3",
-        ))
+        acct = acct.add(
+            _make_decision(
+                gate_name="ep1",
+                verdict=GateVerdict.PASSED,
+                reason="switch-table dispatcher",
+            )
+        )
+        acct = acct.add(
+            _make_decision(
+                gate_name="ep3",
+                verdict=GateVerdict.BYPASSED,
+                reason="collect-only bypass: no strong dispatcher",
+            )
+        )
+        acct = acct.add(
+            _make_decision(
+                gate_name="ep4",
+                verdict=GateVerdict.SKIPPED,
+                reason="preconditioner disabled by config",
+            )
+        )
+        acct = acct.add(
+            _make_decision(
+                gate_name="ep5",
+                verdict=GateVerdict.FAILED,
+                reason="max dispatcher predecessors 1 < 3",
+            )
+        )
 
         for d in acct.decisions:
             assert d.reason, f"Decision for {d.gate_name} has empty reason"
@@ -330,14 +344,18 @@ class TestGateAccountingNoSilentBypass:
 
     def test_bypassed_decisions_all_have_reasons(self) -> None:
         acct = GateAccounting()
-        acct = acct.add(_make_decision(
-            verdict=GateVerdict.BYPASSED,
-            reason="collect-only bypass: profile too weak",
-        ))
-        acct = acct.add(_make_decision(
-            verdict=GateVerdict.BYPASSED,
-            reason="BYPASSED_CONFIG_DISABLED: require_unflattening_gate=False",
-        ))
+        acct = acct.add(
+            _make_decision(
+                verdict=GateVerdict.BYPASSED,
+                reason="collect-only bypass: profile too weak",
+            )
+        )
+        acct = acct.add(
+            _make_decision(
+                verdict=GateVerdict.BYPASSED,
+                reason="BYPASSED_CONFIG_DISABLED: require_unflattening_gate=False",
+            )
+        )
 
         bypassed = [d for d in acct.decisions if d.verdict == GateVerdict.BYPASSED]
         assert len(bypassed) == 2
@@ -394,12 +412,14 @@ class TestPreconditionerGateBypassExplicitInCollectOnly:
     def test_bypass_recorded_explicitly_in_accounting(self) -> None:
         """Accounting records a BYPASSED decision, not silence."""
         acct = GateAccounting()
-        acct = acct.add(GateDecision(
-            gate_name="ep4_preconditioner",
-            verdict=GateVerdict.BYPASSED,
-            reason="BYPASSED_CONFIG_DISABLED: require_unflattening_gate=False",
-            strict_mode=False,
-        ))
+        acct = acct.add(
+            GateDecision(
+                gate_name="ep4_preconditioner",
+                verdict=GateVerdict.BYPASSED,
+                reason="BYPASSED_CONFIG_DISABLED: require_unflattening_gate=False",
+                strict_mode=False,
+            )
+        )
         assert acct.bypassed_count == 1
         assert not acct.any_failed()
         assert acct.decisions[0].reason.startswith("BYPASSED_CONFIG_DISABLED")
@@ -433,13 +453,17 @@ class TestGateModeTransitionConsistency:
 
         # GATE_ONLY: denial passes through
         allowed_strict, _ = _simulate_gate_evaluation(
-            GateOperationMode.GATE_ONLY, inner_allowed, inner_reason,
+            GateOperationMode.GATE_ONLY,
+            inner_allowed,
+            inner_reason,
         )
         assert allowed_strict is False
 
         # COLLECT_ONLY: denial overridden to allow
         allowed_lenient, reason_lenient = _simulate_gate_evaluation(
-            GateOperationMode.COLLECT_ONLY, inner_allowed, inner_reason,
+            GateOperationMode.COLLECT_ONLY,
+            inner_allowed,
+            inner_reason,
         )
         assert allowed_lenient is True
         assert "collect-only" in reason_lenient
@@ -449,7 +473,9 @@ class TestGateModeTransitionConsistency:
         inner_reason = "switch-table dispatcher"
 
         for mode in GateOperationMode:
-            allowed, reason = _simulate_gate_evaluation(mode, inner_allowed, inner_reason)
+            allowed, reason = _simulate_gate_evaluation(
+                mode, inner_allowed, inner_reason
+            )
             assert allowed is True, f"Mode {mode.name} incorrectly blocked an approval"
             assert reason == inner_reason
 
@@ -460,8 +486,8 @@ class TestGateModeTransitionConsistency:
 
         for mode in strict_modes:
             allowed, _ = _simulate_gate_evaluation(
-                mode, inner_allowed=False, inner_reason="test denial",
+                mode,
+                inner_allowed=False,
+                inner_reason="test denial",
             )
-            assert allowed is False, (
-                f"{mode.name} did not fail-closed on inner denial"
-            )
+            assert allowed is False, f"{mode.name} did not fail-closed on inner denial"

@@ -1,4 +1,5 @@
 """Reusable snapshot assembly for state-machine unflattening families."""
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import FlowGraph
@@ -75,9 +76,7 @@ class StateMachineSnapshotBuilder:
             transition_supplementer(state_machine, run_state=run_state)
 
         function_priors = (
-            None
-            if function_priors_resolver is None
-            else function_priors_resolver(mba)
+            None if function_priors_resolver is None else function_priors_resolver(mba)
         )
         discovery = None
         if discovery_builder is not None:

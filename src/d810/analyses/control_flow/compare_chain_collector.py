@@ -1,4 +1,5 @@
-"CompareChainCollector - reconstruct compare-chain dispatch mappings.\n\nThin adapter wrapping ``CompareChainResolver`` (cfg.flow.compare_chain) into\nthe ``PreanalysisCollector`` protocol so dispatch-table signals are persisted per\nfunction/maturity.\n\nMetrics:\n    - ``compare_chain_length``: number of block comparisons fed to the resolver\n    - ``dispatch_table_size``: entries in the resolved dispatch table\n    - ``unique_constants``: distinct constant -> target mappings\n    - ``conflicting_count``: constants mapping to multiple targets\n    - ``default_serial``: fallthrough block serial (-1 when absent)\n\nCandidates:\n    - ``\"compare_chain_entry\"`` per resolved dispatch entry\n"
+'CompareChainCollector - reconstruct compare-chain dispatch mappings.\n\nThin adapter wrapping ``CompareChainResolver`` (cfg.flow.compare_chain) into\nthe ``PreanalysisCollector`` protocol so dispatch-table signals are persisted per\nfunction/maturity.\n\nMetrics:\n    - ``compare_chain_length``: number of block comparisons fed to the resolver\n    - ``dispatch_table_size``: entries in the resolved dispatch table\n    - ``unique_constants``: distinct constant -> target mappings\n    - ``conflicting_count``: constants mapping to multiple targets\n    - ``default_serial``: fallthrough block serial (-1 when absent)\n\nCandidates:\n    - ``"compare_chain_entry"`` per resolved dispatch entry\n'
+
 from __future__ import annotations
 
 import time
@@ -104,11 +105,13 @@ def _varref_from_metadata(var_data: dict | None) -> VarRef:
     kind = str(var_data.get("kind", "temp"))
     if kind not in {"reg", "stack", "temp"}:
         kind = "temp"
-    return VarRef(kind, int(var_data.get("identifier", 0)), int(var_data.get("size", 4)))
+    return VarRef(
+        kind, int(var_data.get("identifier", 0)), int(var_data.get("size", 4))
+    )
 
 
 class CompareChainCollector:
-    "Collect compare-chain derived dispatch table metrics.\n\n    Wraps ``CompareChainResolver.resolve()`` into the ``PreanalysisCollector``\n    protocol.  Accepts portable ``FlowGraph`` targets from the\n    ``FLOWGRAPH_READY`` preanalysis path.\n    "
+    "Collect compare-chain derived dispatch table metrics.\n\n    Wraps ``CompareChainResolver.resolve()`` into the ``PreanalysisCollector``\n    protocol.  Accepts portable ``FlowGraph`` targets from the\n    ``FLOWGRAPH_READY`` preanalysis path.\n"
 
     name: str = "compare_chain"
     maturities: frozenset[int] = frozenset({_MMAT_CALLS, _MMAT_GLBOPT1})
@@ -144,7 +147,9 @@ class CompareChainCollector:
                 "unique_constants": len(table_map),
                 "conflicting_count": conflicting,
                 "default_serial": (
-                    int(table.default_serial) if table.default_serial is not None else -1
+                    int(table.default_serial)
+                    if table.default_serial is not None
+                    else -1
                 ),
             }
         )
@@ -154,10 +159,7 @@ class CompareChainCollector:
                 kind="compare_chain_entry",
                 block_serial=int(entry.source_serial),
                 confidence=0.7,
-                detail=(
-                    f"0x{int(entry.constant):x} -> "
-                    f"blk {int(entry.target_serial)}"
-                ),
+                detail=(f"0x{int(entry.constant):x} -> blk {int(entry.target_serial)}"),
             )
             for entry in table.entries
         )

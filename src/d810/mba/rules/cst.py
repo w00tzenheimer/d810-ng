@@ -63,8 +63,9 @@ class CstSimplificationRule2(VerifiableRule):
     REPLACEMENT = x ^ c_res
 
     CONSTRAINTS = [
-        c_2_1 == ~c_2_2,  # Checking constraint: masks are complements (c_2_1 | c_2_2 == MAX_VAL)
-        c_res == (((c_1_1 ^ c_1_2) & c_2_1) ^ c_1_2)  # Defining constraint
+        c_2_1
+        == ~c_2_2,  # Checking constraint: masks are complements (c_2_1 | c_2_2 == MAX_VAL)
+        c_res == (((c_1_1 ^ c_1_2) & c_2_1) ^ c_1_2),  # Defining constraint
     ]
 
     DESCRIPTION = "Simplify OR of masked XOR expressions with complementary masks"
@@ -86,10 +87,7 @@ class CstSimplificationRule3(VerifiableRule):
     PATTERN = (x - c_0) + c_1 * (x - c_2)
     REPLACEMENT = c_coeff * x - c_sub
 
-    CONSTRAINTS = [
-        c_coeff == c_1 + ONE,
-        c_sub == (c_1 * c_2) + c_0
-    ]
+    CONSTRAINTS = [c_coeff == c_1 + ONE, c_sub == (c_1 * c_2) + c_0]
 
     DESCRIPTION = "Simplify (x - c0) + c1*(x - c2) to (c1+1)*x - (c1*c2 + c0)"
     REFERENCE = "Algebraic simplification"
@@ -194,7 +192,7 @@ class CstSimplificationRule8(VerifiableRule):
     CONSTRAINTS = [
         c_res == c_1 & ~c_2,  # Remove redundant bits
         # Only apply if we actually simplify (c_res != c_1)
-        lambda ctx: (ctx["c_1"].value & ~ctx["c_2"].value) != ctx["c_1"].value
+        lambda ctx: (ctx["c_1"].value & ~ctx["c_2"].value) != ctx["c_1"].value,
     ]
 
     PATTERN = (x & c_1) | c_2
@@ -220,7 +218,7 @@ class CstSimplificationRule9(VerifiableRule):
 
     CONSTRAINTS = [
         c_and == ~c_1 & c_2,  # NOT-AND folding
-        c_xor == c_1 & c_2     # AND for XOR
+        c_xor == c_1 & c_2,  # AND for XOR
     ]
 
     DESCRIPTION = "Simplify (x | c1) & c2 to (x & (~c1 & c2)) ^ (c1 & c2)"
@@ -242,7 +240,7 @@ class CstSimplificationRule10(VerifiableRule):
     CONSTRAINTS = [
         c_and == ~c_1 & c_2,  # Compute result mask
         # Check that c_1 is subset of c_2 (c_1 & c_2 == c_1)
-        (c_1 & c_2) == c_1
+        (c_1 & c_2) == c_1,
     ]
 
     PATTERN = (x & c_1) - (x & c_2)
@@ -267,8 +265,8 @@ class CstSimplificationRule11(VerifiableRule):
     REPLACEMENT = (x ^ c_1_bnot) ^ (x & c_and)
 
     CONSTRAINTS = [
-        c_1_bnot == ~c_1,      # NOT of c_1
-        c_and == ~c_1 & c_2     # AND folding
+        c_1_bnot == ~c_1,  # NOT of c_1
+        c_and == ~c_1 & c_2,  # AND folding
     ]
 
     DESCRIPTION = "Simplify (~x ^ c1) | (x & c2)"
@@ -395,7 +393,7 @@ class CstSimplificationRule15(VerifiableRule):
             # Standard check: a + b overflows if result < a or result < b
             z3.And(
                 z3.ULT(z3_vars["c_1"], z3_vars["c_1"] + z3_vars["c_2"]),
-                z3.ULT(z3_vars["c_2"], z3_vars["c_1"] + z3_vars["c_2"])
+                z3.ULT(z3_vars["c_2"], z3_vars["c_1"] + z3_vars["c_2"]),
             ),
             # Check combined shift is less than BIT_WIDTH
             z3.ULT(z3_vars["c_1"] + z3_vars["c_2"], self.BIT_WIDTH),
@@ -548,7 +546,7 @@ class CstSimplificationRule20(VerifiableRule):
         (c_xor & (c_and_1 | c_and_2)) == ZERO,
         # Definitions of derived constants
         c_and_res == c_and_1 | c_and_2,  # OR for combining disjoint masks
-        c_xor_res == c_and_1 ^ c_xor,     # XOR result
+        c_xor_res == c_and_1 ^ c_xor,  # XOR result
     ]
 
     PATTERN = (bnot_x & c_and_1) | ((x & c_and_2) ^ c_xor)
@@ -576,12 +574,12 @@ class CstSimplificationRule21(VerifiableRule):
     c_xor_res = Const("c_xor_res")  # c_xor_1 | c_xor_2 (OR for disjoint sets)
 
     CONSTRAINTS = [
-        bnot_c_and == ~c_and,           # NOT relationship
+        bnot_c_and == ~c_and,  # NOT relationship
         # Check disjoint XOR constants
         (c_xor_1 & c_xor_2) == ZERO,
         # Newly discovered required conditions
         (c_xor_1 & bnot_c_and) == ZERO,  # c_xor_1 lives in c_and mask
-        (c_xor_2 & c_and) == ZERO,       # c_xor_2 lives in ~c_and mask
+        (c_xor_2 & c_and) == ZERO,  # c_xor_2 lives in ~c_and mask
         # Definition of derived constant
         c_xor_res == c_xor_1 | c_xor_2,  # Use OR for disjoint sets
     ]
@@ -615,7 +613,7 @@ class CstSimplificationRule22(VerifiableRule):
     CONSTRAINTS = [
         # Variable NOT verification
         bnot_x == ~x,
-        bnot_c_and == ~c_and,            # Constant NOT
+        bnot_c_and == ~c_and,  # Constant NOT
         # Disjoint XOR constants
         (c_xor_1 & c_xor_2) == ZERO,
         # c_xor_1 lives in c_and (c_xor_1 & ~c_and == 0)
@@ -623,7 +621,7 @@ class CstSimplificationRule22(VerifiableRule):
         # c_xor_2 lives in ~c_and (c_xor_2 & c_and == 0)
         (c_xor_2 & c_and) == ZERO,
         # Definition of derived constant
-        c_xor_res == c_xor_1 ^ c_xor_2 ^ bnot_c_and,   # XOR with ~c_and
+        c_xor_res == c_xor_1 ^ c_xor_2 ^ bnot_c_and,  # XOR with ~c_and
     ]
 
     PATTERN = ((x & c_and) ^ c_xor_1) | ((bnot_x & bnot_c_and) ^ c_xor_2)

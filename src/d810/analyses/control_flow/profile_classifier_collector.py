@@ -1,4 +1,5 @@
 "FlowProfileClassifierCollector - classify dispatch pattern in Preanalysis.\n\nThin adapter wrapping ``FlowProfileClassifier`` into the ``PreanalysisCollector``\nprotocol. Extracts structural components from the target (a portable ``d810.ir`` ``FlowGraph``), delegates classification to the existing\nclassifier, and packages the result as a ``PreanalysisResult``.\n\nMaturities fired: MMAT_CALLS (3), MMAT_GLBOPT1 (14).\n"
+
 from __future__ import annotations
 
 import time
@@ -18,7 +19,9 @@ _MMAT_CALLS = 3
 _MMAT_GLBOPT1 = 14
 
 
-def _portable_components(target) -> tuple[
+def _portable_components(
+    target,
+) -> tuple[
     frozenset[int],
     frozenset[int],
     int,
@@ -75,7 +78,7 @@ def _portable_components(target) -> tuple[
 
 
 class FlowProfileClassifierCollector:
-    "Classify dispatch profile and persist strategy signals in Preanalysis.\n\n    Thin adapter: extracts structural components from the target, delegates\n    to ``FlowProfileClassifier.from_components()``, and wraps the\n    ``ClassificationResult`` into a ``PreanalysisResult``.\n    "
+    "Classify dispatch profile and persist strategy signals in Preanalysis.\n\n    Thin adapter: extracts structural components from the target, delegates\n    to ``FlowProfileClassifier.from_components()``, and wraps the\n    ``ClassificationResult`` into a ``PreanalysisResult``.\n"
 
     name: str = "flow_profile_classifier"
     maturities: frozenset[int] = frozenset({_MMAT_CALLS, _MMAT_GLBOPT1})
@@ -88,7 +91,7 @@ class FlowProfileClassifierCollector:
         func_ea: int | None = None,
         **legacy_fields: object,
     ) -> PreanalysisResult:
-        "Collect flow profile classification metrics.\n\n        :param target: a portable ``d810.ir`` ``FlowGraph``.\n        :param func_ea: Function effective address.\n        :param maturity: Current maturity level.\n        :return: Frozen ``PreanalysisResult`` with classification metrics.\n        "
+        "Collect flow profile classification metrics.\n\n        :param target: a portable ``d810.ir`` ``FlowGraph``.\n        :param func_ea: Function effective address.\n        :param maturity: Current maturity level.\n        :return: Frozen ``PreanalysisResult`` with classification metrics.\n"
         context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,

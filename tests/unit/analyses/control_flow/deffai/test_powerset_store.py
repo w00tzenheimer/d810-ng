@@ -3,6 +3,7 @@
 Asserts the multi-cell store lattice: union join (``{3} ⊔ {4} = {3,4}``), cell cap
 -> ⊤, ⊥ identity, the ``leq`` order, idempotent join, and meet/widen.  No IDA.
 """
+
 from __future__ import annotations
 
 import pytest

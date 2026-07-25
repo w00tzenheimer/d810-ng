@@ -6,6 +6,7 @@ contract as a parallel artifact loses nothing. Maps are built two ways: directly
 (explicit field control) and via ``build_dispatch_map_any_kind`` on a real
 switch-table ``FlowGraph`` (the end-to-end shape).
 """
+
 from __future__ import annotations
 
 from d810.capabilities.dispatcher import RouterKind

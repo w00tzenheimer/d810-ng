@@ -224,12 +224,14 @@ def _dag():
 
 
 def test_emits_dag_redirect_for_illegal_tail_to_chunk_backpath() -> None:
-    flow = _flow({
-        0: (20,),
-        10: (0,),
-        20: (10,),
-        30: (),
-    })
+    flow = _flow(
+        {
+            0: (20,),
+            10: (0,),
+            20: (10,),
+            30: (),
+        }
+    )
 
     result = plan_dag_authoritative_frontier_closure(
         dag=_dag(),
@@ -272,13 +274,15 @@ def test_closes_ordered_path_tail_instead_of_rewriting_internal_step() -> None:
             _scc(2, exit_key),
         ),
     )
-    flow = _flow({
-        0: (20,),
-        10: (11,),
-        11: (0,),
-        20: (10,),
-        30: (),
-    })
+    flow = _flow(
+        {
+            0: (20,),
+            10: (11,),
+            11: (0,),
+            20: (10,),
+            30: (),
+        }
+    )
 
     result = plan_dag_authoritative_frontier_closure(
         dag=dag,
@@ -351,14 +355,16 @@ def test_preserves_existing_target_entry_shortcut_without_destructive_drop() -> 
             _scc(19, chunk, is_cyclic=True),
         ),
     )
-    flow = _flow({
-        10: (129,),
-        129: (130,),
-        130: (155,),
-        155: (156,),
-        156: (129,),
-        171: (129,),
-    })
+    flow = _flow(
+        {
+            10: (129,),
+            129: (130,),
+            130: (155,),
+            155: (156,),
+            156: (129,),
+            171: (129,),
+        }
+    )
     bad_redirect = RedirectGoto(from_serial=155, old_target=156, new_target=171)
 
     result = plan_dag_authoritative_frontier_closure(
@@ -377,12 +383,14 @@ def test_preserves_existing_target_entry_shortcut_without_destructive_drop() -> 
 
 def test_stale_hazard_overrides_are_disabled_by_default(monkeypatch) -> None:
     monkeypatch.delenv("D810_DAG_FRONTIER_STALE_OVERRIDES", raising=False)
-    flow = _flow({
-        0: (20,),
-        10: (0,),
-        20: (10,),
-        30: (),
-    })
+    flow = _flow(
+        {
+            0: (20,),
+            10: (0,),
+            20: (10,),
+            30: (),
+        }
+    )
 
     result = plan_dag_authoritative_frontier_closure(
         dag=_dag(),
@@ -397,12 +405,14 @@ def test_stale_hazard_overrides_are_disabled_by_default(monkeypatch) -> None:
 
 def test_marks_existing_dag_redirect_as_stale_hazard_override(monkeypatch) -> None:
     monkeypatch.setenv("D810_DAG_FRONTIER_STALE_OVERRIDES", "1")
-    flow = _flow({
-        0: (20,),
-        10: (0,),
-        20: (10,),
-        30: (),
-    })
+    flow = _flow(
+        {
+            0: (20,),
+            10: (0,),
+            20: (10,),
+            30: (),
+        }
+    )
 
     result = plan_dag_authoritative_frontier_closure(
         dag=_dag(),
@@ -416,12 +426,14 @@ def test_marks_existing_dag_redirect_as_stale_hazard_override(monkeypatch) -> No
 
 
 def test_preserves_existing_redirect_that_reopens_dispatcher_backpath() -> None:
-    flow = _flow({
-        0: (20,),
-        10: (30,),
-        20: (10,),
-        30: (),
-    })
+    flow = _flow(
+        {
+            0: (20,),
+            10: (30,),
+            20: (10,),
+            30: (),
+        }
+    )
     bad_redirect = RedirectGoto(from_serial=10, old_target=30, new_target=0)
 
     result = plan_dag_authoritative_frontier_closure(
@@ -457,13 +469,15 @@ def test_preserves_dispatcher_insert_block_that_reopens_semantic_backpath() -> N
             _scc(2, exit_key),
         ),
     )
-    flow = _flow({
-        0: (20,),
-        10: (0,),
-        20: (10,),
-        40: (),
-        41: (),
-    })
+    flow = _flow(
+        {
+            0: (20,),
+            10: (0,),
+            20: (10,),
+            40: (),
+            41: (),
+        }
+    )
     bad_insert = InsertBlock(
         pred_serial=10,
         old_target_serial=0,
@@ -503,12 +517,14 @@ def test_does_not_close_same_dag_scc_alternate_successor_by_default(
             _scc(1, chunk, is_cyclic=True),
         ),
     )
-    flow = _flow({
-        10: (20, 11),
-        11: (10,),
-        20: (10,),
-        99: (),
-    })
+    flow = _flow(
+        {
+            10: (20, 11),
+            11: (10,),
+            20: (10,),
+            99: (),
+        }
+    )
 
     result = plan_dag_authoritative_frontier_closure(
         dag=dag,
@@ -633,9 +649,7 @@ def test_closes_same_scc_frontier_with_range_interval_singleton_proof(
     )
     assert len(result.resolved_frontiers) == 1
     assert result.resolved_frontiers[0].reason == "range_interval_proven_frontier"
-    resolved_rows = [
-        row for row in result.diagnostic_rows if row.kind == "resolved"
-    ]
+    resolved_rows = [row for row in result.diagnostic_rows if row.kind == "resolved"]
     assert len(resolved_rows) == 1
     assert resolved_rows[0].reason == "range_interval_proven_frontier"
     assert resolved_rows[0].source_block == 129
@@ -789,17 +803,11 @@ def test_closes_dispatcher_state_residue_with_dag_chain_and_range_interval() -> 
     )
     assert len(result.resolved_frontiers) == 1
     assert (
-        result.resolved_frontiers[0].reason
-        == "dag_range_interval_dispatcher_residue"
+        result.resolved_frontiers[0].reason == "dag_range_interval_dispatcher_residue"
     )
-    resolved_rows = [
-        row for row in result.diagnostic_rows if row.kind == "resolved"
-    ]
+    resolved_rows = [row for row in result.diagnostic_rows if row.kind == "resolved"]
     assert len(resolved_rows) == 1
-    assert (
-        resolved_rows[0].reason
-        == "dag_range_interval_dispatcher_residue"
-    )
+    assert resolved_rows[0].reason == "dag_range_interval_dispatcher_residue"
     assert resolved_rows[0].source_block == 140
     assert resolved_rows[0].observed_target == 2
     assert resolved_rows[0].candidate_targets == (20,)
@@ -932,17 +940,11 @@ def test_closes_direct_dag_range_dispatcher_residue_without_scc_leak() -> None:
     )
     assert len(result.resolved_frontiers) == 1
     assert (
-        result.resolved_frontiers[0].reason
-        == "dag_range_interval_dispatcher_residue"
+        result.resolved_frontiers[0].reason == "dag_range_interval_dispatcher_residue"
     )
-    resolved_rows = [
-        row for row in result.diagnostic_rows if row.kind == "resolved"
-    ]
+    resolved_rows = [row for row in result.diagnostic_rows if row.kind == "resolved"]
     assert len(resolved_rows) == 1
-    assert (
-        resolved_rows[0].reason
-        == "dag_range_interval_dispatcher_residue"
-    )
+    assert resolved_rows[0].reason == "dag_range_interval_dispatcher_residue"
     assert resolved_rows[0].source_block == 56
     assert resolved_rows[0].observed_target == 2
     assert resolved_rows[0].candidate_targets == (42,)
@@ -1072,7 +1074,9 @@ def _shared_condition_clone_dag(
     )
 
 
-def _shared_condition_clone_flow(*, base_pred_targets_condition: bool = True) -> FlowGraph:
+def _shared_condition_clone_flow(
+    *, base_pred_targets_condition: bool = True
+) -> FlowGraph:
     pred_succ = (81,) if base_pred_targets_condition else (2,)
     return _flow_with_instructions(
         {
@@ -1121,9 +1125,7 @@ def test_clones_dag_backed_shared_condition_entry(monkeypatch) -> None:
     assert result.resolved_frontiers[0].source_block == 52
     assert result.resolved_frontiers[0].target_block == 81
 
-    resolved_rows = [
-        row for row in result.diagnostic_rows if row.kind == "resolved"
-    ]
+    resolved_rows = [row for row in result.diagnostic_rows if row.kind == "resolved"]
     assert len(resolved_rows) == 1
     assert resolved_rows[0].reason == "dag_entry_shared_condition_clone"
     assert resolved_rows[0].payload["proof"] == "DAG_ENTRY_SHARED_CONDITION_CLONE"
@@ -1217,12 +1219,14 @@ def test_can_close_dispatch_frontier_to_same_dag_scc_alternate_successor(
             _scc(1, chunk, is_cyclic=True),
         ),
     )
-    flow = _flow({
-        10: (20, 11),
-        11: (10,),
-        20: (10,),
-        99: (),
-    })
+    flow = _flow(
+        {
+            10: (20, 11),
+            11: (10,),
+            20: (10,),
+            99: (),
+        }
+    )
 
     result = plan_dag_authoritative_frontier_closure(
         dag=dag,
@@ -1263,12 +1267,14 @@ def test_does_not_close_dispatch_frontier_without_same_dag_scc_alternate() -> No
             _scc(2, other),
         ),
     )
-    flow = _flow({
-        10: (20, 11),
-        11: (10,),
-        20: (10,),
-        99: (),
-    })
+    flow = _flow(
+        {
+            10: (20, 11),
+            11: (10,),
+            20: (10,),
+            99: (),
+        }
+    )
 
     result = plan_dag_authoritative_frontier_closure(
         dag=dag,

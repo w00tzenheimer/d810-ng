@@ -5,6 +5,7 @@ stream is an explicit *projection* of it, produced by
 :class:`d810.ir.insn_projection.InstructionProjection` rather than exposed as a
 block attribute.  That keeps ``flowgraph`` a leaf the projection layer consumes.
 """
+
 from __future__ import annotations
 
 from d810.ir.expressions import ValueOpKind
@@ -160,7 +161,9 @@ def test_projection_from_flowgraph_streams_each_block():
         ),
         preds=(1,),
     )
-    graph = FlowGraph(blocks={1: entry, 2: exit_block}, entry_serial=1, func_ea=0x401000)
+    graph = FlowGraph(
+        blocks={1: entry, 2: exit_block}, entry_serial=1, func_ea=0x401000
+    )
 
     by_block = InstructionProjection.from_flowgraph(graph)
 

@@ -20,7 +20,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.analyses.value_flow import state_write
-from d810.backends.hexrays import condition_chain_runtime as _hexrays_condition_chain_runtime
+from d810.backends.hexrays import (
+    condition_chain_runtime as _hexrays_condition_chain_runtime,
+)
 from d810.capabilities.providers import (
     ConditionChainWalkerProvider,
     MicrocodeConstants,
@@ -36,10 +38,19 @@ from d810.core.typing import (
     Set,
     Tuple,
 )
-from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
+from d810.analyses.control_flow.condition_chain_model import (
+    ConditionChainAnalysisResult,
+)
 from d810.analyses.control_flow.condition_chain_model import ConditionChainNodeMap
-from d810.analyses.control_flow.condition_chain_model import resolve_target_via_condition_chain
-from d810.analyses.control_flow.interval_map import Node, NodeKind, emit_dispatch_intervals, IntervalDispatcher
+from d810.analyses.control_flow.condition_chain_model import (
+    resolve_target_via_condition_chain,
+)
+from d810.analyses.control_flow.interval_map import (
+    Node,
+    NodeKind,
+    emit_dispatch_intervals,
+    IntervalDispatcher,
+)
 from d810.ir.flowgraph import InsnSnapshot, MopSnapshot, OperandKind
 from d810.ir.varnode import Space, varnode_from_mop_snapshot
 
@@ -175,7 +186,10 @@ def find_condition_chain_default_block(
             continue
         for i in range(blk.nsucc()):
             succ = blk.succ(i)
-            if succ not in all_condition_chain_serials and succ not in handler_block_serials:
+            if (
+                succ not in all_condition_chain_serials
+                and succ not in handler_block_serials
+            ):
                 return succ
 
     return None
@@ -189,7 +203,9 @@ def find_condition_chain_default_block(
 #
 # One-way dependency: condition_chain_analysis -> condition_chain_snapshot.  Do NOT add an
 # import in the reverse direction.
-from d810.analyses.control_flow.condition_chain_snapshot import find_condition_chain_default_block_snapshot
+from d810.analyses.control_flow.condition_chain_snapshot import (
+    find_condition_chain_default_block_snapshot,
+)
 
 
 def resolve_via_condition_chain_walk(
@@ -319,7 +335,9 @@ def _fallback_mop_snapshot(mop: object) -> MopSnapshot | None:
             value = getattr(mop, "value", None)
         if value is None:
             return None
-        return MopSnapshot(t=int(mop_type), size=size, value=int(value), kind=OperandKind.NUMBER)
+        return MopSnapshot(
+            t=int(mop_type), size=size, value=int(value), kind=OperandKind.NUMBER
+        )
 
     if mop_name == "mop_S":
         stack_ref = getattr(mop, "s", None)
@@ -342,7 +360,9 @@ def _fallback_mop_snapshot(mop: object) -> MopSnapshot | None:
             reg = getattr(mop, "reg", None)
         if reg is None:
             return None
-        return MopSnapshot(t=int(mop_type), size=size, reg=int(reg), kind=OperandKind.REGISTER)
+        return MopSnapshot(
+            t=int(mop_type), size=size, reg=int(reg), kind=OperandKind.REGISTER
+        )
 
     if mop_name == "mop_v":
         gaddr = getattr(mop, "g", None)
@@ -350,7 +370,9 @@ def _fallback_mop_snapshot(mop: object) -> MopSnapshot | None:
             gaddr = getattr(mop, "gaddr", None)
         if gaddr is None:
             return None
-        return MopSnapshot(t=int(mop_type), size=size, gaddr=int(gaddr), kind=OperandKind.GLOBAL)
+        return MopSnapshot(
+            t=int(mop_type), size=size, gaddr=int(gaddr), kind=OperandKind.GLOBAL
+        )
 
     if mop_name == "mop_l":
         lref = getattr(mop, "l", None)
@@ -359,7 +381,9 @@ def _fallback_mop_snapshot(mop: object) -> MopSnapshot | None:
             lvar_off = getattr(mop, "lvar_off", None)
         if lvar_off is None:
             return None
-        return MopSnapshot(t=int(mop_type), size=size, lvar_off=int(lvar_off), kind=OperandKind.LVAR)
+        return MopSnapshot(
+            t=int(mop_type), size=size, lvar_off=int(lvar_off), kind=OperandKind.LVAR
+        )
 
     if mop_name == "mop_b":
         block_ref = getattr(mop, "b", None)
@@ -367,7 +391,9 @@ def _fallback_mop_snapshot(mop: object) -> MopSnapshot | None:
             block_ref = getattr(mop, "block_ref", None)
         if block_ref is None:
             return None
-        return MopSnapshot(t=int(mop_type), size=size, block_ref=int(block_ref), kind=OperandKind.BLOCK)
+        return MopSnapshot(
+            t=int(mop_type), size=size, block_ref=int(block_ref), kind=OperandKind.BLOCK
+        )
 
     return None
 
@@ -508,7 +534,9 @@ def _dump_dispatcher_node(
         return
 
     opcode = getattr(insn, "opcode", None)
-    opcode_name = OPCODE_MAP.get(opcode, f"opcode_{opcode}") if opcode is not None else "unknown"
+    opcode_name = (
+        OPCODE_MAP.get(opcode, f"opcode_{opcode}") if opcode is not None else "unknown"
+    )
 
     succs = [blk.succ(i) for i in range(blk.nsucc())]
 
@@ -529,7 +557,8 @@ def _dump_dispatcher_node(
 
     if is_jbe or is_ja or is_jb or is_jae:
         if condition_chain_blocks is not None:
-            condition_chain_blocks.add(serial,
+            condition_chain_blocks.add(
+                serial,
                 value_range=(value_lo, value_hi),
                 parent_serial=parent_serial,
                 comparison_const=cmp_val,
@@ -584,7 +613,13 @@ def _dump_dispatcher_node(
             c_lo, c_hi = child_ranges[idx] if idx < len(child_ranges) else (None, None)
             c_branch = child_branches[idx] if idx < len(child_branches) else ""
             _dump_dispatcher_node(
-                mba, s, indent + 1, visited, lines, depth + 1, max_depth,
+                mba,
+                s,
+                indent + 1,
+                visited,
+                lines,
+                depth + 1,
+                max_depth,
                 value_lo=c_lo,
                 value_hi=c_hi,
                 handler_state_map=handler_state_map,
@@ -598,7 +633,8 @@ def _dump_dispatcher_node(
 
     elif is_jnz or is_jz:
         if condition_chain_blocks is not None:
-            condition_chain_blocks.add(serial,
+            condition_chain_blocks.add(
+                serial,
                 value_range=(value_lo, value_hi),
                 parent_serial=parent_serial,
                 comparison_const=cmp_val,
@@ -640,8 +676,12 @@ def _dump_dispatcher_node(
         range_str = ""
         if range_known:
             range_str = f" [range: 0x{value_lo:x}..0x{value_hi:x}]"
-        jump_state_str = f"state=0x{jump_state:x}" if jump_state is not None else "state=?"
-        fall_state_str = f"state=0x{fall_state:x}" if fall_state is not None else "state=?"
+        jump_state_str = (
+            f"state=0x{jump_state:x}" if jump_state is not None else "state=?"
+        )
+        fall_state_str = (
+            f"state=0x{fall_state:x}" if fall_state is not None else "state=?"
+        )
 
         lines.append(
             f"{prefix}blk[{serial}] {opcode_name} {op_sym} {cmp_str}{range_str}"
@@ -681,7 +721,9 @@ def _dump_dispatcher_node(
                     if getattr(_tail.l, "size", None) != _root_state_var_size:
                         return False
                 else:
-                    return False  # No constant operand → not a condition-chain comparison
+                    return (
+                        False  # No constant operand → not a condition-chain comparison
+                    )
             return True
 
         # Compute narrowed range for the "not-equal" continuation path.
@@ -737,7 +779,9 @@ def _dump_dispatcher_node(
                     if getattr(_tail.l, "size", None) != _root_state_var_size:
                         return False
                 else:
-                    return False  # No constant operand → not a condition-chain comparison
+                    return (
+                        False  # No constant operand → not a condition-chain comparison
+                    )
             return True
 
         MAX_CHAIN_DEPTH = 10
@@ -746,7 +790,9 @@ def _dump_dispatcher_node(
             # fall-through (succs[0]) is state == V → handler leaf only when V is in range
             if isinstance(fall_blk, int):
                 if cmp_val is None:
-                    lines.append(f"{prefix}  [unknown cmp_val: cannot classify fall-through blk[{fall_blk}]]")
+                    lines.append(
+                        f"{prefix}  [unknown cmp_val: cannot classify fall-through blk[{fall_blk}]]"
+                    )
                 elif not cmp_in_range:
                     lines.append(
                         f"{prefix}  [dead-code: 0x{cmp_val:x} outside range"
@@ -760,7 +806,8 @@ def _dump_dispatcher_node(
                     if handler_range_map is not None:
                         handler_range_map[fall_blk] = (value_lo, value_hi)
                     if condition_chain_blocks is not None:
-                        condition_chain_blocks.add(fall_blk,
+                        condition_chain_blocks.add(
+                            fall_blk,
                             value_range=(value_lo, value_hi),
                             parent_serial=serial,
                             comparison_const=cmp_val,
@@ -779,10 +826,22 @@ def _dump_dispatcher_node(
                     and jump_blk in handler_state_map
                     and handler_state_map[jump_blk] is not None
                 )
-                if not already_resolved and _is_condition_chain_node_chain(jump_blk) and chain_depth < MAX_CHAIN_DEPTH:
-                    new_lo, new_hi = _narrow_range_excluding(cmp_val, value_lo, value_hi)
+                if (
+                    not already_resolved
+                    and _is_condition_chain_node_chain(jump_blk)
+                    and chain_depth < MAX_CHAIN_DEPTH
+                ):
+                    new_lo, new_hi = _narrow_range_excluding(
+                        cmp_val, value_lo, value_hi
+                    )
                     _dump_dispatcher_node(
-                        mba, jump_blk, indent + 1, visited, lines, depth + 1, max_depth,
+                        mba,
+                        jump_blk,
+                        indent + 1,
+                        visited,
+                        lines,
+                        depth + 1,
+                        max_depth,
                         value_lo=new_lo,
                         value_hi=new_hi,
                         handler_state_map=handler_state_map,
@@ -794,9 +853,13 @@ def _dump_dispatcher_node(
                         parent_serial=serial,
                         branch="taken",
                     )
-                elif not already_resolved and not _is_condition_chain_node_chain(jump_blk):
+                elif not already_resolved and not _is_condition_chain_node_chain(
+                    jump_blk
+                ):
                     if cmp_val is None:
-                        lines.append(f"{prefix}  [unknown cmp_val: cannot classify jump blk[{jump_blk}]]")
+                        lines.append(
+                            f"{prefix}  [unknown cmp_val: cannot classify jump blk[{jump_blk}]]"
+                        )
                     elif handler_serials is not None and jump_state is not None:
                         handler_serials.add(jump_blk)
                         if handler_state_map is not None:
@@ -804,7 +867,8 @@ def _dump_dispatcher_node(
                         if handler_range_map is not None:
                             handler_range_map[jump_blk] = (value_lo, value_hi)
                         if condition_chain_blocks is not None:
-                            condition_chain_blocks.add(jump_blk,
+                            condition_chain_blocks.add(
+                                jump_blk,
                                 value_range=(value_lo, value_hi),
                                 parent_serial=serial,
                                 comparison_const=jump_state,
@@ -823,7 +887,9 @@ def _dump_dispatcher_node(
             # jump target (succs[1]) is state == V → handler leaf only when V is in range
             if isinstance(jump_blk, int):
                 if cmp_val is None:
-                    lines.append(f"{prefix}  [unknown cmp_val: cannot classify jump blk[{jump_blk}]]")
+                    lines.append(
+                        f"{prefix}  [unknown cmp_val: cannot classify jump blk[{jump_blk}]]"
+                    )
                 elif not cmp_in_range:
                     lines.append(
                         f"{prefix}  [dead-code: 0x{cmp_val:x} outside range"
@@ -837,7 +903,8 @@ def _dump_dispatcher_node(
                     if handler_range_map is not None:
                         handler_range_map[jump_blk] = (value_lo, value_hi)
                     if condition_chain_blocks is not None:
-                        condition_chain_blocks.add(jump_blk,
+                        condition_chain_blocks.add(
+                            jump_blk,
                             value_range=(value_lo, value_hi),
                             parent_serial=serial,
                             comparison_const=cmp_val,
@@ -856,10 +923,22 @@ def _dump_dispatcher_node(
                     and fall_blk in handler_state_map
                     and handler_state_map[fall_blk] is not None
                 )
-                if not already_resolved and _is_condition_chain_node_chain(fall_blk) and chain_depth < MAX_CHAIN_DEPTH:
-                    new_lo, new_hi = _narrow_range_excluding(cmp_val, value_lo, value_hi)
+                if (
+                    not already_resolved
+                    and _is_condition_chain_node_chain(fall_blk)
+                    and chain_depth < MAX_CHAIN_DEPTH
+                ):
+                    new_lo, new_hi = _narrow_range_excluding(
+                        cmp_val, value_lo, value_hi
+                    )
                     _dump_dispatcher_node(
-                        mba, fall_blk, indent + 1, visited, lines, depth + 1, max_depth,
+                        mba,
+                        fall_blk,
+                        indent + 1,
+                        visited,
+                        lines,
+                        depth + 1,
+                        max_depth,
                         value_lo=new_lo,
                         value_hi=new_hi,
                         handler_state_map=handler_state_map,
@@ -871,9 +950,13 @@ def _dump_dispatcher_node(
                         parent_serial=serial,
                         branch="fallthrough",
                     )
-                elif not already_resolved and not _is_condition_chain_node_chain(fall_blk):
+                elif not already_resolved and not _is_condition_chain_node_chain(
+                    fall_blk
+                ):
                     if cmp_val is None:
-                        lines.append(f"{prefix}  [unknown cmp_val: cannot classify fall-through blk[{fall_blk}]]")
+                        lines.append(
+                            f"{prefix}  [unknown cmp_val: cannot classify fall-through blk[{fall_blk}]]"
+                        )
                     elif handler_serials is not None and fall_state is not None:
                         handler_serials.add(fall_blk)
                         if handler_state_map is not None:
@@ -881,7 +964,8 @@ def _dump_dispatcher_node(
                         if handler_range_map is not None:
                             handler_range_map[fall_blk] = (value_lo, value_hi)
                         if condition_chain_blocks is not None:
-                            condition_chain_blocks.add(fall_blk,
+                            condition_chain_blocks.add(
+                                fall_blk,
                                 value_range=(value_lo, value_hi),
                                 parent_serial=serial,
                                 comparison_const=fall_state,
@@ -894,9 +978,7 @@ def _dump_dispatcher_node(
 
     else:
         cmp_str = f"0x{cmp_val:x}" if cmp_val is not None else "?"
-        lines.append(
-            f"{prefix}blk[{serial}] {opcode_name} {cmp_str} (succs: {succs})"
-        )
+        lines.append(f"{prefix}blk[{serial}] {opcode_name} {cmp_str} (succs: {succs})")
 
 
 def _find_pre_header(
@@ -943,7 +1025,11 @@ def _find_pre_header(
         pred_npred = pred_blk.npred()
         tail = pred_blk.tail
         tail_opcode = getattr(tail, "opcode", None) if tail is not None else None
-        tail_opname = OPCODE_MAP.get(tail_opcode, f"opcode_{tail_opcode}") if tail_opcode is not None else "no_tail"
+        tail_opname = (
+            OPCODE_MAP.get(tail_opcode, f"opcode_{tail_opcode}")
+            if tail_opcode is not None
+            else "no_tail"
+        )
         # Pre-header has exactly one successor: the dispatcher entry
         if nsucc == 1 and pred_blk.succ(0) == dispatcher_entry_serial:
             if diag_lines is not None:
@@ -952,11 +1038,15 @@ def _find_pre_header(
                     f" tail={tail_opname} succ0=blk[{pred_blk.succ(0)}]"
                 )
             # Prefer fewest predecessors; break ties by lowest serial
-            if pred_npred < best_npred or (pred_npred == best_npred and pred_serial < best_serial):
+            if pred_npred < best_npred or (
+                pred_npred == best_npred and pred_serial < best_serial
+            ):
                 best_npred = pred_npred
                 best_serial = pred_serial
     if best_serial is not None and diag_lines is not None:
-        diag_lines.append(f"  Selected pre-header: blk[{best_serial}] (npred={best_npred}, serial={best_serial})")
+        diag_lines.append(
+            f"  Selected pre-header: blk[{best_serial}] (npred={best_npred}, serial={best_serial})"
+        )
     return best_serial
 
 
@@ -1001,11 +1091,7 @@ def _mop_matches_stkoff(
     # Register-resident state variable (d81-3rja): a direct ``mop_r`` naming the
     # recovered state register. Checked first + independently of the stack offset
     # so the pure-register dispatcher (``state_var_stkoff is None``) still matches.
-    if (
-        state_var_reg is not None
-        and mop_r_type is not None
-        and mop_type == mop_r_type
-    ):
+    if state_var_reg is not None and mop_r_type is not None and mop_type == mop_r_type:
         r = getattr(mop, "r", None)
         if diag_lines is not None:
             diag_lines.append(
@@ -1017,7 +1103,11 @@ def _mop_matches_stkoff(
         return False
 
     if diag_lines is not None:
-        mop_type_name = MOP_TYPE_MAP.get(mop_type, f"unknown_{mop_type}") if mop_type is not None else "None"
+        mop_type_name = (
+            MOP_TYPE_MAP.get(mop_type, f"unknown_{mop_type}")
+            if mop_type is not None
+            else "None"
+        )
         diag_lines.append(
             f"    _mop_matches_stkoff: mop.t={mop_type_name}({mop_type})"
             f" target_stkoff=0x{state_var_stkoff:x}"
@@ -1031,7 +1121,9 @@ def _mop_matches_stkoff(
         if s is not None:
             off = getattr(s, "off", None)
             if diag_lines is not None:
-                diag_lines.append(f"      -> mop_S: s.off=0x{off:x} match={off == state_var_stkoff}")
+                diag_lines.append(
+                    f"      -> mop_S: s.off=0x{off:x} match={off == state_var_stkoff}"
+                )
             return off == state_var_stkoff
 
     # Address-of a stack variable (mop_a containing mop_S) — used by m_stx
@@ -1044,7 +1136,9 @@ def _mop_matches_stkoff(
                 if s is not None:
                     off = getattr(s, "off", None)
                     if diag_lines is not None:
-                        diag_lines.append(f"      -> mop_a->mop_S: s.off=0x{off:x} match={off == state_var_stkoff}")
+                        diag_lines.append(
+                            f"      -> mop_a->mop_S: s.off=0x{off:x} match={off == state_var_stkoff}"
+                        )
                     return off == state_var_stkoff
 
     # Local variable (mop_l) — promoted stack var at GLBOPT2 maturity
@@ -1077,7 +1171,9 @@ def _mop_matches_stkoff(
                         return match
                     except Exception as exc:
                         if diag_lines is not None:
-                            diag_lines.append(f"      -> mop_l stkoff lookup failed: {exc}")
+                            diag_lines.append(
+                                f"      -> mop_l stkoff lookup failed: {exc}"
+                            )
 
     return False
 
@@ -1343,7 +1439,9 @@ def _extract_state_from_block(
     insn_idx = 0
     while insn is not None:
         opcode = getattr(insn, "opcode", None)
-        opcode_name = OPCODE_MAP.get(opcode, f"opcode_{opcode}") if opcode is not None else "None"
+        opcode_name = (
+            OPCODE_MAP.get(opcode, f"opcode_{opcode}") if opcode is not None else "None"
+        )
 
         l_mop = getattr(insn, "l", None)
         r_mop = getattr(insn, "r", None)
@@ -1366,8 +1464,11 @@ def _extract_state_from_block(
         if opcode == m_mov_opcode:
             d = getattr(insn, "d", None)
             if _mop_matches_stkoff(
-                d, state_var_stkoff, diag_lines=diag_lines,
-                state_var_lvar_idx=state_var_lvar_idx, mba=mba,
+                d,
+                state_var_stkoff,
+                diag_lines=diag_lines,
+                state_var_lvar_idx=state_var_lvar_idx,
+                mba=mba,
                 state_var_reg=state_var_reg,
             ):
                 l = getattr(insn, "l", None)
@@ -1390,8 +1491,11 @@ def _extract_state_from_block(
             # l = value being stored, r = destination address
             r = getattr(insn, "r", None)
             if _mop_matches_stkoff(
-                r, state_var_stkoff, diag_lines=diag_lines,
-                state_var_lvar_idx=state_var_lvar_idx, mba=mba,
+                r,
+                state_var_stkoff,
+                diag_lines=diag_lines,
+                state_var_lvar_idx=state_var_lvar_idx,
+                mba=mba,
                 state_var_reg=state_var_reg,
             ):
                 l = getattr(insn, "l", None)
@@ -1494,7 +1598,9 @@ def _walk_handler_chain(
     while current is not None and depth < max_chain_depth:
         if current in chain_visited:
             if diag_lines is not None:
-                diag_lines.append(f"  walker: blk[{current}] already in chain_visited -> stop")
+                diag_lines.append(
+                    f"  walker: blk[{current}] already in chain_visited -> stop"
+                )
             break
         chain_visited.add(current)
         result["chain"].append(current)
@@ -1502,7 +1608,9 @@ def _walk_handler_chain(
         if current == dispatcher_entry_serial:
             result["back_edge"] = True
             if diag_lines is not None:
-                diag_lines.append(f"  walker: blk[{current}] == dispatcher_entry -> back_edge stop")
+                diag_lines.append(
+                    f"  walker: blk[{current}] == dispatcher_entry -> back_edge stop"
+                )
             break
 
         blk = mba.get_mblock(current)
@@ -1527,23 +1635,36 @@ def _walk_handler_chain(
         # pure-register state var, whose ``mov #const, reg`` writes the fast path
         # already resolves.
         if state_var_stkoff is not None or state_var_reg is not None:
-            fast_val = _extract_state_from_block(
-                blk, state_var_stkoff, diag_lines=diag_lines,
-                state_var_lvar_idx=state_var_lvar_idx, mba=mba,
-                state_var_reg=state_var_reg,
-            ) if result["next_state"] is None else None
+            fast_val = (
+                _extract_state_from_block(
+                    blk,
+                    state_var_stkoff,
+                    diag_lines=diag_lines,
+                    state_var_lvar_idx=state_var_lvar_idx,
+                    mba=mba,
+                    state_var_reg=state_var_reg,
+                )
+                if result["next_state"] is None
+                else None
+            )
             if fast_val is not None:
                 result["next_state"] = fast_val
                 if diag_lines is not None:
-                    diag_lines.append(f"  walker: found next_state=0x{fast_val:x} in blk[{current}]")
+                    diag_lines.append(
+                        f"  walker: found next_state=0x{fast_val:x} in blk[{current}]"
+                    )
             if state_var_stkoff is not None:
                 # Fast path found it (or not) — run forward eval to keep the stack
                 # value maps current / catch MBA-computed stack state writes.
                 fwd_insn = blk.head
                 while fwd_insn is not None:
                     fwd_val = _forward_eval_insn(
-                        fwd_insn, fwd_stk_map, fwd_reg_map, state_var_stkoff,
-                        mba=mba, state_var_lvar_idx=state_var_lvar_idx,
+                        fwd_insn,
+                        fwd_stk_map,
+                        fwd_reg_map,
+                        state_var_stkoff,
+                        mba=mba,
+                        state_var_lvar_idx=state_var_lvar_idx,
                         diag_lines=diag_lines,
                     )
                     if fwd_val is not None and result["next_state"] is None:
@@ -1563,12 +1684,16 @@ def _walk_handler_chain(
         if nsucc == 1:
             next_serial = blk.succ(0)
             if diag_lines is not None:
-                diag_lines.append(f"  walker: blk[{current}] nsucc=1 -> follow blk[{next_serial}]")
+                diag_lines.append(
+                    f"  walker: blk[{current}] nsucc=1 -> follow blk[{next_serial}]"
+                )
             # Check if next block is dispatcher entry (back-edge)
             if next_serial == dispatcher_entry_serial:
                 result["back_edge"] = True
                 if diag_lines is not None:
-                    diag_lines.append(f"  walker: next blk[{next_serial}] == dispatcher -> back_edge stop")
+                    diag_lines.append(
+                        f"  walker: next blk[{next_serial}] == dispatcher -> back_edge stop"
+                    )
                 break
             # Continue walking — do NOT stop on multi-predecessor blocks.
             # Handler blocks in a flattened loop naturally have multiple
@@ -1615,10 +1740,10 @@ def _walk_handler_chain(
                 any_back_edge = any(s["back_edge"] for s in sub_results)
                 all_exit = all(s["exit"] for s in sub_results)
                 any_exit = any(s["exit"] for s in sub_results)
-                sub_states = [s["next_state"] for s in sub_results if s["next_state"] is not None]
-                all_resolved = all(
-                    s["back_edge"] or s["exit"] for s in sub_results
-                )
+                sub_states = [
+                    s["next_state"] for s in sub_results if s["next_state"] is not None
+                ]
+                all_resolved = all(s["back_edge"] or s["exit"] for s in sub_results)
 
                 if not all_resolved:
                     # At least one branch is unresolvable — conservative unknown
@@ -1655,9 +1780,7 @@ def _walk_handler_chain(
                 elif all_exit:
                     result["exit"] = True
                     if diag_lines is not None:
-                        diag_lines.append(
-                            f"  walker: branch merge: all exit -> exit"
-                        )
+                        diag_lines.append(f"  walker: branch merge: all exit -> exit")
             else:
                 if diag_lines is not None:
                     diag_lines.append(
@@ -1694,7 +1817,9 @@ def _find_pre_header_state(
     Returns:
         Tuple of (pre_header_serial: Optional[int], initial_state: Optional[int])
     """
-    pre_header_serial = _find_pre_header(mba, dispatcher_entry_serial, diag_lines=diag_lines)
+    pre_header_serial = _find_pre_header(
+        mba, dispatcher_entry_serial, diag_lines=diag_lines
+    )
     if pre_header_serial is None or (
         state_var_stkoff is None and state_var_reg is None
     ):
@@ -1703,8 +1828,11 @@ def _find_pre_header_state(
     if blk is None:
         return pre_header_serial, None
     initial_state = _extract_state_from_block(
-        blk, state_var_stkoff, diag_lines=diag_lines,
-        state_var_lvar_idx=state_var_lvar_idx, mba=mba,
+        blk,
+        state_var_stkoff,
+        diag_lines=diag_lines,
+        state_var_lvar_idx=state_var_lvar_idx,
+        mba=mba,
         state_var_reg=state_var_reg,
     )
     return pre_header_serial, initial_state
@@ -1769,7 +1897,9 @@ def _detect_state_var_stkoff(
                 off = getattr(s, "off", None)
                 if off is not None:
                     if diag_lines is not None:
-                        diag_lines.append(f"_detect_stkoff: mop_S hit -> stkoff=0x{off:x}")
+                        diag_lines.append(
+                            f"_detect_stkoff: mop_S hit -> stkoff=0x{off:x}"
+                        )
                     return off, None
 
         # Register (mop_r) — try to find underlying stack variable.
@@ -1841,7 +1971,9 @@ def _detect_state_var_stkoff(
     def _detect_from_block(block_serial: int, visited: Set[int]):
         if block_serial in visited:
             if diag_lines is not None:
-                diag_lines.append(f"_detect_stkoff: blk[{block_serial}] cycle while following mop_b")
+                diag_lines.append(
+                    f"_detect_stkoff: blk[{block_serial}] cycle while following mop_b"
+                )
             return None, None
         visited.add(block_serial)
 
@@ -1860,7 +1992,9 @@ def _detect_state_var_stkoff(
         operands = _candidate_operands(tail)
         if not operands:
             if diag_lines is not None:
-                diag_lines.append(f"_detect_stkoff: blk[{block_serial}] tail has no operands")
+                diag_lines.append(
+                    f"_detect_stkoff: blk[{block_serial}] tail has no operands"
+                )
             return None, None
 
         if diag_lines is not None:
@@ -1891,7 +2025,9 @@ def _detect_state_var_stkoff(
 
         if diag_lines is not None:
             raw_types = tuple(getattr(mop, "t", None) for mop in operands)
-            diag_lines.append(f"_detect_stkoff: FAILED - unhandled operand types {raw_types}")
+            diag_lines.append(
+                f"_detect_stkoff: FAILED - unhandled operand types {raw_types}"
+            )
         return None, None
 
     stkoff, lvar_idx = _detect_from_block(int(dispatcher_entry_serial), set())
@@ -2003,7 +2139,9 @@ def analyze_condition_chain_dispatcher(
 
     # Phase 1: Pre-header + initial state
     pre_header_serial, initial_state = _find_pre_header_state(
-        mba, dispatcher_entry_serial, state_var_stkoff,
+        mba,
+        dispatcher_entry_serial,
+        state_var_stkoff,
         state_var_lvar_idx=state_var_lvar_idx,
         state_var_reg=state_var_reg,
     )
@@ -2044,7 +2182,9 @@ def analyze_condition_chain_dispatcher(
     # and ``detect_conditional_transitions`` over-produce thousands of spurious
     # conditional edges (the cond-explosion that starves return materialization).
     _ddag_condition_chain = getattr(result, "decision_dag", None)
-    if _ddag_condition_chain is not None and getattr(_ddag_condition_chain, "nodes", None):
+    if _ddag_condition_chain is not None and getattr(
+        _ddag_condition_chain, "nodes", None
+    ):
         _added_condition_chain = 0
         for _ns, _node in _ddag_condition_chain.nodes.items():
             if int(_ns) not in condition_chain_blocks:
@@ -2072,15 +2212,15 @@ def analyze_condition_chain_dispatcher(
     if dispatcher is None:
         try:
             dispatch_tree, _dispatch_condition_chain_serials = build_dispatch_tree(
-                mba, dispatcher_entry_serial, state_var_stkoff,
+                mba,
+                dispatcher_entry_serial,
+                state_var_stkoff,
             )
             if dispatch_tree is not None:
                 emitted = emit_dispatch_intervals(dispatch_tree)
                 dispatcher = IntervalDispatcher.from_emitted(emitted)
         except Exception:
-            logger.warning(
-                "INTERVAL_MAP: build_dispatch_tree failed", exc_info=True
-            )
+            logger.warning("INTERVAL_MAP: build_dispatch_tree failed", exc_info=True)
             dispatcher = None
     result.dispatcher = dispatcher
     if dispatcher is not None:
@@ -2091,12 +2231,14 @@ def analyze_condition_chain_dispatcher(
                 ConditionChainIntervalDispatcherObserved,
             )
 
-            _emit_observation(ConditionChainIntervalDispatcherObserved(
-                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                maturity="MMAT_GLBOPT1",
-                dispatcher_entry_block=int(dispatcher_entry_serial),
-                rows=tuple(dispatcher._rows),
-            ))
+            _emit_observation(
+                ConditionChainIntervalDispatcherObserved(
+                    func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                    maturity="MMAT_GLBOPT1",
+                    dispatcher_entry_block=int(dispatcher_entry_serial),
+                    rows=tuple(dispatcher._rows),
+                )
+            )
         except Exception:
             logger.debug(
                 "INTERVAL_DISPATCHER_ROWS structured persistence failed",
@@ -2124,7 +2266,8 @@ def analyze_condition_chain_dispatcher(
         if backfill_point or backfill_range:
             logger.info(
                 "INTERVAL_BACKFILL: %d point + %d range handlers added",
-                backfill_point, backfill_range,
+                backfill_point,
+                backfill_range,
             )
             # Update result after back-fill
             result.handler_state_map = handler_state_map
@@ -2147,20 +2290,23 @@ def analyze_condition_chain_dispatcher(
                     "branch_kind": "handler_state_map",
                     "confidence": 1.0,
                 }
-                for handler_serial, state_const
-                in sorted(result.handler_state_map.items())
+                for handler_serial, state_const in sorted(
+                    result.handler_state_map.items()
+                )
             )
             logger.info(
                 "STATE_DISPATCHER_ROWS: emitting %d exact rows",
                 len(state_rows),
             )
-            _emit_observation(StateDispatcherRowsObserved(
-                func_ea=int(getattr(mba, "entry_ea", 0) or 0),
-                maturity="MMAT_GLBOPT1",
-                dispatcher_entry_block=int(dispatcher_entry_serial),
-                dispatcher_kind="CONDITION_CHAIN",
-                rows=state_rows,
-            ))
+            _emit_observation(
+                StateDispatcherRowsObserved(
+                    func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                    maturity="MMAT_GLBOPT1",
+                    dispatcher_entry_block=int(dispatcher_entry_serial),
+                    dispatcher_kind="CONDITION_CHAIN",
+                    rows=state_rows,
+                )
+            )
         except Exception:
             logger.debug(
                 "STATE_DISPATCHER_ROWS structured observation failed",
@@ -2179,7 +2325,8 @@ def analyze_condition_chain_dispatcher(
                 "INTERVAL_MAP_DIAG: handler_state_map mismatch: "
                 "interval=%d entries, legacy=%d entries, "
                 "missing_in_interval=%s, extra_in_interval=%s",
-                len(derived_hsm), len(result.handler_state_map),
+                len(derived_hsm),
+                len(result.handler_state_map),
                 set(result.handler_state_map.items()) - set(derived_hsm.items()),
                 set(derived_hsm.items()) - set(result.handler_state_map.items()),
             )
@@ -2191,7 +2338,10 @@ def analyze_condition_chain_dispatcher(
 
     # Default block: condition-chain successor that is neither a condition-chain node nor a handler
     result.default_block_serial = find_condition_chain_default_block(
-        mba, dispatcher_entry_serial, condition_chain_blocks, handler_serials,
+        mba,
+        dispatcher_entry_serial,
+        condition_chain_blocks,
+        handler_serials,
     )
 
     # NUKE the register-blind leaf set (user directive llr-kufq): when the
@@ -2233,11 +2383,7 @@ def analyze_condition_chain_dispatcher(
             if _s in _covered:
                 continue
             _h = _dag.route(int(_s))
-            if (
-                _h is None
-                or int(_h) in _dag.nodes
-                or int(_h) in handler_state_map
-            ):
+            if _h is None or int(_h) in _dag.nodes or int(_h) in handler_state_map:
                 continue
             handler_state_map[int(_h)] = int(_s)
             handler_serials.add(int(_h))
@@ -2272,9 +2418,7 @@ def analyze_condition_chain_dispatcher(
             walk = {"next_state": None, "back_edge": False, "exit": False, "chain": []}
 
         next_state = walk.get("next_state")
-        is_exit = walk.get("exit") or (
-            not walk.get("back_edge") and walk.get("chain")
-        )
+        is_exit = walk.get("exit") or (not walk.get("back_edge") and walk.get("chain"))
 
         if state_const is not None:
             result.transitions[state_const] = next_state
@@ -2420,9 +2564,11 @@ def build_dispatch_tree(
         # JZ/JNZ chain nodes and TARGET nodes are path-sensitive —
         # memoizing by block serial causes overlapping intervals when
         # the same block is reachable from multiple condition-chain paths.
-        memoable = (
-            dc is not None
-            and dc.kind in (NodeKind.JBE, NodeKind.JA, NodeKind.JB, NodeKind.JAE)
+        memoable = dc is not None and dc.kind in (
+            NodeKind.JBE,
+            NodeKind.JA,
+            NodeKind.JB,
+            NodeKind.JAE,
         )
 
         if memoable and serial in memo:
@@ -2504,7 +2650,7 @@ def _block_successors(block: object) -> tuple[int, ...]:
 
 
 def build_condition_chain_walker_provider() -> ConditionChainWalkerProvider:
-    "Bundle this backend's condition-chain evidence seams for the provider registry.\n\n    Single source of truth for which Hex-Rays evidence callables satisfy each\n    portable seam.  Called by the composition root (``D810State.start_d810``)\n    and by unit-test fixtures, so production and tests inject identical walkers\n    into ``d810.capabilities.providers`` (preanalysis reads them via\n    ``get_condition_chain_walkers()`` without importing this backend; ticket d81-1w16).\n    "
+    "Bundle this backend's condition-chain evidence seams for the provider registry.\n\n    Single source of truth for which Hex-Rays evidence callables satisfy each\n    portable seam.  Called by the composition root (``D810State.start_d810``)\n    and by unit-test fixtures, so production and tests inject identical walkers\n    into ``d810.capabilities.providers`` (preanalysis reads them via\n    ``get_condition_chain_walkers()`` without importing this backend; ticket d81-1w16).\n"
     return ConditionChainWalkerProvider(
         detect_state_var_stkoff=_detect_state_var_stkoff,
         dump_dispatcher_node=_dump_dispatcher_node,

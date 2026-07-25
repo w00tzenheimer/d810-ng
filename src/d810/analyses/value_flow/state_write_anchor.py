@@ -1,4 +1,5 @@
 "State-write anchor fact collector.\n\nThis collector observes ``mov #const, %var_<stkoff>`` style state-variable\nwrites BEFORE IDA's MMAT_LOCOPT constant-propagation collapses transit-state\nconstants into eventual successor blocks.\n\nBackground\n----------\nOn ``sub_7FFD3338C040`` we observed 34 state-write constants getting\nrewritten in-place between ``MMAT_LOCOPT pre_d810`` and ``MMAT_LOCOPT\npost_d810`` (e.g. ``blk[100] 0x5A21D9DB -> 0x63D54755``).  D810 is NOT the\nmutator: by elimination, IDA's own MMAT_LOCOPT constant-propagation pass\ncollapses transit-state writes into the eventually-reaching successor's\nstate.  Once the rewrite happens, the preanalysis DAG built at GLBOPT1 reflects\nthe post-CP microcode and disagrees with the linearized reference.\n\nThis fact captures the ORIGINAL state-write constant at LOCOPT-pre so later\nconsumers can compare against the GLBOPT1 preanalysis view and detect IDA-driven\nrewrites.\n\nLifecycle integration\n---------------------\nThe :class:`PreanalysisFactRuntime` already invokes collectors at\n``MMAT_LOCOPT`` with ``phase=\"pre_d810\"``.  No runtime changes are required\nto capture LOCOPT-pre observations.  Cross-maturity rewrite detection lives\nin\n:meth:`PreanalysisFactRuntime._derive_state_write_anchor_lifecycle`, which\nemits :data:`FactStatus.STATE_CONST_REWRITTEN` mappings when the same\n``(block_serial, instruction_ea, state_var_stkoff)`` produces a different\n``state_const`` at a later maturity.\n\nllr-3b41 S8 -- per-collector port onto the canonical IR, following the proven\nS3 (:mod:`d810.analyses.value_flow.zero_blob`) / S4\n(:mod:`d810.analyses.value_flow.call_anchor`) / S5\n(:mod:`d810.analyses.control_flow.state_transition_anchor`) dual-currency\npattern.  A collector-local source iterator routes:\n\n* **meta-rich** sources -- a portable :class:`~d810.ir.flowgraph.FlowGraph`\n  block, or a diag row carrying a parseable ``meta`` operand tree -- through\n  the SAME canonical :func:`~d810.ir.insn_projection.project_diag_instruction`\n  / ``InstructionProjection.from_block`` projection.  ``dest_stkoff`` /\n  ``dest_size`` are then read off the canonical ``Instruction.result`` and\n  ``src_l_value`` off the first canonical input, so a state-write is anchored\n  on recovered stack/const semantics rather than opcode-table flat fields.\nThere is no meta-less fallback -- every production fact target is a canonical\n``FlowGraph``.\n\n``_block_succs`` / ``_block_start_ea_lookup`` / ``_DEST_VAR_RE`` are exported\nunchanged for reuse by the state_transition_anchor collector (S5).\n"
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -171,7 +172,9 @@ def _opcode_fingerprint(
         insn for insn in instructions if int(insn.block_serial) == int(block_serial)
     ]
     block_insns.sort(key=lambda insn: int(insn.insn_index))
-    head = [str(insn.opcode_name or "") for insn in block_insns[:_OPCODE_FINGERPRINT_LIMIT]]
+    head = [
+        str(insn.opcode_name or "") for insn in block_insns[:_OPCODE_FINGERPRINT_LIMIT]
+    ]
     return "|".join(head)
 
 
@@ -358,9 +361,7 @@ class StateWriteAnchorFactCollector:
                 "instruction_index": int(insn.insn_index),
                 "instruction_ea_hex": f"0x{int(anchor_ea) & 0xFFFFFFFFFFFFFFFF:016x}",
                 "instruction_ea": int(anchor_ea),
-                "state_var_stkoff": (
-                    storage_offset if storage_kind == "stk" else None
-                ),
+                "state_var_stkoff": (storage_offset if storage_kind == "stk" else None),
                 "state_var_stkoff_hex": (
                     f"0x{storage_offset:x}" if storage_kind == "stk" else None
                 ),
@@ -387,15 +388,12 @@ class StateWriteAnchorFactCollector:
                     source_block=block_serial,
                     source_ea=int(anchor_ea),
                     block_fingerprint=(
-                        f"blk[{block_serial}].{int(insn.insn_index)}:"
-                        f"{insn.opcode_name}"
+                        f"blk[{block_serial}].{int(insn.insn_index)}:{insn.opcode_name}"
                     ),
                     mop_signature=(
-                        (
-                            f"state_write:mop_S:0x{storage_offset:x}:{dest_size}"
-                            if storage_kind == "stk"
-                            else f"state_write:mop_r:{storage_offset}:{dest_size}"
-                        )
+                        f"state_write:mop_S:0x{storage_offset:x}:{dest_size}"
+                        if storage_kind == "stk"
+                        else f"state_write:mop_r:{storage_offset}:{dest_size}"
                     ),
                     payload=payload,
                     evidence=(insn.dstr,),

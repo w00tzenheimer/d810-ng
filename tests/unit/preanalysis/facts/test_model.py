@@ -1,11 +1,18 @@
 """Tests for maturity fact model objects."""
+
 from __future__ import annotations
 
 import json
 
 import pytest
 
-from d810.analyses.value_flow.facts import FactMapping, FactObservation, FactStatus, ValidatedFactView, canonical_json
+from d810.analyses.value_flow.facts import (
+    FactMapping,
+    FactObservation,
+    FactStatus,
+    ValidatedFactView,
+    canonical_json,
+)
 
 
 def test_observation_serializes_deterministically() -> None:
@@ -449,7 +456,9 @@ def test_terminal_byte_emit_sites_for_block_excludes_stale_facts() -> None:
     assert view.terminal_byte_emit_sites_for_block(143) == ()
 
 
-def test_terminal_zero_guard_return_sites_for_block_filters_by_return_successor() -> None:
+def test_terminal_zero_guard_return_sites_for_block_filters_by_return_successor() -> (
+    None
+):
     matching = FactObservation(
         fact_id="byte_emit:zero_guard",
         kind="TerminalByteEmitterFact",

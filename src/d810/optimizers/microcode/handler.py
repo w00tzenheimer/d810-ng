@@ -19,6 +19,7 @@ class ConfigParam:
     description: str
     choices: tuple | None = None  # for enum-like params
 
+
 # Practical maturities - MMAT_GLBOPT3 is rarely/never called by Hex-Rays
 # MMAT_GLBOPT2 is the latest practical maturity level for most operations
 DEFAULT_INSTRUCTION_MATURITIES = [
@@ -52,7 +53,9 @@ class OptimizationRule:
                 "MMAT_LVARS",
             ),
         ),
-        ConfigParam("dump_intermediate_microcode", bool, False, "Dump microcode for debugging"),
+        ConfigParam(
+            "dump_intermediate_microcode", bool, False, "Dump microcode for debugging"
+        ),
     )
 
     def __init__(self):

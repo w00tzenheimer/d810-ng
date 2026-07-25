@@ -1,12 +1,26 @@
 """Release gate: enforces that all INTERR codes are accounted for."""
+
 import json
 import pathlib
 import pytest
 
-_CFG_CONTRACT_DIR = pathlib.Path(__file__).resolve().parents[4] / "src" / "d810" / "hexrays" / "contracts"
+_CFG_CONTRACT_DIR = (
+    pathlib.Path(__file__).resolve().parents[4]
+    / "src"
+    / "d810"
+    / "hexrays"
+    / "contracts"
+)
 
-_TERMINAL_DISPOSITIONS = {"mapped", "native_oracle", "native_oracle_limited", "native_oracle_deferred", "blocked_by_api"}
+_TERMINAL_DISPOSITIONS = {
+    "mapped",
+    "native_oracle",
+    "native_oracle_limited",
+    "native_oracle_deferred",
+    "blocked_by_api",
+}
 _PROHIBITED_DISPOSITIONS = {"unmapped", "unknown"}
+
 
 def _load_matrix(name):
     path = _CFG_CONTRACT_DIR / name
@@ -15,12 +29,14 @@ def _load_matrix(name):
     with open(path) as f:
         return json.load(f)
 
+
 class TestReleaseGate:
     def test_mblock_no_unmapped(self):
         matrix = _load_matrix("parity_matrix.json")
         for entry in matrix["codes"]:
-            assert entry["disposition"] not in _PROHIBITED_DISPOSITIONS, \
+            assert entry["disposition"] not in _PROHIBITED_DISPOSITIONS, (
                 f"Code {entry['code']} has prohibited disposition: {entry['disposition']}"
+            )
 
     def test_mblock_no_planned_at_release(self):
         """All 'planned' codes must be promoted before release."""
@@ -29,7 +45,9 @@ class TestReleaseGate:
         # This is a WARNING test, not a hard gate (planned codes may exist during development)
         if planned:
             codes = [e["code"] for e in planned]
-            pytest.skip(f"Development mode: {len(planned)} planned codes remain: {codes}")
+            pytest.skip(
+                f"Development mode: {len(planned)} planned codes remain: {codes}"
+            )
 
     def test_insn_matrix_exists(self):
         """Instruction-level matrix must exist."""
@@ -40,16 +58,22 @@ class TestReleaseGate:
     def test_insn_no_unmapped(self):
         matrix = _load_matrix("insn_parity_matrix.json")
         for entry in matrix["codes"]:
-            assert entry["disposition"] not in _PROHIBITED_DISPOSITIONS, \
+            assert entry["disposition"] not in _PROHIBITED_DISPOSITIONS, (
                 f"Code {entry['code']} has prohibited disposition: {entry['disposition']}"
+            )
 
     def test_native_oracle_availability_tracked(self):
         """Verify we can programmatically check oracle status."""
-        from d810.hexrays.contracts.native_oracle import oracle_available, NATIVE_ORACLE_AVAILABLE
+        from d810.hexrays.contracts.native_oracle import (
+            oracle_available,
+            NATIVE_ORACLE_AVAILABLE,
+        )
+
         assert oracle_available() == NATIVE_ORACLE_AVAILABLE
         # In non-Cython env, oracle is unavailable — that's OK but must be tracked
         if not oracle_available():
             import warnings
+
             warnings.warn("Native oracle not available — 15 codes unchecked")
 
     def test_combined_summary(self):

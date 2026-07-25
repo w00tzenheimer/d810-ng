@@ -123,9 +123,9 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                                 mba=mba,
                             )
                             if materializer is not None:
-                                decision[
-                                    "semantic_native_body_materializer"
-                                ] = materializer
+                                decision["semantic_native_body_materializer"] = (
+                                    materializer
+                                )
         return decision
 
     def _ensure_lifecycle_session(

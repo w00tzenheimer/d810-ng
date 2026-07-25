@@ -1,10 +1,14 @@
 """Tests for in-memory state-dispatcher transition resolution."""
+
 from __future__ import annotations
 
 import pytest
 
 from d810.capabilities.dispatcher import RouterKind
-from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap, StateDispatcherRow
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
 from d810.analyses.control_flow.semantic_transition import (
     StateTransitionFact,
     StateWriteAnchor,
@@ -433,7 +437,9 @@ def _fold_flow_graph() -> FlowGraph:
     )
 
 
-def test_folds_binop_over_register_next_state(_portable_condition_chain_walkers) -> None:
+def test_folds_binop_over_register_next_state(
+    _portable_condition_chain_walkers,
+) -> None:
     resolutions = resolve_state_transitions_with_dispatcher_map(
         (
             StateTransitionFact(
@@ -458,7 +464,9 @@ def test_folds_binop_over_register_next_state(_portable_condition_chain_walkers)
     assert res.resolution_reason == "resolved_folded_state_write"
 
 
-def test_fold_rejected_when_value_not_a_known_target(_portable_condition_chain_walkers) -> None:
+def test_fold_rejected_when_value_not_a_known_target(
+    _portable_condition_chain_walkers,
+) -> None:
     # Same graph, but the dispatcher map lacks 0x1A2893D9 in its state set, so
     # the folded value is not a known target -> next-state stays BLANK.
     dispatch_map = StateDispatcherMap(
@@ -500,7 +508,9 @@ def test_fold_rejected_when_value_not_a_known_target(_portable_condition_chain_w
     assert res.resolution_reason == "resolved_exact_state"
 
 
-def test_literal_anchor_is_not_overridden_by_fold(_portable_condition_chain_walkers) -> None:
+def test_literal_anchor_is_not_overridden_by_fold(
+    _portable_condition_chain_walkers,
+) -> None:
     # A literal write anchor present at the routed handler wins; the fold path
     # is never consulted (additive/safe: only fills previously-BLANK states).
     resolutions = resolve_state_transitions_with_dispatcher_map(

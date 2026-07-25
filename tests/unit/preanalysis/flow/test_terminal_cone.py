@@ -1,4 +1,5 @@
 """Unit tests for terminal-cone detection (pure model layer, no IDA)."""
+
 from __future__ import annotations
 
 import pytest
@@ -14,6 +15,7 @@ BLT_2WAY = 3
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_deep_cleanup_path(
     start: int,
@@ -31,16 +33,30 @@ def _make_deep_cleanup_path(
         s = start + i
         nxt = start + i + 1 if i < 5 else stop_serial
         pred = (parent_serial,) if i == 0 else (start + i - 1,)
-        chain.append(BlockSnapshot(
-            serial=s, block_type=BLT_1WAY, succs=(nxt,), preds=pred,
-            flags=0, start_ea=0x2000 + s * 0x10,
-            insn_snapshots=(InsnSnapshot(opcode=0x01, ea=0x2000 + s * 0x10, operands=()),),
-        ))
-    chain.append(BlockSnapshot(
-        serial=stop_serial, block_type=BLT_STOP, succs=(), preds=(start + 5,),
-        flags=0, start_ea=0x2000 + stop_serial * 0x10,
-        insn_snapshots=(),
-    ))
+        chain.append(
+            BlockSnapshot(
+                serial=s,
+                block_type=BLT_1WAY,
+                succs=(nxt,),
+                preds=pred,
+                flags=0,
+                start_ea=0x2000 + s * 0x10,
+                insn_snapshots=(
+                    InsnSnapshot(opcode=0x01, ea=0x2000 + s * 0x10, operands=()),
+                ),
+            )
+        )
+    chain.append(
+        BlockSnapshot(
+            serial=stop_serial,
+            block_type=BLT_STOP,
+            succs=(),
+            preds=(start + 5,),
+            flags=0,
+            start_ea=0x2000 + stop_serial * 0x10,
+            insn_snapshots=(),
+        )
+    )
     return chain
 
 
@@ -78,6 +94,7 @@ def _make_flowgraph(blocks: list[BlockSnapshot], entry: int = 0) -> FlowGraph:
 # Tests for detect_terminal_state_families_snapshot
 # ---------------------------------------------------------------------------
 
+
 class TestDetectTerminalStateFamilies:
     """Tests targeting ``detect_terminal_state_families_snapshot``."""
 
@@ -90,8 +107,11 @@ class TestDetectTerminalStateFamilies:
         from d810.analyses.control_flow.state_machine_analysis import (
             detect_terminal_state_families_snapshot,
         )
+
         return detect_terminal_state_families_snapshot(
-            flow_graph, dispatchers, side_effect_blocks,
+            flow_graph,
+            dispatchers,
+            side_effect_blocks,
         )
 
     def test_empty_cone_no_dispatchers(self) -> None:
@@ -175,8 +195,20 @@ class TestDetectTerminalStateFamilies:
         # Deep terminal path from blk2's arm.
         cleanup = _make_deep_cleanup_path(start=20, stop_serial=99, parent_serial=2)
         fg = _make_flowgraph(
-            [blk0, blk1, blk2, blk3, blk4,
-             blk10, blk11, blk12, blk13, blk14, blk15, blk16]
+            [
+                blk0,
+                blk1,
+                blk2,
+                blk3,
+                blk4,
+                blk10,
+                blk11,
+                blk12,
+                blk13,
+                blk14,
+                blk15,
+                blk16,
+            ]
             + cleanup,
             entry=0,
         )
@@ -210,8 +242,21 @@ class TestDetectTerminalStateFamilies:
         cleanup = _make_deep_cleanup_path(start=50, stop_serial=99, parent_serial=2)
 
         fg = _make_flowgraph(
-            [blk0, blk1, blk2, blk100, blk101, blk102,
-             blk10, blk11, blk12, blk110, blk111, blk112, blk113]
+            [
+                blk0,
+                blk1,
+                blk2,
+                blk100,
+                blk101,
+                blk102,
+                blk10,
+                blk11,
+                blk12,
+                blk110,
+                blk111,
+                blk112,
+                blk113,
+            ]
             + cleanup,
             entry=0,
         )
@@ -239,12 +284,22 @@ class TestDetectTerminalStateFamilies:
         blk102 = _make_block(102, BLT_1WAY, succs=(), preds=(20,))
         blk103 = _make_block(103, BLT_1WAY, succs=(), preds=(20,))
         # Deep terminal path from blk12's arm 50.
-        cleanup_blks = _make_deep_cleanup_path(start=50, stop_serial=99, parent_serial=12)
+        cleanup_blks = _make_deep_cleanup_path(
+            start=50, stop_serial=99, parent_serial=12
+        )
 
         fg = _make_flowgraph(
-            [blk10, blk11, blk12, blk20,
-             blk100, blk101, blk102, blk103,
-             ] + cleanup_blks,
+            [
+                blk10,
+                blk11,
+                blk12,
+                blk20,
+                blk100,
+                blk101,
+                blk102,
+                blk103,
+            ]
+            + cleanup_blks,
             entry=10,
         )
         dispatchers = {10, 11, 12, 20}
@@ -259,12 +314,16 @@ class TestDetectTerminalStateFamilies:
 # Tests for _restricted_reach_stop
 # ---------------------------------------------------------------------------
 
+
 class TestRestrictedReachStop:
     """Tests targeting ``_restricted_reach_stop``."""
 
     @staticmethod
     def _reach(fg: FlowGraph, start: int, forbidden: set[int]) -> bool:
-        from d810.analyses.control_flow.state_machine_analysis import _restricted_reach_stop
+        from d810.analyses.control_flow.state_machine_analysis import (
+            _restricted_reach_stop,
+        )
+
         return _restricted_reach_stop(fg, start, forbidden)
 
     def test_direct_stop(self) -> None:
@@ -294,6 +353,6 @@ class TestRestrictedReachStop:
 # Tests for FlowMaturityContext cache invalidation
 # ---------------------------------------------------------------------------
 
-    # NOTE: FlowMaturityContext.refresh_mba() cache invalidation is tested
-    # in system/runtime tests (requires IDA). The reset is a single-line
-    # attribute assignment in context.py — verified by code review.
+# NOTE: FlowMaturityContext.refresh_mba() cache invalidation is tested
+# in system/runtime tests (requires IDA). The reset is a single-line
+# attribute assignment in context.py — verified by code review.

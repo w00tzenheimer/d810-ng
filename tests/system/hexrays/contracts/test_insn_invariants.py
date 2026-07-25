@@ -16,6 +16,7 @@ _HR = inv.ida_hexrays
 # Mock infrastructure
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _Mop:
     t: int
@@ -151,6 +152,7 @@ def _mop_h(size: int = 0) -> _Mop:
 # Group A — insn_basic_validity
 # ---------------------------------------------------------------------------
 
+
 class TestInsnBasicValidity:
     def test_clean_nop_no_violations(self):
         m_nop = int(getattr(_HR, "m_nop", 0))
@@ -234,6 +236,7 @@ class TestInsnBasicValidity:
 # Group B — insn_operand_presence
 # ---------------------------------------------------------------------------
 
+
 class TestInsnOperandPresence:
     def test_clean_goto_has_l_no_violation(self):
         m_goto = int(getattr(_HR, "m_goto", 2))
@@ -275,6 +278,7 @@ class TestInsnOperandPresence:
 # Group C — insn_operand_sizes
 # ---------------------------------------------------------------------------
 
+
 class TestInsnOperandSizes:
     def test_clean_mov_same_size_no_violation(self):
         m_mov = int(getattr(_HR, "m_mov", 21))
@@ -309,6 +313,7 @@ class TestInsnOperandSizes:
 # Group D — insn_operand_types
 # ---------------------------------------------------------------------------
 
+
 class TestInsnOperandTypes:
     def test_clean_reg_operand_no_violation(self):
         m_mov = int(getattr(_HR, "m_mov", 21))
@@ -319,7 +324,9 @@ class TestInsnOperandTypes:
 
     def test_50754_mop_b_nonzero_size_detected(self):
         m_goto = int(getattr(_HR, "m_goto", 2))
-        insn = _Insn(m_goto, ea=0x401000, l=_Mop(t=int(getattr(_HR, "mop_b", 7)), size=4, b=1))
+        insn = _Insn(
+            m_goto, ea=0x401000, l=_Mop(t=int(getattr(_HR, "mop_b", 7)), size=4, b=1)
+        )
         mba = _simple_mba([insn], [_Insn(int(getattr(_HR, "m_nop", 0)), ea=0x401010)])
         viols = inv.insn_operand_types(mba, phase="test")
         assert inv.MINSN_50754_MOP_ZBC_NONZERO_SIZE in _codes(viols)
@@ -375,6 +382,7 @@ class TestInsnOperandTypes:
 # ---------------------------------------------------------------------------
 # Group E — insn_call_validity
 # ---------------------------------------------------------------------------
+
 
 class TestInsnCallValidity:
     def test_clean_call_with_arglist_no_violation(self):
@@ -577,6 +585,7 @@ class TestInsnCallValidity:
 # focus_serials filtering
 # ---------------------------------------------------------------------------
 
+
 class TestFocusSerials:
     def test_focus_serials_limits_scope(self):
         m_nop = int(getattr(_HR, "m_nop", 0))
@@ -607,6 +616,7 @@ class TestFocusSerials:
 # ---------------------------------------------------------------------------
 # Group A new checks — insn_basic_validity (new codes)
 # ---------------------------------------------------------------------------
+
 
 class TestInsnBasicValidityNew:
     def test_50859_jtbl_without_caselist_detected(self):
@@ -690,6 +700,7 @@ class TestInsnBasicValidityNew:
 # Group B new checks — insn_operand_presence (m_ext)
 # ---------------------------------------------------------------------------
 
+
 class TestInsnOperandPresenceNew:
     def test_50807_ext_bad_l_mopb_detected(self):
         m_ext = int(getattr(_HR, "m_ext", 16))
@@ -733,34 +744,44 @@ class TestInsnOperandPresenceNew:
 # Group C new checks — insn_operand_sizes (ldx/stx)
 # ---------------------------------------------------------------------------
 
+
 class TestInsnOperandSizesNew:
     def test_50826_ldx_bad_seg_size_detected(self):
         m_ldx = int(getattr(_HR, "m_ldx", 54))
         # ldx: seg=l, off=r, data=d. seg.size should be 2.
-        insn = _Insn(m_ldx, ea=0x401000,
-                     l=_mop_r(4),  # seg size=4, wrong (should be 2)
-                     r=_mop_r(8),  # off size=8 (addrsize)
-                     d=_mop_r(4))  # data
+        insn = _Insn(
+            m_ldx,
+            ea=0x401000,
+            l=_mop_r(4),  # seg size=4, wrong (should be 2)
+            r=_mop_r(8),  # off size=8 (addrsize)
+            d=_mop_r(4),
+        )  # data
         mba = _simple_mba([insn])
         viols = inv.insn_operand_sizes(mba, phase="test")
         assert inv.MINSN_50826_LDX_STX_SEG_SIZE in _codes(viols)
 
     def test_50826_ldx_correct_seg_size_clean(self):
         m_ldx = int(getattr(_HR, "m_ldx", 54))
-        insn = _Insn(m_ldx, ea=0x401000,
-                     l=_mop_r(2),  # seg size=2 (correct)
-                     r=_mop_r(8),  # off size=8 (addrsize)
-                     d=_mop_r(4))  # data
+        insn = _Insn(
+            m_ldx,
+            ea=0x401000,
+            l=_mop_r(2),  # seg size=2 (correct)
+            r=_mop_r(8),  # off size=8 (addrsize)
+            d=_mop_r(4),
+        )  # data
         mba = _simple_mba([insn])
         viols = inv.insn_operand_sizes(mba, phase="test")
         assert inv.MINSN_50826_LDX_STX_SEG_SIZE not in _codes(viols)
 
     def test_52816_ldx_zero_data_size_detected(self):
         m_ldx = int(getattr(_HR, "m_ldx", 54))
-        insn = _Insn(m_ldx, ea=0x401000,
-                     l=_mop_r(2),  # seg
-                     r=_mop_r(8),  # off
-                     d=_mop_r(0))  # data size=0 — invalid
+        insn = _Insn(
+            m_ldx,
+            ea=0x401000,
+            l=_mop_r(2),  # seg
+            r=_mop_r(8),  # off
+            d=_mop_r(0),
+        )  # data size=0 — invalid
         mba = _simple_mba([insn])
         viols = inv.insn_operand_sizes(mba, phase="test")
         assert inv.MINSN_52816_SEGOFF_SIZE in _codes(viols)
@@ -769,6 +790,7 @@ class TestInsnOperandSizesNew:
 # ---------------------------------------------------------------------------
 # Group D new checks — insn_operand_types (new codes)
 # ---------------------------------------------------------------------------
+
 
 class TestInsnOperandTypesNew:
     def test_50755_str_wrong_size_detected(self):
@@ -963,6 +985,7 @@ class TestInsnOperandTypesNew:
 # ---------------------------------------------------------------------------
 # Group E new checks — insn_call_validity (new codes)
 # ---------------------------------------------------------------------------
+
 
 class TestInsnCallValidityNew:
     def test_50772_arglist_not_d_in_call_validity(self):

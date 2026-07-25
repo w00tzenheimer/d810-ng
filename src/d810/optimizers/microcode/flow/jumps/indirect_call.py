@@ -37,6 +37,7 @@ Key differences from Phase 5 (indirect branches)
 - No CFG edge modification is needed -- calls do not change control
   flow structure.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING, Dict, List, Optional, Tuple
@@ -107,7 +108,9 @@ class IndirectCallResolver(FlowOptimizationRule):
     # operands) -- it never adds/removes CFG edges or blocks.  Therefore it
     # is safe at any maturity and does not need DeferredGraphModifier.
     USES_DEFERRED_CFG = True
-    SAFE_MATURITIES: list[int] = []  # Populated after class definition when IDA is available
+    SAFE_MATURITIES: list[
+        int
+    ] = []  # Populated after class definition when IDA is available
 
     # Config
     MAX_TABLE_ENTRIES = MAX_TABLE_ENTRIES
@@ -185,16 +188,15 @@ class IndirectCallResolver(FlowOptimizationRule):
     # ------------------------------------------------------------------
     # Orchestrator
     # ------------------------------------------------------------------
-    def _resolve_indirect_call(
-        self, blk: "mblock_t", insn: "minsn_t"
-    ) -> bool:
+    def _resolve_indirect_call(self, blk: "mblock_t", insn: "minsn_t") -> bool:
         """Orchestrate table finding, target computation, and replacement.
 
         Returns True if the call was successfully resolved and replaced.
         """
         logger.debug(
             "IndirectCallResolver: analysing indirect call at %#x in block %d",
-            insn.ea, blk.serial,
+            insn.ea,
+            blk.serial,
         )
 
         # Fast path: many optimized samples fold table lookup/sub-offset into a
@@ -204,7 +206,8 @@ class IndirectCallResolver(FlowOptimizationRule):
         if direct_target is not None:
             logger.debug(
                 "IndirectCallResolver: folded callee resolved %#x at %#x",
-                direct_target, insn.ea,
+                direct_target,
+                insn.ea,
             )
             if not is_valid_database_ea(direct_target):
                 return False
@@ -233,7 +236,8 @@ class IndirectCallResolver(FlowOptimizationRule):
 
         logger.debug(
             "IndirectCallResolver: table at %#x for insn at %#x",
-            table_ea, insn.ea,
+            table_ea,
+            insn.ea,
         )
 
         # Step 2: Trace call target (index + offset)
@@ -248,12 +252,17 @@ class IndirectCallResolver(FlowOptimizationRule):
         index, offset = result
         logger.debug(
             "IndirectCallResolver: index=%d, offset=%d for insn at %#x",
-            index, offset, insn.ea,
+            index,
+            offset,
+            insn.ea,
         )
 
         # Step 3: Compute the resolved target
         target_ea = self._compute_target(
-            table_ea, index, offset, self.table_entry_size,
+            table_ea,
+            index,
+            offset,
+            self.table_entry_size,
         )
         if target_ea is None:
             logger.debug(
@@ -264,7 +273,8 @@ class IndirectCallResolver(FlowOptimizationRule):
 
         logger.debug(
             "IndirectCallResolver: computed target %#x for insn at %#x",
-            target_ea, insn.ea,
+            target_ea,
+            insn.ea,
         )
 
         # Step 4: Validate EA is in database range and is a function start
@@ -282,9 +292,7 @@ class IndirectCallResolver(FlowOptimizationRule):
                 try:
                     ida_funcs.add_func(target_ea)
                     func = ida_funcs.get_func(target_ea)
-                    is_func_start = (
-                        func is not None and func.start_ea == target_ea
-                    )
+                    is_func_start = func is not None and func.start_ea == target_ea
                 except Exception:
                     pass
 
@@ -316,13 +324,17 @@ class IndirectCallResolver(FlowOptimizationRule):
         """
         reg_values: Dict[int, int] = {}
         scan = blk.head
-        while scan is not None and not (scan.ea == insn.ea and scan.opcode == insn.opcode):
+        while scan is not None and not (
+            scan.ea == insn.ea and scan.opcode == insn.opcode
+        ):
             self._update_reg_value_map(scan, reg_values)
             scan = scan.next
 
         # In m_icall, the computed target is commonly carried in r; in m_call
         # variants it is usually in l. Try both and keep the first valid EA.
-        candidates = [insn.r, insn.l] if insn.opcode == ida_hexrays.m_icall else [insn.l, insn.r]
+        candidates = (
+            [insn.r, insn.l] if insn.opcode == ida_hexrays.m_icall else [insn.l, insn.r]
+        )
         for mop in candidates:
             target = self._eval_operand_to_ea(mop, reg_values)
             if target is not None and is_valid_database_ea(target):
@@ -399,9 +411,7 @@ class IndirectCallResolver(FlowOptimizationRule):
     # ------------------------------------------------------------------
     # Table discovery
     # ------------------------------------------------------------------
-    def _find_call_table(
-        self, blk: "mblock_t", insn: "minsn_t"
-    ) -> Optional[int]:
+    def _find_call_table(self, blk: "mblock_t", insn: "minsn_t") -> Optional[int]:
         """Locate the call table EA via ``m_ldx`` or Hikari sub pattern.
 
         Strategy 1: Reuse the shared ``find_table_reference`` which scans
@@ -418,7 +428,9 @@ class IndirectCallResolver(FlowOptimizationRule):
 
         # Strategy 2: Hikari sub pattern -- scan backwards from insn
         prev = blk.head
-        while prev is not None and not (prev.ea == insn.ea and prev.opcode == insn.opcode):
+        while prev is not None and not (
+            prev.ea == insn.ea and prev.opcode == insn.opcode
+        ):
             if (
                 prev.opcode == ida_hexrays.m_mov
                 and prev.l.t == ida_hexrays.mop_a
@@ -526,9 +538,7 @@ class IndirectCallResolver(FlowOptimizationRule):
     # ------------------------------------------------------------------
     # Sub-offset extraction
     # ------------------------------------------------------------------
-    def _extract_sub_offset(
-        self, blk: "mblock_t", insn: "minsn_t"
-    ) -> int:
+    def _extract_sub_offset(self, blk: "mblock_t", insn: "minsn_t") -> int:
         """Find the largest large constant in ``m_sub`` instructions in the block.
 
         Returns the offset value or 0 if none found.  A "large constant"
@@ -617,6 +627,7 @@ class IndirectCallResolver(FlowOptimizationRule):
 
         Returns the index value or ``None``.
         """
+
         def _check_mul8(op) -> Optional[int]:
             if (
                 op.t == ida_hexrays.mop_d
@@ -625,28 +636,16 @@ class IndirectCallResolver(FlowOptimizationRule):
             ):
                 mul_insn = op.d
                 # Check mul(X, 8) -- X on left, 8 on right
-                if (
-                    mul_insn.r.t == ida_hexrays.mop_n
-                    and mul_insn.r.nnn.value == 8
-                ):
+                if mul_insn.r.t == ida_hexrays.mop_n and mul_insn.r.nnn.value == 8:
                     if mul_insn.l.t == ida_hexrays.mop_n:
                         return mul_insn.l.nnn.value
-                    if (
-                        mul_insn.l.t == ida_hexrays.mop_r
-                        and mul_insn.l.r in reg_values
-                    ):
+                    if mul_insn.l.t == ida_hexrays.mop_r and mul_insn.l.r in reg_values:
                         return reg_values[mul_insn.l.r]
                 # Check mul(8, X) -- 8 on left, X on right
-                if (
-                    mul_insn.l.t == ida_hexrays.mop_n
-                    and mul_insn.l.nnn.value == 8
-                ):
+                if mul_insn.l.t == ida_hexrays.mop_n and mul_insn.l.nnn.value == 8:
                     if mul_insn.r.t == ida_hexrays.mop_n:
                         return mul_insn.r.nnn.value
-                    if (
-                        mul_insn.r.t == ida_hexrays.mop_r
-                        and mul_insn.r.r in reg_values
-                    ):
+                    if mul_insn.r.t == ida_hexrays.mop_r and mul_insn.r.r in reg_values:
                         return reg_values[mul_insn.r.r]
             return None
 
@@ -691,7 +690,10 @@ class IndirectCallResolver(FlowOptimizationRule):
 
         logger.debug(
             "IndirectCallResolver: table[%d] = %#x, - %#x = %#x",
-            index, entry_val, offset, target,
+            index,
+            entry_val,
+            offset,
+            target,
         )
 
         # Validate target
@@ -705,7 +707,8 @@ class IndirectCallResolver(FlowOptimizationRule):
                 return target
 
         logger.debug(
-            "IndirectCallResolver: target %#x is not valid code", target,
+            "IndirectCallResolver: target %#x is not valid code",
+            target,
         )
         return None
 
@@ -731,13 +734,12 @@ class IndirectCallResolver(FlowOptimizationRule):
         """
         logger.info(
             "IndirectCallResolver: replacing indirect call at %#x -> %#x",
-            insn.ea, target_ea,
+            insn.ea,
+            target_ea,
         )
 
         if insn.opcode == ida_hexrays.m_icall:
-            has_mcallinfo = (
-                insn.d.t == ida_hexrays.mop_f and insn.d.f is not None
-            )
+            has_mcallinfo = insn.d.t == ida_hexrays.mop_f and insn.d.f is not None
 
             if has_mcallinfo:
                 # Update existing mcallinfo
@@ -821,7 +823,8 @@ class IndirectCallResolver(FlowOptimizationRule):
         # Add annotation comment
         name = ida_name.get_name(target_ea)
         comment = "D810: Resolved indirect call -> {} ({:#x})".format(
-            name if name else "?", target_ea,
+            name if name else "?",
+            target_ea,
         )
         idaapi.set_cmt(insn.ea, comment, False)
 
@@ -835,12 +838,14 @@ class IndirectCallResolver(FlowOptimizationRule):
         """Add an IDB comment noting the resolved target without modifying the call."""
         name = ida_name.get_name(target_ea)
         comment = "D810: Indirect call resolved -> {} ({:#x}) [not replaced: not a function start]".format(
-            name if name else "?", target_ea,
+            name if name else "?",
+            target_ea,
         )
         idaapi.set_cmt(insn.ea, comment, False)
         logger.info(
             "IndirectCallResolver: annotated indirect call at %#x -> %#x",
-            insn.ea, target_ea,
+            insn.ea,
+            target_ea,
         )
 
     # TODO(phase6): frameless continuation fallback

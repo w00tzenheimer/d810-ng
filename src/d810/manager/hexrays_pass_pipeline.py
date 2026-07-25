@@ -1,4 +1,5 @@
 """Hex-Rays runtime adapter for portable pass-pipeline specs."""
+
 from __future__ import annotations
 
 from d810.core.typing import Callable
@@ -44,7 +45,6 @@ def build_hexrays_flowgraph_pipeline(
     from d810.passes.pipeline import FlowGraphTransformPipeline
 
     passes = [
-        _build_transform(pass_id, fact_view_provider)
-        for pass_id in spec.pass_ids
+        _build_transform(pass_id, fact_view_provider) for pass_id in spec.pass_ids
     ]
     return FlowGraphTransformPipeline(IDAIRTranslator(), passes)

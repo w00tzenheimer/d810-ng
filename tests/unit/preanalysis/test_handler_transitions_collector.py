@@ -90,4 +90,7 @@ def test_collector_builds_graph_portable_report_from_metadata():
     assert result.metrics["handlers_known"] == 1
     assert result.metrics["handlers_unknown"] == 1
     rows = result.metrics["transition_report"]["rows"]
-    assert {row["kind"] for row in rows} == {TransitionKind.TRANSITION.name, TransitionKind.UNKNOWN.name}
+    assert {row["kind"] for row in rows} == {
+        TransitionKind.TRANSITION.name,
+        TransitionKind.UNKNOWN.name,
+    }

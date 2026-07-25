@@ -36,6 +36,7 @@ class BlockHeuristics:
     Each heuristic is a quick check that can eliminate unlikely candidates.
     Scores range from 0.0 (definitely not) to 1.0 (very likely).
     """
+
     has_many_predecessors: bool
     has_switch_jump: bool
     has_comparison: bool
@@ -95,7 +96,7 @@ class DispatcherHeuristics:
         self,
         min_predecessors: int = 3,
         max_block_size: int = 20,
-        min_comparison_values: int = 2
+        min_comparison_values: int = 2,
     ):
         """Initialize heuristics with tunable thresholds.
 
@@ -145,7 +146,7 @@ class DispatcherHeuristics:
             has_switch_jump=has_switch,
             has_comparison=has_comparison,
             small_block=small_block,
-            has_state_variable=has_state_var
+            has_state_variable=has_state_var,
         )
 
     def is_potential_dispatcher(self, blk: ida_hexrays.mblock_t) -> bool:
@@ -173,14 +174,10 @@ class DispatcherHeuristics:
 
         if not heuristics.is_likely_dispatcher:
             self.blocks_skipped += 1
-            logger.debug(
-                f"Skipped block {blk.serial} (score: {heuristics.score:.2f})"
-            )
+            logger.debug(f"Skipped block {blk.serial} (score: {heuristics.score:.2f})")
             return False
 
-        logger.debug(
-            f"Checking block {blk.serial} (score: {heuristics.score:.2f})"
-        )
+        logger.debug(f"Checking block {blk.serial} (score: {heuristics.score:.2f})")
         return True
 
     def _has_switch_jump(self, blk: ida_hexrays.mblock_t) -> bool:
@@ -222,7 +219,14 @@ class DispatcherHeuristics:
         ins = blk.head
         while ins:
             # Check conditional jumps with constant comparisons
-            if ins.opcode in [ida_hexrays.m_jz, ida_hexrays.m_jnz, ida_hexrays.m_jl, ida_hexrays.m_jge, ida_hexrays.m_jg, ida_hexrays.m_jle]:
+            if ins.opcode in [
+                ida_hexrays.m_jz,
+                ida_hexrays.m_jnz,
+                ida_hexrays.m_jl,
+                ida_hexrays.m_jge,
+                ida_hexrays.m_jg,
+                ida_hexrays.m_jle,
+            ]:
                 # Extract constant if present
                 if ins.r.t == ida_hexrays.mop_n:  # Constant operand
                     comparison_values.add(ins.r.nnn.value)
@@ -329,8 +333,7 @@ class DefUseCache:
         self.misses = 0
 
     def get_def_use(
-        self,
-        blk: ida_hexrays.mblock_t
+        self, blk: ida_hexrays.mblock_t
     ) -> tuple[list[ida_hexrays.mop_t], list[ida_hexrays.mop_t]]:
         """Get def/use lists for a block (cached).
 
@@ -473,8 +476,7 @@ class EarlyExitOptimizer:
 
 
 def apply_selective_scanning(
-    mba: ida_hexrays.mba_t,
-    heuristics: Optional[DispatcherHeuristics] = None
+    mba: ida_hexrays.mba_t, heuristics: Optional[DispatcherHeuristics] = None
 ) -> List[ida_hexrays.mblock_t]:
     """Apply selective scanning to find potential dispatcher blocks.
 

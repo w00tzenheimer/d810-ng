@@ -314,8 +314,6 @@ class Pred0Rule1(VerifiableRule):
     - even & 1 = 0
     """
 
-
-
     PATTERN = (x * (x - ONE)) & ONE
     REPLACEMENT = ZERO
 
@@ -330,8 +328,6 @@ class Pred0Rule2(VerifiableRule):
     so their product is even.
     """
 
-
-
     PATTERN = (x * (x + ONE)) & ONE
     REPLACEMENT = ZERO
 
@@ -344,8 +340,6 @@ class Pred0Rule3(VerifiableRule):
 
     A value AND its complement is always 0.
     """
-
-
 
     PATTERN = x & ~x
     REPLACEMENT = ZERO
@@ -389,8 +383,6 @@ class Pred0Rule5(VerifiableRule):
                         = 0
     """
 
-
-
     PATTERN = x & ~(x | y)
     REPLACEMENT = ZERO
 
@@ -410,8 +402,6 @@ class Pred0Rule6(VerifiableRule):
     This is contradictory, so the result is always 0.
     """
 
-
-
     PATTERN = (x & y) & ~(x | y)
     REPLACEMENT = ZERO
 
@@ -428,8 +418,6 @@ class Pred0Rule7(VerifiableRule):
 
     These conditions are mutually exclusive, so result is always 0.
     """
-
-
 
     PATTERN = (x & y) & (x ^ y)
     REPLACEMENT = ZERO
@@ -449,7 +437,9 @@ class PredFFRule1(VerifiableRule):
     A value OR its complement gives all bits set.
     """
 
-    val_ff = DynamicConst("val_ff", lambda ctx: AND_TABLE[ctx.get('size', 4)], size_from="x_0")
+    val_ff = DynamicConst(
+        "val_ff", lambda ctx: AND_TABLE[ctx.get("size", 4)], size_from="x_0"
+    )
 
     PATTERN = x | ~x
     REPLACEMENT = val_ff
@@ -464,7 +454,9 @@ class PredFFRule2(VerifiableRule):
     Requires verification that bnot_x is actually ~x.
     """
 
-    val_ff = DynamicConst("val_ff", lambda ctx: AND_TABLE[ctx.get('size', 4)], size_from="x_0")
+    val_ff = DynamicConst(
+        "val_ff", lambda ctx: AND_TABLE[ctx.get("size", 4)], size_from="x_0"
+    )
 
     PATTERN = (x ^ y) | (bnot_x | y)
     REPLACEMENT = val_ff
@@ -484,7 +476,9 @@ class PredFFRule3(VerifiableRule):
                         = 0xFF...FF
     """
 
-    val_ff = DynamicConst("val_ff", lambda ctx: AND_TABLE[ctx.get('size', 4)], size_from="x_0")
+    val_ff = DynamicConst(
+        "val_ff", lambda ctx: AND_TABLE[ctx.get("size", 4)], size_from="x_0"
+    )
 
     PATTERN = x | ~(x & y)
     REPLACEMENT = val_ff
@@ -504,7 +498,9 @@ class PredFFRule4(VerifiableRule):
       so it's set in both ~x and ~y, thus set in (~x | ~y)
     """
 
-    val_ff = DynamicConst("val_ff", lambda ctx: AND_TABLE[ctx.get('size', 4)], size_from="x_0")
+    val_ff = DynamicConst(
+        "val_ff", lambda ctx: AND_TABLE[ctx.get("size", 4)], size_from="x_0"
+    )
 
     PATTERN = (x | y) | ~(x & y)
     REPLACEMENT = val_ff

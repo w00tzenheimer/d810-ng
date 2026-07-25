@@ -284,9 +284,9 @@ def test_mutation_projection_prefers_exact_live_shape_over_navigation_proof() ->
         resolver_kind="static_conditional_state_choice_bridge",
     )
 
-    assert mutation_authoritative_materialized_transfers(
-        (navigation, exact_live)
-    ) == (exact_live,)
+    assert mutation_authoritative_materialized_transfers((navigation, exact_live)) == (
+        exact_live,
+    )
 
 
 def test_mutation_projection_rejects_shared_entry_dispatch_navigation_source() -> None:

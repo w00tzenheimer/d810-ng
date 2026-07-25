@@ -1,7 +1,14 @@
 import pytest
 
 # Import from d810.core.bits (IDA-independent bitwise utilities)
-from d810.core.bits import signed_to_unsigned, unsigned_to_signed, get_parity_flag, popcount, is_state_constant
+from d810.core.bits import (
+    signed_to_unsigned,
+    unsigned_to_signed,
+    get_parity_flag,
+    popcount,
+    is_state_constant,
+)
+
 
 def test_signed_to_unsigned_small_sizes():
     # Test positive values
@@ -21,6 +28,7 @@ def test_signed_to_unsigned_small_sizes():
     assert signed_to_unsigned(127, 1) == 127
     assert signed_to_unsigned(-128, 1) == 128
 
+
 def test_unsigned_to_signed_small_sizes():
     # Test positive values
     assert unsigned_to_signed(42, 1) == 42
@@ -39,6 +47,7 @@ def test_unsigned_to_signed_small_sizes():
     assert unsigned_to_signed(127, 1) == 127
     assert unsigned_to_signed(128, 1) == -128
 
+
 def test_signed_to_unsigned_16_bytes():
     # Test positive values
     test_val = 123456789012345678901234567890123456789
@@ -55,6 +64,7 @@ def test_signed_to_unsigned_16_bytes():
     # Test large positive value
     large_val = (1 << 127) - 1
     assert signed_to_unsigned(large_val, 16) == large_val
+
 
 def test_unsigned_to_signed_16_bytes():
     # Test positive values
@@ -73,6 +83,7 @@ def test_unsigned_to_signed_16_bytes():
     # Test zero
     assert unsigned_to_signed(0, 16) == 0
 
+
 def test_roundtrip_conversion():
     # Signed -> unsigned -> signed
     signed_test_values = [0, 1, -1, 42, -42, 127, -128, -1, 42, -100]
@@ -80,7 +91,9 @@ def test_roundtrip_conversion():
         for size in [1, 2, 4, 8]:
             unsigned = signed_to_unsigned(val, size)
             back_to_signed = unsigned_to_signed(unsigned, size)
-            assert back_to_signed == val, f"Signed roundtrip failed for {val} at size {size}: {val} -> {unsigned} -> {back_to_signed}"
+            assert back_to_signed == val, (
+                f"Signed roundtrip failed for {val} at size {size}: {val} -> {unsigned} -> {back_to_signed}"
+            )
 
     # Unsigned -> signed -> unsigned
     unsigned_test_cases = [
@@ -96,7 +109,10 @@ def test_roundtrip_conversion():
         for size in sizes:
             signed = unsigned_to_signed(val, size)
             back_to_unsigned = signed_to_unsigned(signed, size)
-            assert back_to_unsigned == val, f"Unsigned roundtrip failed for {val} at size {size}: {val} -> {signed} -> {back_to_unsigned}"
+            assert back_to_unsigned == val, (
+                f"Unsigned roundtrip failed for {val} at size {size}: {val} -> {signed} -> {back_to_unsigned}"
+            )
+
 
 def test_get_parity_flag():
     # Even number of 1s (should return 1)
@@ -113,6 +129,7 @@ def test_get_parity_flag():
     assert get_parity_flag(1, 0, 16) == 0
     assert get_parity_flag(3, 0, 16) == 1
 
+
 def test_large_values_16_bytes():
     # Test maximum 128-bit unsigned value
     max_u128 = (1 << 128) - 1
@@ -126,6 +143,7 @@ def test_large_values_16_bytes():
     # Test minimum 128-bit signed value
     min_s128 = -(1 << 127)
     assert signed_to_unsigned(min_s128, 16) == 1 << 127
+
 
 def test_invalid_sizes():
     with pytest.raises(KeyError):
@@ -161,19 +179,33 @@ class TestPopcount:
 
 
 class TestIsStateConstant:
-    @pytest.mark.parametrize("value", [
-        0xDEADBEEF, 0xCAFEBABE, 0x12345678, 0x55555555, 0x87654321,
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            0xDEADBEEF,
+            0xCAFEBABE,
+            0x12345678,
+            0x55555555,
+            0x87654321,
+        ],
+    )
     def test_known_state_constants(self, value):
         assert is_state_constant(value) is True
 
-    @pytest.mark.parametrize("value", [
-        0x0, 0x1, 0x100, 0x10000, 0xFFFF,
-        0x10000000,  # low half is zero
-        0xFFFF0000,  # low half is zero
-        0xFFFFFFFF,  # popcount=32
-        0x100000000,  # 64-bit
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            0x0,
+            0x1,
+            0x100,
+            0x10000,
+            0xFFFF,
+            0x10000000,  # low half is zero
+            0xFFFF0000,  # low half is zero
+            0xFFFFFFFF,  # popcount=32
+            0x100000000,  # 64-bit
+        ],
+    )
     def test_known_non_state_constants(self, value):
         assert is_state_constant(value) is False
 
@@ -191,4 +223,3 @@ class TestIsStateConstant:
     def test_custom_popcount_range(self):
         assert is_state_constant(0xDEADBEEF, min_popcount=1, max_popcount=31) is True
         assert is_state_constant(0xDEADBEEF, min_popcount=30, max_popcount=31) is False
-

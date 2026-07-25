@@ -55,5 +55,7 @@ def test_find_algorithm_metadata_filters_by_family_and_search():
         "cfg.modification_builder",
         "cfg.compile_patch_plan",
     }
-    assert any(item.algorithm_id == "cfg.compare_chain_resolver" for item in search_matches)
+    assert any(
+        item.algorithm_id == "cfg.compare_chain_resolver" for item in search_matches
+    )
     assert get_algorithm_metadata("cfg.modification_builder") is not None

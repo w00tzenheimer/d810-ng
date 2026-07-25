@@ -10,6 +10,7 @@ try:
         cy_run_full_pass,
         run_dataflow_cython,
     )
+
     _USING_CYTHON = True
 except ImportError:
     _USING_CYTHON = False

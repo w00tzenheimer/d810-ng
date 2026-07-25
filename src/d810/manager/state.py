@@ -1,4 +1,5 @@
 """Runtime project state for the D810 plugin."""
+
 from __future__ import annotations
 
 import contextlib
@@ -202,9 +203,7 @@ class D810State(metaclass=SingletonMeta):
                     cfg.get("idb_key", self.current_project.path.name)
                 ),
                 pass_scheduler=self.manager.block_pass_scheduler,
-                function_priors_provider=(
-                    self.manager.function_analysis_priors_for_ea
-                ),
+                function_priors_provider=(self.manager.function_analysis_priors_for_ea),
             )
             self.manager._compile_rule_scope()
         if getattr(self, "gui", None) is not None:

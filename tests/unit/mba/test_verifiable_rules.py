@@ -275,7 +275,9 @@ LOCAL_RULE_REGISTRY = [
 def test_registry_is_populated():
     """Sanity check: ensure rules were defined and collected."""
     assert len(LOCAL_RULE_REGISTRY) > 0, "No rules in local registry"
-    assert len(LOCAL_RULE_REGISTRY) >= 20, f"Expected 20+ rules, got {len(LOCAL_RULE_REGISTRY)}"
+    assert len(LOCAL_RULE_REGISTRY) >= 20, (
+        f"Expected 20+ rules, got {len(LOCAL_RULE_REGISTRY)}"
+    )
 
 
 @pytest.mark.parametrize(

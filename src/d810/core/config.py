@@ -187,7 +187,9 @@ class D810Configuration:
         """
         # Store IDA user directory for config_dir and log_dir properties
         self._ida_user_dir = (
-            pathlib.Path(ida_user_dir) if ida_user_dir is not None else DEFAULT_IDA_USER_DIR
+            pathlib.Path(ida_user_dir)
+            if ida_user_dir is not None
+            else DEFAULT_IDA_USER_DIR
         )
 
         if config_path is not None:

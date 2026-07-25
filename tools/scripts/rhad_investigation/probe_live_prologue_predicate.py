@@ -1,4 +1,5 @@
 """Dump the raw PREOPT block containing a native prologue selector."""
+
 from __future__ import annotations
 
 import os

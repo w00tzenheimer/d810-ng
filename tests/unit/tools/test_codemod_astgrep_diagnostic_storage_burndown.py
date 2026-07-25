@@ -8,10 +8,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = (
-    REPO_ROOT
-    / "tools"
-    / "scripts"
-    / "codemod_astgrep_diagnostic_storage_burndown.py"
+    REPO_ROOT / "tools" / "scripts" / "codemod_astgrep_diagnostic_storage_burndown.py"
 )
 
 
@@ -65,13 +62,11 @@ def test_rewrite_import_text_handles_moved_modules_and_symbols() -> None:
     )
     assert (
         "from d810.preanalysis.flow.selected_alternate_edge_override import "
-        "apply_selected_alternate_edge_overrides"
-        in result.text
+        "apply_selected_alternate_edge_overrides" in result.text
     )
     assert (
         "from d810.diagnostics.selected_alternate_edge_override import "
-        "apply_selected_alternate_edge_overrides_from_diag"
-        in result.text
+        "apply_selected_alternate_edge_overrides_from_diag" in result.text
     )
 
 
@@ -103,8 +98,7 @@ def test_render_report_lists_ignores_and_phase_manifest() -> None:
     assert "`phase2-optimizer-hcc-diagnostic-query`" in report
     assert manifest["rules"][0]["ignores"] == ["src/example.py"]
     assert (
-        manifest["candidate_phases"][2]["automation"]
-        == "completed-provider-boundary"
+        manifest["candidate_phases"][2]["automation"] == "completed-provider-boundary"
     )
 
 
@@ -134,4 +128,6 @@ def test_rewrite_imports_cli_dry_run_does_not_write(tmp_path: Path) -> None:
     assert "would rewrite" in result.stdout
     assert "--- " in result.stdout
     assert "dry-run: rewritten=1 warnings=0" in result.stdout
-    assert "d810.preanalysis.flow.edge_diagnostics" in sample.read_text(encoding="utf-8")
+    assert "d810.preanalysis.flow.edge_diagnostics" in sample.read_text(
+        encoding="utf-8"
+    )

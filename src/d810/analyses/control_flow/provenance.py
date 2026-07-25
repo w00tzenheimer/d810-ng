@@ -1,4 +1,5 @@
 "Structured decision provenance for the shared unflattening engine.\n\nThis module contains the outcome layer for planner participation in the\nshared preanalysis-analysis-consumer lifecycle. Every considered ``PlanFragment``\ngets a ``DecisionRecord`` tracking its lifecycle phase, reason code,\nbenefit/risk scores, and input context. The aggregate ``PipelineProvenance``\nrecords what the planner decided and why.\n"
+
 from __future__ import annotations
 
 import enum
@@ -102,26 +103,36 @@ class GateAccounting:
     @property
     def passed_count(self) -> int:
         """Count of PASSED verdicts."""
-        return sum(1 for decision in self.decisions if decision.verdict == GateVerdict.PASSED)
+        return sum(
+            1 for decision in self.decisions if decision.verdict == GateVerdict.PASSED
+        )
 
     @property
     def failed_count(self) -> int:
         """Count of FAILED verdicts."""
-        return sum(1 for decision in self.decisions if decision.verdict == GateVerdict.FAILED)
+        return sum(
+            1 for decision in self.decisions if decision.verdict == GateVerdict.FAILED
+        )
 
     @property
     def bypassed_count(self) -> int:
         """Count of BYPASSED verdicts."""
-        return sum(1 for decision in self.decisions if decision.verdict == GateVerdict.BYPASSED)
+        return sum(
+            1 for decision in self.decisions if decision.verdict == GateVerdict.BYPASSED
+        )
 
     @property
     def all_passed(self) -> bool:
         """True when every decision passed."""
-        return all(decision.verdict == GateVerdict.PASSED for decision in self.decisions)
+        return all(
+            decision.verdict == GateVerdict.PASSED for decision in self.decisions
+        )
 
     def any_failed(self) -> bool:
         """Return True if any gate decision has FAILED verdict."""
-        return any(decision.verdict == GateVerdict.FAILED for decision in self.decisions)
+        return any(
+            decision.verdict == GateVerdict.FAILED for decision in self.decisions
+        )
 
     def summary(self) -> str:
         """One-line summary like '2 passed, 1 failed, 0 bypassed'."""
@@ -357,7 +368,9 @@ class PipelineProvenance:
     def to_dict(self) -> dict:
         """Full provenance serialization including input_summary and phase_summary."""
         return {
-            "input_summary": self.input_summary.to_dict() if self.input_summary else None,
+            "input_summary": self.input_summary.to_dict()
+            if self.input_summary
+            else None,
             "rows": self._rows_to_dicts(),
             "phase_summary": self.phase_summary(),
         }

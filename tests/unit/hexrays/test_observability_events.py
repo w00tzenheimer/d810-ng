@@ -1,4 +1,5 @@
 """Tests for the hexrays observability event API (Phase 2)."""
+
 from __future__ import annotations
 
 import json
@@ -59,13 +60,15 @@ def test_request_capture_returns_snapshot_ref_when_subscribed():
 def test_request_capture_carries_maturity_json_when_supplied():
     captured: list[CaptureMbaSnapshotRequested] = []
     subscribe(CaptureMbaSnapshotRequested, captured.append)
-    maturity_json = json.dumps({
-        "ir": "GLOBAL_ANALYZED",
-        "snapshot_form": "OPTIMIZED_IR",
-        "provider": "hexrays",
-        "provider_id": 4,
-        "provider_name": "MMAT_GLBOPT1",
-    })
+    maturity_json = json.dumps(
+        {
+            "ir": "GLOBAL_ANALYZED",
+            "snapshot_form": "OPTIMIZED_IR",
+            "provider": "hexrays",
+            "provider_id": 4,
+            "provider_name": "MMAT_GLBOPT1",
+        }
+    )
 
     snap = request_capture_mba_snapshot(
         blocks=[],
@@ -109,10 +112,18 @@ def test_request_capture_publishes_event_with_blocks_tuple():
 def test_request_capture_unique_snapshot_ref_per_call():
     subscribe(CaptureMbaSnapshotRequested, lambda _: None)
     s1 = request_capture_mba_snapshot(
-        blocks=[], label="l", func_ea=1, maturity="M", phase="p",
+        blocks=[],
+        label="l",
+        func_ea=1,
+        maturity="M",
+        phase="p",
     )
     s2 = request_capture_mba_snapshot(
-        blocks=[], label="l", func_ea=1, maturity="M", phase="p",
+        blocks=[],
+        label="l",
+        func_ea=1,
+        maturity="M",
+        phase="p",
     )
     assert s1 is not None and s2 is not None
     assert s1.key != s2.key
@@ -150,7 +161,11 @@ def test_subscriber_receives_block_snapshots_with_full_instruction_payload():
         ),
     ]
     request_capture_mba_snapshot(
-        blocks=blocks, label="x", func_ea=1, maturity="M", phase="p",
+        blocks=blocks,
+        label="x",
+        func_ea=1,
+        maturity="M",
+        phase="p",
     )
 
     ev = captured[0]

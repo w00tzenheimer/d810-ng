@@ -18,6 +18,7 @@ The actual classification logic lives in :mod:`d810.analyses.control_flow.redire
 :mod:`d810.analyses.control_flow.forward_target_resolver`. This module is the thin SQL +
 log-parsing layer that feeds those helpers.
 """
+
 from __future__ import annotations
 
 import json
@@ -74,9 +75,7 @@ def load_condition_chain_table(conn: sqlite3.Connection) -> dict[int, int]:
     """``state_const -> handler_block`` lookup from ``state_cfg_edges``."""
     out: dict[int, int] = {}
     for sc, h in (
-        StateCfgEdge.select(
-            StateCfgEdge.target_state_i64, StateCfgEdge.target_entry
-        )
+        StateCfgEdge.select(StateCfgEdge.target_state_i64, StateCfgEdge.target_entry)
         .where(
             StateCfgEdge.target_state_i64.is_null(False)
             & StateCfgEdge.target_entry.is_null(False)
@@ -89,7 +88,8 @@ def load_condition_chain_table(conn: sqlite3.Connection) -> dict[int, int]:
 
 
 def load_block_succs(
-    conn: sqlite3.Connection, snap_id: int,
+    conn: sqlite3.Connection,
+    snap_id: int,
 ) -> dict[int, tuple[int, ...]]:
     """``serial -> tuple(succ_serials)`` for *snap_id*."""
     out: dict[int, tuple[int, ...]] = {}
@@ -138,12 +138,9 @@ def load_block_writes_and_predicates(
             _hex_tok(r[0]) for r in write_rows if r[0] is not None
         )
         tail = (
-            Instruction.select(
-                Instruction.src_l_stkoff, Instruction.src_r_stkoff
-            )
+            Instruction.select(Instruction.src_l_stkoff, Instruction.src_r_stkoff)
             .where(
-                (Instruction.snapshot == snap_id)
-                & (Instruction.block_serial == serial)
+                (Instruction.snapshot == snap_id) & (Instruction.block_serial == serial)
             )
             .order_by(Instruction.insn_index.desc())
             .limit(1)
@@ -168,9 +165,7 @@ def load_block_writes_and_predicates(
             .tuples()
             .first()
         )
-        consts[serial] = (
-            int(row[0]) & 0xFFFFFFFFFFFFFFFF if row else None
-        )
+        consts[serial] = int(row[0]) & 0xFFFFFFFFFFFFFFFF if row else None
     return writes, reads, consts
 
 
@@ -265,12 +260,16 @@ def run_reconcile(
         block_serials = sorted(block_succs)
         block_writes, block_predicate_reads, state_consts = (
             load_block_writes_and_predicates(
-                conn, snap_id, block_serials, state_var_stkoff,
+                conn,
+                snap_id,
+                block_serials,
+                state_var_stkoff,
             )
         )
 
         dispatcher_blocks = compute_dispatcher_blocks(
-            block_succs, min_dispatcher_preds=min_dispatcher_preds,
+            block_succs,
+            min_dispatcher_preds=min_dispatcher_preds,
         )
 
         sccs = compute_live_cfg_sccs(block_succs)
@@ -336,7 +335,6 @@ def run_reconcile(
                 f"  {e.bucket.value:48s} src={e.src_serial:3d}"
                 f" tgt={e.tgt_serial:3d} resolver={e.resolver_target}"
                 f" intent={e.logged_intent_target}"
-                f" persisted={e.persisted_target} state={e.state_const}"
-                + note_suffix
+                f" persisted={e.persisted_target} state={e.state_const}" + note_suffix
             )
     return "\n".join(lines) + "\n"

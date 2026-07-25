@@ -6,6 +6,7 @@ Asserts:
 - No codes are missing a valid disposition.
 - Summary counts are printed for each disposition category.
 """
+
 from __future__ import annotations
 
 import json
@@ -15,8 +16,12 @@ from pathlib import Path
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-_MATRIX_PATH = _REPO_ROOT / "src" / "d810" / "hexrays" / "contracts" / "parity_matrix.json"
-_INVARIANTS_PATH = _REPO_ROOT / "src" / "d810" / "hexrays" / "contracts" / "invariants.py"
+_MATRIX_PATH = (
+    _REPO_ROOT / "src" / "d810" / "hexrays" / "contracts" / "parity_matrix.json"
+)
+_INVARIANTS_PATH = (
+    _REPO_ROOT / "src" / "d810" / "hexrays" / "contracts" / "invariants.py"
+)
 
 _VALID_DISPOSITIONS = {
     "mapped",
@@ -36,7 +41,7 @@ def _load_matrix() -> dict:
 def _extract_invariant_constants() -> set[str]:
     """Return all CFG_XXXXX_ constants found in invariants.py source text."""
     source = _INVARIANTS_PATH.read_text(encoding="utf-8")
-    return set(re.findall(r'CFG_\d+_\w+', source))
+    return set(re.findall(r"CFG_\d+_\w+", source))
 
 
 @pytest.fixture(scope="module")

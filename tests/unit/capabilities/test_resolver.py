@@ -1,4 +1,5 @@
 """Portable tests for the CapabilitySet resolver + context field (no IDA)."""
+
 from __future__ import annotations
 
 import dataclasses

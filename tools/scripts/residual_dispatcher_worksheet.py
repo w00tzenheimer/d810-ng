@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """CLI entrypoint for the residual dispatcher worksheet tool."""
+
 from __future__ import annotations
 
 import sys

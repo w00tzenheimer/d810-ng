@@ -2,6 +2,7 @@
 
 Tests the full flow from action definition to registration and discovery.
 """
+
 from __future__ import annotations
 
 from d810.core import typing
@@ -45,13 +46,9 @@ class TestActionFrameworkIntegration:
         # Filter by view type (simulating what context_menu.py does)
         all_actions = list(D810ActionHandler.registry.values())
         pseudocode_actions = [
-            cls for cls in all_actions
-            if "pseudocode" in cls.SUPPORTED_VIEWS
+            cls for cls in all_actions if "pseudocode" in cls.SUPPORTED_VIEWS
         ]
-        disasm_actions = [
-            cls for cls in all_actions
-            if "disasm" in cls.SUPPORTED_VIEWS
-        ]
+        disasm_actions = [cls for cls in all_actions if "disasm" in cls.SUPPORTED_VIEWS]
 
         assert len(pseudocode_actions) >= 1
         assert len(disasm_actions) >= 1
@@ -60,6 +57,7 @@ class TestActionFrameworkIntegration:
 
     def test_menu_ordering(self):
         """Test that actions can be sorted by MENU_ORDER."""
+
         class Action1(D810ActionHandler):
             ACTION_ID = "d810ng:order1"
             ACTION_TEXT = "Order 1"
@@ -97,8 +95,7 @@ class TestActionFrameworkIntegration:
         # Find our test actions in the sorted list
         test_actions = [Action1, Action2, Action3]
         sorted_test_actions = [
-            action for action in sorted_actions
-            if action in test_actions
+            action for action in sorted_actions if action in test_actions
         ]
 
         # Verify they're in order by MENU_ORDER (10, 20, 30)
@@ -106,6 +103,7 @@ class TestActionFrameworkIntegration:
 
     def test_multi_view_action(self):
         """Test that an action can support multiple views."""
+
         class MultiViewAction(D810ActionHandler):
             ACTION_ID = "d810ng:multi_view"
             ACTION_TEXT = "Multi View"
@@ -119,19 +117,16 @@ class TestActionFrameworkIntegration:
 
         # Should appear in both filtered lists
         pseudocode_actions = [
-            cls for cls in all_actions
-            if "pseudocode" in cls.SUPPORTED_VIEWS
+            cls for cls in all_actions if "pseudocode" in cls.SUPPORTED_VIEWS
         ]
-        disasm_actions = [
-            cls for cls in all_actions
-            if "disasm" in cls.SUPPORTED_VIEWS
-        ]
+        disasm_actions = [cls for cls in all_actions if "disasm" in cls.SUPPORTED_VIEWS]
 
         assert MultiViewAction in pseudocode_actions
         assert MultiViewAction in disasm_actions
 
     def test_action_instantiation_with_state(self):
         """Test that actions can be instantiated with state."""
+
         class TestAction(D810ActionHandler):
             ACTION_ID = "d810ng:instantiate_test"
             ACTION_TEXT = "Instantiate Test"
@@ -172,6 +167,7 @@ class TestActionFrameworkIntegration:
 
     def test_action_filtering_excludes_wrong_view(self):
         """Test that view filtering excludes actions from wrong view."""
+
         class PseudocodeOnlyAction(D810ActionHandler):
             ACTION_ID = "d810ng:pseudo_only"
             ACTION_TEXT = "Pseudocode Only"
@@ -184,9 +180,6 @@ class TestActionFrameworkIntegration:
         all_actions = list(D810ActionHandler.registry.values())
 
         # Filter for disasm - should NOT include PseudocodeOnlyAction
-        disasm_actions = [
-            cls for cls in all_actions
-            if "disasm" in cls.SUPPORTED_VIEWS
-        ]
+        disasm_actions = [cls for cls in all_actions if "disasm" in cls.SUPPORTED_VIEWS]
 
         assert PseudocodeOnlyAction not in disasm_actions

@@ -4,6 +4,7 @@ Phase 2 intentionally starts with an empty collector registry.  The important
 contract is that D810 can invoke this runtime at several maturities without
 changing behavior; later collectors plug into the same API.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -35,12 +36,14 @@ from d810.analyses.value_flow.model import (
 
 logger = getLogger("D810.passes.facts.runtime")
 
-_GENERIC_LIFECYCLE_FACT_KINDS = frozenset({
-    "ByteEmitCorridorFact",
-    "CallAnchorFact",
-    "ReturnFrontierFact",
-    "ZeroBlobFact",
-})
+_GENERIC_LIFECYCLE_FACT_KINDS = frozenset(
+    {
+        "ByteEmitCorridorFact",
+        "CallAnchorFact",
+        "ReturnFrontierFact",
+        "ZeroBlobFact",
+    }
+)
 
 FactPersistenceCallback = Callable[
     [
@@ -200,9 +203,7 @@ class PreanalysisFactRuntime:
         cls,
         provider_phase: ProviderPhase,
     ) -> IRMaturity | None:
-        direct = cls._coerce_ir_maturity(
-            getattr(provider_phase, "ir_maturity", None)
-        )
+        direct = cls._coerce_ir_maturity(getattr(provider_phase, "ir_maturity", None))
         if direct is not None:
             return direct
         provider_rank = mmat_value(
@@ -315,8 +316,7 @@ class PreanalysisFactRuntime:
             if observation.kind == "InductionCarrierFact"
         )
         current_induction_fact_ids = {
-            observation.fact_id
-            for observation in current_induction
+            observation.fact_id for observation in current_induction
         }
         current_by_continuity: dict[tuple[int, str], list[FactObservation]] = {}
         current_by_source_ea: dict[tuple[int, str], list[FactObservation]] = {}
@@ -414,7 +414,7 @@ class PreanalysisFactRuntime:
             if len(by_semantic) <= 1:
                 continue
             for index, left in enumerate(observations):
-                for right in observations[index + 1:]:
+                for right in observations[index + 1 :]:
                     if left.semantic_key == right.semantic_key:
                         continue
                     _add_conflict(
@@ -434,15 +434,17 @@ class PreanalysisFactRuntime:
                 continue
             if observation.fact_id in current_induction_fact_ids:
                 continue
-            mapping_key = (observation.fact_id, self._provider_level_rank(maturity_text))
+            mapping_key = (
+                observation.fact_id,
+                self._provider_level_rank(maturity_text),
+            )
             if mapping_key in existing_mapping_keys:
                 continue
 
             continuity_key = self._induction_continuity_key(observation)
             remap_target: FactObservation | None = None
             remap_reason = (
-                "InductionCarrierFact identity remapped by stable "
-                "block/mop continuity"
+                "InductionCarrierFact identity remapped by stable block/mop continuity"
             )
             contradicted_by: list[FactObservation] = []
             if continuity_key is not None:
@@ -535,7 +537,9 @@ class PreanalysisFactRuntime:
                         source_maturity=observation.maturity,
                         target_maturity=maturity_text,
                         status=FactStatus.REMAPPED,
-                        confidence=min(0.9, observation.confidence, remap_target.confidence),
+                        confidence=min(
+                            0.9, observation.confidence, remap_target.confidence
+                        ),
                         target_fact_id=remap_target.fact_id,
                         target_block=remap_target.source_block,
                         target_ea=remap_target.source_ea,
@@ -583,10 +587,12 @@ class PreanalysisFactRuntime:
                             "conflicting_fact_ids": [
                                 candidate.fact_id for candidate in contradicted_by
                             ],
-                            "conflicting_semantic_keys": sorted({
-                                candidate.semantic_key
-                                for candidate in contradicted_by
-                            }),
+                            "conflicting_semantic_keys": sorted(
+                                {
+                                    candidate.semantic_key
+                                    for candidate in contradicted_by
+                                }
+                            ),
                         },
                     )
                 )
@@ -658,7 +664,9 @@ class PreanalysisFactRuntime:
                     status=FactStatus.IDENTITY_LOST,
                     confidence=0.72,
                     target_block=target_block,
-                    target_ea=observation.source_ea if target_block is not None else None,
+                    target_ea=observation.source_ea
+                    if target_block is not None
+                    else None,
                     reason=(
                         "ReturnCarrierFact observation observed at an earlier "
                         "maturity but absent from this maturity's collection"
@@ -767,7 +775,9 @@ class PreanalysisFactRuntime:
                         source_maturity=observation.maturity,
                         target_maturity=maturity_text,
                         status=FactStatus.REMAPPED,
-                        confidence=min(0.82, observation.confidence, remap_target.confidence),
+                        confidence=min(
+                            0.82, observation.confidence, remap_target.confidence
+                        ),
                         target_fact_id=remap_target.fact_id,
                         target_block=remap_target.source_block,
                         target_ea=remap_target.source_ea,
@@ -850,7 +860,9 @@ class PreanalysisFactRuntime:
             if observation.kind in active_kinds
         )
         current_fact_ids = {observation.fact_id for observation in current_facts}
-        current_by_continuity: dict[tuple[str, str, int, str], list[FactObservation]] = {}
+        current_by_continuity: dict[
+            tuple[str, str, int, str], list[FactObservation]
+        ] = {}
         for observation in current_facts:
             key = self._generic_continuity_key(observation)
             if key is not None:
@@ -891,7 +903,9 @@ class PreanalysisFactRuntime:
                         source_maturity=observation.maturity,
                         target_maturity=maturity_text,
                         status=FactStatus.REMAPPED,
-                        confidence=min(0.8, observation.confidence, remap_target.confidence),
+                        confidence=min(
+                            0.8, observation.confidence, remap_target.confidence
+                        ),
                         target_fact_id=remap_target.fact_id,
                         target_block=remap_target.source_block,
                         target_ea=remap_target.source_ea,
@@ -1087,12 +1101,8 @@ class PreanalysisFactRuntime:
             if observation.kind == "StateWriteAnchorFact"
         )
         current_fact_ids = {observation.fact_id for observation in current_facts}
-        current_by_continuity: dict[
-            tuple[int, int, int], list[FactObservation]
-        ] = {}
-        current_by_fallback: dict[
-            tuple[int, int], list[FactObservation]
-        ] = {}
+        current_by_continuity: dict[tuple[int, int, int], list[FactObservation]] = {}
+        current_by_fallback: dict[tuple[int, int], list[FactObservation]] = {}
         for observation in current_facts:
             key = self._state_write_anchor_continuity_key(observation)
             if key is not None:
@@ -1193,16 +1203,12 @@ class PreanalysisFactRuntime:
                 rewritten_ea_raw = candidate_payload.get("instruction_ea")
                 try:
                     rewritten_ea = (
-                        int(rewritten_ea_raw)
-                        if rewritten_ea_raw is not None
-                        else None
+                        int(rewritten_ea_raw) if rewritten_ea_raw is not None else None
                     )
                 except (TypeError, ValueError):
                     rewritten_ea = None
                 original_ea = continuity_key[0]
-                ea_changed = (
-                    rewritten_ea is not None and rewritten_ea != original_ea
-                )
+                ea_changed = rewritten_ea is not None and rewritten_ea != original_ea
                 if fallback_used:
                     reason = (
                         f"state_const rewritten via canonical-state-var "
@@ -1241,14 +1247,10 @@ class PreanalysisFactRuntime:
                     "original_const_hex": f"0x{original_const:016x}",
                     "original_const_u64": original_const,
                     "rewritten_state_const": candidate_const,
-                    "rewritten_state_const_hex": (
-                        f"0x{candidate_const:016x}"
-                    ),
+                    "rewritten_state_const_hex": (f"0x{candidate_const:016x}"),
                     "rewritten_const_hex": f"0x{candidate_const:016x}",
                     "rewritten_const_u64": candidate_const,
-                    "original_ea_hex": (
-                        f"0x{original_ea & 0xFFFFFFFFFFFFFFFF:016x}"
-                    ),
+                    "original_ea_hex": (f"0x{original_ea & 0xFFFFFFFFFFFFFFFF:016x}"),
                     "rewritten_ea_hex": (
                         f"0x{rewritten_ea & 0xFFFFFFFFFFFFFFFF:016x}"
                         if rewritten_ea is not None

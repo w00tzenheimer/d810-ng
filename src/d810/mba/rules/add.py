@@ -37,6 +37,7 @@ class Add_HackersDelightRule_1(VerifiableRule):
     Example:
         a - (~b + 1) => a + b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = x - (~y + ONE)
@@ -60,6 +61,7 @@ class Add_HackersDelightRule_2(VerifiableRule):
     Example:
         (a ^ b) + 2*(a & b) => a + b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x ^ y) + TWO * (x & y)
@@ -79,6 +81,7 @@ class Add_HackersDelightRule_3(VerifiableRule):
     Example:
         (a | b) + (a & b) => a + b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x | y) + (x & y)
@@ -99,6 +102,7 @@ class Add_HackersDelightRule_4(VerifiableRule):
     Example:
         2*(a | b) - (a ^ b) => a + b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = TWO * (x | y) - (x ^ y)
@@ -118,6 +122,7 @@ class Add_HackersDelightRule_5(VerifiableRule):
     Example:
         2*(a | b | c) - (a ^ (b | c)) => a + (b | c)
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = TWO * (x | y | z) - (x ^ (y | z))
@@ -142,6 +147,7 @@ class Add_OllvmRule_1(VerifiableRule):
     Example:
         ~(a ^ b) + 2*(b | a) => (a + b) - 1
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = ~(x ^ y) + TWO * (y | x)
@@ -161,6 +167,7 @@ class Add_OllvmRule_3(VerifiableRule):
     Example:
         (a ^ b) + 2*(a & b) => a + b
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = (x ^ y) + TWO * (x & y)
@@ -187,6 +194,7 @@ class Add_SpecialConstantRule_1(VerifiableRule):
     Example:
         (a ^ 5) + 2*(a & 5) => a + 5
     """
+
     maturities = _ALL_MATURITIES
 
     c_1 = Const("c_1")
@@ -208,6 +216,7 @@ class Add_SpecialConstantRule_2(VerifiableRule):
     Example:
         ((a & 0xFF) ^ 0x12) + 2*(a & 0x12) => (a & 0xFF) + 0x12
     """
+
     maturities = _ALL_MATURITIES
 
     c_1 = Const("c_1")
@@ -237,6 +246,7 @@ class Add_SpecialConstantRule_3(VerifiableRule):
     DynamicConst and lambda parsing. The constraint val_res == c2 - ONE serves
     both Z3 verification and runtime value computation.
     """
+
     maturities = _ALL_MATURITIES
 
     c1, c2 = Const("c_1"), Const("c_2")
@@ -262,6 +272,7 @@ class Add_OllvmRule_DynamicConst(VerifiableRule):
     Example:
         ~(a ^ b) + 2*(b | a) => (a + b) - 1
     """
+
     maturities = _ALL_MATURITIES
 
     PATTERN = ~(x ^ y) + TWO * (y | x)
@@ -287,6 +298,7 @@ class Add_OllvmRule_2(VerifiableRule):
     Example:
         ~(a ^ b) - (-2 * (a | b)) => (a + b) - 1
     """
+
     maturities = _ALL_MATURITIES
 
     c = Const("c")
@@ -319,6 +331,7 @@ class Add_OllvmRule_4(VerifiableRule):
     Example:
         (a ^ b) - (-2 * (a & b)) => a + b
     """
+
     maturities = _ALL_MATURITIES
 
     c = Const("c")
@@ -344,6 +357,7 @@ class AddXor_Rule_1(VerifiableRule):
     Example:
         (a - b) - 2*(a | ~b) => (a ^ b) + 2
     """
+
     maturities = _ALL_MATURITIES
 
     bnot_y = Var("bnot_y")
@@ -365,6 +379,7 @@ class AddXor_Rule_2(VerifiableRule):
     Example:
         (a - b) - 2*(~(~a & b)) => (a ^ b) + 2
     """
+
     maturities = _ALL_MATURITIES
 
     bnot_x = Var("bnot_x")

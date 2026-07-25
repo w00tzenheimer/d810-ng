@@ -61,8 +61,7 @@ def _find_conditional_flow_block(
         tail_ea = int(ida_bytes.prev_head(int(flow_block.end_ea), start_ea))
         instruction = _decoded_instruction(tail_ea)
         if (
-            int(instruction.ops[0].type)
-            not in {int(idaapi.o_near), int(idaapi.o_far)}
+            int(instruction.ops[0].type) not in {int(idaapi.o_near), int(idaapi.o_far)}
             or ida_idp.is_call_insn(instruction)
             or int(instruction.get_canon_feature()) & int(ida_idp.CF_STOP)
         ):
@@ -535,9 +534,9 @@ class TestNativeSemanticCfgAdapter:
             for block in result.cfg.blocks_by_ea.values()
             if block.start_ea <= resolver_entry_ea < block.end_ea
         )
-        assert tuple(
-            (block.start_ea, block.end_ea) for block in owners
-        ) == ((resolver_entry_ea, stale_end_ea),)
+        assert tuple((block.start_ea, block.end_ea) for block in owners) == (
+            (resolver_entry_ea, stale_end_ea),
+        )
 
     def test_discovered_successor_splits_stale_flowchart_owner(
         self,
@@ -601,9 +600,9 @@ class TestNativeSemanticCfgAdapter:
             for block in result.cfg.blocks_by_ea.values()
             if block.start_ea <= discovered_entry_ea < block.end_ea
         )
-        assert tuple(
-            (block.start_ea, block.end_ea) for block in owners
-        ) == ((discovered_entry_ea, stale_end_ea),)
+        assert tuple((block.start_ea, block.end_ea) for block in owners) == (
+            (discovered_entry_ea, stale_end_ea),
+        )
 
     def test_non_code_seed_abstains_with_exact_native_ea(
         self,

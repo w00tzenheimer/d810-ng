@@ -1,4 +1,5 @@
 """Generic family protocols."""
+
 from __future__ import annotations
 
 from d810.core.typing import Protocol, runtime_checkable

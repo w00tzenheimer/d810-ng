@@ -1,4 +1,5 @@
 """Config-v2 adapter boundary for the live cleanup-family rule."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -34,8 +35,9 @@ class CleanupFamilyAdapterRequest:
 class CleanupFamilyAdapterCapability(Protocol):
     """Backend-provided executor for one configured cleanup-family rule."""
 
-    def run_cleanup_family_rule(self, request: CleanupFamilyAdapterRequest) -> PassResult:
-        ...
+    def run_cleanup_family_rule(
+        self, request: CleanupFamilyAdapterRequest
+    ) -> PassResult: ...
 
 
 @dataclass(frozen=True)
@@ -92,9 +94,7 @@ def build_cleanup_family_adapter_pass(
             f"options.legacy_rule={SIMPLE_FLATTENING_CLEANUP_RULE!r}"
         )
     rule_options = {
-        key: value
-        for key, value in config.options.items()
-        if key != "legacy_rule"
+        key: value for key, value in config.options.items() if key != "legacy_rule"
     }
     return CleanupFamilyAdapterPass(
         legacy_rule=SIMPLE_FLATTENING_CLEANUP_RULE,

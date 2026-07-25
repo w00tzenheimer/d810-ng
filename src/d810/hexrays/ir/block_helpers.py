@@ -39,6 +39,7 @@ def get_block_serial(py_blk: "ida_hexrays.mblock_t") -> int:
     """
     return py_blk.serial
 
+
 def get_block_info(py_blk: "ida_hexrays.mblock_t") -> tuple[int, int, int]:
     """Get (serial, npred, nsucc) from a block in a single call.
 
@@ -49,6 +50,7 @@ def get_block_info(py_blk: "ida_hexrays.mblock_t") -> tuple[int, int, int]:
         Tuple of (serial, npred, nsucc)
     """
     return (py_blk.serial, py_blk.npred(), py_blk.nsucc())
+
 
 def get_pred_serials(py_blk: "ida_hexrays.mblock_t") -> tuple[int, ...]:
     """Get tuple of predecessor serial numbers.
@@ -61,6 +63,7 @@ def get_pred_serials(py_blk: "ida_hexrays.mblock_t") -> tuple[int, ...]:
     """
     return tuple(py_blk.pred(i) for i in range(py_blk.npred()))
 
+
 def get_succ_serials(py_blk: "ida_hexrays.mblock_t") -> tuple[int, ...]:
     """Get tuple of successor serial numbers.
 
@@ -71,6 +74,7 @@ def get_succ_serials(py_blk: "ida_hexrays.mblock_t") -> tuple[int, ...]:
         Tuple of successor block serial numbers
     """
     return tuple(py_blk.succ(i) for i in range(py_blk.nsucc()))
+
 
 def get_pred_serial_set(py_blk: "ida_hexrays.mblock_t") -> frozenset[int]:
     """Get frozenset of predecessor serial numbers.
@@ -83,6 +87,7 @@ def get_pred_serial_set(py_blk: "ida_hexrays.mblock_t") -> frozenset[int]:
     """
     return frozenset(py_blk.pred(i) for i in range(py_blk.npred()))
 
+
 def get_succ_serial_set(py_blk: "ida_hexrays.mblock_t") -> frozenset[int]:
     """Get frozenset of successor serial numbers.
 
@@ -93,6 +98,7 @@ def get_succ_serial_set(py_blk: "ida_hexrays.mblock_t") -> frozenset[int]:
         Frozenset of successor block serial numbers
     """
     return frozenset(py_blk.succ(i) for i in range(py_blk.nsucc()))
+
 
 def block_has_predecessor(py_blk: "ida_hexrays.mblock_t", pred_serial: int) -> bool:
     """Check if a block has a specific predecessor.
@@ -108,6 +114,7 @@ def block_has_predecessor(py_blk: "ida_hexrays.mblock_t", pred_serial: int) -> b
         if py_blk.pred(i) == pred_serial:
             return True
     return False
+
 
 def block_has_successor(py_blk: "ida_hexrays.mblock_t", succ_serial: int) -> bool:
     """Check if a block has a specific successor.
@@ -156,28 +163,36 @@ if CythonMode().is_enabled():
         pass
     else:
         get_block_serial = _make_block_helper(
-            _cblock_helpers.get_block_serial, _py_get_block_serial,
+            _cblock_helpers.get_block_serial,
+            _py_get_block_serial,
         )
         get_block_info = _make_block_helper(
-            _cblock_helpers.get_block_info, _py_get_block_info,
+            _cblock_helpers.get_block_info,
+            _py_get_block_info,
         )
         get_pred_serials = _make_block_helper(
-            _cblock_helpers.get_pred_serials, _py_get_pred_serials,
+            _cblock_helpers.get_pred_serials,
+            _py_get_pred_serials,
         )
         get_succ_serials = _make_block_helper(
-            _cblock_helpers.get_succ_serials, _py_get_succ_serials,
+            _cblock_helpers.get_succ_serials,
+            _py_get_succ_serials,
         )
         get_pred_serial_set = _make_block_helper(
-            _cblock_helpers.get_pred_serial_set, _py_get_pred_serial_set,
+            _cblock_helpers.get_pred_serial_set,
+            _py_get_pred_serial_set,
         )
         get_succ_serial_set = _make_block_helper(
-            _cblock_helpers.get_succ_serial_set, _py_get_succ_serial_set,
+            _cblock_helpers.get_succ_serial_set,
+            _py_get_succ_serial_set,
         )
         block_has_predecessor = _make_block_helper(
-            _cblock_helpers.block_has_predecessor, _py_block_has_predecessor,
+            _cblock_helpers.block_has_predecessor,
+            _py_block_has_predecessor,
         )
         block_has_successor = _make_block_helper(
-            _cblock_helpers.block_has_successor, _py_block_has_successor,
+            _cblock_helpers.block_has_successor,
+            _py_block_has_successor,
         )
 
 
@@ -189,5 +204,5 @@ __all__ = [
     "get_pred_serial_set",
     "get_succ_serial_set",
     "block_has_predecessor",
-    "block_has_successor"
+    "block_has_successor",
 ]

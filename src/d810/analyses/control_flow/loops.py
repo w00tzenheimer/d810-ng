@@ -12,6 +12,7 @@ so importing it here would be layer-fatal.  ``Region`` / ``LoopRef`` /
 ``LoopInfo`` are net-new containers; richer natural-loop construction (header /
 back-edge derivation) is added when a consumer needs it.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

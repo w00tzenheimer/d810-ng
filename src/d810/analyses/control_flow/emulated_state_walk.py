@@ -21,6 +21,7 @@ to" and "what state(s) does handler H produce from S" -- are injected callables.
 Hex-Rays implementation of those oracles (seed + ``MicroCodeInterpreter``) lives in the
 backend adapter, keeping this core IDA-free and unit-testable (``portable-core-no-ida``).
 """
+
 from __future__ import annotations
 
 from collections import deque

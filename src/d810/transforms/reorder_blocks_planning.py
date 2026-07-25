@@ -1,4 +1,5 @@
 """Planning helpers for DFS-based handler block reordering."""
+
 from __future__ import annotations
 
 from d810.core import logging
@@ -57,10 +58,7 @@ def compute_reorder_blocks(
     assert initial_state is not None
 
     entry_to_state: dict[int, int] = (
-        {
-            int(serial): int(state)
-            for serial, state in handler_entry_state_map.items()
-        }
+        {int(serial): int(state) for serial, state in handler_entry_state_map.items()}
         if handler_entry_state_map is not None
         else {}
     )

@@ -1,4 +1,5 @@
 """Tests for terminal-tail DCE cause diagnosis."""
+
 from __future__ import annotations
 
 from d810.transforms.terminal_tail_dce_diagnosis import (
@@ -36,12 +37,16 @@ def _ev(**kwargs) -> ByteEmitSnapshotEvidence:
 
 class TestClassifyByteEmitDce:
     def test_block_present_with_fact_classifies_survives(self) -> None:
-        c = classify_byte_emit_dce(_ev(snap18_block_present=True, snap18_fact_detected=True))
+        c = classify_byte_emit_dce(
+            _ev(snap18_block_present=True, snap18_fact_detected=True)
+        )
         assert c.cause is DceCause.SURVIVES
         assert c.recommended_action is RecommendedAction.NONE
 
     def test_block_present_without_fact_classifies_collector_gap(self) -> None:
-        c = classify_byte_emit_dce(_ev(snap18_block_present=True, snap18_fact_detected=False))
+        c = classify_byte_emit_dce(
+            _ev(snap18_block_present=True, snap18_fact_detected=False)
+        )
         assert c.cause is DceCause.COLLECTOR_GAP
         assert c.recommended_action is RecommendedAction.COLLECTOR_FIX
 
@@ -51,9 +56,12 @@ class TestClassifyByteEmitDce:
         assert c.recommended_action is RecommendedAction.PRESERVATION
 
     def test_redirected_around_before_finalization(self) -> None:
-        c = classify_byte_emit_dce(_ev(
-            snap17_unique_pred=True, snap17_dominated_by_prior_return=True,
-        ))
+        c = classify_byte_emit_dce(
+            _ev(
+                snap17_unique_pred=True,
+                snap17_dominated_by_prior_return=True,
+            )
+        )
         assert c.cause is DceCause.REDIRECTED_AROUND_BEFORE_FINALIZATION
         assert c.recommended_action is RecommendedAction.PRESERVATION
 
@@ -83,20 +91,26 @@ class TestClassifyByteEmitDce:
 
     def test_priority_block_present_beats_other_signals(self) -> None:
         # Even with all snap17 signals set, block-present at snap18 wins.
-        c = classify_byte_emit_dce(_ev(
-            snap17_npred=0, snap17_unique_pred=True,
-            snap17_shares_succ_with_other_byte=True,
-            snap17_memory_write_appears_dead=True,
-            snap18_block_present=True, snap18_fact_detected=True,
-        ))
+        c = classify_byte_emit_dce(
+            _ev(
+                snap17_npred=0,
+                snap17_unique_pred=True,
+                snap17_shares_succ_with_other_byte=True,
+                snap17_memory_write_appears_dead=True,
+                snap18_block_present=True,
+                snap18_fact_detected=True,
+            )
+        )
         assert c.cause is DceCause.SURVIVES
 
     def test_priority_surviving_absorbs_beats_unreachable(self) -> None:
         # surviving_absorbs is checked BEFORE unreachable.
-        c = classify_byte_emit_dce(_ev(
-            snap17_npred=0,
-            snap18_surviving_byte_absorbs=True,
-        ))
+        c = classify_byte_emit_dce(
+            _ev(
+                snap17_npred=0,
+                snap18_surviving_byte_absorbs=True,
+            )
+        )
         assert c.cause is DceCause.FOLDED_INTO_SURVIVING_BYTE_EMIT
 
 
@@ -115,7 +129,9 @@ class TestRecommendOverallAction:
     def test_preservation_takes_priority(self) -> None:
         cs = (
             classify_byte_emit_dce(_ev(byte_index=0, snap17_npred=0)),  # PRESERVATION
-            classify_byte_emit_dce(_ev(byte_index=1, snap17_shares_succ_with_other_byte=True)),  # STRUCTURER
+            classify_byte_emit_dce(
+                _ev(byte_index=1, snap17_shares_succ_with_other_byte=True)
+            ),  # STRUCTURER
         )
         action, reason = recommend_overall_action(cs)
         assert action is RecommendedAction.PRESERVATION
@@ -123,26 +139,30 @@ class TestRecommendOverallAction:
 
     def test_structurer_when_no_preservation_or_reconstruction(self) -> None:
         cs = (
-            classify_byte_emit_dce(_ev(byte_index=2, snap17_shares_succ_with_other_byte=True)),
-            classify_byte_emit_dce(_ev(byte_index=3, snap18_surviving_byte_absorbs=True)),
+            classify_byte_emit_dce(
+                _ev(byte_index=2, snap17_shares_succ_with_other_byte=True)
+            ),
+            classify_byte_emit_dce(
+                _ev(byte_index=3, snap18_surviving_byte_absorbs=True)
+            ),
         )
         action, _ = recommend_overall_action(cs)
         assert action is RecommendedAction.STRUCTURER_SHAPING
 
     def test_collector_fix_when_only_collector_gap(self) -> None:
         cs = (
-            classify_byte_emit_dce(_ev(byte_index=0,
-                                        snap18_block_present=True,
-                                        snap18_fact_detected=False)),
+            classify_byte_emit_dce(
+                _ev(byte_index=0, snap18_block_present=True, snap18_fact_detected=False)
+            ),
         )
         action, _ = recommend_overall_action(cs)
         assert action is RecommendedAction.COLLECTOR_FIX
 
     def test_none_when_all_survive(self) -> None:
         cs = (
-            classify_byte_emit_dce(_ev(byte_index=k,
-                                        snap18_block_present=True,
-                                        snap18_fact_detected=True))
+            classify_byte_emit_dce(
+                _ev(byte_index=k, snap18_block_present=True, snap18_fact_detected=True)
+            )
             for k in range(7)
         )
         action, reason = recommend_overall_action(cs)
@@ -153,7 +173,9 @@ class TestRecommendOverallAction:
 class TestFormatDceTable:
     def test_renders_markdown_with_action_column(self) -> None:
         cs = (
-            classify_byte_emit_dce(_ev(byte_index=2, snap17_shares_succ_with_other_byte=True)),
+            classify_byte_emit_dce(
+                _ev(byte_index=2, snap17_shares_succ_with_other_byte=True)
+            ),
             classify_byte_emit_dce(_ev(byte_index=3, snap17_npred=0)),
         )
         text = format_dce_table(cs)

@@ -4,6 +4,7 @@ This module is intentionally backend-agnostic. It consumes a lifted
 ``FlowGraph`` plus transition metadata and produces semantic observations that
 can later be rendered into a canonical transition report.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -122,8 +123,12 @@ def build_transition_analysis_from_graph(
             chain = (handler.check_block,)
             reaches_exit_block = False
 
-        classified_exit = reaches_exit_block and next_state is None and not conditional_states
-        unresolved = not classified_exit and next_state is None and not conditional_states
+        classified_exit = (
+            reaches_exit_block and next_state is None and not conditional_states
+        )
+        unresolved = (
+            not classified_exit and next_state is None and not conditional_states
+        )
         state_range = range_map.get(handler.check_block)
         range_lo = state_range[0] if state_range else None
         range_hi = state_range[1] if state_range else None

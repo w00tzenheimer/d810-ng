@@ -1,4 +1,5 @@
 """Test adjacent-product modulo opaque predicate rules."""
+
 from __future__ import annotations
 
 import importlib
@@ -8,6 +9,7 @@ import pytest
 # Test will import IDA modules only if available
 try:
     import ida_hexrays
+
     IDA_AVAILABLE = True
 except ImportError:
     IDA_AVAILABLE = False
@@ -17,13 +19,13 @@ except ImportError:
 def test_jnz_rule_mod_identity_exists():
     """Test that JnzRuleModIdentity class exists."""
     from d810.optimizers.microcode.flow.jumps.opaque import JnzRuleModIdentity
-    
+
     rule = JnzRuleModIdentity()
     assert rule is not None
-    assert hasattr(rule, 'ORIGINAL_JUMP_OPCODES')
-    assert hasattr(rule, 'LEFT_PATTERN')
-    assert hasattr(rule, 'RIGHT_PATTERN')
-    assert hasattr(rule, 'check_candidate')
+    assert hasattr(rule, "ORIGINAL_JUMP_OPCODES")
+    assert hasattr(rule, "LEFT_PATTERN")
+    assert hasattr(rule, "RIGHT_PATTERN")
+    assert hasattr(rule, "check_candidate")
 
 
 @pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
@@ -76,7 +78,9 @@ def test_jnz_rule_mod_identity_check_candidate_jnz(rule_name):
     # For jnz (jump if NOT equal), condition left==right is FALSE, so jump NOT taken (fallthrough)
     result = rule.check_candidate(ida_hexrays.m_jnz, {}, {})
     assert result is True
-    assert rule.jump_replacement_block_serial == 200, "Should fallthrough for jnz when left==right"
+    assert rule.jump_replacement_block_serial == 200, (
+        "Should fallthrough for jnz when left==right"
+    )
 
 
 @pytest.mark.skipif(not IDA_AVAILABLE, reason="IDA not available")
@@ -100,4 +104,6 @@ def test_jnz_rule_mod_identity_check_candidate_jz(rule_name):
     # For jz (jump if equal), condition left==right is TRUE, so jump IS taken
     result = rule.check_candidate(ida_hexrays.m_jz, {}, {})
     assert result is True
-    assert rule.jump_replacement_block_serial == 100, "Should take jump for jz when left==right"
+    assert rule.jump_replacement_block_serial == 100, (
+        "Should take jump for jz when left==right"
+    )

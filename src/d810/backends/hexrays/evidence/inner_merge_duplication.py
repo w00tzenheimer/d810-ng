@@ -16,6 +16,7 @@ Safety gates:
  - Total clone budget: at most ``MAX_TOTAL_CLONES`` duplications per
    function to bound code-size growth.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING
@@ -130,9 +131,7 @@ def _compute_sccs(
                 work.pop()
                 if work:
                     parent = work[-1][0]
-                    node_lowlink[parent] = min(
-                        node_lowlink[parent], node_lowlink[v]
-                    )
+                    node_lowlink[parent] = min(node_lowlink[parent], node_lowlink[v])
 
     return sccs
 
@@ -257,9 +256,7 @@ class InnerMergeDuplicationStrategy:
         stop_serial = max_serial  # BLT_STOP is always the last block
 
         full_infra: frozenset[int] = frozenset(
-            condition_chain_blocks
-            | sm_blocks
-            | {entry_serial, stop_serial}
+            condition_chain_blocks | sm_blocks | {entry_serial, stop_serial}
         )
 
         # ---- Build adjacency list and compute SCC membership ----
@@ -317,8 +314,7 @@ class InnerMergeDuplicationStrategy:
 
             owned_blocks.add(serial)
             logger.info(
-                "[inner-merge] blk[%d] npred=%d insns=%d clones=%d "
-                "keep_pred=%d",
+                "[inner-merge] blk[%d] npred=%d insns=%d clones=%d keep_pred=%d",
                 serial,
                 blk.npred,
                 insn_count,

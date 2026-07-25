@@ -10,6 +10,7 @@ Backend-specific operands may be adapted into this type at the lift boundary,
 but portable analyses should group variables by ``StorageIdentity`` rather than
 by ``MopSnapshot`` or raw operand slots.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

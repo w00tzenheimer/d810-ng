@@ -7,6 +7,7 @@ This is the canonical serialized ``FactObservation.kind`` value. The
 diagnostic alias registry maps the historical ``ExpressionCarrierFact``
 string to this family.
 """
+
 from __future__ import annotations
 
 SYMBOLIC_EXPRESSION_FACT_TYPE = "SymbolicExpressionFact"

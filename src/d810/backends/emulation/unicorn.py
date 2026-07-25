@@ -219,7 +219,9 @@ class UnicornEmulator:
         optional boundary classification but should not drive hard rewrites.
         """
         if not self.available:
-            return CorridorTraceResult(stopped=True, stop_reason="Unicorn not available")
+            return CorridorTraceResult(
+                stopped=True, stop_reason="Unicorn not available"
+            )
 
         max_ins = max_instructions or self.MAX_INSTRUCTIONS
         self._instruction_count = 0
@@ -242,10 +244,16 @@ class UnicornEmulator:
                 sp = self._uc.reg_read(UC_X86_REG_RSP)
             elif self.arch == Architecture.X86:
                 sp = self._uc.reg_read(UC_X86_REG_ESP)
-            state_addr = sp + state_var_offset if sp is not None and state_var_offset is not None else None
-            watched_addrs = {
-                sp + offset: offset for offset in watched_stack_offsets
-            } if sp is not None else {}
+            state_addr = (
+                sp + state_var_offset
+                if sp is not None and state_var_offset is not None
+                else None
+            )
+            watched_addrs = (
+                {sp + offset: offset for offset in watched_stack_offsets}
+                if sp is not None
+                else {}
+            )
 
             if initial_mem:
                 for addr, data in initial_mem.items():
@@ -263,9 +271,19 @@ class UnicornEmulator:
             def hook_code(uc, address, size, user_data):
                 nonlocal events
                 self._instruction_count += 1
-                events.append(CorridorEvent(CorridorEventKind.INSN, address, detail=f"size={size}"))
+                events.append(
+                    CorridorEvent(
+                        CorridorEventKind.INSN, address, detail=f"size={size}"
+                    )
+                )
                 if self._instruction_count >= max_ins:
-                    events.append(CorridorEvent(CorridorEventKind.TERMINAL, address, detail="max_instructions"))
+                    events.append(
+                        CorridorEvent(
+                            CorridorEventKind.TERMINAL,
+                            address,
+                            detail="max_instructions",
+                        )
+                    )
                     uc.emu_stop()
 
             def hook_mem_access(uc, access, address, size, value, user_data):
@@ -275,7 +293,14 @@ class UnicornEmulator:
                     return
                 if state_addr is not None and address == state_addr:
                     state_write_seen = True
-                    events.append(CorridorEvent(CorridorEventKind.STATE_WRITE, address, detail=f"size={size}", value=value))
+                    events.append(
+                        CorridorEvent(
+                            CorridorEventKind.STATE_WRITE,
+                            address,
+                            detail=f"size={size}",
+                            value=value,
+                        )
+                    )
                 elif address in watched_addrs:
                     events.append(
                         CorridorEvent(
@@ -303,7 +328,9 @@ class UnicornEmulator:
             )
         except Exception as e:
             logger.debug("Corridor trace error: %s", e)
-            events.append(CorridorEvent(CorridorEventKind.ERROR, entry_addr, detail=str(e)))
+            events.append(
+                CorridorEvent(CorridorEventKind.ERROR, entry_addr, detail=str(e))
+            )
             return CorridorTraceResult(
                 events=tuple(events),
                 stopped=True,

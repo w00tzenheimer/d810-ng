@@ -1,4 +1,5 @@
 """Semantic correctness checks for post-linearization CFG."""
+
 from __future__ import annotations
 
 from collections import deque
@@ -254,13 +255,21 @@ def check_edge_split_structural_legality(
                 return StructuralCheckResult(
                     passed=False,
                     reason="edge-split source block must be 1-way (INTERR 50860 guard)",
-                    diagnostics={"index": idx, "source": edit.source, "src_succs": src_succs},
+                    diagnostics={
+                        "index": idx,
+                        "source": edit.source,
+                        "src_succs": src_succs,
+                    },
                 )
             if len(pred_succs) != 1:
                 return StructuralCheckResult(
                     passed=False,
                     reason="edge-split predecessor must be 1-way (INTERR 50858 guard)",
-                    diagnostics={"index": idx, "via_pred": edit.via_pred, "pred_succs": pred_succs},
+                    diagnostics={
+                        "index": idx,
+                        "via_pred": edit.via_pred,
+                        "pred_succs": pred_succs,
+                    },
                 )
             if edit.source not in pred_succs:
                 return StructuralCheckResult(
@@ -323,11 +332,13 @@ def detect_terminal_cycles(
             node, path = queue.pop(0)
             for succ in adj.get(node, []):
                 if succ in forbidden:
-                    cycles.append(TerminalCycle(
-                        terminal_block=term_blk,
-                        reentry_target=succ,
-                        path=path + [succ],
-                    ))
+                    cycles.append(
+                        TerminalCycle(
+                            terminal_block=term_blk,
+                            reentry_target=succ,
+                            path=path + [succ],
+                        )
+                    )
                     found = True
                     break
                 if succ not in visited:

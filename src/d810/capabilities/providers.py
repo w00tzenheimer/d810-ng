@@ -1,4 +1,5 @@
 "Composition-root provider registry for backend-supplied analysis seams.\n\nPortable-core (``d810.capabilities`` sits below both ``preanalysis`` and\n``backends`` in the layered architecture): portable ``preanalysis`` / ``analyses``\ncode READS backend implementations from here *without* importing the vendor\nbackend, while the composition root (``D810State.start_d810`` -- an\noptimizer/HIGH-layer module that may legally import backends) REGISTERS them.\n\nThis inverts the dependency honestly (backend pushes, portable reads) and is\nthe mechanism that lets the preanalysis condition-chain transition analyses drop their direct\n``from d810.backends.hexrays.evidence import ...`` edges (Landing Sequence\nLS10 -> P1, ticket d81-1w16/llr-pqem).\n\nConvention follows ``d810.core.observability``: a module-global guarded by a\nlock with ``register`` / ``get`` / ``reset`` functions.  The composition root\nre-registers on every plugin load/reload, so a reload that clears these\nmodule globals is repopulated before any preanalysis analysis runs.\n"
+
 from __future__ import annotations
 
 import threading
@@ -9,7 +10,7 @@ from d810.core.typing import Any, Callable, Optional
 
 @dataclass(frozen=True)
 class ConditionChainWalkerProvider:
-    "Backend-supplied condition-chain live-mba walkers + constant-folding eval.\n\n    Bundles the Hex-Rays evidence callables the preanalysis condition-chain transition analyses\n    depend on.  The Hex-Rays implementation lives in\n    ``d810.backends.hexrays.evidence.condition_chain_analysis``; the composition root\n    constructs this bundle from it and registers it via\n    :func:`register_condition_chain_walkers`.  Preanalysis consumers read it via\n    :func:`get_condition_chain_walkers` and never import the backend.\n    "
+    "Backend-supplied condition-chain live-mba walkers + constant-folding eval.\n\n    Bundles the Hex-Rays evidence callables the preanalysis condition-chain transition analyses\n    depend on.  The Hex-Rays implementation lives in\n    ``d810.backends.hexrays.evidence.condition_chain_analysis``; the composition root\n    constructs this bundle from it and registers it via\n    :func:`register_condition_chain_walkers`.  Preanalysis consumers read it via\n    :func:`get_condition_chain_walkers` and never import the backend.\n"
 
     detect_state_var_stkoff: Callable[..., Any]
     dump_dispatcher_node: Callable[..., Any]
@@ -192,7 +193,7 @@ def register_condition_chain_walkers(provider: ConditionChainWalkerProvider) -> 
 
 
 def get_condition_chain_walkers() -> ConditionChainWalkerProvider:
-    "Return the registered condition-chain walker provider.\n\n    Raises:\n        LookupError: if no provider is registered.  The preanalysis condition-chain transition\n            path REQUIRES this seam, so a missing provider is a\n            composition-root wiring bug (fail loud), not an optional miss --\n            unlike diagnostic seams that may legitimately be absent.\n    "
+    "Return the registered condition-chain walker provider.\n\n    Raises:\n        LookupError: if no provider is registered.  The preanalysis condition-chain transition\n            path REQUIRES this seam, so a missing provider is a\n            composition-root wiring bug (fail loud), not an optional miss --\n            unlike diagnostic seams that may legitimately be absent.\n"
     with _lock:
         provider = _condition_chain_walkers
     if provider is None:

@@ -8,6 +8,7 @@ overridden at runtime via ``configure_settings(**overrides)``.
 Phase 1 covers 6 diagnostic env vars.  Later phases will migrate the
 remaining ~25 env vars here.
 """
+
 from __future__ import annotations
 
 import os
@@ -101,7 +102,9 @@ class D810Settings:
                 os.path.expanduser("~/.idapro/logs/d810_logs/verify_failures"),
             ),
             capture_post_maturity=_env_maturity("D810_CAPTURE_POST_MATURITY"),
-            capture_post_file=_env_str("D810_CAPTURE_POST_FILE", "/tmp/d810_capture.txt"),
+            capture_post_file=_env_str(
+                "D810_CAPTURE_POST_FILE", "/tmp/d810_capture.txt"
+            ),
             fact_lifecycle=_env_bool("D810_FACT_LIFECYCLE", default=True),
         )
 

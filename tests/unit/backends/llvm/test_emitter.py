@@ -99,19 +99,27 @@ def _semantic_subinsn(
 
 
 def _mov(src: MopSnapshot, dst: MopSnapshot, ea: int = 0x1000) -> InsnSnapshot:
-    return InsnSnapshot(opcode=0x04, ea=ea, operands=(), kind=InsnKind.MOV, l=src, d=dst)
+    return InsnSnapshot(
+        opcode=0x04, ea=ea, operands=(), kind=InsnKind.MOV, l=src, d=dst
+    )
 
 
 def _add(lhs: MopSnapshot, rhs: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
-    return InsnSnapshot(opcode=0x12, ea=0x1004, operands=(), kind=InsnKind.ADD, l=lhs, r=rhs, d=dst)
+    return InsnSnapshot(
+        opcode=0x12, ea=0x1004, operands=(), kind=InsnKind.ADD, l=lhs, r=rhs, d=dst
+    )
 
 
 def _sub(lhs: MopSnapshot, rhs: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
-    return InsnSnapshot(opcode=0x13, ea=0x1008, operands=(), kind=InsnKind.SUB, l=lhs, r=rhs, d=dst)
+    return InsnSnapshot(
+        opcode=0x13, ea=0x1008, operands=(), kind=InsnKind.SUB, l=lhs, r=rhs, d=dst
+    )
 
 
 def _and(lhs: MopSnapshot, rhs: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
-    return InsnSnapshot(opcode=0x14, ea=0x100C, operands=(), kind=InsnKind.AND, l=lhs, r=rhs, d=dst)
+    return InsnSnapshot(
+        opcode=0x14, ea=0x100C, operands=(), kind=InsnKind.AND, l=lhs, r=rhs, d=dst
+    )
 
 
 def _value_op(
@@ -236,7 +244,9 @@ def _call(
     )
 
 
-def _block(serial: int, succs: tuple[int, ...], insns: tuple[InsnSnapshot, ...]) -> BlockSnapshot:
+def _block(
+    serial: int, succs: tuple[int, ...], insns: tuple[InsnSnapshot, ...]
+) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
         block_type=0,
@@ -513,7 +523,10 @@ def test_boundary_input_name_cannot_collide_with_varnode_alloca():
     assert "define i32 @collision(i32 %arg_r24_4) {" in result.ir_text
     assert "%r24_4 = alloca i32" in result.ir_text
     assert "store i32 %arg_r24_4, ptr %r24_4, align 4" in result.ir_text
-    assert verify_llvm_ir(result.ir_text, function_name="collision").status is LlvmVerificationStatus.PASSED
+    assert (
+        verify_llvm_ir(result.ir_text, function_name="collision").status
+        is LlvmVerificationStatus.PASSED
+    )
 
 
 def test_duplicate_sanitized_boundary_input_names_fail_closed():
@@ -545,8 +558,12 @@ def test_duplicate_sanitized_observable_names_with_conflicting_cells_fail_closed
         flow,
         boundary=LlvmLiftBoundary(
             observables=(
-                LlvmLiftBoundaryObservable("value sink", Varnode(Space.GLOBAL, 0x1000, 4)),
-                LlvmLiftBoundaryObservable("value_sink", Varnode(Space.GLOBAL, 0x2000, 4)),
+                LlvmLiftBoundaryObservable(
+                    "value sink", Varnode(Space.GLOBAL, 0x1000, 4)
+                ),
+                LlvmLiftBoundaryObservable(
+                    "value_sink", Varnode(Space.GLOBAL, 0x2000, 4)
+                ),
             ),
         ),
     )
@@ -560,7 +577,9 @@ def test_duplicate_sanitized_observable_names_with_conflicting_cells_fail_closed
     )
 
 
-@pytest.mark.parametrize("return_cell", (Varnode(Space.REGISTER, 24, 1), Varnode(Space.REGISTER, 24, 8)))
+@pytest.mark.parametrize(
+    "return_cell", (Varnode(Space.REGISTER, 24, 1), Varnode(Space.REGISTER, 24, 8))
+)
 def test_boundary_return_cell_must_be_i32(return_cell):
     flow = _graph(_block(0, (), (_ret(),)))
 
@@ -618,7 +637,9 @@ def test_boundary_return_override_requires_return_cell():
         ),
         (
             LlvmLiftBoundary(
-                observables=(LlvmLiftBoundaryObservable("bad_sink", Varnode(Space.GLOBAL, 1, 3)),)
+                observables=(
+                    LlvmLiftBoundaryObservable("bad_sink", Varnode(Space.GLOBAL, 1, 3)),
+                )
             ),
             UnsupportedLiftKind.VARNODE_WIDTH,
         ),
@@ -642,7 +663,9 @@ def test_boundary_return_override_requires_return_cell():
         ),
         (
             LlvmLiftBoundary(
-                observables=(LlvmLiftBoundaryObservable("bad_sink", Varnode(Space.CONST, 1, 4)),)
+                observables=(
+                    LlvmLiftBoundaryObservable("bad_sink", Varnode(Space.CONST, 1, 4)),
+                )
             ),
             UnsupportedLiftKind.VARNODE_SPACE,
         ),
@@ -708,7 +731,9 @@ def test_xor_materialization_accepts_duplicate_compared_operands():
 
     assert result.supported
     assert " = xor i32 " in result.ir_text
-    assert "XOR requires two inputs" not in {reason.reason for reason in result.unsupported}
+    assert "XOR requires two inputs" not in {
+        reason.reason for reason in result.unsupported
+    }
 
 
 def test_m1h_neg_emits_sub_from_zero():
@@ -787,7 +812,9 @@ def test_m1k_overflow_add_emits_signed_add_overflow_intrinsic():
     result = emit_flowgraph_to_llvm(flow)
 
     assert result.supported
-    assert "declare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)" in result.ir_text
+    assert (
+        "declare { i32, i1 } @llvm.sadd.with.overflow.i32(i32, i32)" in result.ir_text
+    )
     assert " = call { i32, i1 } @llvm.sadd.with.overflow.i32(i32 " in result.ir_text
     assert " = extractvalue { i32, i1 } %t" in result.ir_text
     assert " = zext i1 %t" in result.ir_text
@@ -810,7 +837,9 @@ def test_m1k_overflow_flag_emits_signed_sub_overflow_intrinsic():
     result = emit_flowgraph_to_llvm(flow)
 
     assert result.supported
-    assert "declare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)" in result.ir_text
+    assert (
+        "declare { i32, i1 } @llvm.ssub.with.overflow.i32(i32, i32)" in result.ir_text
+    )
     assert " = call { i32, i1 } @llvm.ssub.with.overflow.i32(i32 " in result.ir_text
     assert " = extractvalue { i32, i1 } %t" in result.ir_text
     assert " = zext i1 %t" in result.ir_text
@@ -1014,7 +1043,8 @@ def test_conditional_branch_conflicting_fallthrough_fails_closed(monkeypatch):
     assert result.ir_text == ""
     assert any(
         reason.kind is UnsupportedLiftKind.BRANCH_TARGET_UNSUPPORTED
-        and reason.reason == "conditional branch fallthrough conflicts with target/successors"
+        and reason.reason
+        == "conditional branch fallthrough conflicts with target/successors"
         for reason in result.unsupported
     )
 
@@ -1027,13 +1057,18 @@ def test_raw_opcode_attrs_do_not_authorize_conditional_branch():
         kind=InsnKind.UNKNOWN,
         opcode_attrs={"raw_opcode_name": "m_jz"},
     )
-    flow = _graph(_block(0, (1, 2), (fake_branch,)), _block(1, (), ()), _block(2, (), ()))
+    flow = _graph(
+        _block(0, (1, 2), (fake_branch,)), _block(1, (), ()), _block(2, (), ())
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 
     assert not result.supported
     assert result.ir_text == ""
-    assert any(reason.reason == "multi-successor block needs conditional terminator" for reason in result.unsupported)
+    assert any(
+        reason.reason == "multi-successor block needs conditional terminator"
+        for reason in result.unsupported
+    )
     assert any(
         reason.kind is UnsupportedLiftKind.BLOCK_TERMINATOR_MISSING
         for reason in result.unsupported
@@ -1297,7 +1332,8 @@ def test_m1d_binary_op_mismatched_widths_fail_closed():
     assert result.ir_text == ""
     assert any(
         reason.kind is UnsupportedLiftKind.VALUE_WIDTH_MISMATCH
-        and reason.reason == "M1a requires value operands and result to have matching widths"
+        and reason.reason
+        == "M1a requires value operands and result to have matching widths"
         for reason in result.unsupported
     )
 
@@ -1521,7 +1557,9 @@ def test_unknown_varnode_space_has_structured_kind(monkeypatch):
         inputs=(Varnode(Space.UNKNOWN, 0, 4),),
         result=Varnode(Space.REGISTER, 0, 4),
     )
-    monkeypatch.setattr(llvm_emitter, "project_instruction_sequence", lambda _insn: (unknown,))
+    monkeypatch.setattr(
+        llvm_emitter, "project_instruction_sequence", lambda _insn: (unknown,)
+    )
     flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
 
     result = emit_flowgraph_to_llvm(flow)
@@ -1579,7 +1617,9 @@ def test_direct_cell_store_emits_distinct_alloca_store(monkeypatch):
     store = Instruction(
         operation=ValueOpKind.STORE,
         inputs=(value, target),
-        effects=(InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),),
+        effects=(
+            InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),
+        ),
         memory=InstructionMemoryAccess(
             kind=InstructionMemoryAccessKind.DIRECT_CELL,
             target=target,
@@ -1588,7 +1628,9 @@ def test_direct_cell_store_emits_distinct_alloca_store(monkeypatch):
         ),
     )
     flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
-    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)})
+    monkeypatch.setattr(
+        llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)}
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 
@@ -1639,7 +1681,9 @@ def test_direct_cell_store_requires_effect_memory_payload_consistency(
         ),
     )
     flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
-    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)})
+    monkeypatch.setattr(
+        llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)}
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 
@@ -1666,7 +1710,9 @@ def test_direct_cell_load_emits_distinct_alloca_load(monkeypatch):
         ),
     )
     flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
-    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (load,)})
+    monkeypatch.setattr(
+        llvm_emitter, "_collect_instructions", lambda _flow: {0: (load,)}
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 
@@ -1707,7 +1753,9 @@ def test_direct_cell_store_width_mismatch_fails_closed(monkeypatch):
     store = Instruction(
         operation=ValueOpKind.STORE,
         inputs=(value, target),
-        effects=(InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),),
+        effects=(
+            InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),
+        ),
         memory=InstructionMemoryAccess(
             kind=InstructionMemoryAccessKind.DIRECT_CELL,
             target=target,
@@ -1716,7 +1764,9 @@ def test_direct_cell_store_width_mismatch_fails_closed(monkeypatch):
         ),
     )
     flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
-    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)})
+    monkeypatch.setattr(
+        llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)}
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 
@@ -1724,7 +1774,8 @@ def test_direct_cell_store_width_mismatch_fails_closed(monkeypatch):
     assert result.ir_text == ""
     assert any(
         reason.kind is UnsupportedLiftKind.MEMORY_WIDTH_MISMATCH
-        and reason.reason == "direct-cell memory access requires target/value/access widths to match"
+        and reason.reason
+        == "direct-cell memory access requires target/value/access widths to match"
         for reason in result.unsupported
     )
 
@@ -1735,7 +1786,9 @@ def test_direct_cell_register_target_fails_closed(monkeypatch):
     store = Instruction(
         operation=ValueOpKind.STORE,
         inputs=(value, target),
-        effects=(InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),),
+        effects=(
+            InstructionEffect(InstructionEffectKind.STORE, target=target, value=value),
+        ),
         memory=InstructionMemoryAccess(
             kind=InstructionMemoryAccessKind.DIRECT_CELL,
             target=target,
@@ -1744,7 +1797,9 @@ def test_direct_cell_register_target_fails_closed(monkeypatch):
         ),
     )
     flow = _graph(_block(0, (), (_mov(_num(1), _reg(0)),)))
-    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)})
+    monkeypatch.setattr(
+        llvm_emitter, "_collect_instructions", lambda _flow: {0: (store,)}
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 
@@ -1752,7 +1807,8 @@ def test_direct_cell_register_target_fails_closed(monkeypatch):
     assert result.ir_text == ""
     assert any(
         reason.kind is UnsupportedLiftKind.MEMORY_TARGET_UNSUPPORTED
-        and reason.reason == "direct-cell memory target must be a concrete non-register storage cell"
+        and reason.reason
+        == "direct-cell memory target must be a concrete non-register storage cell"
         for reason in result.unsupported
     )
 
@@ -1917,7 +1973,9 @@ def test_conditional_branch_arity_has_structured_kind():
         branch_predicate=PredicateKind.NE,
         l=_reg(0),
     )
-    flow = _graph(_block(0, (1, 2), (jcc,)), _block(1, (), (_ret(),)), _block(2, (), (_ret(),)))
+    flow = _graph(
+        _block(0, (1, 2), (jcc,)), _block(1, (), (_ret(),)), _block(2, (), (_ret(),))
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 
@@ -1930,7 +1988,9 @@ def test_conditional_branch_arity_has_structured_kind():
 
 
 def test_indirect_call_emits_opaque_side_effecting_call_with_result_store():
-    flow = _graph(_block(0, (), (_call(CallKind.INDIRECT, _reg(5, size=8), _reg(0)), _ret())))
+    flow = _graph(
+        _block(0, (), (_call(CallKind.INDIRECT, _reg(5, size=8), _reg(0)), _ret()))
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 
@@ -1944,7 +2004,9 @@ def test_indirect_call_emits_opaque_side_effecting_call_with_result_store():
 
 
 def test_direct_call_without_result_emits_void_opaque_call():
-    flow = _graph(_block(0, (), (_call(CallKind.DIRECT, _num(0x180010000, size=8)), _ret())))
+    flow = _graph(
+        _block(0, (), (_call(CallKind.DIRECT, _num(0x180010000, size=8)), _ret()))
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 
@@ -1967,7 +2029,9 @@ def test_indirect_call_preserves_argument_multiplicity_when_arg_equals_target():
     assert result.supported
     assert "declare void @__d810_opaque_call_void_i64_i64(i64, i64)" in result.ir_text
     assert result.ir_text.count(" = load i64, ptr %r5_8, align 8") == 2
-    assert "call void @__d810_opaque_call_void_i64_i64(i64 %t0, i64 %t1)" in result.ir_text
+    assert (
+        "call void @__d810_opaque_call_void_i64_i64(i64 %t0, i64 %t1)" in result.ir_text
+    )
 
 
 def test_call_without_portable_target_fails_closed():
@@ -1985,7 +2049,9 @@ def test_call_without_portable_target_fails_closed():
 
 
 def test_call_const_result_fails_closed():
-    flow = _graph(_block(0, (), (_call(CallKind.INDIRECT, _reg(5, size=8), _num(0)), _ret())))
+    flow = _graph(
+        _block(0, (), (_call(CallKind.INDIRECT, _reg(5, size=8), _num(0)), _ret()))
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 
@@ -2009,7 +2075,9 @@ def test_control_only_invalid_call_target_fails_in_classification(monkeypatch):
         attrs={"ea": 0x3008},
     )
     flow = _graph(_block(0, (), (_call(CallKind.INDIRECT, _reg(5, size=8)), _ret())))
-    monkeypatch.setattr(llvm_emitter, "_collect_instructions", lambda _flow: {0: (call,)})
+    monkeypatch.setattr(
+        llvm_emitter, "_collect_instructions", lambda _flow: {0: (call,)}
+    )
 
     result = emit_flowgraph_to_llvm(flow)
 
@@ -2081,7 +2149,9 @@ def test_non_tail_return_is_reported_not_asserted():
 
 def test_non_tail_conditional_branch_is_reported_not_asserted():
     flow = _graph(
-        _block(0, (1,), (_jcc(PredicateKind.NE, _reg(0), _num(0)), _mov(_num(1), _reg(1)))),
+        _block(
+            0, (1,), (_jcc(PredicateKind.NE, _reg(0), _num(0)), _mov(_num(1), _reg(1)))
+        ),
         _block(1, (), (_ret(),)),
     )
 

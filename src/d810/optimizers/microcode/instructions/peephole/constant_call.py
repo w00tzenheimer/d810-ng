@@ -8,9 +8,16 @@ import ida_hexrays
 from d810.core import typing
 from d810.core import getLogger
 from d810.evaluator.helpers.rotate import _RotateHelper as _HelperLookup
-from d810.hexrays.utils.hexrays_formatters import format_mop_t, opcode_to_string, sanitize_ea
+from d810.hexrays.utils.hexrays_formatters import (
+    format_mop_t,
+    opcode_to_string,
+    sanitize_ea,
+)
 from d810.hexrays.utils.hexrays_helpers import AND_TABLE  # already maps size->mask
-from d810.hexrays.utils.hexrays_helpers import extract_literal_from_mop, is_rotate_helper_call
+from d810.hexrays.utils.hexrays_helpers import (
+    extract_literal_from_mop,
+    is_rotate_helper_call,
+)
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
@@ -115,7 +122,9 @@ class ConstantCallResultFoldRule(PeepholeSimplificationRule):
         helper_func = _HelperLookup.lookup(helper_name)
         if helper_func is None:
             if logger.debug_on:
-                logger.debug("[const-call] helper %s not found in registry", helper_name)
+                logger.debug(
+                    "[const-call] helper %s not found in registry", helper_name
+                )
             return None
 
         # Guard against invalid destination size (0 or unexpected values)

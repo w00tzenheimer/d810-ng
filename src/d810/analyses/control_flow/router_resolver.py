@@ -23,6 +23,7 @@ corpus; ``configured_kind`` is the new override.
 Portable: operates on already-recovered router objects + the exact ``state -> handler``
 map; no IDA, no z3.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -158,7 +159,8 @@ class ExactMapRouterResolver:
             table_provenance = TableProvenance.SWITCH
         kind = (
             RouterKind.TABLE
-            if table_provenance is not None else RouterKind.EQUALITY_CHAIN
+            if table_provenance is not None
+            else RouterKind.EQUALITY_CHAIN
         )
         return ResolverCandidate(
             resolver_name=self.name,
@@ -215,7 +217,8 @@ def select_router(
     best_overall = max(ranked, key=rank_key)
     if configured_kind is not None:
         forced = [
-            rc for rc in ranked
+            rc
+            for rc in ranked
             if rc[1].router_kind == configured_kind
             and (
                 configured_table_provenance is None

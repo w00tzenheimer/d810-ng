@@ -1,4 +1,5 @@
 """Tests for d810.core.settings — centralized runtime settings."""
+
 from __future__ import annotations
 
 import pytest
@@ -60,7 +61,9 @@ class TestD810Settings:
 
     def test_from_env_invalid_maturity_raises(self, monkeypatch):
         monkeypatch.setenv("D810_CAPTURE_POST_MATURITY", "not_a_number")
-        with pytest.raises(ValueError, match="not an integer and not a known maturity name"):
+        with pytest.raises(
+            ValueError, match="not an integer and not a known maturity name"
+        ):
             reset_settings()
 
     def test_from_env_reads_maturity_by_symbolic_name(self, monkeypatch):

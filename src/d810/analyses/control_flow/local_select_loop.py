@@ -12,6 +12,7 @@ normalizer.  ``_const_value`` keeps this module's 32-bit mask (distinct from the
 64-bit shared reader); ``_var_id`` matches the shared 2-tuple and ``_var_use_id``
 extends it with the operand size.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
@@ -293,6 +294,7 @@ def _parse_copy_compare_header(
         return None
     return state_id, previous_id, int(compare_const)
 
+
 def _has_payload_var_assignment(
     block: BlockSnapshot,
     *,
@@ -514,8 +516,7 @@ def _collect_loop_region_to_header(
         if block is None:
             return None
         if not any(
-            int(succ) == int(header) or int(succ) in region
-            for succ in block.succs
+            int(succ) == int(header) or int(succ) in region for succ in block.succs
         ):
             return None
     return frozenset(region)
@@ -716,8 +717,7 @@ def _closed_region_from_header(
         if block is None:
             return None
         if not all(
-            int(succ) == int(header) or int(succ) in region
-            for succ in block.succs
+            int(succ) == int(header) or int(succ) in region for succ in block.succs
         ):
             return None
     return frozenset(region)
@@ -837,9 +837,7 @@ def _find_closed_loop_external_exit(
     """Find a nearby pre-loop guard arm that skips the closed selector shell."""
     forbidden = {int(header), int(init_block.serial), *region}
     queue: list[tuple[int, int]] = [
-        (int(pred), 0)
-        for pred in init_block.preds
-        if int(pred) not in forbidden
+        (int(pred), 0) for pred in init_block.preds if int(pred) not in forbidden
     ]
     seen: set[int] = set()
     candidates: list[tuple[int, int]] = []
@@ -858,9 +856,11 @@ def _find_closed_loop_external_exit(
                 succ_int = int(succ)
                 if _can_reach_block(cfg, succ_int, int(header)):
                     header_reaching.append(succ_int)
-                elif succ_int not in forbidden and (
-                    exit_block := cfg.get_block(succ_int)
-                ) is not None and exit_block.nsucc == 0:
+                elif (
+                    succ_int not in forbidden
+                    and (exit_block := cfg.get_block(succ_int)) is not None
+                    and exit_block.nsucc == 0
+                ):
                     exits.append(succ_int)
             if len(header_reaching) == 1 and len(exits) == 1:
                 candidates.append((depth, exits[0]))
@@ -934,9 +934,7 @@ def _find_closed_loop_terminal_frontier_exit(
     """Find a CFG-proven no-return frontier from the pre-loop guard sibling."""
     forbidden = frozenset({int(header), int(init_block.serial), *region})
     queue: list[tuple[int, int]] = [
-        (int(pred), 0)
-        for pred in init_block.preds
-        if int(pred) not in forbidden
+        (int(pred), 0) for pred in init_block.preds if int(pred) not in forbidden
     ]
     seen: set[int] = set()
     candidates: list[tuple[int, int]] = []
@@ -1412,12 +1410,22 @@ def _fix_sort_key(item: LocalSelectLoopCandidate) -> tuple[str, int, int, int]:
     so no ``getattr`` attribute probe on the fix dataclass remains.
     """
     if isinstance(item, LocalSelectLoopFix):
-        return (item.__class__.__name__, int(item.init_block), int(item.test_block), int(item.assignment_block))
+        return (
+            item.__class__.__name__,
+            int(item.init_block),
+            int(item.test_block),
+            int(item.assignment_block),
+        )
     if isinstance(item, LocalSelectTerminalLoopFix):
         return (item.__class__.__name__, int(item.init_block), -1, int(item.sink_block))
     # LocalSelectConvergenceLoopFix / LocalSelectDirectExitLoopFix both expose
     # ``header_block`` and ``loop_entry_target``.
-    return (item.__class__.__name__, int(item.init_block), int(item.header_block), int(item.loop_entry_target))
+    return (
+        item.__class__.__name__,
+        int(item.init_block),
+        int(item.header_block),
+        int(item.loop_entry_target),
+    )
 
 
 def serialize_local_select_loop_fixes(
@@ -1504,9 +1512,8 @@ def _is_valid_select_fix(cfg: FlowGraph, fix: LocalSelectLoopFix) -> bool:
         return False
     if test_block.nsucc != 2 or int(fix.test_old_target) not in test_block.succs:
         return False
-    if (
-        assignment_block.nsucc != 1
-        or int(assignment_block.succs[0]) != int(fix.assignment_old_target)
+    if assignment_block.nsucc != 1 or int(assignment_block.succs[0]) != int(
+        fix.assignment_old_target
     ):
         return False
     header = cfg.get_block(fix.init_old_target)
@@ -1521,8 +1528,7 @@ def _is_valid_select_fix(cfg: FlowGraph, fix: LocalSelectLoopFix) -> bool:
         return False
     if not (
         selector_assignment.nsucc == 1
-        and int(selector_assignment.succs[0])
-        == int(fix.selector_assignment_old_target)
+        and int(selector_assignment.succs[0]) == int(fix.selector_assignment_old_target)
         and int(fix.selector_assignment_old_target) == int(fix.init_block)
     ):
         return False

@@ -19,6 +19,7 @@ Sample requirements:
     levels.  The libobfuscated sample contains OLLVM-flattened functions
     whose switch dispatchers produce m_jtbl blocks.
 """
+
 from __future__ import annotations
 
 import os
@@ -42,7 +43,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 def get_func_ea(name: str) -> int:
@@ -64,9 +67,7 @@ def gen_microcode_at_maturity(func_ea: int, maturity: int):
 
     mbr = ida_hexrays.mba_ranges_t(func)
     hf = ida_hexrays.hexrays_failure_t()
-    mba = ida_hexrays.gen_microcode(
-        mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, maturity
-    )
+    mba = ida_hexrays.gen_microcode(mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, maturity)
     return mba
 
 
@@ -321,9 +322,7 @@ class TestConvertJtblToGoto:
         assert succ_list[0] == new_target, (
             f"succset[0] should be {new_target}, got {succ_list[0]}"
         )
-        print(
-            f"\n  Block {serial}: succset changed from {old_succ} to {succ_list}"
-        )
+        print(f"\n  Block {serial}: succset changed from {old_succ} to {succ_list}")
 
     @pytest.mark.ida_required
     def test_predsets_updated_correctly(self, libobfuscated_setup):
@@ -351,9 +350,7 @@ class TestConvertJtblToGoto:
             assert _serial_in_predset(dst_blk, blk.serial), (
                 f"Block {blk.serial} should be in block {new_target}'s predset"
             )
-            print(
-                f"\n  Block {new_target}: predset contains {blk.serial} (correct)"
-            )
+            print(f"\n  Block {new_target}: predset contains {blk.serial} (correct)")
 
         # Verify blk.serial is NOT in removed targets' predsets
         for tgt in removed_targets:
@@ -482,9 +479,7 @@ class TestConvertJtblToGotoEdgeCases:
                 continue
             if blk.tail is None:
                 result = convert_jtbl_to_goto(blk, 0, mba)
-                assert result is False, (
-                    f"Block {i} with None tail should return False"
-                )
+                assert result is False, f"Block {i} with None tail should return False"
                 null_tail_tested += 1
 
         if null_tail_tested == 0:
@@ -492,7 +487,9 @@ class TestConvertJtblToGotoEdgeCases:
             # this is acceptable -- the code path is still valid.
             print("\n  No blocks with None tail found (acceptable)")
         else:
-            print(f"\n  Tested {null_tail_tested} blocks with None tail, all returned False")
+            print(
+                f"\n  Tested {null_tail_tested} blocks with None tail, all returned False"
+            )
 
     @pytest.mark.ida_required
     def test_does_not_crash_on_any_block(self, libobfuscated_setup):

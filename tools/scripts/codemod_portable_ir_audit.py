@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"Detector codemod: portable-core IDA-shape abstraction leaks (epic llr-rv7p).\n\nThe ``portable-core-no-ida`` import-linter contract forbids ``import ida_*`` but\ncanNOT see SHAPE -- so portable-core (ir / analyses / transforms / passes /\ncapabilities / families) is full of pure-Python code that PASSES the import gate\nwhile mirroring the Hex-Rays data model.  This script is the deterministic,\nre-runnable replacement for the one-time agent sweep recorded at\n``.tmp/abstraction-audit/INVENTORY.md``.\n\nIt does THREE jobs:\n  1. AUDIT -- deterministic leak inventory (validate / re-measure the ~124 count)\n  2. BURN-DOWN -- ``--json`` per-category counts to track slices S4/S5/S6/S9\n  3. S8 SEED -- the detection core the shape-lint gate (ticket llr-f130) wraps\n\nCategories (match the audit taxonomy):\n  A  maturity -- MMAT_* name-tables, ``maturity:int`` fields/params, MMAT literals\n  B  serial   -- ``*serial*`` dataclass FIELDS (persistent identity), serial as\n                 a dict/set key (mblock_t mirror); within-fn index = ignored\n  C  mop      -- the duck-typed dodge: ``getattr(x,\"t\"/\"nnn\"/\"stkoff\"...)`` and\n                 ``\"mop_n\"``/``\"mop_S\"`` string compares on object-typed operands\n  D  stale    -- comments/docstrings/loggers citing DELETED d810.cfg / d810.preanalysis\n  E  opcode   -- hardcoded ``\"m_<op>\"`` mnemonic string dispatch / raw opcode ints\n\nThis is a CONSERVATIVE structural detector (AST for A/B/C/E so comments never\nfalse-positive; text scan for D since it lives in comments).  It is calibrated\nagainst the agent audit, not identical to it: it trades a little recall for zero\ncomment-noise and full repeatability.  Read-only -- it never writes.\n"
+'Detector codemod: portable-core IDA-shape abstraction leaks (epic llr-rv7p).\n\nThe ``portable-core-no-ida`` import-linter contract forbids ``import ida_*`` but\ncanNOT see SHAPE -- so portable-core (ir / analyses / transforms / passes /\ncapabilities / families) is full of pure-Python code that PASSES the import gate\nwhile mirroring the Hex-Rays data model.  This script is the deterministic,\nre-runnable replacement for the one-time agent sweep recorded at\n``.tmp/abstraction-audit/INVENTORY.md``.\n\nIt does THREE jobs:\n  1. AUDIT -- deterministic leak inventory (validate / re-measure the ~124 count)\n  2. BURN-DOWN -- ``--json`` per-category counts to track slices S4/S5/S6/S9\n  3. S8 SEED -- the detection core the shape-lint gate (ticket llr-f130) wraps\n\nCategories (match the audit taxonomy):\n  A  maturity -- MMAT_* name-tables, ``maturity:int`` fields/params, MMAT literals\n  B  serial   -- ``*serial*`` dataclass FIELDS (persistent identity), serial as\n                 a dict/set key (mblock_t mirror); within-fn index = ignored\n  C  mop      -- the duck-typed dodge: ``getattr(x,"t"/"nnn"/"stkoff"...)`` and\n                 ``"mop_n"``/``"mop_S"`` string compares on object-typed operands\n  D  stale    -- comments/docstrings/loggers citing DELETED d810.cfg / d810.preanalysis\n  E  opcode   -- hardcoded ``"m_<op>"`` mnemonic string dispatch / raw opcode ints\n\nThis is a CONSERVATIVE structural detector (AST for A/B/C/E so comments never\nfalse-positive; text scan for D since it lives in comments).  It is calibrated\nagainst the agent audit, not identical to it: it trades a little recall for zero\ncomment-noise and full repeatability.  Read-only -- it never writes.\n'
+
 from __future__ import annotations
 
 import argparse
@@ -28,8 +29,22 @@ _MOP_FIELDS = {"t", "nnn", "stkoff", "lvar_idx", "lvar_off", "gaddr"}
 # merely share the ``mop_`` prefix (e.g. the ``mop_cell`` Varnode->cell helper
 # exported from d810.analyses.control_flow.deffai) are NOT leaks.
 _MOP_TYPE_NAMES = {
-    "mop_z", "mop_r", "mop_n", "mop_str", "mop_d", "mop_S", "mop_v", "mop_b",
-    "mop_f", "mop_l", "mop_a", "mop_h", "mop_c", "mop_fn", "mop_p", "mop_sc",
+    "mop_z",
+    "mop_r",
+    "mop_n",
+    "mop_str",
+    "mop_d",
+    "mop_S",
+    "mop_v",
+    "mop_b",
+    "mop_f",
+    "mop_l",
+    "mop_a",
+    "mop_h",
+    "mop_c",
+    "mop_fn",
+    "mop_p",
+    "mop_sc",
 }
 # E / C string literals that are raw Hex-Rays enum spellings used for dispatch.
 _VENDOR_ENUM_PREFIXES = ("mop_", "m_")
@@ -79,11 +94,11 @@ class _Visitor(ast.NodeVisitor):
         # annotations and boundary callables/strings are compatible metadata.
         ann_txt = ast.unparse(ann)
         verdict = (
-            "BOUNDARY-OK"
-            if _is_boundary_maturity_annotation(ann_txt)
-            else "REAL-LEAK"
+            "BOUNDARY-OK" if _is_boundary_maturity_annotation(ann_txt) else "REAL-LEAK"
         )
-        self.findings.append(Finding(self.rel, line, "A", f"{name}: {ann_txt}", verdict))
+        self.findings.append(
+            Finding(self.rel, line, "A", f"{name}: {ann_txt}", verdict)
+        )
 
     def visit_Constant(self, node: ast.Constant) -> None:
         if id(node) in self.docstrings:
@@ -91,23 +106,37 @@ class _Visitor(ast.NodeVisitor):
         if isinstance(node.value, str):
             s = node.value
             if _MMAT_TOKEN in s:
-                self.findings.append(Finding(self.rel, node.lineno, "A", repr(s), "REAL-LEAK"))
-            elif s.startswith(_VENDOR_ENUM_PREFIXES) and len(s) <= 12 and s.replace("_", "").isalnum():
+                self.findings.append(
+                    Finding(self.rel, node.lineno, "A", repr(s), "REAL-LEAK")
+                )
+            elif (
+                s.startswith(_VENDOR_ENUM_PREFIXES)
+                and len(s) <= 12
+                and s.replace("_", "").isalnum()
+            ):
                 # "mop_n" / "m_goto" style raw-enum string dispatch (C if mop_, E if m_).
                 # For the mop_ prefix only genuine mop_t type spellings count;
                 # project identifiers sharing the prefix (e.g. "mop_cell") do not.
                 if s.startswith("mop_"):
                     if s in _MOP_TYPE_NAMES:
-                        self.findings.append(Finding(self.rel, node.lineno, "C", repr(s), "REAL-LEAK"))
+                        self.findings.append(
+                            Finding(self.rel, node.lineno, "C", repr(s), "REAL-LEAK")
+                        )
                 else:
-                    self.findings.append(Finding(self.rel, node.lineno, "E", repr(s), "REAL-LEAK"))
+                    self.findings.append(
+                        Finding(self.rel, node.lineno, "E", repr(s), "REAL-LEAK")
+                    )
         self.generic_visit(node)
 
     # ---- B + A: dataclass fields -----------------------------------------
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         is_dc = any(
             (isinstance(d, ast.Name) and d.id == "dataclass")
-            or (isinstance(d, ast.Call) and isinstance(d.func, ast.Name) and d.func.id == "dataclass")
+            or (
+                isinstance(d, ast.Call)
+                and isinstance(d.func, ast.Name)
+                and d.func.id == "dataclass"
+            )
             or (isinstance(d, ast.Attribute) and d.attr == "dataclass")
             for d in node.decorator_list
         )
@@ -145,7 +174,13 @@ class _Visitor(ast.NodeVisitor):
             and node.args[1].value in _MOP_FIELDS
         ):
             self.findings.append(
-                Finding(self.rel, node.lineno, "C", f'getattr(_, "{node.args[1].value}")', "REAL-LEAK")
+                Finding(
+                    self.rel,
+                    node.lineno,
+                    "C",
+                    f'getattr(_, "{node.args[1].value}")',
+                    "REAL-LEAK",
+                )
             )
         self.generic_visit(node)
 
@@ -162,7 +197,13 @@ class _Visitor(ast.NodeVisitor):
 def _scan_stale(rel: str, text: str) -> list[Finding]:
     """D: deleted-package refs live in comments/docstrings/logger strings."""
     out: list[Finding] = []
-    needles = ("d810.cfg", "d810.preanalysis", "preanalysis.collectors", "D810.preanalysis", "D810.cfg")
+    needles = (
+        "d810.cfg",
+        "d810.preanalysis",
+        "preanalysis.collectors",
+        "D810.preanalysis",
+        "D810.cfg",
+    )
     for i, line in enumerate(text.splitlines(), 1):
         for n in needles:
             if n in line:
@@ -180,11 +221,16 @@ def _audit_file(path: pathlib.Path, rel: str) -> list[Finding]:
         return findings
     docstrings = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(
+            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        ):
             body = getattr(node, "body", None)
-            if (body and isinstance(body[0], ast.Expr)
-                    and isinstance(body[0].value, ast.Constant)
-                    and isinstance(body[0].value.value, str)):
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)
+            ):
                 docstrings.add(id(body[0].value))
     v = _Visitor(rel=rel, docstrings=frozenset(docstrings))
     v.visit(tree)
@@ -241,19 +287,41 @@ def _maturity_bucket(finding: Finding) -> str | None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--package", action="append", choices=PORTABLE_CORE,
-                    help="restrict to one or more portable-core packages")
-    ap.add_argument("--category", action="append", choices=list("ABCDE"),
-                    help="restrict to one or more leak categories")
-    ap.add_argument("--real-only", action="store_true",
-                    help="show only REAL-LEAK (drop LIKELY/BOUNDARY-OK)")
-    ap.add_argument("--sites", action="store_true",
-                    help="count edit-SITES (dedup file+category+line) not raw tokens; "
-                         "comparable to the agent audit's site-level count")
-    ap.add_argument("--json", action="store_true", help="machine-readable counts (burn-down)")
-    ap.add_argument("--list", action="store_true", help="print every finding as file:line")
-    ap.add_argument("--fail-over", type=int, default=None,
-                    help="exit 1 if REAL-LEAK count exceeds N (S8 gate mode)")
+    ap.add_argument(
+        "--package",
+        action="append",
+        choices=PORTABLE_CORE,
+        help="restrict to one or more portable-core packages",
+    )
+    ap.add_argument(
+        "--category",
+        action="append",
+        choices=list("ABCDE"),
+        help="restrict to one or more leak categories",
+    )
+    ap.add_argument(
+        "--real-only",
+        action="store_true",
+        help="show only REAL-LEAK (drop LIKELY/BOUNDARY-OK)",
+    )
+    ap.add_argument(
+        "--sites",
+        action="store_true",
+        help="count edit-SITES (dedup file+category+line) not raw tokens; "
+        "comparable to the agent audit's site-level count",
+    )
+    ap.add_argument(
+        "--json", action="store_true", help="machine-readable counts (burn-down)"
+    )
+    ap.add_argument(
+        "--list", action="store_true", help="print every finding as file:line"
+    )
+    ap.add_argument(
+        "--fail-over",
+        type=int,
+        default=None,
+        help="exit 1 if REAL-LEAK count exceeds N (S8 gate mode)",
+    )
     args = ap.parse_args()
 
     packages = tuple(args.package) if args.package else PORTABLE_CORE
@@ -281,28 +349,40 @@ def main() -> int:
     by_cat_real = Counter(f.category for f in real)
     by_file_real = Counter(f.rel for f in real)
     by_maturity_bucket = Counter(
-        bucket
-        for f in real
-        if (bucket := _maturity_bucket(f)) is not None
+        bucket for f in real if (bucket := _maturity_bucket(f)) is not None
     )
 
     if args.json:
-        print(json.dumps({
-            "total": len(findings),
-            "real_leak": len(real),
-            "by_category": dict(sorted(by_cat.items())),
-            "by_category_real": dict(sorted(by_cat_real.items())),
-            "by_maturity_bucket": dict(sorted(by_maturity_bucket.items())),
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "total": len(findings),
+                    "real_leak": len(real),
+                    "by_category": dict(sorted(by_cat.items())),
+                    "by_category_real": dict(sorted(by_cat_real.items())),
+                    "by_maturity_bucket": dict(sorted(by_maturity_bucket.items())),
+                },
+                indent=2,
+            )
+        )
     else:
-        cat_name = {"A": "maturity", "B": "serial-identity", "C": "mop/duck-typed",
-                    "D": "stale-refs", "E": "opcode-dispatch"}
-        print(f"# Portable-IR leak audit (deterministic) -- packages={','.join(packages)}\n")
+        cat_name = {
+            "A": "maturity",
+            "B": "serial-identity",
+            "C": "mop/duck-typed",
+            "D": "stale-refs",
+            "E": "opcode-dispatch",
+        }
+        print(
+            f"# Portable-IR leak audit (deterministic) -- packages={','.join(packages)}\n"
+        )
         print("|cat|name|REAL-LEAK|all findings|")
         print("|-|-|-|-|")
         for c in sorted(cats):
-            print(f"|{c}|{cat_name[c]}|{by_cat_real.get(c,0)}|{by_cat.get(c,0)}|")
-        print(f"\nTOTAL REAL-LEAK: {len(real)}   (all findings incl. LIKELY/BOUNDARY-OK: {len(findings)})\n")
+            print(f"|{c}|{cat_name[c]}|{by_cat_real.get(c, 0)}|{by_cat.get(c, 0)}|")
+        print(
+            f"\nTOTAL REAL-LEAK: {len(real)}   (all findings incl. LIKELY/BOUNDARY-OK: {len(findings)})\n"
+        )
         print("Top real-leak files:")
         for rel, n in by_file_real.most_common(10):
             print(f"  {n:>3}  {rel}")
@@ -316,7 +396,10 @@ def main() -> int:
                 print(f"  {f.category} {f.verdict:<11} {f.rel}:{f.line}  {f.token}")
 
     if args.fail_over is not None and len(real) > args.fail_over:
-        print(f"\nFAIL: {len(real)} REAL-LEAK > threshold {args.fail_over}", file=sys.stderr)
+        print(
+            f"\nFAIL: {len(real)} REAL-LEAK > threshold {args.fail_over}",
+            file=sys.stderr,
+        )
         return 1
     return 0
 

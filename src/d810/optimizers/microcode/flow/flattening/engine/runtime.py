@@ -1,4 +1,5 @@
 """Generic runtime helpers for family-driven unflattening pipelines."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -72,17 +73,13 @@ class FamilyRunState:
         """Return run state for the next family pass."""
         return replace(self, pass_number=int(pass_number))
 
-    def remember_initial_transitions(
-        self, transitions: object
-    ) -> "FamilyRunState":
+    def remember_initial_transitions(self, transitions: object) -> "FamilyRunState":
         """Capture pass-0 transitions once for later supplementation."""
         if self.pass_number != 0 or self.initial_transitions:
             return self
         return replace(self, initial_transitions=tuple(transitions or ()))
 
-    def record_resolved_transitions(
-        self, transitions: object
-    ) -> "FamilyRunState":
+    def record_resolved_transitions(self, transitions: object) -> "FamilyRunState":
         """Record transition keys covered by a successful execution pass."""
         resolved = set(self.resolved_transitions)
         for transition in transitions or ():
@@ -307,7 +304,7 @@ def apply_execution_results_to_provenance(
                 gate_accounting=gate_accounting,
             )
 
-    for fragment in pipeline[len(results):]:
+    for fragment in pipeline[len(results) :]:
         updated = updated.update_phase(
             fragment.strategy_name,
             DecisionPhase.BYPASSED,
@@ -374,18 +371,27 @@ class FamilyRuntimePolicy:
 
     planner: UnflatteningPlanner
     executor_policy: ExecutorPolicy
-    build_planner_inputs: Callable[[FamilyContext, FamilyAnalysis], PlannerInputs | None]
-    select_strategies: Callable[[FamilyContext, FamilyAnalysis], list[UnflatteningStrategy]]
+    build_planner_inputs: Callable[
+        [FamilyContext, FamilyAnalysis], PlannerInputs | None
+    ]
+    select_strategies: Callable[
+        [FamilyContext, FamilyAnalysis], list[UnflatteningStrategy]
+    ]
     plan_pipeline: Callable[..., PlannedPipeline] = plan_family_pipeline
     execute_pipeline: Callable[..., ExecutedPipeline] = execute_family_pipeline
     executor_factory_builder: Callable[
         [ExecutorPolicy], Callable[[object], _PipelineExecutor]
     ] = make_transactional_executor_factory
     on_analysis: Callable[[FamilyContext, FamilyAnalysis], None] | None = None
-    on_planned: Callable[[FamilyContext, FamilyAnalysis, PlannedPipeline], None] | None = None
-    on_executed: Callable[
-        [FamilyContext, FamilyAnalysis, PlannedPipeline, ExecutedPipeline], None
-    ] | None = None
+    on_planned: (
+        Callable[[FamilyContext, FamilyAnalysis, PlannedPipeline], None] | None
+    ) = None
+    on_executed: (
+        Callable[
+            [FamilyContext, FamilyAnalysis, PlannedPipeline, ExecutedPipeline], None
+        ]
+        | None
+    ) = None
 
 
 def run_family_pass(
@@ -394,8 +400,12 @@ def run_family_pass(
     *,
     planner: UnflatteningPlanner,
     executor_policy: ExecutorPolicy,
-    build_planner_inputs: Callable[[FamilyContext, FamilyAnalysis], PlannerInputs | None],
-    select_strategies: Callable[[FamilyContext, FamilyAnalysis], list[UnflatteningStrategy]],
+    build_planner_inputs: Callable[
+        [FamilyContext, FamilyAnalysis], PlannerInputs | None
+    ],
+    select_strategies: Callable[
+        [FamilyContext, FamilyAnalysis], list[UnflatteningStrategy]
+    ],
     plan_pipeline: Callable[..., PlannedPipeline] = plan_family_pipeline,
     execute_pipeline: Callable[..., ExecutedPipeline] = execute_family_pipeline,
     executor_factory_builder: Callable[

@@ -1,4 +1,5 @@
 """LLVM M3c lower-back readiness probe over M2 optimized IR."""
+
 from __future__ import annotations
 
 import os
@@ -93,9 +94,9 @@ class TestLLVMM3LowerBackReadiness:
                 m2.after_ir,
             )
             assert readiness.plan_result is not None
-            assert tuple(reason.kind for reason in readiness.plan_result.unsupported) == (
-                LlvmLowerBackUnsupportedKind.UNSUPPORTED_CONTROL,
-            )
+            assert tuple(
+                reason.kind for reason in readiness.plan_result.unsupported
+            ) == (LlvmLowerBackUnsupportedKind.UNSUPPORTED_CONTROL,)
         else:
             assert readiness.status is LlvmLowerBackReadinessStatus.PLANNED, (
                 parse_diags,

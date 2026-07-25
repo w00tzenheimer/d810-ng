@@ -13,6 +13,7 @@ route oracle (``analyses.control_flow.route_predicate``) and the comparison
 dispatcher router both build their partitions from it.  All set ops return a
 fresh :class:`IntervalSet`.  Portable (no IDA).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

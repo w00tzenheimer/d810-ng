@@ -5,6 +5,7 @@ Provides ``get_children()``, ``iterate_all_subitems()``,
 
 Ported from herast (herast/tree/ast_iteration.py).
 """
+
 from __future__ import annotations
 
 import idaapi
@@ -21,8 +22,7 @@ op2func: dict[int, typing.Callable] = {
     idaapi.cit_return: lambda x: (x.creturn.expr,),
     idaapi.cit_block: lambda x: tuple(i for i in x.cblock),
     idaapi.cit_if: lambda x: (x.cif.ithen, x.cif.ielse, x.cif.expr),
-    idaapi.cit_switch: lambda x: tuple(i for i in x.cswitch.cases)
-    + (x.cswitch.expr,),
+    idaapi.cit_switch: lambda x: tuple(i for i in x.cswitch.cases) + (x.cswitch.expr,),
     idaapi.cit_while: lambda x: (x.cwhile.body, x.cwhile.expr),
     idaapi.cit_do: lambda x: (x.cdo.body, x.cdo.expr),
     idaapi.cit_for: lambda x: (x.cfor.body, x.cfor.init, x.cfor.expr, x.cfor.step),

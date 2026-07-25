@@ -5,6 +5,7 @@ expression/value/location substrate, and in particular the selectivity
 guarantee the dispatcher re-point relies on: ``isinstance(value, Const)`` is
 true exactly when the live source operand was a number.
 """
+
 from __future__ import annotations
 
 from dataclasses import fields
@@ -73,7 +74,9 @@ def _block(serial: int) -> MopSnapshot:
 
 
 def _mov(l: MopSnapshot | None, d: MopSnapshot | None) -> InsnSnapshot:
-    return InsnSnapshot(opcode=M_MOV, ea=0x1000, operands=(), kind=InsnKind.MOV, l=l, d=d)
+    return InsnSnapshot(
+        opcode=M_MOV, ea=0x1000, operands=(), kind=InsnKind.MOV, l=l, d=d
+    )
 
 
 def test_instruction_record_pins_operation_as_field_not_whole_record():
@@ -195,19 +198,24 @@ def test_mov_stack_to_register_projects_move_of_definition():
     a = project_assignment(_mov(_stk(0x3C, size=4), _reg(0)))
     assert a is not None
     assert a.target == DefinitionRef(location=RegisterLocation(register_id=0, size=4))
-    assert a.value == Move(source=DefinitionRef(location=StackSlot(offset=0x3C, size=4)))
+    assert a.value == Move(
+        source=DefinitionRef(location=StackSlot(offset=0x3C, size=4))
+    )
 
 
 def test_mov_register_to_stack_projects_move_into_stackslot():
     a = project_assignment(_mov(_reg(8), _stk(0x7F0)))
     assert a is not None
     assert a.target == DefinitionRef(location=StackSlot(offset=0x7F0, size=4))
-    assert a.value == Move(source=DefinitionRef(location=RegisterLocation(register_id=8, size=4)))
+    assert a.value == Move(
+        source=DefinitionRef(location=RegisterLocation(register_id=8, size=4))
+    )
 
 
 def test_non_mov_returns_none():
-    add = InsnSnapshot(opcode=0x12, ea=0x1000, operands=(), kind=InsnKind.ADD,
-                       l=_num(1), d=_stk(0x3C))
+    add = InsnSnapshot(
+        opcode=0x12, ea=0x1000, operands=(), kind=InsnKind.ADD, l=_num(1), d=_stk(0x3C)
+    )
     assert project_assignment(add) is None
 
 
@@ -223,7 +231,9 @@ def test_number_source_with_no_value_does_not_fabricate_const():
     # A NUMBER operand whose decoded value is missing must NOT become Const(0);
     # it falls to None so the dispatcher skips it (matching the live read where
     # ``None in state_constants`` was False).
-    a = project_assignment(_mov(MopSnapshot(kind=OperandKind.NUMBER, value=None), _stk(0x10)))
+    a = project_assignment(
+        _mov(MopSnapshot(kind=OperandKind.NUMBER, value=None), _stk(0x10))
+    )
     assert a is not None and a.value is None
 
 
@@ -234,8 +244,13 @@ def test_unprojectable_source_and_dest_returns_none():
 
 def _jcc(predicate: PredicateKind, l: MopSnapshot, r: MopSnapshot) -> InsnSnapshot:
     return InsnSnapshot(
-        opcode=0x2C, ea=0x1000, operands=(), kind=InsnKind.EQUALITY_JUMP,
-        branch_predicate=predicate, l=l, r=r,
+        opcode=0x2C,
+        ea=0x1000,
+        operands=(),
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=predicate,
+        l=l,
+        r=r,
     )
 
 
@@ -415,7 +430,9 @@ def test_instruction_projection_call_and_return_operations():
         )
     )
     ret = project_instruction(
-        InsnSnapshot(opcode=0x42, ea=0x1004, operands=(), kind=InsnKind.RET, l=_reg(0, size=8))
+        InsnSnapshot(
+            opcode=0x42, ea=0x1004, operands=(), kind=InsnKind.RET, l=_reg(0, size=8)
+        )
     )
 
     assert call.operation is CallKind.DIRECT
@@ -589,7 +606,9 @@ def test_instruction_projection_load_has_indirect_memory_contract():
 
 def test_instruction_projection_goto_indirect_and_switch_control_payloads():
     goto = project_instruction(
-        InsnSnapshot(opcode=0x30, ea=0x1000, operands=(), kind=InsnKind.GOTO, l=_block(7))
+        InsnSnapshot(
+            opcode=0x30, ea=0x1000, operands=(), kind=InsnKind.GOTO, l=_block(7)
+        )
     )
     ijmp = project_instruction(
         InsnSnapshot(
@@ -612,7 +631,9 @@ def test_instruction_projection_goto_indirect_and_switch_control_payloads():
         )
     )
 
-    assert goto.control == InstructionControl(transfer=ControlTransferKind.GOTO, target=7)
+    assert goto.control == InstructionControl(
+        transfer=ControlTransferKind.GOTO, target=7
+    )
     assert ijmp.control == InstructionControl(
         transfer=ControlTransferKind.INDIRECT_BRANCH,
         indirect_target=Varnode(Space.REGISTER, 9, 8),
@@ -671,7 +692,9 @@ def test_assignment_view_reuses_canonical_instruction_boundary():
 
 
 def _subinsn(sub_kind, sub_l: MopSnapshot, sub_r: MopSnapshot) -> MopSnapshot:
-    return MopSnapshot(kind=OperandKind.SUBINSN, sub_kind=sub_kind, sub_l=sub_l, sub_r=sub_r)
+    return MopSnapshot(
+        kind=OperandKind.SUBINSN, sub_kind=sub_kind, sub_l=sub_l, sub_r=sub_r
+    )
 
 
 def _semantic_subinsn(
@@ -725,7 +748,9 @@ def test_instruction_sequence_lowers_nested_and_before_branch():
 
 def test_nested_mop_d_recurses_two_levels():
     # ``((var - 1) & 0x3F)``
-    outer = _subinsn(InsnKind.AND, _subinsn(InsnKind.SUB, _stk(0x10), _num(1)), _num(0x3F))
+    outer = _subinsn(
+        InsnKind.AND, _subinsn(InsnKind.SUB, _stk(0x10), _num(1)), _num(0x3F)
+    )
     instruction = project_instruction(_jcc(PredicateKind.NE, outer, _num(0)))
     cb = project_conditional_branch(_jcc(PredicateKind.NE, outer, _num(0)))
     assert instruction.inputs == (
@@ -746,7 +771,9 @@ def test_nested_mop_d_recurses_two_levels():
 
 
 def test_instruction_sequence_lowers_nested_two_level_expression_child_first():
-    outer = _subinsn(InsnKind.AND, _subinsn(InsnKind.SUB, _stk(0x10), _num(1)), _num(0x3F))
+    outer = _subinsn(
+        InsnKind.AND, _subinsn(InsnKind.SUB, _stk(0x10), _num(1)), _num(0x3F)
+    )
     sequence = project_instruction_sequence(_jcc(PredicateKind.NE, outer, _num(0)))
 
     assert len(sequence) == 3
@@ -904,9 +931,17 @@ def test_primary_source_operand_kind_distinguishes_address_from_value():
     # the portable operand kind here instead.
     assert primary_source_operand_kind(_mov(_num(7), _stk(0x10))) is OperandKind.NUMBER
     address_src = MopSnapshot(kind=OperandKind.ADDRESS, stack_refs=(0x40,))
-    assert primary_source_operand_kind(_mov(address_src, _stk(0x10))) is OperandKind.ADDRESS
-    assert primary_source_operand_kind(_mov(_reg(0), _stk(0x10))) is OperandKind.REGISTER
-    assert primary_source_operand_kind(_mov(_glob(0x401000), _stk(0x10))) is OperandKind.GLOBAL
+    assert (
+        primary_source_operand_kind(_mov(address_src, _stk(0x10)))
+        is OperandKind.ADDRESS
+    )
+    assert (
+        primary_source_operand_kind(_mov(_reg(0), _stk(0x10))) is OperandKind.REGISTER
+    )
+    assert (
+        primary_source_operand_kind(_mov(_glob(0x401000), _stk(0x10)))
+        is OperandKind.GLOBAL
+    )
     assert primary_source_operand_kind(_mov(None, _stk(0x10))) is None
 
 
@@ -933,7 +968,9 @@ def test_operand_kinds_l_r_d_slot_classification():
     )
     # An LVAR destination keeps OperandKind.LVAR even though its storage view may
     # promote to a STACK Varnode when a frame offset was lifted.
-    lvar_dst = MopSnapshot(kind=OperandKind.LVAR, lvar_off=0x8, lvar_stkoff=0x30, size=4)
+    lvar_dst = MopSnapshot(
+        kind=OperandKind.LVAR, lvar_off=0x8, lvar_stkoff=0x30, size=4
+    )
     assert operand_kinds(_mov(_num(1), lvar_dst))[2] is OperandKind.LVAR
     assert operand_kinds(_mov(None, None)) == (None, None, None)
 
@@ -975,7 +1012,9 @@ def test_operand_stack_refs_per_slot_membership_sets():
     # ``operand_stack_offsets`` cannot express), an operand carrying no lifted
     # ``stack_refs`` yields the empty set, and an absent slot yields the empty
     # set.
-    state_with_refs = MopSnapshot(kind=OperandKind.STACK, stkoff=0x3C, size=8, stack_refs=(0x3C,))
+    state_with_refs = MopSnapshot(
+        kind=OperandKind.STACK, stkoff=0x3C, size=8, stack_refs=(0x3C,)
+    )
     multi = MopSnapshot(kind=OperandKind.ADDRESS, stack_refs=(0x3C, 0x40))
     insn = InsnSnapshot(
         opcode=0x12,
@@ -1001,8 +1040,6 @@ def test_operand_stack_refs_per_slot_membership_sets():
         frozenset(),
         frozenset(),
     )
-
-
 
 
 def test_input_exprs_slot0_is_lifted_tree_for_subinsn_source():
@@ -1069,12 +1106,20 @@ def test_attrs_preserve_snapshot_kind_distinguishing_branch_kinds():
     # distinguishing portable InsnKind must survive in provenance attrs
     # (llr-0s2n: loop_bound_writer_guard gates its loop-test on EQUALITY_JUMP).
     equality = InsnSnapshot(
-        opcode=-1, ea=0x2000, operands=(), kind=InsnKind.EQUALITY_JUMP,
-        l=_stk(0x10), r=_stk(0x20),
+        opcode=-1,
+        ea=0x2000,
+        operands=(),
+        kind=InsnKind.EQUALITY_JUMP,
+        l=_stk(0x10),
+        r=_stk(0x20),
     )
     cond = InsnSnapshot(
-        opcode=-1, ea=0x2004, operands=(), kind=InsnKind.COND_JUMP,
-        l=_stk(0x10), r=_stk(0x20),
+        opcode=-1,
+        ea=0x2004,
+        operands=(),
+        kind=InsnKind.COND_JUMP,
+        l=_stk(0x10),
+        r=_stk(0x20),
     )
 
     eq_instr = project_instruction(equality)

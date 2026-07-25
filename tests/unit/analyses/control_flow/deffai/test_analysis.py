@@ -5,6 +5,7 @@ with ``top_density == 0``; a conditional-fork handler yields a first-class set o
 the back-edge store; an MBA/unknown next-state surfaces as ``top`` (raising
 top_density); contexts stay finite.  No IDA -- the scalar fold is injected.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -85,7 +86,10 @@ def test_conditional_fork_yields_set_at_merge():
     cond = stk(0x20)
     b0 = block(
         0,
-        (mov(num(1), stk(STATE_OFF)), jcc(cond, num(0), taken=2, pred=PredicateKind.EQ)),
+        (
+            mov(num(1), stk(STATE_OFF)),
+            jcc(cond, num(0), taken=2, pred=PredicateKind.EQ),
+        ),
         (1, 2),
     )
     b1 = block(1, (mov(num(0xAA), stk(STATE_OFF)), goto(3)), (3,))
@@ -122,7 +126,9 @@ def test_context_keeps_two_handlers_distinct():
     #   1: h1: state=20 -> 0   (back-edge)
     #   2: h2: state=30 -> 3
     #   3: ret
-    b0 = block(0, (jcc(stk(STATE_OFF), num(10), taken=1, pred=PredicateKind.EQ),), (1, 2))
+    b0 = block(
+        0, (jcc(stk(STATE_OFF), num(10), taken=1, pred=PredicateKind.EQ),), (1, 2)
+    )
     b1 = block(1, (mov(num(20), stk(STATE_OFF)), goto(0)), (0,))
     b2 = block(2, (mov(num(30), stk(STATE_OFF)), goto(3)), (3,))
     b3 = block(3, (ret(),), ())
@@ -143,7 +149,9 @@ def test_context_keeps_two_handlers_distinct():
 
 
 def test_contexts_bounded_by_policy():
-    b0 = block(0, (jcc(stk(STATE_OFF), num(10), taken=1, pred=PredicateKind.EQ),), (1, 2))
+    b0 = block(
+        0, (jcc(stk(STATE_OFF), num(10), taken=1, pred=PredicateKind.EQ),), (1, 2)
+    )
     b1 = block(1, (mov(num(20), stk(STATE_OFF)), goto(0)), (0,))
     b2 = block(2, (ret(),), ())
     graph = make_graph([b0, b1, b2])

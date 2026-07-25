@@ -20,6 +20,7 @@ Until then, callers can seed FlowGraph metadata directly (e.g. from tests
 or future strategies) and the :class:`FixPredecessorBranchArmStrategy` will
 verify each candidate against the planner before emitting.
 """
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -193,9 +194,7 @@ class FixPredecessorBranchArmStrategy:
     family = FAMILY_CLEANUP
 
     def is_applicable(self, snapshot: "AnalysisSnapshot") -> bool:
-        return bool(
-            extract_fix_predecessor_branch_arm_fixes(snapshot.flow_graph)
-        )
+        return bool(extract_fix_predecessor_branch_arm_fixes(snapshot.flow_graph))
 
     def plan(self, snapshot: "AnalysisSnapshot") -> PlanFragment | None:
         fixes = extract_fix_predecessor_branch_arm_fixes(snapshot.flow_graph)

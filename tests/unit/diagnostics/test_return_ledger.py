@@ -1,4 +1,5 @@
 """Tests for the return-ledger diag subcommand."""
+
 from __future__ import annotations
 
 import json
@@ -54,47 +55,137 @@ def _make_diag_db(tmp_path: Path) -> Path:
     db_path = tmp_path / "diag.sqlite3"
     db = create_diag_database(str(db_path))
     with diag_models_on(db):
-        Snapshot.insert_many([
-            dict(id=10, label="state_write_reconstruction_post_apply",
-                 func_ea_hex="0x0", func_ea_i64=0, maturity="",
-                 phase="post_apply", block_count=250, timestamp=0.0),
-            dict(id=11, label="state_write_reconstruction_post_gut_and_wire",
-                 func_ea_hex="0x0", func_ea_i64=0, maturity="",
-                 phase="post_gut_wire", block_count=60, timestamp=1.0),
-            dict(id=12, label="state_write_reconstruction_post_apply",
-                 func_ea_hex="0x0", func_ea_i64=0, maturity="",
-                 phase="post_apply", block_count=220, timestamp=2.0),
-        ]).execute()
+        Snapshot.insert_many(
+            [
+                dict(
+                    id=10,
+                    label="state_write_reconstruction_post_apply",
+                    func_ea_hex="0x0",
+                    func_ea_i64=0,
+                    maturity="",
+                    phase="post_apply",
+                    block_count=250,
+                    timestamp=0.0,
+                ),
+                dict(
+                    id=11,
+                    label="state_write_reconstruction_post_gut_and_wire",
+                    func_ea_hex="0x0",
+                    func_ea_i64=0,
+                    maturity="",
+                    phase="post_gut_wire",
+                    block_count=60,
+                    timestamp=1.0,
+                ),
+                dict(
+                    id=12,
+                    label="state_write_reconstruction_post_apply",
+                    func_ea_hex="0x0",
+                    func_ea_i64=0,
+                    maturity="",
+                    phase="post_apply",
+                    block_count=220,
+                    timestamp=2.0,
+                ),
+            ]
+        ).execute()
         blocks_for_snap = [
-            dict(serial=0,   type_name="BLT_NWAY", preds="[]",     succs="[5]",
-                 block_type=0, nsucc=1, npred=0, insn_count=0, meta=None),
-            dict(serial=5,   type_name="BLT_2WAY", preds="[0]",    succs="[6, 7]",
-                 block_type=0, nsucc=2, npred=1, insn_count=0, meta=None),
-            dict(serial=6,   type_name="BLT_1WAY", preds="[5]",    succs="[100]",
-                 block_type=0, nsucc=1, npred=1, insn_count=0,
-                 meta='{"valranges": "rax: [1, 1]"}'),
-            dict(serial=7,   type_name="BLT_1WAY", preds="[5]",    succs="[100]",
-                 block_type=0, nsucc=1, npred=1, insn_count=0, meta=None),
-            dict(serial=100, type_name="BLT_STOP", preds="[6, 7]", succs="[]",
-                 block_type=0, nsucc=0, npred=2, insn_count=0, meta=None),
-            dict(serial=200, type_name="BLT_1WAY", preds="[]",     succs="[]",
-                 block_type=0, nsucc=0, npred=0, insn_count=0, meta=None),
+            dict(
+                serial=0,
+                type_name="BLT_NWAY",
+                preds="[]",
+                succs="[5]",
+                block_type=0,
+                nsucc=1,
+                npred=0,
+                insn_count=0,
+                meta=None,
+            ),
+            dict(
+                serial=5,
+                type_name="BLT_2WAY",
+                preds="[0]",
+                succs="[6, 7]",
+                block_type=0,
+                nsucc=2,
+                npred=1,
+                insn_count=0,
+                meta=None,
+            ),
+            dict(
+                serial=6,
+                type_name="BLT_1WAY",
+                preds="[5]",
+                succs="[100]",
+                block_type=0,
+                nsucc=1,
+                npred=1,
+                insn_count=0,
+                meta='{"valranges": "rax: [1, 1]"}',
+            ),
+            dict(
+                serial=7,
+                type_name="BLT_1WAY",
+                preds="[5]",
+                succs="[100]",
+                block_type=0,
+                nsucc=1,
+                npred=1,
+                insn_count=0,
+                meta=None,
+            ),
+            dict(
+                serial=100,
+                type_name="BLT_STOP",
+                preds="[6, 7]",
+                succs="[]",
+                block_type=0,
+                nsucc=0,
+                npred=2,
+                insn_count=0,
+                meta=None,
+            ),
+            dict(
+                serial=200,
+                type_name="BLT_1WAY",
+                preds="[]",
+                succs="[]",
+                block_type=0,
+                nsucc=0,
+                npred=0,
+                insn_count=0,
+                meta=None,
+            ),
         ]
         for sid in (10, 12):
-            Block.insert_many([dict(snapshot=sid, **b) for b in blocks_for_snap]).execute()
+            Block.insert_many(
+                [dict(snapshot=sid, **b) for b in blocks_for_snap]
+            ).execute()
         # Return slot writer at blk[6] for snap 10.
         Instruction.insert(
-            snapshot=10, block_serial=6, insn_index=0,
-            ea_hex="0x0", ea_i64=0, opcode=0, opcode_name="m_mov",
-            src_l_type="const", src_l_value_hex="0x1",
+            snapshot=10,
+            block_serial=6,
+            insn_index=0,
+            ea_hex="0x0",
+            ea_i64=0,
+            opcode=0,
+            opcode_name="m_mov",
+            src_l_type="const",
+            src_l_value_hex="0x1",
             dstr="mov #0x1.8, %var_8.8",
             dest_stkoff=DEFAULT_RETURN_SLOT_STKOFF,
         ).execute()
         # v660 writer at blk[7] for snap 10.
         Instruction.insert(
-            snapshot=10, block_serial=7, insn_index=0,
-            ea_hex="0x0", ea_i64=0, opcode=0, opcode_name="m_mov",
-            src_l_type="const", src_l_value_hex="0xDEAD",
+            snapshot=10,
+            block_serial=7,
+            insn_index=0,
+            ea_hex="0x0",
+            ea_i64=0,
+            opcode=0,
+            opcode_name="m_mov",
+            src_l_type="const",
+            src_l_value_hex="0xDEAD",
             dstr="mov #0xDEAD.8, %var_660.8",
             dest_stkoff=DEFAULT_V660_STKOFF,
         ).execute()
@@ -134,14 +225,40 @@ def test_pick_snapshot_falls_back_to_last_post_apply_above_200(
     """No gut_and_wire snapshot exists -- pick the most recent post_apply
     snapshot with >200 blocks."""
     db = make_bound_diag_db()
-    Snapshot.insert_many([
-        dict(id=1, label="something_post_apply", func_ea_hex="0x0", func_ea_i64=0,
-             maturity="", phase="post_apply", block_count=100, timestamp=0.0),
-        dict(id=2, label="something_post_apply", func_ea_hex="0x0", func_ea_i64=0,
-             maturity="", phase="post_apply", block_count=240, timestamp=1.0),
-        dict(id=3, label="other", func_ea_hex="0x0", func_ea_i64=0,
-             maturity="", phase="unknown", block_count=50, timestamp=2.0),
-    ]).execute()
+    Snapshot.insert_many(
+        [
+            dict(
+                id=1,
+                label="something_post_apply",
+                func_ea_hex="0x0",
+                func_ea_i64=0,
+                maturity="",
+                phase="post_apply",
+                block_count=100,
+                timestamp=0.0,
+            ),
+            dict(
+                id=2,
+                label="something_post_apply",
+                func_ea_hex="0x0",
+                func_ea_i64=0,
+                maturity="",
+                phase="post_apply",
+                block_count=240,
+                timestamp=1.0,
+            ),
+            dict(
+                id=3,
+                label="other",
+                func_ea_hex="0x0",
+                func_ea_i64=0,
+                maturity="",
+                phase="unknown",
+                block_count=50,
+                timestamp=2.0,
+            ),
+        ]
+    ).execute()
     assert pick_snapshot(db.connection()) == 2
 
 
@@ -149,12 +266,30 @@ def test_pick_snapshot_returns_last_snapshot_when_no_post_apply(
     tmp_path: Path,
 ) -> None:
     db = make_bound_diag_db()
-    Snapshot.insert_many([
-        dict(id=1, label="pre_d810", func_ea_hex="0x0", func_ea_i64=0,
-             maturity="", phase="pre_d810", block_count=10, timestamp=0.0),
-        dict(id=7, label="pre_d810", func_ea_hex="0x0", func_ea_i64=0,
-             maturity="", phase="pre_d810", block_count=12, timestamp=1.0),
-    ]).execute()
+    Snapshot.insert_many(
+        [
+            dict(
+                id=1,
+                label="pre_d810",
+                func_ea_hex="0x0",
+                func_ea_i64=0,
+                maturity="",
+                phase="pre_d810",
+                block_count=10,
+                timestamp=0.0,
+            ),
+            dict(
+                id=7,
+                label="pre_d810",
+                func_ea_hex="0x0",
+                func_ea_i64=0,
+                maturity="",
+                phase="pre_d810",
+                block_count=12,
+                timestamp=1.0,
+            ),
+        ]
+    ).execute()
     assert pick_snapshot(db.connection()) == 7
 
 
@@ -252,15 +387,49 @@ def test_trace_return_paths_shared_epilogue_walks_through_each_feeder(
     the tracer should walk through each feeder and surface the writer
     sitting on a feeder block."""
     blocks: dict[int, dict] = {
-        0:   {"serial": 0,   "type": "BLT_NWAY", "preds": [],     "succs": [10, 11], "valranges": ""},
-        10:  {"serial": 10,  "type": "BLT_1WAY", "preds": [0],    "succs": [99],     "valranges": ""},
-        11:  {"serial": 11,  "type": "BLT_1WAY", "preds": [0],    "succs": [99],     "valranges": ""},
-        99:  {"serial": 99,  "type": "BLT_1WAY", "preds": [10, 11], "succs": [100], "valranges": ""},  # shared epilogue
-        100: {"serial": 100, "type": "BLT_STOP", "preds": [99],   "succs": [],       "valranges": ""},
+        0: {
+            "serial": 0,
+            "type": "BLT_NWAY",
+            "preds": [],
+            "succs": [10, 11],
+            "valranges": "",
+        },
+        10: {
+            "serial": 10,
+            "type": "BLT_1WAY",
+            "preds": [0],
+            "succs": [99],
+            "valranges": "",
+        },
+        11: {
+            "serial": 11,
+            "type": "BLT_1WAY",
+            "preds": [0],
+            "succs": [99],
+            "valranges": "",
+        },
+        99: {
+            "serial": 99,
+            "type": "BLT_1WAY",
+            "preds": [10, 11],
+            "succs": [100],
+            "valranges": "",
+        },  # shared epilogue
+        100: {
+            "serial": 100,
+            "type": "BLT_STOP",
+            "preds": [99],
+            "succs": [],
+            "valranges": "",
+        },
     }
     writer = ReturnSlotWriter(
-        block_serial=10, opcode="m_mov", src_type="const",
-        src_stkoff=None, src_value="0xAA", dstr="mov #0xAA, %var_8.8",
+        block_serial=10,
+        opcode="m_mov",
+        src_type="const",
+        src_stkoff=None,
+        src_value="0xAA",
+        dstr="mov #0xAA, %var_8.8",
     )
     paths = trace_return_paths(blocks, {10: writer}, {}, set(blocks))
     # 99 has 2 preds AND it is also the sole pred of 100, so is_pts=False
@@ -275,8 +444,20 @@ def test_trace_return_paths_shared_epilogue_walks_through_each_feeder(
 
 def test_trace_return_paths_empty_when_no_blt_stop(tmp_path: Path) -> None:
     blocks: dict[int, dict] = {
-        0: {"serial": 0, "type": "BLT_1WAY", "preds": [], "succs": [1], "valranges": ""},
-        1: {"serial": 1, "type": "BLT_1WAY", "preds": [0], "succs": [], "valranges": ""},
+        0: {
+            "serial": 0,
+            "type": "BLT_1WAY",
+            "preds": [],
+            "succs": [1],
+            "valranges": "",
+        },
+        1: {
+            "serial": 1,
+            "type": "BLT_1WAY",
+            "preds": [0],
+            "succs": [],
+            "valranges": "",
+        },
     }
     assert trace_return_paths(blocks, {}, {}, set(blocks)) == []
 
@@ -397,15 +578,11 @@ def test_run_ledger_emits_header_for_real_db(diag_db: Path) -> None:
 
 
 def test_run_ledger_correlates_after_returns_when_dump_provided(
-    diag_db: Path, tmp_path: Path,
+    diag_db: Path,
+    tmp_path: Path,
 ) -> None:
     dump = tmp_path / "dump.txt"
-    dump.write_text(
-        "--- AFTER ---\n"
-        "    return 1;\n"
-        "    return 2;\n"
-        "AFTER: lines=3\n"
-    )
+    dump.write_text("--- AFTER ---\n    return 1;\n    return 2;\nAFTER: lines=3\n")
     out = run_ledger(diag_db, dump_path=dump)
     assert "2 AFTER Returns" in out
     assert "R1  line" in out and "R2  line" in out

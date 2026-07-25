@@ -81,9 +81,7 @@ def gen_microcode_at_maturity(func_ea: int, maturity: int):
 
     mbr = ida_hexrays.mba_ranges_t(func)
     hf = ida_hexrays.hexrays_failure_t()
-    mba = ida_hexrays.gen_microcode(
-        mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, maturity
-    )
+    mba = ida_hexrays.gen_microcode(mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, maturity)
     return mba
 
 
@@ -182,7 +180,9 @@ class TestEmulatorMopVWritableNoXrefs:
         # Get the value from emulator
         try:
             result = interp.eval(mop, env)
-            print(f"\n  Block {serial}, {op_name} operand: addr=0x{addr:x}, size={size}, value=0x{result:x}")
+            print(
+                f"\n  Block {serial}, {op_name} operand: addr=0x{addr:x}, size={size}, value=0x{result:x}"
+            )
             assert isinstance(result, int), "eval() should return an integer"
         except Exception as e:
             # Some addresses may not be emulatable (e.g., runtime-computed)
@@ -221,7 +221,9 @@ class TestEmulatorMopVWritableNoXrefs:
             seg = idaapi.getseg(addr)
             if seg:
                 has_write = bool(seg.perm & idaapi.SEGPERM_WRITE)
-                print(f"\n  Block {serial}, {op_name}: addr=0x{addr:x}, writable={has_write}")
+                print(
+                    f"\n  Block {serial}, {op_name}: addr=0x{addr:x}, writable={has_write}"
+                )
 
                 try:
                     result = interp.eval(mop, env)
@@ -262,7 +264,9 @@ class TestMopTrackerResolvesGlobals:
         # Before try_resolve_memory_mops
         initial_resolved = tracker.is_resolved()
         initial_memory_unresolved = len(tracker._memory_unresolved_mops)
-        print(f"\n  Initial: resolved={initial_resolved}, memory_unresolved={initial_memory_unresolved}")
+        print(
+            f"\n  Initial: resolved={initial_resolved}, memory_unresolved={initial_memory_unresolved}"
+        )
 
         # Try to resolve
         tracker.try_resolve_memory_mops()
@@ -270,11 +274,14 @@ class TestMopTrackerResolvesGlobals:
         # After try_resolve_memory_mops
         final_resolved = tracker.is_resolved()
         final_memory_unresolved = len(tracker._memory_unresolved_mops)
-        print(f"  After resolve: resolved={final_resolved}, memory_unresolved={final_memory_unresolved}")
+        print(
+            f"  After resolve: resolved={final_resolved}, memory_unresolved={final_memory_unresolved}"
+        )
 
         # For const readonly data, should resolve successfully
-        assert final_memory_unresolved <= initial_memory_unresolved, \
+        assert final_memory_unresolved <= initial_memory_unresolved, (
             "try_resolve_memory_mops should not increase unresolved count"
+        )
 
     def test_tracker_with_mop_v_from_opaque_table(self, libobfuscated_setup):
         """MopTracker should resolve mop_v from writable opaque tables with no xrefs."""
@@ -303,24 +310,31 @@ class TestMopTrackerResolvesGlobals:
 
             # Check if this is truly never written
             from d810.hexrays.utils.ida_utils import is_never_written_var
+
             never_written = is_never_written_var(addr)
 
-            print(f"\n  Block {serial}, {op_name}: addr=0x{addr:x}, never_written={never_written}")
+            print(
+                f"\n  Block {serial}, {op_name}: addr=0x{addr:x}, never_written={never_written}"
+            )
 
             initial_memory_unresolved = len(tracker._memory_unresolved_mops)
             tracker.try_resolve_memory_mops()
             final_memory_unresolved = len(tracker._memory_unresolved_mops)
 
-            print(f"    memory_unresolved: {initial_memory_unresolved} -> {final_memory_unresolved}")
+            print(
+                f"    memory_unresolved: {initial_memory_unresolved} -> {final_memory_unresolved}"
+            )
 
             # If the variable is never written, it should be resolvable
             if never_written:
-                assert final_memory_unresolved == 0, \
+                assert final_memory_unresolved == 0, (
                     "Never-written variable should be resolved"
+                )
             else:
                 # Has write xrefs, should remain unresolved
-                assert final_memory_unresolved == initial_memory_unresolved, \
+                assert final_memory_unresolved == initial_memory_unresolved, (
                     "Variable with write xrefs should stay unresolved"
+                )
 
     def test_tracker_multiple_mops_mixed_segments(self, libobfuscated_setup):
         """Mixed-resolution mop_v integration check for MopTracker.
@@ -408,8 +422,9 @@ class TestMopTrackerResolvesGlobals:
         print(f"  Resolved: {initial_memory_unresolved - final_memory_unresolved}")
 
         # At least some should resolve (e.g. readonly or never-written data)
-        assert final_memory_unresolved < initial_memory_unresolved, \
+        assert final_memory_unresolved < initial_memory_unresolved, (
             "Expected at least some mop_v operands to resolve"
+        )
 
 
 # ===================================================================
@@ -486,15 +501,19 @@ class TestFoldReadonlyDataRuleWritableConstants:
             if seg and (seg.perm & idaapi.SEGPERM_WRITE):
                 # This is a writable segment
                 from d810.hexrays.utils.ida_utils import is_never_written_var
+
                 never_written = is_never_written_var(addr)
                 is_foldable = rule._is_foldable_address(addr)
 
-                print(f"\n  addr=0x{addr:x}, never_written={never_written}, foldable={is_foldable}")
+                print(
+                    f"\n  addr=0x{addr:x}, never_written={never_written}, foldable={is_foldable}"
+                )
 
                 # With fold_writable_constants=True and no xrefs, should be foldable
                 if never_written:
-                    assert is_foldable, \
+                    assert is_foldable, (
                         "Writable never-written address should be foldable with flag enabled"
+                    )
 
     def test_is_foldable_for_writable_with_fold_disabled(self, libobfuscated_setup):
         """Writable addresses should NOT be foldable when flag is disabled."""
@@ -529,8 +548,9 @@ class TestFoldReadonlyDataRuleWritableConstants:
                 print(f"\n  addr=0x{addr:x}, foldable={is_foldable}")
 
                 # With fold_writable_constants=False, writable should NOT be foldable
-                assert not is_foldable, \
+                assert not is_foldable, (
                     "Writable address should NOT be foldable with flag disabled"
+                )
 
     def test_configure_sets_fold_writable_constants(self, libobfuscated_setup):
         """configure() should set _fold_writable_constants from kwargs."""
@@ -538,7 +558,9 @@ class TestFoldReadonlyDataRuleWritableConstants:
         assert rule._fold_writable_constants is False, "Default should be False"
 
         rule.configure({"fold_writable_constants": True})
-        assert rule._fold_writable_constants is True, "Should be set to True after configure"
+        assert rule._fold_writable_constants is True, (
+            "Should be set to True after configure"
+        )
 
         rule.configure({"fold_writable_constants": False})
         assert rule._fold_writable_constants is False, "Should be reset to False"
@@ -668,14 +690,21 @@ class TestIntegrationOpaqueTableFolding:
             # assert the semantic shape instead of one renderer spelling.
 
             # Verify opaque table references eliminated
-            assert "g_opaque_table" not in code, \
+            assert "g_opaque_table" not in code, (
                 "Opaque table reference should be eliminated"
+            )
 
             # Verify state constants eliminated (sample a few key ones)
-            state_constants = ["0x1000", "0x2000", "0x4000", "0x5000", "0x6000", "0x7000"]
+            state_constants = [
+                "0x1000",
+                "0x2000",
+                "0x4000",
+                "0x5000",
+                "0x6000",
+                "0x7000",
+            ]
             for const in state_constants:
-                assert const not in code, \
-                    f"State constant {const} should be eliminated"
+                assert const not in code, f"State constant {const} should be eliminated"
 
             code_lines = {line.strip() for line in code.splitlines()}
             # Writable-global addresses shift with the build base (.rdata rebuild),
@@ -685,19 +714,23 @@ class TestIntegrationOpaqueTableFolding:
                 re.sub(r"\b((?:dword|qword|word|byte)_)[0-9A-Fa-f]+\b", r"\1ADDR", line)
                 for line in code_lines
             }
-            assert "dword_ADDR = 3 * a1 + 7;" in code_lines_norm, \
+            assert "dword_ADDR = 3 * a1 + 7;" in code_lines_norm, (
                 "Expected collapsed side-effect assignment: dword_<g_opaque_table> = 3 * a1 + 7"
+            )
             assert (
                 "return 3 * a1 + 7;" in code_lines
                 or "return (unsigned int)(3 * a1 + 7);" in code_lines
             ), "Expected collapsed return of the recovered expression"
 
-            assert "while" not in code.lower(), \
+            assert "while" not in code.lower(), (
                 "Expected conditional-chain dispatcher to be fully removed"
+            )
 
-            assert "while ( 1 )\n        ;" not in code, \
+            assert "while ( 1 )\n        ;" not in code, (
                 "Unexpected terminal infinite loop after opaque-table folding"
+            )
 
             # Verify decompilation didn't crash and produced something
-            assert len(code.strip()) > 0, \
+            assert len(code.strip()) > 0, (
                 "Expected non-empty pseudocode after deobfuscation"
+            )

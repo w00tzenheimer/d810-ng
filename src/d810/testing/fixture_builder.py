@@ -4,6 +4,7 @@ NO IDA imports live here — the IDA-bound extract/resolve jobs run in the
 subprocess worker ``samples/scripts/fixture_idb_worker.py``. Everything in this
 module is unit-testable without IDA.
 """
+
 from __future__ import annotations
 
 import os
@@ -54,8 +55,9 @@ def _parse_int(tok: str) -> int:
 
 def _materialized_value(asm_text: str, slot: str) -> int | None:
     """Return the raw ``<slot> dq <hex>`` value, or None if it is a reloc expr."""
-    m = re.search(rf"^\s*{re.escape(slot)}\s+dq\s+([0-9A-Fa-f]+h|\d+)\s*$",
-                  asm_text, re.MULTILINE)
+    m = re.search(
+        rf"^\s*{re.escape(slot)}\s+dq\s+([0-9A-Fa-f]+h|\d+)\s*$", asm_text, re.MULTILINE
+    )
     return _parse_int(m.group(1)) if m else None
 
 
@@ -94,10 +96,14 @@ def detect_indirect_call_folds(asm_text: str) -> list[CallSiteFold]:
                         break
                 break
         if slot is not None and const is not None:
-            folds.append(CallSiteFold(
-                slot_symbol=slot, const=const, call_reg=reg,
-                materialized=_materialized_value(asm_text, slot),
-            ))
+            folds.append(
+                CallSiteFold(
+                    slot_symbol=slot,
+                    const=const,
+                    call_reg=reg,
+                    materialized=_materialized_value(asm_text, slot),
+                )
+            )
     return folds
 
 
@@ -112,18 +118,26 @@ def plan_retargets(
     seen: set[str] = set()
     for f in folds:
         if f.materialized is None:
-            skipped.append(f"{f.slot_symbol}: slot already a reloc expr (not a fresh extract)")
+            skipped.append(
+                f"{f.slot_symbol}: slot already a reloc expr (not a fresh extract)"
+            )
             continue
         va = (f.materialized + f.const) & _MASK64
         tgt = resolved.get(va)
         if tgt is None or not tgt.name:
-            skipped.append(f"{f.slot_symbol}: target VA {va:#x} unresolved in source idb")
+            skipped.append(
+                f"{f.slot_symbol}: target VA {va:#x} unresolved in source idb"
+            )
             continue
         if tgt.name in image_symbols:
-            skipped.append(f"{f.slot_symbol}: target {tgt.name} is in-image (already fine)")
+            skipped.append(
+                f"{f.slot_symbol}: target {tgt.name} is in-image (already fine)"
+            )
             continue
         if not tgt.retargetable:
-            skipped.append(f"{f.slot_symbol}: target {tgt.name} is an obfuscated helper, left as MEMORY[...]")
+            skipped.append(
+                f"{f.slot_symbol}: target {tgt.name} is an obfuscated helper, left as MEMORY[...]"
+            )
             continue
         key = f"{f.slot_symbol}->{tgt.name}"
         if key in seen:
@@ -141,7 +155,9 @@ def apply_retargets(asm_text: str, plan: RetargetPlan) -> str:
         text = re.sub(
             rf"^\s*{re.escape(act.slot_symbol)}\s+dq\s+(?:[0-9A-Fa-f]+h|\d+)\s*$",
             f"{act.slot_symbol} dq {act.name} - {act.const:X}h",
-            text, count=1, flags=re.MULTILINE,
+            text,
+            count=1,
+            flags=re.MULTILINE,
         )
         externs.append(f"EXTERN {act.name}:PROC")
     if externs:
@@ -176,9 +192,9 @@ def emit_fixture_case(function: str, project: str) -> str:
         "    DeobfuscationCase(\n"
         f'        function="{function}",\n'
         f'        description="TODO(human): {function} MASM fixture (d810cli fixture, '
-        'd81-rtfh). Auto-generated MINIMAL case: only must_change + no-INTERR '
-        'guarded. Replace this description and add semantic assertions '
-        '(contains / not-contains / expected-rules) from the '
+        "d81-rtfh). Auto-generated MINIMAL case: only must_change + no-INTERR "
+        "guarded. Replace this description and add semantic assertions "
+        "(contains / not-contains / expected-rules) from the "
         'before/after dump before merging.",\n'
         f'        project="{project}",\n'
         "        must_change=True,\n"
@@ -200,7 +216,7 @@ def upsert_case_in_list(list_source: str, function: str, case_src: str) -> str:
     out_parts: list[str] = []
     pos = 0
     for m in case_block.finditer(list_source):
-        out_parts.append(list_source[pos:m.start()])
+        out_parts.append(list_source[pos : m.start()])
         block = m.group(0)
         if _matches(block) and not replaced:
             out_parts.append(case_src)
@@ -222,25 +238,40 @@ def build_fixture_dll(repo_root: Path, binary_name: str, runner=subprocess.run) 
     samples = repo_root / "samples"
     script = samples / "scripts" / "build_masm.sh"
     env = {**os.environ, "BINARY_NAME": binary_name, "MASM_FUNCS": ""}
-    res = runner(["bash", str(script)], env=env, cwd=str(samples),
-                 capture_output=True, text=True)
+    res = runner(
+        ["bash", str(script)], env=env, cwd=str(samples), capture_output=True, text=True
+    )
     out = samples / "bins" / f"{binary_name}.dll"
     if getattr(res, "returncode", 1) != 0 or not out.exists():
         raise RuntimeError(
             f"build_masm.sh failed (rc={getattr(res, 'returncode', '?')}):\n"
-            f"{getattr(res, 'stderr', '')}")
+            f"{getattr(res, 'stderr', '')}"
+        )
     return out
 
 
-def verify_fixture_case(repo_root: Path, function: str, binary_name: str,
-                        runner=subprocess.run) -> bool:
+def verify_fixture_case(
+    repo_root: Path, function: str, binary_name: str, runner=subprocess.run
+) -> bool:
     """Run the DSL case for <function> against the throwaway DLL."""
-    env = {**os.environ,
-           "D810_TEST_BINARY": f"{binary_name}.dll",
-           "PYTHONPATH": f"{repo_root / 'src'}:{repo_root / 'tests'}"}
+    env = {
+        **os.environ,
+        "D810_TEST_BINARY": f"{binary_name}.dll",
+        "PYTHONPATH": f"{repo_root / 'src'}:{repo_root / 'tests'}",
+    }
     res = runner(
-        ["python", "-m", "pytest",
-         "tests/system/e2e/test_libdeobfuscated_dsl.py",
-         "-k", function, "-q"],
-        env=env, cwd=str(repo_root), capture_output=True, text=True)
+        [
+            "python",
+            "-m",
+            "pytest",
+            "tests/system/e2e/test_libdeobfuscated_dsl.py",
+            "-k",
+            function,
+            "-q",
+        ],
+        env=env,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+    )
     return getattr(res, "returncode", 1) == 0

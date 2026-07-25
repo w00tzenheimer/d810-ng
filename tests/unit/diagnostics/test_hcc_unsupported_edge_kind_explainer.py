@@ -4,6 +4,7 @@ Covers verdict logic (safe-to-allow vs correct-rejection), target row
 selection, formatting, and the full DB-join pipeline against an
 in-memory SQLite fixture.
 """
+
 from __future__ import annotations
 
 import json
@@ -249,52 +250,153 @@ def in_memory_db() -> sqlite3.Connection:
     # target this in-memory DB; the fixture returns the live connection.
     db = make_bound_diag_db()
     Snapshot.insert(
-        id=7, label="GLBOPT1_post_d810", func_ea_hex="0x0", func_ea_i64=0,
-        maturity="MMAT_GLBOPT1", phase="unknown", block_count=0, timestamp=0.0,
+        id=7,
+        label="GLBOPT1_post_d810",
+        func_ea_hex="0x0",
+        func_ea_i64=0,
+        maturity="MMAT_GLBOPT1",
+        phase="unknown",
+        block_count=0,
+        timestamp=0.0,
     ).execute()
     # byte's block 100 -> state A; A has 2 outgoing edges, both rejected
     # (one to safe target B with byte fact, one to non-byte target C).
-    StateCfgNode.insert_many([
-        dict(snapshot=7, state_hex="0xa", state_i64=10, entry_block=100,
-             classification="EXACT", shared_suffix=None),
-        dict(snapshot=7, state_hex="0xb", state_i64=11, entry_block=200,
-             classification="EXACT", shared_suffix=None),
-        dict(snapshot=7, state_hex="0xc", state_i64=12, entry_block=300,
-             classification="EXACT", shared_suffix=None),
-    ]).execute()
-    StateCfgNodeBlock.insert_many([
-        dict(snapshot=7, state_hex="0xa", entry_block=100, block_serial=100,
-             block_index=0, role="owned"),
-        dict(snapshot=7, state_hex="0xb", entry_block=200, block_serial=200,
-             block_index=0, role="owned"),
-        dict(snapshot=7, state_hex="0xc", entry_block=300, block_serial=300,
-             block_index=0, role="owned"),
-    ]).execute()
-    StateCfgEdge.insert_many([
-        dict(snapshot=7, edge_id=0, source_state_hex="0xa", source_state_i64=10,
-             target_state_hex="0xb", target_state_i64=11,
-             edge_kind="EXIT_ROUTINE", source_block=100, source_arm=None,
-             target_entry=200, ordered_path="[100, 200]"),
-        dict(snapshot=7, edge_id=1, source_state_hex="0xa", source_state_i64=10,
-             target_state_hex="0xc", target_state_i64=12,
-             edge_kind="CONDITIONAL_RETURN", source_block=100, source_arm=None,
-             target_entry=300, ordered_path="[100, 300]"),
-    ]).execute()
-    Block.insert_many([
-        dict(snapshot=7, serial=100, block_type=0, type_name="BLT_2WAY",
-             nsucc=2, npred=0, succs="200 300", preds="[]", insn_count=0),
-        dict(snapshot=7, serial=200, block_type=0, type_name="BLT_1WAY",
-             nsucc=1, npred=1, succs="300", preds="[]", insn_count=0),
-        dict(snapshot=7, serial=300, block_type=0, type_name="BLT_STOP",
-             nsucc=0, npred=2, succs="", preds="[]", insn_count=0),
-    ]).execute()
+    StateCfgNode.insert_many(
+        [
+            dict(
+                snapshot=7,
+                state_hex="0xa",
+                state_i64=10,
+                entry_block=100,
+                classification="EXACT",
+                shared_suffix=None,
+            ),
+            dict(
+                snapshot=7,
+                state_hex="0xb",
+                state_i64=11,
+                entry_block=200,
+                classification="EXACT",
+                shared_suffix=None,
+            ),
+            dict(
+                snapshot=7,
+                state_hex="0xc",
+                state_i64=12,
+                entry_block=300,
+                classification="EXACT",
+                shared_suffix=None,
+            ),
+        ]
+    ).execute()
+    StateCfgNodeBlock.insert_many(
+        [
+            dict(
+                snapshot=7,
+                state_hex="0xa",
+                entry_block=100,
+                block_serial=100,
+                block_index=0,
+                role="owned",
+            ),
+            dict(
+                snapshot=7,
+                state_hex="0xb",
+                entry_block=200,
+                block_serial=200,
+                block_index=0,
+                role="owned",
+            ),
+            dict(
+                snapshot=7,
+                state_hex="0xc",
+                entry_block=300,
+                block_serial=300,
+                block_index=0,
+                role="owned",
+            ),
+        ]
+    ).execute()
+    StateCfgEdge.insert_many(
+        [
+            dict(
+                snapshot=7,
+                edge_id=0,
+                source_state_hex="0xa",
+                source_state_i64=10,
+                target_state_hex="0xb",
+                target_state_i64=11,
+                edge_kind="EXIT_ROUTINE",
+                source_block=100,
+                source_arm=None,
+                target_entry=200,
+                ordered_path="[100, 200]",
+            ),
+            dict(
+                snapshot=7,
+                edge_id=1,
+                source_state_hex="0xa",
+                source_state_i64=10,
+                target_state_hex="0xc",
+                target_state_i64=12,
+                edge_kind="CONDITIONAL_RETURN",
+                source_block=100,
+                source_arm=None,
+                target_entry=300,
+                ordered_path="[100, 300]",
+            ),
+        ]
+    ).execute()
+    Block.insert_many(
+        [
+            dict(
+                snapshot=7,
+                serial=100,
+                block_type=0,
+                type_name="BLT_2WAY",
+                nsucc=2,
+                npred=0,
+                succs="200 300",
+                preds="[]",
+                insn_count=0,
+            ),
+            dict(
+                snapshot=7,
+                serial=200,
+                block_type=0,
+                type_name="BLT_1WAY",
+                nsucc=1,
+                npred=1,
+                succs="300",
+                preds="[]",
+                insn_count=0,
+            ),
+            dict(
+                snapshot=7,
+                serial=300,
+                block_type=0,
+                type_name="BLT_STOP",
+                nsucc=0,
+                npred=2,
+                succs="",
+                preds="[]",
+                insn_count=0,
+            ),
+        ]
+    ).execute()
     # TerminalByteEmitterFact for byte 2 on block 200 (target B carries
     # byte 2's role; the EXIT_ROUTINE rejection looks safe to relax). No
     # fact on block 300 (target C is genuinely a non-byte path).
     FactObservation.insert(
-        snapshot=7, func_ea_hex="f", func_ea_i64=1, fact_id="fact_b2",
-        kind="TerminalByteEmitterFact", semantic_key="k",
-        maturity="MMAT_GLBOPT1", phase="pre_d810", confidence=0.9,
+        snapshot=7,
+        func_ea_hex="f",
+        func_ea_i64=1,
+        fact_id="fact_b2",
+        kind="TerminalByteEmitterFact",
+        semantic_key="k",
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
+        confidence=0.9,
         source_block=200,
         payload='{"byte_index": 2, "corridor_role": "terminal_tail"}',
         evidence="{}",
@@ -313,7 +415,9 @@ def test_explain_byte_classifies_safe_to_allow_when_target_carries_byte_fact(
     assert len(explanation.rejected_edges) == 2
     kinds = {e.edge_kind for e in explanation.rejected_edges}
     assert kinds == {"EXIT_ROUTINE", "CONDITIONAL_RETURN"}
-    safe_edge = next(e for e in explanation.rejected_edges if e.edge_kind == "EXIT_ROUTINE")
+    safe_edge = next(
+        e for e in explanation.rejected_edges if e.edge_kind == "EXIT_ROUTINE"
+    )
     assert safe_edge.target_byte_facts == (2,)
     assert safe_edge.target_has_same_byte_fact is True
 

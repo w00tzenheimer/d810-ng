@@ -21,6 +21,7 @@ STANDING RULE: whenever a block/serial is serialized (JSON/logs), its EA is
 carried alongside.  :class:`Block` and :class:`EntersDispatcher` therefore hold
 an optional ``ea`` and render ``serial@0xEA`` in ``__repr__``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -50,6 +50,7 @@ already exposed nested structure in the canonical projection, so its flat-shape
 output stays byte-identical; only the nested-sub recovery is newly reachable.
 Meta-less rows stay byte-identical.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -265,9 +266,7 @@ class _InductionVar:
     def is_reg(self) -> bool:
         return self.reg is not None
 
-    def matches_operand(
-        self, *, stkoff: int | None, reg: int | None
-    ) -> bool:
+    def matches_operand(self, *, stkoff: int | None, reg: int | None) -> bool:
         """True iff the given operand identity is this induction var."""
         if self.stkoff is not None:
             return stkoff is not None and int(stkoff) == int(self.stkoff)
@@ -372,9 +371,7 @@ class FoldedLoopGuardFactCollector:
             if counter is None:
                 continue
             counter_var, bound, signed = counter
-            arms = self._guard_arms(
-                target, guard_serial, by_block, canonical_stkoff
-            )
+            arms = self._guard_arms(target, guard_serial, by_block, canonical_stkoff)
             if arms is None:
                 continue
             body_state, exit_state = arms
@@ -396,9 +393,7 @@ class FoldedLoopGuardFactCollector:
                 "guard_ea": int(guard_ea),
                 "guard_ea_hex": f"0x{int(guard_ea) & 0xFFFFFFFFFFFFFFFF:016x}",
                 "counter_stkoff": (
-                    int(counter_var.stkoff)
-                    if counter_var.stkoff is not None
-                    else None
+                    int(counter_var.stkoff) if counter_var.stkoff is not None else None
                 ),
                 "counter_stkoff_hex": (
                     f"0x{counter_var.stkoff:x}"
@@ -409,9 +404,7 @@ class FoldedLoopGuardFactCollector:
                     int(counter_var.reg) if counter_var.reg is not None else None
                 ),
                 "counter_reg_hex": (
-                    f"0x{counter_var.reg:x}"
-                    if counter_var.reg is not None
-                    else None
+                    f"0x{counter_var.reg:x}" if counter_var.reg is not None else None
                 ),
                 "counter_size": int(counter_var.size),
                 "bound": int(bound),
@@ -439,9 +432,7 @@ class FoldedLoopGuardFactCollector:
                         f"exit=0x{int(exit_state):08x}"
                     ),
                     payload=payload,
-                    evidence=tuple(
-                        i.dstr for i in block_insns if i.dstr
-                    )[:4],
+                    evidence=tuple(i.dstr for i in block_insns if i.dstr)[:4],
                 )
             )
         return tuple(observations)
@@ -472,9 +463,7 @@ class FoldedLoopGuardFactCollector:
             signed = FoldedLoopGuardFactCollector._flat_guard_signedness(insn)
             if signed is None:
                 continue
-            match = FoldedLoopGuardFactCollector._match_counter_bound(
-                insn, induction
-            )
+            match = FoldedLoopGuardFactCollector._match_counter_bound(insn, induction)
             if match is None:
                 continue
             counter, bound = match
@@ -485,9 +474,7 @@ class FoldedLoopGuardFactCollector:
             signed = FoldedLoopGuardFactCollector._nested_sub_signedness(insn)
             if signed is None:
                 continue
-            match = FoldedLoopGuardFactCollector._match_buried_sub(
-                insn, induction
-            )
+            match = FoldedLoopGuardFactCollector._match_buried_sub(insn, induction)
             if match is None:
                 continue
             counter, bound = match
@@ -657,9 +644,7 @@ class FoldedLoopGuardFactCollector:
             body_state = next(
                 (
                     s
-                    for s in (
-                        _state_const(i, canonical_stkoff) for i in block_insns
-                    )
+                    for s in (_state_const(i, canonical_stkoff) for i in block_insns)
                     if s is not None
                 ),
                 None,
@@ -684,9 +669,7 @@ class FoldedLoopGuardFactCollector:
             state = next(
                 (
                     s
-                    for s in (
-                        _state_const(i, canonical_stkoff) for i in block_insns
-                    )
+                    for s in (_state_const(i, canonical_stkoff) for i in block_insns)
                     if s is not None
                 ),
                 None,

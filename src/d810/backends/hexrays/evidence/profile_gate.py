@@ -1,4 +1,5 @@
 """Hodur profile admission gates for live strategy entrypoints."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -63,10 +64,7 @@ class AttributeHodurProfileGate:
             maturity = int(getattr(live_function, "maturity", -1))
         except Exception:
             return False
-        return (
-            entry_ea == int(expected_entry_ea)
-            and maturity == int(expected_maturity)
-        )
+        return entry_ea == int(expected_entry_ea) and maturity == int(expected_maturity)
 
 
 DEFAULT_HODUR_PROFILE_GATE: HodurProfileGateBackend = AttributeHodurProfileGate()

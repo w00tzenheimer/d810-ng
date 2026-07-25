@@ -1,4 +1,5 @@
 """Tests for TerminalByteEmitterFactCollector."""
+
 from __future__ import annotations
 
 import json
@@ -16,7 +17,9 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.ir.semantics import ControlTransferKind, PredicateKind
-from d810.analyses.value_flow.terminal_byte_emitter import TerminalByteEmitterFactCollector
+from d810.analyses.value_flow.terminal_byte_emitter import (
+    TerminalByteEmitterFactCollector,
+)
 from d810.analyses.value_flow.induction_carrier import _MATURITY_VALUES
 
 _OPCODE_ALIASES = {
@@ -120,10 +123,12 @@ def _target(
             )
         }
     )
+
+
 def test_collector_does_not_hardcode_hodur_destination_temp_name() -> None:
-    source = Path(
-        "src/d810/analyses/value_flow/terminal_byte_emitter.py"
-    ).read_text(encoding="utf-8")
+    source = Path("src/d810/analyses/value_flow/terminal_byte_emitter.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "%var_188" not in source
 
@@ -258,9 +263,7 @@ def _cfg_insn(
         ea=0x180014000 + index if ea is None else ea,
         operands=tuple(op for op in (l, r, d) if op is not None),
         operand_slots=tuple(
-            (slot, op)
-            for slot, op in (("l", l), ("r", r), ("d", d))
-            if op is not None
+            (slot, op) for slot, op in (("l", l), ("r", r), ("d", d)) if op is not None
         ),
         display_text=display_text,
         l=l,

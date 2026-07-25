@@ -1,4 +1,5 @@
 """Plan one PREOPT range union from resolver-owned handler closures."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -60,9 +61,7 @@ def plan_preopt_union_region(
             ranges_by_target.setdefault(target_ea, set()).add(normalized)
 
     selected_targets: list[int] = []
-    selected_seed_ranges: list[
-        tuple[int, tuple[tuple[int, int], ...]]
-    ] = []
+    selected_seed_ranges: list[tuple[int, tuple[tuple[int, int], ...]]] = []
     selected_ranges: list[tuple[int, int]] = []
     abstentions: list[PreoptUnionAbstention] = []
     for target_ea in sorted(route_targets):

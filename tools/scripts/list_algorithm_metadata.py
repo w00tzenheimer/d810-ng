@@ -7,6 +7,7 @@ Examples:
     python3 tools/scripts/list_algorithm_metadata.py --search hammock
     python3 tools/scripts/list_algorithm_metadata.py --json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -59,12 +60,17 @@ def _load_source_metadata() -> tuple[AlgorithmMetadata, ...]:
         module_name = ".".join(Path(relative_path).with_suffix("").parts)
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in tree.body:
-            if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not isinstance(
+                node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
                 continue
             for decorator in node.decorator_list:
                 if not isinstance(decorator, ast.Call):
                     continue
-                if not isinstance(decorator.func, ast.Name) or decorator.func.id != "algorithm_metadata":
+                if (
+                    not isinstance(decorator.func, ast.Name)
+                    or decorator.func.id != "algorithm_metadata"
+                ):
                     continue
                 kwargs = {
                     keyword.arg: _literal(keyword.value)
@@ -76,10 +82,16 @@ def _load_source_metadata() -> tuple[AlgorithmMetadata, ...]:
                         algorithm_id=str(kwargs["algorithm_id"]),
                         family=str(kwargs["family"]),
                         summary=str(kwargs["summary"]),
-                        use_cases=tuple(str(item) for item in kwargs.get("use_cases", ())),
-                        examples=tuple(str(item) for item in kwargs.get("examples", ())),
+                        use_cases=tuple(
+                            str(item) for item in kwargs.get("use_cases", ())
+                        ),
+                        examples=tuple(
+                            str(item) for item in kwargs.get("examples", ())
+                        ),
                         tags=tuple(str(item) for item in kwargs.get("tags", ())),
-                        related_paths=tuple(str(item) for item in kwargs.get("related_paths", ())),
+                        related_paths=tuple(
+                            str(item) for item in kwargs.get("related_paths", ())
+                        ),
                         module=module_name,
                         object_qualname=f"{module_name}.{node.name}",
                     )
@@ -140,7 +152,13 @@ def main() -> int:
         )
 
     if args.json:
-        print(json.dumps({"matches": [asdict(metadata) for metadata in matches]}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {"matches": [asdict(metadata) for metadata in matches]},
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
 
     for metadata in matches:

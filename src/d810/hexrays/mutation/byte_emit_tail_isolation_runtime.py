@@ -312,7 +312,7 @@ class LiveMbaAdapter:
         blk = mba.get_mblock(int(block_serial))
         if blk is None:
             raise RuntimeError(
-                "split_block_at_tail_jcnd: cannot resolve block " f"{block_serial}"
+                f"split_block_at_tail_jcnd: cannot resolve block {block_serial}"
             )
 
         nsucc = (
@@ -353,8 +353,7 @@ class LiveMbaAdapter:
             cur = cur.next
         if target is None:
             raise RuntimeError(
-                "split_block_at_tail_jcnd: no conditional jump in "
-                f"block {block_serial}"
+                f"split_block_at_tail_jcnd: no conditional jump in block {block_serial}"
             )
 
         new_blk = self._new_deferred_modifier().split_block_now(blk, target)
@@ -650,7 +649,7 @@ class LiveMbaAdapter:
         src = mba.get_mblock(int(source_serial))
         if src is None:
             raise RuntimeError(
-                "redirect_fallthrough_edge: cannot resolve " f"src={source_serial}"
+                f"redirect_fallthrough_edge: cannot resolve src={source_serial}"
             )
         old_qty = int(mba.qty)
         helper_serial = self._new_deferred_modifier().redirect_fallthrough_edge_now(
@@ -1198,8 +1197,7 @@ class LiveMbaAdapter:
         succ_blk = mba.get_mblock(int(successor_serial))
         if succ_blk is None:
             raise RuntimeError(
-                f"insert_anchor_block_xor_pair: succ {successor_serial} "
-                "not resolvable"
+                f"insert_anchor_block_xor_pair: succ {successor_serial} not resolvable"
             )
 
         successor_serial = int(succ_blk.serial)
@@ -3860,8 +3858,7 @@ def _select_terminal_tail_entry_live(
         if not _live_block_exists(adapter, int(entry_snap)):
             return (
                 None,
-                "live_block_not_resolvable:terminal_tail_effective_entry:"
-                f"{entry_snap}",
+                f"live_block_not_resolvable:terminal_tail_effective_entry:{entry_snap}",
             )
         candidate_set: set[int] = {int(entry_snap)}
         reachable = _live_reachable_from_entry(adapter)
@@ -3910,7 +3907,7 @@ def _select_terminal_tail_entry_live(
         if not scored:
             return (
                 None,
-                "terminal_tail_effective_entry_has_no_live_candidate:" f"{candidates}",
+                f"terminal_tail_effective_entry_has_no_live_candidate:{candidates}",
             )
         scored.sort()
         return (int(scored[0][1]), "ok")
@@ -3941,7 +3938,7 @@ def _select_terminal_tail_entry_live(
     if not candidate_set:
         return (
             None,
-            "live_block_not_resolvable:terminal_tail_effective_entry:" f"{entry_snap}",
+            f"live_block_not_resolvable:terminal_tail_effective_entry:{entry_snap}",
         )
 
     reachable = _live_reachable_from_entry(adapter)
@@ -4008,7 +4005,7 @@ def _select_terminal_tail_entry_live(
     if not scored:
         return (
             None,
-            "terminal_tail_effective_entry_has_no_live_candidate:" f"{candidates}",
+            f"terminal_tail_effective_entry_has_no_live_candidate:{candidates}",
         )
     scored.sort()
     return (int(scored[0][1]), "ok")
@@ -4853,7 +4850,7 @@ def maybe_run_byte_anchor(
     ]
     if conflicting:
         logger.warning(
-            "byte_anchor: refusing to run; conflicting tail-shape probes " "set: %s",
+            "byte_anchor: refusing to run; conflicting tail-shape probes set: %s",
             ", ".join(conflicting),
         )
         return

@@ -14,6 +14,7 @@ Design notes (grounded against real x64 ``op_t``):
 
 Only the per-function entry point is public: :func:`generate_masm_for_function`.
 """
+
 from __future__ import annotations
 
 import re
@@ -50,8 +51,8 @@ _DT = {
     0: ("byte", 1),
     1: ("word", 2),
     2: ("dword", 4),
-    3: ("dword", 4),   # float
-    4: ("qword", 8),   # double
+    3: ("dword", 4),  # float
+    4: ("qword", 8),  # double
     5: ("tbyte", 10),
     7: ("qword", 8),
     8: ("xmmword", 16),
@@ -81,8 +82,8 @@ class _FunctionMasmEmitter:
         self.end = self.func.end_ea
         self.image_base = idaapi.get_imagebase()
         self._names: dict[int, str] = {}
-        self.proc_externs: dict[str, int] = {}   # name -> ea (functions/imports)
-        self.data_refs: dict[int, str] = {}      # ea -> name (to materialize)
+        self.proc_externs: dict[str, int] = {}  # name -> ea (functions/imports)
+        self.data_refs: dict[int, str] = {}  # ea -> name (to materialize)
 
     # -- symbol naming -----------------------------------------------------
     def sym_name(self, ea: int) -> str | None:
@@ -153,7 +154,9 @@ class _FunctionMasmEmitter:
             name, delta = self.resolve(ea, raw, op, force_addr=(ty == ida_ua.o_near))
             if name is not None:
                 prefix = "offset " if ty == ida_ua.o_imm else ""
-                return prefix + name + (_hexlit(delta, force_sign=True) if delta else "")
+                return (
+                    prefix + name + (_hexlit(delta, force_sign=True) if delta else "")
+                )
             return _hexlit(delta)
 
         if ty == ida_ua.o_mem:
@@ -163,7 +166,9 @@ class _FunctionMasmEmitter:
             if op.specflag1 == 1 and ((op.specflag2 >> 3) & 7) != 4:
                 return self._deferred_mem(ea, op, is_lea, size_kw)
             name, delta = self.resolve(ea, op.addr, op, force_addr=True)
-            inner = (name or "") + (_hexlit(delta, force_sign=True) if (name and delta) else "")
+            inner = (name or "") + (
+                _hexlit(delta, force_sign=True) if (name and delta) else ""
+            )
             if name is None:
                 inner = _hexlit(delta)
             if is_lea:
@@ -259,7 +264,7 @@ class _FunctionMasmEmitter:
             for i in range(n):
                 if i:
                     p.line()
-                chunk = raw[i * width:(i + 1) * width]
+                chunk = raw[i * width : (i + 1) * width]
                 p.write(f"{directive} ")
                 if width == 8 and dtype == (ida_bytes.FF_QWORD & 0xFFFFFFFF):
                     # A qword may be a relocatable pointer; resolve it.
@@ -292,14 +297,14 @@ class _FunctionMasmEmitter:
                 continue  # alignment padding is irrelevant for analysis
         return body
 
-    def generate(
-        self, materialize_data: bool = True, const_data: bool = False
-    ) -> str:
+    def generate(self, materialize_data: bool = True, const_data: bool = False) -> str:
         fname = self.sym_name(self.start) or f"sub_{self.start:X}"
         body = self.collect_body()  # populates proc_externs / data_refs
 
         out = MasmPrinter()
-        out.line("; Auto-generated x64 MASM (d810 structural export) -- assemble with ml64")
+        out.line(
+            "; Auto-generated x64 MASM (d810 structural export) -- assemble with ml64"
+        )
         out.line(f"; Function: {fname}  @ {self.start:#x}")
         out.line("OPTION PROLOGUE:NONE")
         out.line("OPTION EPILOGUE:NONE")

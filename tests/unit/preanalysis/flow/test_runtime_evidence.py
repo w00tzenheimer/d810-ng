@@ -61,12 +61,15 @@ def test_ensure_terminal_byte_fact_view_keeps_existing_terminal_view(monkeypatch
     )
     view = ValidatedFactView(maturity="MMAT_GLBOPT1", observations=(obs,))
 
-    assert ensure_terminal_byte_fact_view(
-        object(),
-        func_ea=0x1000,
-        maturity=4,
-        fact_view=view,
-    ) is view
+    assert (
+        ensure_terminal_byte_fact_view(
+            object(),
+            func_ea=0x1000,
+            maturity=4,
+            fact_view=view,
+        )
+        is view
+    )
 
 
 def test_ensure_terminal_byte_fact_view_collects_when_view_is_empty(monkeypatch):

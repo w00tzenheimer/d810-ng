@@ -87,6 +87,7 @@ Before implementing full canonicalization, consider:
 
 Related: beads issue d810ng-d7j (P4)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -94,7 +95,13 @@ from d810.core import typing
 
 import ida_hexrays
 
-from d810.hexrays.expr.ast import AstBase, AstConstant, AstConstantProtocol, AstLeaf, AstNode
+from d810.hexrays.expr.ast import (
+    AstBase,
+    AstConstant,
+    AstConstantProtocol,
+    AstLeaf,
+    AstNode,
+)
 
 # Operations where order does not matter (Associative-Commutative ops)
 COMMUTATIVE_OPS = {
@@ -149,7 +156,9 @@ def _is_numeric_constant(node: AstBase | None) -> bool:
         return False
     # Use Protocol for hot-reload safety
     if isinstance(node, AstConstantProtocol):
-        return node.expected_value is not None or (node.mop is not None and node.mop.t == ida_hexrays.mop_n)
+        return node.expected_value is not None or (
+            node.mop is not None and node.mop.t == ida_hexrays.mop_n
+        )
     return False
 
 
@@ -171,7 +180,7 @@ def _negate_constant(node: AstConstant) -> AstConstant:
         # Create a new constant with negated expected_value
         new_const = AstConstant(f"neg_{node.name}", expected_value=-val)
         # Copy size if available
-        if hasattr(node, 'expected_size') and node.expected_size is not None:
+        if hasattr(node, "expected_size") and node.expected_size is not None:
             new_const.expected_size = node.expected_size
         return new_const
     return node
@@ -234,11 +243,15 @@ def normalize_ast(node: AstBase | None) -> AstBase | None:
             if child_node.opcode == ida_hexrays.m_mul:
                 if _is_numeric_constant(child_node.left):
                     # Left operand is constant: neg(mul(const, x)) -> mul(-const, x)
-                    child_node.left = _negate_constant(typing.cast(AstConstant, child_node.left))
+                    child_node.left = _negate_constant(
+                        typing.cast(AstConstant, child_node.left)
+                    )
                     return child_node
                 elif _is_numeric_constant(child_node.right):
                     # Right operand is constant: neg(mul(x, const)) -> mul(x, -const)
-                    child_node.right = _negate_constant(typing.cast(AstConstant, child_node.right))
+                    child_node.right = _negate_constant(
+                        typing.cast(AstConstant, child_node.right)
+                    )
                     return child_node
 
     return ast_node

@@ -3,6 +3,7 @@
 Asserts the sliding-window extend/truncate, ``is_full``, the k<=0 collapse, and
 context-count finiteness.  No IDA.
 """
+
 from __future__ import annotations
 
 import pytest

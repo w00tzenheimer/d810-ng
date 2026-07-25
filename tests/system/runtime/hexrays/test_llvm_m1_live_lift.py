@@ -1,4 +1,5 @@
 """LLVM M1b live-lift maturity probe over real Hex-Rays snapshots."""
+
 from __future__ import annotations
 
 import os
@@ -72,13 +73,17 @@ class _CensusRow:
     def summary(self) -> str:
         if self.missing:
             return f"{self.function_name}: missing/skipped"
-        histogram = ",".join(
-            f"{kind}={count}" for kind, count in self.unsupported_kind_counts
-        ) or "-"
-        operations = ",".join(
-            f"{operation}={count}"
-            for operation, count in self.unsupported_operation_counts
-        ) or "-"
+        histogram = (
+            ",".join(f"{kind}={count}" for kind, count in self.unsupported_kind_counts)
+            or "-"
+        )
+        operations = (
+            ",".join(
+                f"{operation}={count}"
+                for operation, count in self.unsupported_operation_counts
+            )
+            or "-"
+        )
         return (
             f"{self.function_name}: maturity={self.maturity_name} "
             f"blocks={self.block_count} supported={self.supported} "
@@ -169,7 +174,9 @@ class TestLLVMM1LiveLiftProbe:
         for row in rows:
             print(row.summary())
 
-        assert any(row.accepted for row in rows), "\n".join(row.summary() for row in rows)
+        assert any(row.accepted for row in rows), "\n".join(
+            row.summary() for row in rows
+        )
         assert any(row.accepted and row.supported for row in rows), (
             "No accepted maturity emitted supported LLVM IR for lab_if_diamond:\n"
             + "\n".join(row.summary() for row in rows)
@@ -288,9 +295,12 @@ class TestLLVMM1CoverageCensus:
         print("\n=== LLVM M1 preferred-maturity coverage census ===")
         for row in rows:
             print(row.summary())
-        total_histogram = ", ".join(
-            f"{kind}={count}" for kind, count in sorted(total_kind_counts.items())
-        ) or "-"
+        total_histogram = (
+            ", ".join(
+                f"{kind}={count}" for kind, count in sorted(total_kind_counts.items())
+            )
+            or "-"
+        )
         print(f"TOTAL unsupported-kind histogram: {total_histogram}")
 
         present_rows = [row for row in rows if not row.missing]
@@ -383,7 +393,9 @@ class TestLLVMM1IdentityParity:
 
         present_rows = [row for row in rows if not row.missing]
         assert present_rows, "No parity functions were present in restructuring_lab.dll"
-        lab_if_rows = [row for row in present_rows if row.function_name == "lab_if_diamond"]
+        lab_if_rows = [
+            row for row in present_rows if row.function_name == "lab_if_diamond"
+        ]
         assert lab_if_rows, (
             "Known-supported lab_if_diamond was not present:\n"
             + "\n".join(row.summary() for row in rows)
@@ -394,7 +406,9 @@ class TestLLVMM1IdentityParity:
         )
         for row in present_rows:
             if not row.supported:
-                assert row.parity_status == LlvmIdentityParityStatus.UNSUPPORTED.value, (
+                assert (
+                    row.parity_status == LlvmIdentityParityStatus.UNSUPPORTED.value
+                ), (
                     "Unsupported lift reported misleading parity success:\n"
                     + row.summary()
                 )

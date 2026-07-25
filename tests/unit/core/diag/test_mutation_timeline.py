@@ -6,7 +6,10 @@ from unittest.mock import patch
 import pytest
 
 from d810.core.diag import create_diag_database
-from d810.core.diag.event_handlers import install_diag_event_handlers, uninstall_diag_event_handlers
+from d810.core.diag.event_handlers import (
+    install_diag_event_handlers,
+    uninstall_diag_event_handlers,
+)
 from d810.core.observability import emit, reset_diagnostic_bus
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
@@ -211,9 +214,7 @@ def test_terminal_effect_plan_and_aborted_receipt_preserve_applied_work(
             ),
             fragment_plan_id="terminal-fragment",
             fragment_atomic_group_id="terminal-atomic-group",
-            root_publication_groups=(
-                _root_group(published=True, rolled_back=True),
-            ),
+            root_publication_groups=(_root_group(published=True, rolled_back=True),),
             fragment_staged=True,
             root_publication_attempted=True,
             root_publication_succeeded=True,
@@ -527,9 +528,7 @@ def test_aborted_fragment_persists_failed_postcondition_and_rollback(
             reason="postpublication root authority failed",
             fragment_plan_id="fragment-2",
             fragment_atomic_group_id="atomic-route-2",
-            root_publication_groups=(
-                _root_group(published=True, rolled_back=True),
-            ),
+            root_publication_groups=(_root_group(published=True, rolled_back=True),),
             fragment_staged=True,
             root_publication_attempted=True,
             root_publication_succeeded=True,
@@ -550,9 +549,7 @@ def test_aborted_fragment_persists_failed_postcondition_and_rollback(
                     error_type="RuntimeError",
                     error_message="INTERR: 50856",
                     interr_code=50856,
-                    verification_context=(
-                        "staged semantic fragment rollback sweep"
-                    ),
+                    verification_context=("staged semantic fragment rollback sweep"),
                 ),
                 SemanticFragmentFailureObserved(
                     failure_kind="rollback",
@@ -674,9 +671,7 @@ def test_aborted_fragment_persists_failed_postcondition_and_rollback(
             '{"reason":"postpublication root authority failed"}',
         ),
     ]
-    rendered = render_mutation_batch(
-        mutation_batch(diag_conn, "aborted-fragment")
-    )
+    rendered = render_mutation_batch(mutation_batch(diag_conn, "aborted-fragment"))
     assert (
         "stage_failure outcome=failed phase=stage "
         "error=SemanticFragmentBackendRejected: fragment plan requires "
@@ -711,8 +706,7 @@ def test_fragment_receipt_scope_mismatch_leaves_no_partial_receipt(
             fragment_plan_id="expected-plan",
             fragment_atomic_group_id="expected-group",
             fragment_plan_json=(
-                '{"atomic_group_id":"expected-group",'
-                '"plan_id":"expected-plan"}'
+                '{"atomic_group_id":"expected-group","plan_id":"expected-plan"}'
             ),
             root_publication_groups=(_root_group(),),
         )

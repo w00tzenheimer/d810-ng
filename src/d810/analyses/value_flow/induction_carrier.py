@@ -22,6 +22,7 @@ There is no meta-less fallback: every production fact target is a canonical
 canonical operand helpers other collectors import from here (e.g.
 :func:`_canonical_operands`, :func:`_value_op_from_instruction`) stay.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -423,8 +424,12 @@ def _induction_insn_from_canonical(
         dest_reg=_reg_from_varnode(dest),
         src_l_reg=_reg_from_varnode(left),
         src_r_reg=_reg_from_varnode(right),
-        src_l_expr=instruction.input_exprs[0] if len(instruction.input_exprs) > 0 else None,
-        src_r_expr=instruction.input_exprs[1] if len(instruction.input_exprs) > 1 else None,
+        src_l_expr=instruction.input_exprs[0]
+        if len(instruction.input_exprs) > 0
+        else None,
+        src_r_expr=instruction.input_exprs[1]
+        if len(instruction.input_exprs) > 1
+        else None,
     )
 
 
@@ -522,7 +527,9 @@ def _classify_memory_define(
 def _iter_memory_induction_updates(
     instructions: tuple[_InductionInsn, ...],
 ) -> Iterable[_MemoryInductionUpdate]:
-    definitions: dict[tuple[int, int], tuple[_InductionInsn, int, str, tuple[int, ...]]] = {}
+    definitions: dict[
+        tuple[int, int], tuple[_InductionInsn, int, str, tuple[int, ...]]
+    ] = {}
     for insn in instructions:
         mem_def = _classify_memory_define(insn)
         if mem_def is not None and insn.dest_stkoff is not None:
@@ -583,7 +590,7 @@ def _iter_writeback_tail_updates(
             if identity is None:
                 continue
             source_stkoff, dest_stkoff = identity
-            for later in ordered[index + 1:]:
+            for later in ordered[index + 1 :]:
                 if _uses_stack_in_memory_address(later, source_stkoff):
                     yield _WritebackTailUpdate(
                         move_insn=insn,

@@ -23,6 +23,7 @@ In IDA microcode ``al`` / ``ax`` / ``eax`` / ``rax`` share one micro-register
 full overwrite, ``size < 8`` a partial (low-byte) write -- matching the proof
 core's ``is_partial`` flag.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -145,11 +146,7 @@ def snapshot_return_reg_consumer_def_eas(mba) -> set[int]:
         ins = mba.get_mblock(bi).head
         while ins is not None:
             for mop, is_top_dest in _iter_operands(ins):
-                if (
-                    mop.t == ida_hexrays.mop_r
-                    and mop.r == rax
-                    and not is_top_dest
-                ):
+                if mop.t == ida_hexrays.mop_r and mop.r == rax and not is_top_dest:
                     valnum = int(mop.valnum)
                     if valnum:
                         consumed_valnums.add(valnum)
@@ -205,12 +202,8 @@ def _is_carrier_source(insn) -> bool:
         return _is_simple_stack_or_arg_source(insn.l)
     if insn.opcode == getattr(ida_hexrays, "m_add", object()):
         return (
-            _is_simple_stack_or_arg_source(insn.l)
-            and _is_literal_operand(insn.r)
-        ) or (
-            _is_literal_operand(insn.l)
-            and _is_simple_stack_or_arg_source(insn.r)
-        )
+            _is_simple_stack_or_arg_source(insn.l) and _is_literal_operand(insn.r)
+        ) or (_is_literal_operand(insn.l) and _is_simple_stack_or_arg_source(insn.r))
     return False
 
 

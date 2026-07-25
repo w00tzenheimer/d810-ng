@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"preanalysis/cfg DISSOLUTION codemod (umbrella ticket llr-lyly).\n\nGeneralizes ``codemod_ls11_dispatcher_cluster.py`` from a single\n``OLD_PKG -> NEW_PKG`` pair to an arbitrary many->many per-module\n``old_dotted -> new_dotted`` map (preanalysis -> analyses/pre_analysis/passes,\ncfg -> ir/analyses/transforms/passes), and adds the high-value\n``--stage preflight`` UPWARD-EDGE DETECTOR.\n\nThe map is DATA-DRIVEN by module role-suffix (playbook\n``preanalysis-cfg-dissolution-execution-playbook.md`` section 9): the codebase names\nmodules by role, so ``home_for()`` resolves each preanalysis/cfg module to its\ndestination package deterministically.\n\nStages:\n  --stage preflight   THE detector. For each module's POST-MOVE home + the\n                      target layer order, statically (grimp) resolve every\n                      import to its post-move layer and list every edge that\n                      would point UPWARD (layer-fatal).  Converts Risk #1\n                      (intra-cfg upward edges) from an unknown into a per-cluster\n                      worklist: a cluster is either \"clean, codemod-move it\" or\n                      \"these N edges need manual P1-style severance first\".\n                      READ-ONLY.\n  --stage move        Relocate modules (filtered by --only) + sys.modules-alias\n                      shims + libcst+regex intra rewrites. (Per-cluster, golden-gated.)\n  --stage cutover     Repoint consumers off the shims; --delete-shims removes them.\n  --stage scaffold    Create passes/ support/ pre_analysis/ (docstring __init__).\n  --stage selftest    Boundary-regex correctness (prefix-collision guard).\n\nDefault dry-run; --apply writes.  --only <substr> restricts move/cutover to a\ncluster.  Run from the worktree root with ``PYTHONPATH=src``.\n\nNB the move/cutover engine is the LS11 engine verbatim (hybrid libcst import-node\nrewrite + boundary regex + alias shims + per-file regex fallback); only the\nmapping is generalized.  preflight is net-new.\n"
+'preanalysis/cfg DISSOLUTION codemod (umbrella ticket llr-lyly).\n\nGeneralizes ``codemod_ls11_dispatcher_cluster.py`` from a single\n``OLD_PKG -> NEW_PKG`` pair to an arbitrary many->many per-module\n``old_dotted -> new_dotted`` map (preanalysis -> analyses/pre_analysis/passes,\ncfg -> ir/analyses/transforms/passes), and adds the high-value\n``--stage preflight`` UPWARD-EDGE DETECTOR.\n\nThe map is DATA-DRIVEN by module role-suffix (playbook\n``preanalysis-cfg-dissolution-execution-playbook.md`` section 9): the codebase names\nmodules by role, so ``home_for()`` resolves each preanalysis/cfg module to its\ndestination package deterministically.\n\nStages:\n  --stage preflight   THE detector. For each module\'s POST-MOVE home + the\n                      target layer order, statically (grimp) resolve every\n                      import to its post-move layer and list every edge that\n                      would point UPWARD (layer-fatal).  Converts Risk #1\n                      (intra-cfg upward edges) from an unknown into a per-cluster\n                      worklist: a cluster is either "clean, codemod-move it" or\n                      "these N edges need manual P1-style severance first".\n                      READ-ONLY.\n  --stage move        Relocate modules (filtered by --only) + sys.modules-alias\n                      shims + libcst+regex intra rewrites. (Per-cluster, golden-gated.)\n  --stage cutover     Repoint consumers off the shims; --delete-shims removes them.\n  --stage scaffold    Create passes/ support/ pre_analysis/ (docstring __init__).\n  --stage selftest    Boundary-regex correctness (prefix-collision guard).\n\nDefault dry-run; --apply writes.  --only <substr> restricts move/cutover to a\ncluster.  Run from the worktree root with ``PYTHONPATH=src``.\n\nNB the move/cutover engine is the LS11 engine verbatim (hybrid libcst import-node\nrewrite + boundary regex + alias shims + per-file regex fallback); only the\nmapping is generalized.  preflight is net-new.\n'
+
 from __future__ import annotations
 
 import argparse
@@ -27,19 +28,19 @@ TARGET_LAYER_ORDER: tuple[str, ...] = (
     "d810.diagnostics",
     "d810.optimizers",
     "d810.families",
-    "d810.passes",          # NEW: scheduler; above transforms, below families
-    "d810.preanalysis",           # dissolving
+    "d810.passes",  # NEW: scheduler; above transforms, below families
+    "d810.preanalysis",  # dissolving
     "d810.backends",
     "d810.evaluator",
     "d810.hexrays",
     "d810.transforms",
     "d810.mba",
-    "d810.cfg",             # dissolving
-    "d810.analyses",        # read-only collectors land here too (NO pre_analysis
-                            # -- the design-doc end-state has no such package)
+    "d810.cfg",  # dissolving
+    "d810.analyses",  # read-only collectors land here too (NO pre_analysis
+    # -- the design-doc end-state has no such package)
     "d810.capabilities",
     "d810.ir",
-    "d810.support",         # NEW: shared utils, below ir
+    "d810.support",  # NEW: shared utils, below ir
     "d810.core",
     "d810.errors",
 )
@@ -71,35 +72,103 @@ class RoleRule:
 
 ROLE_RULES: tuple[RoleRule, ...] = (
     # ir: portable dataclasses / identities / graph snapshot
-    RoleRule("d810.ir", exact=(
-        "flowgraph", "lattice", "mop_identity", "block_identity", "state_dag_key",
-        "state_edge_pair", "state_variable", "semantic_reference", "provenance", "plan",
-    ), suffixes=("_identity",)),
+    RoleRule(
+        "d810.ir",
+        exact=(
+            "flowgraph",
+            "lattice",
+            "mop_identity",
+            "block_identity",
+            "state_dag_key",
+            "state_edge_pair",
+            "state_variable",
+            "semantic_reference",
+            "provenance",
+            "plan",
+        ),
+        suffixes=("_identity",),
+    ),
     # transforms: planning / emission / lowering / modification building
-    RoleRule("d810.transforms", suffixes=(
-        "_planning", "_emission", "_lowering", "_recording", "_building",
-    ), contains=("modification_builder", "mod_claims", "graph_modification",
-                 "materialization", "reorder_blocks", "select_loop_planning"),
-       exact=("dead_block_elimination", "fake_jump_fixer", "opaque_jump_fixer",
-              "simplify_identical_branch", "loop_carrier_backedge_refresh")),
+    RoleRule(
+        "d810.transforms",
+        suffixes=(
+            "_planning",
+            "_emission",
+            "_lowering",
+            "_recording",
+            "_building",
+        ),
+        contains=(
+            "modification_builder",
+            "mod_claims",
+            "graph_modification",
+            "materialization",
+            "reorder_blocks",
+            "select_loop_planning",
+        ),
+        exact=(
+            "dead_block_elimination",
+            "fake_jump_fixer",
+            "opaque_jump_fixer",
+            "simplify_identical_branch",
+            "loop_carrier_backedge_refresh",
+        ),
+    ),
     # passes: scheduler / pipeline / transaction engine / preanalysis orchestration root
-    RoleRule("d810.passes", exact=(
-        "pipeline", "transaction_engine", "transaction_policy", "invariants",
-        "contract", "phase", "runtime", "store", "inferences", "persist_inference",
-        "outcome", "flow_hints", "function_priors",
-    )),
+    RoleRule(
+        "d810.passes",
+        exact=(
+            "pipeline",
+            "transaction_engine",
+            "transaction_policy",
+            "invariants",
+            "contract",
+            "phase",
+            "runtime",
+            "store",
+            "inferences",
+            "persist_inference",
+            "outcome",
+            "flow_hints",
+            "function_priors",
+        ),
+    ),
     # analyses/value_flow: value-flow fact ontology
-    RoleRule("d810.analyses.value_flow", contains=("value_flow",),
-             suffixes=("_value_fact",)),
+    RoleRule(
+        "d810.analyses.value_flow", contains=("value_flow",), suffixes=("_value_fact",)
+    ),
     # analyses/control_flow: discovery / graph algorithms / classifiers (the bulk)
-    RoleRule("d810.analyses.control_flow", suffixes=(
-        "_discovery", "_analysis", "_facts", "_evidence", "_oracle", "_report",
-        "_classifier", "_resolver", "_closure",
-    ), contains=("transition_", "dominator", "postdominator", "scc", "dag_index",
-                 "sese_hammock", "graph_checks", "compare_chain", "conditional_alias",
-                 "state_var_alias", "terminal_frontier", "block_lineage",
-                 "redirect_reconciliation", "backedge"),
-       exact=("state_machine_analysis",)),
+    RoleRule(
+        "d810.analyses.control_flow",
+        suffixes=(
+            "_discovery",
+            "_analysis",
+            "_facts",
+            "_evidence",
+            "_oracle",
+            "_report",
+            "_classifier",
+            "_resolver",
+            "_closure",
+        ),
+        contains=(
+            "transition_",
+            "dominator",
+            "postdominator",
+            "scc",
+            "dag_index",
+            "sese_hammock",
+            "graph_checks",
+            "compare_chain",
+            "conditional_alias",
+            "state_var_alias",
+            "terminal_frontier",
+            "block_lineage",
+            "redirect_reconciliation",
+            "backedge",
+        ),
+        exact=("state_machine_analysis",),
+    ),
     # observability -> core (lowest layer): keeps its optimizer/runtime
     # importers DOWN-pointing.  d810.diagnostics sits ABOVE optimizers/passes,
     # so homing observability there would flip those into upward-fatal edges.
@@ -178,7 +247,9 @@ def home_for(old_dotted: str) -> str | None:
     # land on the source default and are reviewed at slice time.
     if old_dotted.startswith("d810.preanalysis.facts"):
         return f"d810.analyses.value_flow.{leaf}"
-    if old_dotted.startswith("d810.preanalysis"):  # incl. preanalysis.collectors profiling
+    if old_dotted.startswith(
+        "d810.preanalysis"
+    ):  # incl. preanalysis.collectors profiling
         return f"d810.analyses.control_flow.{leaf}"
     if old_dotted.startswith("d810.cfg"):
         return f"d810.transforms.{leaf}"
@@ -266,11 +337,15 @@ def run_preflight(move_map: dict[str, str], unmapped: list[str]) -> int:
 
     print("\n========== DISSOLUTION PREFLIGHT (post-move upward-edge scan) ==========")
     print(f"mapped modules: {len(move_map)} | unmapped (need a home): {len(unmapped)}")
-    print(f"\n--- CLEAN clusters (codemod-movable as-is; count = modules with 0 upward edges) ---")
+    print(
+        f"\n--- CLEAN clusters (codemod-movable as-is; count = modules with 0 upward edges) ---"
+    )
     for dest in sorted(clean_dest):
-        flagged = len({u.split('  ->')[0].strip() for u in by_dest.get(dest, [])})
+        flagged = len({u.split("  ->")[0].strip() for u in by_dest.get(dest, [])})
         print(f"  {dest:32s} clean={clean_dest[dest]:3d}  needs-severance={flagged}")
-    print(f"\n--- UPWARD EDGES (Risk #1 worklist: manual P1-style severance before move) ---")
+    print(
+        f"\n--- UPWARD EDGES (Risk #1 worklist: manual P1-style severance before move) ---"
+    )
     if not total_up:
         print("  NONE -- every mapped module is layer-clean post-move.")
     for dest in sorted(by_dest):
@@ -278,17 +353,23 @@ def run_preflight(move_map: dict[str, str], unmapped: list[str]) -> int:
         for line in by_dest[dest][:60]:
             print(line)
     if unmapped:
-        print(f"\n--- UNMAPPED ({len(unmapped)}: no role rule matched -> decide a home) ---")
+        print(
+            f"\n--- UNMAPPED ({len(unmapped)}: no role rule matched -> decide a home) ---"
+        )
         for m in unmapped[:80]:
             print(f"      {m}")
     if collisions:
-        print(f"\n--- DEST COLLISIONS ({len(collisions)}: distinct sources -> one home; "
-              "rename one leaf before move) ---")
+        print(
+            f"\n--- DEST COLLISIONS ({len(collisions)}: distinct sources -> one home; "
+            "rename one leaf before move) ---"
+        )
         for new, olds in sorted(collisions.items()):
             print(f"      {new}  <==  {', '.join(olds)}")
-    print(f"\nSUMMARY: {total_up} upward edge(s) across "
-          f"{len(by_dest)} destination cluster(s); {len(unmapped)} unmapped; "
-          f"{len(collisions)} dest-collision(s).")
+    print(
+        f"\nSUMMARY: {total_up} upward edge(s) across "
+        f"{len(by_dest)} destination cluster(s); {len(unmapped)} unmapped; "
+        f"{len(collisions)} dest-collision(s)."
+    )
     return 0
 
 
@@ -305,7 +386,7 @@ def _rewrite_dotted(code: str, move_map: dict[str, str]) -> str | None:
     for old in sorted(move_map, key=len, reverse=True):
         new = move_map[old]
         if code == old or code.startswith(old + "."):
-            return new + code[len(old):]
+            return new + code[len(old) :]
     return None
 
 
@@ -368,8 +449,9 @@ def _alias_shim(old_dotted: str, new_dotted: str) -> str:
     )
 
 
-def _iter_targets(move_map: dict[str, str], only: str | None,
-                  only_exact: set[str] | None = None):
+def _iter_targets(
+    move_map: dict[str, str], only: str | None, only_exact: set[str] | None = None
+):
     for old, new in sorted(move_map.items()):
         if only_exact is not None and old not in only_exact:
             continue
@@ -392,8 +474,13 @@ def _path_of(dotted: str) -> Path:
     return SRC / Path(*dotted.split(".")).with_suffix(".py")
 
 
-def run_move(move_map: dict[str, str], only: str | None, *, apply: bool,
-             only_exact: set[str] | None = None) -> int:
+def run_move(
+    move_map: dict[str, str],
+    only: str | None,
+    *,
+    apply: bool,
+    only_exact: set[str] | None = None,
+) -> int:
     patterns = tuple((_dotted_pattern(o), n) for o, n in move_map.items())
     n = 0
     for old, new in _iter_targets(move_map, only, only_exact):
@@ -412,13 +499,20 @@ def run_move(move_map: dict[str, str], only: str | None, *, apply: bool,
             np_.parent.mkdir(parents=True, exist_ok=True)
             np_.write_text(moved, encoding="utf-8")
             op.write_text(_alias_shim(old, new), encoding="utf-8")
-    print(f"\nmove: {'applied' if apply else 'dry-run'} ({n} module(s), only={only!r}).")
+    print(
+        f"\nmove: {'applied' if apply else 'dry-run'} ({n} module(s), only={only!r})."
+    )
     return 0
 
 
-def run_cutover(move_map: dict[str, str], roots, *, apply: bool,
-                only: str | None = None,
-                only_exact: set[str] | None = None) -> int:
+def run_cutover(
+    move_map: dict[str, str],
+    roots,
+    *,
+    apply: bool,
+    only: str | None = None,
+    only_exact: set[str] | None = None,
+) -> int:
     # Honor --only / --only-exact so a cutover can be scoped to one cluster
     # (e.g. the isolated flowgraph repoint). Without this filter the cutover
     # rewrites EVERY move_map entry across all roots, which breaks per-cluster
@@ -464,8 +558,10 @@ def run_scaffold(*, apply: bool) -> int:
         if apply:
             initp.parent.mkdir(parents=True, exist_ok=True)
             initp.write_text(f'"""{doc}"""\n', encoding="utf-8")
-    print("\nReminder: append each new package to the 3 portable-core .importlinter "
-          "source_modules IN THE SAME COMMIT (never standalone).")
+    print(
+        "\nReminder: append each new package to the 3 portable-core .importlinter "
+        "source_modules IN THE SAME COMMIT (never standalone)."
+    )
     return 0
 
 
@@ -476,12 +572,19 @@ def run_selftest() -> int:
     }
     patterns = tuple((_dotted_pattern(o), n) for o, n in mm.items())
     cases = [
-        ("from d810.cfg.flowgraph import FlowGraph",
-         "from d810.ir.flowgraph import FlowGraph"),
+        (
+            "from d810.cfg.flowgraph import FlowGraph",
+            "from d810.ir.flowgraph import FlowGraph",
+        ),
         # prefix-collision guard: flowgraph must not match flowgraph_utils
-        ("from d810.cfg.flowgraph_utils import X", "from d810.cfg.flowgraph_utils import X"),
-        ("import d810.preanalysis.flow.x_discovery as d",
-         "import d810.analyses.control_flow.x_discovery as d"),
+        (
+            "from d810.cfg.flowgraph_utils import X",
+            "from d810.cfg.flowgraph_utils import X",
+        ),
+        (
+            "import d810.preanalysis.flow.x_discovery as d",
+            "import d810.analyses.control_flow.x_discovery as d",
+        ),
         ("d810.cfg.flowgraph.FlowGraph", "d810.ir.flowgraph.FlowGraph"),
     ]
     ok = True
@@ -495,14 +598,24 @@ def run_selftest() -> int:
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--stage", required=True,
-                   choices=["preflight", "move", "cutover", "scaffold", "selftest"])
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--stage",
+        required=True,
+        choices=["preflight", "move", "cutover", "scaffold", "selftest"],
+    )
     p.add_argument("--apply", action="store_true")
-    p.add_argument("--only", help="restrict move/cutover to modules matching this substring")
-    p.add_argument("--only-exact", dest="only_exact",
-                   help="restrict move to this comma-separated list of EXACT old "
-                        "dotted module names (atomic per-slice moves)")
+    p.add_argument(
+        "--only", help="restrict move/cutover to modules matching this substring"
+    )
+    p.add_argument(
+        "--only-exact",
+        dest="only_exact",
+        help="restrict move to this comma-separated list of EXACT old "
+        "dotted module names (atomic per-slice moves)",
+    )
     p.add_argument("--roots", nargs="*", default=["src", "tests", "tools"])
     args = p.parse_args()
 
@@ -517,16 +630,23 @@ def main() -> int:
     if args.stage == "move":
         only_exact = (
             {m.strip() for m in args.only_exact.split(",") if m.strip()}
-            if args.only_exact else None
+            if args.only_exact
+            else None
         )
         return run_move(move_map, args.only, apply=args.apply, only_exact=only_exact)
     if args.stage == "cutover":
         only_exact = (
             {m.strip() for m in args.only_exact.split(",") if m.strip()}
-            if args.only_exact else None
+            if args.only_exact
+            else None
         )
-        return run_cutover(move_map, tuple(args.roots), apply=args.apply,
-                           only=args.only, only_exact=only_exact)
+        return run_cutover(
+            move_map,
+            tuple(args.roots),
+            apply=args.apply,
+            only=args.only,
+            only_exact=only_exact,
+        )
     return 2
 
 

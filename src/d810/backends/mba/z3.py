@@ -132,9 +132,7 @@ class Z3VerificationEngine:
             )
 
     def create_variables(
-        self,
-        var_names: set[str],
-        options: "VerificationOptions | None" = None
+        self, var_names: set[str], options: "VerificationOptions | None" = None
     ) -> Dict[str, z3.BitVecRef]:
         """Create Z3 BitVec variables for the given names.
 
@@ -212,7 +210,9 @@ class Z3VerificationVisitor:
         >>> # z3_expr is now a z3.BitVecRef representing (x | y) - (x & y)
     """
 
-    def __init__(self, bit_width: int = 32, var_map: dict[str, z3.BitVecRef] | None = None):
+    def __init__(
+        self, bit_width: int = 32, var_map: dict[str, z3.BitVecRef] | None = None
+    ):
         """Initialize the Z3 verification visitor.
 
         Args:
@@ -222,7 +222,9 @@ class Z3VerificationVisitor:
                     need to share variables across multiple expressions.
         """
         if not Z3_INSTALLED:
-            raise ImportError("Z3 is not installed. Install z3-solver to use Z3VerificationVisitor.")
+            raise ImportError(
+                "Z3 is not installed. Install z3-solver to use Z3VerificationVisitor."
+            )
 
         self.bit_width = bit_width
         self.var_map: dict[str, z3.BitVecRef] = var_map if var_map is not None else {}
@@ -359,7 +361,9 @@ class Z3VerificationVisitor:
                 source_width = left.size()
                 low_bit = max(source_width - int(target_width), 0)
                 high_bit = source_width - 1
-                extracted = typing.cast(z3.BitVecRef, z3.Extract(high_bit, low_bit, left))
+                extracted = typing.cast(
+                    z3.BitVecRef, z3.Extract(high_bit, low_bit, left)
+                )
                 if extracted.size() < self.bit_width:
                     return z3.ZeroExt(self.bit_width - extracted.size(), extracted)
                 return extracted
@@ -530,7 +534,9 @@ class Z3VerificationVisitor:
                 case "ge":
                     return z3.UGE(left_z3, right_z3)
                 case _:
-                    raise ValueError(f"Unsupported comparison operator: {constraint.op_name}")
+                    raise ValueError(
+                        f"Unsupported comparison operator: {constraint.op_name}"
+                    )
 
         if isinstance(constraint, EqualityConstraintProtocol):
             left_z3 = self._expr_to_z3_helper(constraint.left)
@@ -631,7 +637,9 @@ def prove_equivalence(
         >>> assert is_equiv  # These are mathematically equivalent
     """
     if not Z3_INSTALLED:
-        raise ImportError("Z3 is not installed. Install z3-solver to prove equivalence.")
+        raise ImportError(
+            "Z3 is not installed. Install z3-solver to prove equivalence."
+        )
 
     # Create visitor with optional pre-created variables
     visitor = Z3VerificationVisitor(bit_width=bit_width, var_map=z3_vars)
@@ -672,7 +680,7 @@ def prove_equivalence(
 
         for name, z3_var in visitor.get_variables().items():
             value = model.eval(z3_var, model_completion=True)
-            if hasattr(value, 'as_long'):
+            if hasattr(value, "as_long"):
                 counterexample[name] = value.as_long()
             else:
                 counterexample[name] = str(value)
@@ -738,21 +746,25 @@ def verify_rule(
         )
 
     # Check if rule should skip verification
-    if getattr(rule, 'SKIP_VERIFICATION', False):
-        logger.debug(f"Skipping verification for {getattr(rule, 'name', 'unknown')}: SKIP_VERIFICATION=True")
+    if getattr(rule, "SKIP_VERIFICATION", False):
+        logger.debug(
+            f"Skipping verification for {getattr(rule, 'name', 'unknown')}: SKIP_VERIFICATION=True"
+        )
         return True
 
     # Resolve bit_width: parameter > rule.BIT_WIDTH > default 32
     if bit_width is None:
-        bit_width = getattr(rule, 'BIT_WIDTH', 32)
-    logger.debug(f"Verifying {getattr(rule, 'name', 'unknown')} with bit_width={bit_width}")
+        bit_width = getattr(rule, "BIT_WIDTH", 32)
+    logger.debug(
+        f"Verifying {getattr(rule, 'name', 'unknown')} with bit_width={bit_width}"
+    )
 
     # Import here to avoid circular imports
     from d810.mba.dsl import SymbolicExpressionProtocol
 
     pattern = rule.pattern
     replacement = rule.replacement
-    rule_name = getattr(rule, 'name', rule.__class__.__name__)
+    rule_name = getattr(rule, "name", rule.__class__.__name__)
 
     # Validate inputs
     if pattern is None:
@@ -761,7 +773,9 @@ def verify_rule(
 
     # Use Protocol for hot-reload safety
     if not isinstance(replacement, SymbolicExpressionProtocol):
-        logger.debug(f"Skipping verification for {rule_name}: replacement is {type(replacement).__name__}, not SymbolicExpression")
+        logger.debug(
+            f"Skipping verification for {rule_name}: replacement is {type(replacement).__name__}, not SymbolicExpression"
+        )
         return True
 
     # Collect all variable/constant names from both expressions
@@ -805,7 +819,7 @@ def verify_rule(
         model = solver.model()
         for name, z3_var in z3_vars.items():
             value = model.eval(z3_var, model_completion=True)
-            if hasattr(value, 'as_long'):
+            if hasattr(value, "as_long"):
                 counterexample[name] = value.as_long()
 
     msg = (
@@ -830,7 +844,9 @@ def verify_rule(
 # =============================================================================
 
 
-def create_z3_variables(var_names: set[str], bit_width: int = 32) -> dict[str, z3.BitVecRef]:
+def create_z3_variables(
+    var_names: set[str], bit_width: int = 32
+) -> dict[str, z3.BitVecRef]:
     """Create Z3 BitVec variables for a set of variable names.
 
     This helper keeps Z3-specific code in the backend, allowing other modules
@@ -952,7 +968,9 @@ def _constraint_expr_to_z3(expr, z3_vars: dict[str, z3.BitVecRef]) -> z3.BitVecR
         visitor = Z3VerificationVisitor(bit_width=32, var_map=z3_vars)
         return visitor.visit(expr)
 
-    raise ValueError(f"Cannot convert {type(expr).__name__} to Z3: expected SymbolicExpression")
+    raise ValueError(
+        f"Cannot convert {type(expr).__name__} to Z3: expected SymbolicExpression"
+    )
 
 
 def _collect_constraint_names(constraint, names: set) -> None:
@@ -975,7 +993,9 @@ def _collect_constraint_names(constraint, names: set) -> None:
         return
 
     # Binary constraints with left/right expressions
-    if isinstance(constraint, (EqualityConstraintProtocol, ComparisonConstraintProtocol)):
+    if isinstance(
+        constraint, (EqualityConstraintProtocol, ComparisonConstraintProtocol)
+    ):
         _collect_symbolic_names(constraint.left, names)
         _collect_symbolic_names(constraint.right, names)
 
@@ -1011,7 +1031,7 @@ def _collect_symbolic_names(expr, names: set) -> None:
         _collect_symbolic_names(expr.right, names)
 
     # Handle bool_to_int expressions that store variables in expr.constraint
-    if hasattr(expr, 'constraint') and expr.constraint is not None:
+    if hasattr(expr, "constraint") and expr.constraint is not None:
         _collect_constraint_names(expr.constraint, names)
 
 
@@ -1028,7 +1048,7 @@ def _extract_constraints(rule, z3_vars: dict) -> list:
     z3_constraints = []
 
     # First, check for get_constraints method (explicit Z3 constraint generation)
-    if hasattr(rule, 'get_constraints') and callable(rule.get_constraints):
+    if hasattr(rule, "get_constraints") and callable(rule.get_constraints):
         try:
             custom_constraints = rule.get_constraints(z3_vars)
             if custom_constraints:
@@ -1036,12 +1056,16 @@ def _extract_constraints(rule, z3_vars: dict) -> list:
                     z3_constraints.extend(custom_constraints)
                 else:
                     z3_constraints.append(custom_constraints)
-                logger.debug(f"Got {len(z3_constraints)} constraints from get_constraints() for {getattr(rule, 'name', 'unknown')}")
+                logger.debug(
+                    f"Got {len(z3_constraints)} constraints from get_constraints() for {getattr(rule, 'name', 'unknown')}"
+                )
         except Exception as e:
-            logger.warning(f"Failed to call get_constraints() for {getattr(rule, 'name', 'unknown')}: {e}")
+            logger.warning(
+                f"Failed to call get_constraints() for {getattr(rule, 'name', 'unknown')}: {e}"
+            )
 
     # Then, check CONSTRAINTS attribute
-    constraints_attr = getattr(rule, 'CONSTRAINTS', None)
+    constraints_attr = getattr(rule, "CONSTRAINTS", None)
     if not constraints_attr:
         return z3_constraints
 
@@ -1049,6 +1073,7 @@ def _extract_constraints(rule, z3_vars: dict) -> list:
         # Check if this is a ConstraintExpr (declarative style)
         try:
             from d810.mba.constraints import is_constraint_expr
+
             if is_constraint_expr(constraint):
                 z3_constraint = constraint_to_z3(constraint, z3_vars)
                 z3_constraints.append(z3_constraint)
@@ -1057,7 +1082,7 @@ def _extract_constraints(rule, z3_vars: dict) -> list:
             pass
 
         # Check if constraint has _to_z3 method (constraint helpers)
-        if callable(constraint) and hasattr(constraint, '_to_z3'):
+        if callable(constraint) and hasattr(constraint, "_to_z3"):
             try:
                 z3_constraint = constraint._to_z3(z3_vars)
                 if z3_constraint is not None:
@@ -1067,7 +1092,11 @@ def _extract_constraints(rule, z3_vars: dict) -> list:
                 pass
 
         # Legacy callable constraints - try to auto-detect pattern
-        if callable(constraint) and hasattr(constraint, '__closure__') and constraint.__closure__:
+        if (
+            callable(constraint)
+            and hasattr(constraint, "__closure__")
+            and constraint.__closure__
+        ):
             closure_vars = []
             for cell in constraint.__closure__:
                 content = cell.cell_contents
@@ -1081,6 +1110,8 @@ def _extract_constraints(rule, z3_vars: dict) -> list:
                     z3_constraints.append(z3_vars[var1] == ~z3_vars[var2])
                     continue
 
-        logger.debug(f"Could not convert constraint to Z3 for rule {getattr(rule, 'name', 'unknown')}")
+        logger.debug(
+            f"Could not convert constraint to Z3 for rule {getattr(rule, 'name', 'unknown')}"
+        )
 
     return z3_constraints

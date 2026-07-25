@@ -35,6 +35,7 @@ handler block serials:
 Portable: no IDA import. ``base_successors`` is supplied by the caller (the live
 wrapper passes the lifted FlowGraph's successor map; unit tests pass a literal).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -287,9 +288,7 @@ def build_state_transition_graph(
     }
     # Only blocks that actually end up terminal (no successor) count as returns;
     # an EXIT_ROUTINE tail that also has a forward edge is a pass-through.
-    real_terminals = frozenset(
-        b for b in return_terminals if not blocks[b].succs
-    )
+    real_terminals = frozenset(b for b in return_terminals if not blocks[b].succs)
     return StateTransitionGraph(
         blocks=blocks, entry_serial=entry_serial, return_terminals=real_terminals
     )
@@ -364,9 +363,7 @@ def augment_state_transition_graph(
         )
         for serial in cfg.blocks
     }
-    return_terminals = frozenset(
-        b for b in cfg.return_terminals if not blocks[b].succs
-    )
+    return_terminals = frozenset(b for b in cfg.return_terminals if not blocks[b].succs)
     return (
         StateTransitionGraph(
             blocks=blocks,
@@ -449,9 +446,7 @@ def prune_infeasible_sibling_arms(
     )
 
 
-def _default_entry(
-    dag: "LinearizedStateDag", entry_by_state: Mapping[int, int]
-) -> int:
+def _default_entry(dag: "LinearizedStateDag", entry_by_state: Mapping[int, int]) -> int:
     initial_state = getattr(dag, "initial_state", None)
     if initial_state is not None:
         masked = int(initial_state) & 0xFFFFFFFF

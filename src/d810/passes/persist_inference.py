@@ -14,6 +14,7 @@ The persist action writes to two existing config mechanisms:
 See ``docs/plans/2026-03-09-rule-inference-layer-design.md`` for
 design rationale (section D4).
 """
+
 from __future__ import annotations
 
 import json
@@ -87,6 +88,8 @@ def persist_inference(
     config_path.write_text(json.dumps(config, indent=2) + "\n")
     logger.info(
         "persist_inference: persisted %d delta(s) for func=0x%x to %s",
-        persisted, func_ea, config_path,
+        persisted,
+        func_ea,
+        config_path,
     )
     return persisted

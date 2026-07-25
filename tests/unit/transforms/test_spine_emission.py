@@ -5,6 +5,7 @@
 tests lock the redirect-kind selection, old_target resolution, dispatcher self-loop skip, and the
 2-way transition rejection that prevents the deferred backend from aborting on a "not 1-way" mismatch.
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -84,8 +85,8 @@ def test_dispatcher_selfloop_and_non_spine_edges_skipped():
     mods = _emit(
         [
             _edge(SemanticEdgeKind.EXIT_ROUTINE, 10, 20),  # not a spine kind
-            _edge(SemanticEdgeKind.TRANSITION, 10, 5),      # routes back to dispatcher (5)
-            _edge(SemanticEdgeKind.TRANSITION, 11, None),   # no resolved target
+            _edge(SemanticEdgeKind.TRANSITION, 10, 5),  # routes back to dispatcher (5)
+            _edge(SemanticEdgeKind.TRANSITION, 11, None),  # no resolved target
         ],
         nsucc={10: 1, 11: 1},
         succ={10: (5,), 11: (5,)},

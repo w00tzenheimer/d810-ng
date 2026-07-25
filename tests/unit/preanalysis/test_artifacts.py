@@ -61,7 +61,9 @@ def _report() -> DispatcherTransitionReport:
 
 
 class _Provider:
-    def collect_return_sites(self, report: DispatcherTransitionReport) -> tuple[ReturnSite, ...]:
+    def collect_return_sites(
+        self, report: DispatcherTransitionReport
+    ) -> tuple[ReturnSite, ...]:
         return (
             ReturnSite(
                 site_id=f"provider_{report.rows[0].handler_serial}",

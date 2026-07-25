@@ -28,7 +28,10 @@ def _flow_graph(block_kinds: dict[int, BlockKind]) -> FlowGraph:
 
 def test_compute_reorder_blocks_returns_none_without_state_machine():
     snapshot = SimpleNamespace(state_machine=None, flow_graph=None)
-    assert compute_reorder_blocks(snapshot, resolve_target_entry=lambda state: None) is None
+    assert (
+        compute_reorder_blocks(snapshot, resolve_target_entry=lambda state: None)
+        is None
+    )
 
 
 def test_compute_reorder_blocks_orders_handlers_and_splits_two_way():

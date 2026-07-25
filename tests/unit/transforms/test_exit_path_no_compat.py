@@ -1,4 +1,5 @@
 """Acceptance tests that terminal-corridor compatibility APIs are gone."""
+
 from __future__ import annotations
 
 import importlib

@@ -33,6 +33,7 @@ Exit codes:
      tracked category is non-zero)
   2  usage / baseline-file error
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,7 +45,9 @@ from collections import Counter
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 _CODEMOD_PATH = pathlib.Path(__file__).resolve().parent / "codemod_portable_ir_audit.py"
-BASELINE_PATH = pathlib.Path(__file__).resolve().parent / "portable_shape_lint_baseline.json"
+BASELINE_PATH = (
+    pathlib.Path(__file__).resolve().parent / "portable_shape_lint_baseline.json"
+)
 
 _CATEGORIES = ("A", "B", "C", "D", "E")
 _CAT_NAME = {
@@ -59,7 +62,9 @@ _CAT_NAME = {
 def _load_codemod():
     """Import the read-only detector as a module (registers it in sys.modules so
     its ``frozen=True`` dataclasses resolve their string annotations)."""
-    spec = importlib.util.spec_from_file_location("codemod_portable_ir_audit", _CODEMOD_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "codemod_portable_ir_audit", _CODEMOD_PATH
+    )
     if spec is None or spec.loader is None:  # pragma: no cover - defensive
         raise RuntimeError(f"cannot load detector at {_CODEMOD_PATH}")
     module = importlib.util.module_from_spec(spec)
@@ -105,12 +110,19 @@ def load_baseline() -> dict[str, dict[str, int]]:
     out: dict[str, dict[str, int]] = {}
     for cat in _CATEGORIES:
         entry = cats.get(cat, {})
-        out[cat] = {"all": int(entry.get("all", 0)), "real_leak": int(entry.get("real_leak", 0))}
+        out[cat] = {
+            "all": int(entry.get("all", 0)),
+            "real_leak": int(entry.get("real_leak", 0)),
+        }
     return out
 
 
-def _print_table(current: dict[str, dict[str, int]], baseline: dict[str, dict[str, int]]) -> None:
-    print("# Portable-core shape-lint gate (warning-mode ratchet) -- epic llr-rv7p S8\n")
+def _print_table(
+    current: dict[str, dict[str, int]], baseline: dict[str, dict[str, int]]
+) -> None:
+    print(
+        "# Portable-core shape-lint gate (warning-mode ratchet) -- epic llr-rv7p S8\n"
+    )
     print("|cat|name|REAL base|REAL now|delta|all base|all now|delta|")
     print("|-|-|-|-|-|-|-|-|")
     for cat in _CATEGORIES:
@@ -118,9 +130,7 @@ def _print_table(current: dict[str, dict[str, int]], baseline: dict[str, dict[st
         rn = current[cat]["real_leak"]
         ab = baseline[cat]["all"]
         an = current[cat]["all"]
-        print(
-            f"|{cat}|{_CAT_NAME[cat]}|{rb}|{rn}|{rn - rb:+d}|{ab}|{an}|{an - ab:+d}|"
-        )
+        print(f"|{cat}|{_CAT_NAME[cat]}|{rb}|{rn}|{rn - rb:+d}|{ab}|{an}|{an - ab:+d}|")
     print()
 
 
@@ -141,7 +151,9 @@ def _regressions(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument(
         "--update-baseline",
         action="store_true",
@@ -152,7 +164,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="error-mode seam (S5/S6): also fail if any tracked category is non-zero",
     )
-    ap.add_argument("--json", action="store_true", help="machine-readable counts + verdict")
+    ap.add_argument(
+        "--json", action="store_true", help="machine-readable counts + verdict"
+    )
     args = ap.parse_args(argv)
 
     current = measure()
@@ -205,7 +219,9 @@ def main(argv: list[str] | None = None) -> int:
             for line in regressions:
                 print(f"  FAIL  {line}")
         elif args.strict and strict_violations:
-            print("STRICT VIOLATIONS (error-mode -- tracked categories must reach zero):")
+            print(
+                "STRICT VIOLATIONS (error-mode -- tracked categories must reach zero):"
+            )
             for line in strict_violations:
                 print(f"  FAIL  {line}")
         else:

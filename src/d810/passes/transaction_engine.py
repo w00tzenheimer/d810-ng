@@ -11,6 +11,7 @@ Ownership:
 - CfgTransactionEngine: phase ordering, projected/live validation sequencing,
   rollback policy selection, failure classification
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -117,7 +118,9 @@ class CfgTransactionEngine:
         if self._contract is not None:
             # When a cumulative CFG is available, validate against the
             # accumulated state first (catches cross-strategy conflicts).
-            projected_base = cumulative_pre_cfg if cumulative_pre_cfg is not None else pre_cfg
+            projected_base = (
+                cumulative_pre_cfg if cumulative_pre_cfg is not None else pre_cfg
+            )
             try:
                 self._contract.verify_projected(projected_base, plan)
             except CfgContractViolationError as exc:
@@ -149,20 +152,24 @@ class CfgTransactionEngine:
             return TransactionResult.failed("post_apply_contract", exc)
         except Exception as exc:
             # Unexpected failure during lowering/apply
-            phase = getattr(self._translator, "last_lowering_phase", None) or "backend_apply"
+            phase = (
+                getattr(self._translator, "last_lowering_phase", None)
+                or "backend_apply"
+            )
             detail = getattr(self._translator, "last_lowering_subphase", None)
             return TransactionResult.failed(phase, exc, detail=detail)
 
         if count == 0:
             # lower() returned 0 -- use translator's reported phase to distinguish
             # pre-mutation rejections (lowering) from post-mutation failures (native_verify)
-            phase = getattr(self._translator, 'last_lowering_phase', None) or "backend_apply"
+            phase = (
+                getattr(self._translator, "last_lowering_phase", None)
+                or "backend_apply"
+            )
             detail = getattr(self._translator, "last_lowering_subphase", None)
             return TransactionResult.failed(
                 phase,
-                RuntimeError(
-                    "translator.lower() returned 0 applied modifications"
-                ),
+                RuntimeError("translator.lower() returned 0 applied modifications"),
                 detail=detail,
             )
 

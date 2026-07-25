@@ -19,6 +19,7 @@ three capability methods (machine / resolver / cross-val source) share one walk.
 IDA-dependent (``ida_hexrays`` via the engines) -> Hex-Rays backend; the contract it
 satisfies (:class:`MachineRecoveryEnginesCapability`) is portable.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -60,6 +61,7 @@ def _hex_or_none(x) -> str:
     """
     return "None" if x is None else f"0x{int(x):x}"
 
+
 logger = getLogger("D810.backends.machine_engines_capability")
 
 __all__ = ["HexRaysMachineRecoveryEnginesCapability"]
@@ -89,7 +91,9 @@ class HexRaysMachineRecoveryEnginesCapability:
         """The DEFFAI AI spine adapter, or ``None`` when disabled / unavailable."""
         if not self.spine_enabled:
             return None
-        return DeffaiSpineEngine(mba=self.mba, min_state_constant=self.min_state_constant)
+        return DeffaiSpineEngine(
+            mba=self.mba, min_state_constant=self.min_state_constant
+        )
 
     def concolic_resolver(self, graph, anchors):
         """A ``(src_state, context) -> ConcolicCellValue | None`` over the walk.

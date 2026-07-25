@@ -23,6 +23,7 @@ The three views diverge in characteristic ways:
 The bucketing here names every divergence so the next behavior step
 (Piece 6) can be guarded by the same vocabulary the live pipeline uses.
 """
+
 from __future__ import annotations
 
 import re
@@ -50,7 +51,9 @@ class ReconciliationBucket(str, Enum):
     RESOLVER_ONLY_STRATEGY_DIDNT_LOG = "RESOLVER_ONLY_STRATEGY_DIDNT_LOG"
     DISAGREE_TARGET = "DISAGREE_TARGET"
     STRATEGY_ONLY_RESOLVER_NO_STATE = "STRATEGY_ONLY_RESOLVER_NO_STATE"
-    STRATEGY_ONLY_STATE_NOT_IN_CONDITION_CHAIN = "STRATEGY_ONLY_STATE_NOT_IN_CONDITION_CHAIN"
+    STRATEGY_ONLY_STATE_NOT_IN_CONDITION_CHAIN = (
+        "STRATEGY_ONLY_STATE_NOT_IN_CONDITION_CHAIN"
+    )
     STRATEGY_ONLY_OTHER = "STRATEGY_ONLY_OTHER"
     BOTH_NONE_NO_STATE = "BOTH_NONE_NO_STATE"
     BOTH_NONE_STATE_NOT_IN_CONDITION_CHAIN = "BOTH_NONE_STATE_NOT_IN_CONDITION_CHAIN"
@@ -155,9 +158,7 @@ def parse_log_signals(log_text: str) -> StrategyLogSignals:
     dag_d: dict[int, tuple[int, int]] = {}
     for m in _RX_DAG_DISAGREEMENT.finditer(log_text):
         dag_d[int(m.group(1))] = (int(m.group(2)), int(m.group(3)))
-    planner_ctx = frozenset(
-        int(m.group(1)) for m in _RX_PLANNER_CTX.finditer(log_text)
-    )
+    planner_ctx = frozenset(int(m.group(1)) for m in _RX_PLANNER_CTX.finditer(log_text))
     hcc_dup = frozenset(int(m.group(1)) for m in _RX_HCC_INTRA_DUP.finditer(log_text))
     hcc_anchors: set[int] = set()
     hcc_preds: set[int] = set()
@@ -297,7 +298,9 @@ def reconcile_edges(
                 logged_intent_target=li[1] if li else None,
                 persisted_target=pe[1] if pe else None,
                 state_const=sc,
-                state_in_condition_chain=(sc is not None and int(sc) in condition_chain_table),
+                state_in_condition_chain=(
+                    sc is not None and int(sc) in condition_chain_table
+                ),
                 log_signals=log_signals,
             )
         )

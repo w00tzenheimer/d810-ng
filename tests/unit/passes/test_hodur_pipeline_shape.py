@@ -5,6 +5,7 @@ the family returns the five named PassSpecs in order, each builds a PipelinePass
 runs end-to-end over a portable (null) context returning a well-formed PassResult. Skeleton
 transforms emit empty PatchPlans; the shape is what this locks in.
 """
+
 from __future__ import annotations
 
 from d810.passes.pass_pipeline import (
@@ -72,9 +73,10 @@ def test_each_spec_carries_native_state_machine_contract():
     assert contracts["recover_state_transitions"].requires.evidence == frozenset(
         {"ir.branch_target", "ir.state_variable_write"}
     )
-    assert "dispatcher_predicates" not in contracts[
-        "recover_state_transitions"
-    ].requires.evidence
+    assert (
+        "dispatcher_predicates"
+        not in contracts["recover_state_transitions"].requires.evidence
+    )
     assert not contracts["plan_semantic_regions"].requires.evidence
     assert not contracts["lower_state_machine"].requires.evidence
     assert not contracts["cleanup_residual_dispatcher"].requires.evidence
@@ -85,9 +87,9 @@ def test_each_spec_carries_native_state_machine_contract():
     assert contracts["recover_state_transitions"].requires.analyses == frozenset(
         {"recover_dispatcher"}
     )
-    assert contracts[
-        "recover_state_transitions"
-    ].requires.facts.required == frozenset({"role.dispatcher"})
+    assert contracts["recover_state_transitions"].requires.facts.required == frozenset(
+        {"role.dispatcher"}
+    )
     assert contracts["recover_state_transitions"].outputs.facts == frozenset(
         {"recovered.state_transition"}
     )
@@ -111,13 +113,18 @@ def test_each_spec_carries_native_state_machine_contract():
     assert contracts["lower_state_machine"].outputs.facts == frozenset(
         {"recovered.cfg_edge"}
     )
-    assert contracts["lower_state_machine"].preserves.analyses == mutating_preserved_analyses
+    assert (
+        contracts["lower_state_machine"].preserves.analyses
+        == mutating_preserved_analyses
+    )
     assert (
         contracts["lower_state_machine"].invalidates.analyses
         == mutating_invalidated_analyses
     )
     assert contracts["lower_state_machine"].preserves.facts == mutating_preserved_facts
-    assert contracts["lower_state_machine"].invalidates.facts == mutating_invalidated_facts
+    assert (
+        contracts["lower_state_machine"].invalidates.facts == mutating_invalidated_facts
+    )
     assert contracts["lower_state_machine"].safety == mutating_safety
     assert contracts["cleanup_residual_dispatcher"].preserves.analyses == (
         mutating_preserved_analyses
@@ -152,7 +159,9 @@ def test_each_pass_factory_builds_a_pipeline_pass():
 
 def test_full_pipeline_runs_end_to_end_on_a_portable_context():
     ctx = _null_ctx()
-    results = [spec.pass_factory().run(ctx) for spec in HodurFamily().pipeline_for(None, None)]
+    results = [
+        spec.pass_factory().run(ctx) for spec in HodurFamily().pipeline_for(None, None)
+    ]
     assert all(isinstance(r, PassResult) for r in results)
     # analysis passes (#1-#3) carry facts; transform passes (#4-#5) carry an empty plan.
     assert results[0].facts and results[1].facts and results[2].facts
@@ -163,7 +172,11 @@ def test_full_pipeline_runs_end_to_end_on_a_portable_context():
     assert tuple(fact.kind for fact in results[3].facts) == ("recovered_cfg_edge",)
     for r in results[3:]:
         assert isinstance(r.rewrite_plan, PatchPlan)
-        assert not r.rewrite_plan.operations if hasattr(r.rewrite_plan, "operations") else True
+        assert (
+            not r.rewrite_plan.operations
+            if hasattr(r.rewrite_plan, "operations")
+            else True
+        )
 
 
 def test_detect_returns_none_without_a_dispatcher():

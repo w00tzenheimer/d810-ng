@@ -8,6 +8,7 @@ hosts the pure parser plus a small CLI handler used by the
 The parser is intentionally text-only so it can be unit-tested without
 loading sqlite, IDA, or any optimizer code.
 """
+
 from __future__ import annotations
 
 import argparse

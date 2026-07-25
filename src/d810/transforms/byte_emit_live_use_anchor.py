@@ -18,6 +18,7 @@ Scope (frozen):
 
 Spec: docs/superpowers/specs/2026-05-11-track-d-byte-anchor-design.md
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -238,7 +239,8 @@ def execute_split_xor_anchor(
 
     try:
         source_operand = adapter.extract_source_byte_indexed_operand(
-            block.serial, byte_index,
+            block.serial,
+            byte_index,
         )
     except Exception:  # noqa: BLE001 — adapter contract: raise on extraction failure
         return ByteEmitAnchorReport(
@@ -345,7 +347,8 @@ def execute_single_xor_anchor(
 
     try:
         source_operand = adapter.extract_source_byte_indexed_operand(
-            block.serial, byte_index,
+            block.serial,
+            byte_index,
         )
     except Exception:  # noqa: BLE001
         return ByteEmitAnchorReport(
@@ -436,7 +439,8 @@ def execute_live_host_anchor(
         # Searches host_block first, then any block in mba; falls back
         # to the cross-block byte_6 reference (likely block 217).
         source_operand = adapter.extract_source_byte_indexed_operand(
-            host_block.serial, read_byte_index,
+            host_block.serial,
+            read_byte_index,
         )
     except Exception:  # noqa: BLE001
         return ByteEmitAnchorReport(
@@ -518,16 +522,20 @@ def execute_multi_byte_live_host_anchor(
     sub_reports: list[ByteEmitAnchorReport] = []
     any_applied = False
     for read_byte in read_byte_indices:
-        sub = execute_live_host_anchor(
-            host_byte_index=host_byte_index,
-            read_byte_index=read_byte,
-            adapter=adapter,
-            accumulator_stkoff=accumulator_stkoff,
-        ) if read_byte == 6 else _execute_live_host_anchor_relaxed(
-            host_byte_index=host_byte_index,
-            read_byte_index=read_byte,
-            adapter=adapter,
-            accumulator_stkoff=accumulator_stkoff,
+        sub = (
+            execute_live_host_anchor(
+                host_byte_index=host_byte_index,
+                read_byte_index=read_byte,
+                adapter=adapter,
+                accumulator_stkoff=accumulator_stkoff,
+            )
+            if read_byte == 6
+            else _execute_live_host_anchor_relaxed(
+                host_byte_index=host_byte_index,
+                read_byte_index=read_byte,
+                adapter=adapter,
+                accumulator_stkoff=accumulator_stkoff,
+            )
         )
         sub_reports.append(sub)
         if sub.applied:
@@ -602,27 +610,31 @@ def execute_reconnect_byte_emits(
                 template_byte_index=target_byte,
                 target_byte_index=target_byte,
             )
-            sub_reports.append(ByteEmitAnchorReport(
-                applied=True,
-                byte_index=target_byte,
-                mechanism="reconnect_byte_emit",
-                reason="ok",
-                byte_emit_serial=host_block.serial,
-                anchor_a_serial=anchor_serial,
-            ))
+            sub_reports.append(
+                ByteEmitAnchorReport(
+                    applied=True,
+                    byte_index=target_byte,
+                    mechanism="reconnect_byte_emit",
+                    reason="ok",
+                    byte_emit_serial=host_block.serial,
+                    anchor_a_serial=anchor_serial,
+                )
+            )
             any_applied = True
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "byte_anchor[reconnect]: failed for byte %d",
                 target_byte,
             )
-            sub_reports.append(ByteEmitAnchorReport(
-                applied=False,
-                byte_index=target_byte,
-                mechanism="reconnect_byte_emit",
-                reason=f"reconnect_failed:{type(exc).__name__}",
-                byte_emit_serial=host_block.serial,
-            ))
+            sub_reports.append(
+                ByteEmitAnchorReport(
+                    applied=False,
+                    byte_index=target_byte,
+                    mechanism="reconnect_byte_emit",
+                    reason=f"reconnect_failed:{type(exc).__name__}",
+                    byte_emit_serial=host_block.serial,
+                )
+            )
 
     return MultiByteAnchorReport(
         applied=any_applied,
@@ -683,12 +695,14 @@ def execute_byte_store_replica_anchor(
             host_block = adapter.find_byte_emit_block_by_source_byte_index(this_host)
             host_cache[this_host] = host_block
         if host_block is None:
-            sub_reports.append(ByteEmitAnchorReport(
-                applied=False,
-                byte_index=target_byte,
-                mechanism=_MECHANISM_BYTE_STORE,
-                reason=f"host_byte_{this_host}_not_resolvable",
-            ))
+            sub_reports.append(
+                ByteEmitAnchorReport(
+                    applied=False,
+                    byte_index=target_byte,
+                    mechanism=_MECHANISM_BYTE_STORE,
+                    reason=f"host_byte_{this_host}_not_resolvable",
+                )
+            )
             continue
         try:
             anchor_serial = adapter.insert_byte_emit_replica_anchor(
@@ -697,27 +711,32 @@ def execute_byte_store_replica_anchor(
                 template_byte_index=this_host,
                 target_byte_index=target_byte,
             )
-            sub_reports.append(ByteEmitAnchorReport(
-                applied=True,
-                byte_index=target_byte,
-                mechanism=_MECHANISM_BYTE_STORE,
-                reason="ok",
-                byte_emit_serial=host_block.serial,
-                anchor_a_serial=anchor_serial,
-            ))
+            sub_reports.append(
+                ByteEmitAnchorReport(
+                    applied=True,
+                    byte_index=target_byte,
+                    mechanism=_MECHANISM_BYTE_STORE,
+                    reason="ok",
+                    byte_emit_serial=host_block.serial,
+                    anchor_a_serial=anchor_serial,
+                )
+            )
             any_applied = True
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "byte_anchor[byte_store]: replica insert failed for byte %d (host %d)",
-                target_byte, this_host,
+                target_byte,
+                this_host,
             )
-            sub_reports.append(ByteEmitAnchorReport(
-                applied=False,
-                byte_index=target_byte,
-                mechanism=_MECHANISM_BYTE_STORE,
-                reason=f"replica_insert_failed:{type(exc).__name__}",
-                byte_emit_serial=host_block.serial,
-            ))
+            sub_reports.append(
+                ByteEmitAnchorReport(
+                    applied=False,
+                    byte_index=target_byte,
+                    mechanism=_MECHANISM_BYTE_STORE,
+                    reason=f"replica_insert_failed:{type(exc).__name__}",
+                    byte_emit_serial=host_block.serial,
+                )
+            )
 
     return MultiByteAnchorReport(
         applied=any_applied,
@@ -766,7 +785,8 @@ def _execute_live_host_anchor_relaxed(
 
     try:
         source_operand = adapter.extract_source_byte_indexed_operand(
-            host_block.serial, read_byte_index,
+            host_block.serial,
+            read_byte_index,
         )
     except Exception:  # noqa: BLE001
         return ByteEmitAnchorReport(
@@ -788,7 +808,8 @@ def _execute_live_host_anchor_relaxed(
     except Exception:  # noqa: BLE001
         logger.exception(
             "byte_anchor[multi]: anchor insert failed for byte %d on host %d",
-            read_byte_index, host_block.serial,
+            read_byte_index,
+            host_block.serial,
         )
         return ByteEmitAnchorReport(
             applied=False,

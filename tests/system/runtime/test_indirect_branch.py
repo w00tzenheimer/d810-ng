@@ -15,6 +15,7 @@ Sample requirements:
     not raw indirect jumps through encrypted tables).  These tests are
     structured and ready to run once an appropriate sample is added.
 """
+
 from __future__ import annotations
 
 import os
@@ -32,7 +33,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +96,7 @@ INDIRECT_BRANCH_CASES = [
 def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     """Setup fixture for libobfuscated tests -- runs once per class."""
     import idaapi
+
     if not idaapi.init_hexrays_plugin():
         pytest.skip("Hex-Rays decompiler plugin not available")
     return ida_database
@@ -110,9 +114,7 @@ class TestIndirectBranchResolver:
     binary_name = _get_default_binary()
 
     @pytest.mark.ida_required
-    @pytest.mark.parametrize(
-        "case", INDIRECT_BRANCH_CASES, ids=lambda c: c.test_id
-    )
+    @pytest.mark.parametrize("case", INDIRECT_BRANCH_CASES, ids=lambda c: c.test_id)
     def test_indirect_branch_resolver(
         self,
         case,
@@ -138,6 +140,7 @@ class TestIndirectBranchResolver:
 # Attribute and constant verification tests
 # ---------------------------------------------------------------------------
 
+
 class TestIndirectBranchResolverAttributes:
     """Verify IndirectBranchResolver class attributes with real IDA constants."""
 
@@ -152,6 +155,7 @@ class TestIndirectBranchResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_branch import (
             IndirectBranchResolver,
         )
+
         desc = IndirectBranchResolver.DESCRIPTION.lower()
         assert "indirect" in desc
 
@@ -161,6 +165,7 @@ class TestIndirectBranchResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_branch import (
             IndirectBranchResolver,
         )
+
         # SAFE_MATURITIES should contain real IDA maturity constants
         for mat in IndirectBranchResolver.SAFE_MATURITIES:
             assert isinstance(mat, int)
@@ -170,6 +175,7 @@ class TestIndirectBranchResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_branch import (
             MAX_TABLE_ENTRIES,
         )
+
         assert MAX_TABLE_ENTRIES == 512
 
     @pytest.mark.ida_required
@@ -177,6 +183,7 @@ class TestIndirectBranchResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_branch import (
             MAX_CONSECUTIVE_INVALID,
         )
+
         assert MAX_CONSECUTIVE_INVALID == 5
 
     @pytest.mark.ida_required
@@ -184,12 +191,14 @@ class TestIndirectBranchResolverAttributes:
         from d810.optimizers.microcode.flow.jumps.indirect_branch import (
             DEFAULT_TABLE_ENTRY_SIZE,
         )
+
         assert DEFAULT_TABLE_ENTRY_SIZE == 8
 
 
 # ---------------------------------------------------------------------------
 # Table utility tests -- pure logic, but using real IDA module imports
 # ---------------------------------------------------------------------------
+
 
 class TestTableUtils:
     """Test table decoding utilities with real IDA modules loaded."""
@@ -199,21 +208,25 @@ class TestTableUtils:
     @pytest.mark.ida_required
     def test_decode_direct(self, libobfuscated_setup):
         from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
+
         assert decode_table_entry(0xDEAD, TableEncoding.DIRECT) == 0xDEAD
 
     @pytest.mark.ida_required
     def test_decode_offset(self, libobfuscated_setup):
         from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
+
         assert decode_table_entry(0x100, TableEncoding.OFFSET, base=0x4000) == 0x4100
 
     @pytest.mark.ida_required
     def test_decode_xor(self, libobfuscated_setup):
         from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
+
         assert decode_table_entry(0xFF00, TableEncoding.XOR, key=0x00FF) == 0xFFFF
 
     @pytest.mark.ida_required
     def test_decode_offset_xor(self, libobfuscated_setup):
         from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
+
         result = decode_table_entry(
             0xFF00, TableEncoding.OFFSET_XOR, key=0x00FF, base=0x1000
         )
@@ -223,6 +236,7 @@ class TestTableUtils:
     def test_roundtrip_xor(self, libobfuscated_setup):
         """Encoding + decoding with XOR should produce the original address."""
         from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
+
         original = 0x401000
         key = 0xCAFEBABE
         encoded = original ^ key
@@ -232,6 +246,7 @@ class TestTableUtils:
     @pytest.mark.ida_required
     def test_roundtrip_offset(self, libobfuscated_setup):
         from d810.hexrays.utils.table_utils import TableEncoding, decode_table_entry
+
         original = 0x401000
         base = 0x400000
         encoded = original - base
@@ -241,6 +256,7 @@ class TestTableUtils:
     @pytest.mark.ida_required
     def test_table_encoding_enum_values(self, libobfuscated_setup):
         from d810.hexrays.utils.table_utils import TableEncoding
+
         assert TableEncoding.DIRECT == 0
         assert TableEncoding.OFFSET == 1
         assert TableEncoding.XOR == 2

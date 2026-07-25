@@ -34,6 +34,7 @@ preserved as a back-compat alias re-exported from
 ``d810.evaluator.hexrays_microcode.use_def_dominance`` so the two
 existing Hodur consumers do not have to update at the same time.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

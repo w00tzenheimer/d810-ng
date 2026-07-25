@@ -1,4 +1,5 @@
 """Tests for shared outcome vocabulary and adapters."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -196,7 +197,9 @@ class TestFlowGateOutcomeAdapter:
 
     def test_custom_gate_name(self) -> None:
         adapter = FlowGateOutcomeAdapter(
-            _StubFlowGateDecision(), func_ea=0x2000, gate_name="unflattening_gate",
+            _StubFlowGateDecision(),
+            func_ea=0x2000,
+            gate_name="unflattening_gate",
         )
         assert adapter.consumer_name == "unflattening_gate"
 
@@ -210,19 +213,22 @@ class TestFlowGateOutcomeAdapter:
 
     def test_verdict_applied_when_allowed(self) -> None:
         adapter = FlowGateOutcomeAdapter(
-            _StubFlowGateDecision(allowed=True), func_ea=0x2000,
+            _StubFlowGateDecision(allowed=True),
+            func_ea=0x2000,
         )
         assert adapter.consumer_verdict_applied is True
 
     def test_verdict_not_applied_when_denied(self) -> None:
         adapter = FlowGateOutcomeAdapter(
-            _StubFlowGateDecision(allowed=False), func_ea=0x2000,
+            _StubFlowGateDecision(allowed=False),
+            func_ea=0x2000,
         )
         assert adapter.consumer_verdict_applied is False
 
     def test_func_ea(self) -> None:
         adapter = FlowGateOutcomeAdapter(
-            _StubFlowGateDecision(), func_ea=0xCAFE,
+            _StubFlowGateDecision(),
+            func_ea=0xCAFE,
         )
         assert adapter.func_ea == 0xCAFE
 
@@ -276,7 +282,8 @@ class TestAdapterDetail:
 
     def test_planner_detail_without_summary(self) -> None:
         adapter = PlannerOutcomeAdapter(
-            _StubPipelineProvenance(), func_ea=0x1000,
+            _StubPipelineProvenance(),
+            func_ea=0x1000,
         )
         assert adapter.detail == ""
 
@@ -305,11 +312,13 @@ class TestGateNameCoexistence:
         log = AnalysisOutcomeLog()
 
         a1 = FlowGateOutcomeAdapter(
-            _StubFlowGateDecision(allowed=True), func_ea=0x1000,
+            _StubFlowGateDecision(allowed=True),
+            func_ea=0x1000,
             gate_name="unflattening_gate",
         )
         a2 = FlowGateOutcomeAdapter(
-            _StubFlowGateDecision(allowed=False), func_ea=0x1000,
+            _StubFlowGateDecision(allowed=False),
+            func_ea=0x1000,
             gate_name="fixpred_gate",
         )
         log.record(a1)
@@ -325,11 +334,13 @@ class TestGateNameCoexistence:
         log = AnalysisOutcomeLog()
 
         a1 = FlowGateOutcomeAdapter(
-            _StubFlowGateDecision(allowed=True), func_ea=0x1000,
+            _StubFlowGateDecision(allowed=True),
+            func_ea=0x1000,
             gate_name="flow_gate",
         )
         a2 = FlowGateOutcomeAdapter(
-            _StubFlowGateDecision(allowed=False), func_ea=0x1000,
+            _StubFlowGateDecision(allowed=False),
+            func_ea=0x1000,
             gate_name="flow_gate",
         )
         log.record(a1)
@@ -351,10 +362,13 @@ class TestAnalysisOutcomeLog:
         log = AnalysisOutcomeLog()
 
         a1 = RuleScopeOutcomeAdapter(
-            _StubAnalysisOutcome(func_ea=0x1000, source="analyzed", hints=object(), apply_result=object()),
+            _StubAnalysisOutcome(
+                func_ea=0x1000, source="analyzed", hints=object(), apply_result=object()
+            ),
         )
         a2 = FlowGateOutcomeAdapter(
-            _StubFlowGateDecision(allowed=True), func_ea=0x1000,
+            _StubFlowGateDecision(allowed=True),
+            func_ea=0x1000,
         )
         log.record(a1)
         log.record(a2)
@@ -400,7 +414,8 @@ class TestAnalysisOutcomeLog:
         log.record(a1)
 
         a2 = PlannerOutcomeAdapter(
-            _StubPipelineProvenance(accepted_count=1), func_ea=0x100,
+            _StubPipelineProvenance(accepted_count=1),
+            func_ea=0x100,
         )
         log.record(a2)
 

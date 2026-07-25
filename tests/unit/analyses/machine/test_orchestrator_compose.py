@@ -6,6 +6,7 @@ Verifies the pipeline order anchor->spine->refine(gate)->cross-val->rank and tha
 * refinement only touches ⊤ cells (resolved rows/transitions are untouched);
 * a ⊤ floor never refines (the §0.1 defect guard, end-to-end).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -31,7 +32,9 @@ W = 4
 
 
 def _floor_range(lo, hi, width=W):
-    return AbstractEvidence(width, KnownBits.top(width), WrappedInterval(width, lo, hi, "range"))
+    return AbstractEvidence(
+        width, KnownBits.top(width), WrappedInterval(width, lo, hi, "range")
+    )
 
 
 @dataclass
@@ -95,7 +98,9 @@ def test_complete_V_refines_top_cell():
     top = MachineTransition(src_state=7, context=(), next_states=())  # ⊤ cell
     machine = _spine_machine((top,), rows=(MachineRow(1, 101, 1),))
     floor = _floor_range(3, 4)  # γ = {3,4}
-    spine = _FakeSpine(_FakeSpineResult(machine, top_density=0.0, floors={(7, ()): floor}))
+    spine = _FakeSpine(
+        _FakeSpineResult(machine, top_density=0.0, floors={(7, ()): floor})
+    )
 
     def resolver(src, ctx):
         if (src, ctx) == (7, ()):
@@ -103,8 +108,11 @@ def test_complete_V_refines_top_cell():
         return None
 
     out = compose_reduced_product(
-        graph=object(), anchors=_ANCHORS, caps=None,
-        spine_engine=spine, concolic_resolver=resolver,
+        graph=object(),
+        anchors=_ANCHORS,
+        caps=None,
+        spine_engine=spine,
+        concolic_resolver=resolver,
     )
     assert out is not None
     fork = next(t for t in out.transitions if t.src_state == 7)
@@ -128,8 +136,11 @@ def test_complete_exit_path_effect_summary_is_carried_into_machine():
         return None
 
     out = compose_reduced_product(
-        graph=object(), anchors=_ANCHORS, caps=None,
-        spine_engine=spine, concolic_resolver=resolver,
+        graph=object(),
+        anchors=_ANCHORS,
+        caps=None,
+        spine_engine=spine,
+        concolic_resolver=resolver,
         gate_mode=GateMode.DETERMINISTIC_F,
     )
 
@@ -143,14 +154,19 @@ def test_incomplete_V_stays_top():
     top = MachineTransition(src_state=7, context=(), next_states=())
     machine = _spine_machine((top,))
     floor = _floor_range(3, 4)  # γ = {3,4}
-    spine = _FakeSpine(_FakeSpineResult(machine, top_density=0.0, floors={(7, ()): floor}))
+    spine = _FakeSpine(
+        _FakeSpineResult(machine, top_density=0.0, floors={(7, ()): floor})
+    )
 
     def resolver(src, ctx):
         return ConcolicCellValue(next_states=frozenset({3}))  # missing 4 -> incomplete
 
     out = compose_reduced_product(
-        graph=object(), anchors=_ANCHORS, caps=None,
-        spine_engine=spine, concolic_resolver=resolver,
+        graph=object(),
+        anchors=_ANCHORS,
+        caps=None,
+        spine_engine=spine,
+        concolic_resolver=resolver,
     )
     fork = next(t for t in out.transitions if t.src_state == 7)
     assert fork.next_states == ()  # stayed ⊤
@@ -161,27 +177,36 @@ def test_top_floor_never_refines_end_to_end():
     machine = _spine_machine((top,))
     # ⊤ floor -> the gate must refuse, even with a "complete" V
     spine = _FakeSpine(
-        _FakeSpineResult(machine, top_density=0.0, floors={(7, ()): AbstractEvidence.top(W)})
+        _FakeSpineResult(
+            machine, top_density=0.0, floors={(7, ()): AbstractEvidence.top(W)}
+        )
     )
 
     def resolver(src, ctx):
         return ConcolicCellValue(next_states=frozenset({3, 4}))
 
     out = compose_reduced_product(
-        graph=object(), anchors=_ANCHORS, caps=None,
-        spine_engine=spine, concolic_resolver=resolver,
+        graph=object(),
+        anchors=_ANCHORS,
+        caps=None,
+        spine_engine=spine,
+        concolic_resolver=resolver,
     )
     fork = next(t for t in out.transitions if t.src_state == 7)
     assert fork.next_states == ()  # ⊤ floor -> no refinement (§0.1 guard)
 
 
 def test_resolved_cells_untouched():
-    resolved = MachineTransition(src_state=5, context=(), next_states=(6,))  # already resolved
+    resolved = MachineTransition(
+        src_state=5, context=(), next_states=(6,)
+    )  # already resolved
     top = MachineTransition(src_state=7, context=(), next_states=())
     machine = _spine_machine((resolved, top))
     floor = _floor_range(3, 4)
     spine = _FakeSpine(
-        _FakeSpineResult(machine, top_density=0.0, floors={(7, ()): floor, (5, ()): floor})
+        _FakeSpineResult(
+            machine, top_density=0.0, floors={(7, ()): floor, (5, ()): floor}
+        )
     )
 
     calls = []
@@ -191,8 +216,11 @@ def test_resolved_cells_untouched():
         return ConcolicCellValue(next_states=frozenset({3, 4}))
 
     out = compose_reduced_product(
-        graph=object(), anchors=_ANCHORS, caps=None,
-        spine_engine=spine, concolic_resolver=resolver,
+        graph=object(),
+        anchors=_ANCHORS,
+        caps=None,
+        spine_engine=spine,
+        concolic_resolver=resolver,
     )
     # resolver consulted ONLY for the ⊤ cell (5 is resolved, not consulted)
     assert calls == [(7, ())]
@@ -205,8 +233,11 @@ def test_no_concolic_resolver_leaves_top_cells():
     machine = _spine_machine((top,))
     spine = _FakeSpine(_FakeSpineResult(machine, top_density=0.0, floors={}))
     out = compose_reduced_product(
-        graph=object(), anchors=_ANCHORS, caps=None,
-        spine_engine=spine, concolic_resolver=None,
+        graph=object(),
+        anchors=_ANCHORS,
+        caps=None,
+        spine_engine=spine,
+        concolic_resolver=None,
     )
     fork = next(t for t in out.transitions if t.src_state == 7)
     assert fork.next_states == ()
@@ -221,8 +252,11 @@ def test_spine_none_returns_none():
             return None
 
     out = compose_reduced_product(
-        graph=object(), anchors=_ANCHORS, caps=None,
-        spine_engine=_NoneSpine(), concolic_resolver=None,
+        graph=object(),
+        anchors=_ANCHORS,
+        caps=None,
+        spine_engine=_NoneSpine(),
+        concolic_resolver=None,
     )
     assert out is None
 
@@ -238,8 +272,11 @@ def test_cross_validation_flags_conflict():
         soundness=Soundness.EXACT_BOUNDED,
     )
     out = compose_reduced_product(
-        graph=object(), anchors=_ANCHORS, caps=None,
-        spine_engine=spine, concolic_resolver=None,
+        graph=object(),
+        anchors=_ANCHORS,
+        caps=None,
+        spine_engine=spine,
+        concolic_resolver=None,
         concolic_machine=conc_machine,
     )
     res = next(t for t in out.transitions if t.src_state == 5)

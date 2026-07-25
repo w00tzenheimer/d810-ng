@@ -7,6 +7,7 @@ Net-new and unwired (Landing Sequence LS8 S6).
 Minimum viable scope: inclusive integer ``[lo, hi]`` bounds (``None`` = open on
 that side).  Symbolic / modular bounds are added on demand.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

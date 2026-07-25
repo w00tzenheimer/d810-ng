@@ -2,12 +2,17 @@ from __future__ import annotations
 import time
 from types import MappingProxyType
 import pytest
-from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints, PreanalysisResult
+from d810.analyses.control_flow.models import (
+    CandidateFlag,
+    DeobfuscationHints,
+    PreanalysisResult,
+)
 from d810.passes.analysis import AnalysisPhase
 
 
-def _make_result(collector: str, func_ea: int, maturity: int, metrics: dict,
-                 candidates: tuple = ()) -> PreanalysisResult:
+def _make_result(
+    collector: str, func_ea: int, maturity: int, metrics: dict, candidates: tuple = ()
+) -> PreanalysisResult:
     return PreanalysisResult(
         collector_name=collector,
         func_ea=func_ea,
@@ -24,21 +29,34 @@ class TestAnalysisPhaseOllvmFlat:
     - max_in_degree >= 4
     - nway_block_count >= 1 OR back_edge_count >= 2 (from DispatchPatternCollector)
     """
+
     def test_strong_flattening_signals(self):
         results = [
-            _make_result("CFGShapeCollector", 0x401000, 5, {
-                "block_count": 30, "edge_count": 45,
-                "max_in_degree": 8, "flattening_score": 0.72,
-            }, candidates=(
-                CandidateFlag("high_indegree_block", 3, 0.9, "8 preds"),
-            )),
-            _make_result("DispatchPatternCollector", 0x401000, 3, {
-                "nway_block_count": 1, "max_nway_fan_out": 6,
-                "tway_chain_max_len": 0, "back_edge_count": 4,
-                "indirect_jump_count": 0,
-            }, candidates=(
-                CandidateFlag("switch_dispatcher", 3, 0.8, "NWAY"),
-            )),
+            _make_result(
+                "CFGShapeCollector",
+                0x401000,
+                5,
+                {
+                    "block_count": 30,
+                    "edge_count": 45,
+                    "max_in_degree": 8,
+                    "flattening_score": 0.72,
+                },
+                candidates=(CandidateFlag("high_indegree_block", 3, 0.9, "8 preds"),),
+            ),
+            _make_result(
+                "DispatchPatternCollector",
+                0x401000,
+                3,
+                {
+                    "nway_block_count": 1,
+                    "max_nway_fan_out": 6,
+                    "tway_chain_max_len": 0,
+                    "back_edge_count": 4,
+                    "indirect_jump_count": 0,
+                },
+                candidates=(CandidateFlag("switch_dispatcher", 3, 0.8, "NWAY"),),
+            ),
         ]
         phase = AnalysisPhase()
         hints = phase.interpret(func_ea=0x401000, results=results)
@@ -48,10 +66,17 @@ class TestAnalysisPhaseOllvmFlat:
 
     def test_weak_signals_no_classification(self):
         results = [
-            _make_result("CFGShapeCollector", 0x401000, 5, {
-                "block_count": 5, "edge_count": 4,
-                "max_in_degree": 1, "flattening_score": 0.0,
-            }),
+            _make_result(
+                "CFGShapeCollector",
+                0x401000,
+                5,
+                {
+                    "block_count": 5,
+                    "edge_count": 4,
+                    "max_in_degree": 1,
+                    "flattening_score": 0.0,
+                },
+            ),
         ]
         phase = AnalysisPhase()
         hints = phase.interpret(func_ea=0x401000, results=results)
@@ -62,15 +87,30 @@ class TestAnalysisPhaseOllvmFlat:
     def test_candidates_forwarded(self):
         flag = CandidateFlag("switch_dispatcher", 3, 0.8, "NWAY")
         results = [
-            _make_result("CFGShapeCollector", 0x401000, 5, {
-                "block_count": 30, "max_in_degree": 8, "flattening_score": 0.72,
-                "edge_count": 45,
-            }),
-            _make_result("DispatchPatternCollector", 0x401000, 3, {
-                "nway_block_count": 1, "max_nway_fan_out": 6,
-                "tway_chain_max_len": 0, "back_edge_count": 4,
-                "indirect_jump_count": 0,
-            }, candidates=(flag,)),
+            _make_result(
+                "CFGShapeCollector",
+                0x401000,
+                5,
+                {
+                    "block_count": 30,
+                    "max_in_degree": 8,
+                    "flattening_score": 0.72,
+                    "edge_count": 45,
+                },
+            ),
+            _make_result(
+                "DispatchPatternCollector",
+                0x401000,
+                3,
+                {
+                    "nway_block_count": 1,
+                    "max_nway_fan_out": 6,
+                    "tway_chain_max_len": 0,
+                    "back_edge_count": 4,
+                    "indirect_jump_count": 0,
+                },
+                candidates=(flag,),
+            ),
         ]
         phase = AnalysisPhase()
         hints = phase.interpret(func_ea=0x401000, results=results)
@@ -91,11 +131,19 @@ class TestAnalysisPhaseOllvmFlat:
 class TestAnalysisPhaseInterpretFromStore:
     def test_interpret_from_store(self, tmp_path):
         from d810.passes.store import PreanalysisStore
+
         store = PreanalysisStore(tmp_path / "analysis_test.db")
-        r1 = _make_result("CFGShapeCollector", 0x401000, 5, {
-            "block_count": 30, "edge_count": 45,
-            "max_in_degree": 8, "flattening_score": 0.72,
-        })
+        r1 = _make_result(
+            "CFGShapeCollector",
+            0x401000,
+            5,
+            {
+                "block_count": 30,
+                "edge_count": 45,
+                "max_in_degree": 8,
+                "flattening_score": 0.72,
+            },
+        )
         store.save_preanalysis_result(r1)
 
         phase = AnalysisPhase()

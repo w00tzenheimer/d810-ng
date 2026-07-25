@@ -42,6 +42,7 @@ def _current_mba_runtime_identity(mba: object) -> int:
     except (AttributeError, TypeError, ValueError):
         return id(mba)
 
+
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
 
@@ -710,9 +711,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
         else:
             self._flow_context.refresh_mba(mba)
-        self._flow_context.set_function_priors_provider(
-            self._function_priors_provider
-        )
+        self._flow_context.set_function_priors_provider(self._function_priors_provider)
         self._flow_context.set_phase(
             priority=phase_priority,
             phase_index=phase_index,
@@ -748,9 +747,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         new_gateway = getattr(lifecycle, "new_current_mba_mutation_gateway", None)
         if not callable(new_gateway):
             return
-        set_factory(
-            lambda: new_gateway(function_ea=function_ea, maturity=maturity)
-        )
+        set_factory(lambda: new_gateway(function_ea=function_ea, maturity=maturity))
 
     def _new_coordinator_mutation_gateway(
         self,
@@ -859,12 +856,19 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             summary.confidence,
         )
 
-    _KNOWN_GATE_TYPES: typing.ClassVar[frozenset[str]] = frozenset({
-        "unflattening_gate", "fixpred_gate", "preconditioner_gate",
-    })
+    _KNOWN_GATE_TYPES: typing.ClassVar[frozenset[str]] = frozenset(
+        {
+            "unflattening_gate",
+            "fixpred_gate",
+            "preconditioner_gate",
+        }
+    )
 
     def _record_flow_outcome(
-        self, func_ea: int, outcome_object: object, consumer_type: str,
+        self,
+        func_ea: int,
+        outcome_object: object,
+        consumer_type: str,
     ) -> None:
         """Callback for flow-context rules to record outcomes."""
         if consumer_type == "planner":
@@ -875,7 +879,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             if consumer_type not in self._KNOWN_GATE_TYPES:
                 optimizer_logger.warning(
                     "_record_flow_outcome: unknown consumer_type=%r for func=0x%x",
-                    consumer_type, func_ea,
+                    consumer_type,
+                    func_ea,
                 )
             callback = self._flow_gate_outcome_callback
             if callable(callback):
@@ -938,9 +943,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     @staticmethod
     def _extract_project_config(kwargs: dict[str, typing.Any]) -> dict[str, typing.Any]:
         return {
-            key: value
-            for key, value in kwargs.items()
-            if key in _PROJECT_CONFIG_KEYS
+            key: value for key, value in kwargs.items() if key in _PROJECT_CONFIG_KEYS
         }
 
     def optimize(self, blk: ida_hexrays.mblock_t):
@@ -960,15 +963,15 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self._perf_counters["scoped_calls"] += 1
             self._perf_counters["scoped_candidates_total"] += len(rules)
             if self._perf_compare_rule_scope and func_ea != 0:
-                self._perf_counters[
-                    "legacy_candidates_total"
-                ] += self._legacy_candidate_count(func_ea)
+                self._perf_counters["legacy_candidates_total"] += (
+                    self._legacy_candidate_count(func_ea)
+                )
         else:
             self._perf_counters["legacy_calls"] += 1
             if func_ea != 0:
-                self._perf_counters[
-                    "legacy_candidates_total"
-                ] += self._legacy_candidate_count(func_ea)
+                self._perf_counters["legacy_candidates_total"] += (
+                    self._legacy_candidate_count(func_ea)
+                )
             else:
                 self._perf_counters["legacy_candidates_total"] += len(rules)
 
@@ -999,12 +1002,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     # this fence does NOT block HCC.
                     try:
                         import os as _os
-                        if (
-                            _os.environ.get(
-                                "D810_FENCE_INSN_OPT_AT_GLBOPT1", "",
-                            )
-                            and int(self.current_maturity)
-                            == int(ida_hexrays.MMAT_GLBOPT1)
+
+                        if _os.environ.get(
+                            "D810_FENCE_INSN_OPT_AT_GLBOPT1",
+                            "",
+                        ) and int(self.current_maturity) == int(
+                            ida_hexrays.MMAT_GLBOPT1
                         ):
                             if not getattr(
                                 cfg_rule,
@@ -1074,8 +1077,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         if late_patch_count > 0:
             self._generation += 1
             self._invalidate_flow_context(
-                "late terminal return cleanup applied "
-                f"{late_patch_count} patch(es)"
+                f"late terminal return cleanup applied {late_patch_count} patch(es)"
             )
             return late_patch_count
         return 0
@@ -1161,8 +1163,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 priors = self._function_priors_provider(func_ea)
             except Exception:
                 optimizer_logger.exception(
-                    "terminal tail cascade egress prior lookup failed "
-                    "for func=0x%x",
+                    "terminal tail cascade egress prior lookup failed for func=0x%x",
                     func_ea,
                 )
                 priors = None
@@ -1193,8 +1194,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 )
             except Exception:
                 optimizer_logger.exception(
-                    "terminal tail cascade egress fact lookup failed "
-                    "for func=0x%x",
+                    "terminal tail cascade egress fact lookup failed for func=0x%x",
                     func_ea,
                 )
                 fact_view = None
@@ -1301,7 +1301,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._configure_rule_project_config(cfg_rule)
 
     def configure(self, **kwargs):
-        if "project_name" in kwargs or any(key in kwargs for key in _PROJECT_CONFIG_KEYS):
+        if "project_name" in kwargs or any(
+            key in kwargs for key in _PROJECT_CONFIG_KEYS
+        ):
             self._project_config = self._extract_project_config(kwargs)
         self._validated_fact_view_provider = kwargs.get(
             "validated_fact_view_provider",

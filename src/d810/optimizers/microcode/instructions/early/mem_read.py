@@ -15,8 +15,12 @@ from d810.optimizers.microcode.instructions.early.handler import EarlyRule
 class SetGlobalVariablesToZero(EarlyRule):
     CATEGORY = "Early Transforms"
     CONFIG_SCHEMA = EarlyRule.CONFIG_SCHEMA + (
-        ConfigParam("ro_dword_min_ea", str, "", "Minimum address for RO data range (hex)"),
-        ConfigParam("ro_dword_max_ea", str, "", "Maximum address for RO data range (hex)"),
+        ConfigParam(
+            "ro_dword_min_ea", str, "", "Minimum address for RO data range (hex)"
+        ),
+        ConfigParam(
+            "ro_dword_max_ea", str, "", "Maximum address for RO data range (hex)"
+        ),
     )
     DESCRIPTION = "This rule can be used to patch memory read"
 
@@ -144,7 +148,9 @@ class ReplaceReadonlyAddressOfWithImmediate(EarlyRule):
         # Run early to avoid creating bogus MEMORY[0] later when addresses fold late
         self.maturities = [ida_hexrays.MMAT_PREOPTIMIZED]
 
-    def _resolve_address_from_mop(self, mop_obj: ida_hexrays.mop_t | None) -> int | None:
+    def _resolve_address_from_mop(
+        self, mop_obj: ida_hexrays.mop_t | None
+    ) -> int | None:
         if mop_obj is None:
             return None
         t = mop_obj.t

@@ -1,4 +1,5 @@
 """Diagnostics-only DB resolution over exact state-dispatcher rows."""
+
 from __future__ import annotations
 
 import json
@@ -113,7 +114,11 @@ def load_latest_state_dispatcher_map_from_db(
         if entry is not None:
             dispatcher_entry = int(entry)
             dispatcher_blocks.add(int(entry))
-        if compare is not None and compare != target and branch_kind != "handler_state_map":
+        if (
+            compare is not None
+            and compare != target
+            and branch_kind != "handler_state_map"
+        ):
             dispatcher_blocks.add(compare)
         state_to_handler[state_const] = target
         model_rows.append(
@@ -159,7 +164,10 @@ def _select_locopt_state_const_at_block(
             continue
         if int(payload.get("block_serial", -1)) != int(block_serial):
             continue
-        if str(payload.get("state_var_stkoff_hex", "")).lower() != canonical_stkoff_hex.lower():
+        if (
+            str(payload.get("state_var_stkoff_hex", "")).lower()
+            != canonical_stkoff_hex.lower()
+        ):
             continue
         const = payload.get("state_const_u64")
         if const is None:
@@ -183,9 +191,7 @@ def resolve_state_transition_facts_with_dispatcher(
 ) -> tuple[StateDispatchResolution, ...]:
     """Resolve transition facts using exact dispatcher rows."""
     fact_rows = (
-        FactObservation.select(
-            FactObservation.fact_id, FactObservation.payload
-        )
+        FactObservation.select(FactObservation.fact_id, FactObservation.payload)
         .where(
             (FactObservation.kind == "StateTransitionAnchorFact")
             & (FactObservation.snapshot == int(locopt_snapshot_id))
@@ -214,8 +220,7 @@ def resolve_state_transition_facts_with_dispatcher(
         next_const_hex: str | None = None
         if successor_kind != "branch":
             reason = (
-                f"successor_kind={successor_kind}; "
-                "not a dispatcher-bound transition"
+                f"successor_kind={successor_kind}; not a dispatcher-bound transition"
             )
         elif dispatch_map is None or not dispatch_map.rows:
             reason = "no_dispatcher_rows_available"
@@ -266,8 +271,7 @@ def persist_state_dispatch_resolutions(
     snapshot_ids = sorted({int(r[0]) for r in rows})
     for snap_id in snapshot_ids:
         conn.execute(
-            "DELETE FROM state_transition_dispatch_resolutions "
-            "WHERE snapshot_id = ?",
+            "DELETE FROM state_transition_dispatch_resolutions WHERE snapshot_id = ?",
             (snap_id,),
         )
     conn.executemany(

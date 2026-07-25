@@ -1,4 +1,5 @@
 "Tests for the SQLite event handlers (Phase 3).\n\nVerify that with handlers installed on the bus and a connected diag DB,\nthe observation events from preanalysis/cfg/hexrays emit rows in the expected\ntables. The mapping ``SnapshotRef.key -> snapshots.id`` is driven by\nthe :class:`CaptureMbaSnapshotRequested` handler.\n"
+
 from __future__ import annotations
 from d810.core.diag import create_diag_database
 
@@ -97,7 +98,8 @@ def _bus_and_handlers(fake_conn):
         return fake_conn
 
     with patch(
-        "d810.core.diag.event_handlers.get_diag_conn", new=fake_get_diag_db,
+        "d810.core.diag.event_handlers.get_diag_conn",
+        new=fake_get_diag_db,
     ):
         install_diag_event_handlers()
         yield
@@ -156,13 +158,15 @@ def test_capture_inserts_snapshots_row_and_binds_mapping(fake_conn):
 
 
 def test_capture_persists_maturity_json(fake_conn):
-    maturity_json = json.dumps({
-        "ir": "GLOBAL_ANALYZED",
-        "snapshot_form": "OPTIMIZED_IR",
-        "provider": "hexrays",
-        "provider_id": 4,
-        "provider_name": "MMAT_GLBOPT1",
-    })
+    maturity_json = json.dumps(
+        {
+            "ir": "GLOBAL_ANALYZED",
+            "snapshot_form": "OPTIMIZED_IR",
+            "provider": "hexrays",
+            "provider_id": 4,
+            "provider_name": "MMAT_GLBOPT1",
+        }
+    )
     snap = request_capture_mba_snapshot(
         blocks=_make_snap_blocks(),
         label="MMAT_GLBOPT1_post_d810",
@@ -197,7 +201,9 @@ def test_followup_event_writes_under_correct_snapshot_id(fake_conn):
     ]
     edges = [
         DagEdge(
-            edge_id=0, source_state=0x10, target_state=0x20,
+            edge_id=0,
+            source_state=0x10,
+            target_state=0x20,
             edge_kind="TRANSITION",
         ),
     ]
@@ -214,7 +220,10 @@ def test_followup_event_writes_under_correct_snapshot_id(fake_conn):
 def test_observe_modifications_writes_to_modifications_table(fake_conn):
     snap = request_capture_mba_snapshot(
         blocks=_make_snap_blocks(),
-        label="L", func_ea=1, maturity="M", phase="post_d810",
+        label="L",
+        func_ea=1,
+        maturity="M",
+        phase="post_d810",
     )
     assert snap is not None
 
@@ -233,7 +242,10 @@ def test_observe_modifications_writes_to_modifications_table(fake_conn):
 def test_reachability_translates_frozensets_to_classification_rows(fake_conn):
     snap = request_capture_mba_snapshot(
         blocks=_make_snap_blocks(),
-        label="L", func_ea=1, maturity="M", phase="post_d810",
+        label="L",
+        func_ea=1,
+        maturity="M",
+        phase="post_d810",
     )
     assert snap is not None
 
@@ -520,12 +532,16 @@ def test_capture_handler_short_circuits_when_no_conn():
 
     reset_diagnostic_bus()
     with patch(
-        "d810.core.diag.event_handlers.get_diag_conn", new=no_conn,
+        "d810.core.diag.event_handlers.get_diag_conn",
+        new=no_conn,
     ):
         install_diag_event_handlers()
         snap = request_capture_mba_snapshot(
             blocks=_make_snap_blocks(),
-            label="L", func_ea=1, maturity="M", phase="post_d810",
+            label="L",
+            func_ea=1,
+            maturity="M",
+            phase="post_d810",
         )
         # Subscriber WAS installed, so request_capture returned a ref;
         # but the handler couldn't get a conn so it no-op'd. The
@@ -561,15 +577,16 @@ def test_cfg_provenance_buffers_until_next_capture(fake_conn):
     )
 
     # No rows yet — they're buffered.
-    pre_rows = fake_conn.execute(
-        "SELECT COUNT(*) FROM cfg_provenance"
-    ).fetchone()
+    pre_rows = fake_conn.execute("SELECT COUNT(*) FROM cfg_provenance").fetchone()
     assert pre_rows[0] == 0
 
     # Capture flushes.
     request_capture_mba_snapshot(
         blocks=_make_snap_blocks(),
-        label="L", func_ea=1, maturity="M", phase="post_d810",
+        label="L",
+        func_ea=1,
+        maturity="M",
+        phase="post_d810",
     )
 
     rows = fake_conn.execute(
@@ -614,7 +631,10 @@ def test_cfg_provenance_normalizes_unsigned_eas_before_insert(fake_conn):
 
     request_capture_mba_snapshot(
         blocks=_make_snap_blocks(),
-        label="L", func_ea=1, maturity="M", phase="post_d810",
+        label="L",
+        func_ea=1,
+        maturity="M",
+        phase="post_d810",
     )
 
     detail = fake_conn.execute(
@@ -635,7 +655,10 @@ def test_cfg_provenance_normalizes_unsigned_eas_before_insert(fake_conn):
 def test_cfg_provenance_latest_writes_to_current_function_snapshot(fake_conn):
     request_capture_mba_snapshot(
         blocks=_make_snap_blocks(),
-        label="L", func_ea=0x401000, maturity="M", phase="post_d810",
+        label="L",
+        func_ea=0x401000,
+        maturity="M",
+        phase="post_d810",
     )
 
     observe_cfg_provenance_latest(
@@ -666,7 +689,10 @@ def test_cfg_provenance_latest_writes_to_current_function_snapshot(fake_conn):
 def test_cfg_provenance_latest_appends_sequence(fake_conn):
     request_capture_mba_snapshot(
         blocks=_make_snap_blocks(),
-        label="L", func_ea=0x401000, maturity="M", phase="post_d810",
+        label="L",
+        func_ea=0x401000,
+        maturity="M",
+        phase="post_d810",
     )
 
     for block_serial in (42, 43):
@@ -719,7 +745,10 @@ def test_handler_exception_is_swallowed_by_bus(fake_conn, caplog):
     # Force the snapshot insert to fail and verify the bus swallows.
     snap = request_capture_mba_snapshot(
         blocks=_make_snap_blocks(),
-        label="L", func_ea=1, maturity="M", phase="post_d810",
+        label="L",
+        func_ea=1,
+        maturity="M",
+        phase="post_d810",
     )
     assert snap is not None
 
@@ -728,7 +757,9 @@ def test_handler_exception_is_swallowed_by_bus(fake_conn, caplog):
     # easier path: close the connection so subsequent writes raise.
     fake_conn.close()
     # Must not raise.
-    emit(ModificationsObserved(
-        snapshot=snap,
-        modifications=(Modification(mod_index=0, mod_type="goto_redirect"),),
-    ))
+    emit(
+        ModificationsObserved(
+            snapshot=snap,
+            modifications=(Modification(mod_index=0, mod_type="goto_redirect"),),
+        )
+    )

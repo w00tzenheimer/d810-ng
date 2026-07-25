@@ -7,6 +7,7 @@ from the CFG. Tests cover:
 - Handling of various CFG topologies
 - Integration with PassPipeline and InMemoryBackend
 """
+
 from __future__ import annotations
 
 import pytest
@@ -26,20 +27,34 @@ class TestDeadBlockEliminationPass:
         """Pass returns empty list when all blocks are reachable."""
         # Create simple chain: 0 -> 1 -> 2
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=3, succs=(2,), preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=3,
+            succs=(2,),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=2, succs=(),preds=(1,),
-            flags=0, start_ea=0x1020, insn_snapshots=()
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(1,),
+            flags=0,
+            start_ea=0x1020,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(
-            blocks={0: blk0, 1: blk1, 2: blk2},
-            entry_serial=0, func_ea=0x1000
+            blocks={0: blk0, 1: blk1, 2: blk2}, entry_serial=0, func_ea=0x1000
         )
 
         pass_instance = DeadBlockEliminationPass()
@@ -53,28 +68,49 @@ class TestDeadBlockEliminationPass:
         # Block 3 is the sentinel (highest serial) and must never be removed.
         insn1 = InsnSnapshot(opcode=0x01, ea=0x1000, operands=())
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=(insn1,)
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(insn1,),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(),preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         # Dead block with 2 instructions
         insn2 = InsnSnapshot(opcode=0x02, ea=0x2000, operands=())
         insn3 = InsnSnapshot(opcode=0x03, ea=0x2004, operands=())
         blk2_dead = BlockSnapshot(
-            serial=2, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x2000, insn_snapshots=(insn2, insn3)
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(insn2, insn3),
         )
         # Sentinel block at highest serial - represents IDA's mba.qty-1 dummy block
         blk3_sentinel = BlockSnapshot(
-            serial=3, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x3000, insn_snapshots=()
+            serial=3,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x3000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2_dead, 3: blk3_sentinel},
-            entry_serial=0, func_ea=0x1000
+            entry_serial=0,
+            func_ea=0x1000,
         )
 
         pass_instance = DeadBlockEliminationPass()
@@ -90,35 +126,61 @@ class TestDeadBlockEliminationPass:
         # Create CFG: 0 -> 1, with unreachable blocks 5, 10, sentinel block 11
         # Block 11 is the sentinel (highest serial) and must never be removed.
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(),preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         # Dead block 5 with 1 instruction
         insn5 = InsnSnapshot(opcode=0x05, ea=0x5000, operands=())
         blk5_dead = BlockSnapshot(
-            serial=5, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x5000, insn_snapshots=(insn5,)
+            serial=5,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x5000,
+            insn_snapshots=(insn5,),
         )
         # Dead block 10 with 3 instructions
         insn10a = InsnSnapshot(opcode=0x0A, ea=0xA000, operands=())
         insn10b = InsnSnapshot(opcode=0x0B, ea=0xA004, operands=())
         insn10c = InsnSnapshot(opcode=0x0C, ea=0xA008, operands=())
         blk10_dead = BlockSnapshot(
-            serial=10, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0xA000, insn_snapshots=(insn10a, insn10b, insn10c)
+            serial=10,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0xA000,
+            insn_snapshots=(insn10a, insn10b, insn10c),
         )
         # Sentinel block at highest serial
         blk11_sentinel = BlockSnapshot(
-            serial=11, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0xB000, insn_snapshots=()
+            serial=11,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0xB000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 5: blk5_dead, 10: blk10_dead, 11: blk11_sentinel},
-            entry_serial=0, func_ea=0x1000
+            entry_serial=0,
+            func_ea=0x1000,
         )
 
         pass_instance = DeadBlockEliminationPass()
@@ -138,24 +200,43 @@ class TestDeadBlockEliminationPass:
         """Pass returns empty for diamond CFG (all reachable)."""
         # Create diamond: 0 -> {1, 2} -> 3
         blk0 = BlockSnapshot(
-            serial=0, block_type=4, succs=(1, 2), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=4,
+            succs=(1, 2),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=3, succs=(3,), preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=3,
+            succs=(3,),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=3, succs=(3,), preds=(0,),
-            flags=0, start_ea=0x1020, insn_snapshots=()
+            serial=2,
+            block_type=3,
+            succs=(3,),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1020,
+            insn_snapshots=(),
         )
         blk3 = BlockSnapshot(
-            serial=3, block_type=2, succs=(),preds=(1, 2),
-            flags=0, start_ea=0x1030, insn_snapshots=()
+            serial=3,
+            block_type=2,
+            succs=(),
+            preds=(1, 2),
+            flags=0,
+            start_ea=0x1030,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(
-            blocks={0: blk0, 1: blk1, 2: blk2, 3: blk3},
-            entry_serial=0, func_ea=0x1000
+            blocks={0: blk0, 1: blk1, 2: blk2, 3: blk3}, entry_serial=0, func_ea=0x1000
         )
 
         pass_instance = DeadBlockEliminationPass()
@@ -167,22 +248,36 @@ class TestDeadBlockEliminationPass:
         """Dead block with no instructions (ea=0) emits no modification."""
         # Create CFG: 0 -> 1, with dead block 2 (no real instructions)
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(),preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         # Dead block with placeholder instruction (ea=0)
         insn_placeholder = InsnSnapshot(opcode=0x00, ea=0, operands=())
         blk2_dead = BlockSnapshot(
-            serial=2, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x2000, insn_snapshots=(insn_placeholder,)
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(insn_placeholder,),
         )
         cfg = FlowGraph(
-            blocks={0: blk0, 1: blk1, 2: blk2_dead},
-            entry_serial=0, func_ea=0x1000
+            blocks={0: blk0, 1: blk1, 2: blk2_dead}, entry_serial=0, func_ea=0x1000
         )
 
         pass_instance = DeadBlockEliminationPass()
@@ -196,29 +291,50 @@ class TestDeadBlockEliminationPass:
         # Create CFG: 0 -> 1, with dead block 2 (mixed EAs), sentinel block 3
         # Block 3 is the sentinel (highest serial) and is always protected.
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(),preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         # Dead block with 3 instructions: ea=0, ea=0x2004, ea=0
         insn0a = InsnSnapshot(opcode=0x00, ea=0, operands=())
         insn2 = InsnSnapshot(opcode=0x02, ea=0x2004, operands=())
         insn0b = InsnSnapshot(opcode=0x00, ea=0, operands=())
         blk2_dead = BlockSnapshot(
-            serial=2, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x2000, insn_snapshots=(insn0a, insn2, insn0b)
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(insn0a, insn2, insn0b),
         )
         # Sentinel block at highest serial
         blk3_sentinel = BlockSnapshot(
-            serial=3, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x3000, insn_snapshots=()
+            serial=3,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x3000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2_dead, 3: blk3_sentinel},
-            entry_serial=0, func_ea=0x1000
+            entry_serial=0,
+            func_ea=0x1000,
         )
 
         pass_instance = DeadBlockEliminationPass()
@@ -250,35 +366,73 @@ class TestDeadBlockEliminationPass:
         # Create CFG with loop: 0 -> 1 <-> 2 -> 3, dead block 10, sentinel 11
         # Block 11 is the sentinel (highest serial) and must never be removed.
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=3, succs=(2,), preds=(0, 2),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=3,
+            succs=(2,),
+            preds=(0, 2),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         blk2 = BlockSnapshot(
-            serial=2, block_type=4, succs=(1, 3), preds=(1,),
-            flags=0, start_ea=0x1020, insn_snapshots=()
+            serial=2,
+            block_type=4,
+            succs=(1, 3),
+            preds=(1,),
+            flags=0,
+            start_ea=0x1020,
+            insn_snapshots=(),
         )
         blk3 = BlockSnapshot(
-            serial=3, block_type=2, succs=(),preds=(2,),
-            flags=0, start_ea=0x1030, insn_snapshots=()
+            serial=3,
+            block_type=2,
+            succs=(),
+            preds=(2,),
+            flags=0,
+            start_ea=0x1030,
+            insn_snapshots=(),
         )
         # Dead block 10
         insn10 = InsnSnapshot(opcode=0x0A, ea=0xA000, operands=())
         blk10_dead = BlockSnapshot(
-            serial=10, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0xA000, insn_snapshots=(insn10,)
+            serial=10,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0xA000,
+            insn_snapshots=(insn10,),
         )
         # Sentinel block at highest serial
         blk11_sentinel = BlockSnapshot(
-            serial=11, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0xB000, insn_snapshots=()
+            serial=11,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0xB000,
+            insn_snapshots=(),
         )
         cfg = FlowGraph(
-            blocks={0: blk0, 1: blk1, 2: blk2, 3: blk3, 10: blk10_dead, 11: blk11_sentinel},
-            entry_serial=0, func_ea=0x1000
+            blocks={
+                0: blk0,
+                1: blk1,
+                2: blk2,
+                3: blk3,
+                10: blk10_dead,
+                11: blk11_sentinel,
+            },
+            entry_serial=0,
+            func_ea=0x1000,
         )
 
         pass_instance = DeadBlockEliminationPass()
@@ -297,28 +451,49 @@ class TestDeadBlockEliminationPass:
         """
         # Create CFG: 0 -> 1, dead block 2, sentinel block 3 (highest serial)
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(),preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         # Dead block 2 with instructions
         insn2 = InsnSnapshot(opcode=0x02, ea=0x2000, operands=())
         blk2_dead = BlockSnapshot(
-            serial=2, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x2000, insn_snapshots=(insn2,)
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(insn2,),
         )
         # Sentinel block 3 (highest serial) - unreachable but must NOT be removed
         insn3 = InsnSnapshot(opcode=0x03, ea=0x3000, operands=())
         blk3_sentinel = BlockSnapshot(
-            serial=3, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x3000, insn_snapshots=(insn3,)
+            serial=3,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x3000,
+            insn_snapshots=(insn3,),
         )
         cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 2: blk2_dead, 3: blk3_sentinel},
-            entry_serial=0, func_ea=0x1000
+            entry_serial=0,
+            func_ea=0x1000,
         )
 
         pass_instance = DeadBlockEliminationPass()
@@ -336,22 +511,36 @@ class TestDeadBlockEliminationPass:
         """Last dummy block is not emitted even when it is the only unreachable block."""
         # Create CFG: 0 -> 1, sentinel block 2 (highest serial, unreachable)
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(),preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         # Sentinel block 2 is unreachable and has instructions - still protected
         insn2 = InsnSnapshot(opcode=0x02, ea=0x2000, operands=())
         blk2_sentinel = BlockSnapshot(
-            serial=2, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x2000, insn_snapshots=(insn2,)
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(insn2,),
         )
         cfg = FlowGraph(
-            blocks={0: blk0, 1: blk1, 2: blk2_sentinel},
-            entry_serial=0, func_ea=0x1000
+            blocks={0: blk0, 1: blk1, 2: blk2_sentinel}, entry_serial=0, func_ea=0x1000
         )
 
         pass_instance = DeadBlockEliminationPass()
@@ -364,22 +553,38 @@ class TestDeadBlockEliminationPass:
         """Protection targets the block with the absolute maximum serial, not a contiguous last."""
         # Non-contiguous serials: 0, 1, 50 (highest). Block 50 is unreachable.
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(),preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         # Block at serial 50 is the highest - treated as sentinel
         insn50 = InsnSnapshot(opcode=0x50, ea=0x5000, operands=())
         blk50_sentinel = BlockSnapshot(
-            serial=50, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x5000, insn_snapshots=(insn50,)
+            serial=50,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x5000,
+            insn_snapshots=(insn50,),
         )
         cfg = FlowGraph(
             blocks={0: blk0, 1: blk1, 50: blk50_sentinel},
-            entry_serial=0, func_ea=0x1000
+            entry_serial=0,
+            func_ea=0x1000,
         )
 
         pass_instance = DeadBlockEliminationPass()
@@ -397,29 +602,49 @@ class TestDeadBlockEliminationPassIntegration:
         # Create CFG: 0 -> 1, dead block 2, sentinel block 3
         # Block 3 is the sentinel (highest serial) and is never removed.
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(),preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         insn2 = InsnSnapshot(opcode=0x02, ea=0x2000, operands=())
         blk2_dead = BlockSnapshot(
-            serial=2, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x2000, insn_snapshots=(insn2,)
+            serial=2,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x2000,
+            insn_snapshots=(insn2,),
         )
         # Sentinel block at highest serial
         blk3_sentinel = BlockSnapshot(
-            serial=3, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x3000, insn_snapshots=()
+            serial=3,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x3000,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1, 2: blk2_dead, 3: blk3_sentinel}
         backend = InMemoryBackend(blocks)
 
         # Run through PassPipeline
         pipeline = FlowGraphTransformPipeline(backend, [DeadBlockEliminationPass()])
-        total_mods = pipeline.run(blocks, mutation_gateway = object())
+        total_mods = pipeline.run(blocks, mutation_gateway=object())
 
         assert total_mods == 1
         assert len(backend.applied_modifications) == 1
@@ -432,19 +657,29 @@ class TestDeadBlockEliminationPassIntegration:
         """PassPipeline integration: no dead blocks returns 0."""
         # Create CFG: 0 -> 1 (all reachable)
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(),preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1}
         backend = InMemoryBackend(blocks)
 
         # Run through PassPipeline
         pipeline = FlowGraphTransformPipeline(backend, [DeadBlockEliminationPass()])
-        total_mods = pipeline.run(blocks, mutation_gateway = object())
+        total_mods = pipeline.run(blocks, mutation_gateway=object())
 
         assert total_mods == 0
         assert len(backend.applied_modifications) == 0
@@ -454,34 +689,59 @@ class TestDeadBlockEliminationPassIntegration:
         # Create CFG: 0 -> 1, dead blocks 5, 10, sentinel block 11
         # Block 11 is the sentinel (highest serial) and is never removed.
         blk0 = BlockSnapshot(
-            serial=0, block_type=3, succs=(1,), preds=(),
-            flags=0, start_ea=0x1000, insn_snapshots=()
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
         )
         blk1 = BlockSnapshot(
-            serial=1, block_type=2, succs=(),preds=(0,),
-            flags=0, start_ea=0x1010, insn_snapshots=()
+            serial=1,
+            block_type=2,
+            succs=(),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(),
         )
         insn5 = InsnSnapshot(opcode=0x05, ea=0x5000, operands=())
         blk5_dead = BlockSnapshot(
-            serial=5, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0x5000, insn_snapshots=(insn5,)
+            serial=5,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0x5000,
+            insn_snapshots=(insn5,),
         )
         insn10 = InsnSnapshot(opcode=0x0A, ea=0xA000, operands=())
         blk10_dead = BlockSnapshot(
-            serial=10, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0xA000, insn_snapshots=(insn10,)
+            serial=10,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0xA000,
+            insn_snapshots=(insn10,),
         )
         # Sentinel block at highest serial
         blk11_sentinel = BlockSnapshot(
-            serial=11, block_type=2, succs=(),preds=(),
-            flags=0, start_ea=0xB000, insn_snapshots=()
+            serial=11,
+            block_type=2,
+            succs=(),
+            preds=(),
+            flags=0,
+            start_ea=0xB000,
+            insn_snapshots=(),
         )
         blocks = {0: blk0, 1: blk1, 5: blk5_dead, 10: blk10_dead, 11: blk11_sentinel}
         backend = InMemoryBackend(blocks)
 
         # Run through PassPipeline
         pipeline = FlowGraphTransformPipeline(backend, [DeadBlockEliminationPass()])
-        total_mods = pipeline.run(blocks, mutation_gateway = object())
+        total_mods = pipeline.run(blocks, mutation_gateway=object())
 
         assert total_mods == 2
         assert len(backend.applied_modifications) == 2

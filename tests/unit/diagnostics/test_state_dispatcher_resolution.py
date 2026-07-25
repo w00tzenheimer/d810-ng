@@ -1,10 +1,15 @@
 """Tests for generic state-dispatcher transition enrichment."""
+
 from __future__ import annotations
 from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
 import json
 
-from d810.core.diag.models import FactObservation, Snapshot, StateTransitionDispatchResolution
+from d810.core.diag.models import (
+    FactObservation,
+    Snapshot,
+    StateTransitionDispatchResolution,
+)
 from d810.core.diag.snapshot import snapshot_state_dispatcher_rows
 from d810.diagnostics.state_dispatcher_resolution import (
     StateDispatchResolution,
@@ -144,10 +149,7 @@ def test_loads_rows_and_resolves_exact_state() -> None:
     assert dispatch_map.resolve_target(0x89407346) == 76
     assert len(resolutions) == 1
     assert resolutions[0].resolved_next_block_serial == 76
-    assert (
-        resolutions[0].resolved_next_state_const_hex
-        == "0x0000000010743c4c"
-    )
+    assert resolutions[0].resolved_next_state_const_hex == "0x0000000010743c4c"
     assert resolutions[0].resolution_reason == "resolved_exact_state"
 
 

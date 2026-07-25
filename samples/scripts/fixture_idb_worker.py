@@ -8,6 +8,7 @@ Two IDA-only jobs, each opens the idb once and prints a single JSON line last:
 Run under an idalib-capable python (same env as gen_masm_from_idb.py):
   PYTHONPATH=src python3 samples/scripts/fixture_idb_worker.py extract ...
 """
+
 from __future__ import annotations
 
 import argparse
@@ -27,6 +28,7 @@ def _add_src_to_path() -> None:
 def _resolve_ea(target: str):
     import idaapi
     import ida_name
+
     if target.lower().startswith("0x"):
         return int(target, 16)
     return ida_name.get_name_ea(idaapi.BADADDR, target)
@@ -35,11 +37,13 @@ def _resolve_ea(target: str):
 def cmd_extract(args) -> int:
     import idapro
     import idaapi
+
     idapro.open_database(args.idb, False)
     try:
         idaapi.auto_wait()
         _add_src_to_path()
         from d810.ui.export_disasm_masm_emit import generate_masm_for_function
+
         ea = _resolve_ea(args.func)
         if ea == idaapi.BADADDR:
             print(f"function not found: {args.func}", file=sys.stderr)
@@ -56,21 +60,30 @@ def cmd_extract(args) -> int:
 def _classify(va: int) -> dict:
     import ida_name
     import ida_bytes
+
     name = ida_name.get_ea_name(va, ida_name.GN_VISIBLE) or ""
     flags = ida_bytes.get_flags(va)
-    is_import = bool(ida_bytes.is_extern(flags)) if hasattr(ida_bytes, "is_extern") else False
+    is_import = (
+        bool(ida_bytes.is_extern(flags)) if hasattr(ida_bytes, "is_extern") else False
+    )
     retargetable = bool(name) and (
         is_import
         or not name.startswith(
             ("sub_", "loc_", "unk_", "off_", "byte_", "word_", "dword_", "qword_")
         )
     )
-    return {"va": va, "name": name, "is_import": is_import, "retargetable": retargetable}
+    return {
+        "va": va,
+        "name": name,
+        "is_import": is_import,
+        "retargetable": retargetable,
+    }
 
 
 def cmd_resolve(args) -> int:
     import idapro
     import idaapi
+
     idapro.open_database(args.idb, False)
     try:
         idaapi.auto_wait()

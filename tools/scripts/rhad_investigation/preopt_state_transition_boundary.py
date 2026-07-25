@@ -5,6 +5,7 @@ reaching state definitions, or an explicit two-arm state choice, into the same
 closure-owned boundary-port requests used by the PREOPT importer.  Unknown
 definitions and ambiguous state-to-handler mappings abstain.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -222,8 +223,7 @@ def _unique_constant_write(
 ) -> tuple[int, int] | None:
     writes = {
         (int(constant) & _MASK32, int(write_ea))
-        for write_register, constant, write_ea
-        in block.register_constant_writes
+        for write_register, constant, write_ea in block.register_constant_writes
         if int(write_register) == int(register)
     }
     return next(iter(writes)) if len(writes) == 1 else None
@@ -320,16 +320,13 @@ def recognize_preopt_conditional_state_choices(
             default_state, default_write_ea = state_default
             copies = {
                 (int(source_register), int(write_ea))
-                for dest_register, source_register, write_ea
-                in copy_block.register_copy_writes
+                for dest_register, source_register, write_ea in copy_block.register_copy_writes
                 if int(dest_register) == state_register
             }
             if len(copies) != 1:
                 continue
             source_register, copy_write_ea = next(iter(copies))
-            if _writes_to_register(copy_block, state_register) != (
-                copy_write_ea,
-            ):
+            if _writes_to_register(copy_block, state_register) != (copy_write_ea,):
                 continue
             alternate = _unique_constant_write(
                 predicate_block,
@@ -346,9 +343,7 @@ def recognize_preopt_conditional_state_choices(
             }:
                 continue
             taken_state = alternate_state if copy_is_taken else default_state
-            fallthrough_state = (
-                default_state if copy_is_taken else alternate_state
-            )
+            fallthrough_state = default_state if copy_is_taken else alternate_state
             assert predicate_block.tail_ea is not None
             candidates.add(
                 PreoptConditionalStateChoice(
@@ -456,14 +451,10 @@ def recognize_preopt_pruned_conditional_state_choices(
                 predicate_ea=int(topology.predicate_ea),
                 state_register=register,
                 taken_state=(
-                    int(alternate_state)
-                    if alternate_is_taken
-                    else int(default_state)
+                    int(alternate_state) if alternate_is_taken else int(default_state)
                 ),
                 fallthrough_state=(
-                    int(default_state)
-                    if alternate_is_taken
-                    else int(alternate_state)
+                    int(default_state) if alternate_is_taken else int(alternate_state)
                 ),
                 resolver_kind="preopt_pruned_conditional_state_choice",
                 source_owner=source_owner,
@@ -487,15 +478,9 @@ def prove_preopt_pruned_conditional_fixed_state_sources(
     native_topology_by_ea: Mapping[int, PreoptConditionalTopologyFact],
     state_register: int,
     dispatcher_router_eas: Collection[int],
-    resolver_bridge_targets_by_source_ea: Mapping[
-        int, Collection[int]
-    ] | None = None,
-    expected_target_eas_by_source_ea: Mapping[
-        int, Collection[int]
-    ] | None = None,
-    expected_state_write_eas_by_source_ea: Mapping[
-        int, Collection[int]
-    ] | None = None,
+    resolver_bridge_targets_by_source_ea: Mapping[int, Collection[int]] | None = None,
+    expected_target_eas_by_source_ea: Mapping[int, Collection[int]] | None = None,
+    expected_state_write_eas_by_source_ea: Mapping[int, Collection[int]] | None = None,
     proven_indirect_source_block_eas: Collection[int] = (),
     excluded_source_eas: Collection[int] = (),
 ) -> frozenset[int]:
@@ -515,9 +500,7 @@ def prove_preopt_pruned_conditional_fixed_state_sources(
                 int(source_ea)
                 for source_ea, target_eas in bridge_targets.items()
                 if int(source_ea) not in routers
-                and bool(
-                    normalized_targets := {int(ea) for ea in target_eas}
-                )
+                and bool(normalized_targets := {int(ea) for ea in target_eas})
                 and normalized_targets.issubset(routers)
             }
             if not additions:
@@ -552,46 +535,33 @@ def prove_preopt_pruned_conditional_fixed_state_sources(
         ):
             continue
         expected_targets = {
-            int(ea)
-            for ea in expected_targets_by_source.get(source_block_ea, ())
+            int(ea) for ea in expected_targets_by_source.get(source_block_ea, ())
         }
         if len(expected_targets) > 1:
             continue
         if expected_targets:
             expected_write_eas = {
-                int(ea)
-                for ea in expected_write_eas_by_source.get(
-                    source_block_ea, ()
-                )
+                int(ea) for ea in expected_write_eas_by_source.get(source_block_ea, ())
             }
-            if (
-                len(expected_write_eas) != 1
-                or not expected_write_eas.issubset(
-                    {int(ea) for ea in source.instruction_eas}
-                )
+            if len(expected_write_eas) != 1 or not expected_write_eas.issubset(
+                {int(ea) for ea in source.instruction_eas}
             ):
                 continue
         else:
             state_write = _unique_constant_write(source, register)
-            if (
-                state_write is None
-                or _writes_to_register(source, register) != (state_write[1],)
+            if state_write is None or _writes_to_register(source, register) != (
+                state_write[1],
             ):
                 continue
         if topology is None:
-            if (
-                not expected_targets
-                or source_block_ea not in proven_indirect_sources
-            ):
+            if not expected_targets or source_block_ea not in proven_indirect_sources:
                 continue
             proven.add(source_block_ea)
             continue
         source_routers = (
             base_routers
             if not expected_targets
-            else expand_router_bridges(
-                (*base_routers, *expected_targets)
-            )
+            else expand_router_bridges((*base_routers, *expected_targets))
         )
         if {
             int(topology.taken_successor_ea),
@@ -621,8 +591,7 @@ def _bounded_reaches(
         if block is None or not block.successors_complete:
             continue
         pending.extend(
-            (int(successor_ea), depth + 1)
-            for successor_ea in block.successor_eas
+            (int(successor_ea), depth + 1) for successor_ea in block.successor_eas
         )
     return False
 
@@ -681,8 +650,7 @@ def recognize_preopt_stack_carried_state_choices(
             loads = {
                 int(load_ea)
                 for block in blocks_by_ea.values()
-                for dest_register, load_off, load_size, load_ea
-                in block.register_stack_loads
+                for dest_register, load_off, load_size, load_ea in block.register_stack_loads
                 if int(dest_register) == state_register
                 and int(load_off) == stack_off
                 and int(load_size) == stack_size
@@ -696,9 +664,7 @@ def recognize_preopt_stack_carried_state_choices(
             if external_source is not None:
                 if external_source.tail_ea is None:
                     continue
-                predicate_stack_identity = (
-                    evidence.canonical_predicate_stack_identity
-                )
+                predicate_stack_identity = evidence.canonical_predicate_stack_identity
                 if predicate_stack_identity is None:
                     continue
                 predicate_ida_stkoff, predicate_size = map(
@@ -731,8 +697,7 @@ def recognize_preopt_stack_carried_state_choices(
                     int(store_off) == stack_off
                     and int(store_size) == stack_size
                     and int(store_ea) == int(evidence.source_store_ea)
-                    for store_off, store_size, _source_register, store_ea
-                    in block.stack_register_stores
+                    for store_off, store_size, _source_register, store_ea in block.stack_register_stores
                 )
             }
             if len(store_blocks) != 1:
@@ -763,9 +728,7 @@ def recognize_preopt_stack_carried_state_choices(
             predicate_block = blocks_by_ea[predicate_block_ea]
             assert predicate_block.tail_ea is not None
             taken_state = int(evidence.taken_state_constant) & _MASK32
-            fallthrough_state = (
-                int(evidence.fallthrough_state_constant) & _MASK32
-            )
+            fallthrough_state = int(evidence.fallthrough_state_constant) & _MASK32
             if taken_state == fallthrough_state:
                 continue
             candidates.add(
@@ -802,10 +765,7 @@ def _handler_target(
 ) -> tuple[int | None, PreoptBoundaryPortAbstentionReason | None]:
     state_key = int(state) & _MASK32
     handler_eas = state_handler_eas
-    if (
-        state_payload_handler_eas is not None
-        and state_key in state_payload_handler_eas
-    ):
+    if state_payload_handler_eas is not None and state_key in state_payload_handler_eas:
         handler_eas = state_payload_handler_eas
     targets = {
         int(target_ea)
@@ -850,12 +810,10 @@ def _direct_port_for_definition(
     preferred_source_owner: PreoptBoundaryEndpointOwner | None = None,
 ) -> tuple[PreoptDirectBoundaryPort | None, PreoptBoundaryPortAbstention | None]:
     states = {
-        int(state) & _MASK32
-        for state in states_by_write_ea.get(int(definition_ea), ())
+        int(state) & _MASK32 for state in states_by_write_ea.get(int(definition_ea), ())
     }
     source_blocks = {
-        int(block_ea)
-        for block_ea in blocks_by_write_ea.get(int(definition_ea), ())
+        int(block_ea) for block_ea in blocks_by_write_ea.get(int(definition_ea), ())
     }
     if not states:
         return None, PreoptBoundaryPortAbstention(
@@ -954,12 +912,9 @@ def plan_preopt_literal_state_write_boundary_ports(
     direct: set[PreoptDirectBoundaryPort] = set()
     abstentions: set[PreoptBoundaryPortAbstention] = set()
     for definition_ea in sorted(states_by_write_ea):
-        if (
-            candidate_states is not None
-            and states_by_write_ea[int(definition_ea)].isdisjoint(
-                candidate_states
-            )
-        ):
+        if candidate_states is not None and states_by_write_ea[
+            int(definition_ea)
+        ].isdisjoint(candidate_states):
             continue
         port, abstention = _direct_port_for_definition(
             definition_ea=int(definition_ea),
@@ -1052,14 +1007,8 @@ def plan_preopt_owned_literal_state_write_boundary_ports(
             candidate_state_constants=mapped_states,
         ),
     )
-    abstentions = {
-        abstention
-        for plan in plans
-        for abstention in plan.abstentions
-    }
-    abstained_sources = {
-        int(abstention.source_ea) for abstention in abstentions
-    }
+    abstentions = {abstention for plan in plans for abstention in plan.abstentions}
+    abstained_sources = {int(abstention.source_ea) for abstention in abstentions}
     candidates = {
         port
         for plan in plans
@@ -1225,9 +1174,7 @@ def plan_preopt_conditional_state_choice_boundary_ports(
     live_native_eas: Collection[int],
 ) -> PreoptBoundaryPortPlan:
     """Map exact conditional state choices to uniquely owned handlers."""
-    choices_by_source: dict[
-        tuple[int, int], set[PreoptConditionalStateChoice]
-    ] = {}
+    choices_by_source: dict[tuple[int, int], set[PreoptConditionalStateChoice]] = {}
     for choice in choices:
         choices_by_source.setdefault(
             (int(choice.predicate_block_ea), int(choice.predicate_ea)),
@@ -1306,9 +1253,7 @@ def plan_preopt_state_transition_boundary_ports(
             ),
         )
     )
-    choices_by_cut: dict[
-        tuple[int, int], set[PreoptConditionalStateChoice]
-    ] = {}
+    choices_by_cut: dict[tuple[int, int], set[PreoptConditionalStateChoice]] = {}
     for choice in conditional_choices:
         choices_by_cut.setdefault(
             (int(choice.consumer_tail_ea), int(choice.state_register)),
@@ -1408,9 +1353,7 @@ def plan_preopt_state_transition_boundary_ports(
             set(),
         ).add(port)
     direct: list[PreoptDirectBoundaryPort] = []
-    for (_source_block_ea, source_ea), candidates in sorted(
-        direct_by_source.items()
-    ):
+    for (_source_block_ea, source_ea), candidates in sorted(direct_by_source.items()):
         if len(candidates) == 1:
             direct.append(next(iter(candidates)))
         else:

@@ -55,6 +55,7 @@ canonical :func:`~d810.ir.insn_projection.project_instruction` projection:
 adapters (consumed by the deffai facade, ``ccm`` and the unit tests); they read
 no operand slot and so are not part of the migrated-module guard surface.
 """
+
 from __future__ import annotations
 
 from itertools import product
@@ -536,9 +537,7 @@ def transfer_block_set(
     cap -- always over-approximating, never under.
     """
     if state_var_stkoff is None:
-        state_var_stkoff = (
-            int(state_cell.key) if state_cell.kind.name == "STACK" else 0
-        )
+        state_var_stkoff = int(state_cell.key) if state_cell.kind.name == "STACK" else 0
     if block_evaluator is None:
         block_evaluator = scalar_block_evaluator(int(state_var_stkoff))
 
@@ -555,11 +554,7 @@ def transfer_block_set(
     tail = block.tail
 
     # -- TABLE_JUMP (jtbl) fan-out -----------------------------------------
-    if (
-        tail is not None
-        and tail.kind is InsnKind.TABLE_JUMP
-        and _switch_cases(tail)
-    ):
+    if tail is not None and tail.kind is InsnKind.TABLE_JUMP and _switch_cases(tail):
         return _transfer_switch(out_store, tail, state_cell)
 
     # -- 2-way conditional fork --------------------------------------------
@@ -630,7 +625,9 @@ def _transfer_switch(
         refined = out_store.get(state_cell).meet(case_set)
         arm_store = out_store.set(state_cell, refined)
         existing = arms.get(target)
-        arms[target] = arm_store if existing is None else _join_stores(existing, arm_store)
+        arms[target] = (
+            arm_store if existing is None else _join_stores(existing, arm_store)
+        )
     return arms
 
 

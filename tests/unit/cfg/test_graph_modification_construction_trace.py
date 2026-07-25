@@ -13,6 +13,7 @@ These tests exercise the tracer in isolation and assert:
 - Turned on: each mod type emits its dedicated line
 - Caller frame walking skips the synthetic ``<string>`` dataclass frame
 """
+
 from __future__ import annotations
 
 import importlib
@@ -63,15 +64,24 @@ class TestDefaultOff:
 class TestEnabledEmission:
     def test_redirect_goto_emits(self, _capture_tracer) -> None:
         gm_module.RedirectGoto(from_serial=76, old_target=2, new_target=11)
-        assert "REDIRECT_GOTO_CONSTRUCTED from_serial=76 old=2 new=11" in _capture_tracer.text
+        assert (
+            "REDIRECT_GOTO_CONSTRUCTED from_serial=76 old=2 new=11"
+            in _capture_tracer.text
+        )
 
     def test_redirect_branch_emits(self, _capture_tracer) -> None:
         gm_module.RedirectBranch(from_serial=100, old_target=2, new_target=21)
-        assert "REDIRECT_BRANCH_CONSTRUCTED from_serial=100 old=2 new=21" in _capture_tracer.text
+        assert (
+            "REDIRECT_BRANCH_CONSTRUCTED from_serial=100 old=2 new=21"
+            in _capture_tracer.text
+        )
 
     def test_zero_state_write_emits(self, _capture_tracer) -> None:
-        gm_module.ZeroStateWrite(block_serial=76, insn_ea=0x180013d94)
-        assert "ZERO_STATE_WRITE_CONSTRUCTED block=76 insn_ea=0x180013d94" in _capture_tracer.text
+        gm_module.ZeroStateWrite(block_serial=76, insn_ea=0x180013D94)
+        assert (
+            "ZERO_STATE_WRITE_CONSTRUCTED block=76 insn_ea=0x180013d94"
+            in _capture_tracer.text
+        )
 
 
 class TestCallerFrame:

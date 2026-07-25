@@ -5,6 +5,7 @@ These types are net-new and unwired in LS11; the tests pin their shape,
 layering, and the StateTransitionFact -> SemanticTransition projection.
 Pure-Python (no IDA), so they belong in tests/unit.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -47,11 +48,16 @@ def _make_dispatcher_map() -> StateDispatcherMap:
 # --- C5: capabilities.dispatcher ------------------------------------------- #
 def test_router_kind_is_str_enum() -> None:
     assert {k.value for k in RouterKind} >= {
-        "table", "equality_chain", "condition_chain", "unknown",
+        "table",
+        "equality_chain",
+        "condition_chain",
+        "unknown",
     }
     assert RouterKind.CONDITION_CHAIN.value == "condition_chain"
     assert {k.value for k in TableProvenance} >= {
-        "switch", "indirect_jump_table", "unknown",
+        "switch",
+        "indirect_jump_table",
+        "unknown",
     }
 
 

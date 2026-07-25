@@ -3,6 +3,7 @@
 These tests run against real libobfuscated binaries in IDA runtime and validate
 identity-wrapper call handling end-to-end.
 """
+
 from __future__ import annotations
 
 import os
@@ -19,7 +20,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 IDENTITY_CALL_SIMPLE = DeobfuscationCase(

@@ -1,4 +1,5 @@
 "Return frontier preanalysis collector.\n\nGeneric collector that audits return site preservation across\nunflattening pipeline stages. Consumes return_sites and planned_mods\nfrom FlowGraph metadata (populated by the active unflattener).\n\nIMPORTANT: This collector is generic \u2014 it must NOT import any\nunflattener-specific code (no hodur imports).\n"
+
 from __future__ import annotations
 
 import json
@@ -23,7 +24,7 @@ logger = getLogger(__name__)
 
 
 class ReturnFrontierCollector:
-    "Preanalysis collector for return frontier audit.\n\n    Satisfies PreanalysisCollector protocol structurally.\n\n    Expected FlowGraph metadata keys:\n        - \"return_sites\": tuple[ReturnSite, ...]\n        - \"cfg_successors\": Mapping[int, Sequence[int]]\n        - \"cfg_entry\": int\n        - \"cfg_exits\": frozenset[int]\n        - \"stage_name\": str (current pipeline stage)\n    "
+    'Preanalysis collector for return frontier audit.\n\n    Satisfies PreanalysisCollector protocol structurally.\n\n    Expected FlowGraph metadata keys:\n        - "return_sites": tuple[ReturnSite, ...]\n        - "cfg_successors": Mapping[int, Sequence[int]]\n        - "cfg_entry": int\n        - "cfg_exits": frozenset[int]\n        - "stage_name": str (current pipeline stage)\n'
 
     name: str = "return_frontier"
     # ``None`` == "fire at all maturities" (the PreanalysisPhase ALL_MATURITIES
@@ -76,13 +77,15 @@ class ReturnFrontierCollector:
             func_ea=func_ea,
             provider_level=provider_level,
             timestamp=time.time() if timestamp is None else timestamp,
-            metrics=MappingProxyType({
-                "total_sites": report["total_sites"],
-                "intact_count": report["intact_count"],
-                "broken_count": report["broken_count"],
-                "stages_audited": len(report["stages_audited"]),
-                "audit_report": report,
-            }),
+            metrics=MappingProxyType(
+                {
+                    "total_sites": report["total_sites"],
+                    "intact_count": report["intact_count"],
+                    "broken_count": report["broken_count"],
+                    "stages_audited": len(report["stages_audited"]),
+                    "audit_report": report,
+                }
+            ),
             candidates=tuple(candidates),
         )
 
@@ -93,7 +96,7 @@ class ReturnFrontierCollector:
         func_ea: int | None = None,
         **legacy_fields: object,
     ) -> PreanalysisResult:
-        "Collect return frontier audit data.\n\n        ``target`` is expected to be a FlowGraph (or any object with\n        a ``metadata`` mapping containing the required keys).\n\n        Called once per stage by the unflattener after populating metadata.\n\n        :param target: Object with a ``metadata`` mapping.\n        :param func_ea: Function effective address.\n        :param maturity: Current maturity level.\n        :return: Frozen ``PreanalysisResult`` with return frontier metrics.\n        "
+        "Collect return frontier audit data.\n\n        ``target`` is expected to be a FlowGraph (or any object with\n        a ``metadata`` mapping containing the required keys).\n\n        Called once per stage by the unflattener after populating metadata.\n\n        :param target: Object with a ``metadata`` mapping.\n        :param func_ea: Function effective address.\n        :param maturity: Current maturity level.\n        :return: Frozen ``PreanalysisResult`` with return frontier metrics.\n"
         context = coerce_preanalysis_collection_context(
             context,
             func_ea=func_ea,

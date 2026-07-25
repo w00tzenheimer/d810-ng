@@ -15,6 +15,7 @@ Pure: synthetic ``FlowGraph`` + ``IntervalDispatcher`` + a fake
 ``EmulationCapability``.  The MBA fold runs through a registered portable
 ``forward_eval_insn`` seam (reused from the sibling recovery tests).
 """
+
 from __future__ import annotations
 
 import pytest
@@ -32,7 +33,10 @@ from d810.analyses.data_flow.concolic import (
     fold_exact,
 )
 from d810.analyses.data_flow.concolic.abstract_evidence import AbstractEvidence
-from d810.capabilities.providers import ConditionChainWalkerProvider, register_condition_chain_walkers
+from d810.capabilities.providers import (
+    ConditionChainWalkerProvider,
+    register_condition_chain_walkers,
+)
 from d810.analyses.value_flow.state_write import (
     MicrocodeEvalSeams,
     forward_eval_insn as _portable_forward_eval_insn,
@@ -80,7 +84,11 @@ def _seam():
     def _fwd(insn, stk_map, reg_map, state_var_stkoff, **kwargs):
         kwargs.pop("seams", None)
         return _portable_forward_eval_insn(
-            insn, stk_map, reg_map, state_var_stkoff, seams=seams,
+            insn,
+            stk_map,
+            reg_map,
+            state_var_stkoff,
+            seams=seams,
             mba=kwargs.pop("mba", None),
             state_var_lvar_idx=kwargs.pop("state_var_lvar_idx", None),
         )
@@ -114,7 +122,9 @@ def _stk(off: int) -> MopSnapshot:
 
 
 def _mov(ea: int, src: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
-    return InsnSnapshot(opcode=_OP_MOV, ea=ea, operands=(), l=src, d=dst, kind=InsnKind.MOV)
+    return InsnSnapshot(
+        opcode=_OP_MOV, ea=ea, operands=(), l=src, d=dst, kind=InsnKind.MOV
+    )
 
 
 def _xor(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
@@ -130,15 +140,24 @@ def _xor(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnaps
     )
 
 
-def _blk(serial, succs, preds, insns, *, ea=None, kind=BlockKind.UNKNOWN) -> BlockSnapshot:
+def _blk(
+    serial, succs, preds, insns, *, ea=None, kind=BlockKind.UNKNOWN
+) -> BlockSnapshot:
     return BlockSnapshot(
-        serial=serial, block_type=0, succs=tuple(succs), preds=tuple(preds),
-        flags=0, start_ea=ea if ea is not None else 0x1000 + serial * 0x40,
-        insn_snapshots=tuple(insns), kind=kind,
+        serial=serial,
+        block_type=0,
+        succs=tuple(succs),
+        preds=tuple(preds),
+        flags=0,
+        start_ea=ea if ea is not None else 0x1000 + serial * 0x40,
+        insn_snapshots=tuple(insns),
+        kind=kind,
     )
 
 
-def _dispatcher(point_targets: dict[int, int], *, exit_block: int, domain_hi: int = 0x100000000) -> IntervalDispatcher:
+def _dispatcher(
+    point_targets: dict[int, int], *, exit_block: int, domain_hi: int = 0x100000000
+) -> IntervalDispatcher:
     rows: list[IntervalRow] = []
     cursor = 0
     for state in sorted(point_targets):
@@ -187,10 +206,13 @@ def _opaque_back_edge_fg() -> FlowGraph:
         blocks={
             2: _blk(2, (10, 20), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
             10: _blk(10, (11,), (2,), ()),  # no reg consts -> XOR cannot fold
-            11: _blk(11, (2,), (10,), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)),
+            11: _blk(
+                11, (2,), (10,), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)
+            ),
             20: _blk(20, (2,), (2,), ()),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
 
 
@@ -201,10 +223,17 @@ def test_emulation_fills_bottom_back_edge(_seam) -> None:
     state_cell = LocationRef.stack(_STATE_OFF, 8)
     emu = _FakeEmulator(state_cell, 0xABCD)
 
-    by_block = {t.write_block: t for t in
-                recover_state_write_transitions_via_partitioned_fixpoint(
-                    fg, disp, _STATE_OFF, dispatcher_entry_serial=2,
-                    emu=emu, live_block_for=lambda s: ("live", int(s)))}
+    by_block = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_partitioned_fixpoint(
+            fg,
+            disp,
+            _STATE_OFF,
+            dispatcher_entry_serial=2,
+            emu=emu,
+            live_block_for=lambda s: ("live", int(s)),
+        )
+    }
     t = by_block[11]
     assert t.next_state == 0xABCD
     assert t.target_handler == 20
@@ -228,9 +257,12 @@ def test_degrade_to_abstract_when_emu_is_none(_seam) -> None:
     """
     fg = _opaque_back_edge_fg()
     disp = _dispatcher({0x10: 10, 0xABCD: 20}, exit_block=99)
-    by_block = {t.write_block: t for t in
-                recover_state_write_transitions_via_partitioned_fixpoint(
-                    fg, disp, _STATE_OFF, dispatcher_entry_serial=2)}
+    by_block = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_partitioned_fixpoint(
+            fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+        )
+    }
     t = by_block[11]
     # The emulator's correct value is unreachable without the concrete leg.
     assert t.next_state != 0xABCD
@@ -249,19 +281,36 @@ def test_emulation_never_overrides_resolved_transition(_seam) -> None:
     fg = FlowGraph(
         blocks={
             2: _blk(2, (10, 20), (11,), (_mov(0x2000, _num(0), _reg(0)),)),
-            10: _blk(10, (11,), (2,), (_mov(0x1000, _num(0x12345678), _reg(8)),
-                                       _mov(0x1004, _num(0x081CC5A1), _reg(9)))),
-            11: _blk(11, (2,), (10,), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)),
+            10: _blk(
+                10,
+                (11,),
+                (2,),
+                (
+                    _mov(0x1000, _num(0x12345678), _reg(8)),
+                    _mov(0x1004, _num(0x081CC5A1), _reg(9)),
+                ),
+            ),
+            11: _blk(
+                11, (2,), (10,), (_xor(0x1100, _reg(8), _reg(9), _stk(_STATE_OFF)),)
+            ),
             20: _blk(20, (2,), (2,), ()),
         },
-        entry_serial=2, func_ea=0x1000,
+        entry_serial=2,
+        func_ea=0x1000,
     )
     disp = _dispatcher({0x10: 10, 0x1A2893D9: 20}, exit_block=99)
     emu = _FakeEmulator(LocationRef.stack(_STATE_OFF, 8), 0xDEAD)  # a WRONG value
-    by_block = {t.write_block: t for t in
-                recover_state_write_transitions_via_partitioned_fixpoint(
-                    fg, disp, _STATE_OFF, dispatcher_entry_serial=2,
-                    emu=emu, live_block_for=lambda s: ("live", int(s)))}
+    by_block = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_partitioned_fixpoint(
+            fg,
+            disp,
+            _STATE_OFF,
+            dispatcher_entry_serial=2,
+            emu=emu,
+            live_block_for=lambda s: ("live", int(s)),
+        )
+    }
     t = by_block[11]
     # The abstract fold wins; the emulator's wrong 0xDEAD never appears.
     assert t.next_state == 0x1A2893D9
@@ -284,9 +333,7 @@ def test_fold_exact_drops_claim_outside_abstract_floor() -> None:
     # The floor still does not admit 0xABCD.
     assert not bounded.abstract.contains(0xABCD)
     # And a contained value DOES fold.
-    top = ConcolicValue(
-        None, None, AbstractEvidence.top(8), 8, PrecisionStatus.TOP
-    )
+    top = ConcolicValue(None, None, AbstractEvidence.top(8), 8, PrecisionStatus.TOP)
     ok = fold_exact(top, ExactResult({state_cell: 0xABCD}), state_cell)
     assert ok.status is PrecisionStatus.CONCRETE
     assert ok.concrete == 0xABCD
@@ -307,8 +354,12 @@ def test_proof_distribution_preserves_oracle_and_kind(_seam) -> None:
     disp = _dispatcher({0x10: 10, 0xABCD: 20}, exit_block=99)
     emu = _FakeEmulator(LocationRef.stack(_STATE_OFF, 8), 0xABCD)
     transitions = recover_state_write_transitions_via_partitioned_fixpoint(
-        fg, disp, _STATE_OFF, dispatcher_entry_serial=2,
-        emu=emu, live_block_for=lambda s: ("live", int(s)),
+        fg,
+        disp,
+        _STATE_OFF,
+        dispatcher_entry_serial=2,
+        emu=emu,
+        live_block_for=lambda s: ("live", int(s)),
     )
     buckets: dict[tuple[str, str], int] = {}
     for t in transitions:
@@ -343,11 +394,17 @@ def test_emulator_abstain_leaves_back_edge_unresolved(_seam) -> None:
         def eval_block(self, block, store):
             return Abstain("cannot prove")
 
-    by_block = {t.write_block: t for t in
-                recover_state_write_transitions_via_partitioned_fixpoint(
-                    fg, disp, _STATE_OFF, dispatcher_entry_serial=2,
-                    emu=_AbstainingEmulator(),
-                    live_block_for=lambda s: ("live", int(s)))}
+    by_block = {
+        t.write_block: t
+        for t in recover_state_write_transitions_via_partitioned_fixpoint(
+            fg,
+            disp,
+            _STATE_OFF,
+            dispatcher_entry_serial=2,
+            emu=_AbstainingEmulator(),
+            live_block_for=lambda s: ("live", int(s)),
+        )
+    }
     t = by_block[11]
     assert t.next_state != 0xABCD  # nothing invented
     # The edge is either unresolved (untrusted) or a non-emulation abstract fold.

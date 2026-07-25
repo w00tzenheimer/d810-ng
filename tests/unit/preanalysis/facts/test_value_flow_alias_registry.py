@@ -1,4 +1,5 @@
 """Phase 3 acceptance tests for the fact-type alias registry."""
+
 from __future__ import annotations
 
 import pytest
@@ -13,7 +14,9 @@ from d810.analyses.value_flow.alias_registry import (
 def test_registry_covers_every_canonical_fact_type():
     """Each canonical *_FACT_TYPE constant has exactly one registry entry."""
 
-    canonical_in_registry = {alias.canonical_fact_type for alias in FACT_TYPE_ALIAS_REGISTRY}
+    canonical_in_registry = {
+        alias.canonical_fact_type for alias in FACT_TYPE_ALIAS_REGISTRY
+    }
     assert canonical_in_registry == set(vf.VALUE_FLOW_FACT_TYPES)
     assert len(FACT_TYPE_ALIAS_REGISTRY) == len(vf.VALUE_FLOW_FACT_TYPES)
 
@@ -26,7 +29,9 @@ def test_accepted_aliases_round_trip_through_canonical():
     for alias in FACT_TYPE_ALIAS_REGISTRY:
         for observed_kind in alias.accepted_kind_aliases:
             if len(vf.canonical_fact_types(observed_kind)) == 1:
-                assert vf.canonical_fact_type(observed_kind) == alias.canonical_fact_type
+                assert (
+                    vf.canonical_fact_type(observed_kind) == alias.canonical_fact_type
+                )
 
 
 def test_canonical_fact_type_handles_unknown_kind():

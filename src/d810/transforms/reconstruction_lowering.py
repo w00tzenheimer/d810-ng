@@ -78,7 +78,10 @@ def plan_shared_group_emission(
             rejection_reason="missing_old_target",
         )
 
-    if all(int(candidate.target_entry) == int(old_target) for candidate in ordered_candidates):
+    if all(
+        int(candidate.target_entry) == int(old_target)
+        for candidate in ordered_candidates
+    ):
         return SharedGroupEmissionPlan(
             accepted=False,
             ordered_candidates=ordered_candidates,

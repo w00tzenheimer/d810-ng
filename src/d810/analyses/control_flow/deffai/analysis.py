@@ -37,6 +37,7 @@ the contexts are capped by ``policy.max_contexts``.
 
 Portable-core: no IDA imports.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -221,9 +222,7 @@ class _ProductDomain:
     def bottom(self) -> PowersetStore:
         return PowersetStore.bottom()
 
-    def confluence(
-        self, left: PowersetStore, right: PowersetStore
-    ) -> PowersetStore:
+    def confluence(self, left: PowersetStore, right: PowersetStore) -> PowersetStore:
         return left.join(right)
 
     def transfer(self, node: ProductNode, in_state: PowersetStore) -> PowersetStore:
@@ -243,9 +242,7 @@ class _ProductDomain:
     def equals(self, left: PowersetStore, right: PowersetStore) -> bool:
         return left == right
 
-    def widen(
-        self, previous: PowersetStore, current: PowersetStore
-    ) -> PowersetStore:
+    def widen(self, previous: PowersetStore, current: PowersetStore) -> PowersetStore:
         return previous.widen(current)
 
     # -- per-edge assume ----------------------------------------------------
@@ -264,11 +261,7 @@ class _ProductDomain:
         if blk is None or out_state.is_bottom():
             return out_state
         tail = blk.tail
-        if (
-            tail is None
-            or not tail.is_conditional_jump
-            or len(blk.succs) != 2
-        ):
+        if tail is None or not tail.is_conditional_jump or len(blk.succs) != 2:
             return out_state
         pred = branch_predicate(tail)
         if pred not in (PredicateKind.EQ, PredicateKind.NE):
@@ -325,9 +318,7 @@ def analyze_kswitch(
     to the state cell's stack offset.
     """
     if state_var_stkoff is None:
-        state_var_stkoff = (
-            int(state_cell.key) if state_cell.kind.name == "STACK" else 0
-        )
+        state_var_stkoff = int(state_cell.key) if state_cell.kind.name == "STACK" else 0
     if block_evaluator is None:
         block_evaluator = scalar_block_evaluator(int(state_var_stkoff))
     if config is None:

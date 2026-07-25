@@ -22,7 +22,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 def _require_ida9_netnode() -> None:
@@ -139,7 +141,10 @@ class TestNetnodeWrapperRuntime:
             patches=[{"type": "redirect_edge", "from": 1, "to": 2}],
         )
 
-        assert optimization_storage.has_valid_cache(0x401000, "runtime-netnode-hash") is True
+        assert (
+            optimization_storage.has_valid_cache(0x401000, "runtime-netnode-hash")
+            is True
+        )
 
         result = optimization_storage.load_result(0x401000, provider_phase)
         assert result is not None

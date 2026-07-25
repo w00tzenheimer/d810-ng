@@ -1,4 +1,5 @@
 """Live Hex-Rays evidence collection for cleanup-family candidates."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -651,10 +652,14 @@ def _collect_copied_carrier_single_iteration_fixes(
     max_path: int = 1000,
 ) -> tuple[SingleIterationPredFix, ...]:
     opcode, compared_mop, check_const = _get_equality_jump_comparison_info(blk)
-    if opcode is None or compared_mop is None or not _is_magic_constant(
-        check_const,
-        min_magic=min_magic,
-        max_magic=max_magic,
+    if (
+        opcode is None
+        or compared_mop is None
+        or not _is_magic_constant(
+            check_const,
+            min_magic=min_magic,
+            max_magic=max_magic,
+        )
     ):
         return ()
 
@@ -700,17 +705,21 @@ def _collect_copied_carrier_single_iteration_fixes(
             max_nb_block=max_nb_block,
             max_path=max_path,
         )
-        if not _is_magic_constant(
-            init_const,
-            min_magic=min_magic,
-            max_magic=max_magic,
-        ) or not update_constants or not all(
-            _is_magic_constant(
-                update_const,
+        if (
+            not _is_magic_constant(
+                init_const,
                 min_magic=min_magic,
                 max_magic=max_magic,
             )
-            for update_const in update_constants
+            or not update_constants
+            or not all(
+                _is_magic_constant(
+                    update_const,
+                    min_magic=min_magic,
+                    max_magic=max_magic,
+                )
+                for update_const in update_constants
+            )
         ):
             if logger is not None:
                 logger.debug(
@@ -818,10 +827,14 @@ def _collect_copied_comparison_convert_fixes(
     the non-self exit arm.
     """
     opcode, compared_mop, check_const = _get_equality_jump_comparison_info(blk)
-    if opcode is None or compared_mop is None or not _is_magic_constant(
-        check_const,
-        min_magic=min_magic,
-        max_magic=max_magic,
+    if (
+        opcode is None
+        or compared_mop is None
+        or not _is_magic_constant(
+            check_const,
+            min_magic=min_magic,
+            max_magic=max_magic,
+        )
     ):
         return ()
 
@@ -924,10 +937,14 @@ def _collect_body_preserving_single_iteration_fixes(
     incoming state value is required.
     """
     opcode, state_mop, check_const = _get_equality_jump_comparison_info(blk)
-    if opcode is None or state_mop is None or not _is_magic_constant(
-        check_const,
-        min_magic=min_magic,
-        max_magic=max_magic,
+    if (
+        opcode is None
+        or state_mop is None
+        or not _is_magic_constant(
+            check_const,
+            min_magic=min_magic,
+            max_magic=max_magic,
+        )
     ):
         return ()
     if _iter_pre_tail_instructions(blk):
@@ -1128,6 +1145,7 @@ def collect_live_single_iteration_block_fixes(
         fixes_by_key.pop(key, None)
 
     return tuple(fixes_by_key[key] for key in sorted(fixes_by_key))
+
 
 def collect_live_single_iteration_fixes(
     mba: object,

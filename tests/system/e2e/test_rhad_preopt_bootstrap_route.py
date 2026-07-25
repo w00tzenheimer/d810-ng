@@ -1,4 +1,5 @@
 """Fresh PREOPT bootstrap-route regression for the Rhad transfer fixture."""
+
 from __future__ import annotations
 
 import json
@@ -16,11 +17,7 @@ pytest.importorskip("idapro")
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 _BINARY = _REPO / "samples" / "bins" / "rhad_loader_unpacked.bin"
 _PROBE = (
-    _REPO
-    / "tools"
-    / "scripts"
-    / "rhad_investigation"
-    / "probe_transfer_function.py"
+    _REPO / "tools" / "scripts" / "rhad_investigation" / "probe_transfer_function.py"
 )
 _FUNCTION_EA = 0x40D200
 _FUNCTION_END = 0x40F82F
@@ -93,8 +90,7 @@ def test_fresh_preopt_rebinds_the_bootstrap_route_without_cache(
         ).fetchall()
 
     assert len(rows) == 1, (
-        "the diagnostic DB must record exactly one bootstrap fact; "
-        f"found {len(rows)}"
+        f"the diagnostic DB must record exactly one bootstrap fact; found {len(rows)}"
     )
     fact = json.loads(rows[0][0])
     assert fact == {

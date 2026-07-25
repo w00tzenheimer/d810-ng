@@ -17,6 +17,7 @@ assert both behaviors:
     ``FixpointResult`` with ``converged=False``
   * ``raise_on_nonconvergence=True`` → ``FixpointDidNotConverge``
 """
+
 from __future__ import annotations
 
 import pytest
@@ -87,9 +88,7 @@ def force_nonconvergent_valrange(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_envs_equal(a: Any, b: Any) -> bool:
         return False
 
-    def fake_refine_for_branch_edge(
-        pred_blk: Any, succ_serial: int, env: Any
-    ) -> Any:
+    def fake_refine_for_branch_edge(pred_blk: Any, succ_serial: int, env: Any) -> Any:
         return env
 
     monkeypatch.setattr(vd_module, "valrange_transfer", fake_transfer)
@@ -140,9 +139,7 @@ def test_raise_on_nonconvergence_true_is_noop_when_converged(
         # worklist drains immediately.
         return {}
 
-    def fake_refine_for_branch_edge(
-        pred_blk: Any, succ_serial: int, env: Any
-    ) -> Any:
+    def fake_refine_for_branch_edge(pred_blk: Any, succ_serial: int, env: Any) -> Any:
         # The real implementation reads ``pred_blk.type`` which is
         # absent on the test fake; pass through unchanged.
         return env
@@ -154,9 +151,7 @@ def test_raise_on_nonconvergence_true_is_noop_when_converged(
     # _envs_equal is the real implementation here so {} == {} succeeds.
 
     mba = _two_node_back_edge_mba()
-    result = run_valrange_fixpoint(
-        mba, max_iterations=50, raise_on_nonconvergence=True
-    )
+    result = run_valrange_fixpoint(mba, max_iterations=50, raise_on_nonconvergence=True)
 
     assert isinstance(result, FixpointResult)
     assert result.converged is True

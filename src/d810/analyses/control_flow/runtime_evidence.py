@@ -1,4 +1,5 @@
 """In-memory read-only reconstruction evidence for live lowering consumers."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -70,7 +71,9 @@ def _count_rewritten_mappings(mappings: tuple[Any, ...]) -> int:
     return total
 
 
-def _collect_terminal_byte_facts(collector: Any, target: Any, context: FactCollectionContext) -> Any:
+def _collect_terminal_byte_facts(
+    collector: Any, target: Any, context: FactCollectionContext
+) -> Any:
     try:
         return collector.collect(target, context=context)
     except TypeError as exc:

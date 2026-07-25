@@ -475,8 +475,7 @@ def _receipted_semantic_operation_closes_boundary(
 ) -> bool:
     """Return whether one prior publication fully owns a semantic boundary."""
     if (
-        operation.operation_id
-        not in normalization_authority.selected_obligation_ids
+        operation.operation_id not in normalization_authority.selected_obligation_ids
         or operation.operation_id not in native_body.proof_ids
     ):
         return False

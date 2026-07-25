@@ -3,6 +3,7 @@
 Tests ASTProcessor tree walking, restart-on-modification, path tracking,
 and build_path using mock AST nodes.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -43,6 +44,7 @@ class MockNode:
 def _register_mock_ops():
     """Register our mock ops in ast_iteration.op2func."""
     from d810.ctree import ast_iteration
+
     ast_iteration.op2func[_MOCK_UNARY_OP] = lambda x: tuple(x._children)
     ast_iteration.op2func[_MOCK_BINARY_OP] = lambda x: tuple(x._children)
     ast_iteration.op2func[_MOCK_BLOCK_OP] = lambda x: tuple(x._children)
@@ -70,6 +72,7 @@ def _make_block(name: str, *children: MockNode) -> MockNode:
 # ---------------------------------------------------------------------------
 # build_path tests
 # ---------------------------------------------------------------------------
+
 
 class TestBuildPath:
     def test_single_leaf(self):
@@ -103,6 +106,7 @@ class TestBuildPath:
 # ---------------------------------------------------------------------------
 # ASTProcessor iteration order tests
 # ---------------------------------------------------------------------------
+
 
 class TestASTProcessorIteration:
     def test_single_leaf_iteration(self):
@@ -205,6 +209,7 @@ class TestASTProcessorIteration:
 # Restart-on-modification
 # ---------------------------------------------------------------------------
 
+
 class TestASTProcessorRestart:
     def test_restart_resets_to_beginning(self):
         """After restart_iteration, processor starts from leftmost leaf again."""
@@ -240,6 +245,7 @@ class TestASTProcessorRestart:
 # ---------------------------------------------------------------------------
 # Path tracking
 # ---------------------------------------------------------------------------
+
 
 class TestASTProcessorPath:
     def test_path_not_empty_during_iteration(self):

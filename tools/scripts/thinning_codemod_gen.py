@@ -12,6 +12,7 @@ Mirrors the canonical project template ``tools/scripts/codemod_rename_mba_backen
 * ``make_alias_shim`` -- sys.modules-alias shim re-exporting PUBLIC and PRIVATE names
   (avoids the ``_unresolved_fact`` ImportError trap).
 """
+
 from __future__ import annotations
 
 import re
@@ -45,7 +46,7 @@ class _ImportRewriter(cst.CSTTransformer):
             return updated
         mod = _dotted(updated.module)
         if mod == self.old or mod.startswith(self.old + "."):
-            tail = mod[len(self.old):]
+            tail = mod[len(self.old) :]
             return updated.with_changes(module=_parse_dotted(self.new + tail))
         return updated
 

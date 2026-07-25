@@ -81,9 +81,13 @@ from d810.evaluator.evaluators import evaluate_concrete
 # Opcodes where the right operand (shift amount) must have size == 1.
 # Folding a constant into ins.r with a larger size triggers INTERR 50835.
 # Mirrors the same set in forward_const_prop.py.
-_SHIFT_OPCODES: frozenset[int] = frozenset({
-    ida_hexrays.m_shl, ida_hexrays.m_shr, ida_hexrays.m_sar,
-})
+_SHIFT_OPCODES: frozenset[int] = frozenset(
+    {
+        ida_hexrays.m_shl,
+        ida_hexrays.m_shr,
+        ida_hexrays.m_sar,
+    }
+)
 
 import d810.core.typing as typing
 from d810.core import getLogger
@@ -146,12 +150,14 @@ def _try_eval_pure_const_mop(mop: ida_hexrays.mop_t) -> Optional[int]:
 
 
 # Operand types that may reference readonly global data.
-_READONLY_CANDIDATE_TYPES: frozenset[int] = frozenset({
-    ida_hexrays.mop_v,   # Global variable
-    ida_hexrays.mop_S,   # Stack/segment variable
-    ida_hexrays.mop_d,   # Nested sub-instruction (may contain refs)
-    ida_hexrays.mop_b,   # Micro basic block (may contain refs)
-})
+_READONLY_CANDIDATE_TYPES: frozenset[int] = frozenset(
+    {
+        ida_hexrays.mop_v,  # Global variable
+        ida_hexrays.mop_S,  # Stack/segment variable
+        ida_hexrays.mop_d,  # Nested sub-instruction (may contain refs)
+        ida_hexrays.mop_b,  # Micro basic block (may contain refs)
+    }
+)
 
 
 def _has_potential_readonly_operand(ins) -> bool:
@@ -172,8 +178,15 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
 
     CATEGORY = "Constant Folding"
     CONFIG_SCHEMA = PeepholeSimplificationRule.CONFIG_SCHEMA + (
-        ConfigParam("fold_writable_constants", bool, False, "Fold from writable segments with no write xrefs"),
-        ConfigParam("allow_executable_readonly", bool, False, "Allow folding from R+X segments"),
+        ConfigParam(
+            "fold_writable_constants",
+            bool,
+            False,
+            "Fold from writable segments with no write xrefs",
+        ),
+        ConfigParam(
+            "allow_executable_readonly", bool, False, "Allow folding from R+X segments"
+        ),
     )
 
     DESCRIPTION = (
@@ -567,9 +580,11 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         if mop.t == ida_hexrays.mop_d and mop.d is not None:
             # mop_d is a sub-instruction — check l, r, d operands
             sub = mop.d
-            for attr in ('l', 'r', 'd'):
+            for attr in ("l", "r", "d"):
                 op = getattr(sub, attr, None)
-                if op is not None and FoldReadonlyDataRule._contains_mop_v(op, depth + 1):
+                if op is not None and FoldReadonlyDataRule._contains_mop_v(
+                    op, depth + 1
+                ):
                     return True
         return False
 
@@ -649,9 +664,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                     ea = src.g
 
                 if ea is not None and self._is_foldable_address(ea):
-                    out_size = (
-                        getattr(op, "size", 0) or getattr(inner, "size", 0) or 0
-                    )
+                    out_size = getattr(op, "size", 0) or getattr(inner, "size", 0) or 0
                     if mem_size in (1, 2, 4, 8) and out_size in (1, 2, 4, 8):
                         val = self._fetch_constant(ea, mem_size)
                         if val is not None:

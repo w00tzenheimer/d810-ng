@@ -8,6 +8,7 @@ Sequence LS8 S6).
 Minimum viable scope: linear ``basis * multiplier`` candidates.  Richer forms
 (polynomial, pointer scaling) are added on demand.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

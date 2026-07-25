@@ -5,6 +5,7 @@ Groups optimization rules by their CATEGORY class attribute and displays
 them in a QTreeWidget with inline checkboxes for enable/disable. Supports
 text-based filtering and emits signals when the user selects a rule.
 """
+
 from __future__ import annotations
 
 from d810.core.logging import getLogger
@@ -89,9 +90,7 @@ class RuleTreeWidget(QtWidgets.QWidget):
         legend_layout.addWidget(disabled_label)
 
         # Configurable legend item
-        configurable_label = QtWidgets.QLabel(
-            "* Configurable", legend_widget
-        )
+        configurable_label = QtWidgets.QLabel("* Configurable", legend_widget)
         configurable_label.setStyleSheet("font-size: 10px")
         legend_layout.addWidget(configurable_label)
 
@@ -168,7 +167,11 @@ class RuleTreeWidget(QtWidgets.QWidget):
         optimizer_groups = self._group_by_optimizer_type(self._rules)
         filter_text = self._filter_edit.text().strip().lower()
 
-        for opt_type_name in ["Instruction Optimizers", "Block Optimizers", "Ctree Optimizers"]:
+        for opt_type_name in [
+            "Instruction Optimizers",
+            "Block Optimizers",
+            "Ctree Optimizers",
+        ]:
             rules_in_type = optimizer_groups.get(opt_type_name, [])
             if not rules_in_type:
                 continue
@@ -182,8 +185,7 @@ class RuleTreeWidget(QtWidgets.QWidget):
             # Pre-filter rules
             if filter_text:
                 visible_rules_all = [
-                    r for r in rules_in_type
-                    if filter_text in r.name.lower()
+                    r for r in rules_in_type if filter_text in r.name.lower()
                 ]
             else:
                 visible_rules_all = rules_in_type
@@ -223,8 +225,7 @@ class RuleTreeWidget(QtWidgets.QWidget):
                 # Pre-filter rules for this category
                 if filter_text:
                     visible_rules = [
-                        r for r in rules_in_cat
-                        if filter_text in r.name.lower()
+                        r for r in rules_in_cat if filter_text in r.name.lower()
                     ]
                 else:
                     visible_rules = rules_in_cat
@@ -290,11 +291,17 @@ class RuleTreeWidget(QtWidgets.QWidget):
                     # Checkbox - conditionally include based on read-only state
                     if self._read_only:
                         rule_item.setFlags(
-                            qt_flag_or(QtCore.Qt.ItemIsEnabled, QtCore.Qt.ItemIsSelectable)
+                            qt_flag_or(
+                                QtCore.Qt.ItemIsEnabled, QtCore.Qt.ItemIsSelectable
+                            )
                         )
                     else:
                         rule_item.setFlags(
-                            qt_flag_or(QtCore.Qt.ItemIsEnabled, QtCore.Qt.ItemIsSelectable, QtCore.Qt.ItemIsUserCheckable)
+                            qt_flag_or(
+                                QtCore.Qt.ItemIsEnabled,
+                                QtCore.Qt.ItemIsSelectable,
+                                QtCore.Qt.ItemIsUserCheckable,
+                            )
                         )
                         if rule.name in self._enabled_rules:
                             rule_item.setCheckState(0, QtCore.Qt.Checked)
@@ -308,7 +315,9 @@ class RuleTreeWidget(QtWidgets.QWidget):
         self._tree.blockSignals(False)
 
     @staticmethod
-    def _group_by_optimizer_type(rules: list[OptimizationRule]) -> dict[str, list[OptimizationRule]]:
+    def _group_by_optimizer_type(
+        rules: list[OptimizationRule],
+    ) -> dict[str, list[OptimizationRule]]:
         """Group rules by their optimizer type based on class hierarchy."""
         groups: dict[str, list[OptimizationRule]] = {
             "Instruction Optimizers": [],
@@ -346,23 +355,21 @@ class RuleTreeWidget(QtWidgets.QWidget):
 
     # --- Slots ---------------------------------------------------------------
 
-    def _on_item_clicked(
-        self, item: QtWidgets.QTreeWidgetItem, _column: int
-    ) -> None:
+    def _on_item_clicked(self, item: QtWidgets.QTreeWidgetItem, _column: int) -> None:
         rule = item.data(0, RULE_DATA_ROLE)
         self.rule_selected.emit(rule)
 
     def _on_current_item_changed(
-        self, current: QtWidgets.QTreeWidgetItem | None, _previous: QtWidgets.QTreeWidgetItem | None
+        self,
+        current: QtWidgets.QTreeWidgetItem | None,
+        _previous: QtWidgets.QTreeWidgetItem | None,
     ) -> None:
         """Slot for currentItemChanged signal (keyboard + mouse navigation)."""
         if current is not None:
             rule = current.data(0, RULE_DATA_ROLE)
             self.rule_selected.emit(rule)
 
-    def _on_item_changed(
-        self, item: QtWidgets.QTreeWidgetItem, _column: int
-    ) -> None:
+    def _on_item_changed(self, item: QtWidgets.QTreeWidgetItem, _column: int) -> None:
         rule = item.data(0, RULE_DATA_ROLE)
         if rule is None:
             return  # category or optimizer type header
@@ -419,7 +426,9 @@ class RuleTreeWidget(QtWidgets.QWidget):
                         opt_total += 1
                         if rule_item.checkState(0) == QtCore.Qt.Checked:
                             opt_enabled += 1
-                optimizer_parent.setText(0, f"{opt_name} ({opt_enabled}/{opt_total} enabled)")
+                optimizer_parent.setText(
+                    0, f"{opt_name} ({opt_enabled}/{opt_total} enabled)"
+                )
 
         self.rule_toggled.emit(rule, is_checked)
 
@@ -433,10 +442,7 @@ class RuleTreeWidget(QtWidgets.QWidget):
             return
 
         # Check if this is a category/optimizer item (has children but no rule data)
-        is_category = (
-            item.childCount() > 0 and
-            item.data(0, RULE_DATA_ROLE) is None
-        )
+        is_category = item.childCount() > 0 and item.data(0, RULE_DATA_ROLE) is None
 
         if not is_category:
             return  # Only show menu for category/optimizer items

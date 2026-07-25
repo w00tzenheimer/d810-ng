@@ -4,6 +4,7 @@ Covers: per-context partial CFG excludes the dispatcher region; keeps only
 feasible arms under the context; block count per context <= original; an
 infeasible arm is dropped from the edge set.  No IDA.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -63,9 +64,7 @@ def test_ccm_block_count_le_original():
 def test_ccm_excludes_dispatcher_region():
     graph = _linear_graph()
     result = _analyze(graph, initial=10)
-    ccm = build_ccm(
-        result, graph, state_cell=STATE, dispatcher_region=frozenset({0})
-    )
+    ccm = build_ccm(result, graph, state_cell=STATE, dispatcher_region=frozenset({0}))
     for ctx in result.reachable_contexts:
         assert 0 not in ccm.get(ctx).blocks  # dispatcher excluded
 

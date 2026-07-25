@@ -11,6 +11,7 @@ The comparison recognition mirrors ``dispatcher_recovery.build_state_dispatcher_
 resolution is the const-or-``⊤`` lattice element; a future cut routes the ``⊤`` writes through the
 injected ``ValRangeCapability`` instead of giving up.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Mapping
@@ -104,10 +105,7 @@ def extract_state_arm_comparisons(
         )
         if const is None:
             continue
-        if (
-            state_var_stkoff is not None
-            and state_identity != expected_identity
-        ):
+        if state_var_stkoff is not None and state_identity != expected_identity:
             continue
         taken = control.target
         fallthrough = next((s for s in blk.succs if s != taken), None)
@@ -119,7 +117,10 @@ def extract_state_arm_comparisons(
         else:
             eq_target, ne_target = int(fallthrough), int(taken)
         comparisons[int(serial)] = StateArmComparison(
-            block=int(serial), const=int(const), eq_target=eq_target, ne_target=ne_target
+            block=int(serial),
+            const=int(const),
+            eq_target=eq_target,
+            ne_target=ne_target,
         )
     return comparisons
 

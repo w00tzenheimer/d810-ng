@@ -12,6 +12,7 @@ from .registry import EventEmitter
 
 logger = getLogger(__name__)
 
+
 def _maturity_name(maturity: int) -> str:
     """Return a short readable name for a microcode maturity level integer."""
     return mmat_name(maturity, numbering=MaturityNumbering.IDA)

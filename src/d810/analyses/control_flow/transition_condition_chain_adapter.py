@@ -3,6 +3,7 @@
 This module isolates direct use of condition-chain private walker helpers so
 ``transition_report.py`` can focus on rendering portable analysis outputs.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Any, Optional

@@ -13,6 +13,7 @@ Kahn topo-sort with edges dependency -> dependent, tie-broken by
 Movable set = entries in phase_RELOC_FULL.json whose source file still exists
 (already-relocated files are dropped).
 """
+
 from __future__ import annotations
 
 import json
@@ -86,7 +87,7 @@ def main() -> None:
         cyc = [m for m in by_mod if m not in emitted]
         raise SystemExit(
             f"CYCLE among movable files ({len(cyc)} unemitted): "
-            + ", ".join(c.split('.')[-1] for c in cyc)
+            + ", ".join(c.split(".")[-1] for c in cyc)
         )
 
     PLAN.write_text(json.dumps(out, indent=1) + "\n")
@@ -98,15 +99,15 @@ def main() -> None:
         for f in dependents
         if pos[g] > pos[f]
     ]
-    print(f"movable: {len(movable)}  emitted: {len(out)}  ordering-violations: {len(bad)}")
+    print(
+        f"movable: {len(movable)}  emitted: {len(out)}  ordering-violations: {len(bad)}"
+    )
     for g, f in bad:
         print(f"  VIOLATION: {g} must precede {f}")
     print("layer dist:", dict(sorted(Counter(e["layer"] for e in out).items())))
     print("first 14 (next batch order):")
     for e in out[:14]:
-        deps_of = sorted(
-            g.split(".")[-1] for g in by_mod if e["old_module"] in deps[g]
-        )
+        deps_of = sorted(g.split(".")[-1] for g in by_mod if e["old_module"] in deps[g])
         print(
             f"  L{e['layer']} {e['old_module'].split('.')[-1]:42s} -> {e['dest']}"
             + (f"   (deps: {','.join(deps_of)})" if deps_of else "")

@@ -11,6 +11,7 @@ New projected value-flow facts must emit canonical strings directly. This
 registry is a schema-normalization boundary, not permission for new projected
 rows to keep using carrier-era serialized names.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -73,6 +74,7 @@ class FactTypeAlias:
     display_name: str
     industry_term: str
     producer_ontology: str
+
 
 FACT_TYPE_ALIAS_REGISTRY: tuple[FactTypeAlias, ...] = (
     FactTypeAlias(
@@ -140,7 +142,11 @@ FACT_TYPE_ALIAS_REGISTRY: tuple[FactTypeAlias, ...] = (
     ),
     FactTypeAlias(
         canonical_fact_type=MATERIALIZATION_POINT_FACT_TYPE,
-        accepted_kind_aliases=("TerminalMaterializationFact", "ReturnCarrierFact", "ReturnFrontierFact"),
+        accepted_kind_aliases=(
+            "TerminalMaterializationFact",
+            "ReturnCarrierFact",
+            "ReturnFrontierFact",
+        ),
         display_name="Materialization point",
         industry_term="Materialization point (return value, output exposure)",
         producer_ontology="Hodur ReturnCarrierFact and ReturnFrontierFact terminals.",
@@ -189,7 +195,10 @@ FACT_TYPE_ALIAS_REGISTRY: tuple[FactTypeAlias, ...] = (
     ),
     FactTypeAlias(
         canonical_fact_type=STATE_TRANSITION_FACT_TYPE,
-        accepted_kind_aliases=("StateTransitionCarrierFact", "StateTransitionAnchorFact"),
+        accepted_kind_aliases=(
+            "StateTransitionCarrierFact",
+            "StateTransitionAnchorFact",
+        ),
         display_name="State transition",
         industry_term="FSM transition edge (or LLVM MemoryPhi at joins)",
         producer_ontology="Hodur StateTransitionAnchorFact.",
@@ -212,10 +221,7 @@ FACT_TYPE_ALIAS_REGISTRY: tuple[FactTypeAlias, ...] = (
 
 
 def _build_canonical_lookup() -> Mapping[str, FactTypeAlias]:
-    return {
-        alias.canonical_fact_type: alias
-        for alias in FACT_TYPE_ALIAS_REGISTRY
-    }
+    return {alias.canonical_fact_type: alias for alias in FACT_TYPE_ALIAS_REGISTRY}
 
 
 def _build_observed_lookup() -> Mapping[str, tuple[FactTypeAlias, ...]]:

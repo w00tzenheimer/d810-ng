@@ -16,6 +16,7 @@ Candidates:
     - ``"large_switch"`` when switch_max_arms >= 5
     - ``"high_goto_density"`` when goto_count >= 3
 """
+
 from __future__ import annotations
 
 import time
@@ -98,30 +99,38 @@ class CtreeStructureCollector:
             for child in getattr(node, "children", []):
                 queue.append((child, depth + 1))
 
-        metrics = MappingProxyType({
-            "switch_count": switch_count,
-            "switch_max_arms": switch_max_arms,
-            "if_count": if_count,
-            "goto_count": goto_count,
-            "max_nesting_depth": max_depth,
-            "total_nodes": total_nodes,
-        })
+        metrics = MappingProxyType(
+            {
+                "switch_count": switch_count,
+                "switch_max_arms": switch_max_arms,
+                "if_count": if_count,
+                "goto_count": goto_count,
+                "max_nesting_depth": max_depth,
+                "total_nodes": total_nodes,
+            }
+        )
 
         candidates: list[CandidateFlag] = []
         if switch_max_arms >= _LARGE_SWITCH_THRESHOLD:
-            candidates.append(CandidateFlag(
-                kind="large_switch",
-                block_serial=-1,
-                confidence=min(1.0, 0.4 + (switch_max_arms - _LARGE_SWITCH_THRESHOLD) * 0.05),
-                detail=f"switch with {switch_max_arms} arms",
-            ))
+            candidates.append(
+                CandidateFlag(
+                    kind="large_switch",
+                    block_serial=-1,
+                    confidence=min(
+                        1.0, 0.4 + (switch_max_arms - _LARGE_SWITCH_THRESHOLD) * 0.05
+                    ),
+                    detail=f"switch with {switch_max_arms} arms",
+                )
+            )
         if goto_count >= _HIGH_GOTO_THRESHOLD:
-            candidates.append(CandidateFlag(
-                kind="high_goto_density",
-                block_serial=-1,
-                confidence=min(1.0, 0.3 + goto_count * 0.1),
-                detail=f"{goto_count} goto statements",
-            ))
+            candidates.append(
+                CandidateFlag(
+                    kind="high_goto_density",
+                    block_serial=-1,
+                    confidence=min(1.0, 0.3 + goto_count * 0.1),
+                    detail=f"{goto_count} goto statements",
+                )
+            )
 
         return PreanalysisResult(
             collector_name=self.name,
@@ -138,10 +147,15 @@ class CtreeStructureCollector:
             func_ea=context.func_ea,
             provider_level=context.provider_level,
             timestamp=time.time(),
-            metrics=MappingProxyType({
-                "switch_count": 0, "switch_max_arms": 0,
-                "if_count": 0, "goto_count": 0,
-                "max_nesting_depth": 0, "total_nodes": 0,
-            }),
+            metrics=MappingProxyType(
+                {
+                    "switch_count": 0,
+                    "switch_max_arms": 0,
+                    "if_count": 0,
+                    "goto_count": 0,
+                    "max_nesting_depth": 0,
+                    "total_nodes": 0,
+                }
+            ),
             candidates=(),
         )

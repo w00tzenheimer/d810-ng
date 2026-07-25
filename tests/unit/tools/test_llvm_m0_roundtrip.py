@@ -9,7 +9,9 @@ from d810.backends.llvm import find_llvm_opt
 from tools.llvm_m0_roundtrip import run_opt
 
 
-LOWER_BACK = run_opt.repo_root() / "tools/llvm_m0_roundtrip/lab_flat_branchless.lower_back.json"
+LOWER_BACK = (
+    run_opt.repo_root() / "tools/llvm_m0_roundtrip/lab_flat_branchless.lower_back.json"
+)
 
 
 def _opt_or_skip():

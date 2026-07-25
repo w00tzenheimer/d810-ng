@@ -1,4 +1,5 @@
 """Tests for terminal-tail loss localizer."""
+
 from __future__ import annotations
 
 from d810.transforms.terminal_tail_loss_localizer import (
@@ -12,10 +13,14 @@ from d810.transforms.terminal_tail_loss_localizer import (
 )
 
 
-def _initial(byte_index: int, snap: int = 5, serial: int = 100, ea: str = "0x1") -> ByteEmitInitialState:
+def _initial(
+    byte_index: int, snap: int = 5, serial: int = 100, ea: str = "0x1"
+) -> ByteEmitInitialState:
     return ByteEmitInitialState(
-        byte_index=byte_index, snapshot_id=snap,
-        block_serial=serial, start_ea_hex=ea,
+        byte_index=byte_index,
+        snapshot_id=snap,
+        block_serial=serial,
+        start_ea_hex=ea,
     )
 
 
@@ -41,10 +46,7 @@ class TestBuildBlockSurvival:
 
     def test_block_absent_at_post_d810_means_ida_native_fold(self) -> None:
         # Present at snap 5, 8, 9, 17 — absent at snap 18 (post_d810).
-        lookup = {
-            (s, "0xAA"): (100, 1, 1, 5)
-            for s, _, _ in SNAPSHOTS_FULL[:-1]
-        }
+        lookup = {(s, "0xAA"): (100, 1, 1, 5) for s, _, _ in SNAPSHOTS_FULL[:-1]}
         surv = build_block_survival(_initial(0, ea="0xAA"), SNAPSHOTS_FULL, lookup)
         assert not surv.survives_pipeline
         assert surv.last_present.snapshot_id == 17
@@ -70,13 +72,23 @@ class TestBuildBlockSurvival:
 class TestSnapshotBlockView:
     def test_present_property(self) -> None:
         v = SnapshotBlockView(
-            snapshot_id=5, snapshot_label="x", snapshot_phase="pre_d810",
-            block_serial=100, npred=1, nsucc=2, insn_count=3,
+            snapshot_id=5,
+            snapshot_label="x",
+            snapshot_phase="pre_d810",
+            block_serial=100,
+            npred=1,
+            nsucc=2,
+            insn_count=3,
         )
         assert v.present
         v_absent = SnapshotBlockView(
-            snapshot_id=5, snapshot_label="x", snapshot_phase="pre_d810",
-            block_serial=None, npred=None, nsucc=None, insn_count=None,
+            snapshot_id=5,
+            snapshot_label="x",
+            snapshot_phase="pre_d810",
+            block_serial=None,
+            npred=None,
+            nsucc=None,
+            insn_count=None,
         )
         assert not v_absent.present
 
@@ -116,11 +128,11 @@ class TestLocalizeByteEmitLoss:
         assert counts["ida_native_maturity_fold"] == 2
 
     def test_format_report_renders_markdown_with_present_indices(self) -> None:
-        lookup = {
-            (s, "0xAA"): (100, 1, 1, 5) for s, _, _ in SNAPSHOTS_FULL[:-1]
-        }
+        lookup = {(s, "0xAA"): (100, 1, 1, 5) for s, _, _ in SNAPSHOTS_FULL[:-1]}
         report = localize_byte_emit_loss(
-            [_initial(2, ea="0xAA")], SNAPSHOTS_FULL, lookup,
+            [_initial(2, ea="0xAA")],
+            SNAPSHOTS_FULL,
+            lookup,
         )
         text = format_localization_report(report)
         assert "Byte-emit block survival" in text
@@ -135,7 +147,10 @@ class TestFactDetectionDimension:
         lookup = {(s, "0xAA"): (100, 1, 1, 5) for s, _, _ in SNAPSHOTS_FULL}
         fact_lookup = {(s, 0): True for s, _, _ in SNAPSHOTS_FULL}
         surv = build_block_survival(
-            _initial(0, ea="0xAA"), SNAPSHOTS_FULL, lookup, fact_lookup,
+            _initial(0, ea="0xAA"),
+            SNAPSHOTS_FULL,
+            lookup,
+            fact_lookup,
         )
         assert all(e.fact_detected for e in surv.timeline if e.present)
         assert surv.fact_first_loss is None
@@ -147,7 +162,10 @@ class TestFactDetectionDimension:
         fact_lookup = {(s, 0): True for s, _, _ in SNAPSHOTS_FULL[:-1]}
         # snap 18 omitted from fact_lookup → fact_detected=False there.
         surv = build_block_survival(
-            _initial(0, ea="0xAA"), SNAPSHOTS_FULL, lookup, fact_lookup,
+            _initial(0, ea="0xAA"),
+            SNAPSHOTS_FULL,
+            lookup,
+            fact_lookup,
         )
         assert surv.first_loss is None  # block survives
         assert surv.fact_first_loss is not None

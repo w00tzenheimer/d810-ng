@@ -5,6 +5,7 @@ and stability checks. They do NOT compare full pipeline output.
 
 Failure means: "Our interaction with IDA/Hex-Rays is wrong or unstable."
 """
+
 from __future__ import annotations
 
 import os
@@ -52,9 +53,7 @@ def gen_microcode_at_maturity(func_ea: int, maturity: int):
 
     mbr = ida_hexrays.mba_ranges_t(func)
     hf = ida_hexrays.hexrays_failure_t()
-    mba = ida_hexrays.gen_microcode(
-        mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, maturity
-    )
+    mba = ida_hexrays.gen_microcode(mbr, hf, None, ida_hexrays.DECOMP_NO_WAIT, maturity)
     return mba
 
 
@@ -131,10 +130,7 @@ def real_asts(libobfuscated_setup):
 
             asts = collect_real_asts_from_mba(mba)
             if len(asts) >= 3:
-                print(
-                    f"\n  Collected {len(asts)} ASTs "
-                    f"@ maturity {maturity}"
-                )
+                print(f"\n  Collected {len(asts)} ASTs @ maturity {maturity}")
                 return asts
         return None
 
@@ -193,6 +189,7 @@ def populated_storages(real_asts):
 
     rules = []
     for i, pattern in enumerate(unique_patterns):
+
         class MockRule:
             pass
 

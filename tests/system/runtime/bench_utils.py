@@ -16,6 +16,7 @@ from d810.core.typing import Callable
 @dataclass
 class BenchResult:
     """Result of a single benchmark run."""
+
     name: str
     cython_time: float
     python_time: float
@@ -24,7 +25,7 @@ class BenchResult:
     @property
     def speedup(self) -> float:
         if self.cython_time == 0:
-            return float('inf')
+            return float("inf")
         return self.python_time / self.cython_time
 
     def report(self) -> str:
@@ -69,12 +70,12 @@ def save_baseline(results: dict, path: Path, label: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     # Write JSON
-    with open(path, 'w') as f:
+    with open(path, "w") as f:
         json.dump(results, f, indent=2, sort_keys=True)
 
     # Write markdown summary
-    md_path = path.with_suffix('.md')
-    with open(md_path, 'w') as f:
+    md_path = path.with_suffix(".md")
+    with open(md_path, "w") as f:
         f.write(f"# {label}\n\n")
         f.write(f"**Generated**: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
         f.write("## Summary\n\n")

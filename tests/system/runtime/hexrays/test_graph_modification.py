@@ -7,6 +7,7 @@ Test coverage:
 - Type discrimination via isinstance and match
 - Tuple field enforcement
 """
+
 from __future__ import annotations
 
 import pytest
@@ -27,7 +28,10 @@ from d810.transforms.graph_modification import (
     RemoveEdge,
 )
 from d810.ir.flowgraph import InsnSnapshot
-from d810.transforms.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
+from d810.transforms.materialization_payload import (
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
+)
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
 

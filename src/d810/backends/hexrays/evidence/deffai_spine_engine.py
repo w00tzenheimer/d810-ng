@@ -21,6 +21,7 @@ is a localized change here once the projection is trusted.
 The live ``mba`` is bound for the block evaluator the fixpoint needs; the fixpoint
 itself is portable.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

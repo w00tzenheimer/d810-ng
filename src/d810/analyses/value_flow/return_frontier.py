@@ -19,6 +19,7 @@ construction for metadata-only blocks (no instructions) keeps the
 ``instructions=()`` empty payload, so non-instruction return blocks are
 unchanged.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -142,7 +143,9 @@ class ReturnFrontierFactCollector:
                 for serial in writer_blocks
                 for carrier in carriers_by_block.get(serial, ())
             )
-            start_ea, succs, preds = metadata.get(block.serial, (block.start_ea, (), ()))
+            start_ea, succs, preds = metadata.get(
+                block.serial, (block.start_ea, (), ())
+            )
             writer_text = ",".join(str(serial) for serial in writer_blocks) or "none"
             semantic_key = (
                 f"return_frontier:return_block={block.serial}:"
@@ -165,7 +168,9 @@ class ReturnFrontierFactCollector:
                     block_fingerprint=f"return_frontier:blk[{block.serial}]",
                     mop_signature=(
                         "return_frontier:"
-                        + ",".join(carrier.mop_signature or "" for carrier in carrier_facts)
+                        + ",".join(
+                            carrier.mop_signature or "" for carrier in carrier_facts
+                        )
                     ),
                     payload={
                         "return_block": block.serial,
@@ -174,7 +179,9 @@ class ReturnFrontierFactCollector:
                         "successor_blocks": list(succs),
                         "frontier_blocks": list(frontier),
                         "writer_blocks": list(writer_blocks),
-                        "carrier_fact_ids": [carrier.fact_id for carrier in carrier_facts],
+                        "carrier_fact_ids": [
+                            carrier.fact_id for carrier in carrier_facts
+                        ],
                         "carrier_semantic_keys": [
                             carrier.semantic_key for carrier in carrier_facts
                         ],

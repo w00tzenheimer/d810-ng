@@ -30,6 +30,7 @@ the real filter -- and it is cheap relative to a decompile, only running under
 the indirect config -- so the materialized hub (resolved by the backend's
 ``_find_materialized_dispatcher_serial``) is recognized end-to-end.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -126,7 +127,9 @@ class IndirectJumpDispatcherResolver:
             table_provenance=self.table_provenance,
             reasons=(
                 "indirect-jump-table",
-                "materialized" if not _graph_has_indirect_jump(graph) else "indirect-jump-tail",
+                "materialized"
+                if not _graph_has_indirect_jump(graph)
+                else "indirect-jump-tail",
                 "rows=%d" % len(dmap.rows),
                 "missing_targets=%d" % int(result.missing_target_count),
             ),

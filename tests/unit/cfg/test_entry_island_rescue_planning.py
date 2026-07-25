@@ -16,8 +16,16 @@ class _DummyBuilder:
         return ("goto", int(source_block), int(target_block), int(old_target))
 
     @staticmethod
-    def edge_redirect(*, source_block: int, target_block: int, old_target: int, via_pred: int):
-        return ("edge", int(source_block), int(target_block), int(old_target), int(via_pred))
+    def edge_redirect(
+        *, source_block: int, target_block: int, old_target: int, via_pred: int
+    ):
+        return (
+            "edge",
+            int(source_block),
+            int(target_block),
+            int(old_target),
+            int(via_pred),
+        )
 
 
 class _DummyBlock:
@@ -31,7 +39,9 @@ class _DummyBlock:
 class _DummyFlowGraph:
     def __init__(self, mapping: dict[int, tuple[tuple[int, ...], tuple[int, ...]]]):
         self._mapping = {
-            int(k): _DummyBlock(tuple(int(v) for v in preds), tuple(int(v) for v in succs))
+            int(k): _DummyBlock(
+                tuple(int(v) for v in preds), tuple(int(v) for v in succs)
+            )
             for k, (preds, succs) in mapping.items()
         }
         self.entry_serial = 1
@@ -84,10 +94,12 @@ class TestScoreEntryIslandRescueOption:
 
 class TestSelectEntryIslandRescue:
     def test_selects_best_scoring_option(self, monkeypatch) -> None:
-        flow_graph = _DummyFlowGraph({
-            40: ((12,), (6,)),
-            50: ((13,), (6,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                40: ((12,), (6,)),
+                50: ((13,), (6,)),
+            }
+        )
 
         monkeypatch.setattr(
             rescue_mod,
@@ -116,9 +128,7 @@ class TestSelectEntryIslandRescue:
             dispatcher_region={6},
             claimed_sources=set(),
             compute_reachable_blocks=lambda projected: (
-                {6, 12, 13, 40, 90}
-                if projected == "fg-40"
-                else {6, 12, 13, 50, 91, 92}
+                {6, 12, 13, 40, 90} if projected == "fg-40" else {6, 12, 13, 50, 91, 92}
             ),
         )
 
@@ -132,9 +142,11 @@ class TestSelectEntryIslandRescue:
         assert selection.projected_flow_graph == "fg-50"
 
     def test_returns_rejected_when_no_option_survives(self, monkeypatch) -> None:
-        flow_graph = _DummyFlowGraph({
-            40: ((12,), (6,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                40: ((12,), (6,)),
+            }
+        )
 
         monkeypatch.setattr(
             rescue_mod,
@@ -165,9 +177,11 @@ class TestSelectEntryIslandRescue:
 
 class TestPlanEntryIslandRescues:
     def test_runs_until_selection_rejected(self, monkeypatch) -> None:
-        flow_graph = _DummyFlowGraph({
-            40: ((12,), (6,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                40: ((12,), (6,)),
+            }
+        )
         modifications = []
         call_count = {"value": 0}
 
@@ -205,10 +219,14 @@ class TestPlanEntryIslandRescues:
         assert run.iterations[1].selection.accepted is False
         assert modifications == [("goto", 40, 90, 6)]
 
-    def test_respects_claims_from_source_serial_modifications(self, monkeypatch) -> None:
-        flow_graph = _DummyFlowGraph({
-            40: ((12,), (6,)),
-        })
+    def test_respects_claims_from_source_serial_modifications(
+        self, monkeypatch
+    ) -> None:
+        flow_graph = _DummyFlowGraph(
+            {
+                40: ((12,), (6,)),
+            }
+        )
         modifications = [_ClaimedSourceMod(40)]
 
         monkeypatch.setattr(
@@ -241,9 +259,11 @@ class TestPlanEntryIslandRescues:
         assert modifications[0].source_serial == 40
 
     def test_respects_claims_from_src_block_modifications(self, monkeypatch) -> None:
-        flow_graph = _DummyFlowGraph({
-            40: ((12,), (6,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                40: ((12,), (6,)),
+            }
+        )
         modifications = [_ClaimedSrcBlockMod(40)]
 
         monkeypatch.setattr(

@@ -1,4 +1,5 @@
 """Write MBA state to SQLite diagnostic snapshot."""
+
 from __future__ import annotations
 
 import json
@@ -70,6 +71,7 @@ def _diag_db() -> SqliteDatabase:
     assert db is not None, "ORM writer called with no active diag db"
     return db
 
+
 _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 _SYNTHETIC_DAG_NODE_STATE_PREFIX = 0xD810000000000000
@@ -127,17 +129,19 @@ def _operand_fingerprint(block: BlockSnapshot) -> str:
     """
     rows: list[dict[str, object | None]] = []
     for insn in block.instructions:
-        rows.append({
-            "d_t": insn.dest_type,
-            "d_o": _safe_int(insn.dest_stkoff),
-            "d_s": _safe_int(insn.dest_size),
-            "l_t": insn.src_l_type,
-            "l_o": _safe_int(insn.src_l_stkoff),
-            "l_v": _hex64_or_none(insn.src_l_value),
-            "r_t": insn.src_r_type,
-            "r_o": _safe_int(insn.src_r_stkoff),
-            "r_v": _hex64_or_none(insn.src_r_value),
-        })
+        rows.append(
+            {
+                "d_t": insn.dest_type,
+                "d_o": _safe_int(insn.dest_stkoff),
+                "d_s": _safe_int(insn.dest_size),
+                "l_t": insn.src_l_type,
+                "l_o": _safe_int(insn.src_l_stkoff),
+                "l_v": _hex64_or_none(insn.src_l_value),
+                "r_t": insn.src_r_type,
+                "r_o": _safe_int(insn.src_r_stkoff),
+                "r_v": _hex64_or_none(insn.src_r_value),
+            }
+        )
     return json.dumps(rows, sort_keys=True, separators=(",", ":"))
 
 
@@ -238,22 +242,24 @@ def snapshot_mba(
         for b in blocks:
             s_hex, s_i64 = _dual(b.start_ea)
             e_hex, e_i64 = _dual(b.end_ea)
-            block_rows.append({
-                "snapshot": snap_id,
-                "serial": b.serial,
-                "block_type": b.block_type,
-                "type_name": b.type_name,
-                "start_ea_hex": s_hex,
-                "start_ea_i64": s_i64,
-                "end_ea_hex": e_hex,
-                "end_ea_i64": e_i64,
-                "nsucc": b.nsucc,
-                "npred": b.npred,
-                "succs": json.dumps(b.succs),
-                "preds": json.dumps(b.preds),
-                "insn_count": len(b.instructions),
-                "meta": b.meta,
-            })
+            block_rows.append(
+                {
+                    "snapshot": snap_id,
+                    "serial": b.serial,
+                    "block_type": b.block_type,
+                    "type_name": b.type_name,
+                    "start_ea_hex": s_hex,
+                    "start_ea_i64": s_i64,
+                    "end_ea_hex": e_hex,
+                    "end_ea_i64": e_i64,
+                    "nsucc": b.nsucc,
+                    "npred": b.npred,
+                    "succs": json.dumps(b.succs),
+                    "preds": json.dumps(b.preds),
+                    "insn_count": len(b.instructions),
+                    "meta": b.meta,
+                }
+            )
         if block_rows:
             Block.insert_many(block_rows).execute()
         observation_rows = [
@@ -275,30 +281,32 @@ def snapshot_mba(
                 ea_hex, ea_i64 = _dual(insn.ea)
                 sl_hex, sl_i64 = _dual(insn.src_l_value)
                 sr_hex, sr_i64 = _dual(insn.src_r_value)
-                insn_rows.append({
-                    "snapshot": snap_id,
-                    "block_serial": b.serial,
-                    "insn_index": insn.index,
-                    "ea_hex": ea_hex,
-                    "ea_i64": ea_i64,
-                    "opcode": insn.opcode,
-                    "opcode_name": insn.opcode_name,
-                    "iprops": int(insn.iprops),
-                    "is_assert": int(insn.is_assert),
-                    "dest_type": insn.dest_type,
-                    "dest_stkoff": _safe_int(insn.dest_stkoff),
-                    "dest_size": insn.dest_size,
-                    "src_l_type": insn.src_l_type,
-                    "src_l_stkoff": _safe_int(insn.src_l_stkoff),
-                    "src_l_value_hex": sl_hex,
-                    "src_l_value_i64": sl_i64,
-                    "src_r_type": insn.src_r_type,
-                    "src_r_stkoff": _safe_int(insn.src_r_stkoff),
-                    "src_r_value_hex": sr_hex,
-                    "src_r_value_i64": sr_i64,
-                    "dstr": insn.dstr,
-                    "meta": insn.meta,
-                })
+                insn_rows.append(
+                    {
+                        "snapshot": snap_id,
+                        "block_serial": b.serial,
+                        "insn_index": insn.index,
+                        "ea_hex": ea_hex,
+                        "ea_i64": ea_i64,
+                        "opcode": insn.opcode,
+                        "opcode_name": insn.opcode_name,
+                        "iprops": int(insn.iprops),
+                        "is_assert": int(insn.is_assert),
+                        "dest_type": insn.dest_type,
+                        "dest_stkoff": _safe_int(insn.dest_stkoff),
+                        "dest_size": insn.dest_size,
+                        "src_l_type": insn.src_l_type,
+                        "src_l_stkoff": _safe_int(insn.src_l_stkoff),
+                        "src_l_value_hex": sl_hex,
+                        "src_l_value_i64": sl_i64,
+                        "src_r_type": insn.src_r_type,
+                        "src_r_stkoff": _safe_int(insn.src_r_stkoff),
+                        "src_r_value_hex": sr_hex,
+                        "src_r_value_i64": sr_i64,
+                        "dstr": insn.dstr,
+                        "meta": insn.meta,
+                    }
+                )
         if insn_rows:
             Instruction.insert_many(insn_rows).execute()
 
@@ -309,6 +317,7 @@ def snapshot_mba(
         # snapshots.
         try:
             from d810.core.diag import drain_pending_provenance
+
             prov_entries = drain_pending_provenance()
             if prov_entries:
                 prov_rows = [
@@ -320,7 +329,8 @@ def snapshot_mba(
                         "block_serial": int(e.block_serial),
                         "target_serial": (
                             int(e.target_serial)
-                            if e.target_serial is not None else None
+                            if e.target_serial is not None
+                            else None
                         ),
                         "reason": e.reason,
                         "extra_json": e.extra_json,
@@ -345,6 +355,7 @@ def snapshot_mba(
         from d810.core.observability_events import (
             BlockLineageDrainRequested,
         )
+
         emit(BlockLineageDrainRequested(conn=conn, snapshot_id=snap_id))
     except Exception:
         pass
@@ -421,7 +432,7 @@ def snapshot_dag_local_facts(
     snapshot_id: int,
     dag: object,
 ) -> None:
-    "Snapshot typed node-local facts from a LinearizedStateDag-like object.\n\n    This intentionally uses duck typing so the core diag module remains pure\n    Python and does not import the preanalysis layer. ``snapshot_dag`` stores the\n    outer state graph; this stores each node's block roles, local segments, and\n    state-local CFG edges for on-demand DB rendering and planner audits.\n    "
+    "Snapshot typed node-local facts from a LinearizedStateDag-like object.\n\n    This intentionally uses duck typing so the core diag module remains pure\n    Python and does not import the preanalysis layer. ``snapshot_dag`` stores the\n    outer state graph; this stores each node's block roles, local segments, and\n    state-local CFG edges for on-demand DB rendering and planner audits.\n"
     nodes = tuple(getattr(dag, "nodes", ()) or ())
     block_rows: list[dict] = []
     segment_rows: list[dict] = []
@@ -438,48 +449,58 @@ def snapshot_dag_local_facts(
             ("exclusive", "exclusive_blocks"),
             ("shared_suffix", "shared_suffix_blocks"),
         ):
-            for block_index, block_serial in enumerate(
-                getattr(node, attr, ()) or ()
-            ):
-                block_rows.append({
-                    "snapshot": snapshot_id,
-                    "state_hex": state_hex,
-                    "entry_block": entry_block,
-                    "block_serial": int(block_serial),
-                    "block_index": block_index,
-                    "role": role,
-                })
+            for block_index, block_serial in enumerate(getattr(node, attr, ()) or ()):
+                block_rows.append(
+                    {
+                        "snapshot": snapshot_id,
+                        "state_hex": state_hex,
+                        "entry_block": entry_block,
+                        "block_serial": int(block_serial),
+                        "block_index": block_index,
+                        "role": role,
+                    }
+                )
 
         for segment_index, segment in enumerate(
             getattr(node, "local_segments", ()) or ()
         ):
             blocks = [int(block) for block in getattr(segment, "blocks", ()) or ()]
-            segment_rows.append({
-                "snapshot": snapshot_id,
-                "state_hex": state_hex,
-                "entry_block": entry_block,
-                "segment_index": segment_index,
-                "segment_id": str(getattr(segment, "segment_id")),
-                "kind": _enum_name(getattr(segment, "kind")),
-                "blocks_json": json.dumps(blocks),
-            })
+            segment_rows.append(
+                {
+                    "snapshot": snapshot_id,
+                    "state_hex": state_hex,
+                    "entry_block": entry_block,
+                    "segment_index": segment_index,
+                    "segment_id": str(getattr(segment, "segment_id")),
+                    "kind": _enum_name(getattr(segment, "kind")),
+                    "blocks_json": json.dumps(blocks),
+                }
+            )
 
         for edge_index, edge in enumerate(getattr(node, "local_edges", ()) or ()):
             branch_arm = getattr(edge, "branch_arm", None)
-            edge_rows.append({
-                "snapshot": snapshot_id,
-                "state_hex": state_hex,
-                "entry_block": entry_block,
-                "edge_index": edge_index,
-                "source_segment_id": str(getattr(edge, "source_segment_id")),
-                "target_segment_id": str(getattr(edge, "target_segment_id")),
-                "kind": _enum_name(getattr(edge, "kind")),
-                "branch_arm": int(branch_arm) if branch_arm is not None else None,
-            })
+            edge_rows.append(
+                {
+                    "snapshot": snapshot_id,
+                    "state_hex": state_hex,
+                    "entry_block": entry_block,
+                    "edge_index": edge_index,
+                    "source_segment_id": str(getattr(edge, "source_segment_id")),
+                    "target_segment_id": str(getattr(edge, "target_segment_id")),
+                    "kind": _enum_name(getattr(edge, "kind")),
+                    "branch_arm": int(branch_arm) if branch_arm is not None else None,
+                }
+            )
 
-    conn.execute("DELETE FROM state_cfg_node_blocks WHERE snapshot_id=?", (snapshot_id,))
-    conn.execute("DELETE FROM state_cfg_local_segments WHERE snapshot_id=?", (snapshot_id,))
-    conn.execute("DELETE FROM state_cfg_local_edges WHERE snapshot_id=?", (snapshot_id,))
+    conn.execute(
+        "DELETE FROM state_cfg_node_blocks WHERE snapshot_id=?", (snapshot_id,)
+    )
+    conn.execute(
+        "DELETE FROM state_cfg_local_segments WHERE snapshot_id=?", (snapshot_id,)
+    )
+    conn.execute(
+        "DELETE FROM state_cfg_local_edges WHERE snapshot_id=?", (snapshot_id,)
+    )
 
     db = _diag_db()
     with diag_models_on(db), db.atomic():
@@ -512,22 +533,24 @@ def snapshot_modifications(
         source_diag = _block_diag_fields("source_block", m.source_block, block_lookup)
         target_diag = _block_diag_fields("target_block", m.target_block, block_lookup)
         old_diag = _block_diag_fields("old_target", m.old_target, block_lookup)
-        rows.append({
-            "snapshot": snapshot_id,
-            "mod_index": m.mod_index,
-            "mod_type": m.mod_type,
-            "source_block": m.source_block,
-            **source_diag,
-            "target_block": m.target_block,
-            **target_diag,
-            "old_target": m.old_target,
-            **old_diag,
-            "write_site_ea_hex": ws_hex,
-            "write_site_ea_i64": ws_i64,
-            "write_site_blk": m.write_site_blk,
-            "status": m.status,
-            "reason": m.reason,
-        })
+        rows.append(
+            {
+                "snapshot": snapshot_id,
+                "mod_index": m.mod_index,
+                "mod_type": m.mod_type,
+                "source_block": m.source_block,
+                **source_diag,
+                "target_block": m.target_block,
+                **target_diag,
+                "old_target": m.old_target,
+                **old_diag,
+                "write_site_ea_hex": ws_hex,
+                "write_site_ea_i64": ws_i64,
+                "write_site_blk": m.write_site_blk,
+                "status": m.status,
+                "reason": m.reason,
+            }
+        )
     db = _diag_db()
     with diag_models_on(db), db.atomic():
         if rows:
@@ -713,22 +736,24 @@ def snapshot_dag_frontier_closure_diagnostics(
     )
     db_rows = []
     for row in rows:
-        db_rows.append({
-            "snapshot": int(snapshot_id),
-            "kind": str(_mapping_value(row, "kind")),
-            "reason": _mapping_value(row, "reason"),
-            "source_block": _mapping_value(row, "source_block"),
-            "observed_target": _mapping_value(row, "observed_target"),
-            "branch_arm": _mapping_value(row, "branch_arm"),
-            "from_dag_scc": _mapping_value(row, "from_dag_scc"),
-            "to_dag_scc": _mapping_value(row, "to_dag_scc"),
-            "candidate_targets_json": _json_text(
-                _mapping_value(row, "candidate_targets"), []
-            ),
-            "path_json": _json_text(_mapping_value(row, "path"), []),
-            "cfg_scc_size": _mapping_value(row, "cfg_scc_size"),
-            "payload_json": _json_text(_mapping_value(row, "payload"), {}),
-        })
+        db_rows.append(
+            {
+                "snapshot": int(snapshot_id),
+                "kind": str(_mapping_value(row, "kind")),
+                "reason": _mapping_value(row, "reason"),
+                "source_block": _mapping_value(row, "source_block"),
+                "observed_target": _mapping_value(row, "observed_target"),
+                "branch_arm": _mapping_value(row, "branch_arm"),
+                "from_dag_scc": _mapping_value(row, "from_dag_scc"),
+                "to_dag_scc": _mapping_value(row, "to_dag_scc"),
+                "candidate_targets_json": _json_text(
+                    _mapping_value(row, "candidate_targets"), []
+                ),
+                "path_json": _json_text(_mapping_value(row, "path"), []),
+                "cfg_scc_size": _mapping_value(row, "cfg_scc_size"),
+                "payload_json": _json_text(_mapping_value(row, "payload"), {}),
+            }
+        )
     db = _diag_db()
     with diag_models_on(db), db.atomic():
         if db_rows:
@@ -759,9 +784,7 @@ def snapshot_condition_chain_interval_dispatcher_rows(
         try:
             lo_i = int(lo, 0) if isinstance(lo, str) else int(lo)
             hi_i = int(hi, 0) if isinstance(hi, str) else int(hi)
-            target_i = (
-                int(target, 0) if isinstance(target, str) else int(target)
-            )
+            target_i = int(target, 0) if isinstance(target, str) else int(target)
         except (TypeError, ValueError):
             continue
         payload = {
@@ -769,21 +792,24 @@ def snapshot_condition_chain_interval_dispatcher_rows(
             "hi": f"0x{hi_i:x}",
             "target": target_i,
         }
-        db_rows.append({
-            "snapshot": int(snapshot_id),
-            "row_index": int(row_index),
-            "lo_hex": f"0x{lo_i:x}",
-            "lo_i64": lo_i,
-            "hi_hex": f"0x{hi_i:x}",
-            "hi_i64": hi_i,
-            "target_block": target_i,
-            "dispatcher_entry_block": (
-                int(dispatcher_entry_block)
-                if dispatcher_entry_block is not None else None
-            ),
-            "maturity": maturity,
-            "payload_json": _json_text(payload, {}),
-        })
+        db_rows.append(
+            {
+                "snapshot": int(snapshot_id),
+                "row_index": int(row_index),
+                "lo_hex": f"0x{lo_i:x}",
+                "lo_i64": lo_i,
+                "hi_hex": f"0x{hi_i:x}",
+                "hi_i64": hi_i,
+                "target_block": target_i,
+                "dispatcher_entry_block": (
+                    int(dispatcher_entry_block)
+                    if dispatcher_entry_block is not None
+                    else None
+                ),
+                "maturity": maturity,
+                "payload_json": _json_text(payload, {}),
+            }
+        )
     db = _diag_db()
     with diag_models_on(db), db.atomic():
         if db_rows:
@@ -816,7 +842,8 @@ def snapshot_state_dispatcher_rows(
         try:
             state_i = (
                 int(state_const, 0)
-                if isinstance(state_const, str) else int(state_const)
+                if isinstance(state_const, str)
+                else int(state_const)
             )
             target_i = int(target, 0) if isinstance(target, str) else int(target)
         except (TypeError, ValueError):
@@ -827,7 +854,8 @@ def snapshot_state_dispatcher_rows(
         )
         row_compare_block = _mapping_value(row, "compare_block")
         dispatcher_kind_value = _mapping_value(
-            row, "router_kind",
+            row,
+            "router_kind",
             _mapping_value(
                 row,
                 "dispatcher_kind",
@@ -858,30 +886,32 @@ def snapshot_state_dispatcher_rows(
         row_payload = _mapping_value(row, "payload")
         if isinstance(row_payload, MappingABC):
             payload = {**payload, **dict(row_payload)}
-        db_rows.append({
-            "snapshot": int(snapshot_id),
-            "row_index": int(row_index),
-            "state_const_hex": state_hex,
-            "state_const_i64": state_i64,
-            "target_block": target_i,
-            "dispatcher_entry_block": (
-                int(row_dispatcher_entry)
-                if row_dispatcher_entry is not None else None
-            ),
-            "compare_block": (
-                int(row_compare_block)
-                if row_compare_block is not None else None
-            ),
-            "dispatcher_kind": str(
-                dispatcher_kind_value or dispatcher_kind or "unknown"
-            ),
-            "branch_kind": (
-                str(row_branch_kind) if row_branch_kind is not None else None
-            ),
-            "maturity": maturity,
-            "confidence": float(confidence),
-            "payload_json": _json_text(payload, payload),
-        })
+        db_rows.append(
+            {
+                "snapshot": int(snapshot_id),
+                "row_index": int(row_index),
+                "state_const_hex": state_hex,
+                "state_const_i64": state_i64,
+                "target_block": target_i,
+                "dispatcher_entry_block": (
+                    int(row_dispatcher_entry)
+                    if row_dispatcher_entry is not None
+                    else None
+                ),
+                "compare_block": (
+                    int(row_compare_block) if row_compare_block is not None else None
+                ),
+                "dispatcher_kind": str(
+                    dispatcher_kind_value or dispatcher_kind or "unknown"
+                ),
+                "branch_kind": (
+                    str(row_branch_kind) if row_branch_kind is not None else None
+                ),
+                "maturity": maturity,
+                "confidence": float(confidence),
+                "payload_json": _json_text(payload, payload),
+            }
+        )
     db = _diag_db()
     with diag_models_on(db), db.atomic():
         if db_rows:
@@ -926,35 +956,35 @@ def snapshot_branch_witness_decisions(
         for offset, row in enumerate(rows):
             state = _mapping_value(row, "state")
             compare_const = _mapping_value(row, "compare_const")
-            state_hex, state_i64 = _dual(
-                None if state is None else int(state)
-            )
+            state_hex, state_i64 = _dual(None if state is None else int(state))
             const_hex, const_i64 = _dual(
                 None if compare_const is None else int(compare_const)
             )
-            db_rows.append({
-                "snapshot": int(snapshot_id),
-                "row_index": next_index + offset,
-                "state_hex": state_hex,
-                "state_i64": state_i64,
-                "dispatcher_entry_block": _mapping_value(
-                    row, "dispatcher_entry_block"
-                ),
-                "compare_block": _mapping_value(row, "compare_block"),
-                "predicate": _mapping_value(row, "predicate"),
-                "compare_const_hex": const_hex,
-                "compare_const_i64": const_i64,
-                "selected_successor": _mapping_value(row, "selected_successor"),
-                "rejected_successors_json": _json_text(
-                    _mapping_value(row, "rejected_successors"), []
-                ),
-                "target_block": _mapping_value(row, "target_block"),
-                "proof_kind": _string_value(_mapping_value(row, "proof_kind")),
-                "outcome": str(_mapping_value(row, "outcome", "unknown")),
-                "reason": _mapping_value(row, "reason"),
-                "evidence": _mapping_value(row, "evidence"),
-                "payload_json": _json_text(_mapping_value(row, "payload"), {}),
-            })
+            db_rows.append(
+                {
+                    "snapshot": int(snapshot_id),
+                    "row_index": next_index + offset,
+                    "state_hex": state_hex,
+                    "state_i64": state_i64,
+                    "dispatcher_entry_block": _mapping_value(
+                        row, "dispatcher_entry_block"
+                    ),
+                    "compare_block": _mapping_value(row, "compare_block"),
+                    "predicate": _mapping_value(row, "predicate"),
+                    "compare_const_hex": const_hex,
+                    "compare_const_i64": const_i64,
+                    "selected_successor": _mapping_value(row, "selected_successor"),
+                    "rejected_successors_json": _json_text(
+                        _mapping_value(row, "rejected_successors"), []
+                    ),
+                    "target_block": _mapping_value(row, "target_block"),
+                    "proof_kind": _string_value(_mapping_value(row, "proof_kind")),
+                    "outcome": str(_mapping_value(row, "outcome", "unknown")),
+                    "reason": _mapping_value(row, "reason"),
+                    "evidence": _mapping_value(row, "evidence"),
+                    "payload_json": _json_text(_mapping_value(row, "payload"), {}),
+                }
+            )
         if db_rows:
             BranchWitnessDecision.insert_many(db_rows).execute()
     conn.commit()
@@ -972,28 +1002,30 @@ def snapshot_exit_path_shortcut_decisions(
     with diag_models_on(db), db.atomic():
         next_index = _next_row_index(ExitPathShortcutDecision, int(snapshot_id))
         for offset, row in enumerate(rows):
-            db_rows.append({
-                "snapshot": int(snapshot_id),
-                "row_index": next_index + offset,
-                "source_block": _mapping_value(row, "source_block"),
-                "old_target": _mapping_value(row, "old_target"),
-                "shortcut_target": _mapping_value(row, "shortcut_target"),
-                "witness_compare_blocks_json": _json_text(
-                    _mapping_value(row, "witness_compare_blocks"), []
-                ),
-                "exit_path_blocks_json": _json_text(
-                    _mapping_value(row, "exit_path_blocks"), []
-                ),
-                "rejected_successors_json": _json_text(
-                    _mapping_value(row, "rejected_successors"), []
-                ),
-                "outcome": str(_mapping_value(row, "outcome", "unknown")),
-                "reason": _mapping_value(row, "reason"),
-                "live_definitions_json": _json_text(
-                    _mapping_value(row, "live_definitions"), []
-                ),
-                "payload_json": _json_text(_mapping_value(row, "payload"), {}),
-            })
+            db_rows.append(
+                {
+                    "snapshot": int(snapshot_id),
+                    "row_index": next_index + offset,
+                    "source_block": _mapping_value(row, "source_block"),
+                    "old_target": _mapping_value(row, "old_target"),
+                    "shortcut_target": _mapping_value(row, "shortcut_target"),
+                    "witness_compare_blocks_json": _json_text(
+                        _mapping_value(row, "witness_compare_blocks"), []
+                    ),
+                    "exit_path_blocks_json": _json_text(
+                        _mapping_value(row, "exit_path_blocks"), []
+                    ),
+                    "rejected_successors_json": _json_text(
+                        _mapping_value(row, "rejected_successors"), []
+                    ),
+                    "outcome": str(_mapping_value(row, "outcome", "unknown")),
+                    "reason": _mapping_value(row, "reason"),
+                    "live_definitions_json": _json_text(
+                        _mapping_value(row, "live_definitions"), []
+                    ),
+                    "payload_json": _json_text(_mapping_value(row, "payload"), {}),
+                }
+            )
         if db_rows:
             ExitPathShortcutDecision.insert_many(db_rows).execute()
     conn.commit()
@@ -1101,14 +1133,17 @@ def snapshot_state_transition_dispatch_resolutions_from_latest_facts(
         """,
         (int(snapshot_id),),
     ).fetchall()
-    for state_i64, target_block, dispatcher_entry, compare_block, branch_kind in row_data:
+    for (
+        state_i64,
+        target_block,
+        dispatcher_entry,
+        compare_block,
+        branch_kind,
+    ) in row_data:
         state_to_target[int(state_i64) & _MASK64] = int(target_block)
         if dispatcher_entry is not None:
             dispatcher_blocks.add(int(dispatcher_entry))
-        if (
-            compare_block is not None
-            and str(branch_kind or "") != "handler_state_map"
-        ):
+        if compare_block is not None and str(branch_kind or "") != "handler_state_map":
             dispatcher_blocks.add(int(compare_block))
     if not state_to_target:
         return 0
@@ -1150,8 +1185,7 @@ def snapshot_state_transition_dispatch_resolutions_from_latest_facts(
         next_const_hex: str | None = None
         if successor_kind != "branch":
             reason = (
-                f"successor_kind={successor_kind}; "
-                "not a dispatcher-bound transition"
+                f"successor_kind={successor_kind}; not a dispatcher-bound transition"
             )
         else:
             target_block = state_to_target.get(source_const & _MASK64)
@@ -1181,17 +1215,19 @@ def snapshot_state_transition_dispatch_resolutions_from_latest_facts(
                     if resolved_via_interval
                     else "resolved_exact_state"
                 )
-        rows.append({
-            "fact_id": str(fact_id),
-            "source_block_serial": int(source_block),
-            "source_state_const_hex": str(source_const_hex),
-            "resolved_next_block_serial": target_block,
-            "resolved_next_state_const_hex": next_const_hex,
-            "resolved_next_state_const_u64": next_const,
-            "resolution_kind": str(resolution_kind),
-            "resolution_reason": reason,
-            "resolution_maturity": maturity_name,
-        })
+        rows.append(
+            {
+                "fact_id": str(fact_id),
+                "source_block_serial": int(source_block),
+                "source_state_const_hex": str(source_const_hex),
+                "resolved_next_block_serial": target_block,
+                "resolved_next_state_const_hex": next_const_hex,
+                "resolved_next_state_const_u64": next_const,
+                "resolution_kind": str(resolution_kind),
+                "resolution_reason": reason,
+                "resolution_maturity": maturity_name,
+            }
+        )
     if not rows:
         return 0
     snapshot_state_transition_dispatch_resolutions(conn, snapshot_id, rows)
@@ -1284,9 +1320,7 @@ def snapshot_state_transition_dispatch_resolutions(
             "resolution_reason": str(resolution_reason),
             "resolution_maturity": str(resolution_maturity),
         }
-        db_rows_by_key[(int(snapshot_id), str(fact_id), str(resolution_kind))] = (
-            db_row
-        )
+        db_rows_by_key[(int(snapshot_id), str(fact_id), str(resolution_kind))] = db_row
     db_rows = list(db_rows_by_key.values())
     db = _diag_db()
     with diag_models_on(db), db.atomic():
@@ -1312,27 +1346,29 @@ def snapshot_switch_case_transition_facts(
         reason = _mapping_value(row, "reason")
         if fact_id is None or transition_kind is None or reason is None:
             continue
-        db_rows.append({
-            "snapshot": int(snapshot_id),
-            "row_index": int(row_index),
-            "fact_id": str(fact_id),
-            "source_state_hex": _mapping_value(row, "source_state_hex"),
-            "source_state_i64": _mapping_value(row, "source_state_i64"),
-            "case_entry_block": _mapping_value(row, "case_entry_block"),
-            "transition_kind": str(transition_kind),
-            "next_state_a_hex": _mapping_value(row, "next_state_a_hex"),
-            "next_state_a_i64": _mapping_value(row, "next_state_a_i64"),
-            "next_state_b_hex": _mapping_value(row, "next_state_b_hex"),
-            "next_state_b_i64": _mapping_value(row, "next_state_b_i64"),
-            "return_value": _mapping_value(row, "return_value"),
-            "proof_kind": _mapping_value(row, "proof_kind"),
-            "trusted": 1 if bool(_mapping_value(row, "trusted", False)) else 0,
-            "reason": str(reason),
-            "profile_name": _mapping_value(row, "profile_name"),
-            "dispatcher_entry": _mapping_value(row, "dispatcher_entry"),
-            "target_block": _mapping_value(row, "target_block"),
-            "payload_json": _json_text(_mapping_value(row, "payload"), {}),
-        })
+        db_rows.append(
+            {
+                "snapshot": int(snapshot_id),
+                "row_index": int(row_index),
+                "fact_id": str(fact_id),
+                "source_state_hex": _mapping_value(row, "source_state_hex"),
+                "source_state_i64": _mapping_value(row, "source_state_i64"),
+                "case_entry_block": _mapping_value(row, "case_entry_block"),
+                "transition_kind": str(transition_kind),
+                "next_state_a_hex": _mapping_value(row, "next_state_a_hex"),
+                "next_state_a_i64": _mapping_value(row, "next_state_a_i64"),
+                "next_state_b_hex": _mapping_value(row, "next_state_b_hex"),
+                "next_state_b_i64": _mapping_value(row, "next_state_b_i64"),
+                "return_value": _mapping_value(row, "return_value"),
+                "proof_kind": _mapping_value(row, "proof_kind"),
+                "trusted": 1 if bool(_mapping_value(row, "trusted", False)) else 0,
+                "reason": str(reason),
+                "profile_name": _mapping_value(row, "profile_name"),
+                "dispatcher_entry": _mapping_value(row, "dispatcher_entry"),
+                "target_block": _mapping_value(row, "target_block"),
+                "payload_json": _json_text(_mapping_value(row, "payload"), {}),
+            }
+        )
     db = _diag_db()
     with diag_models_on(db), db.atomic():
         if db_rows:
@@ -1369,28 +1405,28 @@ def snapshot_branch_ownership_proofs(
         target_state_hex, target_state_i64 = _dual(
             _int_from_any(_mapping_value(row, "target_state"))
         )
-        db_rows.append({
-            "snapshot": int(snapshot_id),
-            "row_index": int(row_index),
-            "proof_id": str(proof_id),
-            "proof_kind": str(proof_kind),
-            "trusted": 1 if bool(_mapping_value(row, "trusted", False)) else 0,
-            "reason": str(reason),
-            "source_block": _mapping_value(row, "source_block"),
-            "branch_arm": _mapping_value(row, "branch_arm"),
-            "source_state_hex": source_state_hex,
-            "source_state_i64": source_state_i64,
-            "target_state_hex": target_state_hex,
-            "target_state_i64": target_state_i64,
-            "target_entry": _mapping_value(row, "target_entry"),
-            "predicate_block": _mapping_value(row, "predicate_block"),
-            "dispatcher_entry_block": _mapping_value(
-                row, "dispatcher_entry_block"
-            ),
-            "oracle_kind": str(oracle_kind),
-            "evidence_json": _json_text(_mapping_value(row, "evidence"), {}),
-            "payload_json": _json_text(_mapping_value(row, "payload"), {}),
-        })
+        db_rows.append(
+            {
+                "snapshot": int(snapshot_id),
+                "row_index": int(row_index),
+                "proof_id": str(proof_id),
+                "proof_kind": str(proof_kind),
+                "trusted": 1 if bool(_mapping_value(row, "trusted", False)) else 0,
+                "reason": str(reason),
+                "source_block": _mapping_value(row, "source_block"),
+                "branch_arm": _mapping_value(row, "branch_arm"),
+                "source_state_hex": source_state_hex,
+                "source_state_i64": source_state_i64,
+                "target_state_hex": target_state_hex,
+                "target_state_i64": target_state_i64,
+                "target_entry": _mapping_value(row, "target_entry"),
+                "predicate_block": _mapping_value(row, "predicate_block"),
+                "dispatcher_entry_block": _mapping_value(row, "dispatcher_entry_block"),
+                "oracle_kind": str(oracle_kind),
+                "evidence_json": _json_text(_mapping_value(row, "evidence"), {}),
+                "payload_json": _json_text(_mapping_value(row, "payload"), {}),
+            }
+        )
     db = _diag_db()
     with diag_models_on(db), db.atomic():
         if db_rows:
@@ -1441,18 +1477,16 @@ def snapshot_watch_transition(
                 json.dumps(list(prev_preds)) if prev_preds is not None else None
             ),
             now_type_name=now_type_name,
-            now_succs=(
-                json.dumps(list(now_succs)) if now_succs is not None else None
-            ),
-            now_preds=(
-                json.dumps(list(now_preds)) if now_preds is not None else None
-            ),
+            now_succs=(json.dumps(list(now_succs)) if now_succs is not None else None),
+            now_preds=(json.dumps(list(now_preds)) if now_preds is not None else None),
             timestamp=time.time(),
         )
     conn.commit()
 
 
-def _mapping_value(row: Mapping[str, Any] | object, key: str, default: Any = None) -> Any:
+def _mapping_value(
+    row: Mapping[str, Any] | object, key: str, default: Any = None
+) -> Any:
     if isinstance(row, MappingABC):
         return row.get(key, default)
     return getattr(row, key, default)
@@ -1486,29 +1520,31 @@ def snapshot_fact_observations(
     func_ea: int,
     observations: Iterable[Mapping[str, Any] | object],
 ) -> None:
-    "Snapshot maturity fact observations.\n\n    Rows may be plain mappings or dataclass-like objects.  This keeps the core\n    diag layer independent of ``d810.preanalysis.facts`` while still accepting those\n    model objects directly.\n    "
+    "Snapshot maturity fact observations.\n\n    Rows may be plain mappings or dataclass-like objects.  This keeps the core\n    diag layer independent of ``d810.preanalysis.facts`` while still accepting those\n    model objects directly.\n"
     func_hex, func_i64 = _dual(func_ea)
     rows = []
     for obs in observations:
         source_ea_hex, source_ea_i64 = _dual(_mapping_value(obs, "source_ea"))
-        rows.append({
-            "snapshot": snapshot_id,
-            "func_ea_hex": func_hex,
-            "func_ea_i64": func_i64,
-            "fact_id": str(_mapping_value(obs, "fact_id")),
-            "kind": str(_mapping_value(obs, "kind")),
-            "semantic_key": str(_mapping_value(obs, "semantic_key")),
-            "maturity": str(_mapping_value(obs, "maturity")),
-            "phase": str(_mapping_value(obs, "phase")),
-            "confidence": float(_mapping_value(obs, "confidence")),
-            "source_block": _mapping_value(obs, "source_block"),
-            "source_ea_hex": source_ea_hex,
-            "source_ea_i64": source_ea_i64,
-            "block_fingerprint": _mapping_value(obs, "block_fingerprint"),
-            "mop_signature": _mapping_value(obs, "mop_signature"),
-            "payload": _json_text(_mapping_value(obs, "payload"), {}),
-            "evidence": _json_text(_mapping_value(obs, "evidence"), []),
-        })
+        rows.append(
+            {
+                "snapshot": snapshot_id,
+                "func_ea_hex": func_hex,
+                "func_ea_i64": func_i64,
+                "fact_id": str(_mapping_value(obs, "fact_id")),
+                "kind": str(_mapping_value(obs, "kind")),
+                "semantic_key": str(_mapping_value(obs, "semantic_key")),
+                "maturity": str(_mapping_value(obs, "maturity")),
+                "phase": str(_mapping_value(obs, "phase")),
+                "confidence": float(_mapping_value(obs, "confidence")),
+                "source_block": _mapping_value(obs, "source_block"),
+                "source_ea_hex": source_ea_hex,
+                "source_ea_i64": source_ea_i64,
+                "block_fingerprint": _mapping_value(obs, "block_fingerprint"),
+                "mop_signature": _mapping_value(obs, "mop_signature"),
+                "payload": _json_text(_mapping_value(obs, "payload"), {}),
+                "evidence": _json_text(_mapping_value(obs, "evidence"), []),
+            }
+        )
     db = _diag_db()
     with diag_models_on(db), db.atomic():
         if rows:
@@ -1531,26 +1567,26 @@ def snapshot_fact_mappings(
         target_ea_hex, target_ea_i64 = _dual(_mapping_value(mapping, "target_ea"))
         status = _mapping_value(mapping, "status")
         status_text = getattr(status, "value", status)
-        rows.append({
-            "snapshot": snapshot_id,
-            "func_ea_hex": func_hex,
-            "func_ea_i64": func_i64,
-            "mapping_index": index,
-            "source_fact_id": str(_mapping_value(mapping, "source_fact_id")),
-            "target_fact_id": _mapping_value(mapping, "target_fact_id"),
-            "source_maturity": str(_mapping_value(mapping, "source_maturity")),
-            "target_maturity": str(_mapping_value(mapping, "target_maturity")),
-            "status": str(status_text),
-            "confidence": float(_mapping_value(mapping, "confidence")),
-            "target_block": _mapping_value(mapping, "target_block"),
-            "target_ea_hex": target_ea_hex,
-            "target_ea_i64": target_ea_i64,
-            "target_mop_signature": _mapping_value(
-                mapping, "target_mop_signature"
-            ),
-            "reason": _mapping_value(mapping, "reason"),
-            "payload": _json_text(_mapping_value(mapping, "payload"), {}),
-        })
+        rows.append(
+            {
+                "snapshot": snapshot_id,
+                "func_ea_hex": func_hex,
+                "func_ea_i64": func_i64,
+                "mapping_index": index,
+                "source_fact_id": str(_mapping_value(mapping, "source_fact_id")),
+                "target_fact_id": _mapping_value(mapping, "target_fact_id"),
+                "source_maturity": str(_mapping_value(mapping, "source_maturity")),
+                "target_maturity": str(_mapping_value(mapping, "target_maturity")),
+                "status": str(status_text),
+                "confidence": float(_mapping_value(mapping, "confidence")),
+                "target_block": _mapping_value(mapping, "target_block"),
+                "target_ea_hex": target_ea_hex,
+                "target_ea_i64": target_ea_i64,
+                "target_mop_signature": _mapping_value(mapping, "target_mop_signature"),
+                "reason": _mapping_value(mapping, "reason"),
+                "payload": _json_text(_mapping_value(mapping, "payload"), {}),
+            }
+        )
     db = _diag_db()
     with diag_models_on(db), db.atomic():
         if rows:
@@ -1567,22 +1603,26 @@ def snapshot_fact_consumers(
     """Snapshot strategy decisions that consumed facts."""
     func_hex, func_i64 = _dual(func_ea)
     rows = []
-    start_index = _next_table_index(conn, "fact_consumers", "consumer_index", snapshot_id)
+    start_index = _next_table_index(
+        conn, "fact_consumers", "consumer_index", snapshot_id
+    )
     for offset, consumer in enumerate(consumers):
         index = start_index + offset
-        rows.append({
-            "snapshot": snapshot_id,
-            "func_ea_hex": func_hex,
-            "func_ea_i64": func_i64,
-            "consumer_index": index,
-            "consumer": str(_mapping_value(consumer, "consumer")),
-            "strategy": str(_mapping_value(consumer, "strategy")),
-            "fact_id": str(_mapping_value(consumer, "fact_id")),
-            "maturity": str(_mapping_value(consumer, "maturity")),
-            "decision": str(_mapping_value(consumer, "decision")),
-            "reason": _mapping_value(consumer, "reason"),
-            "payload": _json_text(_mapping_value(consumer, "payload"), {}),
-        })
+        rows.append(
+            {
+                "snapshot": snapshot_id,
+                "func_ea_hex": func_hex,
+                "func_ea_i64": func_i64,
+                "consumer_index": index,
+                "consumer": str(_mapping_value(consumer, "consumer")),
+                "strategy": str(_mapping_value(consumer, "strategy")),
+                "fact_id": str(_mapping_value(consumer, "fact_id")),
+                "maturity": str(_mapping_value(consumer, "maturity")),
+                "decision": str(_mapping_value(consumer, "decision")),
+                "reason": _mapping_value(consumer, "reason"),
+                "payload": _json_text(_mapping_value(consumer, "payload"), {}),
+            }
+        )
     db = _diag_db()
     with diag_models_on(db), db.atomic():
         if rows:
@@ -1600,18 +1640,20 @@ def snapshot_fact_conflicts(
     func_hex, func_i64 = _dual(func_ea)
     rows = []
     for conflict in conflicts:
-        rows.append({
-            "snapshot": snapshot_id,
-            "func_ea_hex": func_hex,
-            "func_ea_i64": func_i64,
-            "conflict_id": str(_mapping_value(conflict, "conflict_id")),
-            "fact_id": str(_mapping_value(conflict, "fact_id")),
-            "other_fact_id": str(_mapping_value(conflict, "other_fact_id")),
-            "maturity": str(_mapping_value(conflict, "maturity")),
-            "conflict_kind": str(_mapping_value(conflict, "conflict_kind")),
-            "reason": str(_mapping_value(conflict, "reason")),
-            "payload": _json_text(_mapping_value(conflict, "payload"), {}),
-        })
+        rows.append(
+            {
+                "snapshot": snapshot_id,
+                "func_ea_hex": func_hex,
+                "func_ea_i64": func_i64,
+                "conflict_id": str(_mapping_value(conflict, "conflict_id")),
+                "fact_id": str(_mapping_value(conflict, "fact_id")),
+                "other_fact_id": str(_mapping_value(conflict, "other_fact_id")),
+                "maturity": str(_mapping_value(conflict, "maturity")),
+                "conflict_kind": str(_mapping_value(conflict, "conflict_kind")),
+                "reason": str(_mapping_value(conflict, "reason")),
+                "payload": _json_text(_mapping_value(conflict, "payload"), {}),
+            }
+        )
     db = _diag_db()
     with diag_models_on(db), db.atomic():
         if rows:

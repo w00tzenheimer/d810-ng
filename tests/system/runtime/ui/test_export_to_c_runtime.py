@@ -5,6 +5,7 @@ export_to_c by passing real idaapi where the function signature
 accepts an idaapi-like shim.  The conftest.py for tests/system/runtime
 automatically marks all items here as ida_required / runtime / hexrays.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -26,6 +27,7 @@ from d810.ui.actions import export_to_c
 # We pass real idaapi so IDA records the directive changes, and monkeypatch
 # the restore-directive reader so the test is deterministic.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA Pro")
 def test_temporary_hexrays_config_restores(monkeypatch):
@@ -55,6 +57,7 @@ def test_temporary_hexrays_config_restores(monkeypatch):
 # Pass an object whose change_hexrays_config raises on the first call.
 # The context manager must not attempt a restore in that case.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.skipif(not IDA_AVAILABLE, reason="Requires IDA Pro")
 def test_temporary_hexrays_config_no_restore_if_apply_fails():

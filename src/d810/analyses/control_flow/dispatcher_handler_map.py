@@ -3,6 +3,7 @@
 Shared IR consumed by Hodur strategies. Produced by either condition-chain analysis
 (CONDITION_CHAIN) or switch-table analysis (TABLE with switch provenance).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -45,11 +46,7 @@ class DispatcherHandlerMap:
         for serial, (lo, hi) in self.handler_range_map.items():
             if serial in exact_serials:
                 continue
-            if (
-                lo is not None
-                and hi is not None
-                and (hi - lo) >= 0xFFFF0000
-            ):
+            if lo is not None and hi is not None and (hi - lo) >= 0xFFFF0000:
                 continue
             if lo is not None and state_value < lo:
                 continue
@@ -105,7 +102,10 @@ class DispatcherHandlerMap:
         and ``initial_state``.
         Transition-related fields are left empty (Hodur forward eval rebuilds them).
         """
-        from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult, ConditionChainNodeMap
+        from d810.analyses.control_flow.condition_chain_model import (
+            ConditionChainAnalysisResult,
+            ConditionChainNodeMap,
+        )
 
         node_map = ConditionChainNodeMap()
         for serial in self.dispatcher_blocks:

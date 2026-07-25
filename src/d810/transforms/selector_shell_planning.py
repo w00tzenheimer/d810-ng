@@ -1,8 +1,13 @@
 """CFG planning for selector/state-machine shell facts."""
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import FlowGraph
-from d810.transforms.graph_modification import GraphModification, RedirectBranch, RedirectGoto
+from d810.transforms.graph_modification import (
+    GraphModification,
+    RedirectBranch,
+    RedirectGoto,
+)
 from d810.core.typing import Protocol, Sequence
 
 

@@ -1,4 +1,5 @@
-"Behavior layer: replace a collapsed terminal-tail preanalysis edge with the\nfact-selected alternate edge from read-only fact evidence.\n\nThe substrate is built up by these observability-only modules:\n\n* ``d810.analyses.value_flow.state_write_anchor`` -- per-block\n  state-write constants + ``STATE_CONST_REWRITTEN`` lifecycle.\n* ``d810.analyses.control_flow.state_transition_anchor`` -- per-source\n  CFG transit chain.\n* ``d810.analyses.value_flow.terminal_byte_emitter`` -- which\n  ``byte_index`` each corridor block emits.\n* ``d810.diagnostics.edge_diagnostics`` -- classifies preanalysis edges\n  (``COLLAPSED_TO_REWRITTEN_TARGET`` is the load-bearing class here).\n* ``d810.diagnostics.alternate_correlation`` -- pairs each collapsed edge\n  with already-persisted RANGE_BACKED sibling-traversal edges.\n* ``d810.diagnostics.alternate_selection`` -- picks the alternate that\n  preserves terminal-tail byte progression.\n\nThe live path takes an in-memory :class:`LinearizedStateDag` and a\n``ValidatedFactView``-like object, derives the same classify -> correlate\n-> select cascade in memory, and substitutes target_state /\ntarget_entry_anchor / target_key / target_label on the matching\n``StateDagEdge`` instances.  The dag and its edges are frozen, so\nsubstitution returns a NEW dag via ``dataclasses.replace(...)``.\n\nThe legacy ``*_from_diag`` wrapper remains available for diagnostics and\nold tests, but Hodur live behavior should call\n:func:`apply_selected_alternate_edge_overrides` so SQLite availability\ncannot change lowering decisions.\n\nMapping is by VALUE -- ``(source_state, target_state, source_block)``\n-- not by persisted ``edge_id``.  ``edge_id`` is just the enumerate\nindex from the persistence path; relying on it would silently drift if\n``dag.edges`` is reordered.\n\nStrict gates (all required for an override to fire):\n\n* the source edge classifies as ``COLLAPSED_TO_REWRITTEN_TARGET`` from\n  ``STATE_CONST_REWRITTEN`` fact mappings.\n* a RANGE_BACKED sibling edge overlaps the collapsed source blocks.\n* bounded traversal from that sibling reaches exactly one later\n  ``terminal_tail`` byte emitter state.\n* the selected alternate's reached state maps to a real DAG node\n  in ``dag.nodes``.\n* the in-memory edge mapping by value finds exactly one match.\n\nAny miss on any gate -> abstain on that edge.  Multiple candidate\nmatches -> abstain (do NOT pick \"the first\").  The legacy diagnostic\nwrapper adds the historical settings/snapshot/SQLite gates around the\nsame decision.\n"
+'Behavior layer: replace a collapsed terminal-tail preanalysis edge with the\nfact-selected alternate edge from read-only fact evidence.\n\nThe substrate is built up by these observability-only modules:\n\n* ``d810.analyses.value_flow.state_write_anchor`` -- per-block\n  state-write constants + ``STATE_CONST_REWRITTEN`` lifecycle.\n* ``d810.analyses.control_flow.state_transition_anchor`` -- per-source\n  CFG transit chain.\n* ``d810.analyses.value_flow.terminal_byte_emitter`` -- which\n  ``byte_index`` each corridor block emits.\n* ``d810.diagnostics.edge_diagnostics`` -- classifies preanalysis edges\n  (``COLLAPSED_TO_REWRITTEN_TARGET`` is the load-bearing class here).\n* ``d810.diagnostics.alternate_correlation`` -- pairs each collapsed edge\n  with already-persisted RANGE_BACKED sibling-traversal edges.\n* ``d810.diagnostics.alternate_selection`` -- picks the alternate that\n  preserves terminal-tail byte progression.\n\nThe live path takes an in-memory :class:`LinearizedStateDag` and a\n``ValidatedFactView``-like object, derives the same classify -> correlate\n-> select cascade in memory, and substitutes target_state /\ntarget_entry_anchor / target_key / target_label on the matching\n``StateDagEdge`` instances.  The dag and its edges are frozen, so\nsubstitution returns a NEW dag via ``dataclasses.replace(...)``.\n\nThe legacy ``*_from_diag`` wrapper remains available for diagnostics and\nold tests, but Hodur live behavior should call\n:func:`apply_selected_alternate_edge_overrides` so SQLite availability\ncannot change lowering decisions.\n\nMapping is by VALUE -- ``(source_state, target_state, source_block)``\n-- not by persisted ``edge_id``.  ``edge_id`` is just the enumerate\nindex from the persistence path; relying on it would silently drift if\n``dag.edges`` is reordered.\n\nStrict gates (all required for an override to fire):\n\n* the source edge classifies as ``COLLAPSED_TO_REWRITTEN_TARGET`` from\n  ``STATE_CONST_REWRITTEN`` fact mappings.\n* a RANGE_BACKED sibling edge overlaps the collapsed source blocks.\n* bounded traversal from that sibling reaches exactly one later\n  ``terminal_tail`` byte emitter state.\n* the selected alternate\'s reached state maps to a real DAG node\n  in ``dag.nodes``.\n* the in-memory edge mapping by value finds exactly one match.\n\nAny miss on any gate -> abstain on that edge.  Multiple candidate\nmatches -> abstain (do NOT pick "the first").  The legacy diagnostic\nwrapper adds the historical settings/snapshot/SQLite gates around the\nsame decision.\n'
+
 from __future__ import annotations
 
 import dataclasses
@@ -133,7 +134,9 @@ def _edge_target_hex(edge) -> str | None:
     return _state_hex64(getattr(edge, "target_state", None))
 
 
-def _state_const_rewrite_index(fact_view) -> tuple[
+def _state_const_rewrite_index(
+    fact_view,
+) -> tuple[
     dict[int, list[dict[str, object]]],
     set[str],
     dict[str, list[str]],
@@ -313,9 +316,11 @@ def _derive_gated_overrides_from_fact_view(
         return {}
 
     selections: dict[int, list[tuple[str, int | None]]] = {}
-    for collapsed_edge_id, (collapsed_src, _collapsed_tgt, _src_block) in (
-        collapsed.items()
-    ):
+    for collapsed_edge_id, (
+        collapsed_src,
+        _collapsed_tgt,
+        _src_block,
+    ) in collapsed.items():
         collapsed_blocks = state_blocks.get(collapsed_src, set())
         if not collapsed_blocks:
             continue
@@ -334,9 +339,7 @@ def _derive_gated_overrides_from_fact_view(
         for sibling_state, _overlap in sibling_overlaps:
             source_candidates: list[int] = []
             for state_hex in (collapsed_src, sibling_state):
-                bi = _state_byte_index(
-                    state_hex, state_blocks, terminal_tail_blocks
-                )
+                bi = _state_byte_index(state_hex, state_blocks, terminal_tail_blocks)
                 if bi is not None:
                     source_candidates.append(bi)
             if not source_candidates:
@@ -349,9 +352,7 @@ def _derive_gated_overrides_from_fact_view(
                 # abstained under the exact-one-selected gate.
                 continue
 
-            for _alt_edge_id, _alt_edge, alt_target in outgoing.get(
-                sibling_state, ()
-            ):
+            for _alt_edge_id, _alt_edge, alt_target in outgoing.get(sibling_state, ()):
                 if alt_target is None:
                     continue
                 found, reached_bi, reached_state = _bfs_for_later_terminal_tail(
@@ -467,9 +468,7 @@ def _apply_gated_overrides(
         reached_hex, reached_bi = match
         new_target_node = nodes_by_state_hex.get(reached_hex)
         if new_target_node is None and reached_hex.startswith("0x"):
-            new_target_node = nodes_by_state_hex.get(
-                "0x" + reached_hex[-8:]
-            )
+            new_target_node = nodes_by_state_hex.get("0x" + reached_hex[-8:])
         if new_target_node is None:
             logger.warning(
                 "RECON_DAG_EDGE_OVERRIDE_SKIPPED reason=reached_state_no_node "
@@ -517,8 +516,7 @@ def _apply_gated_overrides(
         return dag
 
     logger.info(
-        "RECON_DAG_OVERRIDE_SUMMARY source=%s gated_total=%d "
-        "attempted=%d applied=%d",
+        "RECON_DAG_OVERRIDE_SUMMARY source=%s gated_total=%d attempted=%d applied=%d",
         summary_id,
         len(gated),
         overrides_attempted,
@@ -533,7 +531,8 @@ def apply_selected_alternate_edge_overrides(
     dag,
     fact_view,
     *,
-    override_map: dict[tuple[str, str, int | None], tuple[str, int | None]] | None = None,
+    override_map: dict[tuple[str, str, int | None], tuple[str, int | None]]
+    | None = None,
     func_ea: int | None = None,
 ):
     """Substitute collapsed terminal-tail edges from in-memory fact evidence.

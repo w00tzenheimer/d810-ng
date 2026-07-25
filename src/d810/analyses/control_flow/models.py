@@ -4,6 +4,7 @@ Immutable value objects passed between PreanalysisPhase, AnalysisPhase, and
 RuleScopeService. All public types are frozen dataclasses or NamedTuples.
 No IDA imports - this module is unit-testable without IDA.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ class CandidateFlag:
         >>> flag.confidence
         0.85
     """
+
     kind: str
     block_serial: int
     confidence: float
@@ -41,7 +43,8 @@ class CandidateFlag:
 
 @dataclass(frozen=True, init=False)
 class PreanalysisResult:
-    "Per-collector, per-maturity observation result.\n\n    Produced by a ``PreanalysisCollector.collect()`` call and stored in\n    ``PreanalysisStore``. All values are frozen - collectors must not modify\n    results after creation.\n\n    Attributes:\n        collector_name: Name of the collector that produced this result.\n        func_ea: Function effective address.\n        maturity: Microcode maturity level at which observation was made.\n        timestamp: Wall-clock time of observation (``time.time()``).\n        metrics: Read-only mapping of metric name -> scalar value.\n        candidates: Tuple of flagged locations within this function.\n\n    Example:\n        >>> from types import MappingProxyType\n        >>> result = PreanalysisResult(\n        ...     collector_name=\"CFGShapeCollector\",\n        ...     func_ea=0x401000,\n        ...     maturity=5,\n        ...     timestamp=0.0,\n        ...     metrics=MappingProxyType({\"block_count\": 20}),\n        ...     candidates=(),\n        ... )\n        >>> result.metrics[\"block_count\"]\n        20\n    "
+    'Per-collector, per-maturity observation result.\n\n    Produced by a ``PreanalysisCollector.collect()`` call and stored in\n    ``PreanalysisStore``. All values are frozen - collectors must not modify\n    results after creation.\n\n    Attributes:\n        collector_name: Name of the collector that produced this result.\n        func_ea: Function effective address.\n        maturity: Microcode maturity level at which observation was made.\n        timestamp: Wall-clock time of observation (``time.time()``).\n        metrics: Read-only mapping of metric name -> scalar value.\n        candidates: Tuple of flagged locations within this function.\n\n    Example:\n        >>> from types import MappingProxyType\n        >>> result = PreanalysisResult(\n        ...     collector_name="CFGShapeCollector",\n        ...     func_ea=0x401000,\n        ...     maturity=5,\n        ...     timestamp=0.0,\n        ...     metrics=MappingProxyType({"block_count": 20}),\n        ...     candidates=(),\n        ... )\n        >>> result.metrics["block_count"]\n        20\n'
+
     collector_name: str
     func_ea: int
     provider_level: int
@@ -77,7 +80,10 @@ class PreanalysisResult:
         self.__post_init__()
 
     def __post_init__(self) -> None:
-        if not (hasattr(self.metrics, '__getitem__') and not hasattr(self.metrics, '__setitem__')):
+        if not (
+            hasattr(self.metrics, "__getitem__")
+            and not hasattr(self.metrics, "__setitem__")
+        ):
             raise TypeError(
                 f"PreanalysisResult.metrics must be a read-only mapping, got {type(self.metrics)!r}"
             )
@@ -89,7 +95,8 @@ class PreanalysisResult:
 
 @dataclass(frozen=True)
 class DeobfuscationHints:
-    "Actionable output of the AnalysisPhase.\n\n    Summarises what obfuscation was detected and what the DeobfuscationPhase\n    should do about it. Consumed by ``RuleScopeService.apply_hints()``.\n\n    Attributes:\n        func_ea: Function effective address these hints apply to.\n        obfuscation_type: Detected obfuscation family, or ``None`` if none.\n            One of: ``\"ollvm_flat\"``, ``\"tigress_indirect\"``, ``\"mixed\"``,\n            ``None``.\n        confidence: Overall classification confidence in ``[0.0, 1.0]``.\n        recommended_inferences: Tuple of inference names to activate.\n        candidates: Forwarded candidate flags from PreanalysisResults.\n        suppress_rules: Rule names to explicitly disable for this function.\n\n    Example:\n        >>> hints = DeobfuscationHints(\n        ...     func_ea=0x401000,\n        ...     obfuscation_type=\"ollvm_flat\",\n        ...     confidence=0.85,\n        ...     recommended_inferences=(\"unflattening\",),\n        ...     candidates=(),\n        ...     suppress_rules=(),\n        ... )\n        >>> hints.obfuscation_type\n        'ollvm_flat'\n    "
+    'Actionable output of the AnalysisPhase.\n\n    Summarises what obfuscation was detected and what the DeobfuscationPhase\n    should do about it. Consumed by ``RuleScopeService.apply_hints()``.\n\n    Attributes:\n        func_ea: Function effective address these hints apply to.\n        obfuscation_type: Detected obfuscation family, or ``None`` if none.\n            One of: ``"ollvm_flat"``, ``"tigress_indirect"``, ``"mixed"``,\n            ``None``.\n        confidence: Overall classification confidence in ``[0.0, 1.0]``.\n        recommended_inferences: Tuple of inference names to activate.\n        candidates: Forwarded candidate flags from PreanalysisResults.\n        suppress_rules: Rule names to explicitly disable for this function.\n\n    Example:\n        >>> hints = DeobfuscationHints(\n        ...     func_ea=0x401000,\n        ...     obfuscation_type="ollvm_flat",\n        ...     confidence=0.85,\n        ...     recommended_inferences=("unflattening",),\n        ...     candidates=(),\n        ...     suppress_rules=(),\n        ... )\n        >>> hints.obfuscation_type\n        \'ollvm_flat\'\n'
+
     func_ea: int
     obfuscation_type: str | None
     confidence: float

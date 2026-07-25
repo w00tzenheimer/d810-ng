@@ -10,6 +10,7 @@ import pytest
 # Check if egglog is available
 try:
     from d810.backends.mba.egglog_backend import check_egglog_available
+
     EGGLOG_AVAILABLE = check_egglog_available()
 except ImportError:
     EGGLOG_AVAILABLE = False
@@ -195,8 +196,8 @@ class TestFindInversePairs:
         # Check that the pair is found
         names = [(r1.name, r2.name) for r1, r2 in pairs]
         assert any(
-            ("BnotXor_FactorRule_1" in n1 and "CstSimplificationRule16" in n2) or
-            ("CstSimplificationRule16" in n1 and "BnotXor_FactorRule_1" in n2)
+            ("BnotXor_FactorRule_1" in n1 and "CstSimplificationRule16" in n2)
+            or ("CstSimplificationRule16" in n1 and "BnotXor_FactorRule_1" in n2)
             for n1, n2 in names
         ), f"Should find BnotXor/CstSimpl pair, found: {names}"
 
@@ -212,11 +213,15 @@ class TestFindEquivalentPatterns:
         rules = [Pred0Rule1(), PredOdd1()]
         pairs = find_equivalent_rule_patterns(rules)
 
-        assert len(pairs) == 1, f"Should find exactly one equivalent pair, found {len(pairs)}"
+        assert len(pairs) == 1, (
+            f"Should find exactly one equivalent pair, found {len(pairs)}"
+        )
 
         rule1, rule2 = pairs[0]
         names = {rule1.name, rule2.name}
-        assert names == {"Pred0Rule1", "PredOdd1"}, f"Expected Pred0Rule1/PredOdd1, got {names}"
+        assert names == {"Pred0Rule1", "PredOdd1"}, (
+            f"Expected Pred0Rule1/PredOdd1, got {names}"
+        )
 
 
 class TestEdgeCases:
@@ -229,10 +234,12 @@ class TestEdgeCases:
 
         class RuleWithoutPattern(VerifiableRule):
             """A test rule without PATTERN."""
+
             pass
 
         class RuleWithoutPattern2(VerifiableRule):
             """Another test rule without PATTERN."""
+
             pass
 
         # Should return False gracefully, not crash

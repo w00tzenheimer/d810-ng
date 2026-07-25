@@ -6,6 +6,7 @@ treat that text as a capability token.  Contract evidence is deliberate metadata
 under the payload keys below, plus a small allowlisted projection from known
 production fact families.
 """
+
 from __future__ import annotations
 
 from enum import Enum
@@ -30,12 +31,12 @@ class ContractEvidenceToken(str, Enum):
 CONTRACT_EVIDENCE_TOKENS = frozenset(token.value for token in ContractEvidenceToken)
 
 
-def contract_evidence_payload(*tokens: str | ContractEvidenceToken) -> dict[str, list[str]]:
+def contract_evidence_payload(
+    *tokens: str | ContractEvidenceToken,
+) -> dict[str, list[str]]:
     """Return the canonical payload fragment for explicitly published tokens."""
     return {
-        CONTRACT_EVIDENCE_TOKENS_KEY: sorted(
-            _canonical_tokens(tokens, strict=True)
-        )
+        CONTRACT_EVIDENCE_TOKENS_KEY: sorted(_canonical_tokens(tokens, strict=True))
     }
 
 
@@ -67,7 +68,9 @@ def _canonical_tokens(values, *, strict: bool = False) -> frozenset[str]:
         if token
     )
     if strict:
-        unknown = sorted(token for token in tokens if token not in CONTRACT_EVIDENCE_TOKENS)
+        unknown = sorted(
+            token for token in tokens if token not in CONTRACT_EVIDENCE_TOKENS
+        )
         if unknown:
             raise ValueError(f"unknown contract evidence token(s): {unknown}")
     return tokens

@@ -10,6 +10,7 @@ Slice 6 (naming cleanup): the canonical class is
 ``ConstantFixpointBackend`` is preserved as a back-compat alias and
 covered by ``test_legacy_name_is_alias_of_canonical_capability``.
 """
+
 from __future__ import annotations
 
 from d810.capabilities import (

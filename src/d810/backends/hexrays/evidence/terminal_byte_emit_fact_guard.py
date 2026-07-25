@@ -31,6 +31,7 @@ The guard is deliberately narrow:
   Without a constant write to the state variable in H, the redirect is
   permitted -- the gate must not over-fire.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -439,11 +440,7 @@ def filter_terminal_byte_emit_fact_redirects(
                     old_target,
                     fact_id,
                     byte_index,
-                    (
-                        f"0x{upstream_ea:x}"
-                        if upstream_ea is not None
-                        else "<unknown>"
-                    ),
+                    (f"0x{upstream_ea:x}" if upstream_ea is not None else "<unknown>"),
                 )
             else:
                 logger.info(
@@ -455,11 +452,7 @@ def filter_terminal_byte_emit_fact_redirects(
                     old_target,
                     fact_id,
                     byte_index,
-                    (
-                        f"0x{upstream_ea:x}"
-                        if upstream_ea is not None
-                        else "<unknown>"
-                    ),
+                    (f"0x{upstream_ea:x}" if upstream_ea is not None else "<unknown>"),
                 )
             continue
 
@@ -490,11 +483,7 @@ def filter_terminal_byte_emit_fact_redirects(
                 byte_index,
                 fact_id,
                 sorted(const_refs),
-                (
-                    f"0x{upstream_ea:x}"
-                    if upstream_ea is not None
-                    else "<unknown>"
-                ),
+                (f"0x{upstream_ea:x}" if upstream_ea is not None else "<unknown>"),
             )
             continue
 
@@ -527,11 +516,7 @@ def filter_terminal_byte_emit_fact_redirects(
             byte_index,
             fact_id,
             list(rejection.state_const_writes),
-            (
-                f"0x{upstream_ea:x}"
-                if upstream_ea is not None
-                else "<unknown>"
-            ),
+            (f"0x{upstream_ea:x}" if upstream_ea is not None else "<unknown>"),
         )
 
     if rejections:

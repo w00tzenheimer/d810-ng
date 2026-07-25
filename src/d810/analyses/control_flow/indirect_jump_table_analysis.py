@@ -6,6 +6,7 @@ still contain the label bodies.  This module records that calibrated table as
 shape-neutral dispatcher evidence without pretending missing native labels are
 live MBA blocks.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -52,14 +53,14 @@ def build_state_dispatcher_map_from_indirect_entries(
         row_kind = "handler" if has_target_block else "missing_mba_target"
         branch_kind = (
             "indirect_jump_table"
-            if has_target_block else "indirect_jump_table_missing_target"
+            if has_target_block
+            else "indirect_jump_table_missing_target"
         )
         rows.append(
             StateDispatcherRow(
                 state_const=int(entry.state_const) & 0xFFFFFFFFFFFFFFFF,
                 target_block=(
-                    int(entry.target_block)
-                    if entry.target_block is not None else -1
+                    int(entry.target_block) if entry.target_block is not None else -1
                 ),
                 dispatcher_block=int(dispatcher_serial),
                 compare_block=None,
@@ -77,8 +78,8 @@ def build_state_dispatcher_map_from_indirect_entries(
                     "target_materialized": bool(has_target_block),
                     "table_address_hex": (
                         None
-                        if table_address is None else
-                        f"0x{int(table_address) & 0xFFFFFFFFFFFFFFFF:016x}"
+                        if table_address is None
+                        else f"0x{int(table_address) & 0xFFFFFFFFFFFFFFFF:016x}"
                     ),
                 },
             )
@@ -103,7 +104,9 @@ def _find_dispatcher_serial_by_ea(flow_graph: FlowGraph, ea: int | None) -> int 
     return _find_mba_block_for_instruction_ea(flow_graph, int(ea))
 
 
-def _find_mba_block_for_instruction_ea(flow_graph: FlowGraph, target_ea: int) -> int | None:
+def _find_mba_block_for_instruction_ea(
+    flow_graph: FlowGraph, target_ea: int
+) -> int | None:
     target = int(target_ea)
     for serial, blk in flow_graph.blocks.items():
         if int(blk.start_ea) == target:

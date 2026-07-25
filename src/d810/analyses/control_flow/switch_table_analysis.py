@@ -1,4 +1,5 @@
 "Switch-table dispatcher analysis.\n\nExtracts exact state-dispatcher rows from portable ``FlowGraph`` switch-table\nsnapshots. Live Hex-Rays adapters live above preanalysis and call\n``analyze_switch_table_flow_graph()`` after lifting an MBA.\n\nd81-qlal -- canonical Instruction port.  The operand reads no longer touch the\nbackend-shaped ``InsnSnapshot`` operand slots (``.l`` / ``.r`` / ``.d``).  Each\ntail :class:`~d810.ir.flowgraph.InsnSnapshot` is projected through\n:func:`~d810.ir.insn_projection.project_instruction` to the canonical\n:class:`~d810.ir.instructions.Instruction`, and:\n\n* the switch case-target pairs (was ``blk.tail.r.switch_cases``) are read off\n  ``Instruction.control.switch_cases``;\n* the table-jump state variable (was ``blk.tail.l`` -> ``stack_refs`` / ``stkoff``\n  / ``size``) is read off ``Instruction.inputs`` -- a ``Varnode`` in the STACK\n  identity space (the projection exposes the SUBINSN/stack-ref state operand as a\n  ``Varnode(Space.STACK, offset, size)`` input);\n* the loop-guard compare operands (was ``tail.l`` / ``tail.r``) are read off the\n  canonical slot-aligned storage views (``operand_storages`` -> ``l`` / ``r``):\n  a ``NUMBER`` operand projects to a ``Varnode(Space.CONST, value, size)`` and a\n  stack operand to a ``Varnode(Space.STACK, offset, size)``.\n\nSTRUCTURAL block topology stays direct -- ``flow_graph.get_block`` /\n``BlockSnapshot.tail`` / ``.succs`` / ``.preds`` / ``.tail_kind`` /\n``.is_conditional_jump`` are portable model surfaces, not operand slots.\n"
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -68,7 +69,8 @@ def build_state_dispatcher_map_from_cases(
             default_target = target
             default_kind = (
                 "dispatcher_default_self_loop"
-                if target in dispatcher_blocks else "dispatcher_default"
+                if target in dispatcher_blocks
+                else "dispatcher_default"
             )
             continue
         state_const = int(case_value) & 0xFFFFFFFFFFFFFFFF
@@ -326,15 +328,17 @@ def analyze_switch_table_flow_graph(
             for case_value, _target in cases
             if case_value is not None
         )
-        dispatcher_blocks = frozenset({
-            serial,
-            *find_switch_loop_guard_blocks(
-                flow_graph,
+        dispatcher_blocks = frozenset(
+            {
                 serial,
-                state_var_stkoff=stkoff,
-                case_values=case_values,
-            ),
-        })
+                *find_switch_loop_guard_blocks(
+                    flow_graph,
+                    serial,
+                    state_var_stkoff=stkoff,
+                    case_values=case_values,
+                ),
+            }
+        )
         state_dispatcher_map = build_state_dispatcher_map_from_cases(
             cases=cases,
             dispatcher_serial=serial,

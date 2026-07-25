@@ -625,13 +625,21 @@ typedef int int32_t;
         func = self._get_function_cursor(tu)
         if func is None:
             return {
-                "statements": 0, "returns": 0, "whiles": 0,
-                "gotos": 0, "ifs": 0, "calls": 0,
+                "statements": 0,
+                "returns": 0,
+                "whiles": 0,
+                "gotos": 0,
+                "ifs": 0,
+                "calls": 0,
             }
 
         counts = {
-            "statements": 0, "returns": 0, "whiles": 0,
-            "gotos": 0, "ifs": 0, "calls": 0,
+            "statements": 0,
+            "returns": 0,
+            "whiles": 0,
+            "gotos": 0,
+            "ifs": 0,
+            "calls": 0,
         }
 
         def _walk(cursor: "Cursor") -> None:
@@ -1040,7 +1048,7 @@ def d810_state_all_rules():
 
 @pytest.fixture(scope="session")
 def analysis_store_path():
-    "Session-scoped: path to the preanalysis DB created during this test session.\n\n    Searches for the preanalysis DB in the standard log directory. When the full\n    system test suite runs in a single IDA session, earlier tests populate\n    the preanalysis DB before these pipeline assertions execute.\n\n    Returns None if no preanalysis DB is found.\n    "
+    "Session-scoped: path to the preanalysis DB created during this test session.\n\n    Searches for the preanalysis DB in the standard log directory. When the full\n    system test suite runs in a single IDA session, earlier tests populate\n    the preanalysis DB before these pipeline assertions execute.\n\n    Returns None if no preanalysis DB is found.\n"
     import pathlib
 
     # Search standard locations for the preanalysis DB
@@ -1071,7 +1079,7 @@ def analysis_store_path():
 
 @pytest.fixture(scope="session")
 def analysis_store_session(analysis_store_path):
-    "Session-scoped: open PreanalysisStore for aggregate queries.\n\n    Returns None if preanalysis is disabled.\n    "
+    "Session-scoped: open PreanalysisStore for aggregate queries.\n\n    Returns None if preanalysis is disabled.\n"
     if analysis_store_path is None:
         yield None
         return

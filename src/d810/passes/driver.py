@@ -13,6 +13,7 @@ Fragment publication defers pass-output visibility until the backend returns a
 committed, postvalidated graph snapshot. The live backend + lifter are supplied
 from ``backends/hexrays``; everything here remains portable.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -127,7 +128,9 @@ def validate_contract_capabilities(spec: PassSpec, backend) -> None:
         )
 
 
-def _require_analysis_methods(facts, *, pass_id: str, method_names: tuple[str, ...]) -> None:
+def _require_analysis_methods(
+    facts, *, pass_id: str, method_names: tuple[str, ...]
+) -> None:
     missing = tuple(name for name in method_names if not hasattr(facts, name))
     if missing:
         raise AnalysisContractError(
@@ -144,11 +147,7 @@ def validate_required_analyses(spec: PassSpec, ctx: FunctionPipelineContext) -> 
         ctx.facts, pass_id=spec.pass_id, method_names=("has_analysis",)
     )
     missing = tuple(
-        sorted(
-            key
-            for key in spec.analyses.required
-            if not ctx.facts.has_analysis(key)
-        )
+        sorted(key for key in spec.analyses.required if not ctx.facts.has_analysis(key))
     )
     if missing:
         raise AnalysisContractError(
@@ -271,8 +270,7 @@ def validate_analysis_outputs(spec: PassSpec, result) -> None:
     undeclared = frozenset(result.analysis_outputs) - spec.analyses.provided
     if undeclared:
         raise AnalysisContractError(
-            f"pass {spec.pass_id!r} published undeclared analyses "
-            f"{sorted(undeclared)}"
+            f"pass {spec.pass_id!r} published undeclared analyses {sorted(undeclared)}"
         )
 
 
@@ -413,9 +411,7 @@ def validate_backend_route(spec: PassSpec, result) -> None:
         )
 
 
-def effective_preserved_analyses(
-    spec: PassSpec, result
-) -> PreservedAnalyses:
+def effective_preserved_analyses(spec: PassSpec, result) -> PreservedAnalyses:
     """Return the invalidation hint chosen by result override or spec default."""
     if result.preserved_explicit:
         return result.preserved

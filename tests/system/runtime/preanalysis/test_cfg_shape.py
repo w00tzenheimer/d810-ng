@@ -1,4 +1,5 @@
 """Unit tests for CFGShapeCollector using FlowGraph (no IDA dependency)."""
+
 from __future__ import annotations
 import pytest
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
@@ -12,9 +13,12 @@ def _make_linear_cfg(n: int, func_ea: int = 0x401000) -> FlowGraph:
         succs = (i + 1,) if i < n - 1 else ()
         preds = (i - 1,) if i > 0 else ()
         blocks[i] = BlockSnapshot(
-            serial=i, block_type=1 if succs else 0,
-            succs=succs, preds=preds,
-            flags=0, start_ea=func_ea + i * 0x10,
+            serial=i,
+            block_type=1 if succs else 0,
+            succs=succs,
+            preds=preds,
+            flags=0,
+            start_ea=func_ea + i * 0x10,
             insn_snapshots=(),
         )
     return FlowGraph(blocks=blocks, entry_serial=0, func_ea=func_ea)
@@ -23,10 +27,42 @@ def _make_linear_cfg(n: int, func_ea: int = 0x401000) -> FlowGraph:
 def _make_diamond_cfg(func_ea: int = 0x402000) -> FlowGraph:
     """Build a diamond CFG: 0->(1,2)->3."""
     blocks = {
-        0: BlockSnapshot(serial=0, block_type=2, succs=(1, 2), preds=(), flags=0, start_ea=func_ea, insn_snapshots=()),
-        1: BlockSnapshot(serial=1, block_type=1, succs=(3,), preds=(0,), flags=0, start_ea=func_ea + 0x10, insn_snapshots=()),
-        2: BlockSnapshot(serial=2, block_type=1, succs=(3,), preds=(0,), flags=0, start_ea=func_ea + 0x20, insn_snapshots=()),
-        3: BlockSnapshot(serial=3, block_type=0, succs=(), preds=(1, 2), flags=0, start_ea=func_ea + 0x30, insn_snapshots=()),
+        0: BlockSnapshot(
+            serial=0,
+            block_type=2,
+            succs=(1, 2),
+            preds=(),
+            flags=0,
+            start_ea=func_ea,
+            insn_snapshots=(),
+        ),
+        1: BlockSnapshot(
+            serial=1,
+            block_type=1,
+            succs=(3,),
+            preds=(0,),
+            flags=0,
+            start_ea=func_ea + 0x10,
+            insn_snapshots=(),
+        ),
+        2: BlockSnapshot(
+            serial=2,
+            block_type=1,
+            succs=(3,),
+            preds=(0,),
+            flags=0,
+            start_ea=func_ea + 0x20,
+            insn_snapshots=(),
+        ),
+        3: BlockSnapshot(
+            serial=3,
+            block_type=0,
+            succs=(),
+            preds=(1, 2),
+            flags=0,
+            start_ea=func_ea + 0x30,
+            insn_snapshots=(),
+        ),
     }
     return FlowGraph(blocks=blocks, entry_serial=0, func_ea=func_ea)
 
@@ -40,11 +76,51 @@ def _make_flat_cfg(func_ea: int = 0x403000) -> FlowGraph:
       2 -> 1, 3 -> 1, 4 -> 1  (back-edges)
     """
     blocks = {
-        0: BlockSnapshot(serial=0, block_type=1, succs=(1,), preds=(), flags=0, start_ea=func_ea, insn_snapshots=()),
-        1: BlockSnapshot(serial=1, block_type=3, succs=(2, 3, 4), preds=(0, 2, 3, 4), flags=0, start_ea=func_ea + 0x10, insn_snapshots=()),
-        2: BlockSnapshot(serial=2, block_type=1, succs=(1,), preds=(1,), flags=0, start_ea=func_ea + 0x20, insn_snapshots=()),
-        3: BlockSnapshot(serial=3, block_type=1, succs=(1,), preds=(1,), flags=0, start_ea=func_ea + 0x30, insn_snapshots=()),
-        4: BlockSnapshot(serial=4, block_type=1, succs=(1,), preds=(1,), flags=0, start_ea=func_ea + 0x40, insn_snapshots=()),
+        0: BlockSnapshot(
+            serial=0,
+            block_type=1,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=func_ea,
+            insn_snapshots=(),
+        ),
+        1: BlockSnapshot(
+            serial=1,
+            block_type=3,
+            succs=(2, 3, 4),
+            preds=(0, 2, 3, 4),
+            flags=0,
+            start_ea=func_ea + 0x10,
+            insn_snapshots=(),
+        ),
+        2: BlockSnapshot(
+            serial=2,
+            block_type=1,
+            succs=(1,),
+            preds=(1,),
+            flags=0,
+            start_ea=func_ea + 0x20,
+            insn_snapshots=(),
+        ),
+        3: BlockSnapshot(
+            serial=3,
+            block_type=1,
+            succs=(1,),
+            preds=(1,),
+            flags=0,
+            start_ea=func_ea + 0x30,
+            insn_snapshots=(),
+        ),
+        4: BlockSnapshot(
+            serial=4,
+            block_type=1,
+            succs=(1,),
+            preds=(1,),
+            flags=0,
+            start_ea=func_ea + 0x40,
+            insn_snapshots=(),
+        ),
     }
     return FlowGraph(blocks=blocks, entry_serial=0, func_ea=func_ea)
 

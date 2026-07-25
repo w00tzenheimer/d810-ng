@@ -5,6 +5,7 @@ operates on ``FlowGraph`` snapshots. This module owns the live Hex-Rays
 boundary needed by existing optimizer consumers that still require a live
 ``mop_t`` state variable.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,7 +15,9 @@ import ida_hexrays
 from d810.core.logging import getLogger
 from d810.hexrays.mutation.ir_translator import lift
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
-from d810.analyses.control_flow.switch_table_analysis import analyze_switch_table_flow_graph
+from d810.analyses.control_flow.switch_table_analysis import (
+    analyze_switch_table_flow_graph,
+)
 from d810.core.observability_preanalysis import observe_state_dispatcher_rows
 
 logger = getLogger("D810.switch_table_adapter")
@@ -38,22 +41,26 @@ def _extract_state_var_mop(
 
     if mop.t == ida_hexrays.mop_d:
         inner = mop.d
-        dispatch_expr_opcodes = frozenset({
-            ida_hexrays.m_and,
-            ida_hexrays.m_or,
-            ida_hexrays.m_xor,
-            ida_hexrays.m_sub,
-        })
+        dispatch_expr_opcodes = frozenset(
+            {
+                ida_hexrays.m_and,
+                ida_hexrays.m_or,
+                ida_hexrays.m_xor,
+                ida_hexrays.m_sub,
+            }
+        )
         if inner.opcode in dispatch_expr_opcodes:
             result = _extract_state_var_mop(inner.l, state_var_stkoff)
             if result is not None:
                 return result
             return _extract_state_var_mop(inner.r, state_var_stkoff)
-        copy_opcodes = frozenset({
-            ida_hexrays.m_mov,
-            ida_hexrays.m_xdu,
-            ida_hexrays.m_xds,
-        })
+        copy_opcodes = frozenset(
+            {
+                ida_hexrays.m_mov,
+                ida_hexrays.m_xdu,
+                ida_hexrays.m_xds,
+            }
+        )
         if inner.opcode in copy_opcodes:
             return _extract_state_var_mop(inner.l, state_var_stkoff)
 

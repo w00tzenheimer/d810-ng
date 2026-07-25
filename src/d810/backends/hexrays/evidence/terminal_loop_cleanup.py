@@ -5,6 +5,7 @@ dispatcher via lightweight transition blocks, or form degenerate single-block
 self-loops.  This strategy proposes GOTO_REDIRECT edits that cut those loops
 and redirect to the nearest function exit or return block.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import TYPE_CHECKING
@@ -219,11 +220,16 @@ class TerminalLoopCleanupStrategy:
                 _sv_reg = getattr(_sv, "r", None)
 
         _state_check_opcodes: set[int] = {
-            mc.m_jnz, mc.m_jz,
-            mc.m_jae, mc.m_jb,
-            mc.m_ja, mc.m_jbe,
-            mc.m_jg, mc.m_jge,
-            mc.m_jl, mc.m_jle,
+            mc.m_jnz,
+            mc.m_jz,
+            mc.m_jae,
+            mc.m_jb,
+            mc.m_ja,
+            mc.m_jbe,
+            mc.m_jg,
+            mc.m_jge,
+            mc.m_jl,
+            mc.m_jle,
         }
 
         if not self._is_lightweight_terminal_transition_snapshot(
@@ -436,11 +442,16 @@ class TerminalLoopCleanupStrategy:
                 _sv_reg = getattr(_sv, "r", None)
 
         _state_check_opcodes: set[int] = {
-            mc.m_jnz, mc.m_jz,
-            mc.m_jae, mc.m_jb,
-            mc.m_ja, mc.m_jbe,
-            mc.m_jg, mc.m_jge,
-            mc.m_jl, mc.m_jle,
+            mc.m_jnz,
+            mc.m_jz,
+            mc.m_jae,
+            mc.m_jb,
+            mc.m_ja,
+            mc.m_jbe,
+            mc.m_jg,
+            mc.m_jge,
+            mc.m_jl,
+            mc.m_jle,
         }
 
         if not candidate_blocks:
@@ -561,7 +572,11 @@ class TerminalLoopCleanupStrategy:
             if blk_snap.tail is None or blk_snap.tail.opcode != mc.m_goto:
                 continue
             blk_tail_l = blk_snap.tail.l
-            if blk_tail_l is None or blk_tail_l.t != mc.mop_b or blk_tail_l.block_ref != first_check_block:
+            if (
+                blk_tail_l is None
+                or blk_tail_l.t != mc.mop_b
+                or blk_tail_l.block_ref != first_check_block
+            ):
                 continue
 
             edits.append(
@@ -601,7 +616,9 @@ class TerminalLoopCleanupStrategy:
             return
 
         candidate_blocks = self._collect_nearby_blocks(
-            flow_graph, state_machine_blocks, depth=4,
+            flow_graph,
+            state_machine_blocks,
+            depth=4,
         )
 
         m_nop = mc.m_nop

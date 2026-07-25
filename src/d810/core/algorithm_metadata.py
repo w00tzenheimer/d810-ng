@@ -5,6 +5,7 @@ reverse-engineer strategy names or grep for implementation details.  Metadata
 is attached directly to the primary class/function implementing a technique and
 registered in a lightweight in-memory index.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -43,7 +44,9 @@ _OBJECT_INDEX: dict[str, str] = {}
 
 def _qualname_for_object(obj: object) -> str:
     module = getattr(obj, "__module__", "")
-    qualname = getattr(obj, "__qualname__", getattr(obj, "__name__", type(obj).__name__))
+    qualname = getattr(
+        obj, "__qualname__", getattr(obj, "__name__", type(obj).__name__)
+    )
     if module:
         return f"{module}.{qualname}"
     return str(qualname)
@@ -74,7 +77,9 @@ def algorithm_metadata(
             object_qualname=_qualname_for_object(obj),
         )
         _REGISTRY[metadata.algorithm_id] = metadata
-        _OBJECT_INDEX[metadata.object_qualname or metadata.algorithm_id] = metadata.algorithm_id
+        _OBJECT_INDEX[metadata.object_qualname or metadata.algorithm_id] = (
+            metadata.algorithm_id
+        )
         setattr(obj, "__algorithm_metadata__", metadata)
         return obj
 

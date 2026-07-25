@@ -3,6 +3,7 @@
 These tests verify that our constant mappings match the actual IDA API.
 They require IDA Pro to be available and will be skipped in CI.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -45,10 +46,22 @@ class TestIdaLoaderConstants:
         """Test that our format mapping matches actual IDA constants."""
         from d810.ui.actions.export_disasm_logic import to_ida_format_int_with_loader
 
-        assert to_ida_format_int_with_loader("ASM", loader=ida_loader) == ida_loader.OFILE_ASM
-        assert to_ida_format_int_with_loader("LST", loader=ida_loader) == ida_loader.OFILE_LST
-        assert to_ida_format_int_with_loader("MAP", loader=ida_loader) == ida_loader.OFILE_MAP
-        assert to_ida_format_int_with_loader("IDC", loader=ida_loader) == ida_loader.OFILE_IDC
+        assert (
+            to_ida_format_int_with_loader("ASM", loader=ida_loader)
+            == ida_loader.OFILE_ASM
+        )
+        assert (
+            to_ida_format_int_with_loader("LST", loader=ida_loader)
+            == ida_loader.OFILE_LST
+        )
+        assert (
+            to_ida_format_int_with_loader("MAP", loader=ida_loader)
+            == ida_loader.OFILE_MAP
+        )
+        assert (
+            to_ida_format_int_with_loader("IDC", loader=ida_loader)
+            == ida_loader.OFILE_IDC
+        )
 
     def test_genflg_constants_exist(self):
         """Test that all GENFLG_* constants we use actually exist."""
@@ -61,9 +74,9 @@ class TestIdaLoaderConstants:
 
     def test_genflg_xrf_does_not_exist(self):
         """Test that GENFLG_GENXRF does NOT exist (was the bug)."""
-        assert not hasattr(
-            ida_loader, "GENFLG_GENXRF"
-        ), "GENFLG_GENXRF should not exist in ida_loader"
+        assert not hasattr(ida_loader, "GENFLG_GENXRF"), (
+            "GENFLG_GENXRF should not exist in ida_loader"
+        )
 
     def test_genflg_constant_values(self):
         """Test GENFLG constants are stable integer bitmasks."""
@@ -156,8 +169,14 @@ class TestMasmExportApiSurface:
         import ida_name
 
         assert callable(ida_name.get_name_ea)
-        for reader in ("get_byte", "get_word", "get_dword", "get_qword",
-                       "get_bytes", "get_item_size"):
+        for reader in (
+            "get_byte",
+            "get_word",
+            "get_dword",
+            "get_qword",
+            "get_bytes",
+            "get_item_size",
+        ):
             assert callable(getattr(ida_bytes, reader)), f"Missing {reader}"
 
 

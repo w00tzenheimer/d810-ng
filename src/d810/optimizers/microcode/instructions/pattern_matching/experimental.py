@@ -45,14 +45,10 @@ class ReplaceMovHighContext(VerifiableRule):
     REPLACEMENT = (c_0 << 16) | (full_reg & 0xFFFF)
 
     # Constraint: Destination must be a high-half register (e.g., r6^2)
-    CONSTRAINTS = [
-        when.dst.is_high_half
-    ]
+    CONSTRAINTS = [when.dst.is_high_half]
 
     # Context: Bind 'full_reg' to the parent register (e.g., r6 from r6^2)
-    CONTEXT_VARS = {
-        "full_reg": context.dst.parent_register
-    }
+    CONTEXT_VARS = {"full_reg": context.dst.parent_register}
 
     # Side effect: Change destination from r6^2 to r6
     UPDATE_DESTINATION = "full_reg"

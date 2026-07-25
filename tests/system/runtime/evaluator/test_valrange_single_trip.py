@@ -18,6 +18,7 @@ Ground truth is the REAL ``bogus_loops`` microcode (``for (i=0; !i; i=1)``).
 Like the SCCP probe this asserts only that the mechanism runs; the peel verdict
 is printed for us to read.
 """
+
 from __future__ import annotations
 
 import os
@@ -157,7 +158,7 @@ class TestValrangeSingleTripLoop:
                 f"[{label}] qty={mba.qty} converged={res.converged} backedges={back}"
             )
 
-            for (latch, header) in back:
+            for latch, header in back:
                 hblk = mba.get_mblock(header)
                 tail = hblk.tail
                 guard_key = None
@@ -185,7 +186,9 @@ class TestValrangeSingleTripLoop:
                 for succ in list(hblk.succset):
                     _, constraint = _edge_constraint(hblk, succ)
                     feasible = _edge_feasible(grange, constraint)
-                    cstr = _vr_to_str(constraint) if constraint is not None else "<none>"
+                    cstr = (
+                        _vr_to_str(constraint) if constraint is not None else "<none>"
+                    )
                     lines.append(
                         f"        edge {header}->{succ}: constraint={cstr} "
                         f"feasible={feasible}"

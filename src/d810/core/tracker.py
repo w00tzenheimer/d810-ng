@@ -38,11 +38,14 @@ class ImmutableBlockInfo:
     - Hashability (frozen)
     - Copy-free sharing between MopHistory instances
     """
+
     blk_serial: int
     ins_list: Tuple[int, ...]  # Tuple of instruction EAs for immutability
 
     @classmethod
-    def from_block(cls, blk: "ida_hexrays.mblock_t", ins: Optional["ida_hexrays.minsn_t"] = None) -> "ImmutableBlockInfo":
+    def from_block(
+        cls, blk: "ida_hexrays.mblock_t", ins: Optional["ida_hexrays.minsn_t"] = None
+    ) -> "ImmutableBlockInfo":
         """Create from IDA block, optionally with initial instruction."""
         ins_list = (ins.ea,) if ins is not None else ()
         return cls(blk_serial=blk.serial, ins_list=ins_list)
@@ -50,15 +53,13 @@ class ImmutableBlockInfo:
     def with_prepended_ins(self, ins_ea: int) -> "ImmutableBlockInfo":
         """Return new BlockInfo with instruction prepended (copy-on-write)."""
         return ImmutableBlockInfo(
-            blk_serial=self.blk_serial,
-            ins_list=(ins_ea,) + self.ins_list
+            blk_serial=self.blk_serial, ins_list=(ins_ea,) + self.ins_list
         )
 
     def with_appended_ins(self, ins_ea: int) -> "ImmutableBlockInfo":
         """Return new BlockInfo with instruction appended (copy-on-write)."""
         return ImmutableBlockInfo(
-            blk_serial=self.blk_serial,
-            ins_list=self.ins_list + (ins_ea,)
+            blk_serial=self.blk_serial, ins_list=self.ins_list + (ins_ea,)
         )
 
 
@@ -73,7 +74,8 @@ class CachedBlockPath:
     The original `block_serial_path` property was called 102K times,
     recomputing the list each time. This class caches the result.
     """
-    __slots__ = ('_blocks', '_serial_cache', '_serial_cache_valid')
+
+    __slots__ = ("_blocks", "_serial_cache", "_serial_cache_valid")
 
     def __init__(self, blocks: Optional[List["ImmutableBlockInfo"]] = None):
         self._blocks: List[ImmutableBlockInfo] = blocks if blocks is not None else []
@@ -141,7 +143,8 @@ class MopSet:
     Replaces O(n) list searches with O(1) hash lookups.
     Uses structural hash for mop comparison.
     """
-    __slots__ = ('_by_hash', '_mops')
+
+    __slots__ = ("_by_hash", "_mops")
 
     def __init__(self):
         self._by_hash: dict[int, List["ida_hexrays.mop_t"]] = {}
@@ -152,9 +155,11 @@ class MopSet:
         """Compute structural hash for mop."""
         # Try Cython version first if CythonMode is enabled
         from d810.core.cymode import CythonMode
+
         if CythonMode().is_enabled():
             try:
                 from d810.speedups.cythxr._chexrays_api import hash_mop
+
                 return int(hash_mop(mop, 0))
             except ImportError:
                 pass
@@ -164,9 +169,9 @@ class MopSet:
         if t == 1:  # mop_r (register)
             return hash((t, mop.r))
         elif t == 2:  # mop_n (number)
-            return hash((t, mop.nnn.value if hasattr(mop, 'nnn') and mop.nnn else 0))
+            return hash((t, mop.nnn.value if hasattr(mop, "nnn") and mop.nnn else 0))
         elif t == 3:  # mop_S (stack)
-            return hash((t, mop.s.off if hasattr(mop, 's') and mop.s else 0))
+            return hash((t, mop.s.off if hasattr(mop, "s") and mop.s else 0))
         elif t == 5:  # mop_v (global)
             return hash((t, mop.g))
         elif t == 8:  # mop_b (block ref)
@@ -301,7 +306,9 @@ def benchmark_block_info_copy(n_iterations: int = 100000) -> dict:
         "iterations": n_iterations,
         "immutable_ref_time": immutable_time,
         "shallow_copy_time": shallow_copy_time,
-        "speedup_vs_shallow": shallow_copy_time / immutable_time if immutable_time > 0 else float('inf'),
+        "speedup_vs_shallow": shallow_copy_time / immutable_time
+        if immutable_time > 0
+        else float("inf"),
     }
 
 
@@ -310,10 +317,7 @@ def benchmark_cached_path(n_iterations: int = 10000) -> dict:
     import time
 
     # Create test path
-    blocks = [
-        ImmutableBlockInfo(blk_serial=i, ins_list=())
-        for i in range(50)
-    ]
+    blocks = [ImmutableBlockInfo(blk_serial=i, ins_list=()) for i in range(50)]
 
     # Benchmark cached version
     cached_path = CachedBlockPath(blocks)
@@ -332,7 +336,7 @@ def benchmark_cached_path(n_iterations: int = 10000) -> dict:
         "iterations": n_iterations,
         "cached_time": cached_time,
         "uncached_time": uncached_time,
-        "speedup": uncached_time / cached_time if cached_time > 0 else float('inf'),
+        "speedup": uncached_time / cached_time if cached_time > 0 else float("inf"),
     }
 
 

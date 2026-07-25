@@ -10,6 +10,7 @@ Example:
     >>> # Block 2 is unreachable (dead)
     >>> # Pass emits NopInstructions(block_serial=2, insn_eas=(...))
 """
+
 from __future__ import annotations
 
 from d810.transforms._base import FlowGraphTransform
@@ -64,6 +65,7 @@ class DeadBlockEliminationPass(FlowGraphTransform):
         >>> 0x2000 in mods[0].insn_eas
         True
     """
+
     name = "dead_block_elimination"
     tags = frozenset({"cleanup", "topology"})
 
@@ -123,9 +125,7 @@ class DeadBlockEliminationPass(FlowGraphTransform):
             if serial not in reachable:
                 # Collect all instruction EAs in this dead block
                 # Skip instructions with ea=0 (synthesized/placeholder)
-                insn_eas = tuple(
-                    insn.ea for insn in blk.insn_snapshots if insn.ea != 0
-                )
+                insn_eas = tuple(insn.ea for insn in blk.insn_snapshots if insn.ea != 0)
                 # Only emit modification if there are instructions to NOP
                 if insn_eas:
                     mods.append(NopInstructions(block_serial=serial, insn_eas=insn_eas))

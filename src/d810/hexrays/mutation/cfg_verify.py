@@ -4,6 +4,7 @@ This module contains functions for verifying microcode array correctness and
 capturing failure artifacts for post-mortem debugging. Split from cfg_utils.py
 as part of the CFG Pass Pipeline refactor (Phase 1).
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -180,7 +181,9 @@ class _InterrCatcher(ida_hexrays.Hexrays_Hooks):
         return 0  # 0 = don't suppress; let exception propagate normally
 
 
-def log_block_info(blk: ida_hexrays.mblock_t, logger_func=helper_logger.info, ctx: str = ""):
+def log_block_info(
+    blk: ida_hexrays.mblock_t, logger_func=helper_logger.info, ctx: str = ""
+):
     if blk is None:
         logger_func("Block is None")
         return
@@ -327,9 +330,7 @@ def _collect_related_blocks(
             if getattr(blk, "prevb", None) is not None:
                 related.add(int(blk.prevb.serial))
     return sorted(
-        s
-        for s in related
-        if isinstance(s, int) and 0 <= s < getattr(mba, "qty", 0)
+        s for s in related if isinstance(s, int) and 0 <= s < getattr(mba, "qty", 0)
     )
 
 
@@ -353,6 +354,7 @@ def capture_failure_artifact(
 ) -> str | None:
     """Persist a compact CFG failure artifact for post-mortem debugging."""
     from d810.core.settings import get_settings
+
     _s = get_settings()
     if not _s.verify_capture:
         return None
@@ -361,7 +363,9 @@ def capture_failure_artifact(
     try:
         os.makedirs(output_dir, exist_ok=True)
     except OSError as dir_exc:
-        logger_func("failed to create verify capture directory %s: %s", output_dir, dir_exc)
+        logger_func(
+            "failed to create verify capture directory %s: %s", output_dir, dir_exc
+        )
         return None
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
@@ -372,15 +376,15 @@ def capture_failure_artifact(
     path = os.path.join(output_dir, filename)
 
     focus_blocks = sorted(
-        {
-            int(b)
-            for b in (capture_blocks or [])
-            if b is not None and isinstance(b, int)
-        }
+        {int(b) for b in (capture_blocks or []) if b is not None and isinstance(b, int)}
     )
     related_blocks = _collect_related_blocks(mba, focus_blocks)
     if not related_blocks:
-        related_blocks = [b for b in (getattr(mba, "qty", 0) - 2, getattr(mba, "qty", 1), 0) if 0 <= b < getattr(mba, "qty", 0)]
+        related_blocks = [
+            b
+            for b in (getattr(mba, "qty", 0) - 2, getattr(mba, "qty", 1), 0)
+            if 0 <= b < getattr(mba, "qty", 0)
+        ]
 
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -401,7 +405,9 @@ def capture_failure_artifact(
 
     for serial in related_blocks:
         with contextlib.suppress(Exception):
-            payload["captured_blocks"].append(snapshot_block_for_capture(mba.get_mblock(serial)))
+            payload["captured_blocks"].append(
+                snapshot_block_for_capture(mba.get_mblock(serial))
+            )
 
     try:
         with open(path, "w", encoding="utf-8") as fh:

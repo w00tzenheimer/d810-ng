@@ -17,6 +17,7 @@ def _phase(level: int, friendly: str | None = None) -> ProviderPhaseSnapshot:
 
 class FakeCollector:
     """Minimal collector stub for unit tests (no IDA dependency)."""
+
     name = "FakeCollector"
     maturities: frozenset[int] = frozenset({5, 10})
     level: str = "microcode"
@@ -45,6 +46,7 @@ class AllMaturityCollector(FakeCollector):
 @pytest.fixture
 def store(tmp_path):
     from d810.passes.store import PreanalysisStore
+
     s = PreanalysisStore(tmp_path / "phase_test.db")
     yield s
     s.close()
@@ -75,9 +77,7 @@ class TestPreanalysisPhaseRunIfNeeded:
         collector = FakeCollector()
         phase.register(collector)
 
-        phase.run_microcode_collectors(
-            None, func_ea=0x401000, provider_phase=_phase(5)
-        )
+        phase.run_microcode_collectors(None, func_ea=0x401000, provider_phase=_phase(5))
 
         assert len(collector.call_log) == 1
         assert collector.call_log[0] == (0x401000, 5)
@@ -109,9 +109,7 @@ class TestPreanalysisPhaseRunIfNeeded:
         collector = FakeCollector({"block_count": 7})
         phase.register(collector)
 
-        phase.run_microcode_collectors(
-            None, func_ea=0x401000, provider_phase=_phase(5)
-        )
+        phase.run_microcode_collectors(None, func_ea=0x401000, provider_phase=_phase(5))
 
         loaded = store.load_preanalysis_results(func_ea=0x401000, maturity=5)
         assert len(loaded) == 1
@@ -123,13 +121,9 @@ class TestPreanalysisPhaseRunIfNeeded:
         phase.register(collector)
 
         # First call - should fire
-        phase.run_microcode_collectors(
-            None, func_ea=0x401000, provider_phase=_phase(5)
-        )
+        phase.run_microcode_collectors(None, func_ea=0x401000, provider_phase=_phase(5))
         # Second call same maturity - should NOT fire again
-        phase.run_microcode_collectors(
-            None, func_ea=0x401000, provider_phase=_phase(5)
-        )
+        phase.run_microcode_collectors(None, func_ea=0x401000, provider_phase=_phase(5))
 
         assert len(collector.call_log) == 1
 
@@ -138,19 +132,16 @@ class TestPreanalysisPhaseRunIfNeeded:
         collector = FakeCollector()
         phase.register(collector)
 
-        phase.run_microcode_collectors(
-            None, func_ea=0x401000, provider_phase=_phase(5)
-        )
+        phase.run_microcode_collectors(None, func_ea=0x401000, provider_phase=_phase(5))
         phase.reset(func_ea=0x401000)
-        phase.run_microcode_collectors(
-            None, func_ea=0x401000, provider_phase=_phase(5)
-        )
+        phase.run_microcode_collectors(None, func_ea=0x401000, provider_phase=_phase(5))
 
         assert len(collector.call_log) == 2
 
     def test_collector_exception_does_not_abort_others(self, store):
         class BrokenCollector(FakeCollector):
             name = "BrokenCollector"
+
             def collect(self, target, func_ea, maturity):
                 raise RuntimeError("simulated collector crash")
 
@@ -163,7 +154,5 @@ class TestPreanalysisPhaseRunIfNeeded:
         phase.register(good)
 
         # Should not raise; broken collector is skipped, good one fires
-        phase.run_microcode_collectors(
-            None, func_ea=0x401000, provider_phase=_phase(5)
-        )
+        phase.run_microcode_collectors(None, func_ea=0x401000, provider_phase=_phase(5))
         assert len(good.call_log) == 1

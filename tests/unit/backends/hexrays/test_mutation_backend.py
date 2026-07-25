@@ -54,9 +54,7 @@ def _make_block(
         flags=0,
         start_ea=0x1000 + serial,
         insn_snapshots=(),
-        kind=kind or (
-            BlockKind.ONE_WAY if len(succs) == 1 else BlockKind.ZERO_WAY
-        ),
+        kind=kind or (BlockKind.ONE_WAY if len(succs) == 1 else BlockKind.ZERO_WAY),
     )
 
 

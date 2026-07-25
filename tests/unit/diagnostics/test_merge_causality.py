@@ -5,6 +5,7 @@ each via a different disposition (absorbed / deleted / synthesized_only).
 Locks in the cross-tab, the per-block disposition classification, and the
 EA-based absorber inference.
 """
+
 from __future__ import annotations
 
 import json
@@ -194,12 +195,17 @@ class TestMergeCausalityCli:
     def test_summary_default(
         self, merge_causality_db: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        rc = main([
-            "merge-causality",
-            "--db", str(merge_causality_db),
-            "--from-label", _FROM_LABEL,
-            "--to-label", _TO_LABEL,
-        ])
+        rc = main(
+            [
+                "merge-causality",
+                "--db",
+                str(merge_causality_db),
+                "--from-label",
+                _FROM_LABEL,
+                "--to-label",
+                _TO_LABEL,
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "vanished: 3 blocks" in out
@@ -211,12 +217,17 @@ class TestMergeCausalityCli:
     def test_cross_tab_counts(
         self, merge_causality_db: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        rc = main([
-            "merge-causality",
-            "--db", str(merge_causality_db),
-            "--from-label", _FROM_LABEL,
-            "--to-label", _TO_LABEL,
-        ])
+        rc = main(
+            [
+                "merge-causality",
+                "--db",
+                str(merge_causality_db),
+                "--from-label",
+                _FROM_LABEL,
+                "--to-label",
+                _TO_LABEL,
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         # One absorbed (blk 20), one deleted (blk 30), one synthesized_only (blk 40).
@@ -228,13 +239,19 @@ class TestMergeCausalityCli:
     def test_limit_shows_details(
         self, merge_causality_db: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        rc = main([
-            "merge-causality",
-            "--db", str(merge_causality_db),
-            "--from-label", _FROM_LABEL,
-            "--to-label", _TO_LABEL,
-            "--limit", "5",
-        ])
+        rc = main(
+            [
+                "merge-causality",
+                "--db",
+                str(merge_causality_db),
+                "--from-label",
+                _FROM_LABEL,
+                "--to-label",
+                _TO_LABEL,
+                "--limit",
+                "5",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "blk[20]" in out
@@ -247,14 +264,21 @@ class TestMergeCausalityCli:
     def test_only_disposition_filter(
         self, merge_causality_db: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        rc = main([
-            "merge-causality",
-            "--db", str(merge_causality_db),
-            "--from-label", _FROM_LABEL,
-            "--to-label", _TO_LABEL,
-            "--only-disposition", "deleted",
-            "--limit", "5",
-        ])
+        rc = main(
+            [
+                "merge-causality",
+                "--db",
+                str(merge_causality_db),
+                "--from-label",
+                _FROM_LABEL,
+                "--to-label",
+                _TO_LABEL,
+                "--only-disposition",
+                "deleted",
+                "--limit",
+                "5",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "blk[30]" in out
@@ -265,12 +289,17 @@ class TestMergeCausalityCli:
         self, merge_causality_db: Path, capsys: pytest.CaptureFixture
     ) -> None:
         with pytest.raises(SystemExit) as exc:
-            main([
-                "merge-causality",
-                "--db", str(merge_causality_db),
-                "--from-label", "does_not_exist",
-                "--to-label", _TO_LABEL,
-            ])
+            main(
+                [
+                    "merge-causality",
+                    "--db",
+                    str(merge_causality_db),
+                    "--from-label",
+                    "does_not_exist",
+                    "--to-label",
+                    _TO_LABEL,
+                ]
+            )
         assert exc.value.code == 1
         err = capsys.readouterr().err
         assert "no snapshot with label=" in err

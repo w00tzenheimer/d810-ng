@@ -31,7 +31,9 @@ class ProjectLifecyclePayload:
 
 _project_lifecycle_emitter: EventEmitter[ProjectLifecycleEvent] = EventEmitter()
 _project_reload_cleanup_handlers: dict[str, typing.Callable[[], None]] = {}
-_preanalysis_fact_collector_registration_handlers: dict[str, typing.Callable[..., None]] = {}
+_preanalysis_fact_collector_registration_handlers: dict[
+    str, typing.Callable[..., None]
+] = {}
 
 
 def subscribe_project_lifecycle(
@@ -99,7 +101,9 @@ def emit_preanalysis_fact_collector_registration(
     """Emit the project-profile fact collector registration callback."""
 
     cfg = dict(project_config or {})
-    for name, handler in tuple(_preanalysis_fact_collector_registration_handlers.items()):
+    for name, handler in tuple(
+        _preanalysis_fact_collector_registration_handlers.items()
+    ):
         try:
             handler(runtime=runtime, project_config=cfg)
         except Exception:  # noqa: BLE001 - profile registration must not stop loading
@@ -381,7 +385,7 @@ class ProjectContext:
         function: str | int,
         priors: typing.Any,
     ) -> ProjectContext:
-        "Add scoped analysis priors for one function.\n\n        The concrete priors object is preanalysis-owned.  ProjectContext only\n        provides the scoped project/test harness channel and restores it on\n        context exit.\n        "
+        "Add scoped analysis priors for one function.\n\n        The concrete priors object is preanalysis-owned.  ProjectContext only\n        provides the scoped project/test harness channel and restores it on\n        context exit.\n"
         self.state.manager.add_function_analysis_priors(function, priors)
         return self
 

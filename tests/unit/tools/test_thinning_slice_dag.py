@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[3] / "tools" / "scripts" / "thinning_slice_dag.py"
+SCRIPT = (
+    Path(__file__).resolve().parents[3] / "tools" / "scripts" / "thinning_slice_dag.py"
+)
 _spec = importlib.util.spec_from_file_location("thinning_slice_dag", SCRIPT)
 sd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sd)

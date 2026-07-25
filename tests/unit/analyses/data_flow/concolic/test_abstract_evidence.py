@@ -1,4 +1,5 @@
 """AbstractEvidence = reduced product KnownBits x WrappedInterval (ticket llr-xvkt)."""
+
 from __future__ import annotations
 
 from d810.analyses.abstract_domains.known_bits import KnownBits
@@ -22,9 +23,9 @@ def test_contains_uses_both_components() -> None:
     # interval rejects it (>4) -> contains must consult BOTH components.
     e = AbstractEvidence.singleton(2, W).join(AbstractEvidence.singleton(4, W))
     assert e.contains(2) and e.contains(4)
-    assert not e.contains(3)      # bits reject: 3 is odd, bit0 is known-0
-    assert not e.contains(6)      # interval rejects: 6 > 4 (bits alone allow it)
-    assert not e.contains(8)      # outside both
+    assert not e.contains(3)  # bits reject: 3 is odd, bit0 is known-0
+    assert not e.contains(6)  # interval rejects: 6 > 4 (bits alone allow it)
+    assert not e.contains(8)  # outside both
 
 
 def test_meet_of_distinct_singletons_is_bottom() -> None:
@@ -36,8 +37,8 @@ def test_join_of_distinct_singletons_is_not_constant() -> None:
     j = AbstractEvidence.singleton(1, W).join(AbstractEvidence.singleton(2, W))
     assert j.to_const() is None
     assert not j.is_bottom() and not j.is_top()
-    assert AbstractEvidence.singleton(1, W).leq(j)   # 1 <= join
-    assert AbstractEvidence.singleton(2, W).leq(j)   # 2 <= join
+    assert AbstractEvidence.singleton(1, W).leq(j)  # 1 <= join
+    assert AbstractEvidence.singleton(2, W).leq(j)  # 2 <= join
 
 
 def test_leq_order() -> None:

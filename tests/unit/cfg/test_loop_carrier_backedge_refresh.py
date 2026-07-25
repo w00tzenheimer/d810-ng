@@ -172,14 +172,22 @@ def test_redirects_initial_nonzero_parser_shortcut_through_advance_entry(
     cfg = FlowGraph(
         blocks={
             15: _blk(15, (16, 13), (45, 46), block_type=4),
-            24: _blk(24, (25, 36), (22,), block_type=4, insns=(
-                _insn(43, l_stkoff=0x1F0, r_value=0),
-            )),
+            24: _blk(
+                24,
+                (25, 36),
+                (22,),
+                block_type=4,
+                insns=(_insn(43, l_stkoff=0x1F0, r_value=0),),
+            ),
             25: _blk(25, (45,), (24,), insns=(_insn(12, dst=0x450),)),
             26: _blk(26, (45,), (), insns=(_insn(2, dst=0x450),)),
-            36: _blk(36, (37, 46), (24,), block_type=4, insns=(
-                _insn(43, l_stkoff=0x1F0, r_value=1),
-            )),
+            36: _blk(
+                36,
+                (37, 46),
+                (24,),
+                block_type=4,
+                insns=(_insn(43, l_stkoff=0x1F0, r_value=1),),
+            ),
             37: _blk(37, (38, 39), (36,), block_type=4),
             45: _blk(45, (15,), (25, 26), insns=(_insn(4, dst=0x1A8),)),
             46: _blk(46, (15,), (36,), insns=(_insn(13, dst=0x528),)),
@@ -211,13 +219,21 @@ def test_structural_initial_nonzero_refresh_does_not_require_active_fact(
     cfg = FlowGraph(
         blocks={
             15: _blk(15, (16, 13), (45, 46), block_type=4),
-            24: _blk(24, (25, 36), (22,), block_type=4, insns=(
-                _insn(43, l_stkoff=0x1F0, r_value=0),
-            )),
+            24: _blk(
+                24,
+                (25, 36),
+                (22,),
+                block_type=4,
+                insns=(_insn(43, l_stkoff=0x1F0, r_value=0),),
+            ),
             25: _blk(25, (45,), (24,), insns=(_insn(12, dst=0x450),)),
-            36: _blk(36, (37, 46), (24,), block_type=4, insns=(
-                _insn(43, l_stkoff=0x1F0, r_value=1),
-            )),
+            36: _blk(
+                36,
+                (37, 46),
+                (24,),
+                block_type=4,
+                insns=(_insn(43, l_stkoff=0x1F0, r_value=1),),
+            ),
             37: _blk(37, (38, 39), (36,), block_type=4),
             45: _blk(45, (15,), (25,), insns=(_insn(4, l_stkoff=0x450, dst=0x1A8),)),
             46: _blk(46, (15,), (36,), insns=(_insn(13, dst=0x528),)),
@@ -239,14 +255,22 @@ def test_does_not_redirect_initial_nonzero_when_old_target_is_not_predicate_path
     cfg = FlowGraph(
         blocks={
             15: _blk(15, (16, 13), (45,), block_type=4),
-            24: _blk(24, (25, 36), (22,), block_type=4, insns=(
-                _insn(43, l_stkoff=0x1F0, r_value=0),
-            )),
+            24: _blk(
+                24,
+                (25, 36),
+                (22,),
+                block_type=4,
+                insns=(_insn(43, l_stkoff=0x1F0, r_value=0),),
+            ),
             25: _blk(25, (45,), (24,), insns=(_insn(12, dst=0x450),)),
             26: _blk(26, (45,), (), insns=(_insn(2, dst=0x450),)),
-            36: _blk(36, (37, 46), (24,), block_type=4, insns=(
-                _insn(43, l_stkoff=0x1F0, r_value=1),
-            )),
+            36: _blk(
+                36,
+                (37, 46),
+                (24,),
+                block_type=4,
+                insns=(_insn(43, l_stkoff=0x1F0, r_value=1),),
+            ),
             37: _blk(37, (38, 39), (36,), block_type=4),
             45: _blk(45, (15,), (25, 26), insns=(_insn(4, dst=0x1A8),)),
             46: _blk(46, (99,), (36,), insns=(_insn(13, dst=0x528),)),

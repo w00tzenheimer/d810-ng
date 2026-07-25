@@ -349,14 +349,20 @@ def test_index_keeps_clone_and_split_handles_transaction_local() -> None:
     )
     assert index.resolve(original).serial == 8
     assert index.resolve(retained) is not None
-    assert index.resolve(
-        original,
-        transaction_id="split-clone",
-    ).handle is retained
-    assert index.resolve(
-        split_tail,
-        transaction_id="split-clone",
-    ).serial == 9
+    assert (
+        index.resolve(
+            original,
+            transaction_id="split-clone",
+        ).handle
+        is retained
+    )
+    assert (
+        index.resolve(
+            split_tail,
+            transaction_id="split-clone",
+        ).serial
+        == 9
+    )
 
     clone = index.create_native_handle(identity)
     index.record_clone(
@@ -786,8 +792,7 @@ def test_gateway_insert_commit_publishes_new_proxy_and_shifted_bindings() -> Non
     assert index.resolve(original).serial == 5
     assert index.resolve(created).serial == 3
     assert any(
-        transition.retired_version is None
-        and transition.promoted_version is not None
+        transition.retired_version is None and transition.promoted_version is not None
         for transition in receipt.version_transitions
     )
 
@@ -846,7 +851,6 @@ def test_gateway_remove_commit_retires_proxy_without_promoting_version() -> None
 
     assert index.resolve(original) is None
     assert any(
-        transition.retired_version is not None
-        and transition.promoted_version is None
+        transition.retired_version is not None and transition.promoted_version is None
         for transition in receipt.version_transitions
     )

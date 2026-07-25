@@ -1,4 +1,5 @@
 "Shared state-edge-pair helpers used by reconstruction producers + emitters.\n\n``state_edge_pair(edge)`` extracts the ``(source_state, target_state)`` unsigned\n32-bit tuple that identifies a DAG edge in region-accept bookkeeping. Previously\nduplicated across four producer modules via the copy-local pattern; consolidated\nhere so every Option-C producer/emitter imports from one canonical definition.\n\nLives in the cfg layer because it is pure tuple manipulation on duck-typed\nedge attributes (no preanalysis-specific types), and both cfg emitters and preanalysis\nproducers need it.\n"
+
 from __future__ import annotations
 
 

@@ -29,6 +29,7 @@ edge, it answers "where would a safe redirect go?". CFG edits live in
 a future piece. Piece 5 is unit-tested in isolation and validated
 against existing strategy decisions.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

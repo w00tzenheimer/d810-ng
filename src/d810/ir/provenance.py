@@ -34,6 +34,7 @@ to that event via the abstract observability interface and persists
 rows under the next captured snapshot; this module never imports the
 diag backend.
 """
+
 from __future__ import annotations
 
 import json

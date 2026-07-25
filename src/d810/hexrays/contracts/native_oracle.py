@@ -22,6 +22,7 @@ try:
         oracle_check_block,
         oracle_check_mba,
     )
+
     NATIVE_ORACLE_AVAILABLE = True
 except ImportError:
     NATIVE_ORACLE_AVAILABLE = False

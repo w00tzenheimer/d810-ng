@@ -1,4 +1,5 @@
 """Capture PREOPT source corridors for closure-owned resolver ports."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -120,9 +121,7 @@ class CapturedConditionalBoundaryPort:
     old_fallthrough_target_ea: int | None
     taken_target_ea: int
     fallthrough_target_ea: int
-    delivery_mode: PreoptPortDeliveryMode = (
-        PreoptPortDeliveryMode.PRESERVE_CONDITIONAL
-    )
+    delivery_mode: PreoptPortDeliveryMode = PreoptPortDeliveryMode.PRESERVE_CONDITIONAL
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,8 +194,7 @@ def exclude_closure_conditionals_superseded_by_captured(
         conditional=tuple(
             row
             for row in crossings.conditional
-            if (int(row.source_block_ea), int(row.predicate_ea))
-            not in captured_keys
+            if (int(row.source_block_ea), int(row.predicate_ea)) not in captured_keys
         ),
     )
 
@@ -225,8 +223,7 @@ def semantic_delta_block_entry_eas(
         for block in blocks_by_ea.values()
         if int(block.start_ea) not in live
         or any(
-            int(instruction_ea) not in live
-            for instruction_ea in block.instruction_eas
+            int(instruction_ea) not in live for instruction_ea in block.instruction_eas
         )
     }
     for requested_root_ea in requested_root_eas:
@@ -341,11 +338,7 @@ def capture_preopt_live_to_imported_crossings(
         source_instruction_ea = (
             int(source.tail_ea)
             if source.tail_ea is not None
-            else (
-                int(source.instruction_eas[-1])
-                if source.instruction_eas
-                else None
-            )
+            else (int(source.instruction_eas[-1]) if source.instruction_eas else None)
         )
         if source_instruction_ea is None:
             abstentions.append(
@@ -377,9 +370,7 @@ def capture_preopt_live_to_imported_crossings(
                         else PreoptPortDeliveryMode.REDIRECT_EDGE.value
                     ),
                     resolver_kind="native_semantic_closure_crossing",
-                    old_successor_owners=(
-                        DetachedSnippetBoundaryPortOwner.LIVE,
-                    ),
+                    old_successor_owners=(DetachedSnippetBoundaryPortOwner.LIVE,),
                 )
             )
             continue
@@ -518,8 +509,7 @@ def select_captured_direct_owner_bindings(
             (PreoptBoundaryEndpointOwner.IMPORTED, imported),
             (PreoptBoundaryEndpointOwner.LIVE, live),
         )
-        if source_ea in owned_eas
-        and endpoint in owned_eas
+        if source_ea in owned_eas and endpoint in owned_eas
     )
     if coherent:
         return coherent
@@ -570,10 +560,8 @@ def exclude_ports_satisfied_by_internal_edges(
         row
         for row in captured.direct
         if not (
-            row.request.source_owner
-            == PreoptBoundaryEndpointOwner.IMPORTED
-            and row.request.target_owner
-            == PreoptBoundaryEndpointOwner.IMPORTED
+            row.request.source_owner == PreoptBoundaryEndpointOwner.IMPORTED
+            and row.request.target_owner == PreoptBoundaryEndpointOwner.IMPORTED
             and any(
                 (
                     int(frontier.dispatcher_target_ea),
@@ -625,20 +613,13 @@ def exclude_direct_endpoints_superseded_by_conditionals(
 
         def superseded(endpoint_ea: int) -> bool:
             return (
-                (
-                    row.request.source_owner,
-                    int(endpoint_ea),
-                )
-                in conditional_sources
-                or (
-                    row.request.source_owner
-                    is PreoptBoundaryEndpointOwner.LIVE
-                    and any(
-                        predicate_ea < source_instruction_ea
-                        for predicate_ea in predicates_by_old_arm.get(
-                            int(endpoint_ea), ()
-                        )
-                    )
+                row.request.source_owner,
+                int(endpoint_ea),
+            ) in conditional_sources or (
+                row.request.source_owner is PreoptBoundaryEndpointOwner.LIVE
+                and any(
+                    predicate_ea < source_instruction_ea
+                    for predicate_ea in predicates_by_old_arm.get(int(endpoint_ea), ())
                 )
             )
 
@@ -740,12 +721,8 @@ def reaching_register_definitions(
             if int(successor_ea) in predecessors:
                 predecessors[int(successor_ea)].add(int(block_ea))
 
-    in_definitions = {
-        int(block_ea): frozenset() for block_ea in blocks_by_ea
-    }
-    out_definitions = {
-        int(block_ea): frozenset() for block_ea in blocks_by_ea
-    }
+    in_definitions = {int(block_ea): frozenset() for block_ea in blocks_by_ea}
+    out_definitions = {int(block_ea): frozenset() for block_ea in blocks_by_ea}
     iteration_limit = max(1, len(blocks_by_ea) * 2)
     for _iteration in range(iteration_limit):
         changed = False
@@ -762,9 +739,7 @@ def reaching_register_definitions(
             else:
                 incoming = frozenset({_UNKNOWN_REACHING_DEFINITION})
             writes = _block_register_writes(block, int(register))
-            outgoing = (
-                frozenset({int(writes[-1])}) if writes else incoming
-            )
+            outgoing = frozenset({int(writes[-1])}) if writes else incoming
             if (
                 incoming != in_definitions[int(block_ea)]
                 or outgoing != out_definitions[int(block_ea)]
@@ -854,9 +829,7 @@ def _capture_direct(
         if int(register) == int(request.state_register)
         and int(write_ea) == source_write_ea
     }
-    if literal_values and literal_values != {
-        int(request.state_constant) & 0xFFFFFFFF
-    }:
+    if literal_values and literal_values != {int(request.state_constant) & 0xFFFFFFFF}:
         return None, PreoptPortCaptureAbstention(
             source_write_ea,
             PreoptPortCaptureAbstentionReason.SOURCE_STATE_WRITE_MISMATCH,
@@ -864,9 +837,7 @@ def _capture_direct(
         )
 
     dispatcher_entries = {int(ea) for ea in dispatcher_entry_eas}
-    resolver_cut_instructions = {
-        int(ea) for ea in resolver_cut_instruction_eas
-    }
+    resolver_cut_instructions = {int(ea) for ea in resolver_cut_instruction_eas}
     singleton_source = frozenset({source_write_ea})
     corridor = {
         int(block_ea)
@@ -892,12 +863,10 @@ def _capture_direct(
         (
             block_ea
             for block_ea in sorted(corridor)
-            if blocks_by_ea[block_ea].tail_kind
-            is PreoptPortTailKind.INDIRECT
+            if blocks_by_ea[block_ea].tail_kind is PreoptPortTailKind.INDIRECT
             and (
                 blocks_by_ea[block_ea].tail_ea is None
-                or int(blocks_by_ea[block_ea].tail_ea)
-                not in resolver_cut_instructions
+                or int(blocks_by_ea[block_ea].tail_ea) not in resolver_cut_instructions
             )
         ),
         None,
@@ -935,9 +904,7 @@ def _capture_direct(
     )
     ordered_terminal_endpoints = tuple(sorted(terminal_endpoints))
     if ordered_frontier or ordered_terminal_endpoints:
-        frontier_sources = {
-            int(edge.source_block_ea) for edge in ordered_frontier
-        }
+        frontier_sources = {int(edge.source_block_ea) for edge in ordered_frontier}
         mode = (
             PreoptPortDeliveryMode.PRESERVE_CALL
             if ordered_frontier
@@ -972,10 +939,7 @@ def _capture_direct(
             or (
                 source.tail_kind is PreoptPortTailKind.CONDITIONAL
                 and int(source.start_ea)
-                in {
-                    int(ea)
-                    for ea in proven_pruned_conditional_direct_source_eas
-                }
+                in {int(ea) for ea in proven_pruned_conditional_direct_source_eas}
             )
         )
         and out_definitions[int(source.start_ea)] == singleton_source
@@ -1104,9 +1068,7 @@ def capture_preopt_boundary_ports(
     live_blocks_by_ea: Mapping[int, PreoptPortBlockFact] | None = None,
     dispatcher_entry_eas: Collection[int],
     resolver_cut_instruction_eas: Collection[int] = (),
-    resolver_targets_by_source_block_ea: Mapping[
-        int, Collection[int]
-    ] | None = None,
+    resolver_targets_by_source_block_ea: Mapping[int, Collection[int]] | None = None,
     proven_pruned_conditional_direct_source_eas: Collection[int] = (),
 ) -> CapturedPreoptBoundaryPorts:
     """Capture exact PREOPT endpoints without carrying block serials."""
@@ -1116,9 +1078,7 @@ def capture_preopt_boundary_ports(
     source_graphs = {
         PreoptBoundaryEndpointOwner.IMPORTED: blocks_by_ea,
         PreoptBoundaryEndpointOwner.LIVE: (
-            blocks_by_ea
-            if live_blocks_by_ea is None
-            else live_blocks_by_ea
+            blocks_by_ea if live_blocks_by_ea is None else live_blocks_by_ea
         ),
     }
     definitions_by_owner: dict[
@@ -1139,27 +1099,21 @@ def capture_preopt_boundary_ports(
             for register in owner_registers
         }
         definitions_by_owner[owner] = definitions_by_register
-        expanded_dispatcher_eas_by_owner[owner] = (
-            _expand_resolver_router_bridges(
-                source_blocks,
-                dispatcher_entry_eas,
-                resolver_targets_by_source_block_ea or {},
-                definitions_by_register,
-            )
+        expanded_dispatcher_eas_by_owner[owner] = _expand_resolver_router_bridges(
+            source_blocks,
+            dispatcher_entry_eas,
+            resolver_targets_by_source_block_ea or {},
+            definitions_by_register,
         )
     for request in plan.direct:
         source_blocks = source_graphs[request.source_owner]
-        in_definitions, out_definitions = definitions_by_owner[
-            request.source_owner
-        ][
+        in_definitions, out_definitions = definitions_by_owner[request.source_owner][
             int(request.state_register)
         ]
         captured, abstention = _capture_direct(
             request,
             blocks_by_ea=source_blocks,
-            dispatcher_entry_eas=expanded_dispatcher_eas_by_owner[
-                request.source_owner
-            ],
+            dispatcher_entry_eas=expanded_dispatcher_eas_by_owner[request.source_owner],
             resolver_cut_instruction_eas=resolver_cut_instruction_eas,
             in_definitions=in_definitions,
             out_definitions=out_definitions,

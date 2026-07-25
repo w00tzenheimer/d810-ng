@@ -5,6 +5,7 @@ proofs by whether their endpoints belong to the imported union or the live
 PREOPT MBA. A later capture adapter resolves the exact PREOPT corridor and
 delivery shape; this module never stores maturity-local block serials.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -121,9 +122,7 @@ def classify_preopt_boundary_endpoint_owner(
         for start_ea, end_ea in imported_block_ranges.values()
     )
     live = {int(native_ea) for native_ea in live_native_eas}
-    is_live = address in live or (
-        block_address is not None and block_address in live
-    )
+    is_live = address in live or (block_address is not None and block_address in live)
     if preferred_owner is PreoptBoundaryEndpointOwner.IMPORTED:
         return preferred_owner if imported else None
     if preferred_owner is PreoptBoundaryEndpointOwner.LIVE:
@@ -482,9 +481,7 @@ def exclude_preopt_conditional_topology_with_planned_predicates(
     """
     planned_predicates = {int(row.predicate_ea) for row in planned}
     return tuple(
-        row
-        for row in topology
-        if int(row.predicate_ea) not in planned_predicates
+        row for row in topology if int(row.predicate_ea) not in planned_predicates
     )
 
 
@@ -505,18 +502,16 @@ def plan_preopt_conditional_routing_boundary_ports(
     conditional: list[PreoptConditionalBoundaryPort] = []
     abstentions: list[PreoptBoundaryPortAbstention] = []
     for fact in topology:
-        taken_target, taken_error, taken_failure_ea = (
-            _resolve_exact_conditional_route(
+        taken_target, taken_error, taken_failure_ea = _resolve_exact_conditional_route(
             int(fact.taken_successor_ea),
             exact_targets_by_source_ea=exact_targets_by_source_ea,
             stable_endpoint_eas=stable_endpoint_eas,
-            )
         )
         fallthrough_target, fallthrough_error, fallthrough_failure_ea = (
             _resolve_exact_conditional_route(
-            int(fact.fallthrough_successor_ea),
-            exact_targets_by_source_ea=exact_targets_by_source_ea,
-            stable_endpoint_eas=stable_endpoint_eas,
+                int(fact.fallthrough_successor_ea),
+                exact_targets_by_source_ea=exact_targets_by_source_ea,
+                stable_endpoint_eas=stable_endpoint_eas,
             )
         )
         route_error = taken_error or fallthrough_error
@@ -645,9 +640,9 @@ def plan_preopt_terminal_return_boundary_ports(
     """
     requests_by_predicate: dict[int, list[TerminalReturnCarrierRequest]] = {}
     for request in requests:
-        requests_by_predicate.setdefault(
-            int(request.source_handler_ea), []
-        ).append(request)
+        requests_by_predicate.setdefault(int(request.source_handler_ea), []).append(
+            request
+        )
 
     candidates: list[PreoptConditionalBoundaryPort] = []
     abstentions: list[PreoptBoundaryPortAbstention] = []
@@ -655,9 +650,7 @@ def plan_preopt_terminal_return_boundary_ports(
         fact_requests = requests_by_predicate.get(int(fact.predicate_ea), ())
         for request in fact_requests:
             terminal_target = int(request.terminal_target_ea)
-            taken_is_terminal = terminal_target == int(
-                fact.taken_successor_ea
-            )
+            taken_is_terminal = terminal_target == int(fact.taken_successor_ea)
             fallthrough_is_terminal = terminal_target == int(
                 fact.fallthrough_successor_ea
             )
@@ -735,9 +728,7 @@ def plan_preopt_terminal_return_boundary_ports(
                     source_block_ea=int(fact.source_block_ea),
                     predicate_ea=int(fact.predicate_ea),
                     taken_target_ea=int(fact.taken_successor_ea),
-                    fallthrough_target_ea=int(
-                        fact.fallthrough_successor_ea
-                    ),
+                    fallthrough_target_ea=int(fact.fallthrough_successor_ea),
                     state_register=int(request.state_var_reg),
                     taken_state=(state_constant if taken_is_terminal else None),
                     fallthrough_state=(
@@ -777,9 +768,7 @@ def coalesce_preopt_conditional_boundary_ports(
     tuple[PreoptBoundaryPortAbstention, ...],
 ]:
     """Collapse duplicate proofs while rejecting semantic disagreement."""
-    rows_by_source: dict[
-        tuple[int, int], list[PreoptConditionalBoundaryPort]
-    ] = {}
+    rows_by_source: dict[tuple[int, int], list[PreoptConditionalBoundaryPort]] = {}
     for row in rows:
         rows_by_source.setdefault(
             (int(row.source_block_ea), int(row.predicate_ea)),
@@ -788,9 +777,7 @@ def coalesce_preopt_conditional_boundary_ports(
 
     conditional: list[PreoptConditionalBoundaryPort] = []
     abstentions: list[PreoptBoundaryPortAbstention] = []
-    for (_source_block_ea, predicate_ea), candidates in sorted(
-        rows_by_source.items()
-    ):
+    for (_source_block_ea, predicate_ea), candidates in sorted(rows_by_source.items()):
         semantic_keys = {
             _conditional_semantic_key(candidate) for candidate in candidates
         }
@@ -842,9 +829,7 @@ def plan_preopt_resolver_boundary_ports(
     may preserve the predicate while pruning or retargeting both state arms at
     a later PREOPT callback.
     """
-    direct_by_source: dict[
-        tuple[int, int], set[PreoptDirectBoundaryPort]
-    ] = {}
+    direct_by_source: dict[tuple[int, int], set[PreoptDirectBoundaryPort]] = {}
     conditional_by_source: dict[
         tuple[int, int], set[PreoptConditionalBoundaryPort]
     ] = {}
@@ -883,9 +868,7 @@ def plan_preopt_resolver_boundary_ports(
 
     direct: list[PreoptDirectBoundaryPort] = []
     conditional: list[PreoptConditionalBoundaryPort] = []
-    for (_source_block_ea, source_ea), candidates in sorted(
-        direct_by_source.items()
-    ):
+    for (_source_block_ea, source_ea), candidates in sorted(direct_by_source.items()):
         if len(candidates) == 1:
             direct.append(next(iter(candidates)))
         else:

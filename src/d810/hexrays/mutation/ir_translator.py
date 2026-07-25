@@ -5,6 +5,7 @@ Wraps existing IDA infrastructure:
 - lower() -> materializes PatchPlan -> DeferredGraphModifier queue calls
 - verify() -> calls safe_verify(mba)
 """
+
 from __future__ import annotations
 
 from d810.core.logging import getLogger
@@ -87,7 +88,9 @@ from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 
 if TYPE_CHECKING:
     import ida_hexrays
-    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier as DeferredGraphModifierType
+    from d810.hexrays.mutation.deferred_modifier import (
+        DeferredGraphModifier as DeferredGraphModifierType,
+    )
     from d810.hexrays.mutation.cfg_verify import safe_verify as safe_verify_type
 
 logger = getLogger(__name__)
@@ -321,7 +324,7 @@ def _control_transfer_from_hexrays(opcode: int) -> ControlTransferKind | None:
 
 
 def classify_branch_predicate(insn: object) -> PredicateKind | None:
-    "Return the portable predicate carried by a live conditional\n    branch / set instruction, or ``None`` for non-predicate opcodes.\n\n    Note that this covers BOTH conditional branches (``m_jX``) and\n    byte-materialized predicates (``m_setX``); they share the\n    predicate semantic and the call site decides whether the\n    result is consumed as branch direction (pair with\n    ``classify_control_transfer``) or as a materialized byte (no\n    associated transfer kind).\n\n    Use this at the preanalysis-side seam where a file previously did\n    ``if insn.opcode == ida_hexrays.m_jbe`` -- now ask\n    ``if classify_branch_predicate(insn) is PredicateKind.ULE``.\n    "
+    "Return the portable predicate carried by a live conditional\n    branch / set instruction, or ``None`` for non-predicate opcodes.\n\n    Note that this covers BOTH conditional branches (``m_jX``) and\n    byte-materialized predicates (``m_setX``); they share the\n    predicate semantic and the call site decides whether the\n    result is consumed as branch direction (pair with\n    ``classify_control_transfer``) or as a materialized byte (no\n    associated transfer kind).\n\n    Use this at the preanalysis-side seam where a file previously did\n    ``if insn.opcode == ida_hexrays.m_jbe`` -- now ask\n    ``if classify_branch_predicate(insn) is PredicateKind.ULE``.\n"
     try:
         return _predicate_kind_from_hexrays(int(getattr(insn, "opcode")))
     except (AttributeError, TypeError, ValueError):
@@ -439,7 +442,9 @@ def capture_mop_snapshot(
     kind = _operand_kind_from_hexrays(t)
     if t == ida_hexrays.mop_n:
         nnn = mop.nnn
-        return CfgMopSnapshot(t=t, size=size, value=int(nnn.value) if nnn is not None else 0, kind=kind)
+        return CfgMopSnapshot(
+            t=t, size=size, value=int(nnn.value) if nnn is not None else 0, kind=kind
+        )
     if t == ida_hexrays.mop_S:
         s = mop.s
         stkoff = s.off if s is not None else None
@@ -467,7 +472,9 @@ def capture_mop_snapshot(
                 None if sub_opcode is None else _insn_kind_from_hexrays(sub_opcode)
             )
             sub_value_op_kind = (
-                None if sub_opcode is None else opcode_lift.value_op_from_opcode(sub_opcode)
+                None
+                if sub_opcode is None
+                else opcode_lift.value_op_from_opcode(sub_opcode)
             )
             sub_l = capture_mop_snapshot(getattr(inner, "l", None), lvar_stkoff_map)
             sub_r = capture_mop_snapshot(getattr(inner, "r", None), lvar_stkoff_map)
@@ -550,7 +557,8 @@ def capture_mop_snapshot(
             args=tuple(
                 arg_snapshot
                 for arg in args
-                if (arg_snapshot := capture_mop_snapshot(arg, lvar_stkoff_map)) is not None
+                if (arg_snapshot := capture_mop_snapshot(arg, lvar_stkoff_map))
+                is not None
             ),
             kind=kind,
         )
@@ -657,9 +665,7 @@ def lift_block(
         flags=flags,
         start_ea=start_ea,
         native_start_ea=(
-            mapped_start_ea
-            if 0 <= mapped_start_ea < 0xFFFFFFFFFFFFFFFF
-            else None
+            mapped_start_ea if 0 <= mapped_start_ea < 0xFFFFFFFFFFFFFFFF else None
         ),
         insn_snapshots=tuple(insn_snapshots),
         kind=_block_kind_from_hexrays(block_type),
@@ -875,7 +881,6 @@ def _unsupported_duplicate_replay_reason(
     return None
 
 
-
 class IDAIRTranslator:
     """CFGBackend implementation for IDA Pro's Hex-Rays microcode.
 
@@ -1071,15 +1076,14 @@ class IDAIRTranslator:
         # Opt-in transactional mode: gates the batch with pre-apply conflict
         # detection and rolls back on any mid-batch abort. Off by default to
         # preserve existing behavior; enable for probes that want all-or-nothing.
-        use_transactional = os.getenv(
-            "D810_DEFERRED_TRANSACTIONAL", ""
-        ).strip() == "1" and enable_rollback
+        use_transactional = (
+            os.getenv("D810_DEFERRED_TRANSACTIONAL", "").strip() == "1"
+            and enable_rollback
+        )
         # Opt-in staged atomic mode: destructive mods lowered to copy-and-swap
         # via mba.copy_block so intermediate state is invisible to IDA-level
         # observers. Composable with transactional.
-        use_staged_atomic = os.getenv(
-            "D810_DEFERRED_STAGED_ATOMIC", ""
-        ).strip() == "1"
+        use_staged_atomic = os.getenv("D810_DEFERRED_STAGED_ATOMIC", "").strip() == "1"
         try:
             result_count = modifier.apply(
                 run_optimize_local=not merge_blocks_cleanup,
@@ -1130,7 +1134,15 @@ class IDAIRTranslator:
             match step:
                 case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
                     continue
-                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchEdgeSplitCorridor() | PatchConditionalRedirect() | PatchCloneConditionalAsGoto() | PatchCloneConditionalAsGotoFromBranchArm():
+                case (
+                    PatchNopInstructions()
+                    | PatchZeroStateWrite()
+                    | PatchEdgeSplitTrampoline()
+                    | PatchEdgeSplitCorridor()
+                    | PatchConditionalRedirect()
+                    | PatchCloneConditionalAsGoto()
+                    | PatchCloneConditionalAsGotoFromBranchArm()
+                ):
                     continue
                 case PatchPromoteOperandToScalar():
                     continue
@@ -1189,7 +1201,6 @@ class IDAIRTranslator:
                 case _:
                     reasons.append(type(step).__name__)
         return reasons
-
 
     def _queue_patch_step(
         self,
@@ -1318,8 +1329,7 @@ class IDAIRTranslator:
                     trampoline,
                     target,
                     description=(
-                        f"bypass dispatcher trampoline {src}: "
-                        f"{trampoline}->{target}"
+                        f"bypass dispatcher trampoline {src}: {trampoline}->{target}"
                     ),
                 )
 
@@ -1535,7 +1545,9 @@ class IDAIRTranslator:
                             entry.target_serial,
                             entry.replay_serial,
                             entry.clone_serial,
-                            tuple(insn_snapshots_from_captured_body(entry.captured_body)),
+                            tuple(
+                                insn_snapshots_from_captured_body(entry.captured_body)
+                            ),
                         )
                     )
                 modifier.queue_duplicate_replay_and_redirect(
@@ -1642,7 +1654,9 @@ class IDAIRTranslator:
                 modifier.queue_reorder_blocks(
                     dfs_block_order=order,
                     old_to_new=dict(old_to_new_pairs) if old_to_new_pairs else None,
-                    old_to_trampoline=dict(two_way_tramp_pairs) if two_way_tramp_pairs else None,
+                    old_to_trampoline=dict(two_way_tramp_pairs)
+                    if two_way_tramp_pairs
+                    else None,
                     description=f"reorder {len(order)} blocks in DFS order",
                 )
 
@@ -1758,7 +1772,10 @@ class IDAIRTranslator:
                 )
 
             case _:
-                logger.warning("Unsupported legacy block operation: %s", type(modification).__name__)
+                logger.warning(
+                    "Unsupported legacy block operation: %s",
+                    type(modification).__name__,
+                )
 
     def verify(self, mba: "ida_hexrays.mba_t") -> bool:
         """Verify mba consistency after modifications.

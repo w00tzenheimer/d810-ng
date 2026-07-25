@@ -5,6 +5,7 @@ finds an external LLVM ``opt`` binary, verifies the hand-authored fixture, runs 
 small middle-end pipeline, and compares the result with the checked-in
 ``after.ll`` artifact.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -117,7 +118,9 @@ def run_opt(
             "optimized IR differs from checked-in after.ll; refresh intentionally "
             "only after reviewing the semantic diff"
         )
-    return OptResult(opt=opt_path, before=before_path, after=after_path, optimized=optimized)
+    return OptResult(
+        opt=opt_path, before=before_path, after=after_path, optimized=optimized
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

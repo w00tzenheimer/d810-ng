@@ -1,4 +1,5 @@
 """Read-only preflight checks for native pass contracts."""
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -100,11 +101,7 @@ def _diagnose_missing_requirements(
             )
         else:
             missing = tuple(
-                sorted(
-                    name
-                    for name in contract.requires.analyses
-                    if not method(name)
-                )
+                sorted(name for name in contract.requires.analyses if not method(name))
             )
             if missing:
                 diagnostics.append(

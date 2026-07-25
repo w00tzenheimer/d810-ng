@@ -156,7 +156,11 @@ class DispatchTable:
     def __repr__(self) -> str:
         """Return a human-readable representation."""
         entries_str = ", ".join(f"0x{c:x}->{t}" for c, t in self.as_dict().items())
-        default_str = f", default->{self.default_serial}" if self.default_serial is not None else ""
+        default_str = (
+            f", default->{self.default_serial}"
+            if self.default_serial is not None
+            else ""
+        )
         return f"DispatchTable([{entries_str}]{default_str})"
 
 

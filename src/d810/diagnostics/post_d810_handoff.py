@@ -150,7 +150,9 @@ def _collect_offset_sites(
             used_offsets.add(int(src_l_stkoff))
         if src_r_stkoff in offsets:
             used_offsets.add(int(src_r_stkoff))
-        use_sites.append(f"blk[{int(block_serial)}]:{int(insn_index)} {str(dstr or '')}")
+        use_sites.append(
+            f"blk[{int(block_serial)}]:{int(insn_index)} {str(dstr or '')}"
+        )
 
     defined_offsets: set[int] = {int(row[2]) for row in def_rows if row[2] is not None}
     def_sites = tuple(

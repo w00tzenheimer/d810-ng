@@ -7,6 +7,7 @@ binary and unary ops.
 
 Ported from herast (herast/tree/patterns/expressions.py).
 """
+
 from __future__ import annotations
 
 import sys
@@ -43,7 +44,10 @@ class ExpressionPat(BasePat):
         base_check = BasePat.base_check(func)
 
         def __perform_expr_check(
-            self: ExpressionPat, item: typing.Any, *args: typing.Any, **kwargs: typing.Any
+            self: ExpressionPat,
+            item: typing.Any,
+            *args: typing.Any,
+            **kwargs: typing.Any,
         ) -> bool:
             if idaapi is not None and self.skip_casts and item.op == idaapi.cot_cast:
                 item = item.x
@@ -145,12 +149,20 @@ class CastPat(ExpressionPat):
 
     op = idaapi.cot_cast if idaapi is not None else None
 
-    def __init__(self, pat: BasePat, skip_casts: bool = False, **kwargs: typing.Any) -> None:
+    def __init__(
+        self, pat: BasePat, skip_casts: bool = False, **kwargs: typing.Any
+    ) -> None:
         super().__init__(skip_casts=False, **kwargs)
         self.pat = pat
 
     @ExpressionPat.expr_check
-    def check(self, item: typing.Any, ctx: MatchContext, *args: typing.Any, **kwargs: typing.Any) -> bool:
+    def check(
+        self,
+        item: typing.Any,
+        ctx: MatchContext,
+        *args: typing.Any,
+        **kwargs: typing.Any,
+    ) -> bool:
         return self.pat.check(item.x, ctx)
 
 
@@ -184,6 +196,7 @@ class ObjPat(ExpressionPat):
                 self.names.add(obj_info)
                 if idaapi is not None:
                     from d810.ctree.utils import resolve_name_address
+
                     addr = resolve_name_address(obj_info)
                     if addr == idaapi.BADADDR:
                         logger.warning(

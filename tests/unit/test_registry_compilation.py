@@ -16,6 +16,7 @@ import unittest
 @dataclasses.dataclass
 class MockRule:
     """Minimal rule mock for testing."""
+
     name: str
     generation: int = 0
 
@@ -27,6 +28,7 @@ class CompiledRuleView:
     This dataclass represents the compiled view of all active rules.
     It includes a generation counter to detect when invalidation is needed.
     """
+
     generation: int
     rule_count: int
     compiled_at: float  # time.monotonic()
@@ -54,7 +56,10 @@ class MockOptimizer:
 
     def get_compiled_view(self) -> CompiledRuleView:
         """Get or rebuild the compiled rule view."""
-        if self._compiled_view is None or self._compiled_view.generation != self._generation:
+        if (
+            self._compiled_view is None
+            or self._compiled_view.generation != self._generation
+        ):
             self._compiled_view = self._compile_rules()
         return self._compiled_view
 

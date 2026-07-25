@@ -9,11 +9,14 @@ Pure transform: accepts an iterable of `ReconstructionCandidate`, returns a
 canonicalized tuple and a count of collapsed duplicates. No flow-graph access,
 no IDA calls.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
 
-from d810.analyses.control_flow.reconstruction_candidate_builder import ReconstructionCandidate
+from d810.analyses.control_flow.reconstruction_candidate_builder import (
+    ReconstructionCandidate,
+)
 
 
 def canonicalize_same_target_conditional_candidates(
@@ -33,7 +36,9 @@ def canonicalize_same_target_conditional_candidates(
             continue
         source_anchor = getattr(candidate.edge, "source_anchor", None)
         branch_arm = getattr(source_anchor, "branch_arm", None)
-        source_state = getattr(getattr(candidate.edge, "source_key", None), "state_const", None)
+        source_state = getattr(
+            getattr(candidate.edge, "source_key", None), "state_const", None
+        )
         if branch_arm is None:
             continue
         key = (
@@ -58,7 +63,9 @@ def canonicalize_same_target_conditional_candidates(
             canonicalized.append(candidate)
             continue
         source_anchor = getattr(candidate.edge, "source_anchor", None)
-        source_state = getattr(getattr(candidate.edge, "source_key", None), "state_const", None)
+        source_state = getattr(
+            getattr(candidate.edge, "source_key", None), "state_const", None
+        )
         key = (
             int(getattr(source_anchor, "block_serial", candidate.horizon_block)),
             int(candidate.horizon_block),

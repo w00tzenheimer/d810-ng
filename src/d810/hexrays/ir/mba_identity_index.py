@@ -190,9 +190,7 @@ class MbaBlockIdentityIndex:
         }
         current_block_bindings = ()
         if current_mba_identity_binding is not None:
-            snapshot_origins = dict(
-                current_mba_identity_binding.instruction_origins
-            )
+            snapshot_origins = dict(current_mba_identity_binding.instruction_origins)
             if (
                 imported_instruction_origins is not None
                 and normalized_imported_origins != snapshot_origins
@@ -1122,11 +1120,7 @@ class MbaBlockIdentityIndex:
             if anchors:
                 boundary_anchor = min(anchors) if entry else max(anchors)
                 return self._bound_for_tokens(tokens_by_anchor[boundary_anchor])
-        boundary_ea = (
-            intervals[0].start_ea
-            if entry
-            else intervals[-1].end_ea - 1
-        )
+        boundary_ea = intervals[0].start_ea if entry else intervals[-1].end_ea - 1
         imported_tokens = tuple(
             token
             for token, handle in self._handles_by_token.items()

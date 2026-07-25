@@ -9,6 +9,7 @@ resolvers), so the chain stays cycle-free under the ``check-cycles`` contract.
 NEVER a bool, so :func:`resolve_dispatcher` can rank competing providers
 deterministically by ``(specificity, confidence)`` before committing to one.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Protocol, runtime_checkable

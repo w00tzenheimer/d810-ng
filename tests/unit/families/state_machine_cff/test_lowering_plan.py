@@ -1,4 +1,5 @@
 """LS12 C2: structural tests for FlowAutomaton + LoweringGraph."""
+
 from __future__ import annotations
 
 from d810.families.state_machine_cff import FlowAutomaton as FlowAutomatonFacade

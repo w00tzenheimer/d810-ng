@@ -12,6 +12,7 @@ Sample requirements:
     OLLVM-flattened functions whose unflattening produces mergeable
     goto chains.
 """
+
 from __future__ import annotations
 
 import os
@@ -28,7 +29,9 @@ def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
         return override
-    return "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    return (
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +76,7 @@ BLOCK_MERGE_CASES = [
 def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     """Setup fixture for libobfuscated tests -- runs once per class."""
     import idaapi
+
     if not idaapi.init_hexrays_plugin():
         pytest.skip("Hex-Rays decompiler plugin not available")
     return ida_database
@@ -121,6 +125,7 @@ class TestCleanupFamilyBlockMerge:
 # real ida_hexrays constants.
 # ---------------------------------------------------------------------------
 
+
 class TestCleanupFamilyBlockMergeAttributes:
     """Verify cleanup-family rule attributes with real IDA constants."""
 
@@ -131,6 +136,7 @@ class TestCleanupFamilyBlockMergeAttributes:
         from d810.optimizers.microcode.flow.flattening.unflattener_cleanup_family import (
             SimpleFlatteningCleanupUnflattener,
         )
+
         assert SimpleFlatteningCleanupUnflattener().name == (
             "SimpleFlatteningCleanupUnflattener"
         )
@@ -140,6 +146,7 @@ class TestCleanupFamilyBlockMergeAttributes:
         from d810.optimizers.microcode.flow.flattening.unflattener_cleanup_family import (
             SimpleFlatteningCleanupUnflattener,
         )
+
         desc = SimpleFlatteningCleanupUnflattener.DESCRIPTION.lower()
         assert "cleanup" in desc
 
@@ -148,6 +155,7 @@ class TestCleanupFamilyBlockMergeAttributes:
         from d810.optimizers.microcode.flow.flattening.unflattener_cleanup_family import (
             SimpleFlatteningCleanupUnflattener,
         )
+
         assert SimpleFlatteningCleanupUnflattener.USES_DEFERRED_CFG is True
 
     @pytest.mark.ida_required
@@ -156,6 +164,7 @@ class TestCleanupFamilyBlockMergeAttributes:
         from d810.optimizers.microcode.flow.flattening.unflattener_cleanup_family import (
             SimpleFlatteningCleanupUnflattener,
         )
+
         assert ida_hexrays.MMAT_GLBOPT1 in (
             SimpleFlatteningCleanupUnflattener.DEFAULT_UNFLATTENING_MATURITIES
         )

@@ -1,4 +1,5 @@
 """ModulePassManager project-scope behavior."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -230,16 +231,22 @@ def test_reset_project_clears_all_function_managers_and_schedulers():
 
     manager.reset_project()
 
-    assert first.scheduler.drain(
-        func_ea=0x1000,
-        current_maturity=IRMaturity.GLOBAL_ANALYZED,
-        domain=RunLaterDomain.PIPELINE_PASS,
-    ) == ()
-    assert second.scheduler.drain(
-        func_ea=0x2000,
-        current_maturity=IRMaturity.GLOBAL_ANALYZED,
-        domain=RunLaterDomain.PIPELINE_PASS,
-    ) == ()
+    assert (
+        first.scheduler.drain(
+            func_ea=0x1000,
+            current_maturity=IRMaturity.GLOBAL_ANALYZED,
+            domain=RunLaterDomain.PIPELINE_PASS,
+        )
+        == ()
+    )
+    assert (
+        second.scheduler.drain(
+            func_ea=0x2000,
+            current_maturity=IRMaturity.GLOBAL_ANALYZED,
+            domain=RunLaterDomain.PIPELINE_PASS,
+        )
+        == ()
+    )
     assert manager.function_manager_for(0x1000) is not first
     assert manager.function_manager_for(0x2000) is not second
 

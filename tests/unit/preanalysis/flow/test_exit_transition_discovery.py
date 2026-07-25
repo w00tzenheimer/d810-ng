@@ -17,7 +17,9 @@ def _insn(*, ea: int = 0x1000) -> InsnSnapshot:
     return InsnSnapshot(opcode=1, ea=ea, operands=(), kind=InsnKind.MOV)
 
 
-def _block(serial: int, *, insns: tuple[InsnSnapshot, ...], succs: tuple[int, ...] = ()) -> BlockSnapshot:
+def _block(
+    serial: int, *, insns: tuple[InsnSnapshot, ...], succs: tuple[int, ...] = ()
+) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
         block_type=1,
@@ -96,9 +98,7 @@ class TestCollectConditionChainDefaultTransitionCandidates:
         assert candidates[0].final_state == 0x22
 
     def test_exit_transition_discovery_does_not_import_live_hexrays(self) -> None:
-        assert "import ida_hexrays" not in inspect.getsource(
-            exit_transition_discovery
-        )
+        assert "import ida_hexrays" not in inspect.getsource(exit_transition_discovery)
 
 
 class TestCollectValrangeExitTransitionCandidates:

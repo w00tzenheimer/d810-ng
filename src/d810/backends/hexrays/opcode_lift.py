@@ -1,4 +1,5 @@
 """Backend-facing Hex-Rays opcode lift seam."""
+
 from __future__ import annotations
 
 from d810.hexrays.opcode_lift import (

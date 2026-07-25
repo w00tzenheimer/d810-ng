@@ -17,6 +17,7 @@ strategy logs topology metrics (SCC count/sizes, within-SCC back-edge
 count) before AND after planning so the operator can see the effect
 empirically without the strategy being on by default.
 """
+
 from __future__ import annotations
 
 import os

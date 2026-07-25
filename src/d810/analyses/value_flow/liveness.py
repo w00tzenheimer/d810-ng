@@ -15,6 +15,7 @@ relation, a node's ``in_state`` is its **live-OUT** and ``out_state`` is its
 This answers "is the dispatcher state variable dead at the aligned terminal?"
 -- the liveness half of the carrier-delivery decision.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -908,8 +908,9 @@ def test_apply_transactional_rolls_back_alias_scalarization_verify_failure(monke
     monkeypatch.setattr(
         modifier,
         "_restore_from_snapshot",
-        lambda _snap: restore_calls.__setitem__("count", restore_calls["count"] + 1)
-        or True,
+        lambda _snap: (
+            restore_calls.__setitem__("count", restore_calls["count"] + 1) or True
+        ),
     )
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "safe_verify", _safe_verify)
@@ -1249,9 +1250,7 @@ def test_conditional_lowering_helper_remaps_later_branch_targets(monkeypatch):
         assert insertion_serial == 11
         mba.qty += 1
         target.serial = 21
-        mba.blocks = {
-            int(block.serial): block for block in mba.blocks.values()
-        }
+        mba.blocks = {int(block.serial): block for block in mba.blocks.values()}
         mba.blocks[11] = helper
         return helper
 
@@ -2603,8 +2602,9 @@ def test_apply_pre_rejects_duplicate_block_with_fallthrough_predecessor(monkeypa
     monkeypatch.setattr(
         modifier,
         "_apply_single",
-        lambda _m: called.__setitem__("apply_single", called["apply_single"] + 1)
-        or True,
+        lambda _m: (
+            called.__setitem__("apply_single", called["apply_single"] + 1) or True
+        ),
     )
     monkeypatch.setattr(dm, "_format_block_info", lambda _blk: "<blk>")
     monkeypatch.setattr(dm, "safe_verify", lambda *_a, **_k: None)
@@ -2644,11 +2644,13 @@ def test_duplicate_block_rejects_unexpected_secondary_serial(monkeypatch):
         dm,
         "change_1way_block_successor",
         lambda blk, *_a, **_k: (
-            calls.__setitem__("pred", calls["pred"] + 1)
-            if blk.serial == 6
-            else calls.__setitem__("clone", calls["clone"] + 1)
-        )
-        or True,
+            (
+                calls.__setitem__("pred", calls["pred"] + 1)
+                if blk.serial == 6
+                else calls.__setitem__("clone", calls["clone"] + 1)
+            )
+            or True
+        ),
     )
 
     ok = modifier._apply_duplicate_block_and_redirect(
@@ -2720,11 +2722,13 @@ def test_duplicate_block_applies_explicit_conditional_targets(monkeypatch):
         dm,
         "change_1way_block_successor",
         lambda blk, new_target, **_kwargs: (
-            pred_calls.__setitem__("count", pred_calls["count"] + 1)
-            if blk.serial == 6 and new_target == 7
-            else None
-        )
-        or True,
+            (
+                pred_calls.__setitem__("count", pred_calls["count"] + 1)
+                if blk.serial == 6 and new_target == 7
+                else None
+            )
+            or True
+        ),
     )
 
     monkeypatch.setattr(
@@ -3317,10 +3321,12 @@ class TestPrivateTerminalSuffix:
 
         assert any(
             s == clone_s_serial and t == clone_t_serial for s, t in wiring_changes
-        ), f"Expected clone_S({clone_s_serial}) -> clone_T({clone_t_serial}), got {wiring_changes}"
-        assert any(
-            t == clone_s_serial for _, t in anchor_redirects
-        ), f"Expected anchor redirect to clone_S({clone_s_serial}), got {anchor_redirects}"
+        ), (
+            f"Expected clone_S({clone_s_serial}) -> clone_T({clone_t_serial}), got {wiring_changes}"
+        )
+        assert any(t == clone_s_serial for _, t in anchor_redirects), (
+            f"Expected anchor redirect to clone_S({clone_s_serial}), got {anchor_redirects}"
+        )
 
         # Original S->T chain is unchanged (blocks still in MBA)
         assert 2 in mba.blocks
@@ -3662,9 +3668,9 @@ class TestStagedAtomicClassification:
         """Every ModificationType must have a staged_atomic classification."""
         for mod_type in dm.ModificationType:
             cls = dm.classify_for_staged_atomic(mod_type)
-            assert isinstance(
-                cls, dm.StagedAtomicClassification
-            ), f"{mod_type.name} returned {cls!r}"
+            assert isinstance(cls, dm.StagedAtomicClassification), (
+                f"{mod_type.name} returned {cls!r}"
+            )
 
     def test_classify_destructive_expressible_bucket_contents(self):
         """Every in-place topology mutation must use staged copy-and-swap."""
@@ -4225,9 +4231,7 @@ class TestStagedAtomicApply:
 
         def _strict_remove_block(self, block):
             if block.succset.size() or block.predset.size():
-                raise RuntimeError(
-                    f"INTERR 51919: blk[{block.serial}] still has edges"
-                )
+                raise RuntimeError(f"INTERR 51919: blk[{block.serial}] still has edges")
             removed_copies.append(int(block.serial))
             self.blocks.pop(int(block.serial), None)
 
@@ -4381,19 +4385,19 @@ class TestStagedAtomicApply:
         # wired blk[0] -> copy.  Because we bypass change_1way_block_successor
         # for serial 0, no (0, *, "1way") entry is recorded by the patched
         # wiring helpers — we validate the succset/predset state instead.
-        assert 5 not in list(
-            entry.succset
-        ), "entry blk[0] must no longer target the original blk[5]"
-        assert copy_serial in list(
-            entry.succset
-        ), "entry blk[0] must target the copy after direct rewire"
-        assert 0 not in list(
-            src.predset
-        ), "original blk[5] must no longer list blk[0] as a pred"
+        assert 5 not in list(entry.succset), (
+            "entry blk[0] must no longer target the original blk[5]"
+        )
+        assert copy_serial in list(entry.succset), (
+            "entry blk[0] must target the copy after direct rewire"
+        )
+        assert 0 not in list(src.predset), (
+            "original blk[5] must no longer list blk[0] as a pred"
+        )
         copy_blk = mba.get_mblock(copy_serial)
-        assert 0 in list(
-            copy_blk.predset
-        ), "copy must list blk[0] as a pred after direct rewire"
+        assert 0 in list(copy_blk.predset), (
+            "copy must list blk[0] as a pred after direct rewire"
+        )
         # Sanity: no "1way"-style wrapper call ever fired for the entry block.
         assert not any(s == 0 for (s, _t, _k) in changes), (
             "entry-block rewire must avoid change_1way_block_successor "
@@ -4428,9 +4432,9 @@ class TestStagedAtomicApply:
 
         # Tighten remove_block: INTERR 51919 if the block still has edges.
         removed_ok: list[int] = []
-        remove_calls: list[tuple[int, int, int]] = (
-            []
-        )  # (serial, succset_sz, predset_sz)
+        remove_calls: list[
+            tuple[int, int, int]
+        ] = []  # (serial, succset_sz, predset_sz)
 
         def _strict_remove_block(self, blk):
             succsz = blk.succset.size()
@@ -4863,11 +4867,11 @@ class TestStagedAtomicEaIdentity:
         # Both original source objects must be gone from mba.blocks, identified
         # by their stable start EAs — not by their staging-time serials.
         live_starts = {b.start for b in mba.blocks.values()}
-        assert (
-            src_a.start not in live_starts
-        ), "src_a (ea=0x18005000) must be removed by cleanup"
-        assert (
-            src_b.start not in live_starts
-        ), "src_b (ea=0x18006000) must be removed by cleanup"
+        assert src_a.start not in live_starts, (
+            "src_a (ea=0x18005000) must be removed by cleanup"
+        )
+        assert src_b.start not in live_starts, (
+            "src_b (ea=0x18006000) must be removed by cleanup"
+        )
         # Both copies survived (distinct synthetic EAs per _StagedFakeMBA).
         assert len(mba.copied_blocks) == 2

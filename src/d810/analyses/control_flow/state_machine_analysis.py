@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 def _forward_eval_insn(*args, **kwargs):
     return get_condition_chain_walkers().forward_eval_insn(*args, **kwargs)
 
+
 _CONDITION_CHAIN_BRANCH_PREDICATES = frozenset(
     {
         PredicateKind.NE,
@@ -51,6 +52,8 @@ _CONDITION_CHAIN_BRANCH_PREDICATES = frozenset(
     }
 )
 _LEGACY_BLT_STOP = 1
+
+
 def _semantic_value(value: object) -> object:
     return getattr(value, "value", value)
 
@@ -727,9 +730,7 @@ def _transfer_snapshot_constant_block(
         old_dest_value = None
         if dest_locator is not None:
             kind, ident = dest_locator
-            old_dest_value = (
-                stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
-            )
+            old_dest_value = stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
         resolved = _forward_eval_insn(
             eval_insn,
             stk_map,
@@ -808,9 +809,8 @@ def run_snapshot_constant_fixpoint(
             in_stk = in_stk_maps.get(serial, {})
             in_reg = in_reg_maps.get(serial, {})
 
-        in_changed = (
-            in_stk != in_stk_maps.get(serial, {})
-            or in_reg != in_reg_maps.get(serial, {})
+        in_changed = in_stk != in_stk_maps.get(serial, {}) or in_reg != in_reg_maps.get(
+            serial, {}
         )
         if in_changed:
             in_stk_maps[serial] = in_stk
@@ -825,9 +825,8 @@ def run_snapshot_constant_fixpoint(
             foldable_global_reads=foldable_global_reads,
         )
 
-        if (
-            out_stk != out_stk_maps.get(serial, {})
-            or out_reg != out_reg_maps.get(serial, {})
+        if out_stk != out_stk_maps.get(serial, {}) or out_reg != out_reg_maps.get(
+            serial, {}
         ):
             out_stk_maps[serial] = out_stk
             out_reg_maps[serial] = out_reg
@@ -901,9 +900,7 @@ def find_state_write_sites_snapshot(
         old_dest_value = None
         if dest_locator is not None:
             kind, ident = dest_locator
-            old_dest_value = (
-                stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
-            )
+            old_dest_value = stk_map.get(ident) if kind == "stk" else reg_map.get(ident)
         resolved_state = _forward_eval_insn(
             eval_insn,
             stk_map,
@@ -1189,7 +1186,11 @@ def resolve_exit_via_condition_chain_default_snapshot(
             current_serial = int(blk_snap.succs[0])
             continue
         if blk_snap is None or blk_snap.nsucc != 2:
-            return current_serial if current_serial != condition_chain_default_serial else None
+            return (
+                current_serial
+                if current_serial != condition_chain_default_serial
+                else None
+            )
 
         tail = _tail_insn(blk_snap)
         condition_key = _condition_chain_condition_key_for_tail(tail)
@@ -1197,7 +1198,11 @@ def resolve_exit_via_condition_chain_default_snapshot(
             condition_key not in _CONDITION_CHAIN_CMP_OPCODES
             and condition_key not in _CONDITION_CHAIN_BRANCH_PREDICATES
         ):
-            return current_serial if current_serial != condition_chain_default_serial else None
+            return (
+                current_serial
+                if current_serial != condition_chain_default_serial
+                else None
+            )
 
         # ``tail`` is the canonical ``BlockSnapshot.tail`` (FlowGraph-only walk);
         # read the compared ``l`` / ``r`` operands through the slot-aligned
@@ -1205,10 +1210,18 @@ def resolve_exit_via_condition_chain_default_snapshot(
         # ``tail.r`` / ``tail.l`` slot.
         _l_kind, r_kind, _d_kind = operand_kinds(tail)
         if r_kind is None or r_kind is not OperandKind.NUMBER:
-            return current_serial if current_serial != condition_chain_default_serial else None
+            return (
+                current_serial
+                if current_serial != condition_chain_default_serial
+                else None
+            )
 
         if _l_kind is None:
-            return current_serial if current_serial != condition_chain_default_serial else None
+            return (
+                current_serial
+                if current_serial != condition_chain_default_serial
+                else None
+            )
 
         left_vn, right_vn = _branch_source_storages(tail)
         left_identity = _storage_identity(left_vn)
@@ -1224,22 +1237,33 @@ def resolve_exit_via_condition_chain_default_snapshot(
                     current_serial,
                     left_identity,
                 )
-                return current_serial if current_serial != condition_chain_default_serial else None
-            if (
-                _storage_is_stack(left_vn)
-                and state_var_stkoff_local != _storage_stack_offset(left_vn)
-            ):
+                return (
+                    current_serial
+                    if current_serial != condition_chain_default_serial
+                    else None
+                )
+            if _storage_is_stack(
+                left_vn
+            ) and state_var_stkoff_local != _storage_stack_offset(left_vn):
                 logger.info(
                     "  exit %#x: blk[%d] compares different stkoff=%s, stopping",
                     exit_state,
                     current_serial,
                     _storage_stack_offset(left_vn),
                 )
-                return current_serial if current_serial != condition_chain_default_serial else None
+                return (
+                    current_serial
+                    if current_serial != condition_chain_default_serial
+                    else None
+                )
 
         cmp_val = _storage_number_value(right_vn)
         if cmp_val is None:
-            return current_serial if current_serial != condition_chain_default_serial else None
+            return (
+                current_serial
+                if current_serial != condition_chain_default_serial
+                else None
+            )
         cond_taken = eval_condition_chain_condition(condition_key, exit_state, cmp_val)
 
         if cond_taken:
@@ -1248,7 +1272,11 @@ def resolve_exit_via_condition_chain_default_snapshot(
             next_serial = blk_snap.succs[0]
 
         if next_serial == current_serial:
-            return current_serial if current_serial != condition_chain_default_serial else None
+            return (
+                current_serial
+                if current_serial != condition_chain_default_serial
+                else None
+            )
 
         current_serial = next_serial
 
@@ -1287,13 +1315,17 @@ def detect_terminal_state_families_snapshot(
             if arm in dispatcher_blocks:
                 continue
             if _restricted_reach_stop_with_side_effects(
-                flow_graph, arm, dispatcher_blocks, _se,
+                flow_graph,
+                arm,
+                dispatcher_blocks,
+                _se,
             ):
                 terminal_boundary.add(serial)
                 logger.info(
                     "[TERMINAL-FAMILY] blk[%d] arm→blk[%d] reaches "
                     "BLT_STOP via side-effecting cleanup — terminal boundary",
-                    serial, arm,
+                    serial,
+                    arm,
                 )
                 break
 
@@ -1326,11 +1358,15 @@ def detect_terminal_state_families_snapshot(
     # Only the triggering root's component is protected — unrelated
     # dispatcher components are left alone.
     dispatcher_roots = {
-        blk_id for blk_id in dispatcher_blocks
+        blk_id
+        for blk_id in dispatcher_blocks
         if all(
             pred not in dispatcher_blocks
-            for pred in (flow_graph.get_block(blk_id).preds
-                         if flow_graph.get_block(blk_id) is not None else ())
+            for pred in (
+                flow_graph.get_block(blk_id).preds
+                if flow_graph.get_block(blk_id) is not None
+                else ()
+            )
         )
     }
     reached_roots = dispatcher_roots & cone
@@ -1359,7 +1395,9 @@ def detect_terminal_state_families_snapshot(
         logger.info(
             "[TERMINAL-CONE] cone reached root(s) %s, guarding "
             "component of %d dispatcher blocks (total dispatchers=%d)",
-            sorted(reached_roots), len(cone), len(dispatcher_blocks),
+            sorted(reached_roots),
+            len(cone),
+            len(dispatcher_blocks),
         )
 
     logger.info(
@@ -1515,7 +1553,10 @@ def detect_conditional_transitions(
                     candidate_len - 1 < len(other_op)
                     and other_op[candidate_len - 1] == cand_block
                 ):
-                    if candidate_len < len(other_op) and other_op[candidate_len] != cand_next:
+                    if (
+                        candidate_len < len(other_op)
+                        and other_op[candidate_len] != cand_next
+                    ):
                         has_diverging_sibling = True
                         break
                 elif candidate_len - 1 >= len(other_op):
@@ -1756,10 +1797,14 @@ def evaluate_handler_paths(
                         succ_serial not in path_visited
                         and succ_serial not in condition_chain_blocks
                         and classify_exit_state(
-                            mba, final_val, incoming_state,
-                            succ_serial, state_var_stkoff,
+                            mba,
+                            final_val,
+                            incoming_state,
+                            succ_serial,
+                            state_var_stkoff,
                             condition_chain_blocks,
-                        ) == ExitStateKind.TRANSIENT_CORRIDOR
+                        )
+                        == ExitStateKind.TRANSIENT_CORRIDOR
                     ):
                         # Transient corridor: successor overwrites state
                         # before any side effect.  Continue DFS.
@@ -1794,8 +1839,7 @@ def evaluate_handler_paths(
                     _is_terminal = False
                     if (
                         classify_condition_chain_exits
-                        and
-                        known_handler_states is not None
+                        and known_handler_states is not None
                         and masked not in known_handler_states
                         and flow_graph is not None
                         and dispatcher_root_serial is not None
@@ -1819,7 +1863,9 @@ def evaluate_handler_paths(
                                     "  [CONDITION_CHAIN_TERMINAL] entry=%d curr=%d "
                                     "state=0x%08X resolved=blk[%d] kind=%s "
                                     "→ terminal",
-                                    entry_serial, curr_serial, masked,
+                                    entry_serial,
+                                    curr_serial,
+                                    masked,
                                     _resolved,
                                     (
                                         _resolved_kind.value
@@ -1832,7 +1878,9 @@ def evaluate_handler_paths(
                                     "  [CONDITION_CHAIN_HANDOFF] entry=%d curr=%d "
                                     "state=0x%08X resolved=blk[%d] kind=%s "
                                     "→ keep state handoff",
-                                    entry_serial, curr_serial, masked,
+                                    entry_serial,
+                                    curr_serial,
+                                    masked,
                                     _resolved,
                                     (
                                         _resolved_kind.value

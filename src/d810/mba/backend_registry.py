@@ -68,4 +68,3 @@ def get_egglog_provider(name: str = "egglog") -> type[EgglogProvider]:
     if provider is None:
         raise ImportError(f"Egglog backend '{name}' is not available")
     return provider
-

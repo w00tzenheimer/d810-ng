@@ -133,12 +133,16 @@ def test_session_status_transitions_are_owned_by_one_event(diag_conn) -> None:
     )
     emit(active)
     emit(active)
-    emit(DiagnosticSessionObserved(
-        "session-1", 0x40C8B0, 7, '{"schema_version":1}', "finished", 20.0
-    ))
-    emit(DiagnosticSessionObserved(
-        "session-1", 0x40C8B0, 7, '{"schema_version":1}', "finished", 30.0
-    ))
+    emit(
+        DiagnosticSessionObserved(
+            "session-1", 0x40C8B0, 7, '{"schema_version":1}', "finished", 20.0
+        )
+    )
+    emit(
+        DiagnosticSessionObserved(
+            "session-1", 0x40C8B0, 7, '{"schema_version":1}', "finished", 30.0
+        )
+    )
 
     assert diag_conn.execute(
         "SELECT status,started_at,finished_at FROM diagnostic_sessions"

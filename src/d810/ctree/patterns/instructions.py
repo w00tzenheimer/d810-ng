@@ -6,6 +6,7 @@ Contains patterns for matching ctree statement nodes (``cinsn_t``):
 
 Ported from herast (herast/tree/patterns/instructions.py).
 """
+
 from __future__ import annotations
 
 import idaapi
@@ -43,7 +44,10 @@ class InstructionPat(BasePat):
         base_check = BasePat.base_check(func)
 
         def __perform_instr_check(
-            self: InstructionPat, item: typing.Any, *args: typing.Any, **kwargs: typing.Any
+            self: InstructionPat,
+            item: typing.Any,
+            *args: typing.Any,
+            **kwargs: typing.Any,
         ) -> bool:
             # item.label_num == -1, if it has no label, otherwise item.label_num >= 0
             if self.label_num == self.SKIP_LABEL_CHECK:
@@ -220,7 +224,10 @@ class WhilePat(InstructionPat):
     op = idaapi.cit_while if idaapi is not None else None
 
     def __init__(
-        self, expr: BasePat | None = None, body: BasePat | None = None, **kwargs: typing.Any
+        self,
+        expr: BasePat | None = None,
+        body: BasePat | None = None,
+        **kwargs: typing.Any,
     ) -> None:
         super().__init__(**kwargs)
         self.expr: BasePat = expr or AnyPat()
@@ -242,7 +249,10 @@ class DoPat(InstructionPat):
     op = idaapi.cit_do if idaapi is not None else None
 
     def __init__(
-        self, expr: BasePat | None = None, body: BasePat | None = None, **kwargs: typing.Any
+        self,
+        expr: BasePat | None = None,
+        body: BasePat | None = None,
+        **kwargs: typing.Any,
     ) -> None:
         super().__init__(**kwargs)
         self.expr: BasePat = expr or AnyPat()

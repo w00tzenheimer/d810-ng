@@ -6,6 +6,7 @@ Re-export-compatibility tests live in the system/runtime suite -- the
 from importing ``d810.optimizers.*`` (and by extension testing the
 HR-side back-compat alias).
 """
+
 from __future__ import annotations
 
 from d810.capabilities import (

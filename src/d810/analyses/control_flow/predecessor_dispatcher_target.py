@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from d810.analyses.control_flow.condition_chain_model import ConditionChainAnalysisResult
+from d810.analyses.control_flow.condition_chain_model import (
+    ConditionChainAnalysisResult,
+)
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 
 _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS = frozenset(
@@ -412,9 +414,7 @@ def collect_predecessor_dispatcher_target_facts(
                 state_const=int(next_state),
                 state_dispatcher_map=state_dispatcher_map,
                 range_evidence=range_evidence,
-                source_state_const=_maybe_int(
-                    getattr(source_key, "state_const", None)
-                ),
+                source_state_const=_maybe_int(getattr(source_key, "state_const", None)),
                 transition_provenance_kind=f"state_dag_{kind_name.lower()}",
                 condition_block_serial=None,
                 state_var_stkoff=state_var_stkoff,

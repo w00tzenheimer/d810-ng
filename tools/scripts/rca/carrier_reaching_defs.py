@@ -5,6 +5,7 @@ reaching-defs fixpoint, and reports what reaches the target block's entry.
 
 Usage: python3 carrier_trace.py <db> <snapshot_id> <carrier_stkoff> [target_block]
 """
+
 import collections
 import json
 import sqlite3
@@ -20,7 +21,9 @@ con = sqlite3.connect(DB)
 con.row_factory = sqlite3.Row
 
 blocks = {}
-for r in con.execute("SELECT serial, succs, preds FROM blocks WHERE snapshot_id=?", (SNAP,)):
+for r in con.execute(
+    "SELECT serial, succs, preds FROM blocks WHERE snapshot_id=?", (SNAP,)
+):
     blocks[r["serial"]] = {
         "succs": json.loads(r["succs"]) if r["succs"] else [],
         "preds": json.loads(r["preds"]) if r["preds"] else [],

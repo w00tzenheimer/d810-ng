@@ -359,7 +359,9 @@ def Smod(left: SymbolicExpression, right: SymbolicExpression) -> SymbolicExpress
     return SymbolicExpression(operation="smod", left=left, right=right)
 
 
-def High(expr: SymbolicExpression, target_width: int | None = None) -> SymbolicExpression:
+def High(
+    expr: SymbolicExpression, target_width: int | None = None
+) -> SymbolicExpression:
     """Extract the high half/part of an expression.
 
     ``target_width`` is in bits.  If omitted, verification backends use their
@@ -368,7 +370,9 @@ def High(expr: SymbolicExpression, target_width: int | None = None) -> SymbolicE
     return SymbolicExpression(operation="high", left=expr, value=target_width)
 
 
-def Low(expr: SymbolicExpression, target_width: int | None = None) -> SymbolicExpression:
+def Low(
+    expr: SymbolicExpression, target_width: int | None = None
+) -> SymbolicExpression:
     """Extract the low half/part of an expression."""
     return SymbolicExpression(operation="low", left=expr, value=target_width)
 

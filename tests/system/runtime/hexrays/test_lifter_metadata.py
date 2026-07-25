@@ -27,9 +27,7 @@ class TestLifterMetadataContract:
     def test_all_three_keys_present(self, monkeypatch) -> None:
         from d810.hexrays.mutation import ir_translator
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", lambda: "metapc")
 
         flow_graph = ir_translator.lift(_StubMba())
 
@@ -40,9 +38,7 @@ class TestLifterMetadataContract:
     def test_maturity_int_round_trips_from_mba(self, monkeypatch) -> None:
         from d810.hexrays.mutation import ir_translator
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", lambda: "metapc")
 
         stub = _StubMba(maturity=14)
         flow_graph = ir_translator.lift(stub)
@@ -56,9 +52,7 @@ class TestLifterMetadataContract:
         from d810.hexrays.mutation import ir_translator
         from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", lambda: "metapc")
 
         stub = _StubMba(maturity=14)
         flow_graph = ir_translator.lift(stub)
@@ -70,9 +64,7 @@ class TestLifterMetadataContract:
     def test_cpu_arch_name_is_string(self, monkeypatch) -> None:
         from d810.hexrays.mutation import ir_translator
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", lambda: "metapc")
 
         flow_graph = ir_translator.lift(_StubMba())
 
@@ -85,18 +77,14 @@ class TestLifterMetadataContract:
         type."""
         from d810.hexrays.mutation import ir_translator
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", lambda: b"ARM"
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", lambda: b"ARM")
 
         flow_graph = ir_translator.lift(_StubMba())
 
         assert flow_graph.metadata["cpu_arch_name"] == "ARM"
         assert isinstance(flow_graph.metadata["cpu_arch_name"], str)
 
-    def test_cpu_arch_name_falls_back_to_unknown_sentinel(
-        self, monkeypatch
-    ) -> None:
+    def test_cpu_arch_name_falls_back_to_unknown_sentinel(self, monkeypatch) -> None:
         """If ``inf_get_procname`` raises, the lifter MUST NOT gate
         decompilation -- it falls back to the deterministic
         ``"unknown"`` sentinel.  Non-empty so consumers can do
@@ -106,25 +94,19 @@ class TestLifterMetadataContract:
         def raising_procname():
             raise RuntimeError("simulated IDA failure")
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", raising_procname
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", raising_procname)
 
         flow_graph = ir_translator.lift(_StubMba())
 
         assert flow_graph.metadata["cpu_arch_name"] == "unknown"
 
-    def test_cpu_arch_name_unknown_when_inf_returns_none(
-        self, monkeypatch
-    ) -> None:
+    def test_cpu_arch_name_unknown_when_inf_returns_none(self, monkeypatch) -> None:
         """``inf_get_procname`` returning a falsy value also normalises
         to ``"unknown"`` (some IDA builds may return ``None`` or an
         empty string instead of raising)."""
         from d810.hexrays.mutation import ir_translator
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", lambda: None
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", lambda: None)
 
         flow_graph = ir_translator.lift(_StubMba())
 
@@ -136,9 +118,7 @@ class TestLifterMetadataContract:
         a free-form dict."""
         from d810.hexrays.mutation import ir_translator
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", lambda: "metapc")
 
         flow_graph = ir_translator.lift(_StubMba())
 
@@ -160,9 +140,7 @@ class TestProviderNeutralStageMetadata:
     def _lift(self, monkeypatch, maturity: int = 14):
         from d810.hexrays.mutation import ir_translator
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", lambda: "metapc")
         return ir_translator.lift(_StubMba(maturity=maturity))
 
     def test_neutral_fields_present(self, monkeypatch) -> None:
@@ -237,13 +215,9 @@ class TestProviderNeutralStageMetadata:
         from d810.hexrays.mutation import ir_translator
         from d810.ir.maturity import SnapshotForm
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", lambda: "metapc")
 
-        flow_graph = ir_translator.lift(
-            _StubMba(maturity=int(ida_hexrays.MMAT_ZERO))
-        )
+        flow_graph = ir_translator.lift(_StubMba(maturity=int(ida_hexrays.MMAT_ZERO)))
 
         assert flow_graph.metadata["snapshot_form"] is SnapshotForm.RAW_IR
 
@@ -254,9 +228,7 @@ class TestProviderNeutralStageMetadata:
         from d810.hexrays.mutation import ir_translator
         from d810.ir.maturity import SnapshotForm
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", lambda: "metapc")
 
         flow_graph = ir_translator.lift(_StubMba(maturity=999999))
 
@@ -272,9 +244,7 @@ class TestLifterMetadataImmutability:
     def test_metadata_is_read_only(self, monkeypatch) -> None:
         from d810.hexrays.mutation import ir_translator
 
-        monkeypatch.setattr(
-            ir_translator.idaapi, "inf_get_procname", lambda: "metapc"
-        )
+        monkeypatch.setattr(ir_translator.idaapi, "inf_get_procname", lambda: "metapc")
 
         flow_graph = ir_translator.lift(_StubMba())
 

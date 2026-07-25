@@ -7,7 +7,6 @@ from d810.optimizers.microcode.instructions.handler import (
 
 
 class PeepholeSimplificationRule(InstructionOptimizationRule):
-
     CATEGORY = "Peephole Simplification"
 
     @abc.abstractmethod

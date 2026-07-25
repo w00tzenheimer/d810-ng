@@ -45,15 +45,13 @@ def test_identity_layout_keeps_serial_out_of_durable_identity() -> None:
         "native_ranges",
     ]
     assert [
-        field.name
-        for field in fields(block_identity.CurrentMbaBlockIdentityBinding)
+        field.name for field in fields(block_identity.CurrentMbaBlockIdentityBinding)
     ] == [
         "stable_identity",
         "live_instruction_eas",
     ]
     assert [
-        field.name
-        for field in fields(block_identity.CurrentMbaIdentityBindingSnapshot)
+        field.name for field in fields(block_identity.CurrentMbaIdentityBindingSnapshot)
     ] == [
         "instruction_origins",
         "block_bindings",
@@ -74,12 +72,10 @@ def test_identity_layout_keeps_serial_out_of_durable_identity() -> None:
         field.name for field in fields(block_identity.StableBlockIdentity)
     }
     assert "serial" not in {
-        field.name
-        for field in fields(block_identity.CurrentMbaBlockIdentityBinding)
+        field.name for field in fields(block_identity.CurrentMbaBlockIdentityBinding)
     }
     assert "serial" not in {
-        field.name
-        for field in fields(block_identity.CurrentMbaIdentityBindingSnapshot)
+        field.name for field in fields(block_identity.CurrentMbaIdentityBindingSnapshot)
     }
 
 
@@ -99,9 +95,7 @@ def test_current_mba_identity_snapshot_ties_full_ranges_to_live_anchors() -> Non
         block_bindings=(binding,),
     )
 
-    assert snapshot.instruction_origins == (
-        (0xFFFFFFFFFFFFFF01, 0x40C64B),
-    )
+    assert snapshot.instruction_origins == ((0xFFFFFFFFFFFFFF01, 0x40C64B),)
     assert snapshot.block_bindings == (binding,)
 
 
@@ -278,9 +272,7 @@ def test_snapshot_identity_keeps_block_start_as_range_not_exact_instruction() ->
             preds=(),
             flags=0,
             start_ea=0x401000,
-            insn_snapshots=(
-                InsnSnapshot(opcode=0, ea=0x401005, operands=()),
-            ),
+            insn_snapshots=(InsnSnapshot(opcode=0, ea=0x401005, operands=()),),
         ),
         native_key=make_native_key(),
     )
@@ -333,6 +325,5 @@ def test_stable_identity_exposes_one_serial_free_anchor_and_token() -> None:
 
     assert block_identity.stable_block_identity_semantic_anchor(identity) == 0x401005
     assert block_identity.stable_block_identity_token(identity) == (
-        "0x401000-0x401001,0x401005-0x401007;"
-        "exact=0x401005,0x401006"
+        "0x401000-0x401001,0x401005-0x401007;exact=0x401005,0x401006"
     )

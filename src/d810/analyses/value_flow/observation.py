@@ -10,6 +10,7 @@ ValidatedFactView, ...) stay in that module.
 
 Portable-core layer: no live IDA / Hex-Rays imports, no vendor mutation surfaces.
 """
+
 from __future__ import annotations
 
 import json

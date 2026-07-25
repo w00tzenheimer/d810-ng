@@ -1,4 +1,5 @@
 """Tests for MopSnapshot - requires IDA runtime for module import."""
+
 import pytest
 
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
@@ -38,10 +39,10 @@ class TestMopSnapshot:
     def test_to_cache_key_includes_all_fields(self):
         snap = MopSnapshot(t=1, size=8, reg=3, valnum=5)
         key = snap.to_cache_key()
-        assert 1 in key   # t
-        assert 8 in key   # size
-        assert 3 in key   # reg
-        assert 5 in key   # valnum
+        assert 1 in key  # t
+        assert 8 in key  # size
+        assert 3 in key  # reg
+        assert 5 in key  # valnum
 
     def test_register_snapshot(self):
         snap = MopSnapshot(t=1, size=4, reg=16)
@@ -81,20 +82,24 @@ class TestMopSnapshotProperties:
 
     def test_is_constant(self):
         import ida_hexrays
+
         snap = MopSnapshot(t=ida_hexrays.mop_n, size=4, value=42)
         assert snap.is_constant is True
 
     def test_is_constant_false(self):
         import ida_hexrays
+
         snap = MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=0)
         assert snap.is_constant is False
 
     def test_is_register(self):
         import ida_hexrays
+
         snap = MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=16)
         assert snap.is_register is True
 
     def test_is_register_false(self):
         import ida_hexrays
+
         snap = MopSnapshot(t=ida_hexrays.mop_n, size=4, value=42)
         assert snap.is_register is False

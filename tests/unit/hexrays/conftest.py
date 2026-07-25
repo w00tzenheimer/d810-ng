@@ -3,6 +3,7 @@
 Provides InMemoryBackend as a module-level helper so it can be imported
 by multiple test modules without duplication.
 """
+
 from __future__ import annotations
 
 from d810.transforms.graph_modification import GraphModification
@@ -52,7 +53,7 @@ class InMemoryBackend:
         return FlowGraph(
             blocks=blocks,
             entry_serial=entry_serial,
-            func_ea=blocks[entry_serial].start_ea
+            func_ea=blocks[entry_serial].start_ea,
         )
 
     def lower(

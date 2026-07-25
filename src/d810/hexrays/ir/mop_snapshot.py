@@ -239,11 +239,7 @@ class MopSnapshot:
         its source MBA and can fault in native def/use APIs.
         """
         m = ida_hexrays.mop_t()
-        if (
-            self.t == ida_hexrays.mop_S
-            and self.stkoff is not None
-            and mba is not None
-        ):
+        if self.t == ida_hexrays.mop_S and self.stkoff is not None and mba is not None:
             m.make_stkvar(mba, self.stkoff)
             m.size = self.size
             return m

@@ -109,7 +109,9 @@ def _symbolic_to_pattern_expr(expr: SymbolicExpression) -> "PatternExpr":
         raise ValueError(f"Unsupported operation for egglog pattern gen: {op}")
 
 
-def _generate_commutative_permutations(expr: SymbolicExpression) -> List[SymbolicExpression]:
+def _generate_commutative_permutations(
+    expr: SymbolicExpression,
+) -> List[SymbolicExpression]:
     """Generate all commutative permutations of a SymbolicExpression.
 
     This recursively generates all permutations where commutative operators
@@ -129,8 +131,7 @@ def _generate_commutative_permutations(expr: SymbolicExpression) -> List[Symboli
     if expr.right is None:
         left_perms = _generate_commutative_permutations(expr.left)
         return [
-            SymbolicExpression(expr.operation, left=lp, right=None)
-            for lp in left_perms
+            SymbolicExpression(expr.operation, left=lp, right=None) for lp in left_perms
         ]
 
     # Binary operations
@@ -178,7 +179,8 @@ class _LeafWrapper:
     Used by IDAPatternAdapter.get_replacement() to handle AstLeaf candidates
     that don't natively have leafs_by_name attribute.
     """
-    __slots__ = ('leafs_by_name', 'ea', 'dst_mop')
+
+    __slots__ = ("leafs_by_name", "ea", "dst_mop")
 
     def __init__(self, leaf: AstLeaf):
         self.leafs_by_name = {leaf.name: leaf} if leaf.name else {}
@@ -186,6 +188,7 @@ class _LeafWrapper:
         # Handle both MopSnapshot (from Phase 2) and raw mop_t
         # Phase 2 changed AstLeaf.mop to store MopSnapshot for safety
         from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
         if isinstance(leaf.mop, MopSnapshot):
             self.dst_mop = leaf.mop.to_mop()  # Reconstruct owned mop_t
         else:
@@ -288,7 +291,7 @@ class IDANodeVisitor:
         if expr.is_constant():
             # Concrete constant (has a value)
             return AstConstant(expr.name, expr.value)
-        elif getattr(expr, 'is_pattern_constant', False):
+        elif getattr(expr, "is_pattern_constant", False):
             # Pattern-matching constant (value computed from constraints)
             # Use AstConstant so it can receive computed value and create mop_n
             return AstConstant(expr.name, None)
@@ -319,21 +322,25 @@ class IDANodeVisitor:
             # Map comparison operators to IDA SET opcodes
             op_map = {
                 "ne": ida_hexrays.m_setnz,  # x != y -> SETNZ(x - y)
-                "eq": ida_hexrays.m_setz,   # x == y -> SETZ(x - y)
-                "lt": ida_hexrays.m_setb,   # x < y -> SETB(x, y)
+                "eq": ida_hexrays.m_setz,  # x == y -> SETZ(x - y)
+                "lt": ida_hexrays.m_setb,  # x < y -> SETB(x, y)
                 "ge": ida_hexrays.m_setae,  # x >= y -> SETAE(x, y)
             }
 
             ida_opcode = op_map.get(constraint.op_name)
             if ida_opcode is None:
-                raise ValueError(f"Unsupported comparison for IDA pattern: {constraint.op_name}")
+                raise ValueError(
+                    f"Unsupported comparison for IDA pattern: {constraint.op_name}"
+                )
 
             # For != and ==, IDA uses SETNZ/SETZ with a single operand (difference)
             if constraint.op_name in ["ne", "eq"]:
                 # Check if comparing to zero
-                if (isinstance(constraint.right, SymbolicExpressionProtocol)
+                if (
+                    isinstance(constraint.right, SymbolicExpressionProtocol)
                     and constraint.right.is_constant()
-                    and constraint.right.value == 0):
+                    and constraint.right.value == 0
+                ):
                     return AstNode(ida_opcode, left_node, None)
                 # Check if right is raw int zero
                 if constraint.right == 0:
@@ -350,9 +357,11 @@ class IDANodeVisitor:
             right_node = self._visit_constraint_operand(constraint.right)
 
             # Check if comparing to zero
-            if (isinstance(constraint.right, SymbolicExpressionProtocol)
+            if (
+                isinstance(constraint.right, SymbolicExpressionProtocol)
                 and constraint.right.is_constant()
-                and constraint.right.value == 0):
+                and constraint.right.value == 0
+            ):
                 return AstNode(ida_hexrays.m_setz, left_node, None)
             # Check if right is raw int zero
             if constraint.right == 0:
@@ -361,7 +370,9 @@ class IDANodeVisitor:
             diff_node = AstNode(ida_hexrays.m_sub, left_node, right_node)
             return AstNode(ida_hexrays.m_setz, diff_node, None)
 
-        raise ValueError(f"Unsupported constraint type for IDA pattern: {type(constraint)}")
+        raise ValueError(
+            f"Unsupported constraint type for IDA pattern: {type(constraint)}"
+        )
 
     def _visit_constraint_operand(self, operand) -> Optional[AstNode]:
         """Visit a constraint operand, handling both SymbolicExpression and raw values.
@@ -457,7 +468,7 @@ class IDAPatternAdapter:
     @property
     def maturities(self) -> list:
         """Return the maturities this rule applies to."""
-        return getattr(self.rule, 'maturities', [])
+        return getattr(self.rule, "maturities", [])
 
     @maturities.setter
     def maturities(self, value: list) -> None:
@@ -467,7 +478,7 @@ class IDAPatternAdapter:
     @property
     def config(self) -> dict:
         """Return the rule configuration."""
-        return getattr(self.rule, 'config', {})
+        return getattr(self.rule, "config", {})
 
     # ==========================================================================
     # IDA Pattern Matching Interface
@@ -504,7 +515,8 @@ class IDAPatternAdapter:
                 permutations = [pattern]
             logger.debug(
                 "Rule %s: Generated %d commutative permutations",
-                self.name, len(permutations)
+                self.name,
+                len(permutations),
             )
 
             # Use egglog to filter only equivalent patterns
@@ -512,7 +524,8 @@ class IDAPatternAdapter:
             equivalent_patterns = _filter_equivalent_patterns(pattern, permutations)
             logger.debug(
                 "Rule %s: %d patterns verified equivalent by egglog",
-                self.name, len(equivalent_patterns)
+                self.name,
+                len(equivalent_patterns),
             )
 
             # Convert to AstNode format
@@ -724,7 +737,9 @@ class IDAPatternAdapter:
         setattr(
             self.rule,
             "_runtime_constant_evaluator",
-            lambda mop, *, bits: self._eval_runtime_constant(mop, bits, blk, instruction),
+            lambda mop, *, bits: self._eval_runtime_constant(
+                mop, bits, blk, instruction
+            ),
         )
 
     def clear_match_context(self) -> None:
@@ -802,7 +817,7 @@ class IDAPatternAdapter:
             True if all constraints are satisfied, False otherwise
         """
         # If rule has check_candidate, use it
-        if hasattr(self.rule, 'check_candidate'):
+        if hasattr(self.rule, "check_candidate"):
             return self.rule.check_candidate(candidate)
 
         # Fallback: check runtime constraints directly
@@ -817,18 +832,18 @@ class IDAPatternAdapter:
         Returns:
             True if all constraints pass, False otherwise.
         """
-        constraints = getattr(self.rule, 'CONSTRAINTS', [])
+        constraints = getattr(self.rule, "CONSTRAINTS", [])
         if not constraints:
             return True
 
         # Build match context from candidate's matched variables
         # AstNode stores matched leaves in leafs_by_name after pattern matching
         match_context = {}
-        if hasattr(candidate, 'leafs_by_name') and candidate.leafs_by_name:
+        if hasattr(candidate, "leafs_by_name") and candidate.leafs_by_name:
             match_context = candidate.leafs_by_name
-        elif hasattr(candidate, 'mop_dict'):
+        elif hasattr(candidate, "mop_dict"):
             match_context = candidate.mop_dict
-        elif hasattr(candidate, 'get_z3_vars'):
+        elif hasattr(candidate, "get_z3_vars"):
             match_context = candidate.get_z3_vars({})
 
         # Add candidate itself to context
@@ -860,7 +875,7 @@ class IDAPatternAdapter:
         Args:
             kwargs: Configuration dictionary from the JSON project file.
         """
-        if hasattr(self.rule, 'configure'):
+        if hasattr(self.rule, "configure"):
             self.rule.configure(kwargs)
 
     def set_log_dir(self, log_dir: str) -> None:
@@ -869,7 +884,7 @@ class IDAPatternAdapter:
         Args:
             log_dir: Path to the log directory.
         """
-        if hasattr(self.rule, 'set_log_dir'):
+        if hasattr(self.rule, "set_log_dir"):
             self.rule.set_log_dir(log_dir)
 
 
@@ -893,7 +908,7 @@ def adapt_rules(rules: List[VerifiableRule]) -> List[IDAPatternAdapter]:
 
 
 __all__ = [
-    'IDANodeVisitor',
-    'IDAPatternAdapter',
-    'adapt_rules',
+    "IDANodeVisitor",
+    "IDAPatternAdapter",
+    "adapt_rules",
 ]

@@ -32,6 +32,7 @@ Preservation predicate at any given stage's modifications snapshot:
 A byte is reported lost when it was present in ``dag`` or ``corrected_dag``
 but did not survive the final fragment under that predicate.
 """
+
 from __future__ import annotations
 
 import os
@@ -157,9 +158,7 @@ class ByteRecord:
 
     @property
     def block_serials(self) -> set[int]:
-        return {
-            e.block_serial for e in self.evidence if e.block_serial is not None
-        }
+        return {e.block_serial for e in self.evidence if e.block_serial is not None}
 
     @property
     def source_ea_hex_set(self) -> set[str]:
@@ -403,7 +402,7 @@ def _classify_preservation(
 
 
 def _classify_final_status(record: "ByteRecord") -> str:
-    "Map a record's accumulated state to a final-status taxonomy bucket.\n\n    Hierarchy (first match wins):\n\n    - ``preserved_insertblock`` -- evidence was composed into an InsertBlock body\n    - ``preserved_redirect`` -- block is the explicit target of a redirect\n    - ``redirected_away`` -- final-stage mods rewired the block away with no\n      InsertBlock claim\n    - ``no_dag_evidence`` -- HCC's preanalysis never saw the byte's state node\n    - ``region_detection_gap`` -- byte is in dag/corrected_dag but no raw region\n      contains its block AND no InsertBlock body holds its evidence; HCC did\n      not pick this up as a region candidate\n    - ``unmaterialized_original_block`` -- byte is in dag AND in some raw region,\n      but no final HCC-owned mod materialised the evidence; the original block\n      remains in the CFG, but HCC made no positive claim on it\n    - ``unknown`` -- record_finalize was never called (no FINAL observation)\n    "
+    "Map a record's accumulated state to a final-status taxonomy bucket.\n\n    Hierarchy (first match wins):\n\n    - ``preserved_insertblock`` -- evidence was composed into an InsertBlock body\n    - ``preserved_redirect`` -- block is the explicit target of a redirect\n    - ``redirected_away`` -- final-stage mods rewired the block away with no\n      InsertBlock claim\n    - ``no_dag_evidence`` -- HCC's preanalysis never saw the byte's state node\n    - ``region_detection_gap`` -- byte is in dag/corrected_dag but no raw region\n      contains its block AND no InsertBlock body holds its evidence; HCC did\n      not pick this up as a region candidate\n    - ``unmaterialized_original_block`` -- byte is in dag AND in some raw region,\n      but no final HCC-owned mod materialised the evidence; the original block\n      remains in the CFG, but HCC made no positive claim on it\n    - ``unknown`` -- record_finalize was never called (no FINAL observation)\n"
     if record.preserved_in_insertblock:
         return FINAL_STATUS_PRESERVED_INSERTBLOCK
     final = record.stages.get(ByteCascadeStage.FINAL.value)
@@ -452,9 +451,8 @@ class ByteCascadeCoverageTracer:
     ) -> "ByteCascadeCoverageTracer | None":
         if not is_enabled():
             return None
-        fact_view = (
-            getattr(snapshot, "diagnostic_fact_view", None)
-            or getattr(snapshot, "validated_fact_view", None)
+        fact_view = getattr(snapshot, "diagnostic_fact_view", None) or getattr(
+            snapshot, "validated_fact_view", None
         )
         if fact_view is None:
             return None
@@ -473,7 +471,9 @@ class ByteCascadeCoverageTracer:
         if not self.records or dag is None:
             return
         self._mark_dag_membership(dag, attr="in_dag")
-        self._record_stage_event(ByteCascadeStage.SEED_DAG, present_fn=lambda r: r.in_dag)
+        self._record_stage_event(
+            ByteCascadeStage.SEED_DAG, present_fn=lambda r: r.in_dag
+        )
 
     def seed_corrected_dag(self, corrected_dag: object) -> None:
         if not self.records or corrected_dag is None:
@@ -583,9 +583,7 @@ class ByteCascadeCoverageTracer:
         rows: list[str] = []
         for byte_index in sorted(self.records.keys()):
             r = self.records[byte_index]
-            entry_anchor = (
-                min(r.entry_anchors) if r.entry_anchors else None
-            )
+            entry_anchor = min(r.entry_anchors) if r.entry_anchors else None
             rows.append(
                 "| "
                 + " | ".join(
@@ -609,9 +607,7 @@ class ByteCascadeCoverageTracer:
                 )
                 + " |"
             )
-        title = (
-            f"### HCC byte-cascade coverage for func {self.func_ea_hex or '?'}"
-        )
+        title = f"### HCC byte-cascade coverage for func {self.func_ea_hex or '?'}"
         return "\n".join([title, "", header, sep, *rows])
 
     # ------------------------------------------------------------------
@@ -627,9 +623,7 @@ class ByteCascadeCoverageTracer:
             if anchor is None:
                 continue
             owned = getattr(node, "owned_blocks", ()) or ()
-            owned_ints = {
-                _int_or_none(b) for b in owned if _int_or_none(b) is not None
-            }
+            owned_ints = {_int_or_none(b) for b in owned if _int_or_none(b) is not None}
             key_obj = getattr(node, "key", None)
             key_str = str(key_obj) if key_obj is not None else None
             for record in self.records.values():

@@ -15,6 +15,7 @@ Per-type-by-layer annotation discipline (RESOLVE-FIRST for LS8 S4):
   what lets a concrete ``recurrence_for(self, value, loop: LoopRef)`` still
   structurally satisfy the contract.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Any, Optional, Protocol, runtime_checkable

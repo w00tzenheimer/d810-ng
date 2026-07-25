@@ -5,6 +5,7 @@ and comma-separated ``START-END`` ranges.  The probe first runs d810 once so
 resolver byte materialization is live in the IDB, then tests each range, every
 cumulative prefix, and the complete union in snippet mode at PREOPT.
 """
+
 from __future__ import annotations
 
 import os
@@ -191,16 +192,10 @@ try:
     if PROBE_SINGLES:
         for index, native_range in enumerate(RANGES):
             generate(f"single-{index}", (native_range,))
-    prefix_counts = (
-        PREFIX_COUNTS
-        if PREFIX_COUNTS
-        else tuple(range(2, len(RANGES) + 1))
-    )
+    prefix_counts = PREFIX_COUNTS if PREFIX_COUNTS else tuple(range(2, len(RANGES) + 1))
     for count in prefix_counts:
         if count < 1 or count > len(RANGES):
-            raise ValueError(
-                f"prefix count {count} outside 1..{len(RANGES)}"
-            )
+            raise ValueError(f"prefix count {count} outside 1..{len(RANGES)}")
         generate(f"prefix-{count}", RANGES[:count])
     if PROBE_FULL:
         generate("full", RANGES)

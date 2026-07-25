@@ -123,8 +123,9 @@ def test_decompile_routes_through_manager_owned_controller(monkeypatch):
         sys.modules,
         "ida_hexrays",
         SimpleNamespace(
-            decompile=lambda function_ea: calls.append(("decompile", function_ea))
-            or "cfunc",
+            decompile=lambda function_ea: (
+                calls.append(("decompile", function_ea)) or "cfunc"
+            ),
             clear_cached_cfuncs=lambda: calls.append(("invalidate", 0)),
         ),
     )
@@ -150,10 +151,9 @@ def test_decompile_forwards_hexrays_failure_output_through_controller(monkeypatc
         sys.modules,
         "ida_hexrays",
         SimpleNamespace(
-            decompile=lambda function_ea, failure_output: calls.append(
-                ("decompile", function_ea, failure_output)
-            )
-            or "cfunc",
+            decompile=lambda function_ea, failure_output: (
+                calls.append(("decompile", function_ea, failure_output)) or "cfunc"
+            ),
             clear_cached_cfuncs=lambda: calls.append(("invalidate", 0)),
         ),
     )

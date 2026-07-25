@@ -1,4 +1,5 @@
 """Tests for portable def-use facts (LS8 S3). Pure-Python, no IDA."""
+
 from __future__ import annotations
 
 import dataclasses

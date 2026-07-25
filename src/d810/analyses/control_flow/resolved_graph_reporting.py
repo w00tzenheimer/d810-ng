@@ -26,16 +26,18 @@ def build_resolved_state_machine_dot_report(
     transitions_by_from: dict[int, list] = {}
     for transition in getattr(sm, "transitions", ()):
         if getattr(transition, "from_state", None) is not None:
-            transitions_by_from.setdefault(int(transition.from_state), []).append(transition)
+            transitions_by_from.setdefault(int(transition.from_state), []).append(
+                transition
+            )
 
     node_states: set[int] = set()
     resolved_edges: list[tuple[int, int, bool]] = []
     exit_states: set[int] = set()
     unresolved_states: set[int] = set()
 
-    range_map: dict[int, tuple[int | None, int | None]] = getattr(
-        range_evidence, "handler_range_map", {}
-    ) or {}
+    range_map: dict[int, tuple[int | None, int | None]] = (
+        getattr(range_evidence, "handler_range_map", {}) or {}
+    )
 
     for state_val, _handler in getattr(sm, "handlers", {}).items():
         state_val = int(state_val)
@@ -58,7 +60,11 @@ def build_resolved_state_machine_dot_report(
             target_state = handler_state_map.get(int(target_entry))
             if target_state is not None:
                 resolved_edges.append(
-                    (state_val, int(target_state), bool(getattr(transition, "is_conditional", False)))
+                    (
+                        state_val,
+                        int(target_state),
+                        bool(getattr(transition, "is_conditional", False)),
+                    )
                 )
                 has_resolved = True
             else:
@@ -79,7 +85,9 @@ def build_resolved_state_machine_dot_report(
     for from_state, to_state, _is_conditional in unique_edges:
         targets_per_handler.setdefault(int(from_state), set()).add(int(to_state))
     conditional_states: set[int] = {
-        int(state) for state, targets in targets_per_handler.items() if len(targets) >= 2
+        int(state)
+        for state, targets in targets_per_handler.items()
+        if len(targets) >= 2
     }
 
     dot: list[str] = []
@@ -118,8 +126,7 @@ def build_resolved_state_machine_dot_report(
             )
         else:
             dot.append(
-                '    "0x%08X" [label="%s"];'
-                % (int(state_val), "\\n".join(label_parts))
+                '    "0x%08X" [label="%s"];' % (int(state_val), "\\n".join(label_parts))
             )
 
     dot.append("")
@@ -130,9 +137,7 @@ def build_resolved_state_machine_dot_report(
                 % (int(from_state), int(to_state))
             )
         else:
-            dot.append(
-                '    "0x%08X" -> "0x%08X";' % (int(from_state), int(to_state))
-            )
+            dot.append('    "0x%08X" -> "0x%08X";' % (int(from_state), int(to_state)))
 
     for state_val in sorted(unresolved_states):
         dot.append(

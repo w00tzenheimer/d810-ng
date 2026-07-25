@@ -42,7 +42,11 @@ def ensure_hexrays_available(force_load: bool = False) -> bool:
         return False
     if ida_hexrays.init_hexrays_plugin():
         return True
-    if force_load and idaapi.load_plugin(decompiler) and ida_hexrays.init_hexrays_plugin():
+    if (
+        force_load
+        and idaapi.load_plugin(decompiler)
+        and ida_hexrays.init_hexrays_plugin()
+    ):
         return True
     return False
 
@@ -53,7 +57,6 @@ def ensure_hexrays_available(force_load: bool = False) -> bool:
 
 
 class _UIHooks(idaapi.UI_Hooks):
-
     def ready_to_run(self):
         pass
 

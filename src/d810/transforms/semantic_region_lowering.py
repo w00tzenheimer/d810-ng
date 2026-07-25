@@ -67,25 +67,14 @@ def _infer_semantic_target_from_entry(
     normalized_target_state = int(target_state_value) & 0xFFFFFFFF
     for node in getattr(dag, "nodes", ()) or ():
         owned_blocks = {
-            int(block)
-            for block in (
-                getattr(node, "exclusive_blocks", ())
-                or ()
-            )
+            int(block) for block in (getattr(node, "exclusive_blocks", ()) or ())
         }
         owned_blocks.update(
-            int(block)
-            for block in (
-                getattr(node, "owned_blocks", ())
-                or ()
-            )
+            int(block) for block in (getattr(node, "owned_blocks", ()) or ())
         )
         owned_blocks.update(
             int(block)
-            for segment in (
-                getattr(node, "local_segments", ())
-                or ()
-            )
+            for segment in (getattr(node, "local_segments", ()) or ())
             for block in (getattr(segment, "blocks", ()) or ())
         )
         if (
@@ -99,7 +88,9 @@ def _infer_semantic_target_from_entry(
         candidate_state = semantic_state_value_from_label(candidate_label)
         if candidate_label is None or candidate_state is None:
             continue
-        if candidate_state == normalized_target_state and not candidate_label.endswith("_fallback"):
+        if candidate_state == normalized_target_state and not candidate_label.endswith(
+            "_fallback"
+        ):
             continue
         return candidate_label, candidate_state
     return None, None
@@ -111,10 +102,7 @@ def _select_site_horizon_block(
     branch_arm = getattr(getattr(site.edge, "source_anchor", None), "branch_arm", None)
     if branch_arm is not None:
         source_anchor_block = int(site.source_anchor_block)
-        if (
-            source_anchor_block >= 0
-            and source_anchor_block in site.ordered_path
-        ):
+        if source_anchor_block >= 0 and source_anchor_block in site.ordered_path:
             return source_anchor_block
     if int(site.source_entry_anchor) >= 0:
         return int(site.source_entry_anchor)
@@ -179,21 +167,26 @@ def collect_admissible_region_lowering_sites(
         ),
         semantic_entry_by_label=semantic_entry_by_label,
     )
-    semantic_successors_by_state = _augment_region_contract_semantic_successors_by_state(
-        region=region,
-        dag=dag,
-        semantic_successors_by_state=semantic_successors_by_state,
-        semantic_entry_by_label=semantic_entry_by_label,
-        dispatcher_blocks=dispatcher_blocks,
+    semantic_successors_by_state = (
+        _augment_region_contract_semantic_successors_by_state(
+            region=region,
+            dag=dag,
+            semantic_successors_by_state=semantic_successors_by_state,
+            semantic_entry_by_label=semantic_entry_by_label,
+            dispatcher_blocks=dispatcher_blocks,
+        )
     )
     if str(getattr(region, "region_name", "")) == "sub7ffd_10743c4c_branch_region":
         logger.info(
             "semantic region contract: region=%s semantic_successors=%s",
             str(getattr(region, "region_name", "")),
             {
-                f"0x{int(source_state) & 0xFFFFFFFF:08X}": tuple(str(label) for label in targets)
+                f"0x{int(source_state) & 0xFFFFFFFF:08X}": tuple(
+                    str(label) for label in targets
+                )
                 for source_state, targets in semantic_successors_by_state.items()
-                if (int(source_state) & 0xFFFFFFFF) in {
+                if (int(source_state) & 0xFFFFFFFF)
+                in {
                     0x10743C4C,
                     0x6107F8EC,
                     0x7C2C0220,
@@ -218,7 +211,9 @@ def collect_admissible_region_lowering_sites(
                 logger.info("semantic region reject: self-loop raw branch alias")
             continue
         state_pair = (source_state_value, target_state_value)
-        semantic_labels = tuple(semantic_successors_by_state.get(source_state_value, ()))
+        semantic_labels = tuple(
+            semantic_successors_by_state.get(source_state_value, ())
+        )
         direct_semantic_label_candidates = (
             f"STATE_{target_state_value:08X}",
             f"0x{target_state_value:08X}",
@@ -229,10 +224,7 @@ def collect_admissible_region_lowering_sites(
         site_kind: str | None = None
         if state_pair in allowed_pairs:
             site_kind = "internal"
-        elif (
-            source_state_value in region_states
-            and target_state_value in exit_states
-        ):
+        elif source_state_value in region_states and target_state_value in exit_states:
             site_kind = (
                 "exit"
                 if not semantic_labels or has_direct_semantic_successor
@@ -291,7 +283,9 @@ def collect_admissible_region_lowering_sites(
                 str(getattr(region, "region_name", "")),
                 source_state_value,
                 target_state_value,
-                tuple(int(serial) for serial in (getattr(edge, "ordered_path", ()) or ())),
+                tuple(
+                    int(serial) for serial in (getattr(edge, "ordered_path", ()) or ())
+                ),
             )
             continue
 
@@ -338,17 +332,16 @@ def collect_admissible_region_lowering_sites(
                 condition_chain_blocks=dispatcher_blocks,
                 dispatcher=dispatcher,
             )
-            if (
-                source_state_value == 0x6107F8EC
-                and target_state_value == 0x4C77464F
-            ):
+            if source_state_value == 0x6107F8EC and target_state_value == 0x4C77464F:
                 logger.info(
                     "semantic region raw-nonexact override src=0x%08X target=0x%08X label=%s source_block=%s current=%s normalized=%s supplemental=%s nonexact=%s",
                     source_state_value,
                     target_state_value,
                     str(getattr(edge, "target_label", "") or ""),
                     int(nonexact_source_block),
-                    None if target_resolution.target_entry is None else int(target_resolution.target_entry),
+                    None
+                    if target_resolution.target_entry is None
+                    else int(target_resolution.target_entry),
                     normalized_alias_entry,
                     supplemental_selected_entry,
                     nonexact_target_entry,
@@ -357,9 +350,7 @@ def collect_admissible_region_lowering_sites(
                 dag,
                 source_block=int(nonexact_source_block),
                 dispatcher_blocks=dispatcher_blocks,
-                candidates=(
-                    supplemental_selected_entry,
-                ),
+                candidates=(supplemental_selected_entry,),
             )
             generic_owner_semantic_head = _resolve_owner_semantic_head_for_candidates(
                 dag,
@@ -448,17 +439,11 @@ def collect_admissible_region_lowering_sites(
         }
         source_owned_blocks.update(
             int(block)
-            for block in (
-                getattr(source_node, "shared_suffix_blocks", ())
-                or ()
-            )
+            for block in (getattr(source_node, "shared_suffix_blocks", ()) or ())
         )
         source_owned_blocks.update(
             int(block)
-            for segment in (
-                getattr(source_node, "local_segments", ())
-                or ()
-            )
+            for segment in (getattr(source_node, "local_segments", ()) or ())
             for block in getattr(segment, "blocks", ()) or ()
         )
         if source_entry_anchor >= 0:
@@ -466,7 +451,9 @@ def collect_admissible_region_lowering_sites(
         target_entry_anchor = (
             int(target_entry_anchor) if target_entry_anchor is not None else -1
         )
-        source_anchor_block = int(getattr(getattr(edge, "source_anchor", None), "block_serial", -1))
+        source_anchor_block = int(
+            getattr(getattr(edge, "source_anchor", None), "block_serial", -1)
+        )
         exact_target_entry = resolve_exact_dag_entry_for_state(
             dag,
             target_state_value,
@@ -487,7 +474,8 @@ def collect_admissible_region_lowering_sites(
                 if (
                     candidate_state is not None
                     and (int(candidate_state) & 0xFFFFFFFF) == source_state_value
-                    and int(getattr(candidate_node, "entry_anchor", -1)) == int(exact_source_entry)
+                    and int(getattr(candidate_node, "entry_anchor", -1))
+                    == int(exact_source_entry)
                 ):
                     exact_source_node = candidate_node
                     break
@@ -503,29 +491,23 @@ def collect_admissible_region_lowering_sites(
                 source_owned_blocks.update(
                     int(block)
                     for block in (
-                        getattr(exact_source_node, "exclusive_blocks", ())
-                        or ()
+                        getattr(exact_source_node, "exclusive_blocks", ()) or ()
                     )
                 )
                 source_owned_blocks.update(
                     int(block)
-                    for block in (
-                        getattr(exact_source_node, "owned_blocks", ())
-                        or ()
-                    )
+                    for block in (getattr(exact_source_node, "owned_blocks", ()) or ())
                 )
                 source_owned_blocks.update(
                     int(block)
                     for block in (
-                        getattr(exact_source_node, "shared_suffix_blocks", ())
-                        or ()
+                        getattr(exact_source_node, "shared_suffix_blocks", ()) or ()
                     )
                 )
                 source_owned_blocks.update(
                     int(block)
                     for segment in (
-                        getattr(exact_source_node, "local_segments", ())
-                        or ()
+                        getattr(exact_source_node, "local_segments", ()) or ()
                     )
                     for block in getattr(segment, "blocks", ()) or ()
                 )
@@ -558,10 +540,7 @@ def collect_admissible_region_lowering_sites(
                     site_kind,
                 )
             continue
-        if (
-            source_entry_anchor in dispatcher_blocks
-            and not source_is_exact_head
-        ) or (
+        if (source_entry_anchor in dispatcher_blocks and not source_is_exact_head) or (
             target_entry_anchor in dispatcher_blocks
             and site_kind != "exit_alias_candidate"
             and not target_is_exact_head
@@ -589,16 +568,16 @@ def collect_admissible_region_lowering_sites(
             continue
 
         accepted.append(
-                SemanticRegionLoweringSite(
-                    region_name=str(getattr(region, "region_name", "")),
-                    site_kind=site_kind,
-                    source_state=int(source_state) & 0xFFFFFFFF,
-                    target_state=int(target_state) & 0xFFFFFFFF,
-                    source_entry_anchor=source_entry_anchor,
-                    source_anchor_block=source_anchor_block,
-                    target_entry_anchor=target_entry_anchor,
-                    ordered_path=ordered_path,
-                    edge=edge,
+            SemanticRegionLoweringSite(
+                region_name=str(getattr(region, "region_name", "")),
+                site_kind=site_kind,
+                source_state=int(source_state) & 0xFFFFFFFF,
+                target_state=int(target_state) & 0xFFFFFFFF,
+                source_entry_anchor=source_entry_anchor,
+                source_anchor_block=source_anchor_block,
+                target_entry_anchor=target_entry_anchor,
+                ordered_path=ordered_path,
+                edge=edge,
                 semantic_target_label=semantic_target_label,
                 successor_state_value=(
                     inferred_successor_state_value
@@ -666,7 +645,9 @@ def _resolve_supplemental_selected_entry(
     state_value: int,
 ) -> int | None:
     normalized_state = int(state_value) & 0xFFFFFFFF
-    for candidate_state, anchor in getattr(dag, "supplemental_selected_entries", ()) or ():
+    for candidate_state, anchor in (
+        getattr(dag, "supplemental_selected_entries", ()) or ()
+    ):
         if (int(candidate_state) & 0xFFFFFFFF) == normalized_state:
             return int(anchor)
     return None
@@ -680,9 +661,7 @@ def _resolve_owner_semantic_head_for_candidates(
     candidates: tuple[int | None, ...],
 ) -> int | None:
     anchor_candidates = tuple(
-        int(candidate)
-        for candidate in candidates
-        if candidate is not None
+        int(candidate) for candidate in candidates if candidate is not None
     )
     if not anchor_candidates:
         return None
@@ -753,9 +732,7 @@ def _merge_region_contract_semantic_successors_by_state(
     region_states = {
         int(state) & 0xFFFFFFFF for state in getattr(region, "state_values", ()) or ()
     }
-    for source_state in (
-        int(state) & 0xFFFFFFFF for state in region_states
-    ):
+    for source_state in (int(state) & 0xFFFFFFFF for state in region_states):
         contract_successor_states = internal_targets_by_source.get(source_state)
         is_leaf_exit_source = not contract_successor_states
         if not contract_successor_states:
@@ -839,13 +816,15 @@ def _augment_region_contract_semantic_successors_by_state(
     }
     internal_source_states = {
         int(source_state) & 0xFFFFFFFF
-        for source_state, _target_state in getattr(region, "internal_state_edges", ()) or ()
+        for source_state, _target_state in getattr(region, "internal_state_edges", ())
+        or ()
     }
     region_states = {
         int(state) & 0xFFFFFFFF for state in getattr(region, "state_values", ()) or ()
     }
     region_exit_states = tuple(
-        int(state) & 0xFFFFFFFF for state in getattr(region, "exit_state_values", ()) or ()
+        int(state) & 0xFFFFFFFF
+        for state in getattr(region, "exit_state_values", ()) or ()
     )
     if not region_exit_states:
         return {
@@ -874,7 +853,10 @@ def _augment_region_contract_semantic_successors_by_state(
                 if label not in existing
             ]
             labels_describe_raw_self = bool(preferred_labels) and all(
-                (semantic_state_value_from_label(label) == (int(exit_state) & 0xFFFFFFFF))
+                (
+                    semantic_state_value_from_label(label)
+                    == (int(exit_state) & 0xFFFFFFFF)
+                )
                 and not str(label).endswith("_fallback")
                 for label in preferred_labels
             )
@@ -882,8 +864,12 @@ def _augment_region_contract_semantic_successors_by_state(
                 normalized_alias_entry = None
                 has_raw_exit_alias_family = any(
                     (
-                        getattr(getattr(node, "key", None), "state_const", None) is not None
-                        and (int(getattr(getattr(node, "key", None), "state_const")) & 0xFFFFFFFF)
+                        getattr(getattr(node, "key", None), "state_const", None)
+                        is not None
+                        and (
+                            int(getattr(getattr(node, "key", None), "state_const"))
+                            & 0xFFFFFFFF
+                        )
                         == (int(exit_state) & 0xFFFFFFFF)
                         and is_raw_state_label(
                             str(getattr(node, "state_label", "") or ""),
@@ -988,14 +974,18 @@ def _normalize_semantic_alias_targets(
                 )
                 if branch_arm not in (0, 1):
                     continue
-                current_label = normalize_semantic_target_label(site.semantic_target_label)
+                current_label = normalize_semantic_target_label(
+                    site.semantic_target_label
+                )
                 if current_label is None:
                     direct_label = f"STATE_{int(site.target_state) & 0xFFFFFFFF:08X}"
                     if direct_label in semantic_labels:
                         current_label = direct_label
                 if current_label is None or current_label not in semantic_labels:
                     continue
-                branch_semantic_label_by_arm.setdefault(int(branch_arm), str(current_label))
+                branch_semantic_label_by_arm.setdefault(
+                    int(branch_arm), str(current_label)
+                )
             if (
                 len(branch_semantic_label_by_arm) == 2
                 and len(set(branch_semantic_label_by_arm.values())) == 1
@@ -1036,7 +1026,9 @@ def _normalize_semantic_alias_targets(
         unmatched_labels = [
             label for label in semantic_labels if label not in matched_labels
         ]
-        alias_sites = [site for site in source_sites if site.site_kind == "exit_alias_candidate"]
+        alias_sites = [
+            site for site in source_sites if site.site_kind == "exit_alias_candidate"
+        ]
         alias_site_override: dict[int, SemanticRegionLoweringSite] = {}
         if alias_sites and len(unmatched_labels) == 1:
             target_label = unmatched_labels[0]
@@ -1064,7 +1056,8 @@ def _normalize_semantic_alias_targets(
                             target_entry_anchor=int(target_entry_anchor),
                             target_label=target_label,
                             ordered_path=tuple(
-                                int(serial) for serial in (alias_site.ordered_path or ())
+                                int(serial)
+                                for serial in (alias_site.ordered_path or ())
                             ),
                         ),
                         semantic_target_label=target_label,
@@ -1091,7 +1084,9 @@ def _normalize_semantic_alias_targets(
                 "branch_arm",
                 None,
             )
-            normalized_ordered_path = tuple(int(serial) for serial in (site.ordered_path or ()))
+            normalized_ordered_path = tuple(
+                int(serial) for serial in (site.ordered_path or ())
+            )
             current_source_anchor_block = int(
                 getattr(
                     getattr(site.edge, "source_anchor", None),
@@ -1210,11 +1205,12 @@ def _normalize_semantic_alias_targets(
                 return site
 
             ordered_path = {
-                int(block_serial)
-                for block_serial in (site.ordered_path or ())
+                int(block_serial) for block_serial in (site.ordered_path or ())
             }
 
-            best_choice: tuple[tuple[int, int, int, int, int], str, int, int] | None = None
+            best_choice: tuple[tuple[int, int, int, int, int], str, int, int] | None = (
+                None
+            )
             for label in semantic_labels:
                 entry_anchor = semantic_entry_by_label.get(label)
                 state_value = semantic_state_value_from_label(label)
@@ -1252,7 +1248,9 @@ def _normalize_semantic_alias_targets(
                     inferred_branch_arm = int(matching_arms[0])
             return SemanticRegionLoweringSite(
                 region_name=site.region_name,
-                site_kind="exit" if site.site_kind == "exit_alias_candidate" else site.site_kind,
+                site_kind="exit"
+                if site.site_kind == "exit_alias_candidate"
+                else site.site_kind,
                 source_state=site.source_state,
                 target_state=int(best_state_value) & 0xFFFFFFFF,
                 source_entry_anchor=site.source_entry_anchor,
@@ -1287,7 +1285,9 @@ def _prune_stale_semantic_alias_sites(
 ) -> list[SemanticRegionLoweringSite]:
     grouped: dict[tuple[int, int, int], list[SemanticRegionLoweringSite]] = {}
     for site in sites:
-        branch_arm = getattr(getattr(site.edge, "source_anchor", None), "branch_arm", None)
+        branch_arm = getattr(
+            getattr(site.edge, "source_anchor", None), "branch_arm", None
+        )
         grouped.setdefault(
             (
                 int(site.source_state) & 0xFFFFFFFF,
@@ -1303,9 +1303,7 @@ def _prune_stale_semantic_alias_sites(
             pruned.extend(source_sites)
             continue
         path_blocks = {
-            int(serial)
-            for site in source_sites
-            for serial in (site.ordered_path or ())
+            int(serial) for site in source_sites for serial in (site.ordered_path or ())
         }
         best_site = min(
             source_sites,
@@ -1422,7 +1420,11 @@ def _build_semantic_child_ordered_path(
         )
     )
     branch_arm = getattr(getattr(site.edge, "source_anchor", None), "branch_arm", None)
-    if branch_arm in (0, 1) and source_anchor_block >= 0 and source_anchor_block != child_entry:
+    if (
+        branch_arm in (0, 1)
+        and source_anchor_block >= 0
+        and source_anchor_block != child_entry
+    ):
         return (source_anchor_block, child_entry)
     source_entry_anchor = int(site.source_entry_anchor)
     if source_entry_anchor >= 0 and source_entry_anchor != child_entry:
@@ -1457,7 +1459,9 @@ def _collect_observed_conditional_branch_contexts(
 ) -> dict[int, tuple[object, int, tuple[int, ...]]]:
     if dag is None:
         return {}
-    contexts: dict[int, tuple[tuple[int, int, int, int], object, int, tuple[int, ...]]] = {}
+    contexts: dict[
+        int, tuple[tuple[int, int, int, int], object, int, tuple[int, ...]]
+    ] = {}
     for edge in getattr(dag, "edges", ()) or ():
         source_key = getattr(edge, "source_key", None)
         if source_key is None:
@@ -1496,7 +1500,12 @@ def _collect_observed_conditional_branch_contexts(
             )
     return {
         int(branch_arm): (source_key, int(source_anchor_block), tuple(normalized_path))
-        for branch_arm, (_, source_key, source_anchor_block, normalized_path) in contexts.items()
+        for branch_arm, (
+            _,
+            source_key,
+            source_anchor_block,
+            normalized_path,
+        ) in contexts.items()
     }
 
 
@@ -1558,7 +1567,8 @@ def _synthesize_missing_conditional_exit_sites(
         conditional_sites = [
             site
             for site in source_sites
-            if getattr(getattr(site.edge, "source_anchor", None), "branch_arm", None) in (0, 1)
+            if getattr(getattr(site.edge, "source_anchor", None), "branch_arm", None)
+            in (0, 1)
         ]
         if not conditional_sites:
             continue
@@ -1614,9 +1624,13 @@ def _synthesize_missing_conditional_exit_sites(
         source_anchor_block = int(source_entry_anchor)
         ordered_path = (int(source_entry_anchor),)
         if observed_context is not None:
-            observed_source_key, observed_source_anchor_block, observed_ordered_path = observed_context
+            observed_source_key, observed_source_anchor_block, observed_ordered_path = (
+                observed_context
+            )
             observed_source_entry_anchor = int(
-                getattr(observed_source_key, "handler_serial", observed_source_anchor_block)
+                getattr(
+                    observed_source_key, "handler_serial", observed_source_anchor_block
+                )
             )
             if observed_source_entry_anchor >= 0:
                 source_entry_anchor = int(observed_source_entry_anchor)
@@ -1662,9 +1676,7 @@ def _synthesize_missing_conditional_exit_sites(
     if dag is None:
         return synthesized
 
-    dispatcher_region = {
-        int(block) for block in (dispatcher_blocks or ())
-    }
+    dispatcher_region = {int(block) for block in (dispatcher_blocks or ())}
     existing_signatures = {
         (
             int(site.source_state) & 0xFFFFFFFF,
@@ -1750,7 +1762,10 @@ def _synthesize_missing_conditional_exit_sites(
             handler_serial=int(source_entry_anchor),
             state_const=int(source_state_value) & 0xFFFFFFFF,
         )
-        for branch_arm, target_label in ((1, semantic_labels[0]), (0, semantic_labels[1])):
+        for branch_arm, target_label in (
+            (1, semantic_labels[0]),
+            (0, semantic_labels[1]),
+        ):
             successor_state_value = semantic_state_value_from_label(target_label)
             target_entry_anchor = semantic_entry_by_label.get(str(target_label))
             if successor_state_value is None or target_entry_anchor is None:
@@ -1768,11 +1783,7 @@ def _synthesize_missing_conditional_exit_sites(
                 continue
             successor_state_value = int(successor_state_value) & 0xFFFFFFFF
             target_entry_anchor = int(target_entry_anchor)
-            site_kind = (
-                "internal"
-                if successor_state_value in region_states
-                else "exit"
-            )
+            site_kind = "internal" if successor_state_value in region_states else "exit"
             signature = (
                 int(source_state_value) & 0xFFFFFFFF,
                 int(successor_state_value) & 0xFFFFFFFF,
@@ -1786,14 +1797,24 @@ def _synthesize_missing_conditional_exit_sites(
             branch_ordered_path = (int(source_entry_anchor),)
             branch_source_key = default_source_key
             if observed_context is not None:
-                observed_source_key, observed_source_anchor_block, observed_ordered_path = observed_context
+                (
+                    observed_source_key,
+                    observed_source_anchor_block,
+                    observed_ordered_path,
+                ) = observed_context
                 observed_source_entry_anchor = int(
-                    getattr(observed_source_key, "handler_serial", observed_source_anchor_block)
+                    getattr(
+                        observed_source_key,
+                        "handler_serial",
+                        observed_source_anchor_block,
+                    )
                 )
                 if observed_source_entry_anchor >= 0:
                     branch_source_entry_anchor = int(observed_source_entry_anchor)
                 branch_source_anchor_block = int(observed_source_anchor_block)
-                branch_ordered_path = tuple(int(serial) for serial in observed_ordered_path)
+                branch_ordered_path = tuple(
+                    int(serial) for serial in observed_ordered_path
+                )
                 branch_source_key = observed_source_key
             synthetic_edge = SimpleNamespace(
                 source_key=branch_source_key,
@@ -1871,7 +1892,9 @@ def override_exit_sites_with_child_region_entries(
         semantic_reference_program
     )
     child_region_names_by_state = {
-        int(getattr(region, "entry_state")) & 0xFFFFFFFF: str(getattr(region, "region_name", ""))
+        int(getattr(region, "entry_state")) & 0xFFFFFFFF: str(
+            getattr(region, "region_name", "")
+        )
         for region in structured_regions
         if str(getattr(region, "region_name", "")) != str(current_region_name)
         and getattr(region, "entry_state", None) is not None
@@ -1899,7 +1922,9 @@ def override_exit_sites_with_child_region_entries(
         ):
             overridden.append(site)
             continue
-        branch_arm = getattr(getattr(site.edge, "source_anchor", None), "branch_arm", None)
+        branch_arm = getattr(
+            getattr(site.edge, "source_anchor", None), "branch_arm", None
+        )
         target_source_block = (
             int(site.ordered_path[1])
             if (
@@ -1930,14 +1955,17 @@ def override_exit_sites_with_child_region_entries(
         semantic_target_label = str(
             site.semantic_target_label or f"STATE_{effective_target_state:08X}"
         )
-        direct_effective_target_label = f"STATE_{int(effective_target_state) & 0xFFFFFFFF:08X}"
+        direct_effective_target_label = (
+            f"STATE_{int(effective_target_state) & 0xFFFFFFFF:08X}"
+        )
         current_semantic_target_state = semantic_state_value_from_label(
             semantic_target_label
         )
         if (
             direct_effective_target_label in semantic_entry_by_label
             and current_semantic_target_state is not None
-            and current_semantic_target_state != int(effective_target_state) & 0xFFFFFFFF
+            and current_semantic_target_state
+            != int(effective_target_state) & 0xFFFFFFFF
         ):
             semantic_target_label = direct_effective_target_label
         semantic_reference_entry = semantic_entry_by_label.get(semantic_target_label)
@@ -1979,9 +2007,7 @@ def override_exit_sites_with_child_region_entries(
             dag,
             source_block=target_source_block,
             dispatcher_blocks=dispatcher_blocks,
-            candidates=(
-                supplemental_selected_entry,
-            ),
+            candidates=(supplemental_selected_entry,),
         )
         generic_owner_child_entry = _resolve_owner_semantic_head_for_candidates(
             dag,
@@ -2005,14 +2031,11 @@ def override_exit_sites_with_child_region_entries(
             break
 
         current_target_entry = int(site.target_entry_anchor)
-        current_matches_effective_target = (
-            current_target_entry >= 0
-            and (
-                current_target_entry == normalized_child_entry
-                or current_target_entry == semantic_reference_entry
-                or current_target_entry == child_exact_entry
-                or current_target_entry == exact_dispatcher_entry
-            )
+        current_matches_effective_target = current_target_entry >= 0 and (
+            current_target_entry == normalized_child_entry
+            or current_target_entry == semantic_reference_entry
+            or current_target_entry == child_exact_entry
+            or current_target_entry == exact_dispatcher_entry
         )
 
         if owner_child_entry is not None and owner_child_entry != source_entry_anchor:
@@ -2070,21 +2093,13 @@ def override_exit_sites_with_child_region_entries(
             effective_target_state,
             semantic_target_label,
             int(site.target_entry_anchor),
-            (
-                None
-                if normalized_child_entry is None
-                else int(normalized_child_entry)
-            ),
+            (None if normalized_child_entry is None else int(normalized_child_entry)),
             (
                 None
                 if supplemental_selected_entry is None
                 else int(supplemental_selected_entry)
             ),
-            (
-                None
-                if owner_child_entry is None
-                else int(owner_child_entry)
-            ),
+            (None if owner_child_entry is None else int(owner_child_entry)),
             (
                 None
                 if generic_owner_child_entry is None
@@ -2095,16 +2110,8 @@ def override_exit_sites_with_child_region_entries(
                 if semantic_reference_entry is None
                 else int(semantic_reference_entry)
             ),
-            (
-                None
-                if child_exact_entry is None
-                else int(child_exact_entry)
-            ),
-            (
-                None
-                if exact_dispatcher_entry is None
-                else int(exact_dispatcher_entry)
-            ),
+            (None if child_exact_entry is None else int(child_exact_entry)),
+            (None if exact_dispatcher_entry is None else int(exact_dispatcher_entry)),
         )
         if child_entry_anchor is None:
             overridden.append(site)
@@ -2121,7 +2128,9 @@ def override_exit_sites_with_child_region_entries(
             if site.semantic_target_label is None
             else str(site.semantic_target_label)
         )
-        normalized_ordered_path = tuple(int(serial) for serial in (site.ordered_path or ()))
+        normalized_ordered_path = tuple(
+            int(serial) for serial in (site.ordered_path or ())
+        )
         if (
             int(child_entry_anchor) != int(site.target_entry_anchor)
             or current_successor_state != normalized_successor_state
@@ -2192,7 +2201,9 @@ def override_exit_sites_with_child_region_entries(
                 source_entry_anchor=int(getattr(site, "source_entry_anchor", -1)),
                 source_anchor_block=int(getattr(site, "source_anchor_block", -1)),
                 target_entry_anchor=int(getattr(site, "target_entry_anchor", -1)),
-                ordered_path=tuple(int(serial) for serial in (getattr(site, "ordered_path", ()) or ())),
+                ordered_path=tuple(
+                    int(serial) for serial in (getattr(site, "ordered_path", ()) or ())
+                ),
                 edge=getattr(site, "edge", None),
                 semantic_target_label=normalized_label,
                 successor_state_value=int(normalized_successor) & 0xFFFFFFFF,
@@ -2294,7 +2305,8 @@ def _resolve_direct_semantic_successor_override(
     direct_labels = tuple(
         label
         for label in semantic_labels
-        if label in (
+        if label
+        in (
             f"STATE_{target_state:08X}",
             f"0x{target_state:08X}",
         )
@@ -2320,7 +2332,10 @@ def _resolve_direct_semantic_successor_override(
         dispatcher_region=dispatcher_blocks,
         allow_dispatcher_exact_head=True,
     )
-    if semantic_target_entry in dispatcher_blocks and semantic_target_entry != exact_dag_entry:
+    if (
+        semantic_target_entry in dispatcher_blocks
+        and semantic_target_entry != exact_dag_entry
+    ):
         return current_target_entry, None
     current_entry = (
         int(current_target_entry) if current_target_entry is not None else None
@@ -2333,8 +2348,8 @@ def _resolve_direct_semantic_successor_override(
         or current_entry in ordered_path
         or current_entry != exact_dag_entry
     )
-    semantic_is_exact_head = (
-        exact_dag_entry is None or semantic_target_entry == int(exact_dag_entry)
+    semantic_is_exact_head = exact_dag_entry is None or semantic_target_entry == int(
+        exact_dag_entry
     )
     if current_is_nonhead and semantic_is_exact_head:
         return semantic_target_entry, target_label
@@ -2370,12 +2385,9 @@ def _prefer_exact_target_head_over_path_entry(
         return current_entry
     if semantic_target_label is not None:
         semantic_state = semantic_state_value_from_label(semantic_target_label)
-        if (
-            str(semantic_target_label).endswith("_fallback")
-            or (
-                semantic_state is not None
-                and (int(semantic_state) & 0xFFFFFFFF) != (int(target_state) & 0xFFFFFFFF)
-            )
+        if str(semantic_target_label).endswith("_fallback") or (
+            semantic_state is not None
+            and (int(semantic_state) & 0xFFFFFFFF) != (int(target_state) & 0xFFFFFFFF)
         ):
             return current_entry
     return exact_dag_entry
@@ -2393,7 +2405,12 @@ def _prefer_exact_target_head_over_path_entry(
         "Turn a conditional region exit that still writes 0x2315233C into a branch redirect to STATE_2315233C's semantic entry.",
         "Turn a region-internal successor 0x139F2922 -> 0x63F502FA into a direct handoff to STATE_63F502FA's semantic head.",
     ),
-    tags=("semantic-region", "fallback-lowering", "semantic-head", "structured-lowering"),
+    tags=(
+        "semantic-region",
+        "fallback-lowering",
+        "semantic-head",
+        "structured-lowering",
+    ),
     related_paths=(
         "src/d810/cfg/semantic_region_lowering.py",
         "src/d810/optimizers/microcode/flow/flattening/hodur/strategies/linearized_flow_graph.py",
@@ -2435,11 +2452,7 @@ def build_region_contract_fallback_lowering(
         return None
 
     branch_arm = getattr(getattr(site.edge, "source_anchor", None), "branch_arm", None)
-    emission_mode = (
-        "conditional_arm"
-        if branch_arm is not None
-        else "direct"
-    )
+    emission_mode = "conditional_arm" if branch_arm is not None else "direct"
     return SemanticRegionFallbackLowering(
         emission_mode=emission_mode,
         horizon_block=int(horizon_block),
@@ -2505,7 +2518,9 @@ def build_region_preferred_direct_lowering(
     horizon_block = _select_site_horizon_block(site)
     if horizon_block is None or site.target_entry_anchor < 0:
         return None
-    if not site.ordered_path or int(site.ordered_path[0]) != int(site.source_entry_anchor):
+    if not site.ordered_path or int(site.ordered_path[0]) != int(
+        site.source_entry_anchor
+    ):
         return None
     if len(site.ordered_path) != 1:
         return None

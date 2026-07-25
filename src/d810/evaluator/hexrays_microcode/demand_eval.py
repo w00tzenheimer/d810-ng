@@ -8,6 +8,7 @@ bounds.
 The memo dict is shared across calls for caching within a single
 emulation pass.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -31,44 +32,47 @@ def _get_safe_opcodes() -> frozenset[int]:
     if _SAFE_OPCODES is not None:
         return _SAFE_OPCODES
     import ida_hexrays
-    _SAFE_OPCODES = frozenset([
-        ida_hexrays.m_mov,
-        ida_hexrays.m_neg,
-        ida_hexrays.m_lnot,
-        ida_hexrays.m_bnot,
-        ida_hexrays.m_xds,
-        ida_hexrays.m_xdu,
-        ida_hexrays.m_low,
-        ida_hexrays.m_high,
-        ida_hexrays.m_add,
-        ida_hexrays.m_sub,
-        ida_hexrays.m_mul,
-        ida_hexrays.m_udiv,
-        ida_hexrays.m_sdiv,
-        ida_hexrays.m_umod,
-        ida_hexrays.m_smod,
-        ida_hexrays.m_or,
-        ida_hexrays.m_and,
-        ida_hexrays.m_xor,
-        ida_hexrays.m_shl,
-        ida_hexrays.m_shr,
-        ida_hexrays.m_sar,
-        ida_hexrays.m_cfadd,
-        ida_hexrays.m_ofadd,
-        ida_hexrays.m_sets,
-        ida_hexrays.m_seto,
-        ida_hexrays.m_setnz,
-        ida_hexrays.m_setz,
-        ida_hexrays.m_setae,
-        ida_hexrays.m_setb,
-        ida_hexrays.m_seta,
-        ida_hexrays.m_setbe,
-        ida_hexrays.m_setg,
-        ida_hexrays.m_setge,
-        ida_hexrays.m_setl,
-        ida_hexrays.m_setle,
-        ida_hexrays.m_setp,
-    ])
+
+    _SAFE_OPCODES = frozenset(
+        [
+            ida_hexrays.m_mov,
+            ida_hexrays.m_neg,
+            ida_hexrays.m_lnot,
+            ida_hexrays.m_bnot,
+            ida_hexrays.m_xds,
+            ida_hexrays.m_xdu,
+            ida_hexrays.m_low,
+            ida_hexrays.m_high,
+            ida_hexrays.m_add,
+            ida_hexrays.m_sub,
+            ida_hexrays.m_mul,
+            ida_hexrays.m_udiv,
+            ida_hexrays.m_sdiv,
+            ida_hexrays.m_umod,
+            ida_hexrays.m_smod,
+            ida_hexrays.m_or,
+            ida_hexrays.m_and,
+            ida_hexrays.m_xor,
+            ida_hexrays.m_shl,
+            ida_hexrays.m_shr,
+            ida_hexrays.m_sar,
+            ida_hexrays.m_cfadd,
+            ida_hexrays.m_ofadd,
+            ida_hexrays.m_sets,
+            ida_hexrays.m_seto,
+            ida_hexrays.m_setnz,
+            ida_hexrays.m_setz,
+            ida_hexrays.m_setae,
+            ida_hexrays.m_setb,
+            ida_hexrays.m_seta,
+            ida_hexrays.m_setbe,
+            ida_hexrays.m_setg,
+            ida_hexrays.m_setge,
+            ida_hexrays.m_setl,
+            ida_hexrays.m_setle,
+            ida_hexrays.m_setp,
+        ]
+    )
     return _SAFE_OPCODES
 
 
@@ -82,17 +86,20 @@ def _get_unary_opcodes() -> frozenset[int]:
     if _UNARY_OPCODES is not None:
         return _UNARY_OPCODES
     import ida_hexrays
-    _UNARY_OPCODES = frozenset([
-        ida_hexrays.m_mov,
-        ida_hexrays.m_neg,
-        ida_hexrays.m_lnot,
-        ida_hexrays.m_bnot,
-        ida_hexrays.m_xds,
-        ida_hexrays.m_xdu,
-        ida_hexrays.m_low,
-        ida_hexrays.m_high,
-        ida_hexrays.m_sets,
-    ])
+
+    _UNARY_OPCODES = frozenset(
+        [
+            ida_hexrays.m_mov,
+            ida_hexrays.m_neg,
+            ida_hexrays.m_lnot,
+            ida_hexrays.m_bnot,
+            ida_hexrays.m_xds,
+            ida_hexrays.m_xdu,
+            ida_hexrays.m_low,
+            ida_hexrays.m_high,
+            ida_hexrays.m_sets,
+        ]
+    )
     return _UNARY_OPCODES
 
 
@@ -236,14 +243,18 @@ def _process_worklist(
                 if src_type == ida_hexrays.mop_r:
                     src_defs = find_reaching_defs_for_reg(mba, wl_blk, src_id, src_size)
                 elif src_type == ida_hexrays.mop_S:
-                    src_defs = find_reaching_defs_for_stkvar(mba, wl_blk, src_id, src_size)
+                    src_defs = find_reaching_defs_for_stkvar(
+                        mba, wl_blk, src_id, src_size
+                    )
                 else:
                     memo[src_key] = None
                     all_resolved = False
                     continue
 
                 if len(src_defs) == 1:
-                    worklist.append((src_key, src_defs[0].block_serial, src_defs[0].ins_ea))
+                    worklist.append(
+                        (src_key, src_defs[0].block_serial, src_defs[0].ins_ea)
+                    )
                 else:
                     memo[src_key] = None
                 all_resolved = False
@@ -296,6 +307,7 @@ def _mop_to_key(mop: object) -> tuple | None:
     Returns None for unsupported operand types.
     """
     import ida_hexrays
+
     t = mop.t  # type: ignore[attr-defined]
     size = mop.size  # type: ignore[attr-defined]
 
@@ -458,13 +470,21 @@ def _eval_with_constants(
     elif opcode == ida_hexrays.m_setbe:
         return (1 if lv <= rv else 0) & res_mask
     elif opcode == ida_hexrays.m_setg:
-        return (1 if unsigned_to_signed(lv, ls) > unsigned_to_signed(rv, rs) else 0) & res_mask
+        return (
+            1 if unsigned_to_signed(lv, ls) > unsigned_to_signed(rv, rs) else 0
+        ) & res_mask
     elif opcode == ida_hexrays.m_setge:
-        return (1 if unsigned_to_signed(lv, ls) >= unsigned_to_signed(rv, rs) else 0) & res_mask
+        return (
+            1 if unsigned_to_signed(lv, ls) >= unsigned_to_signed(rv, rs) else 0
+        ) & res_mask
     elif opcode == ida_hexrays.m_setl:
-        return (1 if unsigned_to_signed(lv, ls) < unsigned_to_signed(rv, rs) else 0) & res_mask
+        return (
+            1 if unsigned_to_signed(lv, ls) < unsigned_to_signed(rv, rs) else 0
+        ) & res_mask
     elif opcode == ida_hexrays.m_setle:
-        return (1 if unsigned_to_signed(lv, ls) <= unsigned_to_signed(rv, rs) else 0) & res_mask
+        return (
+            1 if unsigned_to_signed(lv, ls) <= unsigned_to_signed(rv, rs) else 0
+        ) & res_mask
     elif opcode == ida_hexrays.m_setp:
         return get_parity_flag(lv, rv, ls) & res_mask
 

@@ -59,14 +59,14 @@ class TestZ3SetComparisons:
     @pytest.mark.parametrize(
         "left,right",
         [
-            (5, 7),            # both positive, no overflow
+            (5, 7),  # both positive, no overflow
             (7, 5),
             (0, 0),
-            (100, -100),       # diff signs, small -> no overflow
+            (100, -100),  # diff signs, small -> no overflow
             (-100, 100),
             (2147483647, -1),  # INT_MAX - (-1) -> overflow
             (-2147483648, 1),  # INT_MIN - 1     -> overflow
-            (-2147483648, -1), # same sign       -> no overflow
+            (-2147483648, -1),  # same sign       -> no overflow
         ],
     )
     def test_seto_matches_canonical_subtraction_overflow(self, left, right):
@@ -74,9 +74,7 @@ class TestZ3SetComparisons:
         # OF semantics): the signed-subtraction overflow flag of left - right.
         from d810.core.bits import get_sub_of
 
-        assert _z3_value(ida_hexrays.m_seto, left, right) == get_sub_of(
-            left, right, 4
-        )
+        assert _z3_value(ida_hexrays.m_seto, left, right) == get_sub_of(left, right, 4)
 
     def test_seto_no_longer_raises_unknown_opcode(self):
         # Regression: before the m_seto case, the visitor raised D810Z3Exception
@@ -95,8 +93,8 @@ class TestZ3SetComparisons:
         sf = difference < z3.BitVecVal(0, 32)  # m_sets(left=y-c)
         overflow_bit = z3.Extract(31, 31, (y ^ difference) & (y ^ c))
         of = overflow_bit == z3.BitVecVal(1, 1)  # m_seto(y, c)
-        signed_lt = sf != of                     # y <s c
-        signed_ge = sf == of                     # y >=s c
+        signed_lt = sf != of  # y <s c
+        signed_ge = sf == of  # y >=s c
         solver = z3.Solver()
         solver.add(z3.Not(z3.Or(signed_lt, signed_ge)))
         assert solver.check() == z3.unsat  # no y falsifies the tautology

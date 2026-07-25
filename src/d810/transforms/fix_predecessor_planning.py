@@ -7,6 +7,7 @@ This helper admits that shape and emits the dedicated
 ``CloneConditionalAsGoto`` graph primitive.  Callers still have to opt into
 the planned path explicitly; the legacy live rule remains the default.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -395,9 +396,7 @@ def _resolve_pred_arm_for_target(
     explicit_arm = infer_conditional_target(pred_block)
     if explicit_arm is None:
         return None
-    fallthrough = infer_fallthrough_target(
-        pred_block, conditional_target=explicit_arm
-    )
+    fallthrough = infer_fallthrough_target(pred_block, conditional_target=explicit_arm)
     if fallthrough is None:
         return None
     if target_serial == explicit_arm:

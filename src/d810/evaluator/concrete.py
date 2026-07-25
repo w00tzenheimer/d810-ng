@@ -372,22 +372,46 @@ class ConcreteEvaluator(EvaluatorProtocol):
                 return sub_overflow & res_mask
             case ida_hexrays.m_setnz if right is not None:
                 lv, rv = _ev(left), _ev(right)
-                return None if lv is None or rv is None else (1 if lv != rv else 0) & res_mask
+                return (
+                    None
+                    if lv is None or rv is None
+                    else (1 if lv != rv else 0) & res_mask
+                )
             case ida_hexrays.m_setz if right is not None:
                 lv, rv = _ev(left), _ev(right)
-                return None if lv is None or rv is None else (1 if lv == rv else 0) & res_mask
+                return (
+                    None
+                    if lv is None or rv is None
+                    else (1 if lv == rv else 0) & res_mask
+                )
             case ida_hexrays.m_setae if right is not None:
                 lv, rv = _ev(left), _ev(right)
-                return None if lv is None or rv is None else (1 if lv >= rv else 0) & res_mask
+                return (
+                    None
+                    if lv is None or rv is None
+                    else (1 if lv >= rv else 0) & res_mask
+                )
             case ida_hexrays.m_setb if right is not None:
                 lv, rv = _ev(left), _ev(right)
-                return None if lv is None or rv is None else (1 if lv < rv else 0) & res_mask
+                return (
+                    None
+                    if lv is None or rv is None
+                    else (1 if lv < rv else 0) & res_mask
+                )
             case ida_hexrays.m_seta if right is not None:
                 lv, rv = _ev(left), _ev(right)
-                return None if lv is None or rv is None else (1 if lv > rv else 0) & res_mask
+                return (
+                    None
+                    if lv is None or rv is None
+                    else (1 if lv > rv else 0) & res_mask
+                )
             case ida_hexrays.m_setbe if right is not None:
                 lv, rv = _ev(left), _ev(right)
-                return None if lv is None or rv is None else (1 if lv <= rv else 0) & res_mask
+                return (
+                    None
+                    if lv is None or rv is None
+                    else (1 if lv <= rv else 0) & res_mask
+                )
             case ida_hexrays.m_setg if right is not None:
                 lv, rv = _ev(left), _ev(right)
                 if lv is None or rv is None:

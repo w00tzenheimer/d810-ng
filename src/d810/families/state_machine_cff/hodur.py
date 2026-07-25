@@ -9,6 +9,7 @@ patching happens here.
 (The former ``HodurUnflatteningProfile`` strategy-ordering policy was retired with the
 M2 hodur-cluster sever, llr-ibpi — its only consumer was the deleted ``hodur/profile.py``.)
 """
+
 from __future__ import annotations
 
 from d810.ir.flowgraph import FlowGraph
@@ -84,7 +85,9 @@ class HodurFamily(StateMachineCffFamily):
         # detector above and never reach here, so their goldens are unaffected.
         if not (isinstance(context, dict) and context.get("emulation_dispatcher")):
             return None
-        fallback = build_dispatch_map_any_kind(graph, min_state_constant=min_state_constant)
+        fallback = build_dispatch_map_any_kind(
+            graph, min_state_constant=min_state_constant
+        )
         if fallback is not None and fallback.router_kind is RouterKind.CONDITION_CHAIN:
             return fallback
         return None

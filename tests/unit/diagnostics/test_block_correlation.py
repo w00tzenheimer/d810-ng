@@ -1,4 +1,5 @@
 """Tests for block trace and block lineage diagnostics."""
+
 from __future__ import annotations
 
 import json
@@ -228,10 +229,10 @@ class TestBlockTraceQuery:
         result = block_trace_by_ea(correlation_conn, 0x180010000)
         assert result["source"] == "block_observations"
         assert result["ambiguous"] is True
-        assert [
-            (row["snapshot_id"], row["serial"])
-            for row in result["matches"]
-        ] == [(1, 10), (2, 20)]
+        assert [(row["snapshot_id"], row["serial"]) for row in result["matches"]] == [
+            (1, 10),
+            (2, 20),
+        ]
 
 
 class TestBlockTraceCli:
@@ -254,15 +255,17 @@ class TestBlockTraceCli:
         capsys: pytest.CaptureFixture,
     ) -> None:
         db_path = _create_correlation_db(tmp_path)
-        rc = main([
-            "block-trace",
-            "--db",
-            str(db_path),
-            "--snapshot",
-            "2",
-            "--serial",
-            "20",
-        ])
+        rc = main(
+            [
+                "block-trace",
+                "--db",
+                str(db_path),
+                "--snapshot",
+                "2",
+                "--serial",
+                "20",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "anchor: snap 2 (post) blk[20]" in out
@@ -290,15 +293,17 @@ class TestBlockLineageCli:
         capsys: pytest.CaptureFixture,
     ) -> None:
         db_path = _create_correlation_db(tmp_path)
-        rc = main([
-            "block-lineage",
-            "--db",
-            str(db_path),
-            "--snapshot",
-            "2",
-            "--serial",
-            "20",
-        ])
+        rc = main(
+            [
+                "block-lineage",
+                "--db",
+                str(db_path),
+                "--snapshot",
+                "2",
+                "--serial",
+                "20",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "creation_kind=duplicate" in out
@@ -312,15 +317,17 @@ class TestBlockLineageCli:
         capsys: pytest.CaptureFixture,
     ) -> None:
         db_path = _create_legacy_db(tmp_path)
-        rc = main([
-            "block-lineage",
-            "--db",
-            str(db_path),
-            "--snapshot",
-            "1",
-            "--serial",
-            "30",
-        ])
+        rc = main(
+            [
+                "block-lineage",
+                "--db",
+                str(db_path),
+                "--snapshot",
+                "1",
+                "--serial",
+                "30",
+            ]
+        )
         assert rc == 0
         out = capsys.readouterr().out
         assert "block_lineage table not available" in out

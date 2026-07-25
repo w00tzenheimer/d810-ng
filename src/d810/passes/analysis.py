@@ -11,12 +11,17 @@ Their absence does not change the baseline scoring.
 
 No IDA imports - fully unit-testable.
 """
+
 from __future__ import annotations
 
 from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING
 
-from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints, PreanalysisResult
+from d810.analyses.control_flow.models import (
+    CandidateFlag,
+    DeobfuscationHints,
+    PreanalysisResult,
+)
 
 if TYPE_CHECKING:
     from d810.passes.store import PreanalysisStore
@@ -48,9 +53,7 @@ _FLOW_PROFILE_MIN_CONFIDENCE = 0.4
 # globally: Approov engine-wrapper recovery relies on it.  Profiles with known
 # pre-recovery FCP hazards should disable it explicitly.
 _SUPPRESS_CONFIDENCE_THRESHOLD = 0.7
-_FLATTENING_SUPPRESSED_RULES = (
-    "ConstantFolding",
-)
+_FLATTENING_SUPPRESSED_RULES = ("ConstantFolding",)
 
 
 class AnalysisPhase:
@@ -82,7 +85,9 @@ class AnalysisPhase:
             if override is not None:
                 logger.info(
                     "interpret: func=0x%x user override classification=%s confidence=%.2f",
-                    func_ea, override["override_value"], override["confidence"],
+                    func_ea,
+                    override["override_value"],
+                    override["confidence"],
                 )
                 inferences: tuple[str, ...] = ()
                 suppress: tuple[str, ...] = ()
@@ -136,10 +141,7 @@ class AnalysisPhase:
 
         if (
             fixpred
-            and any(
-                c.kind == "fixpred_high_fanin_dispatcher"
-                for c in all_candidates
-            )
+            and any(c.kind == "fixpred_high_fanin_dispatcher" for c in all_candidates)
             and int(fixpred.get("max_dispatcher_predecessors", 0))
             >= _FIXPRED_MIN_DISPATCHER_PREDS
         ):
@@ -147,10 +149,8 @@ class AnalysisPhase:
 
         if (
             compare
-            and int(compare.get("compare_chain_length", 0))
-            >= _COMPARE_CHAIN_MIN_LENGTH
-            and int(compare.get("unique_constants", 0))
-            >= _COMPARE_CHAIN_MIN_CONSTANTS
+            and int(compare.get("compare_chain_length", 0)) >= _COMPARE_CHAIN_MIN_LENGTH
+            and int(compare.get("unique_constants", 0)) >= _COMPARE_CHAIN_MIN_CONSTANTS
         ):
             flat_signals += 1
 
@@ -165,12 +165,8 @@ class AnalysisPhase:
         opcode_results = by_collector.get("OpcodeDistributionCollector", {})
         if (
             opcode_results
-            and any(
-                c.kind == "high_opcode_dominance"
-                for c in all_candidates
-            )
-            and float(opcode_results.get("top_opcode_ratio", 0))
-            > 0.5
+            and any(c.kind == "high_opcode_dominance" for c in all_candidates)
+            and float(opcode_results.get("top_opcode_ratio", 0)) > 0.5
         ):
             flat_signals += 1
 

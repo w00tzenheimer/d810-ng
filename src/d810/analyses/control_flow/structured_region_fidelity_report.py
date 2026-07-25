@@ -16,6 +16,7 @@ postprocess plan, and emits:
 The private ``_build_late_rewrite_semantic_indexes`` helper is only used by
 ``build_structured_region_fidelity_report`` and is kept module-private.
 """
+
 from __future__ import annotations
 
 from d810.ir.state_edge_pair import state_edge_pair, format_state_pair
@@ -45,10 +46,6 @@ __all__ = [
 ]
 
 
-
-
-
-
 def _build_late_rewrite_semantic_indexes(
     *,
     dag,
@@ -62,7 +59,9 @@ def _build_late_rewrite_semantic_indexes(
     dict[tuple[int, int, int | None], list[dict[str, object]]],
 ]:
     bridge_index: dict[tuple[int, int], list[dict[str, object]]] = defaultdict(list)
-    feeder_index: dict[tuple[int, int, int | None], list[dict[str, object]]] = defaultdict(list)
+    feeder_index: dict[tuple[int, int, int | None], list[dict[str, object]]] = (
+        defaultdict(list)
+    )
     for edge in getattr(dag, "edges", ()):
         target_entry = getattr(edge, "target_entry_anchor", None)
         if target_entry is None:
@@ -169,12 +168,12 @@ def build_structured_region_fidelity_report(
             )
             return
 
-        pair_labels = sorted({format_state_pair(match["state_edge_pair"]) for match in matches})
+        pair_labels = sorted(
+            {format_state_pair(match["state_edge_pair"]) for match in matches}
+        )
         edge_kinds = sorted({str(match["edge_kind"]) for match in matches})
         memberships = [
-            membership
-            for match in matches
-            for membership in match["memberships"]
+            membership for match in matches for membership in match["memberships"]
         ]
         if not memberships:
             logger.info(
@@ -203,7 +202,9 @@ def build_structured_region_fidelity_report(
 
         unit_labels = sorted({membership["leak_unit"] for membership in memberships})
         role_labels = sorted({membership["role"] for membership in memberships})
-        primary_statuses = sorted({membership["primary_status"] for membership in memberships})
+        primary_statuses = sorted(
+            {membership["primary_status"] for membership in memberships}
+        )
         for membership in memberships:
             leak_units[str(membership["leak_unit"])] += 1
             leak_roles[str(membership["role"])] += 1
@@ -237,7 +238,9 @@ def build_structured_region_fidelity_report(
         )
 
     for entry in postprocess_plan.bridge_plan.log_entries:
-        matches = bridge_index.get((int(entry.source_block), int(entry.target_block)), [])
+        matches = bridge_index.get(
+            (int(entry.source_block), int(entry.target_block)), []
+        )
         _record_entry(
             planner="bridge",
             source_block=int(entry.source_block),
@@ -279,8 +282,12 @@ def build_structured_region_fidelity_report(
         "primary_region_edges": primary_region_edges,
         "bridge_recovery_edges": bridge_recovery_edges,
         "late_local_redirect_edges": late_local_redirect_edges,
-        "leaked_units": tuple((unit, count) for unit, count in leak_units.most_common()),
-        "leaked_roles": tuple((role, count) for role, count in leak_roles.most_common()),
+        "leaked_units": tuple(
+            (unit, count) for unit, count in leak_units.most_common()
+        ),
+        "leaked_roles": tuple(
+            (role, count) for role, count in leak_roles.most_common()
+        ),
         "late_rewrite_entries": tuple(detailed_entries),
     }
 
@@ -315,13 +322,10 @@ def collect_sub7ffd_may_only_probe_blocks(
         if entry.get("semantic_status") != "structured_leakage":
             continue
         leak_units = {
-            str(unit)
-            for unit in entry.get("leak_units", ())
-            if unit is not None
+            str(unit) for unit in entry.get("leak_units", ()) if unit is not None
         }
         if not any(
-            unit.startswith(f"{_SUB7FFD_INITIAL_REGION_NAME}:")
-            for unit in leak_units
+            unit.startswith(f"{_SUB7FFD_INITIAL_REGION_NAME}:") for unit in leak_units
         ):
             continue
         source_block = entry.get("source_block")
@@ -341,7 +345,9 @@ def collect_sub7ffd_may_only_probe_blocks(
         if isinstance(target_entry, int):
             structured_frontier_targets.add(target_entry)
 
-    for entry in getattr(getattr(postprocess_plan, "bridge_plan", None), "log_entries", ()):
+    for entry in getattr(
+        getattr(postprocess_plan, "bridge_plan", None), "log_entries", ()
+    ):
         source_block = getattr(entry, "source_block", None)
         target_block = getattr(entry, "target_block", None)
         if not isinstance(source_block, int) or not isinstance(target_block, int):

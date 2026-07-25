@@ -21,6 +21,7 @@ and test_valrange_single_trip.py:
     c0 = 0 (entry def ``mov #0, var_18``), c1 = 1 (sole in-loop ``mov #1``),
     header CONTINUE predicate ``C(g) = (g == 0)``.
 """
+
 from __future__ import annotations
 
 from z3 import (
@@ -60,7 +61,7 @@ def peel_gate_obligations(c0, c1, cond):
         sound iff both are ``True``.
     """
     ob1 = _is_valid(Not(cond(c1)))  # recurrence forces EXIT => back-edge dead
-    ob2 = _is_valid(cond(c0))       # first entry takes the loop => exactly 1 trip
+    ob2 = _is_valid(cond(c0))  # first entry takes the loop => exactly 1 trip
     return ob1, ob2
 
 
@@ -78,7 +79,9 @@ def test_bogus_loops_single_trip_is_proved():
 
 def test_bounded_multitrip_loop_is_refused():
     # CONTINUE iff g <u 5; recurrence c1 = 1 still satisfies it -> not single-trip.
-    ob1, _ = peel_gate_obligations(BitVecVal(0, BW), BitVecVal(1, BW), lambda g: ULT(g, 5))
+    ob1, _ = peel_gate_obligations(
+        BitVecVal(0, BW), BitVecVal(1, BW), lambda g: ULT(g, 5)
+    )
     assert not ob1  # ob1 fails -> gate ABSTAINS
 
 

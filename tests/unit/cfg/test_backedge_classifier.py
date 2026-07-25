@@ -1,4 +1,5 @@
 """Tests for back-edge classification."""
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.backedge_classifier import (
@@ -26,9 +27,7 @@ class TestParseVarTokens:
 
     def test_hex_digits(self) -> None:
         text = "sub %var_3A8.8, %var_F0.8, %var_100.8"
-        assert parse_var_tokens(text) == frozenset(
-            {"%var_3A8", "%var_F0", "%var_100"}
-        )
+        assert parse_var_tokens(text) == frozenset({"%var_3A8", "%var_F0", "%var_100"})
 
     def test_dedupes_repeats(self) -> None:
         text = "add %var_50.8, %var_50.8, %var_50.8"
@@ -152,30 +151,40 @@ class TestClassifyBackedges:
 
     def test_mixed_classification_summary(self) -> None:
         # Models the sub_7FFD shape: some real loops, some spurious.
-        edges = [(10, 4), (12, 5), (14, 6), (15, 13), (18, 2),
-                 (32, 29), (35, 4), (44, 33), (46, 15), (47, 27)]
+        edges = [
+            (10, 4),
+            (12, 5),
+            (14, 6),
+            (15, 13),
+            (18, 2),
+            (32, 29),
+            (35, 4),
+            (44, 33),
+            (46, 15),
+            (47, 27),
+        ]
         # Carrier in source → real loop. None → spurious or unknown.
         block_writes = {
-            10: frozenset({"%var_178"}),     # head-byte stride update
+            10: frozenset({"%var_178"}),  # head-byte stride update
             12: frozenset({"%var_330"}),
-            14: frozenset(),                 # no writes
-            15: frozenset({"%var_5B8"}),     # opaque MBA carrier write
-            18: frozenset({"%var_1C8"}),     # chunk-emit carrier
-            32: frozenset({"%var_198"}),     # block-emit counter
-            35: frozenset({"%var_178"}),     # secondary head-byte
-            44: frozenset(),                 # tail iter — no carrier
-            46: frozenset(),                 # tail redo — no carrier
-            47: frozenset(),                 # tail iter — no carrier
+            14: frozenset(),  # no writes
+            15: frozenset({"%var_5B8"}),  # opaque MBA carrier write
+            18: frozenset({"%var_1C8"}),  # chunk-emit carrier
+            32: frozenset({"%var_198"}),  # block-emit counter
+            35: frozenset({"%var_178"}),  # secondary head-byte
+            44: frozenset(),  # tail iter — no carrier
+            46: frozenset(),  # tail redo — no carrier
+            47: frozenset(),  # tail iter — no carrier
         }
         block_predicate_reads = {
-            4: frozenset({"%var_178"}),       # head-byte test
+            4: frozenset({"%var_178"}),  # head-byte test
             5: frozenset({"%var_330"}),
             6: frozenset({"%var_F0"}),
             13: frozenset({"%var_F0"}),
-            2: frozenset({"%var_1C8"}),       # chunk-size test
-            29: frozenset({"%var_198"}),      # counter test
+            2: frozenset({"%var_1C8"}),  # chunk-size test
+            29: frozenset({"%var_198"}),  # counter test
             33: frozenset({"%var_F0"}),
-            15: frozenset({"%var_5B8"}),      # multi-pred test
+            15: frozenset({"%var_5B8"}),  # multi-pred test
             27: frozenset({"%var_F0"}),
         }
         result = classify_backedges(
@@ -197,7 +206,8 @@ class TestClassifyBackedges:
 class TestBackedgeClassificationDataclass:
     def test_real_loop_shortcuts(self) -> None:
         c = BackedgeClassification(
-            src_serial=18, tgt_serial=2,
+            src_serial=18,
+            tgt_serial=2,
             classification=BackedgeClass.REAL_LOOP,
             src_writes=frozenset({"%var_1C8"}),
             tgt_predicate_reads=frozenset({"%var_1C8"}),
@@ -209,7 +219,8 @@ class TestBackedgeClassificationDataclass:
 
     def test_spurious_shortcuts(self) -> None:
         c = BackedgeClassification(
-            src_serial=44, tgt_serial=33,
+            src_serial=44,
+            tgt_serial=33,
             classification=BackedgeClass.SPURIOUS,
             src_writes=frozenset(),
             tgt_predicate_reads=frozenset({"%var_F0"}),
@@ -221,7 +232,8 @@ class TestBackedgeClassificationDataclass:
 
     def test_unknown_shortcuts(self) -> None:
         c = BackedgeClassification(
-            src_serial=99, tgt_serial=100,
+            src_serial=99,
+            tgt_serial=100,
             classification=BackedgeClass.UNKNOWN,
             src_writes=frozenset(),
             tgt_predicate_reads=frozenset(),

@@ -1,4 +1,5 @@
 """Tests for condition-chain single-hop enrichment of StateTransitionAnchorFact."""
+
 from __future__ import annotations
 from tests.unit.core.diag._orm_bind import make_bound_diag_db
 
@@ -24,9 +25,14 @@ from d810.core.diag.snapshot import snapshot_condition_chain_interval_dispatcher
 def _make_db() -> sqlite3.Connection:
     db = make_bound_diag_db()
     Snapshot.insert(
-        id=1, label="MMAT_LOCOPT_pre_d810", func_ea_hex="0x180012df0",
-        func_ea_i64=0x180012df0, maturity="MMAT_LOCOPT", phase="pre_d810",
-        block_count=0, timestamp=0.0,
+        id=1,
+        label="MMAT_LOCOPT_pre_d810",
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        block_count=0,
+        timestamp=0.0,
     ).execute()
     return db.connection()
 
@@ -54,11 +60,21 @@ def _add_transition_fact(
         "state_var_stkoff_hex": canonical_stkoff_hex,
     }
     FactObservation.insert(
-        snapshot=snap, func_ea_hex="0x180012df0", func_ea_i64=0x180012df0,
-        fact_id=fact_id, kind="StateTransitionAnchorFact", semantic_key=fact_id,
-        maturity="MMAT_LOCOPT", phase="pre_d810", confidence=0.85,
-        source_block=block, source_ea_hex=None, source_ea_i64=None,
-        block_fingerprint=None, mop_signature=None, payload=json.dumps(payload),
+        snapshot=snap,
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        fact_id=fact_id,
+        kind="StateTransitionAnchorFact",
+        semantic_key=fact_id,
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.85,
+        source_block=block,
+        source_ea_hex=None,
+        source_ea_i64=None,
+        block_fingerprint=None,
+        mop_signature=None,
+        payload=json.dumps(payload),
         evidence="[]",
     ).execute()
 
@@ -87,20 +103,32 @@ def _add_state_write_anchor(
         f"ea=0x{0x180000000 + block:x}:stkoff={canonical_stkoff_hex}"
     )
     FactObservation.insert(
-        snapshot=snap, func_ea_hex="0x180012df0", func_ea_i64=0x180012df0,
-        fact_id=fact_id, kind="StateWriteAnchorFact", semantic_key=fact_id,
-        maturity="MMAT_LOCOPT", phase="pre_d810", confidence=0.9,
-        source_block=block, source_ea_hex=None, source_ea_i64=None,
-        block_fingerprint=None, mop_signature=None, payload=json.dumps(payload),
+        snapshot=snap,
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        fact_id=fact_id,
+        kind="StateWriteAnchorFact",
+        semantic_key=fact_id,
+        maturity="MMAT_LOCOPT",
+        phase="pre_d810",
+        confidence=0.9,
+        source_block=block,
+        source_ea_hex=None,
+        source_ea_i64=None,
+        block_fingerprint=None,
+        mop_signature=None,
+        payload=json.dumps(payload),
         evidence="[]",
     ).execute()
 
 
 def test_parse_condition_chain_intervals_basic() -> None:
-    payload = json.dumps([
-        {"lo": "0x100", "hi": "0x200", "target": 7},
-        {"lo": "0x200", "hi": "0x300", "target": 8},
-    ])
+    payload = json.dumps(
+        [
+            {"lo": "0x100", "hi": "0x200", "target": 7},
+            {"lo": "0x200", "hi": "0x300", "target": 8},
+        ]
+    )
     intervals = parse_condition_chain_intervals(payload)
     assert len(intervals) == 2
     assert intervals[0] == ConditionChainInterval(lo=0x100, hi=0x200, target_block=7)
@@ -109,9 +137,14 @@ def test_parse_condition_chain_intervals_basic() -> None:
 def test_load_latest_condition_chain_intervals_from_db() -> None:
     conn = _make_db()
     Snapshot.insert(
-        id=2, label="MMAT_GLBOPT1_post_d810", func_ea_hex="0x180012df0",
-        func_ea_i64=0x180012df0, maturity="MMAT_GLBOPT1", phase="post_d810",
-        block_count=0, timestamp=1.0,
+        id=2,
+        label="MMAT_GLBOPT1_post_d810",
+        func_ea_hex="0x180012df0",
+        func_ea_i64=0x180012DF0,
+        maturity="MMAT_GLBOPT1",
+        phase="post_d810",
+        block_count=0,
+        timestamp=1.0,
     ).execute()
     snapshot_condition_chain_interval_dispatcher_rows(
         conn,
@@ -145,9 +178,7 @@ def test_resolve_via_intervals_point_match() -> None:
 
 
 def test_resolve_via_intervals_range_match() -> None:
-    intervals = (
-        ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
-    )
+    intervals = (ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),)
     # 0x5A21D9DB falls in [0x57BE6FD1, 0x5D0AEBD3) -> 76
     assert resolve_via_intervals(intervals, 0x5A21D9DB) == 76
 
@@ -163,11 +194,11 @@ def test_resolve_branch_with_local_state_write() -> None:
         successor_kind="branch",
     )
     _add_state_write_anchor(conn, block=76, state_const=0x10743C4C)
-    intervals = (
-        ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
-    )
+    intervals = (ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),)
     resolutions = resolve_state_transition_facts(
-        conn, range_intervals=intervals, locopt_snapshot_id=1,
+        conn,
+        range_intervals=intervals,
+        locopt_snapshot_id=1,
     )
     assert len(resolutions) == 1
     r = resolutions[0]
@@ -191,11 +222,11 @@ def test_resolve_branch_handler_has_no_state_write() -> None:
         successor_kind="branch",
     )
     # Note: NO StateWriteAnchorFact at block 76.
-    intervals = (
-        ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
-    )
+    intervals = (ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),)
     resolutions = resolve_state_transition_facts(
-        conn, range_intervals=intervals, locopt_snapshot_id=1,
+        conn,
+        range_intervals=intervals,
+        locopt_snapshot_id=1,
     )
     assert len(resolutions) == 1
     r = resolutions[0]
@@ -216,11 +247,11 @@ def test_resolve_no_condition_chain_row() -> None:
         source_const=0xDEADBEEF,
         successor_kind="branch",
     )
-    intervals = (
-        ConditionChainInterval(lo=0x100, hi=0x200, target_block=7),
-    )
+    intervals = (ConditionChainInterval(lo=0x100, hi=0x200, target_block=7),)
     resolutions = resolve_state_transition_facts(
-        conn, range_intervals=intervals, locopt_snapshot_id=1,
+        conn,
+        range_intervals=intervals,
+        locopt_snapshot_id=1,
     )
     assert len(resolutions) == 1
     assert resolutions[0].condition_chain_resolution_reason == "no_condition_chain_row"
@@ -237,11 +268,11 @@ def test_resolve_non_branch_successor_skipped() -> None:
         source_const=0x5A21D9DB,
         successor_kind="direct",
     )
-    intervals = (
-        ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
-    )
+    intervals = (ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),)
     resolutions = resolve_state_transition_facts(
-        conn, range_intervals=intervals, locopt_snapshot_id=1,
+        conn,
+        range_intervals=intervals,
+        locopt_snapshot_id=1,
     )
     assert len(resolutions) == 1
     assert resolutions[0].condition_chain_resolved_next_block_serial is None
@@ -259,7 +290,9 @@ def test_resolve_no_condition_chain_intervals() -> None:
         successor_kind="branch",
     )
     resolutions = resolve_state_transition_facts(
-        conn, range_intervals=(), locopt_snapshot_id=1,
+        conn,
+        range_intervals=(),
+        locopt_snapshot_id=1,
     )
     assert len(resolutions) == 1
     assert (
@@ -278,11 +311,11 @@ def test_persist_idempotent() -> None:
         successor_kind="branch",
     )
     _add_state_write_anchor(conn, block=76, state_const=0x10743C4C)
-    intervals = (
-        ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),
-    )
+    intervals = (ConditionChainInterval(lo=0x57BE6FD1, hi=0x5D0AEBD3, target_block=76),)
     resolutions = resolve_state_transition_facts(
-        conn, range_intervals=intervals, locopt_snapshot_id=1,
+        conn,
+        range_intervals=intervals,
+        locopt_snapshot_id=1,
     )
     persist_condition_chain_resolutions(conn, resolutions)
     persist_condition_chain_resolutions(conn, resolutions)

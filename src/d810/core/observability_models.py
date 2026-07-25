@@ -17,6 +17,7 @@ were re-exported through facade modules. Phase 2/7 of the event
 refactor relocated them so they can be shared by both the sink side
 and the producer side without a layer violation.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -156,10 +157,7 @@ class BlockSnapshot:
             start_ea=self.start_ea,
             synthetic=self.start_ea is None,
         )
-        header = (
-            f"{block_id} {self.type_name} "
-            f"succs={self.succs} preds={self.preds}"
-        )
+        header = f"{block_id} {self.type_name} succs={self.succs} preds={self.preds}"
         lines = [header]
         for insn in self.instructions:
             lines.append(f"  {self.serial}.{insn.index} {insn.dstr}")

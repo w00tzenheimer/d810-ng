@@ -1,4 +1,5 @@
 """Fixpoint result and analyzed-CFG container."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -36,7 +37,7 @@ class FixpointResult(Generic[StateT]):
 
 @dataclass(frozen=True)
 class AnalyzedCFG(Generic[StateT]):
-    "A graph paired with the fixpoint result computed over it.\n\n    ``graph`` is intentionally typed ``Any`` for now.  The portable graph\n    type (``d810.ir.flowgraph.FlowGraph`` today) is not yet pinned at\n    this layer -- mirroring the Slice 9 narrowing decision recorded in\n    ``docs/plans/preanalysis-and-cfg-restructuring.md``.  Pinning it is deferred\n    until the graph-type narrowing lands.\n    "
+    "A graph paired with the fixpoint result computed over it.\n\n    ``graph`` is intentionally typed ``Any`` for now.  The portable graph\n    type (``d810.ir.flowgraph.FlowGraph`` today) is not yet pinned at\n    this layer -- mirroring the Slice 9 narrowing decision recorded in\n    ``docs/plans/preanalysis-and-cfg-restructuring.md``.  Pinning it is deferred\n    until the graph-type narrowing lands.\n"
 
     graph: Any
     result: FixpointResult[StateT]

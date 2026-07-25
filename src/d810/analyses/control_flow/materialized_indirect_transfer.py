@@ -189,9 +189,7 @@ class MaterializedIndirectTransfer:
             "materialized_anchor_eas": [
                 f"0x{int(ea):X}" for ea in self.materialized_anchor_eas
             ],
-            "materialized_predicate_ea": optional_hex(
-                self.materialized_predicate_ea
-            ),
+            "materialized_predicate_ea": optional_hex(self.materialized_predicate_ea),
             "target_eas": [f"0x{int(ea):X}" for ea in self.target_eas],
             "next_target_ea": optional_hex(self.next_target_ea),
             "condition_code": self.condition_code,
@@ -479,9 +477,7 @@ class PortableStateWriteRouteEvidence:
     target_identity: StableBlockIdentity
     target_ea: int
     proof_kind: StateWriteRouteProofKind = StateWriteRouteProofKind.STATE_ASSIGNMENT
-    delivery_kind: StateWriteRouteDeliveryKind = (
-        StateWriteRouteDeliveryKind.DISPATCHER
-    )
+    delivery_kind: StateWriteRouteDeliveryKind = StateWriteRouteDeliveryKind.DISPATCHER
 
     def __post_init__(self) -> None:
         if not isinstance(self.proof_kind, StateWriteRouteProofKind):
@@ -498,9 +494,7 @@ class PortableStateWriteRouteEvidence:
             raise ValueError("state-route source write is outside write identity")
         if not self.delivery_identity.native_ranges.contains(delivery_ea):
             raise ValueError("state-route delivery is outside delivery identity")
-        if not (
-            delivery_region_start_ea <= delivery_ea < delivery_region_end_ea
-        ):
+        if not (delivery_region_start_ea <= delivery_ea < delivery_region_end_ea):
             raise ValueError("state-route delivery must belong to its region")
         if (
             not corridor
@@ -1434,9 +1428,7 @@ def select_materialized_handler_owner_serial(
     )
     exact_instruction_eas = frozenset(
         int(ea)
-        for ea in native_instruction_eas_by_serial.get(
-            int(exact_target_serial), ()
-        )
+        for ea in native_instruction_eas_by_serial.get(int(exact_target_serial), ())
     )
     required_instruction_eas = tuple(
         int(predicate_ea)

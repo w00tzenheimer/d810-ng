@@ -6,6 +6,7 @@ Registered at the composition root (``D810State.start_d810``), mirroring
 ``register_condition_chain_walkers`` -- this is what replaces the old
 ``importlib.import_module("d810.hexrays...")`` dodge inside the (now portable) DSL.
 """
+
 from __future__ import annotations
 
 from d810.hexrays.utils.hexrays_helpers import (

@@ -1,4 +1,5 @@
 """Test-support runner for the sub7FFD Hodur region oracle."""
+
 from __future__ import annotations
 
 import json
@@ -50,7 +51,8 @@ def resolve_oracle_snap_ids(
     """Resolve snap17 and snap18 IDs for the test harness."""
 
     def _max_id_for_labels(
-        labels: tuple[str, ...], upper_bound: int | None,
+        labels: tuple[str, ...],
+        upper_bound: int | None,
     ) -> int | None:
         for label in labels:
             if upper_bound is None:
@@ -60,8 +62,7 @@ def resolve_oracle_snap_ids(
                 ).fetchone()
             else:
                 row = conn.execute(
-                    "SELECT MAX(id) FROM snapshots "
-                    "WHERE label = ? AND id < ?",
+                    "SELECT MAX(id) FROM snapshots WHERE label = ? AND id < ?",
                     (label, upper_bound),
                 ).fetchone()
             if row is not None and row[0] is not None:
@@ -74,7 +75,8 @@ def resolve_oracle_snap_ids(
 
 
 def _byte_emit_facts_at(
-    conn: sqlite3.Connection, snap_id: int,
+    conn: sqlite3.Connection,
+    snap_id: int,
 ) -> dict[int, dict]:
     """Return byte_index -> payload (terminal_tail role preferred)."""
     out: dict[int, dict] = {}
@@ -103,7 +105,9 @@ def _byte_emit_facts_at(
 
 
 def _block_at(
-    conn: sqlite3.Connection, snap_id: int, ea_hex: str,
+    conn: sqlite3.Connection,
+    snap_id: int,
+    ea_hex: str,
 ) -> tuple[int, int, int] | None:
     """Return (serial, npred, nsucc) or None for snapshot+ea."""
     try:
@@ -138,7 +142,9 @@ def _source_form_from_payload(payload: dict, byte_index: int) -> str:
 
 def _destination_present_from_payload(payload: dict) -> bool:
     destination = str(payload.get("destination_buffer_expression") or "")
-    return bool(destination and destination not in {"unknown-destination", "guard-only"})
+    return bool(
+        destination and destination not in {"unknown-destination", "guard-only"}
+    )
 
 
 def _counter_update_present_from_payload(payload: dict) -> bool:
@@ -184,10 +190,16 @@ def _build_snapshot_inputs(
             byte_emit_block_serial[k] = int(facts[k].get("block_serial", 0))
             byte_emit_fact_detected[k] = True
             byte_emit_source_form[k] = _source_form_from_payload(facts[k], k)
-            byte_emit_destination_present[k] = _destination_present_from_payload(facts[k])
-            byte_emit_counter_update_present[k] = _counter_update_present_from_payload(facts[k])
+            byte_emit_destination_present[k] = _destination_present_from_payload(
+                facts[k]
+            )
+            byte_emit_counter_update_present[k] = _counter_update_present_from_payload(
+                facts[k]
+            )
             if k < 6:
-                early_return_guard_present[k] = _early_return_guard_present_from_payload(facts[k])
+                early_return_guard_present[k] = (
+                    _early_return_guard_present_from_payload(facts[k])
+                )
         else:
             byte_emit_present[k] = False
             byte_emit_block_serial[k] = None
@@ -223,7 +235,9 @@ def _build_snapshot_inputs(
                     byte_emit_present[k] = True
                     byte_emit_block_serial[k] = serial_at_snap
                     byte_emit_source_form[k] = _source_form_from_payload(fact, k)
-                    byte_emit_destination_present[k] = _destination_present_from_payload(fact)
+                    byte_emit_destination_present[k] = (
+                        _destination_present_from_payload(fact)
+                    )
                     byte_emit_counter_update_present[k] = (
                         _counter_update_present_from_payload(fact)
                     )
@@ -313,8 +327,7 @@ def _build_dce_evidence(
         ea_hex = None
         try:
             block = conn.execute(
-                "SELECT start_ea_hex FROM blocks "
-                "WHERE snapshot_id=? AND serial=?",
+                "SELECT start_ea_hex FROM blocks WHERE snapshot_id=? AND serial=?",
                 (initial_snap_id, int(fact.get("block_serial", 0))),
             ).fetchone()
         except sqlite3.OperationalError:
@@ -389,7 +402,9 @@ def _build_snapshot_features(
     witness block exists.
     """
     inputs = _build_snapshot_inputs(
-        conn, snap_id, initial_snap_id=initial_snap_id,
+        conn,
+        snap_id,
+        initial_snap_id=initial_snap_id,
     )
     feats = list(d810_features(inputs))
 
@@ -407,18 +422,14 @@ def _build_snapshot_features(
         ).fetchone()
     except sqlite3.OperationalError:
         row = None
-    snap_label = (
-        str(row[0]) if row and row[0] is not None else f"snap_{snap_id}"
-    )
+    snap_label = str(row[0]) if row and row[0] is not None else f"snap_{snap_id}"
 
     # Attach microblock evidence to byte_emit_<k>_present features that
     # have a known witness block.
     enriched: list[RegionFeature] = []
     for f in feats:
         witness_serial: int | None = None
-        if f.feature.startswith("byte_emit_") and f.feature.endswith(
-            "_present"
-        ):
+        if f.feature.startswith("byte_emit_") and f.feature.endswith("_present"):
             try:
                 k = int(f.feature.split("_")[2])
             except (IndexError, ValueError):
@@ -490,9 +501,7 @@ def _render_markdown(
         v17 = s17_by_name.get(f.feature, "?")
         v18 = s18_by_name.get(f.feature, "?")
         verdict = "match" if (f.value == v17 == v18) else "diff"
-        lines.append(
-            f"| {f.feature} | {f.value} | {v17} | {v18} | {verdict} |"
-        )
+        lines.append(f"| {f.feature} | {f.value} | {v17} | {v18} | {verdict} |")
 
     if classifications is not None:
         lines.append("\n## Per-byte DCE causes (snap17 -> snap18)\n")
@@ -505,24 +514,16 @@ def _render_markdown(
         lines.append("\n## Microblock Evidence\n")
         for f in ref:
             lines.append(f"### {f.feature}")
-            lines.append(
-                f"- REF: present={f.value}; evidence={f.evidence}"
-            )
-            s17 = next(
-                (x for x in s17_feats if x.feature == f.feature), None
-            )
-            s18 = next(
-                (x for x in s18_feats if x.feature == f.feature), None
-            )
+            lines.append(f"- REF: present={f.value}; evidence={f.evidence}")
+            s17 = next((x for x in s17_feats if x.feature == f.feature), None)
+            s18 = next((x for x in s18_feats if x.feature == f.feature), None)
             if s17:
                 lines.append(
-                    f"- D810 snap17: present={s17.value}; "
-                    f"evidence={s17.evidence}"
+                    f"- D810 snap17: present={s17.value}; evidence={s17.evidence}"
                 )
             if s18:
                 lines.append(
-                    f"- D810 snap18: present={s18.value}; "
-                    f"evidence={s18.evidence}"
+                    f"- D810 snap18: present={s18.value}; evidence={s18.evidence}"
                 )
             lines.append("")
     return "\n".join(lines) + "\n"
@@ -589,11 +590,17 @@ def render_region_oracle_report(
         pass
 
     s17 = _build_snapshot_features(
-        conn, spec, snap17, blocks=blocks17,
+        conn,
+        spec,
+        snap17,
+        blocks=blocks17,
         initial_snap_id=initial_snap_id,
     )
     s18 = _build_snapshot_features(
-        conn, spec, snap18, blocks=blocks18,
+        conn,
+        spec,
+        snap18,
+        blocks=blocks18,
         initial_snap_id=initial_snap_id,
     )
     diff17 = list(diff_features(ref, s17))

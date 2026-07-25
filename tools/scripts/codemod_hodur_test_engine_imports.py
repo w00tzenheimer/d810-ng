@@ -89,9 +89,7 @@ class HodurTestImportTransformer(cst.CSTTransformer):
             alias_name = _node_code(alias.name)
             if alias_name in SUBMODULE_RENAMES:
                 engine_aliases.append(
-                    alias.with_changes(
-                        name=cst.Name(SUBMODULE_RENAMES[alias_name])
-                    )
+                    alias.with_changes(name=cst.Name(SUBMODULE_RENAMES[alias_name]))
                 )
             else:
                 hodur_aliases.append(alias)
@@ -152,8 +150,7 @@ def iter_test_files(root: Path, explicit_paths: list[str]) -> list[Path]:
     return sorted(
         path
         for path in tests_root.rglob("*.py")
-        if "__pycache__" not in path.parts
-        and not should_skip_path(path, root)
+        if "__pycache__" not in path.parts and not should_skip_path(path, root)
     )
 
 

@@ -255,8 +255,12 @@ class TestEventEmitterIntegration:
         handler1_calls = []
         handler2_calls = []
 
-        stats.events.on(OptimizationEvent.RULE_MATCH, lambda name: handler1_calls.append(name))
-        stats.events.on(OptimizationEvent.RULE_MATCH, lambda name: handler2_calls.append(name))
+        stats.events.on(
+            OptimizationEvent.RULE_MATCH, lambda name: handler1_calls.append(name)
+        )
+        stats.events.on(
+            OptimizationEvent.RULE_MATCH, lambda name: handler2_calls.append(name)
+        )
 
         stats.record_instruction_rule_match("TestRule")
 

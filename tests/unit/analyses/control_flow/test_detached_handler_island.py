@@ -60,9 +60,7 @@ def _live_handler_replacement_evidence(
         terminal_exit_eas=(0x40B931, 0x40C6D8),
         calls_verify_safe=calls_verify_safe,
         contains_calls=(
-            not calls_verify_safe
-            if contains_calls is None
-            else contains_calls
+            not calls_verify_safe if contains_calls is None else contains_calls
         ),
     )
 
@@ -91,14 +89,20 @@ def test_live_handler_replacement_joins_state_branch_and_terminal_proofs() -> No
 
 
 def test_empty_external_block_uses_valid_native_start_ea() -> None:
-    assert detached_handler_island.select_unique_block_native_ea(
-        0x40B6C0,
-        (),
-    ) == 0x40B6C0
-    assert detached_handler_island.select_unique_block_native_ea(
-        0xFFFFFFFFFFFFFFFF,
-        (),
-    ) is None
+    assert (
+        detached_handler_island.select_unique_block_native_ea(
+            0x40B6C0,
+            (),
+        )
+        == 0x40B6C0
+    )
+    assert (
+        detached_handler_island.select_unique_block_native_ea(
+            0xFFFFFFFFFFFFFFFF,
+            (),
+        )
+        is None
+    )
 
 
 def test_owned_ranges_include_empty_native_block_start() -> None:
@@ -285,15 +289,18 @@ def test_live_handler_replacement_restores_absent_fork() -> None:
 
 
 def test_live_handler_replacement_preserves_complete_live_fork() -> None:
-    assert plan_live_handler_template_replacements(
-        (_live_handler_replacement_evidence(),),
-        state_targets={0xA5A94B86: 0x40B8E6},
-        complete_live_branch_eas=frozenset({0x40B90F}),
-        resolver_targets={
-            0x40B931: (0x40B6C0,),
-            0x40C6D8: (0x40A607,),
-        },
-    ) == ()
+    assert (
+        plan_live_handler_template_replacements(
+            (_live_handler_replacement_evidence(),),
+            state_targets={0xA5A94B86: 0x40B8E6},
+            complete_live_branch_eas=frozenset({0x40B90F}),
+            resolver_targets={
+                0x40B931: (0x40B6C0,),
+                0x40C6D8: (0x40A607,),
+            },
+        )
+        == ()
+    )
 
 
 def test_live_handler_replacement_abstains_without_complete_exact_evidence() -> None:
@@ -307,38 +314,53 @@ def test_live_handler_replacement_abstains_without_complete_exact_evidence() -> 
     }
     evidence = _live_handler_replacement_evidence()
 
-    assert plan_live_handler_template_replacements(
-        (evidence,),
-        **{
-            **kwargs,
-            "complete_live_branch_eas": frozenset({0x40B90F}),
-        },
-    ) == ()
-    assert plan_live_handler_template_replacements(
-        (evidence,),
-        **{**kwargs, "state_targets": {0xA5A94B86: 0x40B9A6}},
-    ) == ()
-    assert plan_live_handler_template_replacements(
-        (evidence,),
-        **{
-            **kwargs,
-            "resolver_targets": {
-                0x40B931: (0x40B6C0, 0x40A607),
-                0x40C6D8: (0x40A607,),
+    assert (
+        plan_live_handler_template_replacements(
+            (evidence,),
+            **{
+                **kwargs,
+                "complete_live_branch_eas": frozenset({0x40B90F}),
             },
-        },
-    ) == ()
-    assert plan_live_handler_template_replacements(
-        (_live_handler_replacement_evidence(calls_verify_safe=False),),
-        **kwargs,
-    ) == ()
-    assert plan_live_handler_template_replacements(
-        (
-            evidence,
-            _live_handler_replacement_evidence(branch_ea=0x40B910),
-        ),
-        **kwargs,
-    ) == ()
+        )
+        == ()
+    )
+    assert (
+        plan_live_handler_template_replacements(
+            (evidence,),
+            **{**kwargs, "state_targets": {0xA5A94B86: 0x40B9A6}},
+        )
+        == ()
+    )
+    assert (
+        plan_live_handler_template_replacements(
+            (evidence,),
+            **{
+                **kwargs,
+                "resolver_targets": {
+                    0x40B931: (0x40B6C0, 0x40A607),
+                    0x40C6D8: (0x40A607,),
+                },
+            },
+        )
+        == ()
+    )
+    assert (
+        plan_live_handler_template_replacements(
+            (_live_handler_replacement_evidence(calls_verify_safe=False),),
+            **kwargs,
+        )
+        == ()
+    )
+    assert (
+        plan_live_handler_template_replacements(
+            (
+                evidence,
+                _live_handler_replacement_evidence(branch_ea=0x40B910),
+            ),
+            **kwargs,
+        )
+        == ()
+    )
 
 
 def test_plan_detached_snippet_route_selects_unique_missing_static_target() -> None:
@@ -385,10 +407,13 @@ def test_plan_detached_snippet_route_imports_static_handler_entry() -> None:
         owned_native_ranges=((0x40B163, 0x40B17F),),
     )
 
-    assert plan_detached_snippet_routes(
-        (leaf, transfer),
-        live_eas=frozenset({0x40B149, 0x40B163}),
-    ) == ()
+    assert (
+        plan_detached_snippet_routes(
+            (leaf, transfer),
+            live_eas=frozenset({0x40B149, 0x40B163}),
+        )
+        == ()
+    )
     assert plan_detached_snippet_routes(
         (leaf, transfer),
         live_eas=frozenset({0x40B149, 0x40B163}),
@@ -402,11 +427,14 @@ def test_plan_detached_snippet_route_imports_static_handler_entry() -> None:
             owned_native_ranges=((0x40B163, 0x40B17F),),
         ),
     )
-    assert plan_detached_snippet_routes(
-        (leaf, transfer),
-        live_eas=frozenset({0x40B149, 0x40B163}),
-        live_target_eas=frozenset({0x40B163}),
-    ) == ()
+    assert (
+        plan_detached_snippet_routes(
+            (leaf, transfer),
+            live_eas=frozenset({0x40B149, 0x40B163}),
+            live_target_eas=frozenset({0x40B163}),
+        )
+        == ()
+    )
 
 
 def test_static_handler_capture_ranges_use_prepatch_owned_ranges() -> None:
@@ -422,19 +450,22 @@ def test_static_handler_capture_ranges_use_prepatch_owned_ranges() -> None:
         (plan,),
         target_ea=0x40B163,
     ) == ((0x40B163, 0x40B17F),)
-    assert detached_handler_island.select_detached_snippet_capture_ranges(
-        (
-            plan,
-            DetachedSnippetRoutePlan(
-                source_ea=0x40B149,
-                target_ea=0x40B163,
-                state_constant=0x1EBFFA3C,
-                evidence_kind="static_handler_entry_route",
-                owned_native_ranges=((0x40B163, 0x40B180),),
+    assert (
+        detached_handler_island.select_detached_snippet_capture_ranges(
+            (
+                plan,
+                DetachedSnippetRoutePlan(
+                    source_ea=0x40B149,
+                    target_ea=0x40B163,
+                    state_constant=0x1EBFFA3C,
+                    evidence_kind="static_handler_entry_route",
+                    owned_native_ranges=((0x40B163, 0x40B180),),
+                ),
             ),
-        ),
-        target_ea=0x40B163,
-    ) == ()
+            target_ea=0x40B163,
+        )
+        == ()
+    )
 
 
 def test_static_fixpoint_equality_route_inherits_prepatch_owned_ranges() -> None:
@@ -485,6 +516,7 @@ def test_static_fixpoint_equality_route_inherits_prepatch_owned_ranges() -> None
         target_ea=target_ea,
     ) == ((target_ea, 0x40CCFB),)
 
+
 def test_plan_detached_snippet_route_skips_live_static_handler_entry() -> None:
     state = 0xCCEC5DE0
     leaf = MaterializedIndirectTransfer(
@@ -506,10 +538,13 @@ def test_plan_detached_snippet_route_skips_live_static_handler_entry() -> None:
         resolver_kind="static_handler_entry_route",
     )
 
-    assert plan_detached_snippet_routes(
-        (leaf, handler_entry),
-        live_eas=frozenset({0x40C150}),
-    ) == ()
+    assert (
+        plan_detached_snippet_routes(
+            (leaf, handler_entry),
+            live_eas=frozenset({0x40C150}),
+        )
+        == ()
+    )
 
 
 def test_plan_detached_snippet_route_abstains_for_live_or_conflicting_target() -> None:
@@ -523,14 +558,20 @@ def test_plan_detached_snippet_route_abstains_for_live_or_conflicting_target() -
             resolver_kind="residual_state_route_evidence",
         )
 
-    assert plan_detached_snippet_routes(
-        (transfer(0x40C4B4),),
-        live_eas=frozenset({0x40ADF2, 0x40C4B4}),
-    ) == ()
-    assert plan_detached_snippet_routes(
-        (transfer(0x40C4B4), transfer(0x40C500)),
-        live_eas=frozenset({0x40ADF2}),
-    ) == ()
+    assert (
+        plan_detached_snippet_routes(
+            (transfer(0x40C4B4),),
+            live_eas=frozenset({0x40ADF2, 0x40C4B4}),
+        )
+        == ()
+    )
+    assert (
+        plan_detached_snippet_routes(
+            (transfer(0x40C4B4), transfer(0x40C500)),
+            live_eas=frozenset({0x40ADF2}),
+        )
+        == ()
+    )
 
 
 def test_plan_detached_snippet_route_requires_routable_target_entry() -> None:
@@ -612,13 +653,16 @@ def test_plan_detached_snippet_terminal_route_abstains_on_ambiguous_target() -> 
         native_exit_ea=0x40C703,
     )
 
-    assert plan_detached_snippet_terminal_routes(
-        (evidence,),
-        resolver_targets={0x40C703: (0x40AF00, 0x40ACF3)},
-        source_blocks_by_imported_ea={0xF1C002D0: 77},
-        target_blocks_by_ea={0x40AF00: 70, 0x40ACF3: 68},
-        zero_way_source_blocks=frozenset({77}),
-    ) == ()
+    assert (
+        plan_detached_snippet_terminal_routes(
+            (evidence,),
+            resolver_targets={0x40C703: (0x40AF00, 0x40ACF3)},
+            source_blocks_by_imported_ea={0xF1C002D0: 77},
+            target_blocks_by_ea={0x40AF00: 70, 0x40ACF3: 68},
+            zero_way_source_blocks=frozenset({77}),
+        )
+        == ()
+    )
 
 
 def test_plan_detached_snippet_route_selects_missing_static_equality_arm() -> None:
@@ -700,11 +744,14 @@ def test_plan_detached_snippet_route_seeds_missing_static_equality_candidate() -
 
     # Once that exact target is represented by the live MBA, no detached
     # capture is needed.
-    assert plan_detached_snippet_routes(
-        (transfer,),
-        live_eas=frozenset({0x40D381, 0x40DABB}),
-        live_target_eas=frozenset({0x40D381, 0x40DABB}),
-    ) == ()
+    assert (
+        plan_detached_snippet_routes(
+            (transfer,),
+            live_eas=frozenset({0x40D381, 0x40DABB}),
+            live_target_eas=frozenset({0x40D381, 0x40DABB}),
+        )
+        == ()
+    )
 
 
 def test_plan_detached_snippet_route_rejects_conflicting_equality_candidates() -> None:
@@ -719,14 +766,19 @@ def test_plan_detached_snippet_route_rejects_conflicting_equality_candidates() -
             resolver_kind="static_equality_candidate",
         )
 
-    assert plan_detached_snippet_routes(
-        (candidate(0x40DABB), candidate(0x40DAD0)),
-        live_eas=frozenset({0x40D381}),
-        live_target_eas=frozenset({0x40D381}),
-    ) == ()
+    assert (
+        plan_detached_snippet_routes(
+            (candidate(0x40DABB), candidate(0x40DAD0)),
+            live_eas=frozenset({0x40D381}),
+            live_target_eas=frozenset({0x40D381}),
+        )
+        == ()
+    )
 
 
-def test_conditional_bridge_preserves_imported_target_without_router_predecessor() -> None:
+def test_conditional_bridge_preserves_imported_target_without_router_predecessor() -> (
+    None
+):
     plan = _conditional_bridge(
         true_target=0x40AF00,
         false_target=0x40ACE7,
@@ -816,26 +868,32 @@ def test_plan_conditional_handler_bridge_resolves_taken_and_fallthrough_arms() -
 
 
 def test_plan_conditional_handler_bridge_requires_exact_state_paths() -> None:
-    assert plan_conditional_handler_bridges(
-        (_conditional_bridge(),),
-        state_targets={
-            0x304E8694: 0x40B342,
-            0xA5A94B86: 0x40DEAD,
-        },
-    ) == ()
+    assert (
+        plan_conditional_handler_bridges(
+            (_conditional_bridge(),),
+            state_targets={
+                0x304E8694: 0x40B342,
+                0xA5A94B86: 0x40DEAD,
+            },
+        )
+        == ()
+    )
 
 
 def test_plan_conditional_handler_bridge_abstains_on_conflicting_source() -> None:
-    assert plan_conditional_handler_bridges(
-        (
-            _conditional_bridge(),
-            _conditional_bridge(false_target=0x40B900),
-        ),
-        state_targets={
-            0x304E8694: 0x40B342,
-            0xA5A94B86: 0x40B8E6,
-        },
-    ) == ()
+    assert (
+        plan_conditional_handler_bridges(
+            (
+                _conditional_bridge(),
+                _conditional_bridge(false_target=0x40B900),
+            ),
+            state_targets={
+                0x304E8694: 0x40B342,
+                0xA5A94B86: 0x40B8E6,
+            },
+        )
+        == ()
+    )
 
 
 def test_conditional_bridge_waits_for_exact_residual_route_convergence() -> None:
@@ -875,21 +933,21 @@ def test_conditional_bridge_preserves_router_only_multiblock_target() -> None:
     )[0]
 
     target_topologies = {
-            0x40B342: ConditionalHandlerTargetTopology(
-                target_ea=0x40B342,
-                router_block=212,
-                dispatcher_block=9,
-                predecessor_blocks=(212, 470),
-                successor_blocks=(214,),
-            ),
-            0x40B8E6: ConditionalHandlerTargetTopology(
-                target_ea=0x40B8E6,
-                router_block=413,
-                dispatcher_block=9,
-                predecessor_blocks=(413,),
-                successor_blocks=(281,),
-            ),
-        }
+        0x40B342: ConditionalHandlerTargetTopology(
+            target_ea=0x40B342,
+            router_block=212,
+            dispatcher_block=9,
+            predecessor_blocks=(212, 470),
+            successor_blocks=(214,),
+        ),
+        0x40B8E6: ConditionalHandlerTargetTopology(
+            target_ea=0x40B8E6,
+            router_block=413,
+            dispatcher_block=9,
+            predecessor_blocks=(413,),
+            successor_blocks=(281,),
+        ),
+    }
 
     assert conditional_bridge_pre_dce_target_eas(
         plan,
@@ -1001,12 +1059,15 @@ def test_select_detached_source_path_correlates_distinct_producers_by_target() -
 
 def test_select_detached_source_path_abstains_on_ambiguous_routes() -> None:
     residual = DetachedRouteEvidence(0x401000, 0x402000)
-    assert select_detached_source_path(
-        residual_routes=(residual, residual),
-        conditional_routes=(
-            ConditionalRouteEvidence(0x401000, 5, 0x403000, 0x402000),
-        ),
-    ) is None
+    assert (
+        select_detached_source_path(
+            residual_routes=(residual, residual),
+            conditional_routes=(
+                ConditionalRouteEvidence(0x401000, 5, 0x403000, 0x402000),
+            ),
+        )
+        is None
+    )
 
 
 def _candidate(*, condition_code: int = 5) -> DetachedHandlerIslandCandidate:
@@ -1084,7 +1145,6 @@ def test_plan_detached_handler_island_abstains_on_conflicting_state_route() -> N
         condition_code=candidate.condition_code,
         inherited_state=candidate.inherited_state,
         taken_state=candidate.taken_state,
-        state_targets=candidate.state_targets
-        + ((candidate.taken_state, 0x40D000),),
+        state_targets=candidate.state_targets + ((candidate.taken_state, 0x40D000),),
     )
     assert plan_detached_handler_island(candidate) is None

@@ -1,4 +1,5 @@
 "Alternate-edge correlator for ``COLLAPSED_TO_REWRITTEN_TARGET`` rows.\n\nThis module pairs a collapsed preanalysis edge with an alternate\nalready-persisted ``state_cfg_edges`` row whose source is a RANGE_BACKED\nsibling node whose owned / shared blocks overlap the collapsed\nsource's blocks.  The alternate edge IS the traversing route that the\ncollapsed exact edge is missing -- preanalysis already discovered it; we\njust need to surface the correlation.\n\nConcrete example (sub_7FFD3338C040, snap 6):\n\n* Collapsed edge 144: ``0x385BBE2D -> 0x63D54755`` at blk[100],\n  ordered_path ``[100]``.\n* Alternate edge 68:  ``0x3873BC53 -> 0x10743C4C`` at blk[101],\n  ordered_path ``[101, 103, 104]``.  Source node ``0x3873BC53`` is\n  RANGE_BACKED with shared_suffix ``[69, 100, 104]`` -- it shares\n  blk[100] with the collapsed source ``0x385BBE2D``.\n* Continuation edge 39: ``0x10743C4C -> 0x6107F8EC`` at blk[158]\n  (already persisted; visible by following alternate.target_state).\n\nObservability-only.  No preanalysis or HCC behavior change.\n\nCorrelation rules\n-----------------\n\nFor each ``state_cfg_edge_diagnostics`` row classified\n``COLLAPSED_TO_REWRITTEN_TARGET``:\n\n1. Get the collapsed source state's owned + shared blocks.\n2. Find sibling ``state_cfg_nodes`` whose owned / shared blocks intersect\n   that set AND whose ``classification`` is ``RANGE_BACKED``.  (Exact\n   siblings are skipped because the collapsed exact edge already\n   represents the exact route.)\n3. For each candidate sibling, list its outgoing ``state_cfg_edges`` rows.\n4. Pair the collapsed edge with each candidate alternate.  The\n   ``ordered_path`` of the alternate is preserved verbatim (preanalysis's\n   own walk).\n5. Record the overlap blocks for explainability.\n\nSingle-step: only the immediate sibling-traversal edge is considered.\nThe continuation chain (e.g. ``0x10743C4C -> 0x6107F8EC``) is NOT\nrecursively followed; it is a separate ``state_cfg_edges`` row already and\ncan be queried directly via its source_state.\n\nIf the source's blocks intersect a RANGE_BACKED sibling but that\nsibling has no outgoing edge, the correlator still records the\nsibling-block overlap in a row with ``alternate_edge_id = -1`` and\n``reason = \"range_backed_sibling_no_outgoing_edge\"`` so the absence\nis visible.  Without any RANGE_BACKED sibling, no row is recorded for\nthe collapsed edge (the diagnostic axis tells consumers why).\n"
+
 from __future__ import annotations
 
 import json
@@ -58,9 +59,7 @@ def _collect_state_blocks(
         )
         .where(
             (StateCfgNodeBlock.snapshot == int(snapshot_id))
-            & StateCfgNodeBlock.role.in_(
-                ["owned", "exclusive", "shared_suffix"]
-            )
+            & StateCfgNodeBlock.role.in_(["owned", "exclusive", "shared_suffix"])
         )
         .tuples()
     )
@@ -78,9 +77,7 @@ def _collect_node_classifications(
     """``{state_hex: classification}`` for ``state_cfg_nodes``."""
     out: dict[str, str] = {}
     rows = (
-        StateCfgNode.select(
-            StateCfgNode.state_hex, StateCfgNode.classification
-        )
+        StateCfgNode.select(StateCfgNode.state_hex, StateCfgNode.classification)
         .where(StateCfgNode.snapshot == int(snapshot_id))
         .tuples()
     )
@@ -112,9 +109,7 @@ def _collect_outgoing_edges(
     for edge_id, src, tgt, _src_blk, _tgt_entry, path in rows:
         if src is None:
             continue
-        out.setdefault(str(src).lower(), []).append(
-            (int(edge_id), tgt, path)
-        )
+        out.setdefault(str(src).lower(), []).append((int(edge_id), tgt, path))
     return out
 
 
@@ -132,16 +127,16 @@ def _collect_collapsed_diagnostics(
         )
         .where(
             (StateCfgEdgeDiagnostic.snapshot == int(snapshot_id))
-            & (
-                StateCfgEdgeDiagnostic.classification
-                == "COLLAPSED_TO_REWRITTEN_TARGET"
-            )
+            & (StateCfgEdgeDiagnostic.classification == "COLLAPSED_TO_REWRITTEN_TARGET")
         )
         .tuples()
     )
     return [
-        (int(edge_id), str(src) if src is not None else None,
-         str(tgt) if tgt is not None else None)
+        (
+            int(edge_id),
+            str(src) if src is not None else None,
+            str(tgt) if tgt is not None else None,
+        )
         for edge_id, src, tgt in rows
     ]
 
@@ -193,9 +188,7 @@ def correlate_collapsed_edges(
 
         # Sort siblings by overlap size (largest first); ties broken
         # by lexical state_hex for determinism.
-        sibling_overlaps.sort(
-            key=lambda item: (-len(item[1]), item[0])
-        )
+        sibling_overlaps.sort(key=lambda item: (-len(item[1]), item[0]))
 
         for sibling_state, overlap_set in sibling_overlaps:
             sibling_edges = outgoing.get(sibling_state, [])
@@ -252,8 +245,7 @@ def persist_alternate_correlations(
     snapshot_ids = sorted({int(r[0]) for r in rows})
     for snap_id in snapshot_ids:
         conn.execute(
-            "DELETE FROM state_cfg_edge_alternate_correlations "
-            "WHERE snapshot_id = ?",
+            "DELETE FROM state_cfg_edge_alternate_correlations WHERE snapshot_id = ?",
             (snap_id,),
         )
     conn.executemany(

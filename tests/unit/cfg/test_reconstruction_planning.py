@@ -8,7 +8,10 @@ from d810.transforms.reconstruction_planning import (
     plan_reconstruction_candidate,
     plan_reconstruction_lowering,
 )
-from d810.transforms.reconstruction_lowering import RedirectSpec, SharedGroupEmissionCandidate
+from d810.transforms.reconstruction_lowering import (
+    RedirectSpec,
+    SharedGroupEmissionCandidate,
+)
 
 
 class _DummyBlock:
@@ -22,7 +25,9 @@ class _DummyBlock:
 class _DummyFlowGraph:
     def __init__(self, mapping: dict[int, tuple[tuple[int, ...], tuple[int, ...]]]):
         self._mapping = {
-            int(k): _DummyBlock(tuple(int(v) for v in preds), tuple(int(v) for v in succs))
+            int(k): _DummyBlock(
+                tuple(int(v) for v in preds), tuple(int(v) for v in succs)
+            )
             for k, (preds, succs) in mapping.items()
         }
 
@@ -32,11 +37,13 @@ class _DummyFlowGraph:
 
 class TestPlanReconstructionCandidate:
     def test_accepts_direct_private_corridor(self):
-        flow_graph = _DummyFlowGraph({
-            14: ((12,), (16,)),
-            16: ((14,), (18,)),
-            18: ((16,), (20,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                14: ((12,), (16,)),
+                16: ((14,), (18,)),
+                18: ((16,), (20,)),
+            }
+        )
         decision = plan_reconstruction_candidate(
             flow_graph,
             ReconstructionPlanningContext(
@@ -57,9 +64,11 @@ class TestPlanReconstructionCandidate:
         assert decision.first_shared_block is None
 
     def test_accepts_conditional_arm_at_branch_horizon(self):
-        flow_graph = _DummyFlowGraph({
-            14: ((12,), (16, 18)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                14: ((12,), (16, 18)),
+            }
+        )
         decision = plan_reconstruction_candidate(
             flow_graph,
             ReconstructionPlanningContext(
@@ -78,11 +87,13 @@ class TestPlanReconstructionCandidate:
         assert decision.emission_mode == ReconstructionEmissionMode.CONDITIONAL_ARM
 
     def test_falls_back_to_pred_split_for_shared_block(self):
-        flow_graph = _DummyFlowGraph({
-            12: ((8,), (14,)),
-            14: ((12, 13), (16,)),
-            16: ((14,), (18,)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                12: ((8,), (14,)),
+                14: ((12, 13), (16,)),
+                16: ((14,), (18,)),
+            }
+        )
         decision = plan_reconstruction_candidate(
             flow_graph,
             ReconstructionPlanningContext(
@@ -104,9 +115,11 @@ class TestPlanReconstructionCandidate:
         assert decision.via_pred == 12
 
     def test_rejects_when_no_shared_site_and_trailing_effects_exist(self):
-        flow_graph = _DummyFlowGraph({
-            12: ((8,), (16, 18)),
-        })
+        flow_graph = _DummyFlowGraph(
+            {
+                12: ((8,), (16, 18)),
+            }
+        )
         decision = plan_reconstruction_candidate(
             flow_graph,
             ReconstructionPlanningContext(
