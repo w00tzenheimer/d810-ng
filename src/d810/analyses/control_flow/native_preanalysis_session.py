@@ -1256,7 +1256,7 @@ class NativePreanalysisSessionState:
         if publication_revision < 0:
             raise ValueError(
                 "normalization work-item publication revision cannot be negative"
-        )
+            )
         work_item_id = self.normalization_last_published_work_item_id
         published_operation_ids = tuple(
             str(value).strip()
@@ -1468,7 +1468,7 @@ class NativePreanalysisSessionState:
         ):
             raise RuntimeError(
                 "normalization work-item commit requires current validated staging"
-        )
+            )
         work_item_id = str(work_item_id).strip()
         published_operations = tuple(
             str(value).strip() for value in published_operation_ids
