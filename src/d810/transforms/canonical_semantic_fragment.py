@@ -657,6 +657,7 @@ def _detached_target_component(
                         and not allow_unresolved_published_boundaries
                     ):
                         unresolved_operation = operation_by_source[edge_target.block_id]
+                        incoming_source = plan.block(operation.source_block_id)
                         owner_serial, owner_anchor_ea, _identity = current_owners[0]
                         raise CanonicalSemanticFragmentRejected(
                             "published imported boundary retains unresolved "
@@ -671,6 +672,12 @@ def _detached_target_component(
                                     f"blk{owner_serial}@0x{owner_anchor_ea:X}"
                                 ),
                                 "operation_id": unresolved_operation.operation_id,
+                                "incoming_operation_id": operation.operation_id,
+                                "incoming_source_block_id": operation.source_block_id,
+                                "incoming_source_anchor_ea": (
+                                    f"0x{int(incoming_source.semantic_anchor_ea):X}"
+                                ),
+                                "incoming_edge_role": edge.role.value,
                             },
                         )
                     selected_ids.add(edge_target.block_id)
