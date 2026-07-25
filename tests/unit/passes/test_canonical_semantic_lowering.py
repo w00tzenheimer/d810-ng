@@ -1045,6 +1045,134 @@ def test_configured_reference_scope_drives_bounded_composition_before_root_plan(
     ]
 
 
+def test_configured_reference_scope_reuses_proved_temporary_entry_port(
+    monkeypatch,
+) -> None:
+    graph, bound = _graph_and_bound_evidence()
+    candidate = bound.evidence
+    plan = build_canonical_semantic_fragment_plan(
+        graph,
+        bound,
+        prohibited_dispatcher_serials=(30,),
+    )
+    run = RouteOracleRun(
+        run_id="test-configured-temporary-port",
+        function_ea=graph.func_ea,
+        fixture_sha256="a" * 64,
+        reference_binary_sha256="b" * 64,
+        candidate_binary_sha256="a" * 64,
+        reference_commit="deadbeef",
+        runtime_image="test-image",
+        runtime_image_id="sha256:" + "c" * 64,
+        cache_disabled=True,
+    )
+    selection = ReferenceRouteOracleSelection(
+        run=run,
+        publication_root_ea=0x1200,
+        routes=(
+            ReferenceRouteRewrite(
+                route_id="test:0x1000:flow_route:0x1100",
+                function_ea=graph.func_ea,
+                owner_ea=0x1100,
+                rewrite_anchor_ea=0x1100,
+                corridor=((0x1100, 0x1101),),
+                reference_phase="flow_route",
+                original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+                final_transfer_kind=SemanticTransferKind.DIRECT,
+                direct_target_ea=0x1200,
+                reference_ledger_identity="flow_route:0x1100",
+            ),
+        ),
+    )
+    normalization_authority = object()
+    current_identity_by_serial = {
+        int(serial): _identity(int(block.start_ea))
+        for serial, block in graph.blocks.items()
+    }
+    boundary_calls: list[dict[str, object]] = []
+
+    def compose_boundary(*_args, **kwargs):
+        boundary_calls.append(kwargs)
+        anchor_ea = kwargs["boundary_anchor_ea"]
+        retirement = kwargs.get("temporary_dispatcher_entry_port_obligation_id")
+        if anchor_ea == 0x1200 and retirement is None:
+            raise CanonicalSemanticFragmentRejected(
+                "published canonical boundary has no entry-connectable predecessor",
+                reason_code="published_boundary_predecessor_missing",
+                anchor_ea=0x1200,
+                payload={"incoming_predecessors": ({"prohibited": True},)},
+            )
+        if anchor_ea == 0x1100:
+            raise CanonicalSemanticFragmentRejected(
+                "published canonical boundary requires one current owner",
+                reason_code="published_boundary_current_owner_count_mismatch",
+                anchor_ea=0x1100,
+                payload={
+                    "owner_labels": (),
+                    "current_identity_inventory": (),
+                    "normalization_incoming_operations": (
+                        {
+                            "source_owner_labels": (),
+                            "source_current_identity_inventory": (),
+                        },
+                    ),
+                },
+            )
+        assert anchor_ea == 0x1200
+        assert retirement == (
+            "retire-temporary-dispatcher-entry@0x1200:"
+            "publish-semantic-predecessor@0x1100"
+        )
+        return plan
+
+    bind_calls: list[tuple[object, object]] = []
+
+    def bind_reference(candidate_plan, authority):
+        bind_calls.append((candidate_plan, authority))
+        return candidate_plan
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "compose_canonical_semantic_boundary_fragment_plan",
+        compose_boundary,
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "bind_fragment_reference_oracle",
+        bind_reference,
+    )
+    composition_attempts: list[dict[str, object]] = []
+
+    result = state_machine_module._compose_configured_reference_scope_plan(
+        graph=graph,
+        normalization_plan=plan,
+        configured_scope=selection,
+        available_evidence=candidate,
+        current_identity_by_serial=current_identity_by_serial,
+        normalization_authority=normalization_authority,
+        prohibited_dispatcher_serials=(30,),
+        composition_attempts=composition_attempts,
+    )
+
+    assert result is plan
+    assert bind_calls == [(plan, selection)]
+    assert [attempt["kind"] for attempt in composition_attempts] == [
+        "configured_reference_scope",
+        "configured_reference_semantic_predecessor",
+        "configured_reference_temporary_port",
+    ]
+    assert [attempt["outcome"] for attempt in composition_attempts] == [
+        "rejected",
+        "rejected",
+        "accepted",
+    ]
+    assert tuple(call["boundary_anchor_ea"] for call in boundary_calls) == (
+        0x1200,
+        0x1100,
+        0x1200,
+    )
+
+
 def test_semantic_evidence_spine_declares_fragment_publication_authority() -> None:
     specs = semantic_evidence_state_machine_passes()
 
