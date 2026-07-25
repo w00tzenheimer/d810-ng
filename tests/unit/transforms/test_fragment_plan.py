@@ -1307,10 +1307,7 @@ def test_fragment_plan_requires_exact_terminal_effect_anchors() -> None:
     plan = _terminal_plan()
     carrier = plan.return_carriers[0]
 
-    with pytest.raises(
-        FragmentPlanRejected,
-        match="exact anchors owned by its block identity",
-    ):
+    with pytest.raises(FragmentPlanRejected) as exc_info:
         replace(
             plan,
             return_carriers=(
@@ -1321,6 +1318,24 @@ def test_fragment_plan_requires_exact_terminal_effect_anchors() -> None:
                 ),
             ),
         )
+
+    rejection = exc_info.value
+    source = plan.block(carrier.block_id)
+    assert source.stable_identity is not None
+    assert rejection.reason_code == "fragment_return_carrier_exact_anchor_missing"
+    assert rejection.anchor_ea == 0x40C7EB
+    assert rejection.payload == {
+        "carrier_id": carrier.carrier_id,
+        "block_id": source.block_id,
+        "block_role": source.role.value,
+        "block_semantic_anchor_ea": "0x40C7E5",
+        "block_identity": source.stable_identity.diagnostic_label(),
+        "state_write_ea": "0x40C7E5",
+        "carrier_ea": "0x40C7EB",
+        "corridor_instruction_eas": ("0x40C7E5", "0x40C7EB"),
+        "exact_instruction_eas": ("0x40C7E5", "0x40C7EA"),
+        "missing_anchor_eas": ("0x40C7EB",),
+    }
 
 
 def test_fragment_return_source_rejects_nonportable_storage_and_constants() -> None:

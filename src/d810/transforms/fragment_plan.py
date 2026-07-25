@@ -1905,14 +1905,51 @@ class FragmentPlan:
                     "execute on a staged replacement or imported block"
                 )
             identity = block.stable_identity
-            if identity is None or any(
-                not identity.native_ranges.contains(ea)
-                or ea not in identity.exact_instruction_eas
+            missing_anchor_eas = tuple(
+                ea
                 for ea in carrier.corridor_instruction_eas
-            ):
+                if identity is None
+                or not identity.native_ranges.contains(ea)
+                or ea not in identity.exact_instruction_eas
+            )
+            if identity is None or missing_anchor_eas:
+                anchor_ea = (
+                    int(carrier.state_write_ea)
+                    if not missing_anchor_eas
+                    else int(missing_anchor_eas[0])
+                )
                 raise FragmentPlanRejected(
                     f"fragment return carrier {carrier.carrier_id!r} requires "
-                    "exact anchors owned by its block identity"
+                    "exact anchors owned by its block identity",
+                    reason_code="fragment_return_carrier_exact_anchor_missing",
+                    anchor_ea=anchor_ea,
+                    payload={
+                        "carrier_id": carrier.carrier_id,
+                        "block_id": block.block_id,
+                        "block_role": block.role.value,
+                        "block_semantic_anchor_ea": (
+                            f"0x{int(block.semantic_anchor_ea):X}"
+                        ),
+                        "block_identity": (
+                            None if identity is None else identity.diagnostic_label()
+                        ),
+                        "state_write_ea": f"0x{int(carrier.state_write_ea):X}",
+                        "carrier_ea": f"0x{int(carrier.carrier_ea):X}",
+                        "corridor_instruction_eas": tuple(
+                            f"0x{int(ea):X}" for ea in carrier.corridor_instruction_eas
+                        ),
+                        "exact_instruction_eas": (
+                            ()
+                            if identity is None
+                            else tuple(
+                                f"0x{int(ea):X}"
+                                for ea in sorted(identity.exact_instruction_eas)
+                            )
+                        ),
+                        "missing_anchor_eas": tuple(
+                            f"0x{int(ea):X}" for ea in missing_anchor_eas
+                        ),
+                    },
                 )
 
         terminal_returns = tuple(self.terminal_returns)
