@@ -1376,6 +1376,7 @@ def plan_frontend_computed_branch_normalization(
                         normalization_start_ea=int(proof.source_anchor_ea),
                         condition_producer_ea=int(proof.condition_producer_ea),
                         unresolved_transfer_ea=int(proof.source_transfer_ea),
+                        relocated_instruction_eas=proof.relocated_instruction_eas,
                         conditional_select_envelope=(
                             FragmentConditionalSelectEnvelope(
                                 predicate_ea=conditional_select.predicate_ea,
@@ -1462,6 +1463,7 @@ def plan_frontend_computed_branch_normalization(
                         normalization_start_ea=int(proof.source_anchor_ea),
                         condition_producer_ea=int(proof.condition_producer_ea),
                         unresolved_transfer_ea=int(proof.source_transfer_ea),
+                        relocated_instruction_eas=proof.relocated_instruction_eas,
                         conditional_select_envelope=(
                             None
                             if imported_conditional_select is None

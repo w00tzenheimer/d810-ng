@@ -260,6 +260,7 @@ class ComputedGotoPatchPlan(NamedTuple):
     selector_state_on_left: bool | None = None
     source_register_values: tuple[tuple[str, int], ...] = ()
     condition_producer_ea: int | None = None
+    relocated_instruction_eas: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -529,6 +530,9 @@ def _patch_plan_frontend_proof(
         condition_producer_ea=condition_producer_ea,
         flag_corridor=corridor_identities,
         permitted_flag_write_eas=frozenset({condition_producer_ea}),
+        relocated_instruction_eas=tuple(
+            int(ea) for ea in plan.relocated_instruction_eas
+        ),
         diagnostic_provenance=(
             *provenance,
             ("condition_code", str(int(plan.condition_code))),

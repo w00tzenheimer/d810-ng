@@ -565,6 +565,7 @@ class FragmentComputedBranchNormalization:
         | FragmentImportedConditionalSelectEnvelope
         | None
     ) = None
+    relocated_instruction_eas: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.predicate_kind, PredicateKind):
@@ -598,6 +599,20 @@ class FragmentComputedBranchNormalization:
             ),
         ):
             raise TypeError("computed branch conditional-select envelope is invalid")
+        relocated_instruction_eas = tuple(
+            _require_native_ea(ea, "computed branch relocated instruction")
+            for ea in self.relocated_instruction_eas
+        )
+        if relocated_instruction_eas != tuple(
+            sorted(set(relocated_instruction_eas))
+        ) or any(
+            not normalization_start_ea < ea < unresolved_transfer_ea
+            for ea in relocated_instruction_eas
+        ):
+            raise FragmentPlanRejected(
+                "computed branch relocated instructions require ordered unique "
+                "anchors inside the normalization extent"
+            )
         object.__setattr__(
             self,
             "normalization_start_ea",
@@ -612,6 +627,11 @@ class FragmentComputedBranchNormalization:
             self,
             "unresolved_transfer_ea",
             unresolved_transfer_ea,
+        )
+        object.__setattr__(
+            self,
+            "relocated_instruction_eas",
+            relocated_instruction_eas,
         )
 
 
@@ -677,6 +697,10 @@ class FragmentDirectTransferRewrite:
     delivery_region: NativeEaInterval
     proof_corridor_instruction_eas: tuple[int, ...]
     superseded_instruction_eas: tuple[int, ...]
+    source_computed_branch_normalization: (
+        FragmentComputedBranchNormalization | None
+    ) = None
+    source_predicate_anchor_ea: int | None = None
     reference_route: ReferenceRouteRewrite | None = None
 
     def __post_init__(self) -> None:
@@ -744,6 +768,38 @@ class FragmentDirectTransferRewrite:
                 "superseded direct transfer instructions must be an ordered "
                 "proof-corridor subset ending at the rewrite anchor"
             )
+        source_normalization = self.source_computed_branch_normalization
+        source_predicate_anchor_ea = self.source_predicate_anchor_ea
+        if (source_normalization is None) != (source_predicate_anchor_ea is None):
+            raise FragmentPlanRejected(
+                "direct transfer source normalization requires its predicate anchor"
+            )
+        if source_normalization is not None:
+            if not isinstance(
+                source_normalization,
+                FragmentComputedBranchNormalization,
+            ):
+                raise TypeError(
+                    "direct transfer source normalization has the wrong type"
+                )
+            source_predicate_anchor_ea = _require_native_ea(
+                source_predicate_anchor_ea,
+                "direct transfer source predicate",
+            )
+            if (
+                rewrite_anchor_ea != source_predicate_anchor_ea
+                or not delivery_region.start_ea
+                <= source_normalization.normalization_start_ea
+                <= source_predicate_anchor_ea
+                < source_normalization.unresolved_transfer_ea
+                < delivery_region.end_ea
+                or source_normalization.condition_producer_ea
+                not in proof_corridor_instruction_eas
+            ):
+                raise FragmentPlanRejected(
+                    "direct transfer source normalization does not own its "
+                    "synthetic delivery envelope"
+                )
         object.__setattr__(self, "route_proof_id", route_proof_id)
         object.__setattr__(self, "owner_identity", owner_identity)
         object.__setattr__(self, "owner_anchor_ea", owner_anchor_ea)
@@ -758,6 +814,16 @@ class FragmentDirectTransferRewrite:
             self,
             "superseded_instruction_eas",
             superseded_instruction_eas,
+        )
+        object.__setattr__(
+            self,
+            "source_computed_branch_normalization",
+            source_normalization,
+        )
+        object.__setattr__(
+            self,
+            "source_predicate_anchor_ea",
+            source_predicate_anchor_ea,
         )
         reference_route = self.reference_route
         if reference_route is not None:
@@ -790,6 +856,10 @@ class FragmentOperation:
     predicate_anchor_ea: int | None = None
     direct_transfer_rewrite: FragmentDirectTransferRewrite | None = None
     computed_branch_normalization: FragmentComputedBranchNormalization | None = None
+    superseded_computed_branch_normalization: (
+        FragmentComputedBranchNormalization | None
+    ) = None
+    superseded_predicate_anchor_ea: int | None = None
     storage_predicate_materialization: (
         FragmentStoragePredicateMaterialization | None
     ) = None
@@ -825,6 +895,8 @@ class FragmentOperation:
         predicate_anchor_ea = self.predicate_anchor_ea
         direct_transfer_rewrite = self.direct_transfer_rewrite
         computed_branch_normalization = self.computed_branch_normalization
+        superseded_normalization = self.superseded_computed_branch_normalization
+        superseded_predicate_anchor_ea = self.superseded_predicate_anchor_ea
         storage_predicate_materialization = self.storage_predicate_materialization
         if computed_branch_normalization is not None and not isinstance(
             computed_branch_normalization,
@@ -838,6 +910,19 @@ class FragmentOperation:
             FragmentDirectTransferRewrite,
         ):
             raise TypeError("fragment operation direct transfer rewrite is invalid")
+        if superseded_normalization is not None and not isinstance(
+            superseded_normalization,
+            FragmentComputedBranchNormalization,
+        ):
+            raise TypeError(
+                "fragment operation superseded normalization is invalid"
+            )
+        if (superseded_normalization is None) != (
+            superseded_predicate_anchor_ea is None
+        ):
+            raise FragmentPlanRejected(
+                "fragment superseded normalization requires its predicate anchor"
+            )
         if storage_predicate_materialization is not None and not isinstance(
             storage_predicate_materialization,
             FragmentStoragePredicateMaterialization,
@@ -875,6 +960,16 @@ class FragmentOperation:
                     "storage predicate materialization belongs only to a "
                     "complete conditional"
                 )
+            if superseded_normalization is not None:
+                if edges[0].role is not SemanticEdgeRole.DIRECT:
+                    raise FragmentPlanRejected(
+                        "superseded computed normalization belongs only to one "
+                        "direct semantic edge"
+                    )
+                superseded_predicate_anchor_ea = _require_native_ea(
+                    superseded_predicate_anchor_ea,
+                    "superseded computed predicate anchor",
+                )
             if (
                 direct_transfer_rewrite is not None
                 and edges[0].role is not SemanticEdgeRole.DIRECT
@@ -899,6 +994,10 @@ class FragmentOperation:
                 raise FragmentPlanRejected(
                     "direct transfer rewrite belongs only to one direct edge"
                 )
+            if superseded_normalization is not None:
+                raise FragmentPlanRejected(
+                    "conditional fragment cannot carry a superseded normalization"
+                )
             predicate_anchor_ea = _require_native_ea(
                 predicate_anchor_ea,
                 "fragment predicate anchor",
@@ -912,6 +1011,16 @@ class FragmentOperation:
             self,
             "direct_transfer_rewrite",
             direct_transfer_rewrite,
+        )
+        object.__setattr__(
+            self,
+            "superseded_computed_branch_normalization",
+            superseded_normalization,
+        )
+        object.__setattr__(
+            self,
+            "superseded_predicate_anchor_ea",
+            superseded_predicate_anchor_ea,
         )
 
     @property

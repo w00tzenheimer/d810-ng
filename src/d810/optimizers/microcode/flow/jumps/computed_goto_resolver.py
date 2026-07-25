@@ -175,6 +175,13 @@ class _NativeStateRouteDeliverySite(NamedTuple):
     delivery_region_end_ea: int
 
 
+class _RelocatableLiveTail(NamedTuple):
+    """Native instruction heads and bytes relocated before one branch."""
+
+    instruction_eas: tuple[int, ...]
+    data: bytes
+
+
 class _DecodedNativeFlowInstruction(NamedTuple):
     """IDA-free native facts consumed by immediate state-route recovery."""
 
@@ -2738,7 +2745,7 @@ def _last_reg_writer_end(block_entry: int, jmp_ea: int, reg: str | None) -> int:
     return last_end
 
 
-def _live_tail_bytes(split_ea: int, jmp_ea: int) -> bytes | None:
+def _live_tail_bytes(split_ea: int, jmp_ea: int) -> _RelocatableLiveTail | None:
     """Raw bytes of the live tail ``[split_ea, jmp_ea)`` iff every instruction is
     position-independent and flag-neutral (safe to relocate). None otherwise."""
     import ida_bytes  # type: ignore[import-untyped]
@@ -2747,14 +2754,21 @@ def _live_tail_bytes(split_ea: int, jmp_ea: int) -> bytes | None:
 
     insn = ida_ua.insn_t()
     ea = int(split_ea)
+    instruction_eas: list[int] = []
     while ea < int(jmp_ea):
         length = ida_ua.decode_insn(insn, ea)
         if length <= 0:
             return None
         if (idaapi.print_insn_mnem(ea) or "") not in _SV_FLAG_SAFE_RELOC:
             return None
+        instruction_eas.append(int(ea))
         ea += length
-    return bytes(ida_bytes.get_bytes(int(split_ea), int(jmp_ea) - int(split_ea)) or b"")
+    data = bytes(
+        ida_bytes.get_bytes(int(split_ea), int(jmp_ea) - int(split_ea)) or b""
+    )
+    if len(data) != int(jmp_ea) - int(split_ea):
+        return None
+    return _RelocatableLiveTail(tuple(instruction_eas), data)
 
 
 def _find_patch_start(block_entry: int, jmp_ea: int) -> int:
@@ -2895,11 +2909,11 @@ def _bake_patch_plans(
                         fail_reason = "live tail not relocatable"
                         continue
                     # layout at patch_start: [tail][0F 8x rel32(true)][E9 rel32(false)]
-                    jcc_start = patch_start + len(tail)
+                    jcc_start = patch_start + len(tail.data)
                     jcc_end = jcc_start + 6
                     jmp_end = jcc_end + 5
                     body = (
-                        tail
+                        tail.data
                         + bytes([0x0F, 0x80 + (info["cc"] & 0xF)])
                         + struct.pack("<i", info["true"] - jcc_end)
                         + b"\xe9"
@@ -2938,6 +2952,7 @@ def _bake_patch_plans(
                                 entry_state0
                             ),
                             condition_producer_ea=info.get("condition_producer_ea"),
+                            relocated_instruction_eas=tail.instruction_eas,
                         )
                     )
                     done = True
