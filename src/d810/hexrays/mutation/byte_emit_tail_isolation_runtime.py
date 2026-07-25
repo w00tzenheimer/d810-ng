@@ -158,7 +158,7 @@ class LiveMbaAdapter:
             serial_quantity=int(old_qty),
             description="byte emit tail isolation",
         )
-        gateway.record_insert(
+        gateway.record_observed_insert(
             insertion_serial=int(insertion_serial),
             returned_serial=int(insertion_serial),
         )

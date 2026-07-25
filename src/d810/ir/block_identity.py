@@ -436,7 +436,8 @@ class BlockHandleProvenance(Enum):
 
     NATIVE = "native"
     IMPORTED_NATIVE = "imported_native"
-    SYNTHETIC = "synthetic"
+    CREATED_SYNTHETIC = "created_synthetic"
+    OBSERVED_EPHEMERAL = "observed_ephemeral"
 
 
 @dataclass(frozen=True, slots=True)
@@ -467,10 +468,10 @@ class MbaBlockHandle:
             and self.stable_identity is None
         ):
             raise ValueError("native MBA handle requires stable identity")
-        if (
-            self.provenance is BlockHandleProvenance.SYNTHETIC
-            and self.stable_identity is not None
-        ):
+        if self.provenance in {
+            BlockHandleProvenance.CREATED_SYNTHETIC,
+            BlockHandleProvenance.OBSERVED_EPHEMERAL,
+        } and self.stable_identity is not None:
             raise ValueError("synthetic MBA handle must not claim stable identity")
         object.__setattr__(self, "session_id", session_id)
         object.__setattr__(self, "token", token)
@@ -491,7 +492,7 @@ class MbaBlockHandle:
         )
 
     @classmethod
-    def synthetic(
+    def created_synthetic(
         cls,
         *,
         session_id: str,
@@ -501,7 +502,22 @@ class MbaBlockHandle:
             session_id=session_id,
             token=token,
             stable_identity=None,
-            provenance=BlockHandleProvenance.SYNTHETIC,
+            provenance=BlockHandleProvenance.CREATED_SYNTHETIC,
+        )
+
+    @classmethod
+    def observed_ephemeral(
+        cls,
+        *,
+        session_id: str,
+        token: str,
+    ) -> MbaBlockHandle:
+        """Create a generation-local handle for an anonymously observed block."""
+        return cls(
+            session_id=session_id,
+            token=token,
+            stable_identity=None,
+            provenance=BlockHandleProvenance.OBSERVED_EPHEMERAL,
         )
 
     @classmethod

@@ -155,7 +155,9 @@ def test_identity_contract_exposes_explicit_construction_and_rebind_results() ->
     assert callable(getattr(block_identity.StableBlockIdentity, "from_intervals", None))
     assert callable(getattr(block_identity.MbaBlockHandle, "native", None))
     assert callable(getattr(block_identity.MbaBlockHandle, "imported_native", None))
-    assert callable(getattr(block_identity.MbaBlockHandle, "synthetic", None))
+    assert callable(getattr(block_identity.MbaBlockHandle, "created_synthetic", None))
+    assert callable(getattr(block_identity.MbaBlockHandle, "observed_ephemeral", None))
+    assert not hasattr(block_identity.MbaBlockHandle, "synthetic")
     assert callable(getattr(block_identity.RebindResult, "bound", None))
 
 
@@ -204,7 +206,7 @@ def test_rebind_results_keep_serials_only_in_current_bound_blocks() -> None:
         session_id="session-3",
         token="imported-native-18",
     )
-    synthetic = block_identity.MbaBlockHandle.synthetic(
+    synthetic = block_identity.MbaBlockHandle.observed_ephemeral(
         session_id="session-3",
         token="synthetic-18",
     )
@@ -225,13 +227,15 @@ def test_rebind_results_keep_serials_only_in_current_bound_blocks() -> None:
     assert synthetic.stable_identity is None
     assert imported.stable_identity == identity
     assert imported.provenance is (block_identity.BlockHandleProvenance.IMPORTED_NATIVE)
-    assert synthetic.provenance is block_identity.BlockHandleProvenance.SYNTHETIC
+    assert synthetic.provenance is (
+        block_identity.BlockHandleProvenance.OBSERVED_EPHEMERAL
+    )
     with pytest.raises(ValueError, match="must not claim stable identity"):
         block_identity.MbaBlockHandle(
             session_id="session-3",
             token="synthetic-18",
             stable_identity=identity,
-            provenance=block_identity.BlockHandleProvenance.SYNTHETIC,
+            provenance=block_identity.BlockHandleProvenance.CREATED_SYNTHETIC,
         )
 
 

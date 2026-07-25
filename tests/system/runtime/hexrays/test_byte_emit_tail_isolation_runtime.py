@@ -133,6 +133,10 @@ class _FakeLiveMba:
     def get_mblock(self, serial):
         return self.blocks.get(int(serial))
 
+    @staticmethod
+    def map_fict_ea(ea):
+        return int(ea)
+
 
 def test_live_adapter_uses_fresh_transactions_over_an_injected_gateway_index():
     from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import LiveMbaAdapter

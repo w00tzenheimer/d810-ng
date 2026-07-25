@@ -29,6 +29,62 @@ from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockVersion,
     LogicalBlockVersionTransition,
 )
+from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
+
+
+@dataclass(frozen=True, slots=True)
+class PlanBlockReservation:
+    """Pre-mutation ownership of one plan-local physical realization."""
+
+    attempt_id: TransactionAttemptId
+    plan_ref: PlanBlockRef
+    session_id: str
+    generation: int
+    logical_version: LogicalBlockVersion
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.attempt_id, TransactionAttemptId):
+            raise TypeError("reservation requires a TransactionAttemptId")
+        if not isinstance(self.plan_ref, PlanBlockRef):
+            raise TypeError("reservation requires a PlanBlockRef")
+        if self.attempt_id.plan_id != self.plan_ref.plan_id:
+            raise ValueError("reservation plan authorities differ")
+        if self.attempt_id.session_id != str(self.session_id):
+            raise ValueError("reservation session authority differs")
+        if self.attempt_id.generation != int(self.generation):
+            raise ValueError("reservation generation authority differs")
+        if not isinstance(self.logical_version, LogicalBlockVersion):
+            raise TypeError("reservation requires a logical block version")
+
+
+@dataclass(frozen=True, slots=True)
+class PlanBlockCreationReceipt:
+    """Immutable proof connecting portable intent to its live coordinate."""
+
+    attempt_id: TransactionAttemptId
+    plan_ref: PlanBlockRef
+    logical_version: LogicalBlockVersion
+    insertion_serial: int
+    returned_serial: int
+    block: BoundBlock
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.attempt_id, TransactionAttemptId):
+            raise TypeError("creation receipt requires a TransactionAttemptId")
+        if not isinstance(self.plan_ref, PlanBlockRef):
+            raise TypeError("creation receipt requires a PlanBlockRef")
+        if self.attempt_id.plan_id != self.plan_ref.plan_id:
+            raise ValueError("creation receipt plan authorities differ")
+        if not isinstance(self.logical_version, LogicalBlockVersion):
+            raise TypeError("creation receipt requires a logical block version")
+        if not isinstance(self.block, BoundBlock):
+            raise TypeError("creation receipt requires a bound block")
+        if int(self.insertion_serial) < 0 or int(self.returned_serial) < 0:
+            raise ValueError("creation receipt coordinates must be non-negative")
+        if self.block.handle is not self.logical_version.handle:
+            raise ValueError("creation receipt handle authority differs")
+        if self.block.serial != int(self.returned_serial):
+            raise ValueError("creation receipt must bind the exact returned coordinate")
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +165,27 @@ class MbaBlockIdentityIndex:
         init=False,
         repr=False,
     )
+    _generation_by_transaction: dict[str, int] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _attempt_by_transaction: dict[str, TransactionAttemptId] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _insertion_serials_by_transaction: dict[str, dict[str, int]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _plan_reservations: dict[
+        tuple[TransactionAttemptId, PlanBlockRef], PlanBlockReservation
+    ] = field(default_factory=dict, init=False, repr=False)
+    _plan_creation_receipts: dict[
+        tuple[TransactionAttemptId, PlanBlockRef], PlanBlockCreationReceipt
+    ] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.session_id = str(self.session_id)
@@ -436,18 +513,32 @@ class MbaBlockIdentityIndex:
         identity: StableBlockIdentity | None,
         *,
         token: str | None = None,
-        provenance: BlockHandleProvenance = BlockHandleProvenance.NATIVE,
+        provenance: BlockHandleProvenance | None = None,
     ) -> MbaBlockHandle:
+        if provenance is None:
+            provenance = (
+                BlockHandleProvenance.NATIVE
+                if identity is not None
+                else BlockHandleProvenance.OBSERVED_EPHEMERAL
+            )
         token = token or self._new_token(
-            "native" if identity is not None else "synthetic"
+            "native" if identity is not None else provenance.value
         )
         if token in self._handles_by_token:
             raise ValueError(f"duplicate MBA block-handle token: {token}")
         if identity is None:
-            handle = MbaBlockHandle.synthetic(
-                session_id=self.session_id,
-                token=token,
-            )
+            if provenance is BlockHandleProvenance.CREATED_SYNTHETIC:
+                handle = MbaBlockHandle.created_synthetic(
+                    session_id=self.session_id,
+                    token=token,
+                )
+            elif provenance is BlockHandleProvenance.OBSERVED_EPHEMERAL:
+                handle = MbaBlockHandle.observed_ephemeral(
+                    session_id=self.session_id,
+                    token=token,
+                )
+            else:
+                raise ValueError("identity-free handle requires synthetic provenance")
         elif provenance is BlockHandleProvenance.IMPORTED_NATIVE:
             handle = MbaBlockHandle.imported_native(
                 identity,
@@ -512,7 +603,10 @@ class MbaBlockIdentityIndex:
         return handle
 
     def _bind_new_synthetic(self, serial: int) -> MbaBlockHandle:
-        handle = self._new_handle(None)
+        handle = self._new_handle(
+            None,
+            provenance=BlockHandleProvenance.OBSERVED_EPHEMERAL,
+        )
         self._bind(handle, serial)
         self._register_published_proxy(handle)
         return handle
@@ -554,9 +648,18 @@ class MbaBlockIdentityIndex:
             provenance=BlockHandleProvenance.IMPORTED_NATIVE,
         )
 
-    def create_synthetic_handle(self) -> MbaBlockHandle:
-        """Allocate an unbound transaction-only handle for synthetic CFG work."""
-        return self._new_handle(None)
+    def _create_plan_handle(self) -> MbaBlockHandle:
+        return self._new_handle(
+            None,
+            provenance=BlockHandleProvenance.CREATED_SYNTHETIC,
+        )
+
+    def create_observed_ephemeral_handle(self) -> MbaBlockHandle:
+        """Allocate an unowned handle for a block discovered around SDK work."""
+        return self._new_handle(
+            None,
+            provenance=BlockHandleProvenance.OBSERVED_EPHEMERAL,
+        )
 
     def ensure_serial_space(self, quantity: int) -> None:
         """Give every current serial a published logical proxy exactly once."""
@@ -567,7 +670,7 @@ class MbaBlockIdentityIndex:
 
     def begin_transaction(
         self,
-        transaction_id: str,
+        transaction_id: str | TransactionAttemptId,
         quantity: int | None = None,
     ) -> None:
         """Rebase planned coordinates onto the current live MBA serials.
@@ -578,18 +681,160 @@ class MbaBlockIdentityIndex:
         coordinate.  Rebuild the map at every batch boundary so serial
         resolution cannot replay an obsolete shift.
         """
-        transaction_id = str(transaction_id)
+        attempt = (
+            transaction_id
+            if isinstance(transaction_id, TransactionAttemptId)
+            else None
+        )
+        transaction_id = attempt.attempt_id if attempt is not None else str(transaction_id)
         if not transaction_id:
             raise ValueError("identity transaction requires a non-empty id")
         if transaction_id in self._serials_by_transaction:
             raise ValueError(f"identity transaction already active: {transaction_id}")
+        if attempt is not None:
+            if attempt.session_id != self.session_id:
+                raise ValueError("transaction attempt belongs to another session")
+            if attempt.generation != self.generation:
+                raise ValueError("transaction attempt belongs to another generation")
         if quantity is None:
             quantity = max(self._token_by_serial, default=-1) + 1
         self.ensure_serial_space(int(quantity))
         self._serials_by_transaction[transaction_id] = dict(self._serial_by_token)
+        self._generation_by_transaction[transaction_id] = self.generation
+        if attempt is not None:
+            self._attempt_by_transaction[transaction_id] = attempt
+        self._insertion_serials_by_transaction[transaction_id] = {}
         self._baseline_tokens_by_transaction[transaction_id] = {
             int(serial): token for serial, token in self._token_by_serial.items()
         }
+
+    def _validate_plan_attempt(
+        self,
+        attempt: TransactionAttemptId,
+        plan_ref: PlanBlockRef,
+    ) -> str:
+        if not isinstance(attempt, TransactionAttemptId):
+            raise TypeError("plan reservation requires a TransactionAttemptId")
+        if not isinstance(plan_ref, PlanBlockRef):
+            raise TypeError("plan reservation requires a PlanBlockRef")
+        if attempt.plan_id != plan_ref.plan_id:
+            raise ValueError("plan reservation plan authority differs")
+        if attempt.session_id != self.session_id:
+            raise ValueError("plan reservation session authority differs")
+        if attempt.generation != self.generation:
+            raise ValueError("plan reservation generation authority differs")
+        transaction_id = attempt.attempt_id
+        if transaction_id not in self._serials_by_transaction:
+            raise ValueError("plan reservation requires an active identity transaction")
+        if self._generation_by_transaction.get(transaction_id) != self.generation:
+            raise ValueError("plan reservation belongs to a stale MBA generation")
+        if self._attempt_by_transaction.get(transaction_id) != attempt:
+            raise ValueError("transaction attempt authority differs")
+        return transaction_id
+
+    def reserve_plan_block(
+        self,
+        attempt: TransactionAttemptId,
+        plan_ref: PlanBlockRef,
+        *,
+        handle: MbaBlockHandle | None = None,
+        replaces: MbaBlockHandle | None = None,
+    ) -> PlanBlockReservation:
+        """Allocate plan ownership before the corresponding SDK insertion."""
+        transaction_id = self._validate_plan_attempt(attempt, plan_ref)
+        key = (attempt, plan_ref)
+        if key in self._plan_reservations:
+            raise ValueError("plan block is already reserved in this attempt")
+        if handle is None and replaces is not None:
+            raise ValueError("plan replacement reservation requires a replacement handle")
+        if handle is None:
+            handle = self._create_plan_handle()
+        elif (
+            not isinstance(handle, MbaBlockHandle)
+            or handle.session_id != self.session_id
+            or self._handles_by_token.get(handle.token) is not handle
+            or self.resolve(handle) is not None
+        ):
+            raise ValueError("plan reservation requires an owned unbound handle")
+        if handle.provenance is not BlockHandleProvenance.CREATED_SYNTHETIC:
+            raise ValueError("plan reservation requires created-synthetic provenance")
+        if replaces is None:
+            logical_version = self._reserve_new_proxy(
+                transaction_id=transaction_id,
+                handle=handle,
+                allow_created_synthetic=True,
+            )
+        else:
+            if self.resolve(replaces, transaction_id=transaction_id) is None:
+                raise ValueError("plan replacement source is stale or foreign")
+            proxy = self._ensure_logical_proxy(replaces)
+            logical_version = proxy.stage(
+                transaction_id=transaction_id,
+                handle=handle,
+                generation=self.generation + 1,
+            )
+            self._proxy_token_by_handle_token[handle.token] = proxy.proxy_token
+            self._proxy_tokens_by_transaction[transaction_id].add(proxy.proxy_token)
+            self._proxy_actions_by_transaction[transaction_id][proxy.proxy_token] = (
+                "replacement"
+            )
+        reservation = PlanBlockReservation(
+            attempt_id=attempt,
+            plan_ref=plan_ref,
+            session_id=self.session_id,
+            generation=self.generation,
+            logical_version=logical_version,
+        )
+        self._plan_reservations[key] = reservation
+        return reservation
+
+    def bind_reserved_plan_block(
+        self,
+        attempt: TransactionAttemptId,
+        plan_ref: PlanBlockRef,
+        *,
+        insertion_serial: int,
+        returned_serial: int,
+    ) -> PlanBlockCreationReceipt:
+        """Bind the SDK result to its exact preallocated plan owner."""
+        transaction_id = self._validate_plan_attempt(attempt, plan_ref)
+        key = (attempt, plan_ref)
+        if key in self._plan_creation_receipts:
+            raise ValueError("plan block reservation is already bound")
+        reservation = self._plan_reservations.get(key)
+        if reservation is None:
+            raise ValueError("planned insertion has no reserved plan owner")
+        handle = reservation.logical_version.handle
+        self._record_insert(
+            transaction_id=transaction_id,
+            insertion_serial=int(insertion_serial),
+            created=handle,
+            returned_serial=int(returned_serial),
+            allow_created_synthetic=True,
+        )
+        block = self.resolve(handle, transaction_id=transaction_id)
+        if block is None:
+            raise RuntimeError("bound plan reservation did not resolve synchronously")
+        receipt = PlanBlockCreationReceipt(
+            attempt_id=attempt,
+            plan_ref=plan_ref,
+            logical_version=reservation.logical_version,
+            insertion_serial=int(insertion_serial),
+            returned_serial=int(returned_serial),
+            block=block,
+        )
+        self._plan_creation_receipts[key] = receipt
+        return receipt
+
+    @property
+    def plan_creation_receipts(self) -> tuple[PlanBlockCreationReceipt, ...]:
+        return tuple(self._plan_creation_receipts.values())
+
+    def transaction_quantity(self, transaction_id: str) -> int:
+        serials = self._serials_by_transaction.get(str(transaction_id))
+        if serials is None:
+            raise ValueError("identity transaction is not active")
+        return len(serials)
 
     def resolve_planned_serial(
         self,
@@ -743,10 +988,30 @@ class MbaBlockIdentityIndex:
         handle: MbaBlockHandle,
     ) -> LogicalBlockVersion:
         """Reserve a new logical owner without claiming a physical coordinate."""
+        return self._reserve_new_proxy(
+            transaction_id=transaction_id,
+            handle=handle,
+            allow_created_synthetic=False,
+        )
+
+    def _reserve_new_proxy(
+        self,
+        *,
+        transaction_id: str,
+        handle: MbaBlockHandle,
+        allow_created_synthetic: bool,
+    ) -> LogicalBlockVersion:
         transaction_id = str(transaction_id)
         serials = self._serials_by_transaction.get(transaction_id)
         if serials is None:
             raise ValueError("block creation requires an active identity transaction")
+        if (
+            handle.provenance is BlockHandleProvenance.CREATED_SYNTHETIC
+            and not allow_created_synthetic
+        ):
+            raise ValueError(
+                "CREATED_SYNTHETIC reservation requires PlanBlockRef authority"
+            )
         if self.logical_proxy_for_handle(handle) is not None:
             raise ValueError("new physical block already belongs to a logical proxy")
         proxy_token = f"logical:{self._next_proxy_token}"
@@ -868,6 +1133,9 @@ class MbaBlockIdentityIndex:
         ):
             self._token_by_serial.setdefault(serial, token)
         self._baseline_tokens_by_transaction.pop(transaction_id, None)
+        self._generation_by_transaction.pop(transaction_id, None)
+        self._attempt_by_transaction.pop(transaction_id, None)
+        self._insertion_serials_by_transaction.pop(transaction_id, None)
         self._proxy_actions_by_transaction.pop(transaction_id, None)
         return tuple(transitions)
 
@@ -903,6 +1171,13 @@ class MbaBlockIdentityIndex:
             discarded.append(staged)
         self._serials_by_transaction.pop(transaction_id, None)
         self._baseline_tokens_by_transaction.pop(transaction_id, None)
+        self._generation_by_transaction.pop(transaction_id, None)
+        active_attempt = self._attempt_by_transaction.pop(transaction_id, None)
+        self._insertion_serials_by_transaction.pop(transaction_id, None)
+        for key in tuple(self._plan_reservations):
+            if key[0] == active_attempt:
+                self._plan_reservations.pop(key, None)
+                self._plan_creation_receipts.pop(key, None)
         return tuple(discarded)
 
     def _current_for_tokens(
@@ -1221,21 +1496,60 @@ class MbaBlockIdentityIndex:
         created: MbaBlockHandle,
         returned_serial: int,
     ) -> None:
-        """Stage an insertion and shifted coordinates inside one transaction."""
+        """Record an unowned SDK insertion without consuming plan authority."""
+        if created.provenance is BlockHandleProvenance.CREATED_SYNTHETIC:
+            raise ValueError(
+                "CREATED_SYNTHETIC insertion requires bind_reserved_plan_block"
+            )
+        self._record_insert(
+            transaction_id=transaction_id,
+            insertion_serial=insertion_serial,
+            created=created,
+            returned_serial=returned_serial,
+            allow_created_synthetic=False,
+        )
+
+    def _record_insert(
+        self,
+        *,
+        transaction_id: str,
+        insertion_serial: int,
+        created: MbaBlockHandle,
+        returned_serial: int,
+        allow_created_synthetic: bool,
+    ) -> None:
+        """Bind one insertion while preserving its ownership provenance."""
         transaction_id = str(transaction_id)
         serials = self._serials_by_transaction.get(transaction_id)
         if serials is None:
             raise ValueError("block insertion requires an active identity transaction")
         insertion_serial = int(insertion_serial)
-        for token, serial in tuple(serials.items()):
-            if serial >= insertion_serial:
-                serials[token] = serial + 1
+        returned_serial = int(returned_serial)
+        if insertion_serial < 0 or returned_serial < 0:
+            raise ValueError("block insertion coordinates must be non-negative")
+        if self._handles_by_token.get(created.token) is not created:
+            raise ValueError("inserted block handle is stale or foreign")
+        if (
+            created.provenance is BlockHandleProvenance.CREATED_SYNTHETIC
+            and not allow_created_synthetic
+        ):
+            raise ValueError(
+                "CREATED_SYNTHETIC insertion requires bind_reserved_plan_block"
+            )
         proxy = self.logical_proxy_for_handle(created)
         if proxy is None:
+            if created.provenance is BlockHandleProvenance.CREATED_SYNTHETIC:
+                raise ValueError("planned insertion has no reserved plan owner")
+            for token, serial in tuple(serials.items()):
+                if serial >= insertion_serial:
+                    serials[token] = serial + 1
             self.stage_new_proxy(
                 transaction_id=transaction_id,
                 handle=created,
-                returned_serial=int(returned_serial),
+                returned_serial=returned_serial,
+            )
+            self._insertion_serials_by_transaction[transaction_id][created.token] = (
+                insertion_serial
             )
             return
         action = self._proxy_actions_by_transaction.get(transaction_id, {}).get(
@@ -1243,7 +1557,7 @@ class MbaBlockIdentityIndex:
         )
         staged = proxy.resolve(transaction_id=transaction_id)
         if (
-            action != "new"
+            action not in {"new", "replacement"}
             or staged is None
             or staged.handle is not created
             or created.token in serials
@@ -1251,7 +1565,13 @@ class MbaBlockIdentityIndex:
             raise ValueError(
                 "inserted block does not match a transaction-reserved logical owner"
             )
-        serials[created.token] = int(returned_serial)
+        for token, serial in tuple(serials.items()):
+            if serial >= insertion_serial:
+                serials[token] = serial + 1
+        serials[created.token] = returned_serial
+        self._insertion_serials_by_transaction[transaction_id][created.token] = (
+            insertion_serial
+        )
 
     def discard_reserved_insert(
         self,
@@ -1270,11 +1590,23 @@ class MbaBlockIdentityIndex:
         )
         staged = proxy.resolve(transaction_id=transaction_id)
         removed_serial = serials.get(handle.token)
-        if action != "new" or staged is None or removed_serial is None:
+        insertion_serial = self._insertion_serials_by_transaction.get(
+            transaction_id, {}
+        ).get(handle.token)
+        if (
+            action not in {"new", "replacement"}
+            or staged is None
+            or removed_serial is None
+            or insertion_serial is None
+        ):
             raise ValueError("reserved insertion rollback does not own a live block")
         serials.pop(handle.token)
+        self._insertion_serials_by_transaction[transaction_id].pop(handle.token, None)
+        for key, receipt in tuple(self._plan_creation_receipts.items()):
+            if receipt.logical_version.handle is handle:
+                self._plan_creation_receipts.pop(key, None)
         for token, serial in tuple(serials.items()):
-            if serial > int(removed_serial):
+            if serial > int(insertion_serial):
                 serials[token] = serial - 1
 
     def record_realized_serial(
@@ -1296,6 +1628,7 @@ class MbaBlockIdentityIndex:
             handle = self._new_handle(
                 None,
                 token=f"planned:{transaction_id}:{expected_serial}",
+                provenance=BlockHandleProvenance.OBSERVED_EPHEMERAL,
             )
             self.stage_new_proxy(
                 transaction_id=transaction_id,
@@ -1451,6 +1784,11 @@ class MbaBlockIdentityIndex:
         self._proxy_actions_by_transaction.clear()
         self._serials_by_transaction.clear()
         self._baseline_tokens_by_transaction.clear()
+        self._generation_by_transaction.clear()
+        self._attempt_by_transaction.clear()
+        self._insertion_serials_by_transaction.clear()
+        self._plan_reservations.clear()
+        self._plan_creation_receipts.clear()
 
     def refresh_from_mba(
         self,
@@ -1485,4 +1823,8 @@ class MbaBlockIdentityIndex:
         )
 
 
-__all__ = ["MbaBlockIdentityIndex"]
+__all__ = [
+    "MbaBlockIdentityIndex",
+    "PlanBlockCreationReceipt",
+    "PlanBlockReservation",
+]

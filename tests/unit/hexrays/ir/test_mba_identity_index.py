@@ -19,6 +19,7 @@ from d810.ir.block_identity import (
     StableBlockIdentity,
 )
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
 from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key()
@@ -1010,35 +1011,50 @@ def test_reserved_synthetic_proxy_binds_only_when_insertion_is_realized() -> Non
     later = index.handle_for_serial(1)
     assert later is not None
     proxy_count = index.logical_proxy_count
-    transaction_id = "reserved-synthetic"
-    index.begin_transaction(transaction_id, 2)
-    helper = index.create_synthetic_handle()
-
-    staged = index.reserve_new_proxy(
-        transaction_id=transaction_id,
-        handle=helper,
+    attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="reserved-synthetic",
     )
+    plan_ref = PlanBlockRef("plan-a", "helper")
+    index.begin_transaction(attempt, 2)
+    reservation = index.reserve_plan_block(attempt, plan_ref)
+    helper = reservation.logical_version.handle
+    staged = reservation.logical_version
 
     proxy = index.logical_proxy_for_handle(helper)
     assert proxy is not None
     assert proxy.resolve() is None
-    assert proxy.resolve(transaction_id=transaction_id) is staged
-    assert index.resolve_logical_version(staged, transaction_id=transaction_id) is None
+    assert proxy.resolve(transaction_id=attempt.attempt_id) is staged
+    assert (
+        index.resolve_logical_version(staged, transaction_id=attempt.attempt_id)
+        is None
+    )
     assert index.logical_proxy_count == proxy_count + 1
 
-    index.record_insert(
-        transaction_id=transaction_id,
+    receipt = index.bind_reserved_plan_block(
+        attempt,
+        plan_ref,
         insertion_serial=1,
-        created=helper,
         returned_serial=1,
     )
 
-    bound = index.resolve_logical_version(staged, transaction_id=transaction_id)
+    bound = index.resolve_logical_version(
+        staged,
+        transaction_id=attempt.attempt_id,
+    )
     assert bound is not None and bound.serial == 1
-    shifted = index.resolve(later, transaction_id=transaction_id)
+    assert receipt.plan_ref == plan_ref
+    assert receipt.attempt_id == attempt
+    assert receipt.logical_version is staged
+    assert receipt.insertion_serial == 1
+    assert receipt.returned_serial == 1
+    assert receipt.block == bound
+    shifted = index.resolve(later, transaction_id=attempt.attempt_id)
     assert shifted is not None and shifted.serial == 2
 
-    discarded = index.abort_proxy_transaction(transaction_id)
+    discarded = index.abort_proxy_transaction(attempt.attempt_id)
 
     assert discarded == (staged,)
     assert index.logical_proxy_for_handle(helper) is None
@@ -1083,6 +1099,134 @@ def test_inserted_replacement_abort_preserves_published_coordinates() -> None:
     assert index.resolve(original).handle is original
     assert index.resolve(original).serial == 2
     assert index.resolve(replacement) is None
+
+
+def test_plan_block_receipt_preserves_requested_and_returned_coordinates() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="session-a",
+        generation=4,
+        bindings=((identity, 4),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(4)
+    assert original is not None
+    attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="attempt-divergent-coordinate",
+    )
+    plan_ref = PlanBlockRef("plan-a", "created")
+    index.begin_transaction(attempt, 5)
+    index.reserve_plan_block(attempt, plan_ref)
+
+    receipt = index.bind_reserved_plan_block(
+        attempt,
+        plan_ref,
+        insertion_serial=2,
+        returned_serial=3,
+    )
+
+    assert receipt.insertion_serial == 2
+    assert receipt.returned_serial == 3
+    assert receipt.block.serial == 3
+    assert index.resolve(original, transaction_id=attempt.attempt_id).serial == 5
+
+
+def test_generic_insert_cannot_consume_a_typed_plan_reservation() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="session-a",
+        generation=3,
+        bindings=((identity, 2),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(2)
+    assert original is not None
+    attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="typed-only",
+    )
+    plan_ref = PlanBlockRef("plan-a", "created")
+    index.begin_transaction(attempt, 3)
+    reservation = index.reserve_plan_block(attempt, plan_ref)
+
+    with pytest.raises(ValueError, match="bind_reserved_plan_block"):
+        index.record_insert(
+            transaction_id=attempt.attempt_id,
+            insertion_serial=1,
+            created=reservation.logical_version.handle,
+            returned_serial=1,
+        )
+
+    assert index.resolve(original, transaction_id=attempt.attempt_id).serial == 2
+    assert index.plan_creation_receipts == ()
+
+    receipt = index.bind_reserved_plan_block(
+        attempt,
+        plan_ref,
+        insertion_serial=1,
+        returned_serial=1,
+    )
+    assert receipt.block.serial == 1
+    assert index.resolve(original, transaction_id=attempt.attempt_id).serial == 3
+    assert index.plan_creation_receipts == (receipt,)
+
+
+def test_plan_block_replay_allocates_new_attempt_local_realization() -> None:
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="session-a",
+        generation=2,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    plan_ref = PlanBlockRef("plan-a", "same-plan-block")
+    first_attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="attempt-abort",
+    )
+    index.begin_transaction(first_attempt, 0)
+    first = index.reserve_plan_block(first_attempt, plan_ref)
+    index.abort_proxy_transaction(first_attempt.attempt_id)
+
+    assert index.resolve(first.logical_version.handle) is None
+
+    second_attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="attempt-replay",
+    )
+    index.begin_transaction(second_attempt, 0)
+    second = index.reserve_plan_block(second_attempt, plan_ref)
+
+    assert second.logical_version.handle is not first.logical_version.handle
+    assert second.logical_version.version_id != first.logical_version.version_id
+
+
+def test_serial_space_imports_are_observed_not_created() -> None:
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=3,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    index.ensure_serial_space(1)
+
+    observed = index.handle_for_serial(0)
+    assert observed is not None
+    assert observed.provenance is BlockHandleProvenance.OBSERVED_EPHEMERAL
+    assert not hasattr(BlockHandleProvenance, "SYNTHETIC")
+    assert not hasattr(MbaBlockHandle, "synthetic")
+    assert not hasattr(index, "create_synthetic_handle")
 
 
 def test_identity_index_has_no_parallel_stale_token_authority() -> None:
