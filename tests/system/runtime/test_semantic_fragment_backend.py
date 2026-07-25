@@ -1055,6 +1055,56 @@ class _PreparedDirectNativeBodyMaterializer:
         )
 
 
+class _CallsBuiltImportedNativeBodyMaterializer:
+    def __init__(self, *, stale_target_serial: int) -> None:
+        self.stale_target_serial = int(stale_target_serial)
+
+    def prepare_native_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> object:
+        return (plan.plan_id, native_body.body_id)
+
+    def stage_native_body(
+        self,
+        *,
+        context,
+        native_body: FragmentNativeBody,
+        preparation: object,
+    ) -> None:
+        assert preparation == (context.plan.plan_id, native_body.body_id)
+        assert native_body.block_ids == ("imported-call",)
+        block = context.stage_block("imported-call")
+
+        analyzed_call = _Instruction(ida_hexrays.m_icall, 0x40AE60)
+        analyzed_call.d.t = int(ida_hexrays.mop_f)
+        analyzed_call.d.f = object()
+        call_owner = _Instruction(ida_hexrays.m_mov, 0x40AE60)
+        call_owner.l.create_from_insn(analyzed_call)
+        context.populate_block(
+            block_id="imported-call",
+            instructions=(
+                (0x40AE5D, _Instruction(ida_hexrays.m_ldx, 0x40AE5D)),
+                (0x40AE60, call_owner),
+                (0x40AE69, _Instruction(ida_hexrays.m_mov, 0x40AE69)),
+                (0x40AE6F, _Instruction(ida_hexrays.m_mov, 0x40AE6F)),
+                (
+                    0x40AE7A,
+                    _Instruction(
+                        ida_hexrays.m_goto,
+                        0x40AE7A,
+                        self.stale_target_serial,
+                    ),
+                ),
+            ),
+            block_flags=int(ida_hexrays.MBL_GOTO),
+        )
+        block.type = int(ida_hexrays.BLT_1WAY)
+        block.flags |= int(ida_hexrays.MBL_GOTO)
+
+
 class _TerminalEffectNativeBodyMaterializer:
     def __init__(self, *, conflicting_carrier: bool = False) -> None:
         self.conflicting_carrier = bool(conflicting_carrier)
@@ -1524,6 +1574,80 @@ def _plan_with_imported_call(
             ),
             FragmentOperation(
                 operation_id="imported-call-continuation",
+                source_block_id=imported.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                        target_block_id="target",
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id="native-body",
+                block_ids=(imported.block_id,),
+                entry_block_ids=(imported.block_id,),
+                terminal_block_ids=(),
+                native_ranges=(native_range,),
+                proof_ids=("proof:native-body",),
+            ),
+        ),
+    )
+
+
+def _plan_with_calls_built_imported_call(
+    gateway,
+    *,
+    entry: int,
+    original: int,
+    target: int,
+    dispatcher: int,
+) -> FragmentPlan:
+    plan = _plan(
+        gateway,
+        entry=entry,
+        original=original,
+        target=target,
+        dispatcher=dispatcher,
+    )
+    native_range = NativeEaInterval(0x40AE3E, 0x40AE8B)
+    imported_identity = StableBlockIdentity.from_intervals(
+        (native_range,),
+        native_key=gateway.native_key,
+        exact_instruction_eas=(
+            0x40AE5D,
+            0x40AE60,
+            0x40AE69,
+            0x40AE6F,
+            0x40AE7A,
+        ),
+    )
+    imported = FragmentBlock(
+        block_id="imported-call",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x40AE3E,
+        stable_identity=imported_identity,
+        native_body_id="native-body",
+    )
+    direct_route = plan.operations[0]
+    return replace(
+        plan,
+        plan_id="runtime-calls-built-imported-native-call",
+        blocks=plan.blocks + (imported,),
+        operations=(
+            replace(
+                direct_route,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=imported.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="native-body-edge@0x40AE3E",
                 source_block_id=imported.block_id,
                 edges=(
                     FragmentEdge(
@@ -3692,6 +3816,75 @@ def test_cached_preopt_call_materializes_with_gateway_owned_fallthrough(
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="runtime cached PREOPT call cleanup")
+
+
+def test_calls_built_imported_native_splits_owned_continuation_after_call(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x40A5B2, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x40A5C8, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x40AE63, block_type=ida_hexrays.BLT_0WAY)
+    target.end = 0x40AE7A
+    dispatcher = _Block(3, start=0x40AE8B, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x40AE90, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    for instruction in (
+        _Instruction(ida_hexrays.m_mov, 0x40AE69),
+        _Instruction(ida_hexrays.m_mov, 0x40AE6F),
+    ):
+        target.insert_into_block(instruction, target.tail)
+
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    plan = _plan_with_calls_built_imported_call(
+        gateway,
+        entry=entry.serial,
+        original=original.serial,
+        target=target.serial,
+        dispatcher=dispatcher.serial,
+    )
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=(
+            _CallsBuiltImportedNativeBodyMaterializer(
+                stale_target_serial=dispatcher.serial,
+            )
+        ),
+    )
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    state = modifier._semantic_fragment_state
+    assert state is not None
+    imported_binding = state.binding("imported-call")
+    assert imported_binding.version.predecessor_version_id is None
+    assert (
+        imported_binding.version.handle.provenance
+        is BlockHandleProvenance.IMPORTED_NATIVE
+    )
+    imported = sfb._live_block_for_binding(modifier, imported_binding)
+    helper = projection.block("fallthrough-helper:native-body-edge@0x40AE3E")
+    assert tuple(
+        (int(mba.map_fict_ea(instruction.ea)), int(instruction.opcode))
+        for instruction in modifier._block_instructions(imported)
+    ) == (
+        (0x40AE5D, int(ida_hexrays.m_ldx)),
+        (0x40AE60, int(ida_hexrays.m_mov)),
+    )
+    assert tuple(int(value) for value in imported.succset) == (
+        helper.physical_position,
+    )
+    assert helper.successors == ("target",)
+    assert not int(imported.flags) & int(ida_hexrays.MBL_GOTO)
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime calls-built imported native cleanup")
 
 
 def test_calls_built_replacement_splits_owned_continuation_after_call(

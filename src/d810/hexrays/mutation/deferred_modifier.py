@@ -3314,7 +3314,7 @@ class DeferredGraphModifier:
         source: object,
         target_binding: object,
     ) -> bool:
-        """Split one CALLS-built staged clone at its exact analyzed call."""
+        """Split one CALLS-built staged block at its exact analyzed call."""
         gateway = self._mutation_gateway
         proxy = (
             None
@@ -3330,7 +3330,11 @@ class DeferredGraphModifier:
         if (
             source_version is None
             or source_version.handle != source_binding.handle
-            or source_version.predecessor_version_id is None
+            or (
+                source_version.predecessor_version_id is None
+                and source_version.handle.provenance
+                is not BlockHandleProvenance.IMPORTED_NATIVE
+            )
             or int(source.nsucc()) != 0
             or int(getattr(source, "type", -1)) != int(ida_hexrays.BLT_1WAY)
             or tail is None
