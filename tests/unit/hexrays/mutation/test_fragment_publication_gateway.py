@@ -169,6 +169,8 @@ def _plan_with_reference_route() -> FragmentPlan:
         source_block_id="replacement",
         direct_transfer_rewrite=FragmentDirectTransferRewrite(
             route_proof_id="state_assignment@0x401004:0x1",
+            owner_identity=source_identity,
+            owner_anchor_ea=0x401000,
             rewrite_anchor_ea=0x401004,
             proof_corridor_instruction_eas=(0x401000, 0x401004),
             superseded_instruction_eas=(0x401004,),

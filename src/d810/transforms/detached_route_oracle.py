@@ -214,17 +214,25 @@ def _candidate_observation(
 ) -> SemanticRouteObservation:
     try:
         source = projection.block(operation.source_block_id)
-        source_plan = plan.block(operation.source_block_id)
     except KeyError:
         return _candidate_failure(
             route,
             f"route {route.route_id} has no staged source block",
         )
-    identity = source_plan.stable_identity
-    if identity is None or not identity.native_ranges.contains(route.owner_ea):
+    rewrite = operation.direct_transfer_rewrite
+    if rewrite is None:
         return _candidate_failure(
             route,
-            f"route {route.route_id} staged source does not own 0x{route.owner_ea:X}",
+            f"route {route.route_id} has no staged direct rewrite",
+        )
+    owner_identity = rewrite.owner_identity
+    if (
+        rewrite.owner_anchor_ea != route.owner_ea
+        or not owner_identity.native_ranges.contains(route.owner_ea)
+    ):
+        return _candidate_failure(
+            route,
+            f"route {route.route_id} staged rewrite does not own 0x{route.owner_ea:X}",
         )
     if (
         source.terminator_ea != route.rewrite_anchor_ea
@@ -253,7 +261,8 @@ def _candidate_observation(
         else None
     )
     owner_start_ea = min(
-        int(interval.start_ea) for interval in identity.native_ranges.intervals
+        int(interval.start_ea)
+        for interval in owner_identity.native_ranges.intervals
     )
     return SemanticRouteObservation(
         route_id=route.route_id,
