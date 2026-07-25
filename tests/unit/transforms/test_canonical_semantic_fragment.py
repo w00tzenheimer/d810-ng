@@ -1069,12 +1069,18 @@ def test_nested_imported_state_assignments_reach_fixpoint() -> None:
     )
 
 
-def test_published_boundary_root_closes_one_nested_semantic_route() -> None:
+def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
     graph, normalization_plan, root_evidence = _live_source_detached_target_case()
     graph = FlowGraph(
         blocks={
             10: _block(10, 0x1000, succs=(90,), preds=()),
-            30: _block(30, 0x1200, succs=(90,), preds=(90,)),
+            30: _block(
+                30,
+                0x1200,
+                succs=(90,),
+                preds=(90,),
+                insn_eas=(0x1200, 0x1210),
+            ),
             90: _block(90, 0x1400, succs=(30,), preds=(10, 30)),
         },
         entry_serial=10,

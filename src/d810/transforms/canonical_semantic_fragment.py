@@ -643,6 +643,7 @@ def _detached_target_component(
     normalization_authority: NormalizationWorkItemAuthority,
     allow_unresolved_published_boundaries: bool,
     prohibited_dispatcher_serials: frozenset[int],
+    replaced_current_owner_serials: frozenset[int],
 ) -> tuple[
     tuple[FragmentBlock, ...],
     tuple[FragmentOperation, ...],
@@ -735,6 +736,33 @@ def _detached_target_component(
                             "imported body identity has mixed prohibited and "
                             "published current owners",
                             reason_code=("imported_boundary_current_owner_mixed"),
+                            anchor_ea=int(edge_target.semantic_anchor_ea),
+                            payload={
+                                "boundary_block_id": edge_target.block_id,
+                                "current_owner_labels": tuple(
+                                    f"blk{serial}@0x{anchor_ea:X}"
+                                    for serial, anchor_ea, _identity in current_owners
+                                ),
+                            },
+                        )
+                    pending.append(edge_target.block_id)
+                    continue
+                replaced_current_owners = tuple(
+                    owner
+                    for owner in current_owners
+                    if int(owner[0]) in replaced_current_owner_serials
+                )
+                if replaced_current_owners:
+                    retained_current_owners = tuple(
+                        owner
+                        for owner in current_owners
+                        if int(owner[0]) not in replaced_current_owner_serials
+                    )
+                    if retained_current_owners:
+                        raise CanonicalSemanticFragmentRejected(
+                            "imported body identity has mixed replaced and "
+                            "retained current owners",
+                            reason_code=("imported_boundary_replaced_owner_mixed"),
                             anchor_ea=int(edge_target.semantic_anchor_ea),
                             payload={
                                 "boundary_block_id": edge_target.block_id,
@@ -1467,6 +1495,7 @@ def _resolved_detached_target_component(
     current_identity_by_serial: Mapping[int, StableBlockIdentity],
     normalization_authority: NormalizationWorkItemAuthority,
     prohibited_dispatcher_serials: frozenset[int],
+    replaced_current_owner_serials: frozenset[int],
 ) -> tuple[
     tuple[FragmentBlock, ...],
     tuple[FragmentOperation, ...],
@@ -1501,6 +1530,7 @@ def _resolved_detached_target_component(
                 normalization_authority=normalization_authority,
                 allow_unresolved_published_boundaries=True,
                 prohibited_dispatcher_serials=prohibited_dispatcher_serials,
+                replaced_current_owner_serials=replaced_current_owner_serials,
             )
         )
         (
@@ -1592,6 +1622,7 @@ def _resolved_detached_target_component(
             normalization_authority=normalization_authority,
             allow_unresolved_published_boundaries=False,
             prohibited_dispatcher_serials=prohibited_dispatcher_serials,
+            replaced_current_owner_serials=replaced_current_owner_serials,
         )
     except CanonicalSemanticFragmentRejected as exc:
         if not nested_state_assignment_decisions:
@@ -1799,6 +1830,7 @@ def compose_canonical_semantic_fragment_plan(
         current_identity_by_serial=current_identity_by_serial,
         normalization_authority=normalization_authority,
         prohibited_dispatcher_serials=prohibited_serial_set,
+        replaced_current_owner_serials=frozenset(),
     )
     if imported_consumer is not None:
         predicate = imported_consumer.predicate
@@ -2349,6 +2381,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
         current_identity_by_serial=current_identity_by_serial,
         normalization_authority=normalization_authority,
         prohibited_dispatcher_serials=prohibited_serials,
+        replaced_current_owner_serials=frozenset({int(root_serial)}),
     )
     if not nested_state_assignment_proofs:
         raise CanonicalSemanticFragmentRejected(
