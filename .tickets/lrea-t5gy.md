@@ -2914,3 +2914,56 @@ anchor and include it in the proof corridor. Prove the `0x40C62F` /
 `0x40C634` / `0x40C63A` transaction in a narrow resolver test before adding
 fixpoint projection. Do not rewrite `0x40C649`, add a boundary exception, or
 iterate the current incorrect proof.
+
+**2026-07-25T03:57:49Z**
+
+The byte-level parity check corrected the prior capture-order hypothesis:
+native `0x40C63A` is originally `mov eax, edx`, not a direct branch. The
+reference indirect-jump phase first normalizes the `0x40C649` register jump
+into a conditional rooted at `0x40C63A`; its later flow-route phase then
+replaces that normalized root with the direct state target `0x40B9A6`.
+
+Commit `12cfb2083` projects that already-proved intermediate normalization
+shape without changing native bytes. It binds complete two-target patch plans
+at their normalized predicate root and preserves the exact state corridor.
+Commit `a3fb880f8` separately fixes the immediate native scanner so a
+register-indirect jump with no `direct_target_ea` is a hard corridor boundary,
+not a fabricated direct delivery that suppresses the plan-derived proof. The
+focused resolver/canonical suite is 269/269 green; Ruff, ast-grep, graphify,
+and all 14 import contracts pass.
+
+The first mandatory canary after `12cfb2083` returned normally in 36.57
+seconds with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-normalized-state-root-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-normalized-state-root-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+It exposed the scanner shadowing bug: generation 1 still published
+`0x40C62F -> 0x40C649 -> 0x40B9A6` as `direct_target`, and snapshot 11 still
+failed at `0x40A607`.
+
+The second mandatory canary after `a3fb880f8` returned normally in 33.77
+seconds with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-normalized-state-root-v2.txt`; primary DB:
+`.tmp/rhad-a560-v33-normalized-state-root-v2/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-normalized-state-root-v2/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The C3 fact is now exact in the DB: `source_write=0x40C62F`,
+`delivery=0x40C63A`, `target=0x40B9A6`, `delivery_kind=direct_target`, and
+corridor `[0x40C62F,0x40C634,0x40C63A]`. The highest completed level remains
+C5 through generation-2 receipt event 287. The first failed C6 obligation
+remains snapshot 11 / `MMAT_CALLS` at `0x40A607`, but the per-proof payload
+now makes the cause deterministic: projection entry 62 applies
+`state_assignment@0x40C2E9:0x872BFF1` and makes `0x40C62F` reachable, while
+entry 72 skips the corrected `state_assignment@0x40C63A:0xEC71CA67` as
+`source_not_in_component` because projection runs only once over the original
+component.
+
+Continue with a bounded nested-route projection fixpoint. Recompute component
+membership after each deterministic projection round, require monotonic
+progress, reject conflicting or overlapping sibling proofs atomically, and
+retain the existing strict final boundary validation. Prove the two-hop
+`0x40C2E9 -> 0x40C62F -> 0x40C63A -> 0x40B9A6` vertical in the canonical
+transform before another A560 diagnostic canary. Do not broaden to 91-route
+publication, relax the `0x40A607` boundary, or add another semantic fact.
