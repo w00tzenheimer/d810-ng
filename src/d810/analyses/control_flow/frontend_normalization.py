@@ -185,9 +185,7 @@ class NativeIndirectTransferProof:
             _native_ea(ea, "relocated native instruction")
             for ea in self.relocated_instruction_eas
         )
-        if relocated_instruction_eas != tuple(
-            sorted(set(relocated_instruction_eas))
-        ):
+        if relocated_instruction_eas != tuple(sorted(set(relocated_instruction_eas))):
             raise FrontendNormalizationEvidenceRejected(
                 "relocated native instructions require ordered unique anchors"
             )

@@ -878,9 +878,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
         nested_operation.direct_transfer_rewrite.source_computed_branch_normalization.relocated_instruction_eas
         == (0x121A, 0x121C)
     )
-    assert (
-        nested_operation.direct_transfer_rewrite.source_predicate_anchor_ea == 0x1218
-    )
+    assert nested_operation.direct_transfer_rewrite.source_predicate_anchor_ea == 0x1218
     assert tuple(
         (
             edge.role,

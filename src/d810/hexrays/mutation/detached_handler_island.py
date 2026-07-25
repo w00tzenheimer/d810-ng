@@ -1063,9 +1063,7 @@ def _template_block_anchors_split_normalization(
     source_proof: _ComputedBranchSourceProof | None,
 ) -> bool:
     """Admit one explicit normalization whose native block split in PREOPT."""
-    if (
-        source_proof is None or not block.instructions
-    ):
+    if source_proof is None or not block.instructions:
         return False
     normalization = source_proof.normalization
     predicate_anchor_ea = int(source_proof.predicate_anchor_ea)
@@ -1479,9 +1477,10 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         envelope = normalization.conditional_select_envelope
         relocated_eas = tuple(int(ea) for ea in normalization.relocated_instruction_eas)
-        raw_tail_size = (
-            int(normalization.unresolved_transfer_ea)
-            - (relocated_eas[0] if relocated_eas else int(normalization.unresolved_transfer_ea))
+        raw_tail_size = int(normalization.unresolved_transfer_ea) - (
+            relocated_eas[0]
+            if relocated_eas
+            else int(normalization.unresolved_transfer_ea)
         )
         relocated_size = int(predicate_anchor_ea) - int(
             normalization.normalization_start_ea
@@ -1575,9 +1574,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 and int(normalization.unresolved_transfer_ea)
                 < int(delivery_region.end_ea)
                 and all(
-                    int(delivery_region.start_ea)
-                    <= ea
-                    < int(delivery_region.end_ea)
+                    int(delivery_region.start_ea) <= ea < int(delivery_region.end_ea)
                     for ea in relocated_eas
                 ),
             ),
@@ -1599,9 +1596,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 payload={
                     "operation_id": operation.operation_id,
                     "failed_obligations": failed_obligations,
-                    "relocated_instruction_eas": tuple(
-                        hex(ea) for ea in relocated_eas
-                    ),
+                    "relocated_instruction_eas": tuple(hex(ea) for ea in relocated_eas),
                 },
             )
         return _DirectTransferRewritePlan(

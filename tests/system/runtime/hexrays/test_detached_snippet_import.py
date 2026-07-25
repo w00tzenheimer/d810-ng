@@ -3093,12 +3093,12 @@ def test_preopt_native_body_lowers_split_normalized_direct_route_with_live_tail(
         join_ea,
         (
             _Instruction(ida_hexrays.m_mov, join_ea),
-                _Instruction(ida_hexrays.m_add, 0x40AE0A),
-                *tuple(
-                    _Instruction(ida_hexrays.m_mov, ea)
-                    for ea in relocated_instruction_eas
-                    if ea != missing_relocated_ea
-                ),
+            _Instruction(ida_hexrays.m_add, 0x40AE0A),
+            *tuple(
+                _Instruction(ida_hexrays.m_mov, ea)
+                for ea in relocated_instruction_eas
+                if ea != missing_relocated_ea
+            ),
             _Instruction(
                 ida_hexrays.m_ijmp,
                 unresolved_transfer_ea,
@@ -3207,9 +3207,7 @@ def test_preopt_native_body_lowers_split_normalized_direct_route_with_live_tail(
         block_ids=(imported.block_id,),
         entry_block_ids=(imported.block_id,),
         terminal_block_ids=(),
-        native_ranges=(
-            NativeEaInterval(source_ea, unresolved_transfer_ea + 2),
-        ),
+        native_ranges=(NativeEaInterval(source_ea, unresolved_transfer_ea + 2),),
         proof_ids=(operation_id,),
     )
     context = _NativeBodyStagingContext(

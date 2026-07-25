@@ -766,9 +766,7 @@ def test_live_tail_bytes_carries_exact_native_instruction_inventory(
     }
     expected = bytes(range(jmp_ea - split_ea))
     idaapi = ModuleType("idaapi")
-    idaapi.print_insn_mnem = lambda ea: (
-        "mov" if int(ea) in instruction_sizes else ""
-    )
+    idaapi.print_insn_mnem = lambda ea: "mov" if int(ea) in instruction_sizes else ""
     monkeypatch.setitem(sys.modules, "idaapi", idaapi)
     monkeypatch.setattr(computed_goto_resolver, "idaapi", idaapi)
 
