@@ -804,9 +804,10 @@ class TestModificationProjection:
         projected = project_post_state(cfg, patch_plan)
         dtl_step = patch_plan.steps[0]
 
-        assert dict(dtl_step.per_site_clone_block_ids)[
-            dtl_step.sites[0].anchor_serial
-        ] == ()
+        assert (
+            dict(dtl_step.per_site_clone_block_ids)[dtl_step.sites[0].anchor_serial]
+            == ()
+        )
         assert projected.blocks[27].succs == (219,)
         assert len(projected.blocks) == len(cfg.blocks)
         assert (
