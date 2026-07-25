@@ -115,9 +115,7 @@ class SessionFrontendNormalizationPlanAuthority:
             or work_item_scope.work_item_id != work_item_plan.plan_id
             or authority.work_item_id != work_item_plan.plan_id
             or authority.published_operation_ids
-            != tuple(
-                operation.operation_id for operation in work_item_plan.operations
-            )
+            != tuple(operation.operation_id for operation in work_item_plan.operations)
             or authority.selected_obligation_ids
             != work_item_scope.selected_obligation_ids
             or authority.remaining_obligation_ids
@@ -226,7 +224,10 @@ class SessionFrontendNormalizationPlanAuthority:
             )
             work_item_key = (generation, plan.plan_id, work_item_plan.plan_id)
             previous_work_item = self._receipted_prepared_work_items.get(work_item_key)
-            if previous_work_item is not None and previous_work_item != prepared_work_item:
+            if (
+                previous_work_item is not None
+                and previous_work_item != prepared_work_item
+            ):
                 raise FrontendNormalizationPublicationError(
                     "prepared normalization work item changed after its receipt"
                 )

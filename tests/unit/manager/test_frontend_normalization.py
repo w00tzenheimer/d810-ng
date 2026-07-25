@@ -414,8 +414,7 @@ def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance
     assert result.microcode_modified is True
     assert result.published_generation is None
     assert (
-        result.published_work_item_id
-        == "frontend-normalization:0x1000:g7:root@0x1100"
+        result.published_work_item_id == "frontend-normalization:0x1000:g7:root@0x1100"
     )
     assert result.remaining_obligation_count == 1
     assert state.normalization_published_postvalidated_generation is None
@@ -425,10 +424,7 @@ def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance
     retained_plan, authority = retained
     assert authority.source_plan_id == retained_plan.plan_id
     assert authority.publication_revision == 1
-    assert (
-        authority.work_item_id
-        == "frontend-normalization:0x1000:g7:root@0x1100"
-    )
+    assert authority.work_item_id == "frontend-normalization:0x1000:g7:root@0x1100"
     assert authority.published_operation_ids == ("direct@0x1100",)
     assert authority.selected_obligation_ids == ("direct@0x1100",)
     assert authority.remaining_obligation_ids == ("direct@0x1400",)
