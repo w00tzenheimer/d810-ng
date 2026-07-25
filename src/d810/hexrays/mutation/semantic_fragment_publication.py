@@ -128,8 +128,7 @@ class PreparedSemanticCfgTransaction(PreparedCfgTransaction):
         if (
             self.fragment.authority.attempt_id is not self.attempt_id
             or self.fragment.authority.plan_id != self.plan.plan_id
-            or self.fragment.authority.cfg_projection.plan_id
-            != self.projection.plan_id
+            or self.fragment.authority.cfg_projection.plan_id != self.projection.plan_id
             or self.fragment.authority.cfg_projection.snapshot_id
             != self.projection.snapshot_id
             or self.fragment.authority.cfg_projection.graph != self.projection.graph
@@ -233,9 +232,7 @@ class SemanticFragmentTransactionParticipant:
                 atomic_group_id=plan.atomic_group_id,
                 outcomes=(
                     FragmentValidationOutcome(
-                        postcondition=(
-                            FragmentValidationPostcondition.BLOCK_TOPOLOGY
-                        ),
+                        postcondition=(FragmentValidationPostcondition.BLOCK_TOPOLOGY),
                         subject_id="cfg-projection",
                         passed=False,
                         reason=f"projected CFG contract failed: {error.summary}",

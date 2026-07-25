@@ -469,9 +469,7 @@ class _FragmentBackend:
         )
         target_successors = ("original",) if self.invalid_preprojection else ()
         original_predecessors = (
-            ("entry", "target")
-            if self.invalid_preprojection
-            else ("entry",)
+            ("entry", "target") if self.invalid_preprojection else ("entry",)
         )
         projection_input = FragmentProjectionInput(
             snapshot_id="snapshot:gateway-fragment",
@@ -500,21 +498,13 @@ class _FragmentBackend:
                 ),
                 FragmentProjectionBlockInput(
                     "target",
-                    (
-                        BlockKind.ONE_WAY
-                        if target_successors
-                        else BlockKind.ZERO_WAY
-                    ),
+                    (BlockKind.ONE_WAY if target_successors else BlockKind.ZERO_WAY),
                     target_successors,
                     (),
                     2,
                     None,
                     None,
-                    (
-                        InsnKind.GOTO
-                        if target_successors
-                        else InsnKind.UNKNOWN
-                    ),
+                    (InsnKind.GOTO if target_successors else InsnKind.UNKNOWN),
                 ),
                 FragmentProjectionBlockInput(
                     "dispatcher",

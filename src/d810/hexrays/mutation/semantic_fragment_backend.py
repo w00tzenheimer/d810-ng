@@ -2574,11 +2574,7 @@ def _project_fragment(
                     transaction_id=transaction_id,
                 )
             )
-            live = (
-                None
-                if bound is None
-                else modifier.mba.get_mblock(int(bound.serial))
-            )
+            live = None if bound is None else modifier.mba.get_mblock(int(bound.serial))
             if live is not None and bound is not None and version is not None:
                 matches.append((live, proxy, version))
         if len(matches) != 1:
@@ -3222,9 +3218,7 @@ def snapshot_semantic_fragment_inputs(
         writes = frozenset()
         if plan.flag_corridors:
             try:
-                writes = frozenset(
-                    int(ea) for ea in condition_code_write_eas(live)
-                )
+                writes = frozenset(int(ea) for ea in condition_code_write_eas(live))
             except ConditionCodeQueryUnavailable as exc:
                 raise FragmentProjectionFailure(
                     FragmentValidationPostcondition.FLAG_CORRIDOR_INTEGRITY,
@@ -3249,8 +3243,7 @@ def snapshot_semantic_fragment_inputs(
                     raise FragmentProjectionFailure(
                         FragmentValidationPostcondition.GRAPH_CLOSURE,
                         block_id,
-                        "zero-way successor bookkeeping is malformed for "
-                        f"{block_id!r}",
+                        f"zero-way successor bookkeeping is malformed for {block_id!r}",
                     )
         else:
             successors = tuple(ids_by_serial[int(serial)] for serial in raw_successors)
@@ -3283,10 +3276,13 @@ def snapshot_semantic_fragment_inputs(
         str,
         tuple[tuple[int, object], ...],
     ] = {}
-    next_position = max(
-        (block.physical_position for block in blocks),
-        default=-1,
-    ) + 1
+    next_position = (
+        max(
+            (block.physical_position for block in blocks),
+            default=-1,
+        )
+        + 1
+    )
     for planned in plan.blocks:
         if planned.materialization is not FragmentBlockMaterialization.IMPORT_NATIVE:
             continue
@@ -3318,9 +3314,7 @@ def snapshot_semantic_fragment_inputs(
             FragmentProjectionBlockInput(
                 block_id=planned.block_id,
                 kind=fact.kind,
-                successors=tuple(
-                    edge.target_block_id for edge in fact.successors
-                ),
+                successors=tuple(edge.target_block_id for edge in fact.successors),
                 predecessors=fact.predecessor_block_ids,
                 physical_position=next_position,
                 adjacent_fallthrough_target_id=None,
@@ -3537,9 +3531,7 @@ def snapshot_semantic_fragment_inputs(
             terminal_diagnostics.append(
                 ProjectedTerminalEffectDiagnostic(
                     effect_id=terminal.return_id,
-                    reason=(
-                        "prepared terminal return opcode or placement is invalid"
-                    ),
+                    reason=("prepared terminal return opcode or placement is invalid"),
                 )
             )
 
@@ -4062,8 +4054,7 @@ def stage_semantic_fragment(
         or authority.attempt_id.generation != gateway.generation
         or authority.session_id != gateway.session_id
         or authority.generation != gateway.generation
-        or authority.snapshot_id
-        != authority.snapshot.projection_input.snapshot_id
+        or authority.snapshot_id != authority.snapshot.projection_input.snapshot_id
         or authority.cfg_projection.plan_id != plan.plan_id
         or authority.cfg_projection.snapshot_id != authority.snapshot_id
         or gateway._active_fragment_plan is not plan
@@ -4104,9 +4095,7 @@ def stage_semantic_fragment(
             "semantic fragment realization authority projection was forged"
         )
 
-    fact_by_body_id = {
-        fact.body_id: fact for fact in authority.snapshot.native_bodies
-    }
+    fact_by_body_id = {fact.body_id: fact for fact in authority.snapshot.native_bodies}
     try:
         preparations = tuple(
             (
@@ -4160,8 +4149,7 @@ def stage_semantic_fragment(
                 if (
                     fact.native_ea != int(native_ea)
                     or fact.opcode != int(instruction.opcode)
-                    or fact.operand_shape
-                    != sdk_instruction_operand_shape(instruction)
+                    or fact.operand_shape != sdk_instruction_operand_shape(instruction)
                     or fact.writes_condition_codes != writes_flags
                 ):
                     raise SemanticFragmentBackendRejected(

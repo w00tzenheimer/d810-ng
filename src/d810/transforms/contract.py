@@ -198,9 +198,7 @@ class CfgContract:
         focus = (
             None
             if scope == "full"
-            or any(
-                isinstance(ref, PlanBlockRef) for ref in projection.focus_refs
-            )
+            or any(isinstance(ref, PlanBlockRef) for ref in projection.focus_refs)
             else None
         )
         return self._check_projected(
