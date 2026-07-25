@@ -992,10 +992,7 @@ def _detached_target_component(
                 ),
             )
         imported_identity_by_source_id[source_id] = refined_identity
-        if (
-            source_id not in selected_reimported_ids
-            and refined_identity == identity
-        ):
+        if source_id not in selected_reimported_ids and refined_identity == identity:
             continue
         imported_id = (
             f"native[{stable_block_identity_token(refined_identity)}]:imported"
@@ -1894,9 +1891,7 @@ def _resolved_detached_target_component(
             allow_unresolved_published_boundaries=False,
             prohibited_dispatcher_serials=prohibited_dispatcher_serials,
             replaced_current_owner_serials=replaced_current_owner_serials,
-            required_staged_destination_ids=frozenset(
-                required_staged_destination_ids
-            ),
+            required_staged_destination_ids=frozenset(required_staged_destination_ids),
             required_exact_instruction_eas_by_block_id={
                 block_id: frozenset(exact_instruction_eas)
                 for block_id, exact_instruction_eas in (

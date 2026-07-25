@@ -1507,9 +1507,7 @@ def test_published_boundary_projects_nested_terminal_route_atomically(
     terminal = plan.block(plan.terminal_returns[0].block_id)
     assert terminal.role is FragmentBlockRole.IMPORTED
     assert terminal.stable_identity is not None
-    assert terminal.stable_identity.exact_instruction_eas == frozenset(
-        {0x1320, 0x1328}
-    )
+    assert terminal.stable_identity.exact_instruction_eas == frozenset({0x1320, 0x1328})
     assert terminal.block_id == (
         f"native[{stable_block_identity_token(terminal.stable_identity)}]:imported"
     )
