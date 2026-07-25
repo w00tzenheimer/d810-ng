@@ -4689,3 +4689,45 @@ requires predecessor-to-root reachability through that exact port, includes
 the retirement obligation in the outcome, and leaves ordinary disconnected
 roots rejected. Do not exempt arbitrary unreachable roots or erase the
 obligation.
+
+**2026-07-25T14:50:40Z**
+
+Commits `70f4da05a` and `30ad111e7` make the typed temporary boundary port real
+validation authority while keeping Ruff formatting separate. A port satisfies
+root reachability only through its exact predecessor-to-root edge or one
+registered physical root-fallthrough helper; arbitrary transitive paths remain
+invalid. Published connectivity, original supersession, and dispatcher absence
+are checked from function entry plus those exact temporary authorities, and the
+positive diagnostic outcome retains the stable retirement obligation. The
+affected validation, plan, oracle, gateway, canonical, resolver, and runtime
+suite is 157/157 green; changed-file Ruff, repository-wide Ruff format,
+ast-grep, all 14 import contracts, diff checks, `graphify update .`, and
+pre-commit gates pass.
+
+The mandatory full cache-disabled A560 canary completed normally in 23.02
+seconds without a process crash, numeric `INTERR`, or verifier failure. Log:
+`.tmp/rhad-a560-v33-port-reach-v9.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-port-reach-v9/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-port-reach-v9/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects one false `while ( 1 )`, so this is not A560
+acceptance.
+
+The DB proves the root-reachability failure is cleared. After the expected
+CALLS companion request and redo, the bounded 31-mutation transaction stages
+29 operations and passes all 84/84 prepublication validation outcomes. It then
+records all six pinned route comparisons before rolling back cleanly. Every
+comparison has the same and only divergence:
+`reachable_from_entry oracle=True candidate=False`; transfer kind, rewrite
+anchor, owner, target, and staged route shape otherwise match. The first
+divergence is the route anchored at `0x40AA4F`; the other five anchors are
+`0x40AE7A`, `0x40AB64`, `0x40B52E`, `0x40C341`, and `0x40C7F6`. No root
+publication is attempted.
+
+Main-path A560 therefore remains at C3, with a narrower first C4 obligation:
+detached oracle reachability must use the same exact validated publication
+authority as fragment validation. Normalize literal function entry plus only
+validated typed-port predecessors when computing candidate route reachability,
+and keep the port plus retirement obligation in the plan/DB as the explanation
+for that normalization. Do not mark every disconnected staged block reachable,
+weaken route-shape comparison, or skip the six-route oracle.
