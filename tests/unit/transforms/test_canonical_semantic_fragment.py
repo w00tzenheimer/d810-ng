@@ -1155,6 +1155,114 @@ def test_detached_component_stops_at_unique_current_imported_successor() -> None
     assert successor.stable_identity == current_identity_by_serial[30]
 
 
+def test_detached_component_rejects_current_imported_successor_with_topology() -> None:
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            30: _block(
+                30,
+                0x1250,
+                succs=(),
+                preds=(),
+                insn_eas=(0x1250, 0x1251),
+            ),
+        },
+    )
+    (native_body,) = normalization_plan.native_bodies
+    published_successor = FragmentBlock(
+        block_id="detached-successor",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=_identity(0x1250),
+        native_body_id=native_body.body_id,
+    )
+    terminal = FragmentBlock(
+        block_id="detached-terminal",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1260,
+        stable_identity=_identity(0x1260),
+        native_body_id=native_body.body_id,
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *normalization_plan.blocks,
+            published_successor,
+            terminal,
+        ),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="detached-normalization",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=published_successor.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="successor-normalization",
+                source_block_id=published_successor.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=terminal.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    published_successor.block_id,
+                    terminal.block_id,
+                ),
+                terminal_block_ids=(terminal.block_id,),
+                native_ranges=(
+                    *native_body.native_ranges,
+                    NativeEaInterval(0x1250, 0x1251),
+                    NativeEaInterval(0x1260, 0x1261),
+                ),
+                proof_ids=(*native_body.proof_ids, "successor-normalization"),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        CanonicalSemanticFragmentRejected,
+        match="published imported boundary retains unresolved semantic topology",
+    ) as exc_info:
+        compose_canonical_semantic_fragment_plan(
+            graph,
+            normalization_plan,
+            evidence,
+            available_evidence=evidence,
+            current_identity_by_serial=_current_identity_authority(graph),
+            normalization_authority=_normalization_authority(
+                normalization_plan,
+                evidence,
+            ),
+            prohibited_dispatcher_serials=(90,),
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == ("published_imported_boundary_topology_unresolved")
+    assert rejection.anchor_ea == 0x1250
+    assert rejection.payload == {
+        "boundary_block_id": published_successor.block_id,
+        "current_owner": "blk30@0x1250",
+        "operation_id": "successor-normalization",
+    }
+
+
 def test_detached_component_rejects_ambiguous_current_imported_successor() -> None:
     graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = replace(

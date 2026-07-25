@@ -598,6 +598,24 @@ def _detached_target_component(
                     if edge_target.block_id in proof_owned_reimport_source_ids:
                         pending.append(edge_target.block_id)
                         continue
+                    if edge_target.block_id not in native_body.terminal_block_ids:
+                        unresolved_operation = operation_by_source[edge_target.block_id]
+                        owner_serial, owner_anchor_ea, _identity = current_owners[0]
+                        raise CanonicalSemanticFragmentRejected(
+                            "published imported boundary retains unresolved "
+                            "semantic topology",
+                            reason_code=(
+                                "published_imported_boundary_topology_unresolved"
+                            ),
+                            anchor_ea=int(edge_target.semantic_anchor_ea),
+                            payload={
+                                "boundary_block_id": edge_target.block_id,
+                                "current_owner": (
+                                    f"blk{owner_serial}@0x{owner_anchor_ea:X}"
+                                ),
+                                "operation_id": unresolved_operation.operation_id,
+                            },
+                        )
                     selected_ids.add(edge_target.block_id)
                     published_imported_identity_by_id[edge_target.block_id] = (
                         current_owners[0][2]
