@@ -5291,3 +5291,40 @@ gateway must then prepare and stage that exact plan to establish C4, followed
 by one atomic root publication and committed receipt for C5. Do not broaden to
 the 91-route set, reuse the unrelated 93-block PREOPT work item as authority,
 or call mutation-free projection C4.
+
+**2026-07-25T19:27:08Z — v24 complete-plan composition boundary**
+
+Commit `9b789df70` removes the false prepared-work-item prerequisite from the
+configured direct-route critical path. The detached direct-route plan remains
+the portable per-site preflight, but an accepted preflight now continues into
+canonical `FragmentPlan` composition instead of stopping at a mutation-free
+projection. Commit `02a7db410` contains only the separately requested Ruff
+formatting for that logical slice. The relevant transform and pass gate is
+159/159 green.
+
+The mandatory fresh cache-disabled v24 A560 diagnostic canary completed
+normally in 22.73 seconds with worker return code zero and no reported
+segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-vertical-fragment-v24.txt`; primary DB:
+`.tmp/rhad-a560-v33-vertical-fragment-v24/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+The semantic oracle remains red on one empty `while ( 1 )`.
+
+The diagnostic DB records the detached direct-route attempt as accepted for
+rewrite anchor `0x40BB63`, imported owner `0x40BB51`, corridor owners
+`0x40BB3A` and `0x40BB51`, and target `0x40ACF3`. The subsequent canonical
+composition reaches the composer and rejects with
+`normalization_plan_owner_count_mismatch`: it searches block exact-instruction
+anchors for `0x40BB63` and observes zero owners. The complete normalization
+plan instead records one operation, `native-body-edge@0x40BB51`, whose
+predicate anchor is exactly `0x40BB63`; its imported source block is stably
+anchored at `0x40BB51` and spans `[0x40BB51,0x40BB69)`.
+
+The highest strictly completed level remains C2. The first failed obligation
+remains `C3_complete_vertical_fragment_plan`, but the false preparation
+boundary is gone and the failure is now localized to operation-owned source
+selection. The next falsifiable slice is to select exactly one normalization
+operation by its predicate or superseded-predicate anchor, then separately
+validate that operation's imported source block by stable native range and
+identity before composing the canonical route. This must not add a block-EA
+fallback, weaken stable identity matching, or broaden publication beyond the
+single `0x40BB63` vertical fragment.
