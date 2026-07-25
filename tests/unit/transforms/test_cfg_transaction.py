@@ -59,9 +59,7 @@ def test_plan_local_refs_are_nominal_and_replay_stable() -> None:
     first, _first_digest = creation_intents[0]
     second, _second_digest = creation_intents[1]
 
-    assert {digest for _ref, digest in creation_intents} == {
-        "body-digest:identical"
-    }
+    assert {digest for _ref, digest in creation_intents} == {"body-digest:identical"}
     assert len({ref for ref, _digest in creation_intents}) == 2
     assert first != second
     assert first == PlanBlockRef("plan-1", "block-a")
@@ -196,18 +194,23 @@ def test_projection_rejects_plan_refs_from_another_authority() -> None:
         _projection(focus_refs=(PlanBlockRef("plan-2", "block-a"),))
 
 
-def test_transactions_keep_attempt_projection_and_binding_authority_consistent() -> None:
+def test_transactions_keep_attempt_projection_and_binding_authority_consistent() -> (
+    None
+):
     """Prepared and bound records reject cross-authority reuse."""
     block = PlanBlockRef("plan-1", "block-a")
     projection = _projection(focus_refs=(block,))
     prepared = PreparedCfgTransaction(_attempt(), projection, ("proof-a",))
 
-    assert BoundCfgTransaction(
-        prepared,
-        session_id="session-1",
-        generation=3,
-        bindings=((block, object()),),
-    ).prepared == prepared
+    assert (
+        BoundCfgTransaction(
+            prepared,
+            session_id="session-1",
+            generation=3,
+            bindings=((block, object()),),
+        ).prepared
+        == prepared
+    )
     with pytest.raises(ValueError, match="plan"):
         PreparedCfgTransaction(_attempt(plan_id="plan-2"), projection)
     with pytest.raises(ValueError, match="session"):
@@ -239,12 +242,15 @@ def test_bound_transaction_allows_same_authority_supporting_ref_outside_focus() 
     )
     supporting_ref = PlanBlockRef("plan-1", "supporting-block")
 
-    assert BoundCfgTransaction(
-        prepared,
-        session_id="session-1",
-        generation=3,
-        bindings=((supporting_ref, object()),),
-    ).prepared == prepared
+    assert (
+        BoundCfgTransaction(
+            prepared,
+            session_id="session-1",
+            generation=3,
+            bindings=((supporting_ref, object()),),
+        ).prepared
+        == prepared
+    )
 
 
 def test_bound_transaction_rejects_foreign_reference_authority() -> None:

@@ -96,9 +96,7 @@ def test_project_fragment_derives_replacement_and_root_rewrite_from_snapshots() 
                 if block.block_id == "original"
                 else block.predecessors,
                 physical_position=block.physical_position,
-                adjacent_fallthrough_target_id=(
-                    block.adjacent_fallthrough_target_id
-                ),
+                adjacent_fallthrough_target_id=(block.adjacent_fallthrough_target_id),
                 terminator_ea=(
                     replacement.terminator_ea
                     if block.block_id == "original"
@@ -121,14 +119,12 @@ def test_project_fragment_derives_replacement_and_root_rewrite_from_snapshots() 
                 ),
             )
             for block in staged.blocks
-            if block.block_id in plan_block_ids
-            and block.block_id != "replacement"
+            if block.block_id in plan_block_ids and block.block_id != "replacement"
         ),
         identity_bindings=tuple(
             binding
             for binding in staged.identity_bindings
-            if binding.block_id in plan_block_ids
-            and binding.block_id != "replacement"
+            if binding.block_id in plan_block_ids and binding.block_id != "replacement"
         ),
         data_flow_relations=staged.data_flow_relations,
         value_ranges=staged.value_ranges,

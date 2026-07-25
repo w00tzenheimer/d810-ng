@@ -275,9 +275,7 @@ class CfgGenerationPoisoned(RuntimeError):
         if failure.phase is not CfgTransactionPhase.POISONED_RESTART_REQUIRED:
             raise ValueError("generation poison requires a poisoned failure phase")
         self.failure = failure
-        interr = (
-            "" if failure.interr_code is None else f" INTERR={failure.interr_code}"
-        )
+        interr = "" if failure.interr_code is None else f" INTERR={failure.interr_code}"
         super().__init__(
             f"CFG generation poisoned during {failure.failure_phase or 'mutation'}: "
             f"{failure.reason}{interr}"
