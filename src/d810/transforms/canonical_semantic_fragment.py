@@ -468,6 +468,32 @@ def _as_imported_frontend_operation(
     )
 
 
+def _receipted_semantic_operation_closes_boundary(
+    operation: FragmentOperation,
+    native_body: FragmentNativeBody,
+    normalization_authority: NormalizationWorkItemAuthority,
+) -> bool:
+    """Return whether one prior publication fully owns a semantic boundary."""
+    if (
+        operation.operation_id
+        not in normalization_authority.selected_obligation_ids
+        or operation.operation_id not in native_body.proof_ids
+    ):
+        return False
+    if operation.roles == frozenset({SemanticEdgeRole.DIRECT}):
+        return True
+    return bool(
+        operation.roles
+        == frozenset(
+            {
+                SemanticEdgeRole.CONDITIONAL_TAKEN,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }
+        )
+        and operation.computed_branch_normalization is not None
+    )
+
+
 def _detached_target_component(
     graph: FlowGraph,
     plan: FragmentPlan,
@@ -475,6 +501,7 @@ def _detached_target_component(
     *,
     current_identity_by_serial: Mapping[int, StableBlockIdentity],
     canonical_proof_id: str,
+    normalization_authority: NormalizationWorkItemAuthority,
     prohibited_dispatcher_serials: frozenset[int],
 ) -> tuple[
     tuple[FragmentBlock, ...],
@@ -598,7 +625,14 @@ def _detached_target_component(
                     if edge_target.block_id in proof_owned_reimport_source_ids:
                         pending.append(edge_target.block_id)
                         continue
-                    if edge_target.block_id not in native_body.terminal_block_ids:
+                    if (
+                        edge_target.block_id not in native_body.terminal_block_ids
+                        and not _receipted_semantic_operation_closes_boundary(
+                            operation_by_source[edge_target.block_id],
+                            native_body,
+                            normalization_authority,
+                        )
+                    ):
                         unresolved_operation = operation_by_source[edge_target.block_id]
                         owner_serial, owner_anchor_ea, _identity = current_owners[0]
                         raise CanonicalSemanticFragmentRejected(
@@ -1386,6 +1420,7 @@ def compose_canonical_semantic_fragment_plan(
             canonical_proof_id="+".join(
                 item.proof_id for item in evidence.route_proofs
             ),
+            normalization_authority=normalization_authority,
             prohibited_dispatcher_serials=prohibited_serial_set,
         )
     )
@@ -1411,6 +1446,7 @@ def compose_canonical_semantic_fragment_plan(
                 *(item.proof_id for item in nested_state_assignment_proofs),
             )
         ),
+        normalization_authority=normalization_authority,
         prohibited_dispatcher_serials=prohibited_serial_set,
     )
     nested_rewrite_by_operation_id = {
