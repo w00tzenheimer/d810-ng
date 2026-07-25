@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.core.typing import Callable
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.edit_simulator import project_post_state
 from d810.transforms.graph_modification import (
     ExitPathLoweringGroup,
@@ -73,7 +75,7 @@ def _candidate_anchor_for_suffix(
     suffix_serials: tuple[int, ...],
     projected_flow_graph,
 ) -> int | None:
-    if candidate.path[-len(suffix_serials) :] != suffix_serials:
+    if candidate.path[-len(suffix_serials):] != suffix_serials:
         return None
     if len(candidate.path) > len(suffix_serials):
         anchor_serial = int(candidate.path[-len(suffix_serials) - 1])
@@ -96,9 +98,7 @@ def build_terminal_family_split_proposals(
     projected_flow_graph,
     excluded_anchors: frozenset[int] = frozenset(),
 ) -> tuple[TerminalFamilySplitProposal, ...]:
-    groups_by_suffix: dict[
-        tuple[int, ...], list[tuple[int, TerminalFamilySplitCandidate]]
-    ] = {}
+    groups_by_suffix: dict[tuple[int, ...], list[tuple[int, TerminalFamilySplitCandidate]]] = {}
     for index, candidate in enumerate(candidates):
         for suffix_len in range(2, len(candidate.path) + 1):
             suffix = candidate.path[-suffix_len:]
@@ -131,9 +131,7 @@ def build_terminal_family_split_proposals(
         ] = defaultdict(list)
         for member in members:
             index, candidate = member
-            signature_buckets[candidate.value_family_signature].append(
-                (index, candidate)
-            )
+            signature_buckets[candidate.value_family_signature].append((index, candidate))
         if len(signature_buckets) < 2:
             continue
 
@@ -347,6 +345,7 @@ def select_terminal_family_split(
     builder,
     modifications: list,
     compute_reachable_blocks: Callable[[object], set[int] | None],
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
 ) -> TerminalFamilySplitSelection | None:
     current_reachable = compute_reachable_blocks(projected_flow_graph)
     if not current_reachable:
@@ -369,19 +368,18 @@ def select_terminal_family_split(
         if candidate_mod is None:
             continue
 
+        patch_plan = compile_patch_plan(
+            modifications + [candidate_mod],
+            base_flow_graph,
+            block_refs_by_serial=block_refs_by_serial,
+        )
         try:
-            patch_plan = compile_patch_plan(
-                modifications + [candidate_mod], base_flow_graph
-            )
             candidate_projected = project_post_state(base_flow_graph, patch_plan)
         except Exception:
             continue
 
         candidate_reachable = compute_reachable_blocks(candidate_projected)
-        if (
-            candidate_reachable is None
-            or len(candidate_reachable) < baseline_reachable_count
-        ):
+        if candidate_reachable is None or len(candidate_reachable) < baseline_reachable_count:
             continue
 
         return TerminalFamilySplitSelection(
@@ -407,6 +405,7 @@ def plan_terminal_family_splits(
     modifications: list,
     collect_report,
     compute_reachable_blocks: Callable[[object], set[int] | None],
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
 ) -> TerminalFamilySplitRun:
     current_projected_flow_graph = projected_flow_graph
     emitted = 0
@@ -438,6 +437,7 @@ def plan_terminal_family_splits(
                 builder=builder,
                 modifications=modifications,
                 compute_reachable_blocks=compute_reachable_blocks,
+                block_refs_by_serial=block_refs_by_serial,
             )
             if selected is not None:
                 selected_candidates = tuple(

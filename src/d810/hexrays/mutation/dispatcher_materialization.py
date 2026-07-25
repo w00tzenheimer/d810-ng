@@ -1,5 +1,4 @@
 """Hex-Rays materialization helpers for dispatcher rewrite batches."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,7 +9,7 @@ import ida_hexrays
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.mutation.deferred_modifier import (
     DeferredGraphModifier,
-    GraphModification,
+    QueuedModification,
 )
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 
@@ -28,7 +27,7 @@ def apply_scheduled_deferred_modifications(
     *,
     mba: object,
     mutation_gateway: MbaMutationGateway,
-    modifications: tuple[GraphModification, ...] | list[GraphModification],
+    modifications: tuple[QueuedModification, ...] | list[QueuedModification],
     verify_each_mod: bool,
     rollback_on_verify_failure: bool,
     continue_on_verify_failure: bool,
@@ -154,7 +153,8 @@ def _downgrade_nway_goto_blocks(
             continue
         _log_debug(
             logger,
-            "generic: block %d BLT_NWAY+m_goto+nsucc==1 -> BLT_1WAY (pre-apply sweep)",
+            "generic: block %d BLT_NWAY+m_goto+nsucc==1 -> BLT_1WAY "
+            "(pre-apply sweep)",
             blk_serial,
         )
         modifier = DeferredGraphModifier(

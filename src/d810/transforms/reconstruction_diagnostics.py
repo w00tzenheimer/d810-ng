@@ -9,13 +9,14 @@ each watched candidate's provenance.
 These are strictly observability; no CFG mutations, no claim updates, no
 plan-fragment assembly. Safe to call at any point inside the strategy pass.
 """
-
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 
 from d810.core import logging
 from d810.transforms.edit_simulator import project_post_state
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.plan import compile_patch_plan
 
 logger = logging.getLogger(
@@ -26,26 +27,7 @@ logger = logging.getLogger(
 # Sub_7FFD-focused block watch-list. Probes filter to these serials so the
 # emitted logs stay compact. Does not affect pipeline behaviour.
 RECON_PHASE_WATCH_BLOCKS: tuple[int, ...] = (
-    8,
-    11,
-    20,
-    32,
-    35,
-    45,
-    64,
-    69,
-    81,
-    83,
-    95,
-    100,
-    104,
-    156,
-    184,
-    187,
-    192,
-    195,
-    200,
-    203,
+    8, 11, 20, 32, 35, 45, 64, 69, 81, 83, 95, 100, 104, 156, 184, 187, 192, 195, 200, 203,
 )
 
 
@@ -57,9 +39,18 @@ __all__ = (
 )
 
 
-def project_phase_probe_flow_graph(flow_graph, modifications: list):
+def project_phase_probe_flow_graph(
+    flow_graph,
+    modifications: list,
+    *,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
+):
+    patch_plan = compile_patch_plan(
+        modifications,
+        flow_graph,
+        block_refs_by_serial=block_refs_by_serial,
+    )
     try:
-        patch_plan = compile_patch_plan(modifications, flow_graph)
         return project_post_state(flow_graph, patch_plan)
     except Exception:
         logger.debug("RECON PHASE PROBE: projection failed", exc_info=True)
@@ -77,8 +68,13 @@ def log_reconstruction_phase_probe(
     rejected_metadata: list[dict[str, int | str | None]],
     compute_reachable_blocks,
     shared_group_results=(),
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
 ) -> None:
-    projected_flow_graph = project_phase_probe_flow_graph(flow_graph, modifications)
+    projected_flow_graph = project_phase_probe_flow_graph(
+        flow_graph,
+        modifications,
+        block_refs_by_serial=block_refs_by_serial,
+    )
     reachable_set: set[int] = set()
     if callable(compute_reachable_blocks):
         try:
@@ -137,9 +133,7 @@ def log_reconstruction_phase_probe(
 def _candidate_probe_signature(candidate) -> str:
     edge = getattr(candidate, "edge", None)
     source_anchor = getattr(edge, "source_anchor", None)
-    ordered_path = tuple(
-        int(serial) for serial in getattr(edge, "ordered_path", ()) or ()
-    )
+    ordered_path = tuple(int(serial) for serial in getattr(edge, "ordered_path", ()) or ())
     return (
         f"src={int(getattr(source_anchor, 'block_serial', -1))}"
         f"/arm={getattr(source_anchor, 'branch_arm', None)}"
@@ -155,9 +149,7 @@ def _candidate_probe_signature(candidate) -> str:
 def _should_watch_candidate(candidate) -> bool:
     edge = getattr(candidate, "edge", None)
     source_anchor = getattr(edge, "source_anchor", None)
-    ordered_path = tuple(
-        int(serial) for serial in getattr(edge, "ordered_path", ()) or ()
-    )
+    ordered_path = tuple(int(serial) for serial in getattr(edge, "ordered_path", ()) or ())
     interesting_values = {
         int(getattr(source_anchor, "block_serial", -1)),
         int(getattr(candidate, "horizon_block", -1)),

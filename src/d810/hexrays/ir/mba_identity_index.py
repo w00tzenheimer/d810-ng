@@ -33,6 +33,8 @@ from d810.transforms.cfg_transaction import (
     CfgGenerationPoisoned,
     CfgTransactionFailure,
     CfgTransactionPhase,
+    LogicalBlockRef,
+    NativeBlockRef,
     PlanBlockRef,
     TransactionAttemptId,
 )
@@ -115,6 +117,8 @@ class MbaBlockIdentityIndex:
     native_key: NativePreanalysisKey
     generation: int = 0
     evidence_generation: int | None = None
+    maturity: int | None = None
+    snapshot_id: str | None = None
     decision_observer: Callable[[IdentityRebindObservation], None] | None = field(
         default=None,
         repr=False,
@@ -214,6 +218,17 @@ class MbaBlockIdentityIndex:
             raise ValueError("MBA identity index generation must be non-negative")
         if self.evidence_generation < 0:
             raise ValueError("MBA identity evidence generation must be non-negative")
+        if self.maturity is not None:
+            self.maturity = int(self.maturity)
+            if self.maturity < 0:
+                raise ValueError("MBA identity maturity must be non-negative")
+        if self.snapshot_id is None:
+            maturity_label = "unknown" if self.maturity is None else str(self.maturity)
+            self.snapshot_id = (
+                f"{self.session_id}:m{maturity_label}:g{self.generation}"
+            )
+        elif not isinstance(self.snapshot_id, str) or not self.snapshot_id.strip():
+            raise ValueError("MBA identity snapshot_id must be a non-empty string")
 
     @property
     def generation_poisoned(self) -> bool:
@@ -250,6 +265,8 @@ class MbaBlockIdentityIndex:
         generation: int,
         native_key: NativePreanalysisKey,
         evidence_generation: int | None = None,
+        maturity: int | None = None,
+        snapshot_id: str | None = None,
         bindings: Iterable[tuple[StableBlockIdentity, int]],
         session_id: str = "identity-index",
         decision_observer: Callable[[IdentityRebindObservation], None] | None = None,
@@ -260,6 +277,8 @@ class MbaBlockIdentityIndex:
             native_key=native_key,
             generation=generation,
             evidence_generation=evidence_generation,
+            maturity=maturity,
+            snapshot_id=snapshot_id,
         )
         for identity, serial in bindings:
             index._bind_new_native(identity, int(serial))
@@ -273,6 +292,8 @@ class MbaBlockIdentityIndex:
         generation: int,
         native_key: NativePreanalysisKey,
         evidence_generation: int | None = None,
+        maturity: int | None = None,
+        snapshot_id: str | None = None,
         session_id: str = "live-mba",
         imported_instruction_origins: Mapping[int, int] | None = None,
         current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None,
@@ -293,6 +314,8 @@ class MbaBlockIdentityIndex:
             native_key=native_key,
             generation=generation,
             evidence_generation=evidence_generation,
+            maturity=maturity,
+            snapshot_id=snapshot_id,
         )
         if current_mba_identity_binding is not None and not isinstance(
             current_mba_identity_binding,
@@ -407,6 +430,8 @@ class MbaBlockIdentityIndex:
         generation: int,
         native_key: NativePreanalysisKey,
         evidence_generation: int | None = None,
+        maturity: int | None = None,
+        snapshot_id: str | None = None,
         flow_graph: FlowGraph,
         session_id: str | None = None,
         imported_native_eas_by_serial: Mapping[int, Iterable[int]] | None = None,
@@ -423,6 +448,8 @@ class MbaBlockIdentityIndex:
             native_key=native_key,
             generation=generation,
             evidence_generation=evidence_generation,
+            maturity=maturity,
+            snapshot_id=snapshot_id,
         )
         imported_native_eas_by_serial = imported_native_eas_by_serial or {}
         for serial, block in flow_graph.blocks.items():
@@ -547,6 +574,29 @@ class MbaBlockIdentityIndex:
             serial=int(serial),
             generation=self.generation,
             anchor_ea=anchor_ea,
+        )
+
+    def resolve_logical_ref(
+        self,
+        ref: LogicalBlockRef,
+        *,
+        transaction_id: str,
+    ) -> BoundBlock | None:
+        """Resolve an exact portable logical version in one active attempt."""
+        self.require_generation_usable()
+        if not isinstance(ref, LogicalBlockRef):
+            raise TypeError("logical resolution requires a LogicalBlockRef")
+        if ref.session_id != self.session_id:
+            return None
+        proxy = self._proxies_by_token.get(ref.proxy_token)
+        if proxy is None:
+            return None
+        version = proxy.resolve(transaction_id=str(transaction_id))
+        if version is None or version.version_id.version != ref.version:
+            return None
+        return self.resolve_logical_version(
+            version,
+            transaction_id=str(transaction_id),
         )
 
     def _new_token(self, prefix: str) -> str:
@@ -887,11 +937,23 @@ class MbaBlockIdentityIndex:
         return tuple(self._plan_creation_receipts.values())
 
     def transaction_quantity(self, transaction_id: str) -> int:
+        """Return the exact staged block quantity for an active transaction."""
         self.require_generation_usable()
         serials = self._serials_by_transaction.get(str(transaction_id))
         if serials is None:
             raise ValueError("identity transaction is not active")
         return len(serials)
+
+    def require_active_attempt(self, attempt_id: TransactionAttemptId) -> None:
+        """Verify exact typed authority for an already-open transaction."""
+        self.require_generation_usable()
+        if not isinstance(attempt_id, TransactionAttemptId):
+            raise TypeError("active attempt check requires TransactionAttemptId")
+        active = self._attempt_by_transaction.get(attempt_id.attempt_id)
+        if active != attempt_id:
+            raise ValueError("transaction attempt is not active in this identity index")
+        if self._generation_by_transaction.get(attempt_id.attempt_id) != self.generation:
+            raise ValueError("transaction attempt belongs to a stale MBA generation")
 
     def resolve_planned_serial(
         self,
@@ -917,6 +979,36 @@ class MbaBlockIdentityIndex:
         self.require_generation_usable()
         handle = self.handle_for_serial(serial)
         return None if handle is None else handle.stable_identity
+
+    def plan_ref_for_serial(self, serial: int) -> NativeBlockRef | LogicalBlockRef:
+        """Export current identity authority without leaking a live serial."""
+        self.require_generation_usable()
+        handle = self.handle_for_serial(serial)
+        if handle is None:
+            raise ValueError("current serial has no identity binding")
+        if handle.stable_identity is not None:
+            return NativeBlockRef(handle.stable_identity)
+        proxy = self.logical_proxy_for_handle(handle)
+        if proxy is None:
+            raise ValueError("observed block has no published logical proxy")
+        version = proxy.resolve()
+        if version is None:
+            raise ValueError("observed block has no published logical version")
+        return LogicalBlockRef(
+            session_id=self.session_id,
+            proxy_token=version.version_id.proxy_token,
+            version=version.version_id.version,
+        )
+
+    def plan_refs_by_serial(self) -> Mapping[int, NativeBlockRef | LogicalBlockRef]:
+        """Return the current snapshot's complete typed compiler authority."""
+        self.require_generation_usable()
+        return MappingProxyType(
+            {
+                int(serial): self.plan_ref_for_serial(int(serial))
+                for serial in sorted(self._token_by_serial)
+            }
+        )
 
     def handle_for_serial(self, serial: int) -> MbaBlockHandle | None:
         self.require_generation_usable()
@@ -1888,6 +1980,8 @@ class MbaBlockIdentityIndex:
                 generation=self.generation,
                 native_key=self.native_key,
                 evidence_generation=self.evidence_generation,
+                maturity=self.maturity,
+                snapshot_id=self.snapshot_id,
                 session_id=self.session_id,
                 imported_instruction_origins=imported_instruction_origins,
                 current_mba_identity_binding=current_mba_identity_binding,
@@ -1902,6 +1996,8 @@ class MbaBlockIdentityIndex:
                 generation=self.generation,
                 native_key=self.native_key,
                 evidence_generation=self.evidence_generation,
+                maturity=self.maturity,
+                snapshot_id=self.snapshot_id,
                 flow_graph=flow_graph,
                 session_id=self.session_id,
             )

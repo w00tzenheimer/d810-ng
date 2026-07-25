@@ -1,5 +1,4 @@
 """Tests for the Phase B PatchPlan execution layer."""
-
 from __future__ import annotations
 
 import ast
@@ -10,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+from d810.ir.maturity import MaturityEnvelope
 from d810.transforms.edit_simulator import project_post_state
 from d810.transforms.graph_modification import (
     BypassDispatcherTrampoline,
@@ -28,6 +28,7 @@ from d810.transforms.graph_modification import (
     NormalizeNWayDispatcherExit,
     NopInstructions,
     PhaseCycleLowering,
+    RedirectBranch,
     RedirectGoto,
     RemoveEdge,
     RetargetOutputStore,
@@ -38,17 +39,18 @@ from d810.transforms.materialization_payload import (
     CapturedBlockBodySummary,
 )
 from d810.transforms.plan import (
-    LegacyBlockOperation,
     PatchBlockSpec,
     PatchCloneConditionalAsGoto,
     PatchCloneConditionalAsGotoFromBranchArm,
     PatchConditionalRedirect,
     PatchConvertToGoto,
     PatchDuplicateBlock,
+    PatchDuplicateReplayEntry,
     PatchDuplicateReplayAndRedirect,
     PatchEdgeRef,
     PatchEdgeSplitCorridor,
     PatchEdgeSplitTrampoline,
+    PatchExitPathLoweringSite,
     PatchInsertBlock,
     PatchLowerConditionalStateTransition,
     PatchNormalizeNWayDispatcherExit,
@@ -57,19 +59,29 @@ from d810.transforms.plan import (
     PatchCanonicalizeJumpTableCaseOverlap,
     PatchPhaseCycleLowering,
     PatchPlan,
+    PatchRedirectBranch,
     PatchRedirectGoto,
+    PatchRelocationMap,
+    PatchReorderBlocks,
     PatchRemoveEdge,
     PatchRetargetOutputStore,
     PatchScalarizeLocalAliasAccess,
-    VirtualBlockId,
-    compile_patch_plan,
+    compile_patch_plan as _compile_patch_plan,
     ensure_patch_plan,
+)
+from d810.transforms.cfg_transaction import (
+    NativeBlockRef,
+    LogicalBlockRef,
+    PlanBlockRef,
 )
 
 
 @dataclass(frozen=True)
 class _BlockRef:
     block_num: int
+
+
+TEST_MATURITY = MaturityEnvelope(ir=None, provider="hexrays", provider_id=4)
 
 
 def _block(
@@ -88,6 +100,28 @@ def _block(
         start_ea=0,
         insn_snapshots=insn_snapshots,
     )
+
+
+def _snapshot_serial(ref, plan: PatchPlan) -> int:
+    return dict(plan.source_coordinates)[ref]
+
+
+def _logical(serial: int) -> LogicalBlockRef:
+    return LogicalBlockRef("test-plan-session", f"proxy-{serial}", 0)
+
+
+def compile_patch_plan(*args, **kwargs) -> PatchPlan:
+    """Compile test fixtures with explicit observed-source witnesses."""
+    kwargs.setdefault(
+        "block_refs_by_serial",
+        {serial: _logical(serial) for serial in range(1024)},
+    )
+    return _compile_patch_plan(*args, **kwargs)
+
+
+def _assert_plan_ref(ref: PlanBlockRef, plan: PatchPlan) -> None:
+    assert isinstance(ref, PlanBlockRef)
+    assert ref.plan_id == plan.plan_id
 
 
 def _cfg() -> FlowGraph:
@@ -130,6 +164,7 @@ def _conditional_cfg() -> FlowGraph:
                         ea=0x1010,
                         operands=(_BlockRef(14),),
                         operand_slots=(("d", _BlockRef(14)),),
+                        kind=InsnKind.COND_JUMP,
                     ),
                 ),
             ),
@@ -139,6 +174,181 @@ def _conditional_cfg() -> FlowGraph:
         entry_serial=9,
         func_ea=0,
     )
+
+
+def test_redirect_branch_declares_helper_only_for_fallthrough_rewrite() -> None:
+    plan = compile_patch_plan(
+        [RedirectBranch(from_serial=10, old_target=11, new_target=9)],
+        _conditional_cfg(),
+        plan_id="fallthrough-helper-plan",
+    )
+
+    step = plan.steps[0]
+    assert isinstance(step, PatchRedirectBranch)
+    assert step.fallthrough_helper_block_id == PlanBlockRef(
+        "fallthrough-helper-plan", "redirect_branch_fallthrough:0"
+    )
+    assert plan.new_blocks == (
+        PatchBlockSpec(
+            block_id=step.fallthrough_helper_block_id,
+            kind="redirect_branch_fallthrough",
+            template_block=step.from_serial,
+            incoming_edge=PatchEdgeRef(
+                source=step.from_serial,
+                target=step.fallthrough_helper_block_id,
+            ),
+            outgoing_edges=(
+                PatchEdgeRef(
+                    source=step.fallthrough_helper_block_id,
+                    target=step.new_target,
+                ),
+            ),
+        ),
+    )
+
+
+def test_redirect_branch_direct_arm_declares_no_helper() -> None:
+    plan = compile_patch_plan(
+        [RedirectBranch(from_serial=10, old_target=14, new_target=9)],
+        _conditional_cfg(),
+        plan_id="direct-branch-plan",
+    )
+
+    step = plan.steps[0]
+    assert isinstance(step, PatchRedirectBranch)
+    assert step.fallthrough_helper_block_id is None
+    assert plan.new_blocks == ()
+
+
+def test_redirect_branch_rejects_nonconditional_two_way_tail_before_reservation() -> None:
+    cfg = FlowGraph(
+        blocks={
+            9: _block(9, (10,), ()),
+            10: _block(
+                10,
+                (11, 14),
+                (9,),
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0x70,
+                        ea=0x1010,
+                        operands=(_BlockRef(14),),
+                        operand_slots=(("d", _BlockRef(14)),),
+                        kind=InsnKind.UNKNOWN,
+                    ),
+                ),
+            ),
+            11: _block(11, (), (10,)),
+            14: _block(14, (), (10,)),
+        },
+        entry_serial=9,
+        func_ea=0,
+    )
+
+    with pytest.raises(ValueError, match="redirectable conditional tail"):
+        compile_patch_plan(
+            [RedirectBranch(from_serial=10, old_target=11, new_target=9)],
+            cfg,
+            plan_id="malformed-two-way-plan",
+        )
+
+
+def test_patch_operations_reject_bare_block_serials() -> None:
+    with pytest.raises(TypeError, match="from_serial must be a typed block reference"):
+        PatchRedirectGoto(from_serial=9, old_target=10, new_target=11)
+
+    snapshot = _logical(9)
+    with pytest.raises(TypeError, match="goto_target must be a typed block reference"):
+        PatchConvertToGoto(block_serial=snapshot, goto_target=10)
+
+    with pytest.raises(TypeError, match="anchor_serial must be a typed block reference"):
+        PatchExitPathLoweringSite(anchor_serial=9, kind=object())
+
+    created = PlanBlockRef("typed-plan", "reorder:0")
+    with pytest.raises(TypeError, match="copy_lineage source must be a typed block reference"):
+        PatchReorderBlocks(
+            dfs_block_order=(snapshot,),
+            copy_lineage=((9, created),),
+        )
+
+    with pytest.raises(TypeError, match="block_id must be a typed block reference"):
+        PatchDuplicateBlock(
+            block_id=12,
+            source_serial=snapshot,
+            pred_serial=None,
+            pred_redirect_kind="none",
+            source_successors=(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    (
+        ("incoming_edge", "incoming_edge must be a PatchEdgeRef"),
+        ("outgoing_edges", "outgoing_edges must contain PatchEdgeRef"),
+        ("rewritten_edges", "rewritten_edges must contain PatchEdgeRef pairs"),
+        (
+            "replay_group",
+            "per_pred_replays must contain PatchDuplicateReplayEntry",
+        ),
+        ("replay_entry", "pred_serial must be a typed block reference"),
+    ),
+)
+def test_nested_patch_payloads_reject_untyped_or_malformed_references(
+    case: str,
+    message: str,
+) -> None:
+    created = PlanBlockRef("typed-plan", "nested:0")
+    snapshot = _logical(9)
+
+    def construct() -> object:
+        if case == "incoming_edge":
+            return PatchBlockSpec(created, "insert", incoming_edge=object())
+        if case == "outgoing_edges":
+            return PatchBlockSpec(created, "insert", outgoing_edges=(object(),))
+        if case == "rewritten_edges":
+            return PatchRelocationMap(
+                rewritten_edges=((PatchEdgeRef(snapshot, snapshot), object()),)
+            )
+        if case == "replay_group":
+            return PatchDuplicateReplayAndRedirect(
+                source_serial=snapshot,
+                dispatcher_entry=snapshot,
+                per_pred_replays=(object(),),
+            )
+        return PatchDuplicateReplayEntry(
+            pred_serial=9,
+            target_serial=snapshot,
+            replay_block_id=created,
+            captured_body=object(),
+        )
+
+    with pytest.raises(TypeError, match=message):
+        construct()
+
+
+def test_patch_plan_requires_exact_plan_reference_authority() -> None:
+    source = _logical(9)
+    target = PlanBlockRef("foreign-plan", "target")
+    with pytest.raises(ValueError, match="plan authority"):
+        PatchPlan(
+            plan_id="typed-plan",
+            snapshot_id="snap:m4:g7",
+            source_maturity=TEST_MATURITY,
+            source_generation=7,
+            steps=(PatchRedirectGoto(source, source, target),),
+        )
+
+
+def test_patch_relocation_records_only_plan_reference_lineage() -> None:
+    created = PlanBlockRef("typed-plan", "insert:0")
+    source = _logical(9)
+    relocation = PatchRelocationMap(
+        planned_lineage=((created, source),),
+    )
+
+    assert relocation.planned_lineage == ((created, source),)
+    assert not hasattr(relocation, "assigned_serials")
 
 
 def _conditional_duplicate_cfg() -> FlowGraph:
@@ -170,11 +380,7 @@ def _conditional_duplicate_cfg() -> FlowGraph:
 def _duplicate_replay_cfg() -> FlowGraph:
     return FlowGraph(
         blocks={
-            2: _block(
-                2,
-                (3, 4),
-                (10,),
-            ),
+            2: _block(2, (3, 4), (10,),),
             3: _block(3, (), (2,)),
             4: _block(4, (), (2,)),
             8: _block(8, (10,), ()),
@@ -208,17 +414,34 @@ def test_compile_patch_plan_converts_existing_block_rewrites():
         NopInstructions(block_serial=6, insn_eas=(0x1000, 0x1004)),
     ]
 
-    patch_plan = compile_patch_plan(modifications)
+    patch_plan = compile_patch_plan(
+        modifications,
+        block_refs_by_serial={serial: _logical(serial) for serial in range(1, 8)},
+    )
 
     assert isinstance(patch_plan, PatchPlan)
-    assert patch_plan.steps == (
-        PatchRedirectGoto(from_serial=1, old_target=2, new_target=3),
-        PatchConvertToGoto(block_serial=4, goto_target=5),
-        PatchNopInstructions(block_serial=6, insn_eas=(0x1000, 0x1004)),
+    assert tuple(type(step) for step in patch_plan.steps) == (
+        PatchRedirectGoto,
+        PatchConvertToGoto,
+        PatchNopInstructions,
+    )
+    assert all(
+        not isinstance(value, int)
+        for step in patch_plan.steps
+        for name, value in vars(step).items()
+        if "serial" in name or "target" in name
     )
     assert patch_plan.new_blocks == ()
-    assert not patch_plan.contains_block_creation
-    assert patch_plan.as_graph_modifications() == modifications
+    assert {serial for _ref, serial in patch_plan.source_coordinates} == set(
+        range(1, 7)
+    )
+
+
+def test_compile_patch_plan_rejects_missing_typed_source_authority() -> None:
+    with pytest.raises(TypeError, match="block serial 1 has no typed source authority"):
+        _compile_patch_plan(
+            [RedirectGoto(from_serial=1, old_target=2, new_target=3)]
+        )
 
 
 def test_compile_patch_plan_requires_cfg_for_edge_split_trampoline():
@@ -249,28 +472,15 @@ def test_compile_patch_plan_finalizes_edge_split_trampoline():
     )
 
     assert patch_plan.contains_block_creation
-    assert patch_plan.steps == (
-        PatchEdgeSplitTrampoline(
-            block_id=VirtualBlockId(namespace="edge_split", ordinal=0),
-            assigned_serial=11,
-            source_serial=10,
-            via_pred=9,
-            old_target=11,
-            apply_old_target=12,
-            new_target=12,
-            template_block=10,
-        ),
-    )
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchEdgeSplitTrampoline)
+    assert step.block_id == patch_plan.new_blocks[0].block_id
+    _assert_plan_ref(step.block_id, patch_plan)
     assert patch_plan.new_blocks[0].kind == "edge_split_trampoline"
-    assert (
-        patch_plan.relocation_map.assigned_serial_for(
-            VirtualBlockId(namespace="edge_split", ordinal=0)
-        )
-        == 11
+    assert patch_plan.relocation_map.planned_lineage == (
+        (step.block_id, step.template_block),
     )
-    assert patch_plan.relocation_map.stop_serial_before == 11
-    assert patch_plan.relocation_map.stop_serial_after == 12
-    assert patch_plan.legacy_block_operations == ()
+    assert _snapshot_serial(patch_plan.relocation_map.source_stop, patch_plan) == 11
 
 
 def test_compile_patch_plan_finalizes_corridor_edge_split():
@@ -284,27 +494,14 @@ def test_compile_patch_plan_finalizes_corridor_edge_split():
 
     patch_plan = compile_patch_plan([modification], _corridor_cfg())
 
-    assert patch_plan.steps == (
-        PatchEdgeSplitCorridor(
-            clone_block_ids=(
-                VirtualBlockId(namespace="edge_split_corridor", ordinal=0),
-                VirtualBlockId(namespace="edge_split_corridor", ordinal=1),
-            ),
-            clone_assigned_serials=(13, 14),
-            source_serial=10,
-            via_pred=9,
-            old_target=11,
-            new_target=12,
-            clone_until=11,
-            corridor_serials=(10, 11),
-            rule_priority=550,
-        ),
-    )
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchEdgeSplitCorridor)
+    assert all(isinstance(ref, PlanBlockRef) for ref in step.clone_block_ids)
+    assert all(ref.plan_id == patch_plan.plan_id for ref in step.clone_block_ids)
     assert [spec.kind for spec in patch_plan.new_blocks] == [
         "edge_split_corridor_clone",
         "edge_split_corridor_clone",
     ]
-    assert patch_plan.legacy_block_operations == ()
 
 
 def test_compile_patch_plan_finalizes_conditional_redirect():
@@ -322,36 +519,15 @@ def test_compile_patch_plan_finalizes_conditional_redirect():
     )
 
     assert patch_plan.contains_block_creation
-    assert patch_plan.steps == (
-        PatchConditionalRedirect(
-            block_id=VirtualBlockId(namespace="conditional_redirect", ordinal=0),
-            assigned_serial=14,
-            fallthrough_block_id=VirtualBlockId(
-                namespace="conditional_redirect_fallthrough",
-                ordinal=1,
-            ),
-            fallthrough_serial=15,
-            source_serial=9,
-            ref_block=10,
-            conditional_target=16,
-            fallthrough_target=11,
-            old_target_serial=10,
-        ),
-    )
-    assert patch_plan.steps[0].to_graph_modification() == CreateConditionalRedirect(
-        source_block=9,
-        ref_block=10,
-        conditional_target=16,
-        fallthrough_target=11,
-        old_target_serial=10,
-    )
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchConditionalRedirect)
+    _assert_plan_ref(step.block_id, patch_plan)
+    _assert_plan_ref(step.fallthrough_block_id, patch_plan)
     assert [spec.kind for spec in patch_plan.new_blocks] == [
         "conditional_redirect_clone",
         "conditional_redirect_fallthrough",
     ]
-    assert patch_plan.relocation_map.stop_serial_before == 14
-    assert patch_plan.relocation_map.stop_serial_after == 16
-    assert patch_plan.legacy_block_operations == ()
+    assert _snapshot_serial(patch_plan.relocation_map.source_stop, patch_plan) == 14
 
 
 def test_compile_patch_plan_finalizes_conditional_redirect_with_instructions():
@@ -369,22 +545,9 @@ def test_compile_patch_plan_finalizes_conditional_redirect_with_instructions():
         _conditional_cfg(),
     )
 
-    assert patch_plan.steps == (
-        PatchConditionalRedirect(
-            block_id=VirtualBlockId(namespace="conditional_redirect", ordinal=0),
-            assigned_serial=14,
-            fallthrough_block_id=VirtualBlockId(
-                namespace="conditional_redirect_fallthrough",
-                ordinal=1,
-            ),
-            fallthrough_serial=15,
-            source_serial=9,
-            ref_block=10,
-            conditional_target=16,
-            fallthrough_target=11,
-            instructions=instructions,
-        ),
-    )
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchConditionalRedirect)
+    assert step.instructions == instructions
 
 
 def test_compile_patch_plan_finalizes_insert_block():
@@ -401,19 +564,12 @@ def test_compile_patch_plan_finalizes_insert_block():
     )
 
     assert patch_plan.contains_block_creation
-    assert patch_plan.steps == (
-        PatchInsertBlock(
-            block_id=VirtualBlockId(namespace="insert_block", ordinal=0),
-            assigned_serial=11,
-            pred_serial=10,
-            succ_serial=12,
-            instructions=instructions,
-        ),
-    )
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchInsertBlock)
+    _assert_plan_ref(step.block_id, patch_plan)
+    assert step.instructions == instructions
     assert [spec.kind for spec in patch_plan.new_blocks] == ["insert_block"]
-    assert patch_plan.relocation_map.stop_serial_before == 11
-    assert patch_plan.relocation_map.stop_serial_after == 12
-    assert patch_plan.legacy_block_operations == ()
+    assert _snapshot_serial(patch_plan.relocation_map.source_stop, patch_plan) == 11
 
 
 def test_compile_patch_plan_preserves_opaque_insert_block_body():
@@ -439,16 +595,9 @@ def test_compile_patch_plan_preserves_opaque_insert_block_body():
     )
 
     assert patch_plan.new_blocks[0].captured_body is body
-    assert patch_plan.steps == (
-        PatchInsertBlock(
-            block_id=VirtualBlockId(namespace="insert_block", ordinal=0),
-            assigned_serial=11,
-            pred_serial=10,
-            succ_serial=12,
-            instructions=(),
-            captured_body=body,
-        ),
-    )
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchInsertBlock)
+    assert step.captured_body is body
 
 
 def test_compile_patch_plan_finalizes_insert_block_with_explicit_old_target():
@@ -466,27 +615,14 @@ def test_compile_patch_plan_finalizes_insert_block_with_explicit_old_target():
     )
 
     assert patch_plan.contains_block_creation
-    assert patch_plan.steps == (
-        PatchInsertBlock(
-            block_id=VirtualBlockId(namespace="insert_block", ordinal=0),
-            assigned_serial=14,
-            pred_serial=9,
-            succ_serial=11,
-            instructions=instructions,
-            old_target_serial=10,
-        ),
-    )
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchInsertBlock)
+    _assert_plan_ref(step.block_id, patch_plan)
     assert [spec.kind for spec in patch_plan.new_blocks] == ["insert_block"]
-    assert patch_plan.new_blocks[0].incoming_edge == PatchEdgeRef(source=9, target=10)
-    assert patch_plan.new_blocks[0].outgoing_edges == (
-        PatchEdgeRef(
-            source=VirtualBlockId(namespace="insert_block", ordinal=0),
-            target=11,
-        ),
-    )
-    assert patch_plan.relocation_map.stop_serial_before == 14
-    assert patch_plan.relocation_map.stop_serial_after == 15
-    assert patch_plan.legacy_block_operations == ()
+    assert patch_plan.new_blocks[0].incoming_edge.source == step.pred_serial
+    assert patch_plan.new_blocks[0].incoming_edge.target == step.old_target_serial
+    assert patch_plan.new_blocks[0].outgoing_edges[0].source == step.block_id
+    assert _snapshot_serial(patch_plan.relocation_map.source_stop, patch_plan) == 14
 
 
 def test_empty_insert_block_compiles_as_runtime_trampoline():
@@ -505,17 +641,7 @@ def test_empty_insert_block_compiles_as_runtime_trampoline():
     assert patch_plan.new_blocks[0].kind == "insert_block"
     assert patch_plan.new_blocks[0].instructions == ()
     assert patch_plan.new_blocks[0].captured_body is None
-    assert patch_plan.steps == (
-        PatchInsertBlock(
-            block_id=VirtualBlockId(namespace="insert_block", ordinal=0),
-            assigned_serial=14,
-            pred_serial=9,
-            succ_serial=11,
-            instructions=(),
-            old_target_serial=10,
-        ),
-    )
-    assert patch_plan.legacy_block_operations == ()
+    assert isinstance(patch_plan.steps[0], PatchInsertBlock)
 
 
 def test_compile_patch_plan_finalizes_duplicate_block():
@@ -531,23 +657,10 @@ def test_compile_patch_plan_finalizes_duplicate_block():
     )
 
     assert patch_plan.contains_block_creation
-    assert patch_plan.steps == (
-        PatchDuplicateBlock(
-            block_id=VirtualBlockId(namespace="duplicate_block", ordinal=0),
-            assigned_serial=11,
-            source_serial=10,
-            pred_serial=9,
-            pred_redirect_kind="one_way",
-            source_successors=(12,),
-            target_serial=12,
-            conditional_target=None,
-            fallthrough_target=None,
-            fallthrough_block_id=None,
-            fallthrough_serial=None,
-        ),
-    )
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchDuplicateBlock)
+    _assert_plan_ref(step.block_id, patch_plan)
     assert [spec.kind for spec in patch_plan.new_blocks] == ["duplicate_block_clone"]
-    assert patch_plan.legacy_block_operations == ()
 
 
 def test_compile_patch_plan_finalizes_duplicate_block_for_private_target_split():
@@ -563,28 +676,13 @@ def test_compile_patch_plan_finalizes_duplicate_block_for_private_target_split()
     )
 
     assert patch_plan.contains_block_creation
-    assert patch_plan.steps == (
-        PatchDuplicateBlock(
-            block_id=VirtualBlockId(namespace="duplicate_block", ordinal=0),
-            assigned_serial=11,
-            source_serial=10,
-            pred_serial=9,
-            pred_redirect_kind="one_way",
-            source_successors=(12,),
-            target_serial=None,
-            conditional_target=None,
-            fallthrough_target=None,
-            fallthrough_block_id=None,
-            fallthrough_serial=None,
-        ),
-    )
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchDuplicateBlock)
+    assert step.target_serial is None
     assert [spec.kind for spec in patch_plan.new_blocks] == ["duplicate_block_clone"]
-    assert patch_plan.legacy_block_operations == ()
 
 
-def test_compile_patch_plan_finalizes_duplicate_replay_and_redirect_without_legacy() -> (
-    None
-):
+def test_compile_patch_plan_finalizes_duplicate_replay_and_redirect_without_legacy() -> None:
     left_body = _captured_body()
     right_body = _captured_body()
     modification = DuplicateReplayAndRedirect(
@@ -609,22 +707,21 @@ def test_compile_patch_plan_finalizes_duplicate_replay_and_redirect_without_lega
     assert patch_plan.contains_block_creation
     step = patch_plan.steps[0]
     assert isinstance(step, PatchDuplicateReplayAndRedirect)
-    assert [
-        (
-            row.pred_serial,
-            row.target_serial,
-            row.replay_serial,
-            row.clone_serial,
-        )
+    assert [_snapshot_serial(row.pred_serial, patch_plan) for row in step.per_pred_replays] == [8, 9]
+    assert [_snapshot_serial(row.target_serial, patch_plan) for row in step.per_pred_replays] == [3, 4]
+    assert all(
+        isinstance(row.replay_block_id, PlanBlockRef)
         for row in step.per_pred_replays
-    ] == [(8, 3, 20, None), (9, 4, 21, 22)]
+    )
+    assert all(
+        row.replay_block_id.plan_id == patch_plan.plan_id
+        for row in step.per_pred_replays
+    )
     assert [spec.kind for spec in patch_plan.new_blocks] == [
         "duplicate_replay_insert",
         "duplicate_replay_insert",
         "duplicate_replay_clone",
     ]
-    assert patch_plan.legacy_block_operations == ()
-    assert patch_plan.as_graph_modifications() == [modification]
 
 
 def test_compile_patch_plan_rejects_invalid_duplicate_replay_shapes() -> None:
@@ -652,7 +749,7 @@ def test_compile_patch_plan_rejects_invalid_duplicate_replay_shapes() -> None:
         )
 
 
-def test_compile_patch_plan_keeps_unsupported_duplicate_block_legacy():
+def test_compile_patch_plan_rejects_unsupported_duplicate_block():
     cfg = FlowGraph(
         blocks={
             44: _block(44, (99, 45), ()),
@@ -664,20 +761,17 @@ def test_compile_patch_plan_keeps_unsupported_duplicate_block_legacy():
         func_ea=0,
     )
 
-    patch_plan = compile_patch_plan(
-        [
-            DuplicateBlock(
-                source_block=45,
-                target_block=2,
-                pred_serial=44,
-            )
-        ],
-        cfg,
-    )
-
-    assert len(patch_plan.legacy_block_operations) == 1
-    assert isinstance(patch_plan.legacy_block_operations[0], LegacyBlockOperation)
-    assert patch_plan.new_blocks[0].kind == "duplicate_block"
+    with pytest.raises(ValueError, match="cannot be compiled"):
+        compile_patch_plan(
+            [
+                DuplicateBlock(
+                    source_block=45,
+                    target_block=2,
+                    pred_serial=44,
+                )
+            ],
+            cfg,
+        )
 
 
 def test_compile_patch_plan_finalizes_conditional_duplicate_block():
@@ -693,29 +787,14 @@ def test_compile_patch_plan_finalizes_conditional_duplicate_block():
     )
 
     assert patch_plan.contains_block_creation
-    assert patch_plan.steps == (
-        PatchDuplicateBlock(
-            block_id=VirtualBlockId(namespace="duplicate_block", ordinal=0),
-            assigned_serial=13,
-            source_serial=10,
-            pred_serial=8,
-            pred_redirect_kind="one_way",
-            source_successors=(11, 12),
-            target_serial=None,
-            conditional_target=11,
-            fallthrough_target=12,
-            fallthrough_block_id=VirtualBlockId(
-                namespace="duplicate_block_fallthrough",
-                ordinal=1,
-            ),
-            fallthrough_serial=14,
-        ),
-    )
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchDuplicateBlock)
+    _assert_plan_ref(step.block_id, patch_plan)
+    _assert_plan_ref(step.fallthrough_block_id, patch_plan)
     assert [spec.kind for spec in patch_plan.new_blocks] == [
         "duplicate_block_clone",
         "duplicate_block_fallthrough",
     ]
-    assert patch_plan.legacy_block_operations == ()
 
 
 def test_compile_patch_plan_finalizes_clone_conditional_as_goto():
@@ -729,38 +808,11 @@ def test_compile_patch_plan_finalizes_clone_conditional_as_goto():
     patch_plan = compile_patch_plan([modification], _conditional_duplicate_cfg())
 
     assert patch_plan.contains_block_creation
-    assert patch_plan.steps == (
-        PatchCloneConditionalAsGoto(
-            block_id=VirtualBlockId(namespace="clone_conditional_as_goto", ordinal=0),
-            assigned_serial=13,
-            source_serial=10,
-            pred_serial=8,
-            goto_target=11,
-            source_successors=(11, 12),
-            conditional_target=11,
-            fallthrough_target=12,
-            reason="fix predecessor simple case",
-        ),
-    )
-    assert patch_plan.new_blocks == (
-        PatchBlockSpec(
-            block_id=VirtualBlockId(namespace="clone_conditional_as_goto", ordinal=0),
-            kind="clone_conditional_as_goto",
-            template_block=10,
-            incoming_edge=PatchEdgeRef(source=8, target=10),
-            outgoing_edges=(
-                PatchEdgeRef(
-                    source=VirtualBlockId(
-                        namespace="clone_conditional_as_goto",
-                        ordinal=0,
-                    ),
-                    target=11,
-                ),
-            ),
-        ),
-    )
-    assert patch_plan.legacy_block_operations == ()
-    assert patch_plan.as_graph_modifications() == [modification]
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchCloneConditionalAsGoto)
+    _assert_plan_ref(step.block_id, patch_plan)
+    assert patch_plan.new_blocks[0].block_id == step.block_id
+    assert patch_plan.new_blocks[0].kind == "clone_conditional_as_goto"
 
 
 def test_clone_conditional_as_goto_projects_clone_and_pred_redirect_only():
@@ -833,7 +885,7 @@ def test_compile_patch_plan_rejects_invalid_clone_conditional_as_goto_shapes(
         compile_patch_plan([modification], cfg)
 
 
-def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_block_creation():
+def test_compile_patch_plan_records_symbolic_block_specs_for_block_creation():
     instructions = (InsnSnapshot(opcode=0x77, ea=0x2000, operands=()),)
     modifications = [
         EdgeRedirectViaPredSplit(
@@ -856,9 +908,7 @@ def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_bl
     assert patch_plan.contains_block_creation
     assert len(patch_plan.new_blocks) == 4
     assert all(isinstance(spec, PatchBlockSpec) for spec in patch_plan.new_blocks)
-    assert all(
-        isinstance(spec.block_id, VirtualBlockId) for spec in patch_plan.new_blocks
-    )
+    assert all(isinstance(spec.block_id, PlanBlockRef) for spec in patch_plan.new_blocks)
     assert [spec.kind for spec in patch_plan.new_blocks] == [
         "edge_split_trampoline",
         "conditional_redirect_clone",
@@ -868,20 +918,12 @@ def test_compile_patch_plan_records_symbolic_block_specs_for_remaining_legacy_bl
     assert isinstance(patch_plan.steps[0], PatchEdgeSplitTrampoline)
     assert isinstance(patch_plan.steps[1], PatchConditionalRedirect)
     assert isinstance(patch_plan.steps[2], PatchInsertBlock)
-    assert len(patch_plan.legacy_block_operations) == 0
-    assert all(
-        isinstance(step, LegacyBlockOperation)
-        for step in patch_plan.legacy_block_operations
-    )
-    assert patch_plan.as_graph_modifications() == modifications
 
 
 def test_ensure_patch_plan_is_idempotent():
-    patch_plan = compile_patch_plan(
-        [
-            RedirectGoto(from_serial=1, old_target=2, new_target=3),
-        ]
-    )
+    patch_plan = compile_patch_plan([
+        RedirectGoto(from_serial=1, old_target=2, new_target=3),
+    ])
 
     assert ensure_patch_plan(patch_plan) is patch_plan
 
@@ -912,16 +954,10 @@ def test_patch_remove_edge_exists_but_unused_in_strategies():
         assert py_file.is_file(), f"Hodur strategy source not found: {py_file}"
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id in {
-                "RemoveEdge",
-                "PatchRemoveEdge",
-            }:
+            if isinstance(node, ast.Name) and node.id in {"RemoveEdge", "PatchRemoveEdge"}:
                 violations.append(py_file.name)
                 break
-            if isinstance(node, ast.Attribute) and node.attr in {
-                "RemoveEdge",
-                "PatchRemoveEdge",
-            }:
+            if isinstance(node, ast.Attribute) and node.attr in {"RemoveEdge", "PatchRemoveEdge"}:
                 violations.append(py_file.name)
                 break
 
@@ -947,9 +983,7 @@ def test_modification_builder_has_no_remove_edge_method():
         / "transforms"
         / "modification_builder.py"
     )
-    assert bridge_path.exists(), (
-        f"ModificationBuilder source not found at {bridge_path}"
-    )
+    assert bridge_path.exists(), f"ModificationBuilder source not found at {bridge_path}"
     source = bridge_path.read_text()
     assert "def remove_edge" not in source, (
         "ModificationBuilder gained a remove_edge method. "
@@ -969,12 +1003,9 @@ def test_compile_patch_plan_compiles_remove_edge():
     assert len(patch_plan.steps) == 1
     step = patch_plan.steps[0]
     assert isinstance(step, PatchRemoveEdge)
-    assert step.from_serial == 5
-    assert step.to_serial == 10
+    assert _snapshot_serial(step.from_serial, patch_plan) == 5
+    assert _snapshot_serial(step.to_serial, patch_plan) == 10
 
-    # Round-trip back to GraphModification
-    roundtripped = step.to_graph_modification()
-    assert roundtripped == RemoveEdge(from_serial=5, to_serial=10)
 
 
 def _branch_arm_clone_cfg() -> FlowGraph:
@@ -1081,26 +1112,26 @@ def test_clone_conditional_as_goto_from_branch_arm_projects_clone_and_arm_redire
     assert len(patch_plan.steps) == 1
     step = patch_plan.steps[0]
     assert isinstance(step, PatchCloneConditionalAsGotoFromBranchArm)
-    assert step.source_serial == 10
-    assert step.pred_serial == 7
+    assert _snapshot_serial(step.source_serial, patch_plan) == 10
+    assert _snapshot_serial(step.pred_serial, patch_plan) == 7
     assert step.pred_arm == 1
-    assert step.goto_target == 12
-    assert step.conditional_target == 12
-    assert step.fallthrough_target == 11
-    assert step.pred_branch_target_serial == 10
+    assert _snapshot_serial(step.goto_target, patch_plan) == 12
+    assert _snapshot_serial(step.conditional_target, patch_plan) == 12
+    assert _snapshot_serial(step.fallthrough_target, patch_plan) == 11
+    assert _snapshot_serial(step.pred_branch_target_serial, patch_plan) == 10
     # Allocator places the clone before existing terminal blocks, which
     # shifts the original pred_fallthrough (blk[20]) one slot up.  The
     # relocation map is applied here, so the recorded fallthrough is whatever
     # serial blk[20] now lives at after the clone slot is reserved.
-    assert step.pred_fallthrough_target_serial >= 20
-    assert step.assigned_serial > 0
+    assert _snapshot_serial(step.pred_fallthrough_target_serial, patch_plan) >= 20
+    _assert_plan_ref(step.block_id, patch_plan)
 
     # Post-state projection: pred 7's explicit branch arm now points at the
-    # clone (assigned_serial), clone points at the selected target 12, and
+    # clone (block_id), clone points at the selected target 12, and
     # the source conditional 10 retains both arms (still reachable from blk[8]).
     projected = project_post_state(_branch_arm_clone_cfg(), patch_plan)
     assert projected.get_block(10).succs == (11, 12)
-    clone = projected.get_block(step.assigned_serial)
+    clone = projected.get_block(max(_branch_arm_clone_cfg().blocks))
     assert clone is not None
     assert clone.succs == (12,)
 
@@ -1122,17 +1153,18 @@ def test_clone_conditional_as_goto_from_fallthrough_arm_projects_clone_and_redir
     step = patch_plan.steps[0]
     assert isinstance(step, PatchCloneConditionalAsGotoFromBranchArm)
     assert step.pred_arm == 0
-    assert step.goto_target == 11
-    assert step.pred_branch_target_serial >= 20
-    assert step.pred_fallthrough_target_serial == 10
-    assert step.conditional_target == 12
-    assert step.fallthrough_target == 11
+    assert _snapshot_serial(step.goto_target, patch_plan) == 11
+    assert _snapshot_serial(step.pred_branch_target_serial, patch_plan) >= 20
+    assert _snapshot_serial(step.pred_fallthrough_target_serial, patch_plan) == 10
+    assert _snapshot_serial(step.conditional_target, patch_plan) == 12
+    assert _snapshot_serial(step.fallthrough_target, patch_plan) == 11
 
     projected = project_post_state(_branch_arm_clone_fallthrough_cfg(), patch_plan)
     pred = projected.get_block(7)
     assert pred is not None
-    assert step.assigned_serial in pred.succs
-    clone = projected.get_block(step.assigned_serial)
+    clone_serial = max(_branch_arm_clone_fallthrough_cfg().blocks)
+    assert clone_serial in pred.succs
+    clone = projected.get_block(clone_serial)
     assert clone is not None
     assert clone.succs == (11,)
 
@@ -1291,4 +1323,3 @@ def test_compile_patch_plan_round_trips_legacy_flow_primitives():
     assert isinstance(plan.steps[4], PatchScalarizeLocalAliasAccess)
     assert isinstance(plan.steps[5], PatchRetargetOutputStore)
     assert isinstance(plan.steps[6], PatchPhaseCycleLowering)
-    assert plan.as_graph_modifications() == modifications

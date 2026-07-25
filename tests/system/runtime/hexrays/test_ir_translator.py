@@ -5,12 +5,11 @@ IRTranslator protocol and exposes the expected interface.
 
 Runs in IDA environment (system/runtime); skips gracefully without IDA.
 """
-
 from __future__ import annotations
 
 import importlib
 import platform
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from types import SimpleNamespace
 
 import pytest
@@ -27,6 +26,7 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.ir.expressions import ValueOpKind
+from d810.ir.maturity import MaturityEnvelope
 from d810.transforms.graph_modification import (
     CloneConditionalAsGoto,
     CreateConditionalRedirect,
@@ -35,6 +35,7 @@ from d810.transforms.graph_modification import (
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
+    RedirectBranch,
     RedirectGoto,
     RemoveEdge,
 )
@@ -44,18 +45,18 @@ from d810.transforms.plan import (
     PatchDuplicateReplayEntry,
     PatchDuplicateReplayAndRedirect,
     PatchInsertBlock,
+    PatchBlockSpec,
     PatchNopInstructions,
     PatchPlan,
     PatchRedirectBranch,
     PatchRedirectGoto,
-    VirtualBlockId,
     compile_patch_plan,
 )
-from d810.transforms.materialization_payload import (
-    CapturedBlockBody,
-    CapturedBlockBodySummary,
-)
+from d810.transforms.cfg_transaction import LogicalBlockRef, PlanBlockRef
+from d810.transforms.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+from d810.hexrays.ir.mba_identity_index import BlockHandleProvenance
+from d810.hexrays.mutation.patch_binding import PatchBindingRejected
 from d810.hexrays.mutation.ir_translator import (
     _build_lvar_stkoff_map,
     _branch_predicate_only_from_hexrays,
@@ -67,9 +68,53 @@ from d810.hexrays.mutation.ir_translator import (
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 
-_DEFAULT_TEST_BINARY = (
-    "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
-)
+_DEFAULT_TEST_BINARY = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+_TEST_MATURITY = MaturityEnvelope(ir=None, provider="hexrays", provider_id=4)
+_MANUAL_PLAN_ID = "system-ir-translator"
+_MANUAL_SNAPSHOT_ID = "system-ir-translator:m4:g0"
+_MANUAL_SESSION_ID = "system-ir-translator-session"
+_MANUAL_COORDINATES: dict[LogicalBlockRef, int] = {}
+
+
+def _manual_ref(serial: int) -> LogicalBlockRef:
+    ref = LogicalBlockRef(_MANUAL_SESSION_ID, f"logical:{serial}", 0)
+    _MANUAL_COORDINATES[ref] = serial
+    return ref
+
+
+def _manual_plan(*steps, execution_policy=ExecutionPolicy.STRICT) -> PatchPlan:
+    refs: list[LogicalBlockRef] = []
+
+    def collect(value: object) -> None:
+        if isinstance(value, LogicalBlockRef):
+            if value not in refs:
+                refs.append(value)
+            return
+        if is_dataclass(value):
+            for field in fields(value):
+                collect(getattr(value, field.name))
+            return
+        if isinstance(value, (tuple, list, set, frozenset)):
+            for item in value:
+                collect(item)
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                collect(key)
+                collect(item)
+
+    collect(steps)
+    return PatchPlan(
+        plan_id=_MANUAL_PLAN_ID,
+        snapshot_id=_MANUAL_SNAPSHOT_ID,
+        source_maturity=_TEST_MATURITY,
+        source_generation=0,
+        steps=tuple(steps),
+        execution_policy=execution_policy,
+        source_coordinates=tuple(
+            (ref, _MANUAL_COORDINATES[ref]) for ref in refs
+        ),
+    )
 
 
 class _FakeLocation:
@@ -91,7 +136,8 @@ class _FakeVars:
     def __init__(self, locations: tuple[_FakeLocation, ...]) -> None:
         self.size_called = False
         self.values = tuple(
-            SimpleNamespace(location=location) for location in locations
+            SimpleNamespace(location=location)
+            for location in locations
         )
 
     def size(self) -> int:
@@ -131,9 +177,7 @@ class _BlockRef:
     block_num: int
 
 
-def _block(
-    serial: int, succs: tuple[int, ...], preds: tuple[int, ...]
-) -> BlockSnapshot:
+def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
         block_type=1 if succs else 0,
@@ -282,12 +326,22 @@ def test_capture_mop_snapshot_preserves_nested_value_op_kind():
 
 
 def test_hexrays_branch_opcodes_map_to_backend_neutral_predicates():
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jnz) is (PredicateKind.NE)
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jnz) is (
+        PredicateKind.NE
+    )
     assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jz) is PredicateKind.EQ
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jae) is (PredicateKind.UGE)
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jb) is (PredicateKind.ULT)
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jg) is (PredicateKind.SGT)
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jle) is (PredicateKind.SLE)
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jae) is (
+        PredicateKind.UGE
+    )
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jb) is (
+        PredicateKind.ULT
+    )
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jg) is (
+        PredicateKind.SGT
+    )
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jle) is (
+        PredicateKind.SLE
+    )
 
 
 def _conditional_duplicate_cfg() -> FlowGraph:
@@ -433,9 +487,7 @@ def _find_conditional_duplicate_candidate(mba) -> tuple[int, int] | None:
             continue
         if source_blk.nsucc() != 2:
             continue
-        if source_blk.tail is None or not ida_hexrays.is_mcode_jcond(
-            source_blk.tail.opcode
-        ):
+        if source_blk.tail is None or not ida_hexrays.is_mcode_jcond(source_blk.tail.opcode):
             continue
 
         for pred_idx in range(source_blk.npred()):
@@ -454,6 +506,174 @@ def _find_conditional_duplicate_candidate(mba) -> tuple[int, int] | None:
             ):
                 return pred_blk.serial, source_blk.serial
     return None
+
+
+def _find_fallthrough_redirect_candidate(
+    mba,
+) -> tuple[int, int, int] | None:
+    for i in range(mba.qty):
+        block = mba.get_mblock(i)
+        if (
+            block is None
+            or block.serial == 0
+            or block.nsucc() != 2
+            or block.tail is None
+            or not ida_hexrays.is_mcode_jcond(block.tail.opcode)
+            or block.tail.d.t != ida_hexrays.mop_b
+        ):
+            continue
+        branch_target = int(block.tail.d.b)
+        fallthrough = next(
+            (int(block.succ(index)) for index in range(2) if int(block.succ(index)) != branch_target),
+            None,
+        )
+        if fallthrough is None:
+            continue
+        for target in range(mba.qty - 1):
+            target_block = mba.get_mblock(target)
+            if (
+                target not in {block.serial, branch_target, fallthrough}
+                and target_block is not None
+                and target_block.type not in (ida_hexrays.BLT_XTRN, ida_hexrays.BLT_STOP)
+            ):
+                return int(block.serial), fallthrough, target
+    return None
+
+
+def _created_serial(gateway: object, ref: PlanBlockRef) -> int:
+    assert ref.plan_id
+    matches = tuple(
+        receipt
+        for receipt in gateway.identity_index.plan_creation_receipts
+        if receipt.plan_ref == ref
+    )
+    assert len(matches) == 1
+    receipt = matches[0]
+    assert receipt.attempt_id.plan_id == ref.plan_id
+    return receipt.returned_serial
+
+
+def _gateway_for_plan(plan: PatchPlan, mba: object | None = None):
+    """Build a test gateway representing the plan's exact source snapshot."""
+    assert plan.source_generation is not None
+    assert plan.source_maturity is not None
+    if mba is None or not hasattr(mba, "qty"):
+        mba = SimpleNamespace(
+            qty=512,
+            maturity=plan.source_maturity.provider_id,
+            entry_ea=0,
+        )
+    return make_mutation_gateway(
+        mba,
+        generation=plan.source_generation,
+        snapshot_id=plan.snapshot_id,
+        maturity=plan.source_maturity.provider_id,
+        session_id=_MANUAL_SESSION_ID,
+    )
+
+
+def _lower(backend: IDAIRTranslator, plan: PatchPlan, mba: object) -> int:
+    if not hasattr(mba, "qty"):
+        snapshot_serials = {serial for _ref, serial in plan.source_coordinates}
+
+        def collect(value: object) -> None:
+            if is_dataclass(value):
+                for field in fields(value):
+                    collect(getattr(value, field.name))
+            elif isinstance(value, (tuple, list, set, frozenset)):
+                for item in value:
+                    collect(item)
+            elif isinstance(value, dict):
+                for key, item in value.items():
+                    collect(key)
+                    collect(item)
+
+        collect(plan)
+        mba = SimpleNamespace(
+            qty=max(snapshot_serials, default=-1) + 1,
+            maturity=plan.source_maturity.provider_id,
+            entry_ea=int(getattr(mba, "entry_ea", 0) or 0),
+        )
+    gateway = _gateway_for_plan(plan, mba)
+    source_refs = {
+        ref: gateway.identity_index.plan_ref_for_serial(serial)
+        for ref, serial in plan.source_coordinates
+    }
+
+    def bind_source_refs(value: object) -> object:
+        if isinstance(value, (LogicalBlockRef,)):
+            return source_refs.get(value, value)
+        if isinstance(value, tuple):
+            return tuple(bind_source_refs(item) for item in value)
+        if isinstance(value, list):
+            return [bind_source_refs(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                bind_source_refs(key): bind_source_refs(item)
+                for key, item in value.items()
+            }
+        if is_dataclass(value):
+            return replace(
+                value,
+                **{
+                    field.name: bind_source_refs(getattr(value, field.name))
+                    for field in fields(value)
+                },
+            )
+        return value
+
+    bound_plan = replace(
+        plan,
+        steps=bind_source_refs(plan.steps),
+        new_blocks=bind_source_refs(plan.new_blocks),
+        relocation_map=bind_source_refs(plan.relocation_map),
+        source_coordinates=tuple(
+            (source_refs.get(ref, ref), serial)
+            for ref, serial in plan.source_coordinates
+        ),
+    )
+    return backend.lower(bound_plan, mba, mutation_gateway=gateway)
+
+
+def _compile_for_gateway(
+    backend: IDAIRTranslator,
+    mba: object,
+    gateway: object,
+    modifications: list[object],
+) -> PatchPlan:
+    index = gateway.identity_index
+    return compile_patch_plan(
+        modifications,
+        backend.lift(mba),
+        snapshot_id=index.snapshot_id,
+        source_maturity=MaturityEnvelope(
+            ir=None,
+            provider="hexrays",
+            provider_id=index.maturity,
+        ),
+        source_generation=index.generation,
+        block_refs_by_serial=index.plan_refs_by_serial(),
+    )
+
+
+def _compile_test_patch_plan(
+    modifications: list[object],
+    cfg: FlowGraph | None = None,
+) -> PatchPlan:
+    return compile_patch_plan(
+        modifications,
+        cfg,
+        source_maturity=_TEST_MATURITY,
+        source_generation=0,
+        block_refs_by_serial={
+            serial: LogicalBlockRef(
+                _MANUAL_SESSION_ID,
+                f"compiler-source:{serial}",
+                0,
+            )
+            for serial in range(1024)
+        },
+    )
 
 
 class TestIDAIRTranslatorBasics:
@@ -477,8 +697,7 @@ class TestIDAIRTranslatorBasics:
             backend.lower(  # type: ignore[arg-type]
                 [RedirectGoto(from_serial=1, old_target=2, new_target=3)],
                 object(),
-                mutation_gateway=make_mutation_gateway(),
-            )
+            mutation_gateway = make_mutation_gateway())
 
 
 class _FakeDeferredGraphModifier:
@@ -486,6 +705,10 @@ class _FakeDeferredGraphModifier:
         self.mba = mba
         self.calls: list[tuple] = []
         self.verify_failed = False
+        self.bound_plan = None
+
+    def configure_patch_bindings(self, bound_plan: object) -> None:
+        self.bound_plan = bound_plan
 
     def queue_goto_change(self, src: int, new: int, description: str = "") -> None:
         self.calls.append(("goto", src, new, description))
@@ -495,13 +718,14 @@ class _FakeDeferredGraphModifier:
         src: int,
         new: int,
         old_target: int | None = None,
+        expected_helper_serial: int | None = None,
         description: str = "",
     ) -> None:
-        self.calls.append(("branch", src, new, old_target, description))
+        self.calls.append(
+            ("branch", src, new, old_target, description, expected_helper_serial)
+        )
 
-    def queue_convert_to_goto(
-        self, serial: int, target: int, description: str = ""
-    ) -> None:
+    def queue_convert_to_goto(self, serial: int, target: int, description: str = "") -> None:
         self.calls.append(("convert", serial, target, description))
 
     def queue_edge_redirect(
@@ -651,7 +875,8 @@ class _FakeDeferredGraphModifier:
                         clone_serial,
                         len(instructions),
                     )
-                    for pred, target, replay_serial, clone_serial, instructions in per_pred_replays
+                    for pred, target, replay_serial, clone_serial, instructions
+                    in per_pred_replays
                 ),
                 description,
             )
@@ -680,9 +905,7 @@ class _FakeDeferredGraphModifier:
     def queue_insn_nop(self, serial: int, ea: int, description: str = "") -> None:
         self.calls.append(("nop", serial, ea, description))
 
-    def queue_remove_edge(
-        self, from_serial: int, to_serial: int, description: str = ""
-    ) -> None:
+    def queue_remove_edge(self, from_serial: int, to_serial: int, description: str = "") -> None:
         self.calls.append(("remove_edge", from_serial, to_serial, description))
 
     def _check_edge_split_trampoline_preconditions(
@@ -701,6 +924,176 @@ class _FakeDeferredGraphModifier:
     def apply(self, **kwargs) -> int:  # noqa: ANN003
         self.calls.append(("apply", kwargs))
         return sum(1 for call in self.calls if call[0] != "apply")
+
+
+class TestTypedPatchBinding:
+    def test_lower_binds_snapshot_ref_only_at_modifier_queue_boundary(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mba = SimpleNamespace(qty=1, maturity=4)
+        gateway = make_mutation_gateway(mba, generation=7)
+        block_ref = gateway.identity_index.plan_ref_for_serial(0)
+        plan = PatchPlan(
+            plan_id="typed-lowering",
+            snapshot_id=gateway.identity_index.snapshot_id,
+            source_maturity=_TEST_MATURITY,
+            source_generation=7,
+            steps=(PatchNopInstructions(block_ref, (0x401000,)),),
+            source_coordinates=((block_ref, 0),),
+        )
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
+
+        assert IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway) == 1
+        assert created[0].bound_plan is not None
+        assert created[0].calls[0][:3] == ("nop", 0, 0x401000)
+
+    def test_lower_rejects_wrong_snapshot_before_modifier_creation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mba = SimpleNamespace(qty=1, maturity=4)
+        gateway = make_mutation_gateway(mba, generation=7)
+        stale_ref = LogicalBlockRef("stale-session", "logical:0", 0)
+        plan = PatchPlan(
+            plan_id="typed-lowering",
+            snapshot_id="stale-snapshot",
+            source_maturity=_TEST_MATURITY,
+            source_generation=7,
+            steps=(PatchNopInstructions(stale_ref, (0x401000,)),),
+        )
+        created: list[object] = []
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            lambda *_args, **_kwargs: created.append(object()),
+        )
+
+        with pytest.raises(PatchBindingRejected, match="snapshot authority"):
+            IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway)
+
+        assert created == []
+
+    def test_queue_exception_aborts_all_prewrite_identity_residue_and_retry_works(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mba = SimpleNamespace(qty=1, maturity=4)
+        gateway = make_mutation_gateway(mba, generation=7)
+        source = gateway.identity_index.plan_ref_for_serial(0)
+        created_ref = PlanBlockRef("typed-retry", "insert:0")
+        plan = PatchPlan(
+            plan_id="typed-retry",
+            snapshot_id=gateway.identity_index.snapshot_id,
+            source_maturity=_TEST_MATURITY,
+            source_generation=7,
+            steps=(
+                PatchInsertBlock(
+                    block_id=created_ref,
+                    pred_serial=source,
+                    succ_serial=source,
+                    instructions=(),
+                ),
+            ),
+            new_blocks=(PatchBlockSpec(created_ref, "insert", template_block=source),),
+            source_coordinates=((source, 0),),
+        )
+        child_gateways: list[object] = []
+        call_count = 0
+
+        def _factory(mba: object, **kwargs) -> _FakeDeferredGraphModifier:
+            nonlocal call_count
+            call_count += 1
+            child_gateways.append(kwargs["mutation_gateway"])
+            modifier = _FakeDeferredGraphModifier(mba)
+            if call_count == 1:
+                def _explode(**_kwargs) -> None:
+                    raise RuntimeError("queue exploded before SDK write")
+
+                modifier.queue_create_and_redirect = _explode  # type: ignore[method-assign]
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
+        baseline_proxy_count = gateway.identity_index.logical_proxy_count
+
+        with pytest.raises(RuntimeError, match="queue exploded"):
+            IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway)
+
+        assert not child_gateways[0].active
+        assert gateway.identity_index.logical_proxy_count == baseline_proxy_count
+        assert gateway.identity_index.plan_creation_receipts == ()
+
+        assert IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway) == 1
+
+    def test_partial_reservation_failure_aborts_prewrite_identity_residue(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mba = SimpleNamespace(qty=1, maturity=4)
+        gateway = make_mutation_gateway(mba, generation=7)
+        refs = (
+            PlanBlockRef("reservation-retry", "insert:0"),
+            PlanBlockRef("reservation-retry", "insert:1"),
+        )
+        plan = PatchPlan(
+            plan_id="reservation-retry",
+            snapshot_id=gateway.identity_index.snapshot_id,
+            source_maturity=_TEST_MATURITY,
+            source_generation=7,
+            new_blocks=tuple(PatchBlockSpec(ref, "insert") for ref in refs),
+        )
+        child_gateways: list[object] = []
+        gateway_type = type(gateway)
+        index_type = type(gateway.identity_index)
+        original_new_transaction = gateway_type.new_transaction
+        original_reserve = index_type.reserve_plan_block
+        reservation_calls = 0
+
+        def _new_transaction(self):
+            child = original_new_transaction(self)
+            child_gateways.append(child)
+            return child
+
+        def _reserve(self, attempt, ref, **kwargs):
+            nonlocal reservation_calls
+            reservation_calls += 1
+            if reservation_calls == 2:
+                raise RuntimeError("second reservation failed")
+            return original_reserve(self, attempt, ref, **kwargs)
+
+        monkeypatch.setattr(gateway_type, "new_transaction", _new_transaction)
+        monkeypatch.setattr(index_type, "reserve_plan_block", _reserve)
+        baseline_proxy_count = gateway.identity_index.logical_proxy_count
+
+        with pytest.raises(RuntimeError, match="second reservation failed"):
+            IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway)
+
+        assert not child_gateways[0].active
+        assert gateway.identity_index.logical_proxy_count == baseline_proxy_count
+        assert gateway.identity_index.plan_creation_receipts == ()
+
+        monkeypatch.setattr(
+            index_type,
+            "reserve_plan_block",
+            original_reserve,
+        )
+        assert IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway) == 0
 
 
 class TestIDAIntegration:
@@ -729,9 +1122,7 @@ class TestIDAIntegration:
         assert hasattr(backend, "verify")
         assert callable(backend.verify)
 
-    def test_lower_applies_insert_block_patch_plan_to_real_mba(
-        self, libobfuscated_setup
-    ):
+    def test_lower_applies_insert_block_patch_plan_to_real_mba(self, libobfuscated_setup):
         mba = _get_real_mba()
         edge = _find_insertable_edge(mba)
         if edge is None:
@@ -739,25 +1130,24 @@ class TestIDAIntegration:
 
         pred_serial, succ_serial = edge
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        gateway = make_mutation_gateway(mba)
+        patch_plan = _compile_for_gateway(
+            backend,
+            mba,
+            gateway,
             [
                 InsertBlock(
                     pred_serial=pred_serial,
                     succ_serial=succ_serial,
-                    instructions=(
-                        InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),
-                    ),
+                    instructions=(InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),),
                 )
             ],
-            backend.lift(mba),
         )
         insert_step = next(
             step for step in patch_plan.steps if isinstance(step, PatchInsertBlock)
         )
 
-        count = backend.lower(
-            patch_plan, mba, mutation_gateway=make_mutation_gateway(mba)
-        )
+        count = backend.lower(patch_plan, mba, mutation_gateway=gateway)
 
         assert count == 1
         mba.verify(True)
@@ -765,26 +1155,67 @@ class TestIDAIntegration:
         pred_blk = mba.get_mblock(pred_serial)
         assert pred_blk is not None
         assert pred_blk.nsucc() == 1
-        assert pred_blk.succ(0) == insert_step.assigned_serial
+        inserted_serial = _created_serial(gateway, insert_step.block_id)
+        assert pred_blk.succ(0) == inserted_serial
 
-        inserted_blk = mba.get_mblock(insert_step.assigned_serial)
+        inserted_blk = mba.get_mblock(inserted_serial)
         assert inserted_blk is not None
         assert inserted_blk.nsucc() == 1
-        assert inserted_blk.succ(0) == insert_step.succ_serial
+        assert inserted_blk.succ(0) == succ_serial
 
-    def test_lower_applies_duplicate_block_patch_plan_to_real_mba(
-        self, libobfuscated_setup
+    def test_fallthrough_redirect_publishes_typed_helper_receipt(
+        self,
+        libobfuscated_setup,
     ):
+        mba = _get_real_mba()
+        candidate = _find_fallthrough_redirect_candidate(mba)
+        if candidate is None:
+            pytest.skip("No conditional fallthrough redirect candidate available")
+        source, old_fallthrough, new_target = candidate
+        backend = IDAIRTranslator()
+        gateway = make_mutation_gateway(mba)
+        patch_plan = _compile_for_gateway(
+            backend,
+            mba,
+            gateway,
+            [RedirectBranch(source, old_fallthrough, new_target)],
+        )
+        step = patch_plan.steps[0]
+        assert isinstance(step, PatchRedirectBranch)
+        assert step.fallthrough_helper_block_id is not None
+
+        assert backend.lower(patch_plan, mba, mutation_gateway=gateway) == 1
+        mba.verify(True)
+
+        receipts = tuple(
+            receipt
+            for receipt in gateway.identity_index.plan_creation_receipts
+            if receipt.plan_ref == step.fallthrough_helper_block_id
+        )
+        assert len(receipts) == 1
+        receipt = receipts[0]
+        assert (
+            receipt.logical_version.handle.provenance
+            is BlockHandleProvenance.CREATED_SYNTHETIC
+        )
+        helper = mba.get_mblock(receipt.returned_serial)
+        assert helper is not None
+        assert helper.nsucc() == 1
+        assert helper.succ(0) == new_target
+
+    def test_lower_applies_duplicate_block_patch_plan_to_real_mba(self, libobfuscated_setup):
         mba = _get_real_mba()
         candidate = _find_duplicate_candidate(mba)
         if candidate is None:
-            pytest.skip(
-                "No supported predecessor/source pair available for DuplicateBlock runtime test"
-            )
+            pytest.skip("No supported predecessor/source pair available for DuplicateBlock runtime test")
 
         pred_serial, source_serial = candidate
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        gateway = make_mutation_gateway(mba)
+        patch_plan = _compile_for_gateway(
+            backend,
+            mba,
+            gateway,
             [
                 DuplicateBlock(
                     source_block=source_serial,
@@ -792,33 +1223,30 @@ class TestIDAIntegration:
                     pred_serial=pred_serial,
                 )
             ],
-            backend.lift(mba),
         )
         duplicate_step = next(
             step for step in patch_plan.steps if isinstance(step, PatchDuplicateBlock)
         )
-
-        count = backend.lower(
-            patch_plan, mba, mutation_gateway=make_mutation_gateway(mba)
+        assert (
+            gateway.identity_index.plan_ref_for_serial(pred_serial)
+            == duplicate_step.pred_serial
         )
+
+        count = backend.lower(patch_plan, mba, mutation_gateway=gateway)
 
         assert count == 1
         mba.verify(True)
 
         pred_blk = mba.get_mblock(pred_serial)
         assert pred_blk is not None
-        assert duplicate_step.pred_serial == pred_serial
-        assert duplicate_step.assigned_serial in {
-            pred_blk.succ(i) for i in range(pred_blk.nsucc())
-        }
+        duplicated_serial = _created_serial(gateway, duplicate_step.block_id)
+        assert duplicated_serial in {pred_blk.succ(i) for i in range(pred_blk.nsucc())}
 
-        duplicated_blk = mba.get_mblock(duplicate_step.assigned_serial)
+        duplicated_blk = mba.get_mblock(duplicated_serial)
         assert duplicated_blk is not None
         assert duplicated_blk.nsucc() == len(duplicate_step.source_successors)
 
-    def test_lower_applies_conditional_duplicate_block_patch_plan_to_real_mba(
-        self, libobfuscated_setup
-    ):
+    def test_lower_applies_conditional_duplicate_block_patch_plan_to_real_mba(self, libobfuscated_setup):
         mba = _get_real_mba()
         candidate = _find_conditional_duplicate_candidate(mba)
         if candidate is None:
@@ -828,7 +1256,11 @@ class TestIDAIntegration:
 
         pred_serial, source_serial = candidate
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        gateway = make_mutation_gateway(mba)
+        patch_plan = _compile_for_gateway(
+            backend,
+            mba,
+            gateway,
             [
                 DuplicateBlock(
                     source_block=source_serial,
@@ -836,32 +1268,33 @@ class TestIDAIntegration:
                     pred_serial=pred_serial,
                 )
             ],
-            backend.lift(mba),
         )
         duplicate_step = next(
             step for step in patch_plan.steps if isinstance(step, PatchDuplicateBlock)
         )
 
-        assert duplicate_step.fallthrough_serial is not None
+        assert duplicate_step.fallthrough_block_id is not None
 
-        count = backend.lower(
-            patch_plan, mba, mutation_gateway=make_mutation_gateway(mba)
-        )
+        count = backend.lower(patch_plan, mba, mutation_gateway=gateway)
 
         assert count == 1
         mba.verify(True)
 
         pred_blk = mba.get_mblock(pred_serial)
         assert pred_blk is not None
-        assert duplicate_step.assigned_serial in {
+        duplicated_serial = _created_serial(gateway, duplicate_step.block_id)
+        assert duplicated_serial in {
             pred_blk.succ(i) for i in range(pred_blk.nsucc())
         }
 
-        duplicated_blk = mba.get_mblock(duplicate_step.assigned_serial)
+        duplicated_blk = mba.get_mblock(duplicated_serial)
         assert duplicated_blk is not None
         assert duplicated_blk.nsucc() == 2
 
-        duplicated_default = mba.get_mblock(duplicate_step.fallthrough_serial)
+        fallthrough_serial = _created_serial(
+            gateway, duplicate_step.fallthrough_block_id
+        )
+        duplicated_default = mba.get_mblock(fallthrough_serial)
         assert duplicated_default is not None
         assert duplicated_default.nsucc() == 1
 
@@ -883,13 +1316,15 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = PatchPlan(
-            steps=(PatchRedirectGoto(from_serial=7, old_target=8, new_target=9),)
+        patch_plan = _manual_plan(
+            PatchRedirectGoto(
+                from_serial=_manual_ref(7),
+                old_target=_manual_ref(8),
+                new_target=_manual_ref(9),
+            )
         )
 
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
+        count = _lower(backend, patch_plan, object())
 
         assert count == 1
         assert len(created) == 1
@@ -917,23 +1352,20 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = PatchPlan(
-            steps=(PatchRedirectBranch(from_serial=15, old_target=16, new_target=66),)
+        patch_plan = _manual_plan(
+            PatchRedirectBranch(
+                from_serial=_manual_ref(15),
+                old_target=_manual_ref(16),
+                new_target=_manual_ref(66),
+            )
         )
 
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
+        count = _lower(backend, patch_plan, object())
 
         assert count == 1
         assert len(created) == 1
-        assert created[0].calls[0] == (
-            "branch",
-            15,
-            66,
-            16,
-            "redirect branch 15: 16->66",
-        )
+        assert created[0].calls[0][:4] == ("branch", 15, 66, 16)
+        assert created[0].calls[0][4].startswith("redirect branch ")
 
     def test_lower_applies_edge_split_trampoline_patch_plan(
         self,
@@ -956,7 +1388,7 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        patch_plan = _compile_test_patch_plan(
             [
                 EdgeRedirectViaPredSplit(
                     src_block=45,
@@ -969,14 +1401,14 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
+        count = _lower(backend, patch_plan, object())
 
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "edge_split_trampoline"
-        assert created[0].calls[0][1:6] == (45, 122, 2, 2, 199)
+        step = patch_plan.steps[0]
+        expected = created[0].bound_plan.serial_for(step.block_id)
+        assert created[0].calls[0][1:6] == (45, 122, 2, 2, expected)
 
     def test_lower_applies_edge_split_corridor_patch_plan(
         self,
@@ -999,7 +1431,7 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        patch_plan = _compile_test_patch_plan(
             [
                 EdgeRedirectViaPredSplit(
                     src_block=45,
@@ -1013,16 +1445,14 @@ class TestIDAIntegration:
             _corridor_cfg(),
         )
 
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
+        count = _lower(backend, patch_plan, object())
 
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "edge_redirect"
         assert created[0].calls[0][1:8] == (45, 46, 2, 44, 46, None, 550)
 
-    def test_lower_rejects_legacy_block_creation_when_disabled(
+    def test_compile_insert_requires_exact_source_graph(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ):
@@ -1042,22 +1472,16 @@ class TestIDAIntegration:
             _factory,
         )
 
-        backend = IDAIRTranslator(allow_legacy_block_creation=False)
-        patch_plan = compile_patch_plan(
-            [
-                InsertBlock(
-                    pred_serial=45,
-                    succ_serial=2,
-                    instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),),
-                )
-            ]
-        )
-
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
-
-        assert count == 0
+        with pytest.raises(ValueError, match="requires FlowGraph context"):
+            compile_patch_plan(
+                [
+                    InsertBlock(
+                        pred_serial=45,
+                        succ_serial=2,
+                        instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),),
+                    )
+                ]
+            )
         assert created == []
 
     def test_lower_applies_conditional_redirect_patch_plan(
@@ -1082,7 +1506,7 @@ class TestIDAIntegration:
 
         backend = IDAIRTranslator()
         instructions = (InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),)
-        patch_plan = compile_patch_plan(
+        patch_plan = _compile_test_patch_plan(
             [
                 CreateConditionalRedirect(
                     source_block=44,
@@ -1096,22 +1520,25 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
+        count = _lower(backend, patch_plan, object())
 
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "create_conditional"
+        step = patch_plan.steps[0]
+        expected_conditional = created[0].bound_plan.serial_for(step.block_id)
+        expected_fallthrough = created[0].bound_plan.serial_for(
+            step.fallthrough_block_id
+        )
         assert created[0].calls[0][1:9] == (
             44,
             45,
-            201,
+            199,
             2,
             45,
             instructions,
-            199,
-            200,
+            expected_conditional,
+            expected_fallthrough,
         )
 
     def test_lower_applies_insert_block_patch_plan(
@@ -1135,7 +1562,7 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        patch_plan = _compile_test_patch_plan(
             [
                 InsertBlock(
                     pred_serial=45,
@@ -1146,16 +1573,14 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(
-            patch_plan,
-            SimpleNamespace(entry_ea=0x180000000),
-            mutation_gateway=make_mutation_gateway(),
-        )
+        count = _lower(backend, patch_plan, SimpleNamespace(entry_ea=0x180000000))
 
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "create_and_redirect"
-        assert created[0].calls[0][1:6] == (45, 200, 1, False, 199)
+        step = patch_plan.steps[0]
+        expected = created[0].bound_plan.serial_for(step.block_id)
+        assert created[0].calls[0][1:6] == (45, 199, 1, False, expected)
 
     def test_lower_applies_duplicate_block_patch_plan(
         self,
@@ -1178,7 +1603,7 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        patch_plan = _compile_test_patch_plan(
             [
                 DuplicateBlock(
                     source_block=45,
@@ -1189,14 +1614,14 @@ class TestIDAIntegration:
             _cfg(),
         )
 
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
+        count = _lower(backend, patch_plan, object())
 
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "duplicate_block"
-        assert created[0].calls[0][1:8] == (45, 44, 200, None, None, 199, None)
+        step = patch_plan.steps[0]
+        expected = created[0].bound_plan.serial_for(step.block_id)
+        assert created[0].calls[0][1:8] == (45, 44, 199, None, None, expected, None)
 
     def test_lower_applies_duplicate_replay_patch_plan(
         self,
@@ -1219,7 +1644,7 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        patch_plan = _compile_test_patch_plan(
             [
                 DuplicateReplayAndRedirect(
                     source_serial=45,
@@ -1242,17 +1667,24 @@ class TestIDAIntegration:
         )
 
         assert isinstance(patch_plan.steps[0], PatchDuplicateReplayAndRedirect)
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
+        count = _lower(backend, patch_plan, object())
 
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "duplicate_replay"
         assert created[0].calls[0][1:3] == (45, 2)
+        step = patch_plan.steps[0]
+        first, second = step.per_pred_replays
+        bound = created[0].bound_plan
         assert created[0].calls[0][3] == (
-            (44, 202, 199, None, 1),
-            (122, 202, 200, 201, 1),
+            (44, 199, bound.serial_for(first.replay_block_id), None, 1),
+            (
+                122,
+                199,
+                bound.serial_for(second.replay_block_id),
+                bound.serial_for(second.clone_block_id),
+                1,
+            ),
         )
 
     def test_lower_rejects_call_captured_duplicate_replay_before_modifier_creation(
@@ -1276,24 +1708,29 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
+        plan_id = "reject-call-replay"
+        snapshot_id = "reject-call-replay:m4:g0"
+        snapshot = _manual_ref
         patch_plan = PatchPlan(
+            plan_id=plan_id,
+            snapshot_id=snapshot_id,
+            source_maturity=_TEST_MATURITY,
+            source_generation=0,
             steps=(
                 PatchDuplicateReplayAndRedirect(
-                    source_serial=45,
-                    dispatcher_entry=2,
+                    source_serial=snapshot(45),
+                    dispatcher_entry=snapshot(2),
                     per_pred_replays=(
                         PatchDuplicateReplayEntry(
-                            pred_serial=44,
-                            target_serial=199,
-                            replay_block_id=VirtualBlockId("duplicate_replay", 0),
-                            replay_serial=200,
+                            pred_serial=snapshot(44),
+                            target_serial=snapshot(199),
+                            replay_block_id=PlanBlockRef(plan_id, "duplicate_replay:0"),
                             captured_body=_captured_body(45, contains_call=True),
                         ),
                         PatchDuplicateReplayEntry(
-                            pred_serial=122,
-                            target_serial=199,
-                            replay_block_id=VirtualBlockId("duplicate_replay", 1),
-                            replay_serial=201,
+                            pred_serial=snapshot(122),
+                            target_serial=snapshot(199),
+                            replay_block_id=PlanBlockRef(plan_id, "duplicate_replay:1"),
                             captured_body=_captured_body(45),
                         ),
                     ),
@@ -1301,9 +1738,7 @@ class TestIDAIntegration:
             )
         )
 
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
+        count = _lower(backend, patch_plan, object())
 
         assert count == 0
         assert created == []
@@ -1329,7 +1764,7 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        patch_plan = _compile_test_patch_plan(
             [
                 DuplicateBlock(
                     source_block=45,
@@ -1340,14 +1775,18 @@ class TestIDAIntegration:
             _conditional_duplicate_cfg(),
         )
 
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
+        count = _lower(backend, patch_plan, object())
 
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "duplicate_block"
-        assert created[0].calls[0][1:8] == (45, 44, None, 2, 3, 199, 200)
+        step = patch_plan.steps[0]
+        bound = created[0].bound_plan
+        assert created[0].calls[0][1:8] == (
+            45, 44, None, 2, 3,
+            bound.serial_for(step.block_id),
+            bound.serial_for(step.fallthrough_block_id),
+        )
 
     def test_lower_applies_conditional_duplicate_block_patch_plan_with_explicit_targets(
         self,
@@ -1370,7 +1809,7 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        patch_plan = _compile_test_patch_plan(
             [
                 DuplicateBlock(
                     source_block=45,
@@ -1383,14 +1822,18 @@ class TestIDAIntegration:
             _conditional_duplicate_cfg(),
         )
 
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
+        count = _lower(backend, patch_plan, object())
 
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "duplicate_block"
-        assert created[0].calls[0][1:8] == (45, 44, None, 201, 3, 199, 200)
+        step = patch_plan.steps[0]
+        bound = created[0].bound_plan
+        assert created[0].calls[0][1:8] == (
+            45, 44, None, 199, 3,
+            bound.serial_for(step.block_id),
+            bound.serial_for(step.fallthrough_block_id),
+        )
 
     def test_lower_applies_clone_conditional_as_goto_patch_plan(
         self,
@@ -1413,7 +1856,7 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        patch_plan = _compile_test_patch_plan(
             [
                 CloneConditionalAsGoto(
                     source_block=45,
@@ -1425,17 +1868,17 @@ class TestIDAIntegration:
             _conditional_duplicate_cfg(),
         )
 
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
+        count = _lower(backend, patch_plan, object())
 
         assert count == 1
         assert len(created) == 1
         assert created[0].calls[0][0] == "clone_conditional_as_goto"
-        assert created[0].calls[0][1:5] == (45, 44, 2, 199)
+        step = patch_plan.steps[0]
+        expected = created[0].bound_plan.serial_for(step.block_id)
+        assert created[0].calls[0][1:5] == (45, 44, 2, expected)
         assert "fix predecessor simple case" in created[0].calls[0][5]
 
-    def test_lower_rejects_unsupported_legacy_insert_block_when_enabled(
+    def test_compile_insert_never_falls_back_to_backend_local_lowering(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ):
@@ -1455,22 +1898,16 @@ class TestIDAIntegration:
             _factory,
         )
 
-        backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
-            [
-                InsertBlock(
-                    pred_serial=45,
-                    succ_serial=2,
-                    instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),),
-                )
-            ]
-        )
-
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
-        )
-
-        assert count == 0
+        with pytest.raises(ValueError, match="requires FlowGraph context"):
+            compile_patch_plan(
+                [
+                    InsertBlock(
+                        pred_serial=45,
+                        succ_serial=2,
+                        instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),),
+                    )
+                ]
+            )
         assert created == []
 
     def test_lower_rejects_unreconstructable_patch_insert_block_before_modifier_creation(
@@ -1494,24 +1931,18 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        patch_plan = _compile_test_patch_plan(
             [
                 InsertBlock(
                     pred_serial=45,
                     succ_serial=199,
-                    instructions=(
-                        InsnSnapshot(opcode=0x77, ea=0x1000, operands=(object(),)),
-                    ),
+                    instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=(object(),)),),
                 )
             ],
             _cfg(),
         )
 
-        count = backend.lower(
-            patch_plan,
-            SimpleNamespace(entry_ea=0x180000000),
-            mutation_gateway=make_mutation_gateway(),
-        )
+        count = _lower(backend, patch_plan, SimpleNamespace(entry_ea=0x180000000))
 
         assert count == 0
         assert created == []
@@ -1537,7 +1968,7 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan(
+        patch_plan = _compile_test_patch_plan(
             [
                 InsertBlock(
                     pred_serial=45,
@@ -1550,11 +1981,7 @@ class TestIDAIntegration:
 
         assert isinstance(patch_plan.steps[0], PatchInsertBlock)
 
-        count = backend.lower(
-            patch_plan,
-            SimpleNamespace(entry_ea=0x180000000),
-            mutation_gateway=make_mutation_gateway(),
-        )
+        count = _lower(backend, patch_plan, SimpleNamespace(entry_ea=0x180000000))
 
         assert count == 0
         assert created == []
@@ -1580,18 +2007,19 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = compile_patch_plan([RemoveEdge(from_serial=45, to_serial=2)])
-
-        count = backend.lower(
-            patch_plan, object(), mutation_gateway=make_mutation_gateway()
+        patch_plan = _compile_test_patch_plan(
+            [RemoveEdge(from_serial=45, to_serial=2)]
         )
+
+        count = _lower(backend, patch_plan, object())
 
         assert len(created) == 1
         modifier = created[0]
         # Should have queued remove_edge + apply
         remove_calls = [c for c in modifier.calls if c[0] == "remove_edge"]
         assert len(remove_calls) == 1
-        assert remove_calls[0] == ("remove_edge", 45, 2, "remove edge 45->2")
+        assert remove_calls[0][:3] == ("remove_edge", 45, 2)
+        assert remove_calls[0][3].startswith("remove edge ")
         assert count > 0
 
 
@@ -1625,23 +2053,28 @@ class TestExecutionPolicyGuard:
             created.append(modifier)
             return modifier
 
-        deferred_modifier = importlib.import_module(
-            "d810.hexrays.mutation.deferred_modifier"
-        )
+        deferred_modifier = importlib.import_module("d810.hexrays.mutation.deferred_modifier")
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
 
         backend = IDAIRTranslator()
 
         # PatchRedirectGoto is a structural CFG edit — must be rejected under relaxed policy.
-        plan = compile_patch_plan(
+        plan = _compile_test_patch_plan(
             [RedirectGoto(from_serial=10, old_target=20, new_target=30)],
+        )
+        plan = PatchPlan(
+            plan_id=plan.plan_id,
+            snapshot_id=plan.snapshot_id,
+            source_maturity=plan.source_maturity,
+            source_generation=plan.source_generation,
+            steps=plan.steps,
+            new_blocks=plan.new_blocks,
+            relocation_map=plan.relocation_map,
             execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
         )
-        count = backend.lower(plan, object(), mutation_gateway=make_mutation_gateway())
+        count = _lower(backend, plan, object())
 
-        assert count == 0, (
-            "CFG-edit plan must be rejected when policy is NOP_CLEANUP_RELAXED"
-        )
+        assert count == 0, "CFG-edit plan must be rejected when policy is NOP_CLEANUP_RELAXED"
         assert created == [], "Modifier must not be created when guard rejects the plan"
 
     def test_nop_only_plan_passes_guard(
@@ -1660,19 +2093,17 @@ class TestExecutionPolicyGuard:
             created.append(modifier)
             return modifier
 
-        deferred_modifier = importlib.import_module(
-            "d810.hexrays.mutation.deferred_modifier"
-        )
+        deferred_modifier = importlib.import_module("d810.hexrays.mutation.deferred_modifier")
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
 
         backend = IDAIRTranslator()
 
         # PatchNopInstructions is the only allowed step type — must pass the guard.
-        nop_plan = PatchPlan(
-            steps=(PatchNopInstructions(block_serial=7, insn_eas=(0xDEAD,)),),
+        nop_plan = _manual_plan(
+            PatchNopInstructions(block_serial=_manual_ref(7), insn_eas=(0xDEAD,)),
             execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
         )
-        backend.lower(nop_plan, object(), mutation_gateway=make_mutation_gateway())
+        _lower(backend, nop_plan, object())
 
         assert len(created) == 1, (
             "NOP-only plan must not be rejected by the step-type guard; "
@@ -1701,15 +2132,12 @@ class TestExecutionPolicyGuard:
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
 
         backend = IDAIRTranslator(contract=_ExplodingContract())
-        nop_plan = PatchPlan(
-            steps=(PatchNopInstructions(block_serial=7, insn_eas=(0xDEAD,)),),
+        nop_plan = _manual_plan(
+            PatchNopInstructions(block_serial=_manual_ref(7), insn_eas=(0xDEAD,)),
             execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
         )
 
-        assert (
-            backend.lower(nop_plan, object(), mutation_gateway=make_mutation_gateway())
-            == 1
-        )
+        assert _lower(backend, nop_plan, object()) == 1
         assert len(created) == 1
         apply_calls = [call for call in created[0].calls if call[0] == "apply"]
         assert len(apply_calls) == 1
@@ -1733,15 +2161,12 @@ class TestExecutionPolicyGuard:
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
 
         backend = IDAIRTranslator()
-        nop_plan = PatchPlan(
-            steps=(PatchNopInstructions(block_serial=7, insn_eas=(0xDEAD,)),),
+        nop_plan = _manual_plan(
+            PatchNopInstructions(block_serial=_manual_ref(7), insn_eas=(0xDEAD,)),
             execution_policy=ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED,
         )
 
-        assert (
-            backend.lower(nop_plan, object(), mutation_gateway=make_mutation_gateway())
-            == 1
-        )
+        assert _lower(backend, nop_plan, object()) == 1
         apply_calls = [call for call in created[0].calls if call[0] == "apply"]
         assert len(apply_calls) == 1
         assert apply_calls[0][1]["run_deep_cleaning"] is True

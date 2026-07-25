@@ -4,11 +4,11 @@ The executor records lineage after a PatchPlan is successfully applied, before
 the post-apply diagnostic snapshot is captured.  ``snapshot_mba`` can later
 drain this process-local buffer and persist the rows under its new snapshot_id.
 """
-
 from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.ir.block_identity import (
@@ -19,7 +19,9 @@ from d810.ir.block_identity import (
     hex64,
 )
 from d810.ir.flowgraph import FlowGraph
-from d810.transforms.plan import LegacyBlockOperation, PatchPlan, VirtualBlockId
+from d810.transforms.cfg_transaction import PlanBlockRef
+from d810.transforms.plan import PatchPlan
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.core.typing import Any
 
 
@@ -64,6 +66,7 @@ def build_patch_plan_block_lineage(
     pre_cfg: FlowGraph | None,
     post_cfg: FlowGraph | None,
     *,
+    realized_serials: Mapping[PlanBlockRef, int] | None = None,
     creation_reason_prefix: str = "patch_plan",
 ) -> list[BlockLineageEntry]:
     """Build lineage entries for every assigned ``patch_plan.new_blocks`` spec."""
@@ -76,7 +79,11 @@ def build_patch_plan_block_lineage(
     entries: list[BlockLineageEntry] = []
     for spec in new_blocks:
         block_id = getattr(spec, "block_id", None)
-        assigned_serial = _assigned_serial_for(patch_plan, block_id)
+        assigned_serial = (
+            realized_serials.get(block_id)
+            if realized_serials is not None and isinstance(block_id, PlanBlockRef)
+            else None
+        )
         if assigned_serial is None:
             continue
 
@@ -85,6 +92,7 @@ def build_patch_plan_block_lineage(
             pre_cfg=pre_cfg,
             post_cfg=post_cfg,
             assigned_serial=assigned_serial,
+            source_coordinates=dict(patch_plan.source_coordinates),
         )
         origin_block = (
             pre_cfg.get_block(origin_serial)
@@ -107,14 +115,13 @@ def build_patch_plan_block_lineage(
             origin_serial=origin_serial,
             pre_cfg=pre_cfg,
             post_cfg=post_cfg,
+            source_coordinates=dict(patch_plan.source_coordinates),
         )
         entries.append(
             BlockLineageEntry(
                 serial=int(assigned_serial),
                 origin_snapshot_id=origin_snapshot_id,
-                origin_serial=(
-                    int(origin_serial) if origin_serial is not None else None
-                ),
+                origin_serial=(int(origin_serial) if origin_serial is not None else None),
                 origin_start_ea_hex=origin_start_ea_hex,
                 origin_body_fingerprint=origin_fingerprint,
                 creation_kind=creation_kind,
@@ -143,6 +150,7 @@ def buffer_patch_plan_block_lineage(
     pre_cfg: FlowGraph | None,
     post_cfg: FlowGraph | None,
     *,
+    realized_serials: Mapping[PlanBlockRef, int] | None = None,
     creation_reason_prefix: str = "patch_plan",
 ) -> list[BlockLineageEntry]:
     """Build and buffer PatchPlan-created block lineage entries."""
@@ -150,6 +158,7 @@ def buffer_patch_plan_block_lineage(
         patch_plan,
         pre_cfg,
         post_cfg,
+        realized_serials=realized_serials,
         creation_reason_prefix=creation_reason_prefix,
     )
     buffer_block_lineage(entries)
@@ -182,28 +191,18 @@ def _drain_into_snapshot(conn: object, snapshot_id: int) -> int:
     return len(entries)
 
 
-def _assigned_serial_for(patch_plan: PatchPlan, block_id: object | None) -> int | None:
-    if block_id is None:
-        return None
-    relocation_map = getattr(patch_plan, "relocation_map", None)
-    assigned_serial_for = getattr(relocation_map, "assigned_serial_for", None)
-    if assigned_serial_for is None:
-        return None
-    try:
-        assigned = assigned_serial_for(block_id)
-    except Exception:
-        return None
-    return _safe_int(assigned)
-
-
 def _infer_origin_serial(
     spec: object,
     *,
     pre_cfg: FlowGraph | None,
     post_cfg: FlowGraph | None,
     assigned_serial: int,
+    source_coordinates: Mapping[LogicalBlockRef | NativeBlockRef, int],
 ) -> int | None:
-    origin = _safe_int(getattr(spec, "template_block", None))
+    origin = _safe_int(
+        getattr(spec, "template_block", None),
+        source_coordinates=source_coordinates,
+    )
     if origin is not None:
         return origin
     if str(getattr(spec, "kind", "")) == "insert_block":
@@ -216,7 +215,10 @@ def _infer_origin_serial(
     incoming_edge = getattr(spec, "incoming_edge", None)
     if incoming_edge is None:
         return None
-    return _safe_int(getattr(incoming_edge, "source", None))
+    return _safe_int(
+        getattr(incoming_edge, "source", None),
+        source_coordinates=source_coordinates,
+    )
 
 
 def _infer_insert_block_origin_serial(
@@ -235,7 +237,9 @@ def _infer_insert_block_origin_serial(
     synthetic rather than recording a false origin.
     """
     assigned_block = (
-        post_cfg.get_block(assigned_serial) if post_cfg is not None else None
+        post_cfg.get_block(assigned_serial)
+        if post_cfg is not None
+        else None
     )
     if pre_cfg is not None and assigned_block is not None:
         assigned_opcodes = _opcode_tuple(assigned_block.insn_snapshots)
@@ -285,11 +289,10 @@ def _source_mod_types_by_block_id(patch_plan: PatchPlan) -> dict[object, str]:
 
 
 def _source_mod_type_for_step(step: object) -> str | None:
-    if isinstance(step, LegacyBlockOperation):
-        return type(step.modification).__name__
     name = type(step).__name__
     return {
         "PatchEdgeSplitTrampoline": "EdgeRedirectViaPredSplit",
+        "PatchRedirectBranch": "RedirectBranch",
         "PatchConditionalRedirect": "CreateConditionalRedirect",
         "PatchInsertBlock": "InsertBlock",
         "PatchDuplicateBlock": "DuplicateBlock",
@@ -304,6 +307,7 @@ def _iter_step_block_ids(step: object) -> list[object]:
     block_ids: list[object] = []
     _append_block_id(block_ids, getattr(step, "block_id", None))
     _append_block_id(block_ids, getattr(step, "fallthrough_block_id", None))
+    _append_block_id(block_ids, getattr(step, "fallthrough_helper_block_id", None))
     for block_id in tuple(getattr(step, "clone_block_ids", ()) or ()):
         _append_block_id(block_ids, block_id)
     for block_ids_for_anchor in tuple(
@@ -311,9 +315,9 @@ def _iter_step_block_ids(step: object) -> list[object]:
     ):
         for block_id in tuple(block_ids_for_anchor or ()):
             _append_block_id(block_ids, block_id)
-    per_site = getattr(step, "per_site_clone_assigned_serials", None)
-    if isinstance(per_site, dict):
-        for block_ids_for_site in per_site.values():
+    per_site = getattr(step, "per_site_clone_block_ids", None)
+    if isinstance(per_site, tuple):
+        for _anchor, block_ids_for_site in per_site:
             for block_id in tuple(block_ids_for_site or ()):
                 _append_block_id(block_ids, block_id)
     return block_ids
@@ -322,7 +326,7 @@ def _iter_step_block_ids(step: object) -> list[object]:
 def _append_block_id(out: list[object], value: object | None) -> None:
     if value is None:
         return
-    if isinstance(value, VirtualBlockId):
+    if isinstance(value, PlanBlockRef):
         out.append(value)
 
 
@@ -332,6 +336,8 @@ def _infer_source_mod_type(spec: object) -> str | None:
         return "EdgeRedirectViaPredSplit"
     if kind.startswith("conditional_redirect"):
         return "CreateConditionalRedirect"
+    if kind.startswith("redirect_branch_fallthrough"):
+        return "RedirectBranch"
     if kind.startswith("insert_block"):
         return "InsertBlock"
     if kind.startswith("duplicate_block"):
@@ -352,10 +358,9 @@ def _entry_extra(
     origin_serial: int | None,
     pre_cfg: FlowGraph | None,
     post_cfg: FlowGraph | None,
+    source_coordinates: Mapping[LogicalBlockRef | NativeBlockRef, int],
 ) -> dict[str, Any]:
-    assigned_block = (
-        post_cfg.get_block(assigned_serial) if post_cfg is not None else None
-    )
+    assigned_block = post_cfg.get_block(assigned_serial) if post_cfg is not None else None
     return {
         "assigned_label": block_label(post_cfg, assigned_serial),
         "assigned_start_ea_hex": (
@@ -372,9 +377,12 @@ def _entry_extra(
             else "synthetic"
         ),
         "origin_display_fingerprint": block_fingerprint(pre_cfg, origin_serial),
-        "incoming_edge": _edge_payload(getattr(spec, "incoming_edge", None)),
+        "incoming_edge": _edge_payload(
+            getattr(spec, "incoming_edge", None),
+            source_coordinates=source_coordinates,
+        ),
         "outgoing_edges": [
-            _edge_payload(edge)
+            _edge_payload(edge, source_coordinates=source_coordinates)
             for edge in tuple(getattr(spec, "outgoing_edges", ()) or ())
         ],
         "pre_context": flow_graph_context_label(pre_cfg),
@@ -382,17 +390,31 @@ def _entry_extra(
     }
 
 
-def _edge_payload(edge: object | None) -> dict[str, Any] | None:
+def _edge_payload(
+    edge: object | None,
+    *,
+    source_coordinates: Mapping[LogicalBlockRef | NativeBlockRef, int],
+) -> dict[str, Any] | None:
     if edge is None:
         return None
     return {
-        "source": _ref_payload(getattr(edge, "source", None)),
-        "target": _ref_payload(getattr(edge, "target", None)),
+        "source": _ref_payload(
+            getattr(edge, "source", None),
+            source_coordinates=source_coordinates,
+        ),
+        "target": _ref_payload(
+            getattr(edge, "target", None),
+            source_coordinates=source_coordinates,
+        ),
     }
 
 
-def _ref_payload(value: object | None) -> int | str | None:
-    int_value = _safe_int(value)
+def _ref_payload(
+    value: object | None,
+    *,
+    source_coordinates: Mapping[LogicalBlockRef | NativeBlockRef, int],
+) -> int | str | None:
+    int_value = _safe_int(value, source_coordinates=source_coordinates)
     if int_value is not None:
         return int_value
     if value is None:
@@ -409,9 +431,15 @@ def _json_or_none(payload: dict[str, Any]) -> str | None:
         return None
 
 
-def _safe_int(value: object) -> int | None:
+def _safe_int(
+    value: object,
+    *,
+    source_coordinates: Mapping[LogicalBlockRef | NativeBlockRef, int] | None = None,
+) -> int | None:
     if value is None:
         return None
+    if isinstance(value, (LogicalBlockRef, NativeBlockRef)):
+        return None if source_coordinates is None else source_coordinates.get(value)
     try:
         return int(value)
     except Exception:

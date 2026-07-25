@@ -121,6 +121,7 @@ from d810.transforms.graph_modification import (
     ZeroStateWrite,
 )
 from d810.transforms.plan import PatchPlan, compile_patch_plan
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.exit_path_effect_emission import (
     plan_state_exit_path_effect_lowerings,
 )
@@ -4840,7 +4841,9 @@ def _prefer_exact_terminal_route_fragments(
             result.append(modification)
 
     for source, (old_target, new_target) in sorted(authoritative.items()):
-        result.append(terminal_mod_by_key[(source, old_target, new_target)])
+        result.append(
+            terminal_mod_by_key[(source, old_target, new_target)]
+        )
     return result
 
 
@@ -5090,24 +5093,21 @@ def build_materialized_conditional_handler_bridges(
         # the rewrite lands on a block Hex-Rays later deletes and leaves the
         # reachable clone routed through stale state handlers.
         authoritative_source_matches = (
-            handler_source_matches if len(handler_source_matches) == 1 else set()
+            handler_source_matches
+            if len(handler_source_matches) == 1
+            else set()
         )
-        source_matches = (
-            authoritative_source_matches
-            or predicate_matches
-            or {
-                int(block.serial)
-                for block in flow_graph.blocks.values()
-                if (
-                    int(block.start_ea) == int(transfer.source_block_ea)
-                    and int(block.serial) not in imported_native_eas
-                )
-                or any(
-                    int(insn.ea) in predicate_anchor_eas
-                    for insn in block.insn_snapshots
-                )
-            }
-        )
+        source_matches = authoritative_source_matches or predicate_matches or {
+            int(block.serial)
+            for block in flow_graph.blocks.values()
+            if (
+                int(block.start_ea) == int(transfer.source_block_ea)
+                and int(block.serial) not in imported_native_eas
+            )
+            or any(
+                int(insn.ea) in predicate_anchor_eas for insn in block.insn_snapshots
+            )
+        }
         if len(source_matches) != 1:
             if trace_exact_live:
                 logger.info(
@@ -6293,7 +6293,8 @@ def _plan_imported_conditional_entry_bridges(
     if not roots:
         if logger.info_on:
             logger.info(
-                "imported conditional entry forest abstained: gate=no_roots nodes=%s",
+                "imported conditional entry forest abstained: "
+                "gate=no_roots nodes=%s",
                 [
                     _format_block_label(flow_graph, source)
                     for source in sorted(candidates)
@@ -6343,7 +6344,8 @@ def _plan_imported_conditional_entry_bridges(
     proofs = tuple(candidates[source][0] for source in sorted(candidates))
     if logger.info_on:
         logger.info(
-            "imported conditional entry forest proven: roots=%s nodes=%d predicates=%s",
+            "imported conditional entry forest proven: roots=%s nodes=%d "
+            "predicates=%s",
             [_format_block_label(flow_graph, source) for source in roots],
             len(proofs),
             ["0x%X" % proof.predicate_ea for proof in proofs],
@@ -7302,6 +7304,7 @@ def emit_minimal_unflatten(
     flow_graph,
     dispatcher,
     *,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
     state_var_stkoff: int | None,
     dispatcher_entry_serial: int | None,
     pre_header_serial: int | None = None,
@@ -7367,7 +7370,9 @@ def emit_minimal_unflatten(
     itself is intentionally severed (that is the unflattening) and never vetoed.
     """
     if dispatcher_entry_serial is None:
-        return compile_patch_plan([], flow_graph)
+        return compile_patch_plan(
+            [], flow_graph, block_refs_by_serial=block_refs_by_serial
+        )
     if materialized_computed_goto_profile and missing_materialized_handler_targets:
         if logger.info_on:
             logger.info(
@@ -7378,7 +7383,9 @@ def emit_minimal_unflatten(
                     for state, target_ea in missing_materialized_handler_targets
                 ),
             )
-        return compile_patch_plan([], flow_graph)
+        return compile_patch_plan(
+            [], flow_graph, block_refs_by_serial=block_refs_by_serial
+        )
     # A register-resident state variable (``state_var_reg`` set and
     # ``state_var_stkoff`` None) carries no stack
     # offset. ``_soff`` is the None-safe int form threaded into the stkoff-keyed
@@ -7638,7 +7645,7 @@ def emit_minimal_unflatten(
     )
     if native_stack_carrier_closure and logger.info_on:
         logger.info(
-            "imported conditional entry forest superseded: native_stack_carriers=%d",
+            "imported conditional entry forest superseded: " "native_stack_carriers=%d",
             native_stack_carrier_choice_count,
         )
     if imported_conditional_entry_bridge is not None:
@@ -7897,7 +7904,9 @@ def emit_minimal_unflatten(
                         "initial_state=%s) -- leaving function intact",
                         initial_state,
                     )
-                return compile_patch_plan([], flow_graph)
+                return compile_patch_plan(
+                    [], flow_graph, block_refs_by_serial=block_refs_by_serial
+                )
     mods = build_state_write_redirects(
         flow_graph,
         dispatcher,
@@ -8331,7 +8340,9 @@ def emit_minimal_unflatten(
                         "engine-equivalent)",
                         severed,
                     )
-                return compile_patch_plan([], flow_graph)
+                return compile_patch_plan(
+                    [], flow_graph, block_refs_by_serial=block_refs_by_serial
+                )
         mods = filter_use_def_severing_redirects(
             mods,
             use_def_safety=use_def_safety,
@@ -8459,7 +8470,9 @@ def emit_minimal_unflatten(
         terminal_state_route_mods,
     )
     mods = _normalize_degenerate_branch_redirects(flow_graph, list(mods))
-    plan = compile_patch_plan(list(mods), flow_graph)
+    plan = compile_patch_plan(
+        list(mods), flow_graph, block_refs_by_serial=block_refs_by_serial
+    )
     if terminal_carrier_convergence:
         plan = plan.with_metadata(
             **{

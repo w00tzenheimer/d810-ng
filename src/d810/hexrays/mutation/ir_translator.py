@@ -5,7 +5,6 @@ Wraps existing IDA infrastructure:
 - lower() -> materializes PatchPlan -> DeferredGraphModifier queue calls
 - verify() -> calls safe_verify(mba)
 """
-
 from __future__ import annotations
 
 from d810.core.logging import getLogger
@@ -18,21 +17,6 @@ from d810.hexrays.ir_maturity import (
     maturity_name_to_ida,
 )
 
-from d810.transforms.graph_modification import (
-    CloneConditionalAsGoto,
-    CloneConditionalAsGotoFromBranchArm,
-    GraphModification,
-    RedirectGoto,
-    RedirectBranch,
-    ConvertToGoto,
-    EdgeRedirectViaPredSplit,
-    CreateConditionalRedirect,
-    DuplicateBlock,
-    DuplicateReplayAndRedirect,
-    InsertBlock,
-    RemoveEdge,
-    NopInstructions,
-)
 from d810.ir.flowgraph import (
     BlockKind,
     BlockSnapshot,
@@ -46,7 +30,6 @@ from d810.ir.flowgraph import MopSnapshot as CfgMopSnapshot
 from d810.ir.semantics import CallKind, ControlTransferKind, PredicateKind
 from d810.transforms.plan import (
     ExecutionPolicy,
-    LegacyBlockOperation,
     PatchBypassDispatcherTrampoline,
     PatchCanonicalizeJumpTableCaseOverlap,
     PatchCloneConditionalAsGoto,
@@ -85,12 +68,17 @@ from d810.hexrays.mutation.insn_snapshot_materializer import (
     validate_insn_snapshots,
 )
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+from d810.hexrays.mutation.mba_mutation_events import StructuralMutationKind
+from d810.hexrays.mutation.patch_binding import (
+    BoundModifier,
+    PatchBindingRejected,
+    bind_patch_plan,
+)
+from d810.transforms.cfg_transaction import TransactionAttemptId
 
 if TYPE_CHECKING:
     import ida_hexrays
-    from d810.hexrays.mutation.deferred_modifier import (
-        DeferredGraphModifier as DeferredGraphModifierType,
-    )
+    from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier as DeferredGraphModifierType
     from d810.hexrays.mutation.cfg_verify import safe_verify as safe_verify_type
 
 logger = getLogger(__name__)
@@ -324,7 +312,7 @@ def _control_transfer_from_hexrays(opcode: int) -> ControlTransferKind | None:
 
 
 def classify_branch_predicate(insn: object) -> PredicateKind | None:
-    "Return the portable predicate carried by a live conditional\n    branch / set instruction, or ``None`` for non-predicate opcodes.\n\n    Note that this covers BOTH conditional branches (``m_jX``) and\n    byte-materialized predicates (``m_setX``); they share the\n    predicate semantic and the call site decides whether the\n    result is consumed as branch direction (pair with\n    ``classify_control_transfer``) or as a materialized byte (no\n    associated transfer kind).\n\n    Use this at the preanalysis-side seam where a file previously did\n    ``if insn.opcode == ida_hexrays.m_jbe`` -- now ask\n    ``if classify_branch_predicate(insn) is PredicateKind.ULE``.\n"
+    "Return the portable predicate carried by a live conditional\n    branch / set instruction, or ``None`` for non-predicate opcodes.\n\n    Note that this covers BOTH conditional branches (``m_jX``) and\n    byte-materialized predicates (``m_setX``); they share the\n    predicate semantic and the call site decides whether the\n    result is consumed as branch direction (pair with\n    ``classify_control_transfer``) or as a materialized byte (no\n    associated transfer kind).\n\n    Use this at the preanalysis-side seam where a file previously did\n    ``if insn.opcode == ida_hexrays.m_jbe`` -- now ask\n    ``if classify_branch_predicate(insn) is PredicateKind.ULE``.\n    "
     try:
         return _predicate_kind_from_hexrays(int(getattr(insn, "opcode")))
     except (AttributeError, TypeError, ValueError):
@@ -442,9 +430,7 @@ def capture_mop_snapshot(
     kind = _operand_kind_from_hexrays(t)
     if t == ida_hexrays.mop_n:
         nnn = mop.nnn
-        return CfgMopSnapshot(
-            t=t, size=size, value=int(nnn.value) if nnn is not None else 0, kind=kind
-        )
+        return CfgMopSnapshot(t=t, size=size, value=int(nnn.value) if nnn is not None else 0, kind=kind)
     if t == ida_hexrays.mop_S:
         s = mop.s
         stkoff = s.off if s is not None else None
@@ -472,9 +458,7 @@ def capture_mop_snapshot(
                 None if sub_opcode is None else _insn_kind_from_hexrays(sub_opcode)
             )
             sub_value_op_kind = (
-                None
-                if sub_opcode is None
-                else opcode_lift.value_op_from_opcode(sub_opcode)
+                None if sub_opcode is None else opcode_lift.value_op_from_opcode(sub_opcode)
             )
             sub_l = capture_mop_snapshot(getattr(inner, "l", None), lvar_stkoff_map)
             sub_r = capture_mop_snapshot(getattr(inner, "r", None), lvar_stkoff_map)
@@ -557,8 +541,7 @@ def capture_mop_snapshot(
             args=tuple(
                 arg_snapshot
                 for arg in args
-                if (arg_snapshot := capture_mop_snapshot(arg, lvar_stkoff_map))
-                is not None
+                if (arg_snapshot := capture_mop_snapshot(arg, lvar_stkoff_map)) is not None
             ),
             kind=kind,
         )
@@ -665,7 +648,9 @@ def lift_block(
         flags=flags,
         start_ea=start_ea,
         native_start_ea=(
-            mapped_start_ea if 0 <= mapped_start_ea < 0xFFFFFFFFFFFFFFFF else None
+            mapped_start_ea
+            if 0 <= mapped_start_ea < 0xFFFFFFFFFFFFFFFF
+            else None
         ),
         insn_snapshots=tuple(insn_snapshots),
         kind=_block_kind_from_hexrays(block_type),
@@ -831,7 +816,7 @@ def _unsupported_duplicate_block_reason(step: PatchDuplicateBlock) -> str | None
             f"unsupported successor count: {len(step.source_successors)}"
         )
     if len(step.source_successors) == 2:
-        if step.fallthrough_serial is None:
+        if step.fallthrough_block_id is None:
             return (
                 f"PatchDuplicateBlock(source={step.source_serial}) "
                 "missing duplicated fallthrough serial"
@@ -881,6 +866,7 @@ def _unsupported_duplicate_replay_reason(
     return None
 
 
+
 class IDAIRTranslator:
     """CFGBackend implementation for IDA Pro's Hex-Rays microcode.
 
@@ -903,10 +889,8 @@ class IDAIRTranslator:
     def __init__(
         self,
         *,
-        allow_legacy_block_creation: bool = True,
         contract: IDACfgContract | None = None,
     ) -> None:
-        self.allow_legacy_block_creation = allow_legacy_block_creation
         self._contract = contract
         self._last_lowering_phase: str | None = None
         self._last_lowering_subphase: str | None = None
@@ -957,9 +941,7 @@ class IDAIRTranslator:
 
         ``PatchPlan`` concrete operations are lowered directly. Supported
         block-creating steps are materialized through backend queue/apply
-        operations. Unsupported block creation remains explicit legacy fallback
-        and can be rejected before any live mutation when
-        ``allow_legacy_block_creation`` is disabled.
+        operations. Unsupported typed operations are rejected before mutation.
 
         Args:
             patch_plan: Finalized backend execution plan.
@@ -991,13 +973,6 @@ class IDAIRTranslator:
                 "IDAIRTranslator.lower() now requires PatchPlan; "
                 "compile GraphModification lists before lowering"
             )
-        if patch_plan.legacy_block_operations and not self.allow_legacy_block_creation:
-            logger.warning(
-                "PatchPlan contains %d legacy block-creating steps but legacy block creation is disabled",
-                len(patch_plan.legacy_block_operations),
-            )
-            self._last_lowering_phase = "lowering"
-            return 0
         unsupported_reasons = self._unsupported_patch_plan_reasons(patch_plan)
         if unsupported_reasons:
             logger.warning(
@@ -1036,9 +1011,18 @@ class IDAIRTranslator:
                 self._last_lowering_phase = "lowering"
                 return 0
 
-        modifier = deferred_modifier.DeferredGraphModifier(
+        if patch_plan.contains_block_creation:
+            logger.info(
+                "Lowering PatchPlan with %d typed ops and %d planned block creations",
+                len(patch_plan.concrete_operations),
+                len(patch_plan.new_blocks),
+            )
+
+        modifier = self._bind_and_queue_patch_plan(
+            patch_plan,
             mba,
-            mutation_gateway=mutation_gateway.new_transaction(),
+            mutation_gateway=mutation_gateway,
+            deferred_modifier_module=deferred_modifier,
         )
 
         # Build effective post-apply hook: caller hook + contract check
@@ -1057,17 +1041,7 @@ class IDAIRTranslator:
 
             effective_hook = _combined_post_apply_hook
 
-        if patch_plan.contains_block_creation:
-            logger.info(
-                "Lowering PatchPlan with %d concrete ops and %d legacy block-creating steps",
-                len(patch_plan.concrete_operations),
-                len(patch_plan.legacy_block_operations),
-            )
-
         verify_each_mod = not patch_plan.contains_block_creation
-
-        for step in patch_plan.steps:
-            self._queue_patch_step(modifier, step)
 
         # Apply all queued modifications with snapshot rollback enabled.
         # Under relaxed NOP cleanup, disable rollback so the NOPs survive
@@ -1076,14 +1050,15 @@ class IDAIRTranslator:
         # Opt-in transactional mode: gates the batch with pre-apply conflict
         # detection and rolls back on any mid-batch abort. Off by default to
         # preserve existing behavior; enable for probes that want all-or-nothing.
-        use_transactional = (
-            os.getenv("D810_DEFERRED_TRANSACTIONAL", "").strip() == "1"
-            and enable_rollback
-        )
+        use_transactional = os.getenv(
+            "D810_DEFERRED_TRANSACTIONAL", ""
+        ).strip() == "1" and enable_rollback
         # Opt-in staged atomic mode: destructive mods lowered to copy-and-swap
         # via mba.copy_block so intermediate state is invisible to IDA-level
         # observers. Composable with transactional.
-        use_staged_atomic = os.getenv("D810_DEFERRED_STAGED_ATOMIC", "").strip() == "1"
+        use_staged_atomic = os.getenv(
+            "D810_DEFERRED_STAGED_ATOMIC", ""
+        ).strip() == "1"
         try:
             result_count = modifier.apply(
                 run_optimize_local=not merge_blocks_cleanup,
@@ -1128,21 +1103,70 @@ class IDAIRTranslator:
 
         return result_count
 
+    def _bind_and_queue_patch_plan(
+        self,
+        patch_plan: PatchPlan,
+        mba: "ida_hexrays.mba_t",
+        *,
+        mutation_gateway: MbaMutationGateway,
+        deferred_modifier_module: object,
+    ) -> "DeferredGraphModifierType":
+        """Prepare a plan without leaving identity residue on prewrite failure."""
+        patch_gateway = mutation_gateway.new_transaction()
+        transaction_attempt = TransactionAttemptId.new(
+            patch_plan.plan_id,
+            patch_gateway.session_id,
+            patch_gateway.generation,
+        )
+        try:
+            patch_gateway.begin_batch(
+                StructuralMutationKind.BLOCK_REPLACE,
+                serial_quantity=int(mba.qty),
+                description=f"PatchPlan {patch_plan.plan_id}",
+                planned_operation_count=len(patch_plan.steps),
+                transaction_attempt=transaction_attempt,
+                patch_plan_id=patch_plan.plan_id,
+                patch_plan_refs=tuple(
+                    spec.block_id for spec in patch_plan.new_blocks
+                ),
+            )
+            bound_patch_plan = bind_patch_plan(
+                patch_plan,
+                patch_gateway.identity_index,
+                transaction_attempt,
+            )
+            patch_gateway.register_patch_plan_reservations(
+                bound_patch_plan.reservations
+            )
+            modifier = deferred_modifier_module.DeferredGraphModifier(
+                mba,
+                mutation_gateway=patch_gateway,
+            )
+            modifier.configure_patch_bindings(bound_patch_plan)
+            bound_modifier = BoundModifier(modifier, bound_patch_plan)
+            for step in patch_plan.steps:
+                self._queue_patch_step(bound_modifier, step)
+            return modifier
+        except Exception as exc:
+            if patch_gateway.active:
+                patch_gateway.abort(
+                    reason=(
+                        "PatchPlan prewrite preparation failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                )
+            self._last_lowering_phase = (
+                "binding" if isinstance(exc, PatchBindingRejected) else "queueing"
+            )
+            raise
+
     def _unsupported_patch_plan_reasons(self, patch_plan: PatchPlan) -> list[str]:
         reasons: list[str] = []
         for step in patch_plan.steps:
             match step:
                 case PatchRedirectGoto() | PatchRedirectBranch() | PatchConvertToGoto():
                     continue
-                case (
-                    PatchNopInstructions()
-                    | PatchZeroStateWrite()
-                    | PatchEdgeSplitTrampoline()
-                    | PatchEdgeSplitCorridor()
-                    | PatchConditionalRedirect()
-                    | PatchCloneConditionalAsGoto()
-                    | PatchCloneConditionalAsGotoFromBranchArm()
-                ):
+                case PatchNopInstructions() | PatchZeroStateWrite() | PatchEdgeSplitTrampoline() | PatchEdgeSplitCorridor() | PatchConditionalRedirect() | PatchCloneConditionalAsGoto() | PatchCloneConditionalAsGotoFromBranchArm():
                     continue
                 case PatchPromoteOperandToScalar():
                     continue
@@ -1178,29 +1202,10 @@ class IDAIRTranslator:
                         reasons.append(reason)
                 case PatchRemoveEdge():
                     continue
-                case LegacyBlockOperation(modification=CreateConditionalRedirect()):
-                    continue
-                case LegacyBlockOperation(modification=EdgeRedirectViaPredSplit()):
-                    continue
-                case LegacyBlockOperation(
-                    modification=InsertBlock(pred_serial=pred, succ_serial=succ)
-                ):
-                    reasons.append(f"InsertBlock({pred}->{succ})")
-                case LegacyBlockOperation(
-                    modification=DuplicateBlock(
-                        source_block=src,
-                        target_block=target,
-                        pred_serial=pred,
-                    )
-                ):
-                    reasons.append(
-                        f"DuplicateBlock(source={src}, target={target}, pred={pred})"
-                    )
-                case LegacyBlockOperation(modification=mod):
-                    reasons.append(type(mod).__name__)
                 case _:
                     reasons.append(type(step).__name__)
         return reasons
+
 
     def _queue_patch_step(
         self,
@@ -1208,19 +1213,25 @@ class IDAIRTranslator:
         step: PatchStep,
     ) -> None:
         match step:
+            case PatchRedirectBranch(
+                from_serial=src,
+                old_target=old,
+                new_target=new,
+                fallthrough_helper_block_id=helper,
+            ):
+                modifier.queue_conditional_target_change(
+                    src,
+                    new,
+                    old_target=old,
+                    expected_helper_serial=helper,
+                    description=f"redirect branch {src}: {old}->{new}",
+                )
+
             case PatchRedirectGoto(from_serial=src, old_target=old, new_target=new):
                 modifier.queue_goto_change(
                     src,
                     new,
                     description=f"redirect goto {src}: {old}->{new}",
-                )
-
-            case PatchRedirectBranch(from_serial=src, old_target=old, new_target=new):
-                modifier.queue_conditional_target_change(
-                    src,
-                    new,
-                    old_target=old,
-                    description=f"redirect branch {src}: {old}->{new}",
                 )
 
             case PatchConvertToGoto(block_serial=serial, goto_target=target):
@@ -1329,7 +1340,8 @@ class IDAIRTranslator:
                     trampoline,
                     target,
                     description=(
-                        f"bypass dispatcher trampoline {src}: {trampoline}->{target}"
+                        f"bypass dispatcher trampoline {src}: "
+                        f"{trampoline}->{target}"
                     ),
                 )
 
@@ -1417,11 +1429,11 @@ class IDAIRTranslator:
                 )
 
             case PatchEdgeSplitTrampoline(
+                block_id=assigned,
                 source_serial=src,
                 via_pred=pred,
                 apply_old_target=old,
                 new_target=new,
-                assigned_serial=assigned,
             ):
                 modifier.queue_edge_split_trampoline(
                     source_block=src,
@@ -1459,13 +1471,13 @@ class IDAIRTranslator:
                 )
 
             case PatchConditionalRedirect(
+                block_id=assigned,
+                fallthrough_block_id=fallthrough_serial,
                 source_serial=src,
                 ref_block=ref,
                 conditional_target=conditional_target,
                 fallthrough_target=fallthrough_target,
                 old_target_serial=old_target,
-                assigned_serial=assigned,
-                fallthrough_serial=fallthrough_serial,
                 instructions=instructions,
             ):
                 modifier.queue_create_conditional_redirect(
@@ -1485,9 +1497,9 @@ class IDAIRTranslator:
                 )
 
             case PatchInsertBlock(
+                block_id=assigned,
                 pred_serial=pred,
                 succ_serial=succ,
-                assigned_serial=assigned,
                 instructions=instructions,
                 old_target_serial=old_target,
                 captured_body=captured_body,
@@ -1509,13 +1521,13 @@ class IDAIRTranslator:
                 )
 
             case PatchDuplicateBlock(
+                block_id=assigned,
+                fallthrough_block_id=fallthrough_serial,
                 source_serial=src,
                 pred_serial=pred,
                 target_serial=target,
                 conditional_target=conditional_target,
                 fallthrough_target=fallthrough_target,
-                assigned_serial=assigned,
-                fallthrough_serial=fallthrough_serial,
             ):
                 modifier.queue_duplicate_block(
                     source_block_serial=src,
@@ -1543,11 +1555,9 @@ class IDAIRTranslator:
                         (
                             entry.pred_serial,
                             entry.target_serial,
-                            entry.replay_serial,
-                            entry.clone_serial,
-                            tuple(
-                                insn_snapshots_from_captured_body(entry.captured_body)
-                            ),
+                            entry.replay_block_id,
+                            entry.clone_block_id,
+                            tuple(insn_snapshots_from_captured_body(entry.captured_body)),
                         )
                     )
                 modifier.queue_duplicate_replay_and_redirect(
@@ -1561,10 +1571,10 @@ class IDAIRTranslator:
                 )
 
             case PatchCloneConditionalAsGoto(
+                block_id=assigned,
                 source_serial=src,
                 pred_serial=pred,
                 goto_target=target,
-                assigned_serial=assigned,
                 reason=reason,
             ):
                 modifier.queue_clone_conditional_as_goto(
@@ -1579,11 +1589,11 @@ class IDAIRTranslator:
                 )
 
             case PatchCloneConditionalAsGotoFromBranchArm(
+                block_id=assigned,
                 source_serial=src,
                 pred_serial=pred,
                 pred_arm=arm,
                 goto_target=target,
-                assigned_serial=assigned,
                 reason=reason,
             ):
                 modifier.queue_clone_conditional_as_goto_from_branch_arm(
@@ -1603,7 +1613,7 @@ class IDAIRTranslator:
                 shared_entry_serial=shared_entry,
                 return_block_serial=return_block,
                 suffix_serials=suffix,
-                clone_assigned_serials=clone_serials,
+                clone_block_ids=clone_serials,
             ):
                 modifier.queue_private_terminal_suffix(
                     anchor_serial=anchor,
@@ -1623,7 +1633,7 @@ class IDAIRTranslator:
                 return_block_serial=return_block,
                 suffix_serials=suffix_serials,
                 anchors=anchors,
-                per_anchor_clone_assigned_serials=per_anchor_serials,
+                per_anchor_clone_block_ids=per_anchor_serials,
             ):
                 modifier.queue_private_terminal_suffix_group(
                     anchors=anchors,
@@ -1648,134 +1658,18 @@ class IDAIRTranslator:
 
             case PatchReorderBlocks(
                 dfs_block_order=order,
-                old_to_new=old_to_new_pairs,
-                two_way_old_to_trampoline=two_way_tramp_pairs,
+                copy_lineage=old_to_new_pairs,
+                two_way_trampoline_lineage=two_way_tramp_pairs,
             ):
                 modifier.queue_reorder_blocks(
                     dfs_block_order=order,
                     old_to_new=dict(old_to_new_pairs) if old_to_new_pairs else None,
-                    old_to_trampoline=dict(two_way_tramp_pairs)
-                    if two_way_tramp_pairs
-                    else None,
+                    old_to_trampoline=dict(two_way_tramp_pairs) if two_way_tramp_pairs else None,
                     description=f"reorder {len(order)} blocks in DFS order",
                 )
 
-            case LegacyBlockOperation(modification=mod):
-                self._queue_legacy_block_operation(modifier, mod)
-
             case _:
                 logger.warning("Unknown PatchPlan step type: %s", type(step).__name__)
-
-    def _queue_legacy_block_operation(
-        self,
-        modifier: "DeferredGraphModifierType",
-        modification: GraphModification,
-    ) -> None:
-        match modification:
-            case EdgeRedirectViaPredSplit(
-                src_block=src,
-                old_target=old,
-                new_target=new,
-                via_pred=pred,
-                clone_until=clone_until,
-                rule_priority=priority,
-            ):
-                modifier.queue_edge_redirect(
-                    src_block=src,
-                    old_target=old,
-                    new_target=new,
-                    via_pred=pred,
-                    clone_until=clone_until,
-                    rule_priority=priority,
-                    description=f"edge redirect via pred split: pred={pred} src={src} {old}->{new}",
-                )
-
-            case CreateConditionalRedirect(
-                source_block=src,
-                ref_block=ref,
-                conditional_target=cond_target,
-                fallthrough_target=fallthrough_target,
-                old_target_serial=old_target,
-                instructions=instructions,
-            ):
-                modifier.queue_create_conditional_redirect(
-                    source_blk_serial=src,
-                    ref_blk_serial=ref,
-                    conditional_target_serial=cond_target,
-                    fallthrough_target_serial=fallthrough_target,
-                    old_target_serial=old_target,
-                    instructions_to_copy=instructions,
-                    description=(
-                        f"create conditional redirect src={src} ref={ref} "
-                        f"cond={cond_target} fallthrough={fallthrough_target}"
-                    ),
-                )
-
-            case DuplicateBlock(
-                source_block=src,
-                target_block=target,
-                pred_serial=pred,
-                conditional_target=conditional_target,
-                fallthrough_target=fallthrough_target,
-            ):
-                modifier.queue_duplicate_block(
-                    source_block_serial=src,
-                    pred_serial=pred,
-                    target_serial=target,
-                    conditional_target=conditional_target,
-                    fallthrough_target=fallthrough_target,
-                    description=(
-                        f"duplicate block src={src} pred={pred} target={target} "
-                        f"cond={conditional_target} ft={fallthrough_target}"
-                    ),
-                )
-
-            case CloneConditionalAsGoto(
-                source_block=src,
-                pred_serial=pred,
-                goto_target=target,
-                reason=reason,
-            ):
-                modifier.queue_clone_conditional_as_goto(
-                    source_block_serial=src,
-                    pred_serial=pred,
-                    goto_target_serial=target,
-                    description=(
-                        f"clone conditional as goto pred={pred} src={src} "
-                        f"target={target}: {reason}"
-                    ),
-                )
-
-            case CloneConditionalAsGotoFromBranchArm(
-                source_block=src,
-                pred_serial=pred,
-                pred_arm=arm,
-                goto_target=target,
-                reason=reason,
-            ):
-                modifier.queue_clone_conditional_as_goto_from_branch_arm(
-                    source_block_serial=src,
-                    pred_serial=pred,
-                    pred_arm=arm,
-                    goto_target_serial=target,
-                    description=(
-                        f"clone conditional as goto from arm pred={pred} "
-                        f"arm={arm} src={src} target={target}: {reason}"
-                    ),
-                )
-
-            case InsertBlock(pred_serial=pred, succ_serial=succ, instructions=insns):
-                logger.warning(
-                    "InsertBlock(%d->%d) requires InsnSnapshot->minsn_t conversion (not yet implemented), skipping",
-                    pred,
-                    succ,
-                )
-
-            case _:
-                logger.warning(
-                    "Unsupported legacy block operation: %s",
-                    type(modification).__name__,
-                )
 
     def verify(self, mba: "ida_hexrays.mba_t") -> bool:
         """Verify mba consistency after modifications.
