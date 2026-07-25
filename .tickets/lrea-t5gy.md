@@ -3582,3 +3582,39 @@ start differs from the portable boundary identity. Original and replacement
 roots must use an anchor belonging to that portable identity; do not persist
 the live block start as semantic identity or weaken the FragmentBlock
 invariant.
+
+**2026-07-25T06:25:50Z**
+
+Commit `8955288bd` makes published-boundary original and replacement roots use
+their portable `boundary_anchor_ea`, not the maturity-local live owner's block
+start. The strengthened replacement-owned split test models a live owner at
+`0x1005` with portable identity `0x1200-0x1211` and proves both roots remain
+anchored at `0x1200`. The combined canonical, resolver, fragment-plan,
+fragment-validation, and semantic-backend gate is 450/450 green; Ruff,
+ast-grep, `graphify update .`, and all 14 import contracts pass.
+
+The mandatory cache-disabled A560 canary completed normally in 23.44 seconds
+wall time (20.94 seconds inside pytest) with no process crash or numeric
+`INTERR`. Log: `.tmp/rhad-a560-v33-portable-boundary-anchor-v1.txt`; primary
+DB:
+`.tmp/rhad-a560-v33-portable-boundary-anchor-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-portable-boundary-anchor-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red as the same eight-line infinite-loop stub; this is
+not A560 acceptance.
+
+The boundary anchor mismatch is gone and canonical construction reaches the
+terminal-carrier plan invariant. The first failed obligation is now
+`fragment_plan_rejected@0x40A560`: return carrier
+`return-carrier:terminal_return@0x40C7F6:0x19A7218A` requires every corridor EA
+to be an exact instruction owned by its staged block identity. The DB does not
+record the carrier's block, corridor EAs, exact-instruction inventory, or
+missing subset. The only committed transaction and root-publication group
+remain frontend-normalization evidence; there are zero semantic-oracle runs or
+comparisons. The highest completed semantic level remains C2 because the
+canonical plan still fails validation.
+
+Continue by structuring this return-carrier rejection with the block ID, role,
+stable identity, corridor anchors, exact-instruction inventory, and missing
+anchors. Do not widen an identity or relax exact ownership until the DB
+identifies the precise mismatch.
