@@ -12,8 +12,12 @@ from dataclasses import dataclass, replace
 from enum import Enum
 import json
 
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.observability_models import BlockSnapshot, InstructionSnapshot
 from d810.core.typing import Mapping, Sequence
+
+
+_MANIFEST_SCHEMA_VERSION = 1
 
 
 class RouteCaptureLane(str, Enum):
@@ -202,6 +206,204 @@ class RouteOracleRun:
         metadata = json.loads(self.metadata_json)
         if not isinstance(metadata, dict):
             raise ValueError("route oracle metadata must be a JSON object")
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceRouteOracleSelection:
+    """Pinned reference authority selected for one fragment plan."""
+
+    run: RouteOracleRun
+    routes: tuple[ReferenceRouteRewrite, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.run, RouteOracleRun):
+            raise TypeError("reference route selection requires one oracle run")
+        if not self.run.cache_disabled:
+            raise ValueError("reference route selection requires a cache-disabled run")
+        routes = tuple(self.routes)
+        if not routes or any(
+            not isinstance(route, ReferenceRouteRewrite) for route in routes
+        ):
+            raise ValueError("reference route selection requires portable routes")
+        if any(route.function_ea != self.run.function_ea for route in routes):
+            raise ValueError("reference route selection has a function mismatch")
+        _require_unique_reference_fields(routes)
+        object.__setattr__(self, "routes", routes)
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceRouteOracleCatalog:
+    """Exact-input manifest authority exposed through a portable capability."""
+
+    run: RouteOracleRun
+    routes: tuple[ReferenceRouteRewrite, ...]
+
+    def __post_init__(self) -> None:
+        selection = ReferenceRouteOracleSelection(run=self.run, routes=self.routes)
+        object.__setattr__(self, "routes", selection.routes)
+
+    @classmethod
+    def from_manifest(
+        cls,
+        manifest: Mapping[str, object],
+    ) -> ReferenceRouteOracleCatalog:
+        """Parse the single supported manifest schema without aliases."""
+
+        if not isinstance(manifest, Mapping):
+            raise TypeError("semantic route oracle manifest must be an object")
+        observed_version = manifest.get("schema_version")
+        if observed_version != _MANIFEST_SCHEMA_VERSION:
+            raise ValueError(
+                "semantic route oracle manifest schema version mismatch: "
+                f"expected={_MANIFEST_SCHEMA_VERSION} "
+                f"observed={observed_version!r}"
+            )
+        raw_run = manifest.get("run")
+        if not isinstance(raw_run, Mapping):
+            raise ValueError("semantic route oracle manifest has no run object")
+        raw_routes = manifest.get("routes")
+        if not isinstance(raw_routes, list) or not raw_routes:
+            raise ValueError("semantic route oracle manifest has no routes")
+        run = _run_from_manifest(raw_run)
+        routes = tuple(_route_from_manifest(raw) for raw in raw_routes)
+        return cls(run=run, routes=routes)
+
+    def reference_oracle_for(
+        self,
+        function_ea: int,
+        native_key: NativePreanalysisKey,
+        rewrite_anchor_eas: Sequence[int],
+    ) -> ReferenceRouteOracleSelection | None:
+        """Return authority only for an exact input, function, and anchor set."""
+
+        if not isinstance(native_key, NativePreanalysisKey):
+            raise TypeError("reference route selection requires a native key")
+        requested = tuple(int(anchor_ea) for anchor_ea in rewrite_anchor_eas)
+        if not requested or len(set(requested)) != len(requested):
+            return None
+        expected_input_identity = f"sha256:{self.run.candidate_binary_sha256.lower()}"
+        if (
+            int(function_ea) != self.run.function_ea
+            or native_key.input_identity.lower() != expected_input_identity
+        ):
+            return None
+        by_anchor = {route.rewrite_anchor_ea: route for route in self.routes}
+        if any(anchor_ea not in by_anchor for anchor_ea in requested):
+            return None
+        return ReferenceRouteOracleSelection(
+            run=self.run,
+            routes=tuple(by_anchor[anchor_ea] for anchor_ea in requested),
+        )
+
+
+def _require_unique_reference_fields(
+    routes: Sequence[ReferenceRouteRewrite],
+) -> None:
+    fields = (
+        ("route ids", tuple(route.route_id for route in routes)),
+        (
+            "rewrite anchors",
+            tuple(route.rewrite_anchor_ea for route in routes),
+        ),
+        (
+            "ledger identities",
+            tuple(route.reference_ledger_identity for route in routes),
+        ),
+    )
+    for label, values in fields:
+        if len(set(values)) != len(values):
+            raise ValueError(f"reference route catalog requires unique {label}")
+
+
+def _manifest_int(value: object, *, field: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be an integer or numeric string")
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value, 0)
+        except ValueError as exc:
+            raise ValueError(f"{field} must be an integer or numeric string") from exc
+    raise ValueError(f"{field} must be an integer or numeric string")
+
+
+def _run_from_manifest(raw: Mapping[str, object]) -> RouteOracleRun:
+    try:
+        cache_disabled = raw["cache_disabled"]
+        if not isinstance(cache_disabled, bool):
+            raise ValueError("route oracle cache_disabled must be a boolean")
+        return RouteOracleRun(
+            run_id=str(raw["run_id"]),
+            function_ea=_manifest_int(raw["function_ea"], field="run function_ea"),
+            fixture_sha256=str(raw["fixture_sha256"]),
+            reference_binary_sha256=str(raw["reference_binary_sha256"]),
+            candidate_binary_sha256=str(raw["candidate_binary_sha256"]),
+            reference_commit=str(raw["reference_commit"]),
+            runtime_image=str(raw["runtime_image"]),
+            runtime_image_id=str(raw["runtime_image_id"]),
+            cache_disabled=cache_disabled,
+            metadata_json=json.dumps(raw.get("metadata", {}), sort_keys=True),
+        )
+    except KeyError as exc:
+        raise ValueError(
+            f"semantic route oracle run lacks required field {exc.args[0]!r}"
+        ) from exc
+
+
+def _optional_manifest_ea(
+    raw: Mapping[str, object],
+    field: str,
+) -> int | None:
+    value = raw.get(field)
+    return None if value is None else _manifest_int(value, field=field)
+
+
+def _route_from_manifest(raw: object) -> ReferenceRouteRewrite:
+    if not isinstance(raw, Mapping):
+        raise ValueError("semantic route oracle route is not an object")
+    corridor = raw.get("corridor")
+    if not isinstance(corridor, list) or not corridor:
+        raise ValueError("semantic route oracle route has no corridor")
+    parsed_corridor: list[tuple[int, int]] = []
+    for item in corridor:
+        if not isinstance(item, list) or len(item) != 2:
+            raise ValueError("semantic route oracle corridor range is malformed")
+        parsed_corridor.append(
+            (
+                _manifest_int(item[0], field="corridor start"),
+                _manifest_int(item[1], field="corridor end"),
+            )
+        )
+    try:
+        return ReferenceRouteRewrite(
+            route_id=str(raw["route_id"]),
+            function_ea=_manifest_int(raw["function_ea"], field="function_ea"),
+            owner_ea=_manifest_int(raw["owner_ea"], field="owner_ea"),
+            rewrite_anchor_ea=_manifest_int(
+                raw["rewrite_anchor_ea"], field="rewrite_anchor_ea"
+            ),
+            corridor=tuple(parsed_corridor),
+            reference_phase=str(raw["reference_phase"]),
+            original_transfer_kind=SemanticTransferKind(
+                str(raw["original_transfer_kind"])
+            ),
+            final_transfer_kind=SemanticTransferKind(str(raw["final_transfer_kind"])),
+            direct_target_ea=_optional_manifest_ea(raw, "direct_target_ea"),
+            true_target_ea=_optional_manifest_ea(raw, "true_target_ea"),
+            false_target_ea=_optional_manifest_ea(raw, "false_target_ea"),
+            predicate_kind=(
+                None
+                if raw.get("predicate_kind") is None
+                else str(raw["predicate_kind"])
+            ),
+            reference_ledger_identity=str(raw["reference_ledger_identity"]),
+            reference_ledger_json=json.dumps(raw["reference_ledger"], sort_keys=True),
+        )
+    except KeyError as exc:
+        raise ValueError(
+            f"semantic route oracle route lacks required field {exc.args[0]!r}"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -669,6 +871,8 @@ def compare_route_maturities(
 
 __all__ = [
     "ReferenceRouteRewrite",
+    "ReferenceRouteOracleCatalog",
+    "ReferenceRouteOracleSelection",
     "RouteCaptureLane",
     "RouteOracleCapture",
     "RouteOracleComparison",
