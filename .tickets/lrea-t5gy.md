@@ -4770,3 +4770,46 @@ the already-pinned inventory/port owner and prove that its live version is the
 captured predecessor, while retaining rejection for physical-version aliases.
 Do not weaken ownership to arbitrary serial matching, publish on ambiguity, or
 skip the prepublication and route-oracle proofs that are now green.
+
+**2026-07-25T15:13:52Z**
+
+Commits `56c53862b` and `71709ec5f` make conditional publication ownership
+fragment-atomic and keep the requested Ruff formatting separate. Canonical
+boundary composition now owns the untouched sibling of each two-way incoming
+root predecessor as a portable external block and rejects an incomplete
+conditional envelope before live staging. The backend's exact-one-binding and
+physical-version-alias guards remain unchanged. The full canonical composer
+and semantic backend suite is 135/135 green; Ruff lint, repository-wide Ruff
+format, architecture pre-commit gates, and `graphify update .` pass.
+
+The mandatory cache-disabled A560 canary completed normally without a process
+crash, numeric `INTERR`, verifier failure, or diagnostic-write error. Log:
+`.tmp/rhad-a560-v33-owned-sibling-v11.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-owned-sibling-v11/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-owned-sibling-v11/test_real_loader_matches_reach0/sub_40A560.c`.
+The output is still only the initial `memset` followed by one false
+`while ( 1 )`, so A560 remains semantically red.
+
+The DB records the first successful main-path C5 transaction mechanics for the
+bounded six-route fragment: all six detached comparisons match, 85/85
+prepublication checks pass, the conditional-fallthrough publication group
+anchored at `0x40AE2E` publishes root `0x40AE3E`, 159/159 postpublication
+checks pass, and the 31/31 receipt commits without rollback. This clears the
+previous binding-ownership failure.
+
+That committed receipt is not yet the strategy's complete entry-connectable
+C5 gate. A recursive reachability query over postpublication snapshot 15 finds
+only four blocks reachable from literal function entry:
+`blk0@0x40A560 -> blk1@0x40A560 -> blk2@0x40A5F0 -> blk34@0x40A560`, with the
+last block self-looping. The newly published semantic fragment is physically
+present but unreachable from function entry. The validator treated the typed
+temporary port as provisional publication authority, so its positive
+postvalidation does not prove the v3.3 entry-connectability obligation.
+
+Record the highest mechanical canary as C5, but keep the architecture gate
+open at C5 entry reachability and C6 semantic output. The next vertical slice
+must select or compose the smallest actual entry-connected reference-route
+group, publish it through the same detached proof path, and make literal-entry
+postpublication reachability queryable in the DB. Do not broaden to all 91
+immediate routes merely because one provisional-port receipt committed.
