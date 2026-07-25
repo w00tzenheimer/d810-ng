@@ -2792,3 +2792,46 @@ them with the available state-write inventory, and explain why the selected
 component reaches the `0x40A607` dispatcher router after nested projection.
 Add or repair one portable semantic proof only after that parity result is
 explicit in the diagnostic DB.
+
+**2026-07-25T03:04:21Z**
+
+The v3.3 differential-oracle checkpoint was already present and has now been
+audited rather than replayed. Commits `1a766ae57` and `25e5595ed` own the
+portable comparison model, diagnostic tables, isolated capture adapter, and
+tests. The reference ledger at `.tmp/rhad_reference_parity_ledger.json`
+contains 756 committed transactions over the four protected Rhad functions
+and is bound to fixture SHA-256
+`2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c`.
+The unchanged reference repository is clean at
+`21b0d4783703bc4fb6910cfae51d92cd683d2c65`, matching the manifest.
+
+The reproducible isolated A560 artifact is
+`.tmp/rhad-oracle-v33.mcFPat/a560-d.diag.sqlite3`, with manifest
+`.tmp/rhad-oracle-v33.mcFPat/manifest-d.json`. It contains eight captures:
+reference-patched and unpatched-baseline lanes at `MMAT_GENERATED`,
+`MMAT_PREOPTIMIZED`, `MMAT_CALLS`, and `MMAT_GLBOPT1`, all cache-disabled and
+with D810 disabled. Runs b, c, and d have identical serialized block dump
+SHA-256 `bd8714769b9ac4e9d25c4eb264dc64d14b21ed9e26e29e328548392879027cf1`
+and instruction dump SHA-256
+`75ca09647cd4cf2aba15cee5b22530bddbed8a5dd4bc30f5832551a7e9838840`.
+
+For the first selected route, the diagnostic DB now supplies the exact C1
+parity result. Reference identity
+`rhad:0x40A560:flow_route:0x40BB63` owns native `0x40BB51`, rewrites anchor
+`0x40BB63`, and commits one direct target `0x40ACF3`. At
+`MMAT_GENERATED`, the patched reference has a direct `m_goto` at `0x40BB63`
+with sole successor `0x40ACF3`; the unpatched baseline still has `m_jcnd`
+with taken successor `0x40C6F7` and physical fallthrough `0x40BB69`. The DB
+marks this `transfer_kind` mismatch as the first divergence. Candidate owner
+loss at `MMAT_CALLS` and `MMAT_GLBOPT1` is downstream and must not replace the
+earlier generated-maturity obligation.
+
+This recovered C1 oracle evidence does not reset or replay the completed
+direct-route vertical. Commits `deddb3700` and `9385ceef9` already carry and
+realize the complete `0x40BB51` / `0x40BB63` / `0x40ACF3` rewrite inside the
+detached plan, and the current generation-2 path has a committed C5 receipt.
+The first unmet obligation therefore remains post-C5 at native `0x40A607`:
+explain which selected semantic exit still reaches that dispatcher router and
+derive its exact reference-equivalent route proof. Use the audited oracle as
+the C1 pattern for that exit; do not reimplement the direct rewrite, add a raw
+boundary exception, or broaden publication.
