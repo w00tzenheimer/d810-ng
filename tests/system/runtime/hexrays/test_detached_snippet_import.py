@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import replace
+from dataclasses import fields, replace
 from enum import Enum
 from types import SimpleNamespace
 
@@ -14,11 +14,20 @@ from d810.hexrays.mutation import detached_handler_island
 from d810.hexrays.mutation import cfg_verify
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+from d810.hexrays.mutation.semantic_fragment_preparation import (
+    PreparedNativeBlockFact,
+    PreparedNativeBodyFact,
+    PreparedNativeBodyPayload,
+    PreparedNativeBodyPreparation,
+    PreparedNativeEdgeFact,
+    PreparedNativeInstructionFact,
+)
 from d810.ir.block_identity import (
     BlockHandleProvenance,
     NativeEaInterval,
     StableBlockIdentity,
 )
+from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
@@ -831,11 +840,158 @@ def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
         mba=destination,
         function_ea=function_ea,
     )
+    destination_before = (
+        destination.qty,
+        destination.chains_dirty,
+        destination.next_fictitious_ea,
+        tuple(sorted(destination.fictitious_ea_map.items())),
+        tuple(
+            (
+                block.serial,
+                block.start,
+                block.end,
+                block.type,
+                block.flags,
+                tuple(block.succset),
+                tuple(block.predset),
+                tuple(
+                    (instruction.opcode, instruction.ea)
+                    for instruction in block.instructions()
+                ),
+            )
+            for block in destination.blocks
+        ),
+    )
+    destination_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(function_ea, function_ea + 1),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(function_ea,),
+    )
+    identity_index = MbaBlockIdentityIndex.from_bindings(
+        generation=7,
+        native_key=NATIVE_KEY,
+        bindings=((destination_identity, 0),),
+        session_id="native-preparation-test",
+    )
 
-    _prepare_and_stage_native_body(
-        materializer,
+    first = materializer.prepare_native_body(
+        plan=context.plan,
+        native_body=native_body,
+    )
+    second = materializer.prepare_native_body(
+        plan=context.plan,
+        native_body=native_body,
+    )
+
+    assert isinstance(first, PreparedNativeBodyPreparation)
+    assert first.fact == second.fact
+    assert first.payload.semantic_signature == second.payload.semantic_signature
+    assert first.fact.plan_id == context.plan.plan_id
+    assert first.fact.body_id == native_body.body_id
+    assert first.fact.native_ranges == native_body.native_ranges
+    assert first.fact.entry_block_ids == native_body.entry_block_ids
+    assert first.fact.terminal_block_ids == native_body.terminal_block_ids
+    entry_fact = first.fact.block(entry_block.block_id)
+    terminal_fact = first.fact.block(terminal_block.block_id)
+    assert entry_fact.stable_identity == entry_block.stable_identity
+    assert entry_fact.semantic_anchor_ea == entry_ea
+    assert entry_fact.kind is BlockKind.ONE_WAY
+    assert entry_fact.successors == (
+        PreparedNativeEdgeFact(
+            SemanticEdgeRole.DIRECT,
+            terminal_block.block_id,
+        ),
+    )
+    assert entry_fact.predecessor_block_ids == ()
+    assert entry_fact.terminator_kind is InsnKind.GOTO
+    assert terminal_fact.stable_identity == terminal_block.stable_identity
+    assert terminal_fact.kind is BlockKind.ZERO_WAY
+    assert terminal_fact.predecessor_block_ids == (entry_block.block_id,)
+    assert terminal_fact.terminator_ea == terminal_ea
+    assert terminal_fact.terminator_kind is InsnKind.RET
+    assert tuple(
+        (instruction.native_ea, instruction.opcode)
+        for instruction in entry_fact.instructions + terminal_fact.instructions
+    ) == (
+        (entry_ea, int(ida_hexrays.m_mov)),
+        (terminal_ea, int(ida_hexrays.m_ret)),
+    )
+    assert all(
+        "serial" not in field.name
+        for fact_type in (
+            PreparedNativeInstructionFact,
+            PreparedNativeEdgeFact,
+            PreparedNativeBlockFact,
+            PreparedNativeBodyFact,
+        )
+        for field in fields(fact_type)
+    )
+    assert all(
+        isinstance(value, (str, int, bool, type(None), tuple))
+        for block in first.fact.blocks
+        for instruction in block.instructions
+        for value in instruction.operand_shape
+    )
+    assert not any(
+        isinstance(value, _Instruction)
+        for block in first.fact.blocks
+        for instruction in block.instructions
+        for value in instruction.operand_shape
+    )
+    assert (
+        destination.qty,
+        destination.chains_dirty,
+        destination.next_fictitious_ea,
+        tuple(sorted(destination.fictitious_ea_map.items())),
+        tuple(
+            (
+                block.serial,
+                block.start,
+                block.end,
+                block.type,
+                block.flags,
+                tuple(block.succset),
+                tuple(block.predset),
+                tuple(
+                    (instruction.opcode, instruction.ea)
+                    for instruction in block.instructions()
+                ),
+            )
+            for block in destination.blocks
+        ),
+    ) == destination_before
+    assert identity_index.generation == 7
+
+    with pytest.raises(ValueError, match="scope"):
+        PreparedNativeBodyPreparation(
+            fact=first.fact,
+            payload=replace(first.payload, plan_id="foreign-plan"),
+        )
+    first_row = first.payload.rows[0]
+    drifted_instruction = copy.deepcopy(first_row[2][0][1])
+    drifted_instruction.opcode = int(ida_hexrays.m_add)
+    drifted_rows = (
+        (
+            first_row[0],
+            first_row[1],
+            ((first_row[2][0][0], drifted_instruction), *first_row[2][1:]),
+        ),
+        *first.payload.rows[1:],
+    )
+    with pytest.raises(ValueError, match="instruction facts"):
+        PreparedNativeBodyPreparation(
+            fact=first.fact,
+            payload=PreparedNativeBodyPayload(
+                plan_id=first.payload.plan_id,
+                body_id=first.payload.body_id,
+                rows=drifted_rows,
+            ),
+        )
+
+    materializer.stage_native_body(
         context=context,
         native_body=native_body,
+        preparation=first,
     )
 
     assert context.staged_block_ids == [
