@@ -7,6 +7,8 @@ and identities from Hacker's Delight.
 All rules are verified using Z3 SMT solver.
 """
 
+from typing import Any
+
 from d810.core.bits import AND_TABLE, SUB_TABLE
 from d810.mba.dsl import Var, Const, when
 from d810.mba.rules._base import VerifiableRule
@@ -445,6 +447,12 @@ class Xor_Rule_4_WithXdu(VerifiableRule):
 
     This rule cannot be fully verified by Z3 because the constraint depends
     on microcode operand types that only exist at runtime.
+
+    Note: This rule contains IDA-specific MOP type checks in check_candidate().
+    This is a known architecture limitation - rules should be backend-agnostic,
+    but this rule requires runtime type information. The IDA import is kept inline
+    to allow unit testing of the rule definition without IDA installed.
+    A proper fix would use a runtime validator attachment framework.
     """
     maturities = _ALL_MATURITIES
 
@@ -459,8 +467,15 @@ class Xor_Rule_4_WithXdu(VerifiableRule):
     DESCRIPTION = "Simplify (xdu(z) & ~c) | (~xdu(z) & c) to xdu(z) ^ c"
     REFERENCE = "XOR pattern with XDU and constant complement"
 
-    def check_candidate(self, candidate) -> bool:
-        """Check MOP types: x_0 must be mop_d with m_xdu opcode, constants must be bnot."""
+    def check_candidate(self, candidate: dict[str, Any]) -> bool:
+        """Check MOP types: x_0 must be mop_d with m_xdu opcode, constants must be bnot.
+
+        Args:
+            candidate: Dictionary mapping variable names to their matched AST nodes.
+
+        Returns:
+            True if the candidate satisfies the runtime constraints, False otherwise.
+        """
         try:
             import ida_hexrays
 

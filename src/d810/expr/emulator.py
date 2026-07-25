@@ -86,10 +86,15 @@ def fetch_idb_value(address: int, size: int) -> int | None:
 
 # Extracted class
 class SyntheticCallReturnCache:
-    """
-    Provides stable, synthetic return values for calls based on (EA, dest_size).
+    """Provides stable, synthetic return values for calls based on (EA, dest_size).
 
     Also tracks provenance: chained synthetic values can be traced back to their origin.
+
+    Attributes:
+        tag: High-bit sentinel pattern (0xD810...) used to identify synthetic values.
+            The 0xD810 prefix is a play on "D-810" (deobfuscation).
+        mask: 48-bit mask (0xFFFFFFFFFFFF) for extracting the EA portion from
+            a synthetic value. Synthetic values are constructed as tag ^ (ea & mask).
     """
 
     DEFAULT_TAG = 0xD810000000000000
@@ -250,7 +255,11 @@ class MicroCodeInterpreter(object):
     concrete states are not interchangeable.
     """
 
-    def __init__(self, global_environment=None, symbolic_mode=False):
+    def __init__(
+        self,
+        global_environment: MicroCodeEnvironment | None = None,
+        symbolic_mode: bool = False,
+    ):
         self.global_environment = (
             MicroCodeEnvironment() if global_environment is None else global_environment
         )
@@ -571,7 +580,7 @@ class MicroCodeInterpreter(object):
             dest_block_serials = get_block_serials_by_address(
                 environment.cur_blk.mba, ijmp_dest_ea
             )
-            if len(dest_block_serials) == 0:
+            if not dest_block_serials:
                 raise EmulationIndirectJumpException(
                     "No blocks found at address {0:x}".format(ijmp_dest_ea),
                     ijmp_dest_ea,

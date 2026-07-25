@@ -56,7 +56,7 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
             resolved_histories = [h for h in pred_histories if h.is_resolved()]
             unresolved_count = len(pred_histories) - len(resolved_histories)
 
-            if len(resolved_histories) == 0:
+            if not resolved_histories:
                 # No resolved paths at all - can't determine values for this predecessor
                 unflat_logger.debug(
                     "No resolved histories for pred %s, skipping",
@@ -119,7 +119,7 @@ class UnflattenerFakeJump(GenericUnflatteningRule):
         pred: ida_hexrays.mblock_t,
         pred_comparison_values: list[int],
     ) -> bool:
-        if len(pred_comparison_values) == 0:
+        if not pred_comparison_values:
             return False
         jmp_ins = fake_loop_block.tail
         compared_value = jmp_ins.r.nnn.value

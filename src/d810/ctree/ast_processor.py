@@ -75,11 +75,11 @@ class ASTProcessor:
 
     def is_iteration_ended(self) -> bool:
         """Return True if the iteration is finished."""
-        return len(self.path) == 0
+        return not self.path
 
     def is_iteration_started(self) -> bool:
         """Return True if the iterator is at the very beginning."""
-        if len(self.path) == 0:
+        if not self.path:
             return False
         # check that AST path is all left-sided
         if any(child_idx != 0 for (_, child_idx) in self.path[:-1]):
@@ -92,13 +92,13 @@ class ASTProcessor:
 
     def get_current(self) -> typing.Any | None:
         """Return the current item, or None if iteration ended."""
-        if len(self.path) == 0:
+        if not self.path:
             return None
         return self.path[-1][0]
 
     def pop_current(self) -> typing.Any | None:
         """Advance the iterator and return the next item."""
-        if len(self.path) == 0:
+        if not self.path:
             return None
 
         current_item, child_idx = self.path.pop()
@@ -152,12 +152,12 @@ class ASTProcessor:
         assert ast_patch.item is not None
 
         # if iteration ended, just do the patch
-        if len(self.path) == 0:
+        if not self.path:
             logger.warning("patching AST that already finished iteration")
             return ast_patch.do_patch(ast_ctx)
 
         item_path = self.get_item_path(ast_patch.item)
-        if len(item_path) == 0:
+        if not item_path:
             logger.warning("patching AST with items that don't match")
             rv = ast_patch.do_patch(ast_ctx)
             self.restart_iteration()

@@ -204,11 +204,11 @@ class ObjPat(ExpressionPat):
     @ExpressionPat.expr_check
     def check(self, expression: typing.Any, ctx: MatchContext) -> bool:
         # if no object was given aka any object, that passes expr_check
-        if len(self.addrs) == 0 and len(self.names) == 0:
+        if not self.addrs and not self.names:
             return True
-        if len(self.addrs) != 0 and expression.obj_ea in self.addrs:
+        if self.addrs and expression.obj_ea in self.addrs:
             return True
-        if len(self.names) == 0:
+        if not self.names:
             return False
         if idaapi is None:
             return False

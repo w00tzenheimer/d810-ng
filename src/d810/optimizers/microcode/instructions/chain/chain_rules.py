@@ -40,7 +40,7 @@ class ChainSimplification(object):
         return final_mop_list
 
     def get_simplified_constant(self):
-        if len(self.cst_mop_list) == 0:
+        if not self.cst_mop_list:
             return []
         elif len(self.cst_mop_list) == 1:
             return self.cst_mop_list
@@ -82,7 +82,7 @@ class ChainSimplification(object):
         This is much faster than O(n^2) all-pairs comparison for large operand lists.
         """
         # Fast path
-        if len(self.non_cst_mop_list) == 0:
+        if not self.non_cst_mop_list:
             return []
         if len(self.non_cst_mop_list) == 1:
             return self.non_cst_mop_list
@@ -176,7 +176,7 @@ class ChainSimplification(object):
                 if is_always_0:
                     break
 
-        if len(index_removed) == 0 and not is_always_0:
+        if not index_removed and not is_always_0:
             return unique
 
         final_mop_list: list[ida_hexrays.mop_t] = []
@@ -210,7 +210,7 @@ class ChainSimplification(object):
     def create_new_chain(self, original_ins, mop_list):
         new_ins = ida_hexrays.minsn_t(original_ins.ea)
         new_ins.opcode = self.opcode
-        if len(mop_list) == 0:
+        if not mop_list:
             mop_list.append(self.create_cst_mop(0, original_ins.d.size))
         if len(mop_list) == 1:
             mop_list.append(self.create_cst_mop(0, original_ins.d.size))
@@ -286,11 +286,11 @@ class ArithmeticChainSimplification(object):
         return final_add_list, final_sub_list, final_add_cst_list, final_sub_cst_list
 
     def get_simplified_constant(self):
-        if len(self.add_cst_mop_list) == 0 and len(self.sub_cst_mop_list) == 0:
+        if not self.add_cst_mop_list and not self.sub_cst_mop_list:
             return [[], []]
-        if len(self.add_cst_mop_list) == 1 and len(self.sub_cst_mop_list) == 0:
+        if len(self.add_cst_mop_list) == 1 and not self.sub_cst_mop_list:
             return self.add_cst_mop_list, []
-        if len(self.add_cst_mop_list) == 0 and len(self.sub_cst_mop_list) == 1:
+        if not self.add_cst_mop_list and len(self.sub_cst_mop_list) == 1:
             return [], self.sub_cst_mop_list
         add_cst_size_list = [c.size for c in self.add_cst_mop_list]
         add_cst_value_list = [c.nnn.value for c in self.add_cst_mop_list]
@@ -314,7 +314,7 @@ class ArithmeticChainSimplification(object):
         return [final_cst_mop], []
 
     def get_simplified_non_constant(self):
-        if len(self.add_non_cst_mop_list) == 0 and len(self.sub_non_cst_mop_list) == 0:
+        if not self.add_non_cst_mop_list and not self.sub_non_cst_mop_list:
             # Return an explicit zero-constant mop so callers can safely inspect .nnn
             zero = ida_hexrays.mop_t()
             zero.make_number(0, 1)
@@ -347,7 +347,7 @@ class ArithmeticChainSimplification(object):
         return final_add_list, final_sub_list, final_add_cst_mop
 
     def check_bnot_mop(self, add_non_cst_mop_list, sub_non_cst_mop_list):
-        if len(add_non_cst_mop_list) == 0 and len(sub_non_cst_mop_list) == 0:
+        if not add_non_cst_mop_list and not sub_non_cst_mop_list:
             zero = ida_hexrays.mop_t()
             zero.make_number(0, 1)
             return add_non_cst_mop_list, sub_non_cst_mop_list, zero
@@ -442,7 +442,7 @@ class ArithmeticChainSimplification(object):
         return new_ins
 
     def _create_mop_add_chain(self, ea, mop_list, size):
-        if len(mop_list) == 0:
+        if not mop_list:
             res = ida_hexrays.mop_t()
             res.make_number(0, size)
             return res

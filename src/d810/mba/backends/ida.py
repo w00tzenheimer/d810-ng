@@ -689,7 +689,7 @@ class IDAPatternAdapter:
             A new minsn_t if the rule matched, None otherwise.
         """
         valid_candidates = self.get_valid_candidates(instruction, stop_early=True)
-        if len(valid_candidates) == 0:
+        if not valid_candidates:
             return None
         new_instruction = self.get_replacement(valid_candidates[0])
         return new_instruction

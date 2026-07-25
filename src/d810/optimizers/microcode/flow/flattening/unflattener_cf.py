@@ -1131,7 +1131,7 @@ class cf_flatten_info_t:
         # statements. This is our "comparison" variable.
         switch_tbl_collector = switch_state_collector_t()
         mba.for_all_topinsns(switch_tbl_collector)
-        if len(switch_tbl_collector.switches) == 0:
+        if not switch_tbl_collector.switches:
             logger.info(
                 f"No switch statements seen for function @ {hex(ea)} - adding function to blacklist"
             )
@@ -1572,7 +1572,7 @@ class cf_unflattener_t:
         )
 
         # If we found no intervening assignments to "what", that's bad.
-        if len(local) == 0:
+        if not local:
             logger.info(
                 f"Local array is zero, failed backward search! Dirty search now for block = {mb.serial}"
             )

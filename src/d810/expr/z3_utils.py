@@ -156,14 +156,8 @@ def create_z3_vars(leaf_list: list[AstLeaf]):
         if leaf_index == -1:
             known_leaf_list.append(leaf.mop)
             leaf_index = len(known_leaf_list) - 1
-            if leaf.mop.size in [1, 2, 4, 8]:
-                # Normally, we should create variable based on their size
-                # but for now it can cause issue when instructions like XDU are used, hence this ugly fix
-                # known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), 8 * leaf.mop.size))
-                known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), 32))
-                pass
-            else:
-                known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), 32))
+            bit_width = 8 * leaf.mop.size
+            known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), bit_width))
         leaf.z3_var = known_leaf_z3_var_list[leaf_index]
         leaf.z3_var_name = "x_{0}".format(leaf_index)
     return known_leaf_z3_var_list

@@ -10,9 +10,14 @@ from __future__ import annotations
 import abc
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
 from d810.core.typing import Any, Dict, Protocol
 
 import ida_hexrays
+
+if TYPE_CHECKING:
+    from d810.expr.ast import AstNode
 
 
 @dataclass(frozen=True)
@@ -90,7 +95,7 @@ class PatternMatchingRule(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def pattern(self) -> "AstNode":
+    def pattern(self) -> AstNode:
         """The AST pattern to match against microcode instructions.
 
         Returns:
@@ -100,7 +105,7 @@ class PatternMatchingRule(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def replacement(self) -> "AstNode":
+    def replacement(self) -> AstNode:
         """The AST pattern to substitute when a match is found.
 
         Returns:
@@ -109,7 +114,7 @@ class PatternMatchingRule(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def check_candidate(self, candidate: "AstNode") -> bool:
+    def check_candidate(self, candidate: AstNode) -> bool:
         """Performs rule-specific validation on a matched pattern.
 
         After the pattern is matched, this method can perform additional checks

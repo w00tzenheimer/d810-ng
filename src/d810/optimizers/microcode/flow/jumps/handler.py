@@ -126,7 +126,7 @@ class JumpOptimizationRule(Registrant):
         valid_candidates = self.get_valid_candidates(
             instruction, left_ast, right_ast, stop_early=True
         )
-        if len(valid_candidates) == 0:
+        if not valid_candidates:
             return None
         # if self.jump_original_block_serial is None:
         #     self.jump_replacement_block_serial = self.jump_original_block_serial

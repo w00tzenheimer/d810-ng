@@ -289,30 +289,6 @@ conf: dict[str, typing.Any] = {
 }
 
 
-# # Ensure *every* LogRecord, no matter the logger class, carries MDC data so
-# # that format strings with "%(maturity)s" never raise a KeyError.
-# _old_factory = logging.getLogRecordFactory()
-
-# def _d810_record_factory(*args, **kwargs):  # type: ignore
-#     record = _old_factory(*args, **kwargs)
-#     # Inject MDC data for non-D810Logger records
-#     if not hasattr(record, "mdc"):
-#         # Fetch MDC from the logger instance if available; else empty dict.
-#         try:
-#             logger_obj = logging.getLogger(record.name)
-#             if isinstance(logger_obj, D810Logger):
-#                 record.mdc = (
-#                     logger_obj._get_mdc()
-#                 )  # pylint: disable=protected-access
-#             else:
-#                 record.mdc = {}
-#         except Exception:
-#             record.mdc = {}
-#     return record
-
-# logging.setLogRecordFactory(_d810_record_factory)
-
-
 class LoggerConfigurator:
     """
     Utility to dynamically query and set logger levels at runtime.
