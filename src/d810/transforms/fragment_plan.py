@@ -55,6 +55,54 @@ class FragmentPublicationPurpose(str, Enum):
     CANONICAL_SEMANTIC_LOWERING = "canonical_semantic_lowering"
 
 
+class FragmentBoundaryPortKind(str, Enum):
+    """Explicit temporary attachment retained by a partial semantic fragment."""
+
+    TEMPORARY_DISPATCHER_ENTRY = "temporary_dispatcher_entry"
+
+
+@dataclass(frozen=True, slots=True)
+class FragmentBoundaryPort:
+    """One serialized migration port and the obligation that retires it."""
+
+    port_id: str
+    kind: FragmentBoundaryPortKind
+    predecessor_block_id: str
+    root_block_id: str
+    retirement_obligation_id: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "port_id",
+            _require_identifier(self.port_id, "fragment boundary port id"),
+        )
+        if not isinstance(self.kind, FragmentBoundaryPortKind):
+            raise TypeError("fragment boundary port requires a typed kind")
+        predecessor_block_id = _require_identifier(
+            self.predecessor_block_id,
+            "fragment boundary port predecessor",
+        )
+        root_block_id = _require_identifier(
+            self.root_block_id,
+            "fragment boundary port root",
+        )
+        if predecessor_block_id == root_block_id:
+            raise FragmentPlanRejected(
+                "fragment boundary port predecessor and root must differ"
+            )
+        object.__setattr__(self, "predecessor_block_id", predecessor_block_id)
+        object.__setattr__(self, "root_block_id", root_block_id)
+        object.__setattr__(
+            self,
+            "retirement_obligation_id",
+            _require_identifier(
+                self.retirement_obligation_id,
+                "fragment boundary port retirement obligation",
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class FragmentWorkItemScope:
     """Generation-local obligations owned by one fragment transaction."""
@@ -1245,6 +1293,7 @@ class FragmentPlan:
     data_flow_obligations: tuple[FragmentDataFlowObligation, ...] = ()
     flag_corridors: tuple[FragmentFlagCorridor, ...] = ()
     value_range_assumptions: tuple[FragmentRangeAssumption, ...] = ()
+    boundary_ports: tuple[FragmentBoundaryPort, ...] = ()
 
     def __post_init__(self) -> None:
         plan_id = _require_identifier(self.plan_id, "fragment plan id")
@@ -1332,6 +1381,45 @@ class FragmentPlan:
             if block_id in roots:
                 raise FragmentPlanRejected(
                     "fragment root cannot also be a prohibited dispatcher block"
+                )
+
+        boundary_ports = tuple(self.boundary_ports)
+        if any(not isinstance(port, FragmentBoundaryPort) for port in boundary_ports):
+            raise TypeError("fragment plan contains an invalid boundary port")
+        self._require_unique_ids(
+            (port.port_id for port in boundary_ports),
+            "fragment boundary port",
+        )
+        self._require_unique_ids(
+            (port.retirement_obligation_id for port in boundary_ports),
+            "fragment boundary port retirement obligation",
+        )
+        if boundary_ports and (
+            self.publication_purpose
+            is not FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+        ):
+            raise FragmentPlanRejected(
+                "temporary boundary ports belong only to canonical semantic plans"
+            )
+        for port in boundary_ports:
+            predecessor = block_by_id.get(port.predecessor_block_id)
+            root = block_by_id.get(port.root_block_id)
+            if (
+                predecessor is None
+                or predecessor.role is not FragmentBlockRole.EXTERNAL
+            ):
+                raise FragmentPlanRejected(
+                    f"fragment boundary port {port.port_id!r} requires an external "
+                    "predecessor"
+                )
+            if root is None or port.root_block_id not in roots:
+                raise FragmentPlanRejected(
+                    f"fragment boundary port {port.port_id!r} requires a plan root"
+                )
+            if port.predecessor_block_id in prohibited_dispatcher_blocks:
+                raise FragmentPlanRejected(
+                    f"fragment boundary port {port.port_id!r} predecessor cannot "
+                    "also be prohibited"
                 )
 
         for block in blocks:
@@ -2034,6 +2122,7 @@ class FragmentPlan:
             "value_range_assumptions",
             value_range_assumptions,
         )
+        object.__setattr__(self, "boundary_ports", boundary_ports)
 
     @staticmethod
     def _normalize_block_ids(
@@ -2151,6 +2240,8 @@ __all__ = [
     "FragmentBlock",
     "FragmentBlockMaterialization",
     "FragmentBlockRole",
+    "FragmentBoundaryPort",
+    "FragmentBoundaryPortKind",
     "FragmentConditionalSelectEnvelope",
     "FragmentComputedBranchNormalization",
     "FragmentDataFlowObligation",

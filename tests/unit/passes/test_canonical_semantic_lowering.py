@@ -483,6 +483,42 @@ def test_semantic_predecessor_uses_proved_state_write_block_entry() -> None:
     )
 
 
+def test_temporary_boundary_port_requires_unpublished_semantic_predecessor() -> None:
+    rejection = CanonicalSemanticFragmentRejected(
+        "published canonical boundary requires one current owner",
+        reason_code="published_boundary_current_owner_count_mismatch",
+        anchor_ea=0x1100,
+        payload={
+            "owner_labels": (),
+            "current_identity_inventory": (),
+            "normalization_incoming_operations": (
+                {
+                    "source_owner_labels": (),
+                    "source_current_identity_inventory": (),
+                },
+            ),
+        },
+    )
+
+    assert state_machine_module._temporary_boundary_port_retirement_obligation(
+        boundary_anchor_ea=0x1200,
+        source_anchor_ea=0x1100,
+        upstream_rejection=rejection,
+    ) == (
+        "retire-temporary-dispatcher-entry@0x1200:publish-semantic-predecessor@0x1100"
+    )
+
+    rejection.payload["owner_labels"] = ("blk20@0x1100",)
+    assert (
+        state_machine_module._temporary_boundary_port_retirement_obligation(
+            boundary_anchor_ea=0x1200,
+            source_anchor_ea=0x1100,
+            upstream_rejection=rejection,
+        )
+        is None
+    )
+
+
 def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_oracle(
     monkeypatch,
 ) -> None:
@@ -652,6 +688,7 @@ def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_orac
         "atomic_group_id": expected_plan.atomic_group_id,
         "block_count": len(expected_plan.blocks),
         "boundary_anchor_ea": "0x1100",
+        "boundary_ports": (),
         "native_body_count": len(expected_plan.native_bodies),
         "operation_count": len(expected_plan.operations),
         "operation_ids": tuple(

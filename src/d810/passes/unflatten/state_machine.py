@@ -814,6 +814,44 @@ def _semantic_predecessor_boundary_anchor(
     return source_anchor_ea
 
 
+def _temporary_boundary_port_retirement_obligation(
+    *,
+    boundary_anchor_ea: int,
+    source_anchor_ea: int,
+    upstream_rejection: CanonicalSemanticFragmentRejected,
+) -> str | None:
+    """Name one deferred semantic entry only after live ownership is disproved."""
+    boundary_anchor_ea = int(boundary_anchor_ea)
+    source_anchor_ea = int(source_anchor_ea)
+    if (
+        boundary_anchor_ea == source_anchor_ea
+        or upstream_rejection.reason_code
+        != "published_boundary_current_owner_count_mismatch"
+        or upstream_rejection.anchor_ea != source_anchor_ea
+    ):
+        return None
+    owner_labels = upstream_rejection.payload.get("owner_labels")
+    current_inventory = upstream_rejection.payload.get("current_identity_inventory")
+    incoming_operations = upstream_rejection.payload.get(
+        "normalization_incoming_operations"
+    )
+    if owner_labels not in ((), []) or current_inventory not in ((), []):
+        return None
+    if not isinstance(incoming_operations, (tuple, list)) or not incoming_operations:
+        return None
+    if any(
+        not isinstance(operation, dict)
+        or operation.get("source_owner_labels") not in ((), [])
+        or operation.get("source_current_identity_inventory") not in ((), [])
+        for operation in incoming_operations
+    ):
+        return None
+    return (
+        f"retire-temporary-dispatcher-entry@0x{boundary_anchor_ea:X}:"
+        f"publish-semantic-predecessor@0x{source_anchor_ea:X}"
+    )
+
+
 def _compose_candidate_semantic_fragment(
     context: FunctionPipelineContext,
     *,
@@ -995,6 +1033,32 @@ def _compose_candidate_semantic_fragment(
             except CanonicalSemanticFragmentRejected as exc:
                 if first_upstream_rejection is None:
                     first_upstream_rejection = exc
+                retirement_obligation_id = (
+                    _temporary_boundary_port_retirement_obligation(
+                        boundary_anchor_ea=boundary_anchor_ea,
+                        source_anchor_ea=source_anchor_ea,
+                        upstream_rejection=exc,
+                    )
+                )
+                if retirement_obligation_id is None:
+                    continue
+                try:
+                    boundary_plan = compose_canonical_semantic_boundary_fragment_plan(
+                        context.graph,
+                        normalization_plan,
+                        boundary_anchor_ea=boundary_anchor_ea,
+                        available_evidence=candidate,
+                        current_identity_by_serial=current_identity_by_serial,
+                        normalization_authority=normalization_authority,
+                        prohibited_dispatcher_serials=(prohibited_dispatcher_serials),
+                        temporary_dispatcher_entry_port_obligation_id=(
+                            retirement_obligation_id
+                        ),
+                    )
+                except CanonicalSemanticFragmentRejected as port_exc:
+                    first_upstream_rejection = port_exc
+                    continue
+                boundary_plans.append((boundary_anchor_ea, boundary_plan))
                 continue
             boundary_plans.append((source_anchor_ea, boundary_plan))
         if first_upstream_rejection is not None:
@@ -1023,6 +1087,16 @@ def _compose_candidate_semantic_fragment(
                 "atomic_group_id": boundary_plan.atomic_group_id,
                 "block_count": len(boundary_plan.blocks),
                 "boundary_anchor_ea": f"0x{boundary_anchor_ea:X}",
+                "boundary_ports": tuple(
+                    {
+                        "kind": port.kind.value,
+                        "port_id": port.port_id,
+                        "predecessor_block_id": port.predecessor_block_id,
+                        "retirement_obligation_id": (port.retirement_obligation_id),
+                        "root_block_id": port.root_block_id,
+                    }
+                    for port in boundary_plan.boundary_ports
+                ),
                 "native_body_count": len(boundary_plan.native_bodies),
                 "operation_count": len(boundary_plan.operations),
                 "operation_ids": tuple(

@@ -49,6 +49,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentBoundaryPortKind,
     FragmentConditionalSelectEnvelope,
     FragmentComputedBranchNormalization,
     FragmentDataFlowRole,
@@ -1072,9 +1073,9 @@ def test_published_boundary_root_closes_one_nested_semantic_route() -> None:
     graph, normalization_plan, root_evidence = _live_source_detached_target_case()
     graph = FlowGraph(
         blocks={
-            10: _block(10, 0x1000, succs=(30,), preds=()),
-            30: _block(30, 0x1200, succs=(90,), preds=(10, 90)),
-            90: _block(90, 0x1400, succs=(30,), preds=(30,)),
+            10: _block(10, 0x1000, succs=(90,), preds=()),
+            30: _block(30, 0x1200, succs=(90,), preds=(90,)),
+            90: _block(90, 0x1400, succs=(30,), preds=(10, 30)),
         },
         entry_serial=10,
         func_ea=0x1000,
@@ -1213,6 +1214,7 @@ def test_published_boundary_root_closes_one_nested_semantic_route() -> None:
             available_evidence,
         ),
         prohibited_dispatcher_serials=(90,),
+        temporary_dispatcher_entry_port_obligation_id=("publish-semantic-entry@0x1200"),
     )
 
     (root_id,) = plan.roots
@@ -1243,9 +1245,14 @@ def test_published_boundary_root_closes_one_nested_semantic_route() -> None:
         if block.role is FragmentBlockRole.IMPORTED
     )
     assert any(
-        block.role is FragmentBlockRole.EXTERNAL and block.semantic_anchor_ea == 0x1000
+        block.role is FragmentBlockRole.EXTERNAL and block.semantic_anchor_ea == 0x1400
         for block in plan.blocks
     )
+    (boundary_port,) = plan.boundary_ports
+    assert boundary_port.kind is FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_ENTRY
+    assert boundary_port.root_block_id == root_id
+    assert plan.block(boundary_port.predecessor_block_id).semantic_anchor_ea == 0x1400
+    assert boundary_port.retirement_obligation_id == "publish-semantic-entry@0x1200"
 
 
 def test_published_boundary_rejection_records_prohibited_predecessor() -> None:
