@@ -43,6 +43,7 @@ from d810.core.diag.lifecycle import (
     persist_lifecycle_event,
     persist_mutation_plan,
     persist_mutation_receipt,
+    persist_semantic_fragment_route_oracle,
 )
 from d810.core.formatting import format_block_id
 from d810.core.diag.snapshot import (
@@ -96,6 +97,7 @@ from d810.core.observability_events import (
     IdentityDecisionObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
+    SemanticFragmentRouteOracleComparedObserved,
     ReachabilityObserved,
     RenderedProgramObserved,
     StateDispatcherRowsObserved,
@@ -279,6 +281,18 @@ def _handle_mutation_receipt(ev: MutationReceiptObserved) -> None:
     if conn is not None:
         with conn:
             persist_mutation_receipt(conn, ev)
+
+
+def _handle_semantic_fragment_route_oracle(
+    ev: SemanticFragmentRouteOracleComparedObserved,
+) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is not None:
+        with conn:
+            persist_semantic_fragment_route_oracle(conn, ev)
 
 
 def _handle_dag(ev: DagObserved) -> None:
@@ -864,6 +878,10 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (IdentityDecisionObserved, _handle_identity_decision),
     (MutationPlanObserved, _handle_mutation_plan),
     (MutationReceiptObserved, _handle_mutation_receipt),
+    (
+        SemanticFragmentRouteOracleComparedObserved,
+        _handle_semantic_fragment_route_oracle,
+    ),
     (CaptureMbaSnapshotRequested, _handle_capture_mba),
     (
         ConditionChainIntervalDispatcherObserved,

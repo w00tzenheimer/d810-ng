@@ -42,6 +42,7 @@ def test_create_tables_creates_all_expected_tables():
     assert "semantic_route_reference_rewrites" in tables
     assert "semantic_route_oracle_captures" in tables
     assert "semantic_route_oracle_comparisons" in tables
+    assert "semantic_fragment_route_oracle_comparisons" in tables
 
 
 def test_create_tables_idempotent():
@@ -88,6 +89,22 @@ def test_root_publication_group_schema_is_serial_free_and_ea_anchored():
         "rollback_attempted",
         "rollback_succeeded",
     ]
+    assert all("serial" not in column for column in columns)
+
+
+def test_fragment_route_oracle_schema_is_serial_free_and_ea_anchored() -> None:
+    conn = create_diag_database(":memory:").connection()
+    columns = [
+        row[1]
+        for row in conn.execute(
+            "PRAGMA table_info(semantic_fragment_route_oracle_comparisons)"
+        )
+    ]
+    assert "owner_ea_i64" in columns
+    assert "rewrite_anchor_ea_i64" in columns
+    assert "reference_ledger_identity" in columns
+    assert "oracle_shape_json" in columns
+    assert "candidate_shape_json" in columns
     assert all("serial" not in column for column in columns)
 
 

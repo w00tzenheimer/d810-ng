@@ -20,6 +20,13 @@ from d810.core.observability_events import (
     MutationPlanObserved,
     MutationReceiptObserved,
     SemanticFragmentFailureObserved,
+    SemanticFragmentRouteOracleComparedObserved,
+)
+from d810.core.semantic_route_oracle import (
+    RouteCaptureLane,
+    RouteOracleComparison,
+    SemanticRouteShape,
+    SemanticTransferKind,
 )
 from d810.diagnostics.lifecycle_timeline import (
     mutation_batch,
@@ -57,6 +64,28 @@ def _root_group(
         publication_succeeded=bool(published),
         rollback_attempted=bool(rolled_back),
         rollback_succeeded=True if rolled_back else None,
+    )
+
+
+def _route_shape(lane: RouteCaptureLane) -> SemanticRouteShape:
+    return SemanticRouteShape(
+        route_id="rhad:0x40C8B0:flow_route:0x40CA3D",
+        lane=lane,
+        maturity="DETACHED_PREPUBLICATION",
+        owner_ea=0x40CA20,
+        rewrite_anchor_ea=0x40CA3D,
+        owner_block_start_ea=0x40CA20,
+        instruction_eas=(0x40CA20, 0x40CA3D),
+        terminator_ea=0x40CA3D,
+        terminator_opcode="goto",
+        transfer_kind=SemanticTransferKind.DIRECT,
+        direct_target_ea=0x40CD76,
+        true_target_ea=None,
+        false_target_ea=None,
+        predicate_kind=None,
+        successor_eas=(0x40CD76,),
+        physical_fallthrough_ea=None,
+        reachable_from_entry=True,
     )
 
 
@@ -486,6 +515,138 @@ def test_fragment_receipt_persists_complete_semantic_transaction(
         ("postpublication_validation", "passed"),
         ("receipt", "committed"),
     ]
+
+
+def test_detached_route_oracle_persists_before_fragment_receipt(diag_conn) -> None:
+    emit(
+        MutationPlanObserved(
+            session_id="s1",
+            func_ea=0x40C8B0,
+            mutation_batch_id="oracle-batch",
+            mutation_kind="fragment_publication",
+            planned_operation_count=1,
+            mba_generation=8,
+            evidence_generation=3,
+            maturity="MMAT_PREOPT",
+            description="publish semantic fragment",
+            fragment_plan_id="fragment-oracle",
+            fragment_atomic_group_id="atomic-oracle",
+            fragment_plan_json=(
+                '{"atomic_group_id":"atomic-oracle","plan_id":"fragment-oracle"}'
+            ),
+            root_publication_groups=(_root_group(),),
+        )
+    )
+    comparison = RouteOracleComparison(
+        route_id="rhad:0x40C8B0:flow_route:0x40CA3D",
+        maturity="DETACHED_PREPUBLICATION",
+        candidate_variant="detached_prepublication",
+        outcome="matched",
+        first_divergence=False,
+        failed_invariant=None,
+        owner_ea=0x40CA20,
+        rewrite_anchor_ea=0x40CA3D,
+        oracle_shape=_route_shape(RouteCaptureLane.REFERENCE),
+        candidate_shape=_route_shape(RouteCaptureLane.CANDIDATE),
+        reason="",
+    )
+
+    emit(
+        SemanticFragmentRouteOracleComparedObserved(
+            session_id="s1",
+            func_ea=0x40C8B0,
+            mutation_batch_id="oracle-batch",
+            run_id="rhad-c8b0-v33",
+            plan_id="fragment-oracle",
+            atomic_group_id="atomic-oracle",
+            mba_generation=8,
+            evidence_generation=3,
+            maturity="MMAT_PREOPT",
+            reference_ledger_identities=((comparison.route_id, "flow_route:0x40CA3D"),),
+            comparisons=(comparison,),
+        )
+    )
+
+    assert diag_conn.execute(
+        "SELECT mutation_batch_id,run_id,plan_id,atomic_group_id,route_id,"
+        "maturity,outcome,first_divergence,failed_invariant,owner_ea_i64,"
+        "rewrite_anchor_ea_i64,reference_ledger_identity,oracle_shape_json,"
+        "candidate_shape_json,reason "
+        "FROM semantic_fragment_route_oracle_comparisons"
+    ).fetchone() == (
+        "oracle-batch",
+        "rhad-c8b0-v33",
+        "fragment-oracle",
+        "atomic-oracle",
+        comparison.route_id,
+        "DETACHED_PREPUBLICATION",
+        "matched",
+        0,
+        None,
+        0x40CA20,
+        0x40CA3D,
+        "flow_route:0x40CA3D",
+        comparison.oracle_shape.to_json(),
+        comparison.candidate_shape.to_json(),
+        "",
+    )
+    assert diag_conn.execute(
+        "SELECT event_kind,correlation_id FROM lifecycle_events ORDER BY event_seq"
+    ).fetchall() == [
+        ("session_active", None),
+        ("mutation_plan", "oracle-batch"),
+        ("semantic_fragment_route_oracle", "oracle-batch"),
+    ]
+    assert diag_conn.execute(
+        "SELECT event_index,event_kind,outcome FROM "
+        "semantic_fragment_transaction_events WHERE mutation_batch_id='oracle-batch' "
+        "ORDER BY event_index"
+    ).fetchall() == [
+        (0, "plan_recorded", "planned"),
+        (1, "detached_route_oracle", "passed"),
+    ]
+    emit(
+        MutationReceiptObserved(
+            session_id="s1",
+            func_ea=0x40C8B0,
+            mutation_batch_id="oracle-batch",
+            mutation_kind="fragment_publication",
+            pre_generation=8,
+            post_generation=8,
+            planned_operation_count=1,
+            applied_operation_count=1,
+            evidence_generation=3,
+            maturity="MMAT_PREOPT",
+            outcome="aborted",
+            description="publish semantic fragment",
+            reason="later publication obligation rejected",
+            fragment_plan_id="fragment-oracle",
+            fragment_atomic_group_id="atomic-oracle",
+            root_publication_groups=(_root_group(),),
+            fragment_staged=True,
+            root_publication_attempted=False,
+            root_publication_succeeded=False,
+            rollback_attempted=False,
+            rollback_succeeded=None,
+        )
+    )
+    assert diag_conn.execute(
+        "SELECT event_index,event_kind,outcome FROM "
+        "semantic_fragment_transaction_events WHERE mutation_batch_id='oracle-batch' "
+        "ORDER BY event_index"
+    ).fetchall() == [
+        (0, "plan_recorded", "planned"),
+        (1, "detached_route_oracle", "passed"),
+        (2, "fragment_staged", "completed"),
+        (3, "receipt", "aborted"),
+    ]
+    batch = mutation_batch(diag_conn, "oracle-batch")
+    assert batch["route_oracle_comparisons"][0]["route_id"] == comparison.route_id
+    rendered = render_mutation_batch(batch)
+    assert (
+        "route-oracle[0] rhad:0x40C8B0:flow_route:0x40CA3D outcome=matched" in rendered
+    )
+    assert "anchor=ea@0x000000000040ca3d" in rendered
 
 
 def test_aborted_fragment_persists_failed_postcondition_and_rollback(

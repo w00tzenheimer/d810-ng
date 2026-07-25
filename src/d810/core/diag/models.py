@@ -519,6 +519,44 @@ class SemanticFragmentValidationOutcome(BaseModel):
         indexes = ((("mutation_batch_id", "phase", "postcondition"), False),)
 
 
+class SemanticFragmentRouteOracleComparisonRecord(BaseModel):
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        index=False,
+        null=False,
+    )
+    mutation_batch_id = TextField()
+    comparison_index = IntegerField()
+    run_id = TextField()
+    plan_id = TextField()
+    atomic_group_id = TextField()
+    route_id = TextField()
+    maturity = TextField()
+    candidate_variant = TextField()
+    outcome = TextField()
+    first_divergence = IntegerField(constraints=[Check("first_divergence IN (0,1)")])
+    failed_invariant = TextField(null=True)
+    owner_ea_hex = TextField()
+    owner_ea_i64 = IntegerField()
+    rewrite_anchor_ea_hex = TextField()
+    rewrite_anchor_ea_i64 = IntegerField()
+    reference_ledger_identity = TextField()
+    oracle_shape_json = TextField(null=True)
+    candidate_shape_json = TextField(null=True)
+    reason = TextField()
+
+    class Meta:
+        table_name = "semantic_fragment_route_oracle_comparisons"
+        primary_key = CompositeKey("mutation_batch_id", "route_id")
+        indexes = (
+            (("event",), False),
+            (("mutation_batch_id", "outcome", "first_divergence"), False),
+            (("rewrite_anchor_ea_i64", "outcome"), False),
+        )
+
+
 class LogicalBlockVersionTransitionRecord(BaseModel):
     event = ForeignKeyField(
         LifecycleEvent,
@@ -1392,6 +1430,7 @@ MODELS = (
     SemanticFragmentTransaction,
     SemanticFragmentRootPublicationGroupRecord,
     SemanticFragmentValidationOutcome,
+    SemanticFragmentRouteOracleComparisonRecord,
     LogicalBlockVersionTransitionRecord,
     SemanticFragmentTransactionEvent,
     SnapshotMaturity,

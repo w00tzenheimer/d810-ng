@@ -13,6 +13,7 @@ from d810.core.observability_events import (
     LifecycleEventObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
+    SemanticFragmentRouteOracleComparedObserved,
 )
 
 
@@ -345,6 +346,113 @@ def persist_mutation_plan(
     return event_id
 
 
+def persist_semantic_fragment_route_oracle(
+    conn: sqlite3.Connection,
+    event: SemanticFragmentRouteOracleComparedObserved,
+) -> int:
+    transaction = conn.execute(
+        "SELECT plan_id,atomic_group_id FROM semantic_fragment_transactions "
+        "WHERE mutation_batch_id=?",
+        (event.mutation_batch_id,),
+    ).fetchone()
+    if transaction != (event.plan_id, event.atomic_group_id):
+        raise ValueError("fragment route oracle does not match its persisted plan")
+    passed = all(comparison.outcome == "matched" for comparison in event.comparisons)
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="semantic_fragment_route_oracle",
+            maturity=event.maturity,
+            evidence_generation=event.evidence_generation,
+            mba_generation_before=event.mba_generation,
+            mba_generation_after=event.mba_generation,
+            correlation_id=event.mutation_batch_id,
+            summary=(
+                f"detached route oracle: {'passed' if passed else 'failed'} "
+                f"({len(event.comparisons)} routes)"
+            ),
+            payload={
+                "atomic_group_id": event.atomic_group_id,
+                "plan_id": event.plan_id,
+                "run_id": event.run_id,
+            },
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+    ledger_by_route = dict(event.reference_ledger_identities)
+    for comparison_index, comparison in enumerate(event.comparisons):
+        conn.execute(
+            "INSERT INTO semantic_fragment_route_oracle_comparisons "
+            "(event_id,mutation_batch_id,comparison_index,run_id,plan_id,"
+            "atomic_group_id,route_id,maturity,candidate_variant,outcome,"
+            "first_divergence,failed_invariant,owner_ea_hex,owner_ea_i64,"
+            "rewrite_anchor_ea_hex,rewrite_anchor_ea_i64,"
+            "reference_ledger_identity,oracle_shape_json,candidate_shape_json,"
+            "reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                event_id,
+                event.mutation_batch_id,
+                comparison_index,
+                event.run_id,
+                event.plan_id,
+                event.atomic_group_id,
+                comparison.route_id,
+                comparison.maturity,
+                comparison.candidate_variant,
+                comparison.outcome,
+                int(comparison.first_divergence),
+                comparison.failed_invariant,
+                _func_hex(comparison.owner_ea),
+                int(comparison.owner_ea),
+                _func_hex(comparison.rewrite_anchor_ea),
+                int(comparison.rewrite_anchor_ea),
+                ledger_by_route[comparison.route_id],
+                (
+                    None
+                    if comparison.oracle_shape is None
+                    else comparison.oracle_shape.to_json()
+                ),
+                (
+                    None
+                    if comparison.candidate_shape is None
+                    else comparison.candidate_shape.to_json()
+                ),
+                comparison.reason,
+            ),
+        )
+    next_index = int(
+        conn.execute(
+            "SELECT COALESCE(MAX(event_index),0)+1 FROM "
+            "semantic_fragment_transaction_events WHERE mutation_batch_id=?",
+            (event.mutation_batch_id,),
+        ).fetchone()[0]
+    )
+    conn.execute(
+        "INSERT INTO semantic_fragment_transaction_events "
+        "(event_id,mutation_batch_id,event_index,event_kind,outcome,detail_json) "
+        "VALUES (?,?,?,?,?,?)",
+        (
+            event_id,
+            event.mutation_batch_id,
+            next_index,
+            "detached_route_oracle",
+            "passed" if passed else "failed",
+            json.dumps(
+                {
+                    "comparison_count": len(event.comparisons),
+                    "run_id": event.run_id,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        ),
+    )
+    return event_id
+
+
 def persist_mutation_receipt(
     conn: sqlite3.Connection,
     event: MutationReceiptObserved,
@@ -604,11 +712,18 @@ def persist_mutation_receipt(
                 )
             )
         transaction_events.append(("receipt", event.outcome, {"reason": event.reason}))
+        next_event_index = int(
+            conn.execute(
+                "SELECT COALESCE(MAX(event_index),0)+1 FROM "
+                "semantic_fragment_transaction_events WHERE mutation_batch_id=?",
+                (event.mutation_batch_id,),
+            ).fetchone()[0]
+        )
         for event_index, (
             event_kind,
             outcome,
             detail,
-        ) in enumerate(transaction_events, start=1):
+        ) in enumerate(transaction_events, start=next_event_index):
             conn.execute(
                 "INSERT INTO semantic_fragment_transaction_events "
                 "(event_id,mutation_batch_id,event_index,event_kind,outcome,"
@@ -625,4 +740,10 @@ def persist_mutation_receipt(
     return event_id
 
 
-__all__.extend(["persist_mutation_plan", "persist_mutation_receipt"])
+__all__.extend(
+    [
+        "persist_mutation_plan",
+        "persist_mutation_receipt",
+        "persist_semantic_fragment_route_oracle",
+    ]
+)

@@ -1301,6 +1301,30 @@ class D810Manager:
         )
 
     @staticmethod
+    def _on_semantic_fragment_route_oracle_compared(event) -> None:
+        from d810.core.maturity_labels import mmat_label
+        from d810.core.observability import emit as emit_diagnostic
+        from d810.core.observability_events import (
+            SemanticFragmentRouteOracleComparedObserved,
+        )
+
+        emit_diagnostic(
+            SemanticFragmentRouteOracleComparedObserved(
+                session_id=event.session_id,
+                func_ea=int(event.function_ea),
+                mutation_batch_id=event.mutation_batch_id,
+                run_id=event.run_id,
+                plan_id=event.plan_id,
+                atomic_group_id=event.atomic_group_id,
+                mba_generation=int(event.mba_generation),
+                evidence_generation=int(event.evidence_generation),
+                maturity=mmat_label(int(event.maturity)),
+                reference_ledger_identities=event.reference_ledger_identities,
+                comparisons=event.result.comparisons,
+            )
+        )
+
+    @staticmethod
     def _on_mutation_committed(event) -> None:
         from d810.core.maturity_labels import mmat_label
         from d810.core.observability import emit as emit_diagnostic
@@ -1454,11 +1478,16 @@ class D810Manager:
             MbaMutationAborted,
             MbaMutationCommitted,
             MbaMutationPlanned,
+            MbaSemanticFragmentRouteOracleCompared,
         )
 
         self.event_emitter.on(MbaMutationPlanned, self._on_mutation_planned)
         self.event_emitter.on(MbaMutationCommitted, self._on_mutation_committed)
         self.event_emitter.on(MbaMutationAborted, self._on_mutation_aborted)
+        self.event_emitter.on(
+            MbaSemanticFragmentRouteOracleCompared,
+            self._on_semantic_fragment_route_oracle_compared,
+        )
         self.event_emitter.on(
             DecompilationEvent.SESSION_STARTED,
             self._on_session_started,
