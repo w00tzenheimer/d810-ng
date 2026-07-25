@@ -4036,3 +4036,51 @@ stage, the semantic state must not retain compacted serial bindings, and the
 fresh MBA must verify. Then rerun this exact diagnostic canary and continue
 from the stable-EA `0x40AE3E` call-ownership mismatch only after rollback is
 clean.
+
+**2026-07-25T09:52:00Z**
+
+The rollback contract is now repaired and committed in narrow slices.
+Commits `6d9e66fba`, `0781eee02`, `5e74b0362`, and `3ec26b1b0` restore the
+published tail fallthrough, invalidate failed staged state, recognize the
+already-severed staged tail, rebind the shifted stop after sweep compaction,
+and compare transient SWIG block wrappers by stable serial rather than Python
+object identity. Commits `310c55aa8` and `c1d3ff41a` are the corresponding
+separate Ruff-formatting changes. Commit `fe7e0299f` preserves the BLT_STOP
+block's refined return-use lists while restoring only its predecessor metadata;
+the SDK forbids dirty stop lists after CALLS information exists.
+
+The successive canaries exposed three distinct verifier obligations rather
+than a process segfault. `INTERR 50856` is `verify.cpp`'s wrong block-successor
+cardinality check. Secondary `INTERR 52719` is `hexrays.hpp`'s out-of-range
+`mba_t::get_mblock()` assertion after a repeated discard. V6 then reached
+`INTERR 51328`, which is `verify.cpp`'s rejection of a BLT_STOP with dirty
+use/def lists after callinfo was built. The focused regression makes an
+attempt to dirty that stop fail exactly as 51328; the repaired cleanup never
+makes that call. The complete semantic-fragment backend file is 94/94 green,
+Ruff is clean, and the commit-time ast-grep, import-cycle, portable-shape, and
+all 14 import-linter gates pass.
+
+The mandatory exact cache-disabled A560 canary at `fe7e0299f` completed
+normally in 21.01 seconds. Log: `.tmp/rhad-a560-v33-rollback-v7.txt`; primary
+schema-8 DB:
+`.tmp/rhad-a560-v33-rollback-v7/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-rollback-v7/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects the residual false `while ( 1 )`, so this is
+not A560 acceptance.
+
+The v7 DB proves rollback is now verifier-clean and honest. It contains no
+`verifier_failure` event. The second 31-operation semantic attempt applies 24
+operations, aborts before publication, and records `rollback_succeeded=1`.
+There are zero detached route-oracle comparisons and no semantic C5 receipt.
+Production therefore remains at C3.
+
+The first failed C4 obligation is unchanged and native-EA anchored:
+`native-body-edge@0x40AE3E` binds stable identity
+`native[0x40AE3E-0x40AE8B;exact=0x40AE5D,0x40AE60,0x40AE69,0x40AE6F]`
+to staged replacement `blk89@0x40A560`, which is `BLT_1WAY` with zero
+successors and an unmapped `m_goto` tail. The operation requires the analyzed
+zero-way block-closing call for the `0x40AE3E` call-fallthrough boundary. Do
+not allow the goto as call fallthrough. Continue by reconciling canonical
+source ownership and PREOPT/CALLS binding at stable native EA `0x40AE3E`, then
+rerun the same diagnostic canary.
