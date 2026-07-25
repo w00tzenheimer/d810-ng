@@ -2998,6 +2998,278 @@ def test_preopt_native_body_normalizes_split_signed_select_from_real_start(
     )
 
 
+@pytest.mark.parametrize("missing_relocated_ea", (None, 0x40AE12))
+def test_preopt_native_body_lowers_split_normalized_direct_route_with_live_tail(
+    monkeypatch,
+    missing_relocated_ea,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    source_ea = 0x40ADF2
+    condition_producer_ea = 0x40ADF7
+    normalization_start_ea = 0x40ADFD
+    selected_ea = 0x40AE05
+    join_ea = 0x40AE08
+    predicate_ea = 0x40AE09
+    relocated_instruction_eas = (
+        0x40AE0C,
+        0x40AE0E,
+        0x40AE12,
+        0x40AE16,
+    )
+    unresolved_transfer_ea = 0x40AE18
+    overflow_flag = _Operand(ida_hexrays.mop_r, register=3, size=1)
+    sign_flag = _Operand(ida_hexrays.mop_r, register=2, size=1)
+    signed_less_than = _Instruction(
+        ida_hexrays.m_xor,
+        predicate_ea,
+        left=sign_flag,
+        right=overflow_flag,
+    )
+    skip_selected = _Instruction(
+        ida_hexrays.m_lnot,
+        predicate_ea,
+        left=_Operand(
+            ida_hexrays.mop_d,
+            nested=signed_less_than,
+            size=1,
+        ),
+    )
+    source = _Block(
+        0,
+        source_ea,
+        (
+            _Instruction(ida_hexrays.m_mov, source_ea),
+            _Instruction(
+                ida_hexrays.m_setb,
+                condition_producer_ea,
+                dest=_Operand(ida_hexrays.mop_r, register=0, size=1),
+            ),
+            _Instruction(
+                ida_hexrays.m_seto,
+                condition_producer_ea,
+                dest=overflow_flag,
+            ),
+            _Instruction(
+                ida_hexrays.m_setz,
+                condition_producer_ea,
+                dest=_Operand(ida_hexrays.mop_r, register=1, size=1),
+            ),
+            _Instruction(
+                ida_hexrays.m_setp,
+                condition_producer_ea,
+                dest=_Operand(ida_hexrays.mop_r, register=4, size=1),
+            ),
+            _Instruction(
+                ida_hexrays.m_sets,
+                condition_producer_ea,
+                dest=sign_flag,
+            ),
+            _Instruction(ida_hexrays.m_mov, normalization_start_ea),
+            _Instruction(ida_hexrays.m_mov, 0x40ADFF),
+            _Instruction(
+                ida_hexrays.m_jcnd,
+                selected_ea,
+                left=_Operand(
+                    ida_hexrays.mop_d,
+                    nested=skip_selected,
+                    size=1,
+                ),
+                dest=_Operand(ida_hexrays.mop_b, block_ref=2),
+            ),
+        ),
+        (1, 2),
+    )
+    source.type = int(ida_hexrays.BLT_2WAY)
+    selected = _Block(
+        1,
+        selected_ea,
+        (_Instruction(ida_hexrays.m_mov, selected_ea),),
+        (2,),
+    )
+    selected.type = int(ida_hexrays.BLT_1WAY)
+    join = _Block(
+        2,
+        join_ea,
+        (
+            _Instruction(ida_hexrays.m_mov, join_ea),
+                _Instruction(ida_hexrays.m_add, 0x40AE0A),
+                *tuple(
+                    _Instruction(ida_hexrays.m_mov, ea)
+                    for ea in relocated_instruction_eas
+                    if ea != missing_relocated_ea
+                ),
+            _Instruction(
+                ida_hexrays.m_ijmp,
+                unresolved_transfer_ea,
+                left=_Operand(ida_hexrays.mop_r, register=8, size=4),
+            ),
+        ),
+    )
+    native = _MBA(
+        (source, selected, join),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_preopt_union_snippet_template(
+        function_ea,
+        source_ea,
+        native,
+        ((source_ea, unresolved_transfer_ea + 2),),
+        owned_block_entry_eas=(source_ea, selected_ea, join_ea),
+    )
+
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    body_id = "native-body:split-normalized-direct"
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(source_ea, unresolved_transfer_ea + 2),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(
+            source_ea,
+            condition_producer_ea,
+            normalization_start_ea,
+            predicate_ea,
+        ),
+    )
+    imported = FragmentBlock(
+        block_id="imported-split-normalized-direct",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=source_ea,
+        stable_identity=source_identity,
+        native_body_id=body_id,
+    )
+    normalization = FragmentComputedBranchNormalization(
+        predicate_kind=PredicateKind.SLT,
+        normalization_start_ea=normalization_start_ea,
+        condition_producer_ea=condition_producer_ea,
+        unresolved_transfer_ea=unresolved_transfer_ea,
+        relocated_instruction_eas=relocated_instruction_eas,
+        conditional_select_envelope=FragmentImportedConditionalSelectEnvelope(
+            source_branch_ea=selected_ea,
+            selected_value_ea=selected_ea,
+            selected_value_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(selected_ea, join_ea),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(selected_ea,),
+            ),
+            join_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(join_ea, unresolved_transfer_ea + 2),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(join_ea, unresolved_transfer_ea),
+            ),
+        ),
+    )
+    route_proof_id = "state_assignment@0x40AE09:0xF6A636EF"
+    operation_id = f"route:{route_proof_id}"
+    operation = FragmentOperation(
+        operation_id=operation_id,
+        source_block_id=imported.block_id,
+        direct_transfer_rewrite=FragmentDirectTransferRewrite(
+            route_proof_id=route_proof_id,
+            owner_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(source_ea, source_ea + 5),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(source_ea,),
+            ),
+            owner_anchor_ea=source_ea,
+            rewrite_anchor_ea=predicate_ea,
+            delivery_region=NativeEaInterval(
+                normalization_start_ea,
+                unresolved_transfer_ea + 2,
+            ),
+            proof_corridor_instruction_eas=(
+                source_ea,
+                condition_producer_ea,
+                predicate_ea,
+            ),
+            superseded_instruction_eas=(predicate_ea,),
+            source_computed_branch_normalization=normalization,
+            source_predicate_anchor_ea=predicate_ea,
+        ),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="semantic-target",
+            ),
+        ),
+    )
+    native_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=(imported.block_id,),
+        entry_block_ids=(imported.block_id,),
+        terminal_block_ids=(),
+        native_ranges=(
+            NativeEaInterval(source_ea, unresolved_transfer_ea + 2),
+        ),
+        proof_ids=(operation_id,),
+    )
+    context = _NativeBodyStagingContext(
+        destination,
+        _NativeBodyPlan((imported,), operations=(operation,)),
+    )
+    context.stage_block("semantic-target")
+
+    if missing_relocated_ea is not None:
+        with pytest.raises(
+            detached_handler_island.SemanticFragmentBackendRejected,
+            match="relocated_inventory_complete",
+        ):
+            _prepare_and_stage_native_body(
+                detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+                    mba=destination,
+                    function_ea=function_ea,
+                ),
+                context=context,
+                native_body=native_body,
+            )
+        assert imported.block_id not in context.blocks
+        return
+
+    _prepare_and_stage_native_body(
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        ),
+        context=context,
+        native_body=native_body,
+    )
+
+    staged = context.blocks[imported.block_id].instructions()
+    assert tuple(int(instruction.opcode) for instruction in staged) == (
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_setb),
+        int(ida_hexrays.m_seto),
+        int(ida_hexrays.m_setz),
+        int(ida_hexrays.m_setp),
+        int(ida_hexrays.m_sets),
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_goto),
+    )
+    assert tuple(context.instruction_origins.values()) == (
+        source_ea,
+        condition_producer_ea,
+        condition_producer_ea,
+        condition_producer_ea,
+        condition_producer_ea,
+        condition_producer_ea,
+        *relocated_instruction_eas,
+        predicate_ea,
+    )
+    assert operation_id in context.detached_operation_ids
+
+
 @pytest.mark.parametrize(
     (
         "semantic_predicate",

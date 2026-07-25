@@ -513,6 +513,56 @@ def test_fragment_operation_carries_typed_computed_branch_normalization() -> Non
     assert operation.computed_branch_normalization is normalization
 
 
+@pytest.mark.parametrize(
+    "relocated_instruction_eas",
+    (
+        (0x40AE36, 0x40AE34),
+        (0x40AE34, 0x40AE34),
+        (0x40AE2E,),
+        (0x40AE3C,),
+    ),
+)
+def test_computed_branch_rejects_unowned_relocated_instruction_inventory(
+    relocated_instruction_eas,
+) -> None:
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="ordered unique anchors inside the normalization extent",
+    ):
+        FragmentComputedBranchNormalization(
+            predicate_kind=PredicateKind.EQ,
+            normalization_start_ea=0x40AE2E,
+            condition_producer_ea=0x40AE28,
+            unresolved_transfer_ea=0x40AE3C,
+            relocated_instruction_eas=relocated_instruction_eas,
+        )
+
+
+def test_direct_rewrite_rejects_unpaired_source_normalization() -> None:
+    normalization = FragmentComputedBranchNormalization(
+        predicate_kind=PredicateKind.SLT,
+        normalization_start_ea=0x40ADFD,
+        condition_producer_ea=0x40ADF7,
+        unresolved_transfer_ea=0x40AE18,
+        relocated_instruction_eas=(0x40AE0C, 0x40AE0E, 0x40AE12, 0x40AE16),
+    )
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="source normalization requires its predicate anchor",
+    ):
+        FragmentDirectTransferRewrite(
+            route_proof_id="state_assignment@0x40AE09:0xF6A636EF",
+            owner_identity=_identity(0x40ADF2),
+            owner_anchor_ea=0x40ADF2,
+            rewrite_anchor_ea=0x40AE09,
+            delivery_region=NativeEaInterval(0x40ADFD, 0x40AE1A),
+            proof_corridor_instruction_eas=(0x40ADF2, 0x40ADF7, 0x40AE09),
+            superseded_instruction_eas=(0x40AE09,),
+            source_computed_branch_normalization=normalization,
+        )
+
+
 def _same_ea_imported_conditional_plan(
     *,
     selected_identity: StableBlockIdentity | None = None,

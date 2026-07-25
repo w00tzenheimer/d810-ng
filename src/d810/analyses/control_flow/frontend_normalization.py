@@ -97,6 +97,7 @@ class NativeIndirectTransferProof:
     condition_producer_ea: int | None = None
     flag_corridor: tuple[StableBlockIdentity, ...] = ()
     permitted_flag_write_eas: frozenset[int] = frozenset()
+    relocated_instruction_eas: tuple[int, ...] = ()
     diagnostic_provenance: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
@@ -180,6 +181,16 @@ class NativeIndirectTransferProof:
             _native_ea(ea, "permitted native flag writer")
             for ea in self.permitted_flag_write_eas
         )
+        relocated_instruction_eas = tuple(
+            _native_ea(ea, "relocated native instruction")
+            for ea in self.relocated_instruction_eas
+        )
+        if relocated_instruction_eas != tuple(
+            sorted(set(relocated_instruction_eas))
+        ):
+            raise FrontendNormalizationEvidenceRejected(
+                "relocated native instructions require ordered unique anchors"
+            )
         predicate_kind = self.predicate_kind
 
         if self.shape is NativeTransferShape.DIRECT:
@@ -193,6 +204,7 @@ class NativeIndirectTransferProof:
                 or predicate_kind is not None
                 or flag_corridor
                 or permitted_flag_write_eas
+                or relocated_instruction_eas
             ):
                 raise FrontendNormalizationEvidenceRejected(
                     "direct native transfer cannot carry conditional proof data"
@@ -245,6 +257,17 @@ class NativeIndirectTransferProof:
                 raise FrontendNormalizationEvidenceRejected(
                     "permitted flag writers must belong to the proof corridor"
                 )
+            if any(
+                not (
+                    predicate_anchor_ea < ea < source_transfer_ea
+                    and _identity_contains(self.source_identity, ea)
+                )
+                for ea in relocated_instruction_eas
+            ):
+                raise FrontendNormalizationEvidenceRejected(
+                    "relocated native instructions must lie between the synthetic "
+                    "predicate and unresolved transfer"
+                )
 
         provenance: list[tuple[str, str]] = []
         for key, value in self.diagnostic_provenance:
@@ -272,6 +295,11 @@ class NativeIndirectTransferProof:
             self,
             "permitted_flag_write_eas",
             permitted_flag_write_eas,
+        )
+        object.__setattr__(
+            self,
+            "relocated_instruction_eas",
+            relocated_instruction_eas,
         )
         object.__setattr__(self, "diagnostic_provenance", tuple(provenance))
 

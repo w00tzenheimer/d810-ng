@@ -46,6 +46,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     PreoptUnionPreparationResult,
     PrepatchPreoptUnionSource,
     NativePreanalysisSessionState,
+    _patch_plan_frontend_proof,
     _without_superseded_frontier_patch_proofs,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
@@ -1241,6 +1242,48 @@ def test_computed_goto_resolution_is_frontend_ready_without_detached_closure() -
     assert tuple(proof.source_anchor_ea for proof in evidence.transfer_proofs) == (
         plan.jmp_ea,
     )
+
+
+def test_conditional_patch_proof_carries_relocated_native_instruction_inventory() -> (
+    None
+):
+    relocated_instruction_eas = (
+        0x40AE0C,
+        0x40AE0E,
+        0x40AE12,
+        0x40AE16,
+    )
+    plan = ComputedGotoPatchPlan(
+        jmp_ea=0x40AE18,
+        block_entry=0x40ADF2,
+        patch_start=0x40ADFD,
+        patch_bytes=b"",
+        region_end=0x40AE1A,
+        insn_heads=(
+            0x40ADFD,
+            0x40AE01,
+            0x40AE05,
+            0x40AE09,
+            0x40AE0F,
+        ),
+        new_block_eas=(0x40AE09, 0x40AE0F),
+        target_eas=(0x40C4B4, 0x40A5F0),
+        condition_code=12,
+        true_target_ea=0x40C4B4,
+        false_target_ea=0x40A5F0,
+        condition_producer_ea=0x40ADF7,
+        relocated_instruction_eas=relocated_instruction_eas,
+    )
+
+    proof = _patch_plan_frontend_proof(
+        NATIVE_KEY,
+        plan,
+        atomic_group_id="frontend-normalization:g1",
+    )
+
+    assert proof.shape is NativeTransferShape.CONDITIONAL
+    assert proof.predicate_anchor_ea == 0x40AE09
+    assert proof.relocated_instruction_eas == relocated_instruction_eas
 
 
 def test_contextual_patch_plan_promotion_is_unique_and_generation_owned() -> None:

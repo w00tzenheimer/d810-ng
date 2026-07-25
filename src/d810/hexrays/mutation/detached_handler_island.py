@@ -97,6 +97,15 @@ class _ComputedBranchNormalizationPlan:
 
 
 @dataclass(frozen=True, slots=True)
+class _ComputedBranchSourceProof:
+    """One raw computed branch retained after its final route is selected."""
+
+    operation: FragmentOperation
+    normalization: FragmentComputedBranchNormalization
+    predicate_anchor_ea: int
+
+
+@dataclass(frozen=True, slots=True)
 class _StoragePredicateNormalizationPlan:
     """Backend realization of one proof-owned stable-storage predicate."""
 
@@ -112,6 +121,7 @@ class _DirectTransferRewritePlan:
     operation: FragmentOperation
     rewrite: FragmentDirectTransferRewrite
     cut_index: int
+    relocated_instructions: tuple[object, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1005,28 +1015,60 @@ def _template_block_covers_identity(
     )
 
 
+def _computed_branch_source_proof(
+    operation: FragmentOperation | None,
+) -> _ComputedBranchSourceProof | None:
+    """Return the exact raw computed branch consumed by one final operation."""
+    if operation is None:
+        return None
+    normalization = operation.computed_branch_normalization
+    predicate_anchor_ea = operation.predicate_anchor_ea
+    if normalization is not None:
+        if (
+            predicate_anchor_ea is None
+            or len(operation.edges) != 2
+            or {edge.role for edge in operation.edges}
+            != {
+                SemanticEdgeRole.CONDITIONAL_TAKEN,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }
+        ):
+            return None
+        return _ComputedBranchSourceProof(
+            operation,
+            normalization,
+            int(predicate_anchor_ea),
+        )
+    rewrite = operation.direct_transfer_rewrite
+    if (
+        rewrite is None
+        or rewrite.source_computed_branch_normalization is None
+        or rewrite.source_predicate_anchor_ea is None
+        or len(operation.edges) != 1
+        or operation.edges[0].role is not SemanticEdgeRole.DIRECT
+    ):
+        return None
+    return _ComputedBranchSourceProof(
+        operation,
+        rewrite.source_computed_branch_normalization,
+        int(rewrite.source_predicate_anchor_ea),
+    )
+
+
 def _template_block_anchors_split_normalization(
     block: DetachedSnippetBlockTemplate,
     identity: StableBlockIdentity,
     *,
     semantic_anchor_ea: int,
-    operation: FragmentOperation | None,
+    source_proof: _ComputedBranchSourceProof | None,
 ) -> bool:
     """Admit one explicit normalization whose native block split in PREOPT."""
     if (
-        operation is None
-        or operation.computed_branch_normalization is None
-        or operation.predicate_anchor_ea is None
-        or len(operation.edges) != 2
-        or {edge.role for edge in operation.edges}
-        != {
-            SemanticEdgeRole.CONDITIONAL_TAKEN,
-            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
-        }
-        or not block.instructions
+        source_proof is None or not block.instructions
     ):
         return False
-    normalization = operation.computed_branch_normalization
+    normalization = source_proof.normalization
+    predicate_anchor_ea = int(source_proof.predicate_anchor_ea)
     envelope = normalization.conditional_select_envelope
     source_coordinates = {
         int(block.native_entry_ea),
@@ -1035,7 +1077,7 @@ def _template_block_anchors_split_normalization(
     proof_anchors = {
         int(semantic_anchor_ea),
         int(normalization.condition_producer_ea),
-        int(operation.predicate_anchor_ea),
+        predicate_anchor_ea,
     }
     tail = block.instructions[-1]
     if isinstance(envelope, FragmentImportedConditionalSelectEnvelope):
@@ -1048,7 +1090,7 @@ def _template_block_anchors_split_normalization(
                 for instruction in block.instructions[:-1]
             )
             and ida_hexrays.is_mcode_jcond(int(tail.opcode))
-            and int(tail.ea) != int(operation.predicate_anchor_ea)
+            and int(tail.ea) != predicate_anchor_ea
         )
     return bool(
         int(semantic_anchor_ea) in source_coordinates
@@ -1059,7 +1101,7 @@ def _template_block_anchors_split_normalization(
             for instruction in block.instructions
         )
         and ida_hexrays.is_mcode_jcond(int(tail.opcode))
-        and int(tail.ea) != int(operation.predicate_anchor_ea)
+        and int(tail.ea) != predicate_anchor_ea
     )
 
 
@@ -1192,6 +1234,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 source_operation = (
                     source_operations[0] if len(source_operations) == 1 else None
                 )
+                source_proof = _computed_branch_source_proof(source_operation)
                 matches = (
                     ()
                     if identity is None or identity.native_key != plan.native_key
@@ -1207,7 +1250,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                                 template_block,
                                 identity,
                                 semantic_anchor_ea=int(plan_block.semantic_anchor_ea),
-                                operation=source_operation,
+                                source_proof=source_proof,
                             )
                         )
                     )
@@ -1389,6 +1432,185 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             cut_index=int(cut_index),
         )
 
+    def _preflight_split_normalized_direct_transfer_rewrite(
+        self,
+        *,
+        template: DetachedSnippetTemplate,
+        native_body: FragmentNativeBody,
+        block_id: str,
+        template_block: DetachedSnippetBlockTemplate,
+        source_proof: _ComputedBranchSourceProof | None,
+        operation: FragmentOperation,
+        rewrite: FragmentDirectTransferRewrite,
+    ) -> _DirectTransferRewritePlan:
+        """Prove one direct route over a split, relocated computed branch."""
+        normalization = rewrite.source_computed_branch_normalization
+        predicate_anchor_ea = rewrite.source_predicate_anchor_ea
+        label = (
+            f"operation={operation.operation_id!r} "
+            f"source={block_id!r}@0x{int(template_block.native_entry_ea):X} "
+            f"rewrite=0x{int(rewrite.rewrite_anchor_ea):X}"
+        )
+        if (
+            source_proof is None
+            or normalization is None
+            or predicate_anchor_ea is None
+            or source_proof.operation is not operation
+            or source_proof.normalization != normalization
+            or int(source_proof.predicate_anchor_ea) != int(predicate_anchor_ea)
+            or int(predicate_anchor_ea) != int(rewrite.rewrite_anchor_ea)
+            or operation.operation_id not in native_body.proof_ids
+            or operation.operation_id != f"route:{rewrite.route_proof_id}"
+            or len(operation.edges) != 1
+            or operation.edges[0].role is not SemanticEdgeRole.DIRECT
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"PREOPT split-normalized direct transfer lacks one complete "
+                f"source proof; {label}",
+                reason_code="detached_split_direct_source_proof_incomplete",
+                anchor_ea=int(rewrite.rewrite_anchor_ea),
+                payload={"operation_id": operation.operation_id},
+            )
+        split_plan = self._preflight_split_conditional_select_normalization(
+            template,
+            template_block,
+            native_body,
+            source_proof,
+        )
+        envelope = normalization.conditional_select_envelope
+        relocated_eas = tuple(int(ea) for ea in normalization.relocated_instruction_eas)
+        raw_tail_size = (
+            int(normalization.unresolved_transfer_ea)
+            - (relocated_eas[0] if relocated_eas else int(normalization.unresolved_transfer_ea))
+        )
+        relocated_size = int(predicate_anchor_ea) - int(
+            normalization.normalization_start_ea
+        )
+        corridor_coordinates = {
+            int(instruction.ea)
+            for block in template.blocks
+            for instruction in block.instructions
+        }
+        missing_corridor_eas = tuple(
+            int(ea)
+            for ea in rewrite.proof_corridor_instruction_eas
+            if int(ea) != int(predicate_anchor_ea)
+            and int(ea) not in corridor_coordinates
+        )
+        join_matches = (
+            ()
+            if not isinstance(envelope, FragmentImportedConditionalSelectEnvelope)
+            else tuple(
+                block
+                for block in template.blocks
+                if _template_block_covers_identity(block, envelope.join_identity)
+            )
+        )
+        join = join_matches[0] if len(join_matches) == 1 else None
+        join_instruction_eas = (
+            () if join is None else tuple(int(insn.ea) for insn in join.instructions)
+        )
+        transfer_indexes = tuple(
+            index
+            for index, ea in enumerate(join_instruction_eas)
+            if ea == int(normalization.unresolved_transfer_ea)
+        )
+        transfer_index = transfer_indexes[0] if len(transfer_indexes) == 1 else None
+        relocated_indexes = tuple(
+            index
+            for ea in relocated_eas
+            for index, candidate_ea in enumerate(join_instruction_eas)
+            if candidate_ea == ea
+        )
+        relocated_instructions = (
+            ()
+            if join is None or len(relocated_indexes) != len(relocated_eas)
+            else tuple(join.instructions[index] for index in relocated_indexes)
+        )
+        expected_relocated_indexes = (
+            ()
+            if transfer_index is None or not relocated_eas
+            else tuple(
+                range(
+                    int(transfer_index) - len(relocated_eas),
+                    int(transfer_index),
+                )
+            )
+        )
+        relocated_operands_portable = all(
+            all(
+                int(operand.t)
+                not in {
+                    int(ida_hexrays.mop_l),
+                    int(ida_hexrays.mop_b),
+                }
+                for operand in _instruction_operands(instruction)
+            )
+            for instruction in relocated_instructions
+        )
+        delivery_region = rewrite.delivery_region
+        checks = (
+            ("source_split_validated", split_plan.cut_index >= 0),
+            ("imported_envelope_owned", len(join_matches) == 1),
+            ("relocated_size_exact", raw_tail_size == relocated_size),
+            (
+                "relocated_inventory_complete",
+                bool(relocated_eas) == bool(relocated_size)
+                and len(relocated_instructions) == len(relocated_eas),
+            ),
+            (
+                "relocated_tail_contiguous",
+                relocated_indexes == expected_relocated_indexes,
+            ),
+            ("relocated_operands_portable", relocated_operands_portable),
+            ("proof_corridor_present", not missing_corridor_eas),
+            (
+                "synthetic_cut_owned",
+                rewrite.superseded_instruction_eas == (int(predicate_anchor_ea),),
+            ),
+            (
+                "delivery_extent_exact",
+                int(delivery_region.start_ea)
+                == int(normalization.normalization_start_ea)
+                and int(normalization.unresolved_transfer_ea)
+                < int(delivery_region.end_ea)
+                and all(
+                    int(delivery_region.start_ea)
+                    <= ea
+                    < int(delivery_region.end_ea)
+                    for ea in relocated_eas
+                ),
+            ),
+        )
+        failed_obligations = tuple(name for name, passed in checks if not passed)
+        if failed_obligations:
+            raise SemanticFragmentBackendRejected(
+                "PREOPT split-normalized direct transfer does not own its "
+                f"relocated delivery corridor; {label} "
+                f"relocated_eas={tuple(hex(ea) for ea in relocated_eas)!r} "
+                f"join_matches={len(join_matches)} "
+                f"join_instruction_eas={tuple(hex(ea) for ea in join_instruction_eas)!r} "
+                f"relocated_indexes={relocated_indexes!r} "
+                f"transfer_indexes={transfer_indexes!r} "
+                f"missing_corridor_eas={tuple(hex(ea) for ea in missing_corridor_eas)!r} "
+                f"failed_obligations={failed_obligations!r}",
+                reason_code="detached_split_direct_corridor_mismatch",
+                anchor_ea=int(rewrite.rewrite_anchor_ea),
+                payload={
+                    "operation_id": operation.operation_id,
+                    "failed_obligations": failed_obligations,
+                    "relocated_instruction_eas": tuple(
+                        hex(ea) for ea in relocated_eas
+                    ),
+                },
+            )
+        return _DirectTransferRewritePlan(
+            operation=operation,
+            rewrite=rewrite,
+            cut_index=int(split_plan.cut_index),
+            relocated_instructions=relocated_instructions,
+        )
+
     def _preflight_stack_rebase(
         self,
         template: DetachedSnippetTemplate,
@@ -1513,9 +1735,23 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             direct_transfer_rewrite = (
                 None if len(operations) != 1 else operations[0].direct_transfer_rewrite
             )
+            source_proof = _computed_branch_source_proof(
+                operations[0] if len(operations) == 1 else None
+            )
             if direct_transfer_rewrite is not None:
                 direct_transfer_rewrites[str(block_id)] = (
-                    self._preflight_direct_transfer_rewrite(
+                    self._preflight_split_normalized_direct_transfer_rewrite(
+                        template=template,
+                        native_body=native_body,
+                        block_id=str(block_id),
+                        template_block=template_block,
+                        source_proof=source_proof,
+                        operation=operations[0],
+                        rewrite=direct_transfer_rewrite,
+                    )
+                    if direct_transfer_rewrite.source_computed_branch_normalization
+                    is not None
+                    else self._preflight_direct_transfer_rewrite(
                         matched=matched,
                         native_body=native_body,
                         block_id=str(block_id),
@@ -1547,13 +1783,16 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     elif int(template_block.instructions[-1].ea) != int(
                         operations[0].predicate_anchor_ea
                     ):
+                        if source_proof is None:
+                            raise SemanticFragmentBackendRejected(
+                                "PREOPT split conditional lost its source proof"
+                            )
                         computed_normalizations[str(block_id)] = (
                             self._preflight_split_conditional_select_normalization(
                                 template,
                                 template_block,
                                 native_body,
-                                operations[0],
-                                computed_normalization,
+                                source_proof,
                             )
                         )
             compatible_conditional = bool(
@@ -1593,16 +1832,18 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         template: DetachedSnippetTemplate,
         template_block: DetachedSnippetBlockTemplate,
         native_body: FragmentNativeBody,
-        operation: FragmentOperation,
-        normalization: FragmentComputedBranchNormalization,
+        source_proof: _ComputedBranchSourceProof,
     ) -> _ComputedBranchNormalizationPlan:
         """Collapse one exact PREOPT CMOV split into its portable semantic branch."""
+        operation = source_proof.operation
+        normalization = source_proof.normalization
+        predicate_anchor_ea = int(source_proof.predicate_anchor_ea)
         label = (
             f"operation={operation.operation_id!r} "
             f"source=0x{int(template_block.native_entry_ea):X} "
             f"producer=0x{int(normalization.condition_producer_ea):X} "
             f"normalization_start=0x{int(normalization.normalization_start_ea):X} "
-            f"predicate=0x{int(operation.predicate_anchor_ea):X} "
+            f"predicate=0x{predicate_anchor_ea:X} "
             f"transfer=0x{int(normalization.unresolved_transfer_ea):X} "
             f"predicate_kind={normalization.predicate_kind.value}"
         )
@@ -1615,7 +1856,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         predicate_indexes = tuple(
             index
             for index, instruction in enumerate(instructions)
-            if int(instruction.ea) == int(operation.predicate_anchor_ea)
+            if int(instruction.ea) == predicate_anchor_ea
         )
         normalization_start_indexes = tuple(
             index
@@ -2198,6 +2439,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 predicate_indexes=predicate_indexes,
                 operation=operation,
                 normalization=normalization,
+                predicate_anchor_ea=int(operation.predicate_anchor_ea),
             )
         )
         if signed_plan is not None:
@@ -2370,6 +2612,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         predicate_indexes: tuple[int, ...],
         operation: FragmentOperation,
         normalization: FragmentComputedBranchNormalization,
+        predicate_anchor_ea: int,
     ) -> _ComputedBranchNormalizationPlan | None:
         """Recognize one exact ``SF XOR OF`` signed predicate materialization."""
         if normalization.predicate_kind not in {
@@ -2421,7 +2664,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             else:
                 predicate_consumes_xor = (
                     int(predicate.l.t) == int(ida_hexrays.mop_d)
-                    and int(predicate.l.d.ea) == int(operation.predicate_anchor_ea)
+                    and int(predicate.l.d.ea) == int(predicate_anchor_ea)
                     and value_op_from_opcode(int(predicate.l.d.opcode))
                     is ValueOpKind.LNOT
                     and int(predicate.l.d.r.t) == int(ida_hexrays.mop_z)
@@ -2502,7 +2745,10 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             normalization_entry = computed_normalizations.get(str(block_id))
             direct_rewrite_entry = direct_transfer_rewrites.get(str(block_id))
             captured_instructions = (
-                template_block.instructions[: direct_rewrite_entry.cut_index]
+                (
+                    *template_block.instructions[: direct_rewrite_entry.cut_index],
+                    *direct_rewrite_entry.relocated_instructions,
+                )
                 if direct_rewrite_entry is not None
                 else (
                     template_block.instructions

@@ -684,7 +684,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
         stable_identity=StableBlockIdentity.from_intervals(
             (NativeEaInterval(0x1210, 0x1220),),
             native_key=NATIVE_KEY,
-            exact_instruction_eas=(0x1210,),
+            exact_instruction_eas=(0x1210, 0x1212, 0x1214, 0x1218),
         ),
         native_body_id=native_body.body_id,
     )
@@ -734,11 +734,23 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
                 ),
             ),
             FragmentOperation(
-                operation_id="native-body-edge@0x1210",
+                operation_id="native-indirect-transfer@0x121F",
                 source_block_id=route_source.block_id,
+                predicate_anchor_ea=0x1218,
+                computed_branch_normalization=FragmentComputedBranchNormalization(
+                    predicate_kind=PredicateKind.SLT,
+                    normalization_start_ea=0x1214,
+                    condition_producer_ea=0x1212,
+                    unresolved_transfer_ea=0x121F,
+                    relocated_instruction_eas=(0x121A, 0x121C),
+                ),
                 edges=(
                     FragmentEdge(
-                        role=SemanticEdgeRole.DIRECT,
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id=route_target.block_id,
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
                         target_block_id=raw_dispatcher.block_id,
                     ),
                 ),
@@ -778,7 +790,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
                 proof_ids=(
                     *native_body.proof_ids,
                     "native-body-edge@0x1200",
-                    "native-body-edge@0x1210",
+                    "native-indirect-transfer@0x121F",
                     "native-body-edge@0x1300",
                 ),
             ),
@@ -796,7 +808,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
             exact_instruction_eas=(0x1218,),
         ),
         source_anchor_ea=0x1218,
-        delivery_region=NativeEaInterval(0x1218, 0x1219),
+        delivery_region=NativeEaInterval(0x1214, 0x1220),
         destinations=(
             SemanticRouteDestination(
                 role=SemanticEdgeRole.DIRECT,
@@ -818,7 +830,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
             ),
             width=4,
             state_constant=0x44,
-            corridor_instruction_eas=(0x1210, 0x1218),
+            corridor_instruction_eas=(0x1210, 0x1212, 0x1218),
             authority_transfer_ea=None,
             preserved_call_instruction_eas=(),
         ),
@@ -842,7 +854,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
     )
 
     operations = {operation.operation_id: operation for operation in plan.operations}
-    assert "native-body-edge@0x1210" not in operations
+    assert "native-indirect-transfer@0x121F" not in operations
     nested_operation = operations[f"route:{nested_proof.proof_id}"]
     assert nested_operation.source_block_id == route_source.block_id
     assert nested_operation.direct_transfer_rewrite is not None
@@ -852,10 +864,22 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
     assert nested_operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x1218
     assert nested_operation.direct_transfer_rewrite.proof_corridor_instruction_eas == (
         0x1210,
+        0x1212,
         0x1218,
     )
     assert nested_operation.direct_transfer_rewrite.superseded_instruction_eas == (
         0x1218,
+    )
+    assert (
+        nested_operation.direct_transfer_rewrite.source_computed_branch_normalization
+        is not None
+    )
+    assert (
+        nested_operation.direct_transfer_rewrite.source_computed_branch_normalization.relocated_instruction_eas
+        == (0x121A, 0x121C)
+    )
+    assert (
+        nested_operation.direct_transfer_rewrite.source_predicate_anchor_ea == 0x1218
     )
     assert tuple(
         (

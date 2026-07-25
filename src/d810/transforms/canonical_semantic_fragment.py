@@ -1172,6 +1172,8 @@ def _canonical_composition_proofs(
 
 def _direct_transfer_rewrite(
     proof: SemanticRouteProof,
+    *,
+    source_operation: FragmentOperation | None = None,
 ) -> FragmentDirectTransferRewrite | None:
     """Carry one proved direct route into detached rewrite coordinates."""
     if proof.shape is not SemanticRouteShape.DIRECT:
@@ -1209,6 +1211,27 @@ def _direct_transfer_rewrite(
             anchor_ea=int(proof.source_anchor_ea),
             payload={"route_proof_id": proof.proof_id},
         )
+    source_normalization = None
+    if source_operation is not None:
+        source_normalization = (
+            source_operation.superseded_computed_branch_normalization
+            or source_operation.computed_branch_normalization
+        )
+    source_predicate_anchor_ea = (
+        None
+        if source_operation is None
+        else (
+            source_operation.superseded_predicate_anchor_ea
+            or source_operation.predicate_anchor_ea
+        )
+    )
+    if (source_normalization is None) != (source_predicate_anchor_ea is None):
+        raise CanonicalSemanticFragmentRejected(
+            "direct semantic route inherited an incomplete source normalization",
+            reason_code="direct_route_source_normalization_incomplete",
+            anchor_ea=int(proof.source_anchor_ea),
+            payload={"route_proof_id": proof.proof_id},
+        )
     return FragmentDirectTransferRewrite(
         route_proof_id=proof.proof_id,
         owner_identity=owner_identity,
@@ -1217,6 +1240,8 @@ def _direct_transfer_rewrite(
         delivery_region=delivery_region,
         proof_corridor_instruction_eas=corridor_instruction_eas,
         superseded_instruction_eas=(int(proof.source_anchor_ea),),
+        source_computed_branch_normalization=source_normalization,
+        source_predicate_anchor_ea=source_predicate_anchor_ea,
     )
 
 
@@ -1545,6 +1570,10 @@ def _with_nested_imported_state_routes(
         raw_operation.operation_id: FragmentOperation(
             operation_id=f"route:{proof.proof_id}",
             source_block_id=source.block_id,
+            superseded_computed_branch_normalization=(
+                raw_operation.computed_branch_normalization
+            ),
+            superseded_predicate_anchor_ea=raw_operation.predicate_anchor_ea,
             edges=(
                 FragmentEdge(
                     role=SemanticEdgeRole.DIRECT,
@@ -2169,18 +2198,20 @@ def _resolved_detached_target_component(
                 ),
             },
         ) from exc
-    nested_rewrite_by_operation_id = {
-        f"route:{item.proof_id}": _direct_transfer_rewrite(item)
-        for item in nested_route_proofs
+    nested_proof_by_operation_id = {
+        f"route:{item.proof_id}": item for item in nested_route_proofs
     }
     target_operations = tuple(
         replace(
             operation,
-            direct_transfer_rewrite=nested_rewrite_by_operation_id[
-                operation.operation_id
-            ],
+            direct_transfer_rewrite=_direct_transfer_rewrite(
+                nested_proof_by_operation_id[operation.operation_id],
+                source_operation=operation,
+            ),
+            superseded_computed_branch_normalization=None,
+            superseded_predicate_anchor_ea=None,
         )
-        if operation.operation_id in nested_rewrite_by_operation_id
+        if operation.operation_id in nested_proof_by_operation_id
         else operation
         for operation in target_operations
     )

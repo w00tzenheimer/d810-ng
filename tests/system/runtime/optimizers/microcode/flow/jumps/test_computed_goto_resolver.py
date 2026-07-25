@@ -753,6 +753,43 @@ def test_branch_target_patch_plan_preserves_shared_indirect_conditional() -> Non
     )
 
 
+def test_live_tail_bytes_carries_exact_native_instruction_inventory(
+    monkeypatch,
+) -> None:
+    split_ea = 0x40AE0C
+    jmp_ea = 0x40AE18
+    instruction_sizes = {
+        0x40AE0C: 2,
+        0x40AE0E: 4,
+        0x40AE12: 4,
+        0x40AE16: 2,
+    }
+    expected = bytes(range(jmp_ea - split_ea))
+    idaapi = ModuleType("idaapi")
+    idaapi.print_insn_mnem = lambda ea: (
+        "mov" if int(ea) in instruction_sizes else ""
+    )
+    monkeypatch.setitem(sys.modules, "idaapi", idaapi)
+    monkeypatch.setattr(computed_goto_resolver, "idaapi", idaapi)
+
+    ida_ua = ModuleType("ida_ua")
+    ida_ua.insn_t = type("Instruction", (), {})
+    ida_ua.decode_insn = lambda _insn, ea: instruction_sizes.get(int(ea), 0)
+    monkeypatch.setitem(sys.modules, "ida_ua", ida_ua)
+
+    ida_bytes = ModuleType("ida_bytes")
+    ida_bytes.get_bytes = lambda ea, size: (
+        expected if (int(ea), int(size)) == (split_ea, len(expected)) else None
+    )
+    monkeypatch.setitem(sys.modules, "ida_bytes", ida_bytes)
+
+    tail = computed_goto_resolver._live_tail_bytes(split_ea, jmp_ea)
+
+    assert tail is not None
+    assert tail.instruction_eas == tuple(instruction_sizes)
+    assert tail.data == expected
+
+
 def test_static_branch_discovery_collects_shared_indirect_conditional(
     monkeypatch,
 ) -> None:

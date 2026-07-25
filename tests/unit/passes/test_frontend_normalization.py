@@ -253,6 +253,7 @@ def _conditional_select_case(
     malformed_copy: bool = False,
     nested_signed_truthiness: bool = False,
     mismatched_signed_flag_register: bool = False,
+    relocated_instruction_eas: tuple[int, ...] = (),
 ) -> tuple[FlowGraph, FrontendNormalizationEvidence]:
     condition_ea = 0x1100
     predicate_anchor_ea = 0x1101
@@ -292,6 +293,7 @@ def _conditional_select_case(
         condition_producer_ea=condition_ea,
         flag_corridor=(condition_identity, source_identity),
         permitted_flag_write_eas=frozenset({condition_ea}),
+        relocated_instruction_eas=relocated_instruction_eas,
     )
     selected_instructions = (
         _insn(
@@ -495,7 +497,10 @@ def test_provider_provenance_is_diagnostic_and_does_not_change_plan() -> None:
 
 
 def test_live_conditional_select_is_one_detached_normalization_contract() -> None:
-    graph, evidence = _conditional_select_case()
+    relocated_instruction_eas = (0x110A, 0x110C)
+    graph, evidence = _conditional_select_case(
+        relocated_instruction_eas=relocated_instruction_eas,
+    )
 
     plan = plan_frontend_computed_branch_normalization(graph, evidence)
 
@@ -507,6 +512,7 @@ def test_live_conditional_select_is_one_detached_normalization_contract() -> Non
     assert normalization.normalization_start_ea == operation.predicate_anchor_ea
     assert normalization.condition_producer_ea == 0x1100
     assert normalization.unresolved_transfer_ea == 0x110F
+    assert normalization.relocated_instruction_eas == relocated_instruction_eas
     assert normalization.conditional_select_envelope == (
         FragmentConditionalSelectEnvelope(
             predicate_ea=0x1108,
