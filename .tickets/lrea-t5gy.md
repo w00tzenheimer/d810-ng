@@ -3399,3 +3399,40 @@ incoming semantic route and its corridor without weakening the semantic-route
 requirement, treating the temporary dispatcher port as semantic work, or
 publishing before a C4 oracle comparison. Do not broaden to the 91-route
 publication until one complete fragment reaches C5.
+
+**2026-07-25T05:43:41Z**
+
+Commit `fb03d3f61` makes normalization blocks reimportable when their sole live
+owner is explicitly among the current originals being replaced by the bounded
+transaction. Mixed replaced/retained ownership remains a hard rejection. This
+models the real maturity split where `blk48@0x40AE3E` owns native range through
+`0x40AE8B`, while frontend normalization retains separate `0x40AE3E` and
+`0x40AE63` blocks. The combined vertical gate is 446/446 green; Ruff,
+ast-grep, `graphify update .`, and all 14 import contracts pass.
+
+The mandatory cache-disabled A560 canary completed normally in 19.01 seconds
+inside pytest with no process crash or numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-replaced-owner-split-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-replaced-owner-split-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-replaced-owner-split-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red as the same eight-line infinite-loop stub; this is
+not A560 acceptance.
+
+The intended route fact advanced substantially. The DB now projects five real
+state routes in four fixpoint rounds, including required
+`state_assignment@0x40B52E:0x13B0D3B2`; the others are deliveries at
+`0x40AE7A`, `0x40AA4F`, `0x40C341`, and `0x40AB64`. The first failed
+obligation moved to
+`published_imported_boundary_topology_unresolved@0x40A607`: imported operation
+`native-body-edge@0x40A607` is owned live by `blk8@0x40A560` and is entered by
+`native-indirect-transfer@0x40C802` from native source `0x40C7FC`. The only
+committed transaction remains the 260/260 frontend-normalization publication,
+and there are still zero semantic-oracle runs or comparisons. Therefore the
+highest completed semantic level remains C2.
+
+Continue from the `0x40A607` C3 boundary obligation. Determine whether the
+`0x40C7FC -> 0x40A607` transfer has a reference-ledger semantic replacement or
+is a valid closed external boundary before changing publication logic. Do not
+classify `blk8@0x40A560` as replacement-owned, permit unresolved dispatcher
+residue, or advance to C4 without a complete route-backed plan.
