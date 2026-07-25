@@ -7,6 +7,7 @@ from enum import Enum
 
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import (
+    NativeEaInterval,
     StableBlockIdentity,
     stable_block_identities_refine_at_anchor,
     stable_block_identity_from_snapshot,
@@ -391,6 +392,7 @@ class SemanticRouteProof:
     source_identity: StableBlockIdentity
     source_anchor_ea: int
     destinations: tuple[SemanticRouteDestination, ...]
+    delivery_region: NativeEaInterval | None = None
     source_owner_identity: StableBlockIdentity | None = None
     source_owner_anchor_ea: int | None = None
     state_write: SemanticStateWriteProof | None = None
@@ -440,6 +442,35 @@ class SemanticRouteProof:
         if len(set(roles)) != len(roles):
             raise SemanticRouteEvidenceRejected(
                 "semantic route proof requires unique destination roles"
+            )
+
+        delivery_region = self.delivery_region
+        if self.shape is SemanticRouteShape.DIRECT:
+            if not isinstance(delivery_region, NativeEaInterval):
+                raise SemanticRouteEvidenceRejected(
+                    "direct semantic route requires an exact delivery region"
+                )
+            if not (
+                delivery_region.start_ea
+                <= source_anchor_ea
+                < delivery_region.end_ea
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "direct semantic route anchor is outside its delivery region"
+                )
+            if not any(
+                int(source_interval.start_ea)
+                <= int(delivery_region.start_ea)
+                and int(delivery_region.end_ea)
+                <= int(source_interval.end_ea)
+                for source_interval in self.source_identity.native_ranges.intervals
+            ):
+                raise SemanticRouteEvidenceRejected(
+                    "direct semantic route delivery region is outside its source identity"
+                )
+        elif delivery_region is not None:
+            raise SemanticRouteEvidenceRejected(
+                "conditional semantic route cannot claim a direct delivery region"
             )
 
         predicate = self.predicate

@@ -674,6 +674,7 @@ class FragmentDirectTransferRewrite:
     owner_identity: StableBlockIdentity
     owner_anchor_ea: int
     rewrite_anchor_ea: int
+    delivery_region: NativeEaInterval
     proof_corridor_instruction_eas: tuple[int, ...]
     superseded_instruction_eas: tuple[int, ...]
     reference_route: ReferenceRouteRewrite | None = None
@@ -701,6 +702,17 @@ class FragmentDirectTransferRewrite:
             self.rewrite_anchor_ea,
             "direct transfer rewrite anchor",
         )
+        delivery_region = self.delivery_region
+        if not isinstance(delivery_region, NativeEaInterval):
+            raise TypeError("direct transfer rewrite requires a delivery region")
+        if not (
+            delivery_region.start_ea
+            <= rewrite_anchor_ea
+            < delivery_region.end_ea
+        ):
+            raise FragmentPlanRejected(
+                "direct transfer rewrite anchor is outside its delivery region"
+            )
         proof_corridor_instruction_eas = tuple(
             _require_native_ea(ea, "direct transfer corridor instruction")
             for ea in self.proof_corridor_instruction_eas
@@ -740,6 +752,7 @@ class FragmentDirectTransferRewrite:
         object.__setattr__(self, "owner_identity", owner_identity)
         object.__setattr__(self, "owner_anchor_ea", owner_anchor_ea)
         object.__setattr__(self, "rewrite_anchor_ea", rewrite_anchor_ea)
+        object.__setattr__(self, "delivery_region", delivery_region)
         object.__setattr__(
             self,
             "proof_corridor_instruction_eas",
@@ -1634,15 +1647,21 @@ class FragmentPlan:
                         f"fragment operation {operation.operation_id!r} direct "
                         "transfer rewrite requires owned canonical route proof"
                     )
+                delivery_region = direct_rewrite.delivery_region
+                source_owns_delivery_region = any(
+                    int(source_interval.start_ea)
+                    <= int(delivery_region.start_ea)
+                    and int(delivery_region.end_ea)
+                    <= int(source_interval.end_ea)
+                    for source_interval in source.stable_identity.native_ranges.intervals
+                )
                 if (
                     source.role is FragmentBlockRole.IMPORTED
-                    and not source.stable_identity.native_ranges.contains(
-                        direct_rewrite.rewrite_anchor_ea
-                    )
+                    and not source_owns_delivery_region
                 ):
                     raise FragmentPlanRejected(
                         f"fragment operation {operation.operation_id!r} direct "
-                        "transfer anchor is outside its imported source"
+                        "transfer delivery region is outside its imported source"
                     )
                 if direct_rewrite.owner_identity.native_key != self.native_key:
                     raise FragmentPlanRejected(

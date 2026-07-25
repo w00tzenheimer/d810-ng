@@ -313,6 +313,7 @@ def _run_worker(
             MbaSemanticFragmentRouteOracleCompared,
         )
         from d810.ir.block_identity import (
+            NativeEaInterval,
             stable_block_identity_from_snapshot,
         )
         from d810.ir.semantic_edge import SemanticEdgeRole
@@ -444,6 +445,7 @@ def _run_worker(
             shape=SemanticRouteShape.DIRECT,
             source_identity=route_identity,
             source_anchor_ea=_DELIVERY_EA,
+            delivery_region=NativeEaInterval(_DELIVERY_EA, _DELIVERY_EA + 1),
             destinations=(
                 SemanticRouteDestination(
                     role=SemanticEdgeRole.DIRECT,

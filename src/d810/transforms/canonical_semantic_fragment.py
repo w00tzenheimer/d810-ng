@@ -1164,6 +1164,14 @@ def _direct_transfer_rewrite(
     """Carry one proved direct route into detached rewrite coordinates."""
     if proof.shape is not SemanticRouteShape.DIRECT:
         return None
+    delivery_region = proof.delivery_region
+    if delivery_region is None:
+        raise CanonicalSemanticFragmentRejected(
+            "direct semantic route lacks its exact delivery region",
+            reason_code="direct_route_delivery_region_missing",
+            anchor_ea=int(proof.source_anchor_ea),
+            payload={"route_proof_id": proof.proof_id},
+        )
     if proof.state_write is not None:
         owner_identity = proof.state_write.identity
         owner_anchor_ea = int(proof.state_write.instruction_ea)
@@ -1194,6 +1202,7 @@ def _direct_transfer_rewrite(
         owner_identity=owner_identity,
         owner_anchor_ea=owner_anchor_ea,
         rewrite_anchor_ea=int(proof.source_anchor_ea),
+        delivery_region=delivery_region,
         proof_corridor_instruction_eas=corridor_instruction_eas,
         superseded_instruction_eas=(int(proof.source_anchor_ea),),
     )

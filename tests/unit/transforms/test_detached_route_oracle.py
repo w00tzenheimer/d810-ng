@@ -163,6 +163,10 @@ def _plan() -> FragmentPlan:
                     owner_identity=source_identity,
                     owner_anchor_ea=_OWNER_EA,
                     rewrite_anchor_ea=_REWRITE_ANCHOR_EA,
+                    delivery_region=NativeEaInterval(
+                        _REWRITE_ANCHOR_EA,
+                        0x40B534,
+                    ),
                     proof_corridor_instruction_eas=(
                         _OWNER_EA,
                         _REWRITE_ANCHOR_EA,
@@ -405,6 +409,10 @@ def test_reference_owner_is_independent_of_delivery_block_identity() -> None:
                     rewrite,
                     owner_identity=owner_identity,
                     owner_anchor_ea=_OWNER_EA,
+                    delivery_region=NativeEaInterval(
+                        _REWRITE_ANCHOR_EA,
+                        _REWRITE_ANCHOR_EA + 1,
+                    ),
                 ),
             ),
         ),

@@ -110,6 +110,7 @@ class _DirectTransferRewritePlan:
 
     operation: FragmentOperation
     rewrite: FragmentDirectTransferRewrite
+    cut_index: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -1315,20 +1316,45 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             for ea in rewrite.superseded_instruction_eas
             for owner_id in instruction_owners.get(int(ea), ())
         }
+        source_inventory = tuple(
+            (int(instruction.ea), int(instruction.opcode))
+            for instruction in template_block.instructions
+        )
+        cut_indexes = tuple(
+            index
+            for index, instruction in enumerate(template_block.instructions)
+            if int(instruction.ea) == anchor_ea
+        )
+        cut_index = cut_indexes[0] if len(cut_indexes) == 1 else None
+        delivery_region = rewrite.delivery_region
+        delivery_suffix = (
+            ()
+            if cut_index is None
+            else template_block.instructions[int(cut_index) :]
+        )
+        suffix_escapes_delivery_region = any(
+            not (
+                int(delivery_region.start_ea)
+                <= int(instruction.ea)
+                < int(delivery_region.end_ea)
+            )
+            for instruction in delivery_suffix
+        )
         tail = template_block.instructions[-1] if template_block.instructions else None
         if (
             missing_corridor_eas
             or superseded_owner_ids != {str(block_id)}
+            or cut_index is None
+            or suffix_escapes_delivery_region
             or tail is None
-            or int(tail.ea) != anchor_ea
             or not (
                 ida_hexrays.is_mcode_jcond(int(tail.opcode))
                 or int(tail.opcode) == int(ida_hexrays.m_ijmp)
             )
         ):
             raise SemanticFragmentBackendRejected(
-                f"PREOPT direct transfer does not own its exact detached tail; {label}",
-                reason_code="detached_direct_transfer_tail_mismatch",
+                f"PREOPT direct transfer does not own its exact detached cut; {label}",
+                reason_code="detached_direct_transfer_cut_mismatch",
                 anchor_ea=anchor_ea,
                 payload={
                     "operation_id": operation.operation_id,
@@ -1336,13 +1362,34 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                         hex(ea) for ea in missing_corridor_eas
                     ),
                     "superseded_owner_ids": tuple(sorted(superseded_owner_ids)),
+                    "delivery_region": (
+                        hex(int(delivery_region.start_ea)),
+                        hex(int(delivery_region.end_ea)),
+                    ),
+                    "cut_indexes": cut_indexes,
+                    "delivery_suffix": tuple(
+                        (hex(int(instruction.ea)), int(instruction.opcode))
+                        for instruction in delivery_suffix
+                    ),
+                    "suffix_escapes_delivery_region": (
+                        suffix_escapes_delivery_region
+                    ),
+                    "source_instruction_inventory": tuple(
+                        (hex(ea), opcode) for ea, opcode in source_inventory
+                    ),
                     "tail_ea": None if tail is None else hex(int(tail.ea)),
                     "tail_opcode": None if tail is None else int(tail.opcode),
+                    "reference_ledger_identity": (
+                        None
+                        if rewrite.reference_route is None
+                        else rewrite.reference_route.reference_ledger_identity
+                    ),
                 },
             )
         return _DirectTransferRewritePlan(
             operation=operation,
             rewrite=rewrite,
+            cut_index=int(cut_index),
         )
 
     def _preflight_stack_rebase(
@@ -2458,22 +2505,16 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             normalization_entry = computed_normalizations.get(str(block_id))
             direct_rewrite_entry = direct_transfer_rewrites.get(str(block_id))
             captured_instructions = (
-                template_block.instructions
-                if normalization_entry is None
-                else template_block.instructions[: normalization_entry.cut_index]
-            )
-            superseded_instruction_eas = (
-                frozenset()
-                if direct_rewrite_entry is None
-                else frozenset(
-                    int(ea)
-                    for ea in direct_rewrite_entry.rewrite.superseded_instruction_eas
+                template_block.instructions[: direct_rewrite_entry.cut_index]
+                if direct_rewrite_entry is not None
+                else (
+                    template_block.instructions
+                    if normalization_entry is None
+                    else template_block.instructions[: normalization_entry.cut_index]
                 )
             )
             instructions: list[tuple[int, object]] = []
             for captured in captured_instructions:
-                if int(captured.ea) in superseded_instruction_eas:
-                    continue
                 instruction = ida_hexrays.minsn_t(captured)
                 instruction_stack_map = _stack_map_with_positive_identity_overrides(
                     dict(stack_map),
