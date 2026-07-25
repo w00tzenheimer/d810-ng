@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
@@ -32,6 +33,12 @@ from d810.transforms.fragment_plan import (
     FragmentTerminalRoute,
     FragmentValueSite,
 )
+from d810.transforms.fragment_projection import (
+    FragmentProjectionBlockInput,
+    FragmentProjectionFailure,
+    FragmentProjectionInput,
+    project_fragment,
+)
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
     FragmentValidationPostcondition,
@@ -53,6 +60,111 @@ from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key(function_rva=0x40A560)
 CONDITION_STORAGE = StorageIdentity(StorageIdentityKind.REGISTER, offset=0x10)
+
+
+def test_fragment_projection_failure_is_prewrite_evidence() -> None:
+    failure = FragmentProjectionFailure(
+        FragmentValidationPostcondition.ROOT_AUTHORITY,
+        "root-inventory",
+        "projection rejected",
+    )
+
+    assert failure.live_mutation_started is False
+    assert failure.failure_phase == "projection"
+
+
+def test_project_fragment_derives_replacement_and_root_rewrite_from_snapshots() -> None:
+    plan = _plan()
+    staged = _projection(plan)
+    replacement = replace(
+        staged.block("replacement"),
+        terminator_ea=0x1004,
+        terminator_kind=InsnKind.COND_JUMP,
+    )
+    plan_block_ids = {block.block_id for block in plan.blocks}
+    snapshot = FragmentProjectionInput(
+        snapshot_id="snapshot:projection-test",
+        entry_block_id="entry",
+        blocks=tuple(
+            FragmentProjectionBlockInput(
+                block_id=block.block_id,
+                kind=block.kind,
+                successors=("original",)
+                if block.block_id == "entry"
+                else block.successors,
+                predecessors=("entry",)
+                if block.block_id == "original"
+                else block.predecessors,
+                physical_position=block.physical_position,
+                adjacent_fallthrough_target_id=(
+                    block.adjacent_fallthrough_target_id
+                ),
+                terminator_ea=(
+                    replacement.terminator_ea
+                    if block.block_id == "original"
+                    else block.terminator_ea
+                ),
+                terminator_kind=(
+                    replacement.terminator_kind
+                    if block.block_id == "original"
+                    else block.terminator_kind
+                ),
+                instruction_eas=(
+                    replacement.instruction_eas
+                    if block.block_id == "original"
+                    else block.instruction_eas
+                ),
+                flag_write_eas=(
+                    replacement.flag_write_eas
+                    if block.block_id == "original"
+                    else block.flag_write_eas
+                ),
+            )
+            for block in staged.blocks
+            if block.block_id in plan_block_ids
+            and block.block_id != "replacement"
+        ),
+        identity_bindings=tuple(
+            binding
+            for binding in staged.identity_bindings
+            if binding.block_id in plan_block_ids
+            and binding.block_id != "replacement"
+        ),
+        data_flow_relations=staged.data_flow_relations,
+        value_ranges=staged.value_ranges,
+    )
+    inventory = SimpleNamespace(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        items=(
+            SimpleNamespace(
+                root_block_id="replacement",
+                original_block_id="original",
+                predecessor_block_id="entry",
+                role=SemanticEdgeRole.DIRECT,
+                requires_helper=False,
+            ),
+        ),
+    )
+
+    projection = project_fragment(plan, snapshot, inventory)
+
+    assert projection.block("entry").successors == ("replacement",)
+    assert projection.block("original").predecessors == ()
+    assert projection.block("replacement").successors == (
+        "fallthrough-helper:condition",
+        "true",
+    )
+    assert projection.block("replacement").terminator_ea == 0x1004
+    assert projection.block("replacement").terminator_kind is InsnKind.COND_JUMP
+    assert tuple(
+        helper.helper_block_id for helper in projection.fallthrough_helpers
+    ) == ("fallthrough-helper:condition",)
+    assert (
+        projection.binding("replacement").previous_version
+        == projection.binding("original").version
+    )
+    assert validate_fragment_projection(plan, projection).passed
 
 
 def _identity(start_ea: int) -> StableBlockIdentity:
