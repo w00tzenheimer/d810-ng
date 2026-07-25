@@ -2484,6 +2484,166 @@ def test_static_state_write_routes_project_frontend_normalized_delivery_root(
     assert evidence.delivery_kind is StateWriteRouteDeliveryKind.DIRECT_TARGET
 
 
+def test_frontend_normalized_state_route_corridor_joins_original_prefix_to_synthetic_delivery() -> (
+    None
+):
+    insn = computed_goto_resolver._DecodedStateRouteInstruction
+    decoded_prefix = (
+        insn(0x40ADF2, 0x40ADF7, "mov", 20, True, 0xF6A636EF),
+        insn(0x40ADF7, 0x40ADFD, "cmp", 20, False, 0x0BB2D365),
+    )
+
+    corridor = computed_goto_resolver._frontend_normalized_state_route_corridor(
+        decoded_prefix,
+        condition_producer_ea=0x40ADF7,
+        normalization_start_ea=0x40ADFD,
+        delivery_ea=0x40AE09,
+        delivery_region_end_ea=0x40AE1A,
+    )
+
+    assert corridor == (
+        *decoded_prefix,
+        insn(0x40AE09, 0x40AE0A, "normalized_branch", None, False, None),
+    )
+    assert computed_goto_resolver._select_frontend_normalized_state_write_assignment(
+        corridor,
+        state_var_reg=20,
+        delivery_ea=0x40AE09,
+    ) == (
+        0x40ADF2,
+        0xF6A636EF,
+        (0x40ADF2, 0x40ADF7, 0x40AE09),
+    )
+
+
+@pytest.mark.parametrize(
+    ("producer_end_ea", "delivery_ea", "delivery_region_end_ea"),
+    (
+        (0x40ADFC, 0x40AE09, 0x40AE1A),
+        (0x40ADFD, 0x40ADFC, 0x40AE1A),
+        (0x40ADFD, 0x40AE1A, 0x40AE1A),
+    ),
+)
+def test_frontend_normalized_state_route_corridor_rejects_unproven_cut(
+    producer_end_ea,
+    delivery_ea,
+    delivery_region_end_ea,
+) -> None:
+    insn = computed_goto_resolver._DecodedStateRouteInstruction
+
+    assert (
+        computed_goto_resolver._frontend_normalized_state_route_corridor(
+            (
+                insn(0x40ADF2, 0x40ADF7, "mov", 20, True, 0xF6A636EF),
+                insn(
+                    0x40ADF7,
+                    producer_end_ea,
+                    "cmp",
+                    20,
+                    False,
+                    0x0BB2D365,
+                ),
+            ),
+            condition_producer_ea=0x40ADF7,
+            normalization_start_ea=0x40ADFD,
+            delivery_ea=delivery_ea,
+            delivery_region_end_ea=delivery_region_end_ea,
+        )
+        == ()
+    )
+
+
+def test_static_state_write_routes_join_condition_prefix_to_normalized_delivery(
+    monkeypatch,
+) -> None:
+    plan = _PatchPlan(
+        jmp_ea=0x40AE18,
+        block_entry=0x40ADF2,
+        patch_start=0x40ADFD,
+        patch_bytes=b"",
+        region_end=0x40AE1A,
+        insn_heads=(0x40AE09, 0x40AE18),
+        new_block_eas=(0x40AE09, 0x40AE18),
+        target_eas=(0x40B6C0, 0x40A607),
+        condition_code=12,
+        true_target_ea=0x40B6C0,
+        false_target_ea=0x40A607,
+        condition_producer_ea=0x40ADF7,
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={plan.jmp_ea: plan.target_eas},
+        reachable_eas=(0x40A560, 0x40ADF2),
+        arch="x86",
+        executed_insns=10,
+        seeds_run=0,
+        patch_plans=(plan,),
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40C49A,
+        source_block_ea=0x40C49A,
+        materialized_anchor_eas=(),
+        target_eas=(0x40C4B4,),
+        selector_state_var_reg=20,
+        selector_state_constant=0xF6A636EF,
+        resolver_kind="static_handler_entry_route",
+    )
+    insn = computed_goto_resolver._DecodedStateRouteInstruction
+    decoded_prefix = (
+        insn(0x40ADF2, 0x40ADF7, "mov", 20, True, 0xF6A636EF),
+        insn(0x40ADF7, 0x40ADFD, "cmp", 20, False, 0x0BB2D365),
+    )
+    decode_requests = []
+
+    def decode_corridor(start_ea: int, delivery_ea: int):
+        decode_requests.append((int(start_ea), int(delivery_ea)))
+        if (int(start_ea), int(delivery_ea)) == (0x40ADF2, 0x40ADF7):
+            return decoded_prefix
+        return ()
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_block_start_of",
+        lambda producer_ea, function_ea: (
+            0x40ADF2
+            if (int(producer_ea), int(function_ea)) == (0x40ADF7, 0x40A560)
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_decode_static_state_route_corridor",
+        decode_corridor,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_decode_native_flow_route_inventory",
+        lambda *_args: (),
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_native_direct_dispatch_delivery_sites",
+        lambda *_args, **_kwargs: (),
+    )
+    _session, state = _resolver_session(resolution)
+
+    (evidence,) = computed_goto_resolver._discover_static_state_write_routes(
+        state,
+        resolution,
+        (transfer,),
+    )
+
+    assert decode_requests == [(0x40ADF2, 0x40ADF7)]
+    assert evidence.source_write_ea == 0x40ADF2
+    assert evidence.delivery_ea == 0x40AE09
+    assert evidence.delivery_region_start_ea == 0x40ADFD
+    assert evidence.delivery_region_end_ea == 0x40AE1A
+    assert evidence.corridor_instruction_eas == (0x40ADF2, 0x40ADF7, 0x40AE09)
+    assert evidence.state_constant == 0xF6A636EF
+    assert evidence.target_ea == 0x40C4B4
+    assert evidence.delivery_kind is StateWriteRouteDeliveryKind.DIRECT_TARGET
+
+
 def test_static_state_write_routes_require_exact_exit_authority_across_call(
     monkeypatch,
 ) -> None:
@@ -2540,7 +2700,11 @@ def test_static_state_write_routes_require_exact_exit_authority_across_call(
     monkeypatch.setattr(
         computed_goto_resolver,
         "_decode_static_state_route_corridor",
-        lambda *_args: decoded,
+        lambda _start_ea, delivery_ea: tuple(
+            instruction
+            for instruction in decoded
+            if int(instruction.ea) <= int(delivery_ea)
+        ),
     )
     monkeypatch.setattr(
         computed_goto_resolver,
