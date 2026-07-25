@@ -1076,7 +1076,7 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
             10: _block(10, 0x1000, succs=(90,), preds=()),
             30: _block(
                 30,
-                0x1200,
+                0x1005,
                 succs=(90,),
                 preds=(90,),
                 insn_eas=(0x1200, 0x1210),
@@ -1085,6 +1085,12 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
         },
         entry_serial=10,
         func_ea=0x1000,
+    )
+    current_identity_by_serial = _current_identity_authority(graph)
+    current_identity_by_serial[30] = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1200, 0x1211),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1200, 0x1210),
     )
     (native_body,) = normalization_plan.native_bodies
     route_source = FragmentBlock(
@@ -1214,7 +1220,7 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
         normalization_plan,
         boundary_anchor_ea=0x1200,
         available_evidence=available_evidence,
-        current_identity_by_serial=_current_identity_authority(graph),
+        current_identity_by_serial=current_identity_by_serial,
         normalization_authority=_normalization_authority(
             normalization_plan,
             available_evidence,
@@ -1227,7 +1233,9 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
     root = plan.block(root_id)
     assert root.role is FragmentBlockRole.REPLACEMENT
     assert root.semantic_anchor_ea == 0x1200
-    assert plan.block(str(root.replaces_block_id)).role is FragmentBlockRole.ORIGINAL
+    original = plan.block(str(root.replaces_block_id))
+    assert original.role is FragmentBlockRole.ORIGINAL
+    assert original.semantic_anchor_ea == 0x1200
     operations = {operation.operation_id: operation for operation in plan.operations}
     root_operation = operations["boundary-call-fallthrough@0x1200"]
     assert root_operation.source_block_id == root_id

@@ -2764,14 +2764,14 @@ def compose_canonical_semantic_boundary_fragment_plan(
         block_id=original_id,
         role=FragmentBlockRole.ORIGINAL,
         materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
-        semantic_anchor_ea=int(root_anchor_ea),
+        semantic_anchor_ea=boundary_anchor_ea,
         stable_identity=root_identity,
     )
     block_by_id[replacement_id] = FragmentBlock(
         block_id=replacement_id,
         role=FragmentBlockRole.REPLACEMENT,
         materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
-        semantic_anchor_ea=int(root_anchor_ea),
+        semantic_anchor_ea=boundary_anchor_ea,
         stable_identity=root_identity,
         replaces_block_id=original_id,
     )
