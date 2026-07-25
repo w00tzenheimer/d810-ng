@@ -18,6 +18,10 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     semantic_route_proof_reaches_consumer,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
+from d810.core.semantic_route_oracle import (
+    ReferenceRouteRewrite,
+    SemanticTransferKind,
+)
 from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
@@ -104,6 +108,120 @@ class _CallBackedNestedRouteStaging:
     route_proof_id: str
     block_ids: frozenset[str]
     exact_instruction_eas_by_block_id: Mapping[str, frozenset[int]]
+
+
+@dataclass(frozen=True, slots=True)
+class DetachedDirectRoutePlan:
+    """One complete per-site direct rewrite before detached MBA mutation."""
+
+    plan_id: str
+    evidence_generation: int
+    normalization_authority: NormalizationWorkItemAuthority
+    source_block: FragmentBlock
+    target_block: FragmentBlock
+    corridor_block_ids: tuple[str, ...]
+    superseded_operation: FragmentOperation
+    operation: FragmentOperation
+
+    def __post_init__(self) -> None:
+        plan_id = str(self.plan_id).strip()
+        if not plan_id:
+            raise ValueError("detached direct route plan requires an id")
+        evidence_generation = int(self.evidence_generation)
+        authority = self.normalization_authority
+        if (
+            evidence_generation < 0
+            or not isinstance(authority, NormalizationWorkItemAuthority)
+            or authority.evidence_generation != evidence_generation
+        ):
+            raise ValueError(
+                "detached direct route plan requires generation-owned "
+                "normalization authority"
+            )
+        source = self.source_block
+        target = self.target_block
+        if (
+            not isinstance(source, FragmentBlock)
+            or not isinstance(target, FragmentBlock)
+            or source.role is not FragmentBlockRole.IMPORTED
+            or target.role is not FragmentBlockRole.IMPORTED
+            or source.native_body_id is None
+            or source.native_body_id != target.native_body_id
+        ):
+            raise ValueError(
+                "detached direct route plan requires one imported native body"
+            )
+        corridor_block_ids = tuple(self.corridor_block_ids)
+        if (
+            not corridor_block_ids
+            or len(set(corridor_block_ids)) != len(corridor_block_ids)
+            or source.block_id not in corridor_block_ids
+        ):
+            raise ValueError(
+                "detached direct route plan requires unique corridor owners"
+            )
+        superseded = self.superseded_operation
+        operation = self.operation
+        rewrite = operation.direct_transfer_rewrite
+        reference_route = None if rewrite is None else rewrite.reference_route
+        if (
+            not isinstance(superseded, FragmentOperation)
+            or not isinstance(operation, FragmentOperation)
+            or superseded.source_block_id != source.block_id
+            or operation.source_block_id != source.block_id
+            or operation.operation_id == superseded.operation_id
+            or rewrite is None
+            or reference_route is None
+            or reference_route.final_transfer_kind is not SemanticTransferKind.DIRECT
+            or reference_route.direct_target_ea is None
+            or rewrite.owner_identity != source.stable_identity
+            or rewrite.owner_anchor_ea != int(source.semantic_anchor_ea)
+            or len(operation.edges) != 1
+            or operation.edges[0].role is not SemanticEdgeRole.DIRECT
+            or operation.edges[0].target_block_id != target.block_id
+        ):
+            raise ValueError(
+                "detached direct route plan requires one reference-owned direct "
+                "semantic replacement"
+            )
+        object.__setattr__(self, "plan_id", plan_id)
+        object.__setattr__(self, "evidence_generation", evidence_generation)
+        object.__setattr__(self, "corridor_block_ids", corridor_block_ids)
+
+    def diagnostic_payload(self) -> dict[str, object]:
+        """Serialize the complete serial-free C3 operation intent."""
+        rewrite = self.operation.direct_transfer_rewrite
+        assert rewrite is not None
+        reference_route = rewrite.reference_route
+        assert reference_route is not None
+        source_identity = self.source_block.stable_identity
+        target_identity = self.target_block.stable_identity
+        assert source_identity is not None
+        assert target_identity is not None
+        return {
+            "plan_id": self.plan_id,
+            "evidence_generation": int(self.evidence_generation),
+            "normalization_plan_id": self.normalization_authority.source_plan_id,
+            "route_proof_id": rewrite.route_proof_id,
+            "reference_route_id": reference_route.route_id,
+            "source_block_id": self.source_block.block_id,
+            "source_identity": source_identity.diagnostic_label(),
+            "owner_anchor_ea": f"0x{int(rewrite.owner_anchor_ea):X}",
+            "rewrite_anchor_ea": f"0x{int(rewrite.rewrite_anchor_ea):X}",
+            "proof_corridor_instruction_eas": tuple(
+                f"0x{int(ea):X}" for ea in rewrite.proof_corridor_instruction_eas
+            ),
+            "corridor_block_ids": self.corridor_block_ids,
+            "superseded_operation_id": self.superseded_operation.operation_id,
+            "superseded_edge_roles": tuple(
+                edge.role.value for edge in self.superseded_operation.edges
+            ),
+            "semantic_operation_id": self.operation.operation_id,
+            "semantic_edge_role": self.operation.edges[0].role.value,
+            "target_block_id": self.target_block.block_id,
+            "target_identity": target_identity.diagnostic_label(),
+            "direct_target_ea": f"0x{int(reference_route.direct_target_ea):X}",
+        }
 
 
 def _identity_contains(
@@ -1186,16 +1304,16 @@ def _direct_transfer_rewrite(
             anchor_ea=int(proof.source_anchor_ea),
             payload={"route_proof_id": proof.proof_id},
         )
-    if proof.state_write is not None:
-        owner_identity = proof.state_write.identity
-        owner_anchor_ea = int(proof.state_write.instruction_ea)
-    elif proof.source_owner_identity is not None:
+    if proof.source_owner_identity is not None:
         if proof.source_owner_anchor_ea is None:
             raise CanonicalSemanticFragmentRejected(
                 "direct semantic route owner lacks its exact anchor"
             )
         owner_identity = proof.source_owner_identity
         owner_anchor_ea = int(proof.source_owner_anchor_ea)
+    elif proof.state_write is not None:
+        owner_identity = proof.state_write.identity
+        owner_anchor_ea = int(proof.state_write.instruction_ea)
     else:
         owner_identity = proof.source_identity
         owner_anchor_ea = int(proof.source_anchor_ea)
@@ -1242,6 +1360,308 @@ def _direct_transfer_rewrite(
         superseded_instruction_eas=(int(proof.source_anchor_ea),),
         source_computed_branch_normalization=source_normalization,
         source_predicate_anchor_ea=source_predicate_anchor_ea,
+    )
+
+
+def plan_detached_reference_direct_route(
+    normalization_plan: FragmentPlan,
+    evidence: CanonicalSemanticEvidence,
+    reference_route: ReferenceRouteRewrite,
+    *,
+    normalization_authority: NormalizationWorkItemAuthority,
+) -> DetachedDirectRoutePlan | None:
+    """Plan one imported direct rewrite by its operation-owned native anchor.
+
+    The result is portable C3 intent only.  It deliberately has no live root
+    and cannot be submitted to the fragment publication backend.
+    """
+    if not isinstance(normalization_plan, FragmentPlan):
+        raise TypeError("detached direct-route planning requires a FragmentPlan")
+    if (
+        normalization_plan.publication_purpose
+        is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+    ):
+        return None
+    if not isinstance(evidence, CanonicalSemanticEvidence):
+        raise TypeError("detached direct-route planning requires canonical evidence")
+    if not isinstance(reference_route, ReferenceRouteRewrite):
+        raise TypeError("detached direct-route planning requires a reference route")
+    if not isinstance(normalization_authority, NormalizationWorkItemAuthority):
+        raise TypeError(
+            "detached direct-route planning requires normalization authority"
+        )
+    if (
+        evidence.native_key != normalization_plan.native_key
+        or normalization_authority.evidence_generation != evidence.generation
+        or normalization_authority.source_plan_id != normalization_plan.plan_id
+        or normalization_authority.source_atomic_group_id
+        != normalization_plan.atomic_group_id
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "detached direct-route normalization authority drifted",
+            reason_code="detached_direct_route_normalization_authority_drift",
+            anchor_ea=int(reference_route.rewrite_anchor_ea),
+        )
+    if len(evidence.route_proofs) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "detached direct-route planning requires one route proof",
+            reason_code="detached_direct_route_proof_count_mismatch",
+            anchor_ea=int(reference_route.rewrite_anchor_ea),
+            payload={
+                "route_proof_ids": tuple(
+                    proof.proof_id for proof in evidence.route_proofs
+                ),
+            },
+        )
+    (proof,) = evidence.route_proofs
+    rewrite_anchor_ea = int(reference_route.rewrite_anchor_ea)
+    if (
+        proof.shape is not SemanticRouteShape.DIRECT
+        or proof.proof_kind is not SemanticRouteProofKind.STATE_ASSIGNMENT
+        or proof.state_write is None
+        or proof.delivery_region is None
+        or len(proof.destinations) != 1
+        or int(proof.source_anchor_ea) != rewrite_anchor_ea
+        or reference_route.final_transfer_kind is not SemanticTransferKind.DIRECT
+        or reference_route.direct_target_ea is None
+        or tuple(reference_route.corridor)
+        != (
+            (
+                int(proof.state_write.corridor_instruction_eas[0]),
+                int(proof.delivery_region.end_ea),
+            ),
+        )
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "detached direct route does not match its reference rewrite envelope",
+            reason_code="detached_direct_route_reference_envelope_mismatch",
+            anchor_ea=rewrite_anchor_ea,
+            payload={
+                "route_proof_id": proof.proof_id,
+                "reference_route_id": reference_route.route_id,
+            },
+        )
+
+    block_by_id = {block.block_id: block for block in normalization_plan.blocks}
+    imported_operation_matches: list[tuple[FragmentBlock, FragmentOperation]] = []
+    for operation in normalization_plan.operations:
+        operation_anchor_ea = (
+            operation.predicate_anchor_ea
+            if operation.predicate_anchor_ea is not None
+            else operation.superseded_predicate_anchor_ea
+        )
+        if operation_anchor_ea != rewrite_anchor_ea:
+            continue
+        source = block_by_id.get(operation.source_block_id)
+        if (
+            source is None
+            or source.role is not FragmentBlockRole.IMPORTED
+            or source.stable_identity is None
+            or not source.stable_identity.native_ranges.contains(rewrite_anchor_ea)
+            or not _identity_ranges_contain(
+                source.stable_identity,
+                proof.source_identity,
+            )
+        ):
+            continue
+        imported_operation_matches.append((source, operation))
+    if not imported_operation_matches:
+        return None
+    if len(imported_operation_matches) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "detached direct route has multiple imported operation owners",
+            reason_code="detached_direct_route_operation_owner_ambiguous",
+            anchor_ea=rewrite_anchor_ea,
+            payload={
+                "operation_ids": tuple(
+                    operation.operation_id
+                    for _source, operation in imported_operation_matches
+                ),
+                "source_block_ids": tuple(
+                    source.block_id for source, _operation in imported_operation_matches
+                ),
+            },
+        )
+    source, superseded_operation = imported_operation_matches[0]
+    source_identity = source.stable_identity
+    assert source_identity is not None
+    native_bodies = tuple(
+        body
+        for body in normalization_plan.native_bodies
+        if body.body_id == source.native_body_id
+    )
+    if len(native_bodies) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "detached direct route requires one imported native-body owner",
+            reason_code="detached_direct_route_native_body_count_mismatch",
+            anchor_ea=rewrite_anchor_ea,
+            payload={"native_body_id": source.native_body_id},
+        )
+    (native_body,) = native_bodies
+    missing_proof_ids = tuple(
+        proof_id
+        for proof_id in (
+            superseded_operation.operation_id,
+            reference_route.route_id,
+        )
+        if proof_id not in native_body.proof_ids
+    )
+    if missing_proof_ids:
+        raise CanonicalSemanticFragmentRejected(
+            "detached direct route lacks imported native-body proof ownership",
+            reason_code="detached_direct_route_native_body_proof_missing",
+            anchor_ea=rewrite_anchor_ea,
+            payload={
+                "native_body_id": native_body.body_id,
+                "missing_proof_ids": missing_proof_ids,
+            },
+        )
+    owner_ea = int(reference_route.owner_ea)
+    if (
+        int(source.semantic_anchor_ea) != owner_ea
+        or not source_identity.native_ranges.contains(owner_ea)
+        or owner_ea not in source_identity.exact_instruction_eas
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "detached direct route reference owner is not its imported operation owner",
+            reason_code="detached_direct_route_reference_owner_mismatch",
+            anchor_ea=rewrite_anchor_ea,
+            payload={
+                "reference_owner_ea": f"0x{owner_ea:X}",
+                "source_block_id": source.block_id,
+                "source_identity": source_identity.diagnostic_label(),
+            },
+        )
+    raw_edge_roles = tuple(edge.role for edge in superseded_operation.edges)
+    if (
+        reference_route.original_transfer_kind is SemanticTransferKind.CONDITIONAL
+        and frozenset(raw_edge_roles)
+        != frozenset(
+            {
+                SemanticEdgeRole.CONDITIONAL_TAKEN,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }
+        )
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "detached direct route raw operation does not retain both original arms",
+            reason_code="detached_direct_route_raw_shape_mismatch",
+            anchor_ea=rewrite_anchor_ea,
+            payload={
+                "operation_id": superseded_operation.operation_id,
+                "edge_roles": tuple(role.value for role in raw_edge_roles),
+            },
+        )
+
+    (destination,) = proof.destinations
+    direct_target_ea = int(reference_route.direct_target_ea)
+    if int(destination.target_anchor_ea) != direct_target_ea:
+        raise CanonicalSemanticFragmentRejected(
+            "detached direct route reference target disagrees with semantic evidence",
+            reason_code="detached_direct_route_reference_target_mismatch",
+            anchor_ea=rewrite_anchor_ea,
+            payload={
+                "evidence_target_ea": f"0x{int(destination.target_anchor_ea):X}",
+                "reference_target_ea": f"0x{direct_target_ea:X}",
+            },
+        )
+    target_matches = tuple(
+        block
+        for block in normalization_plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+        and block.native_body_id == source.native_body_id
+        and block.stable_identity is not None
+        and int(block.semantic_anchor_ea) == direct_target_ea
+        and direct_target_ea in block.stable_identity.exact_instruction_eas
+        and _identity_ranges_contain(
+            block.stable_identity,
+            destination.target_identity,
+        )
+    )
+    if len(target_matches) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "detached direct route requires one imported reference target",
+            reason_code="detached_direct_route_target_count_mismatch",
+            anchor_ea=rewrite_anchor_ea,
+            payload={
+                "reference_target_ea": f"0x{direct_target_ea:X}",
+                "target_block_ids": tuple(block.block_id for block in target_matches),
+            },
+        )
+    (target,) = target_matches
+
+    body_blocks = tuple(
+        block
+        for block in normalization_plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+        and block.native_body_id == source.native_body_id
+        and block.stable_identity is not None
+    )
+    corridor_block_ids: list[str] = []
+    for corridor_ea in proof.state_write.corridor_instruction_eas:
+        owners = tuple(
+            block
+            for block in body_blocks
+            if block.stable_identity is not None
+            and block.stable_identity.native_ranges.contains(int(corridor_ea))
+        )
+        if len(owners) != 1:
+            raise CanonicalSemanticFragmentRejected(
+                "detached direct route proof corridor lacks one imported owner",
+                reason_code="detached_direct_route_corridor_owner_mismatch",
+                anchor_ea=int(corridor_ea),
+                payload={
+                    "route_proof_id": proof.proof_id,
+                    "owner_block_ids": tuple(block.block_id for block in owners),
+                },
+            )
+        if owners[0].block_id not in corridor_block_ids:
+            corridor_block_ids.append(owners[0].block_id)
+
+    bound_proof = replace(
+        proof,
+        source_owner_identity=source_identity,
+        source_owner_anchor_ea=owner_ea,
+    )
+    operation_without_rewrite = FragmentOperation(
+        operation_id=f"route:{proof.proof_id}",
+        source_block_id=source.block_id,
+        superseded_computed_branch_normalization=(
+            superseded_operation.computed_branch_normalization
+        ),
+        superseded_predicate_anchor_ea=(
+            superseded_operation.predicate_anchor_ea
+            if superseded_operation.computed_branch_normalization is not None
+            else None
+        ),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=target.block_id,
+            ),
+        ),
+    )
+    direct_rewrite = _direct_transfer_rewrite(
+        bound_proof,
+        source_operation=operation_without_rewrite,
+    )
+    assert direct_rewrite is not None
+    operation = replace(
+        operation_without_rewrite,
+        direct_transfer_rewrite=replace(
+            direct_rewrite,
+            reference_route=reference_route,
+        ),
+    )
+    return DetachedDirectRoutePlan(
+        plan_id=f"detached-direct:{evidence.atomic_group_id}:{proof.proof_id}",
+        evidence_generation=int(evidence.generation),
+        normalization_authority=normalization_authority,
+        source_block=source,
+        target_block=target,
+        corridor_block_ids=tuple(corridor_block_ids),
+        superseded_operation=superseded_operation,
+        operation=operation,
     )
 
 
@@ -3700,7 +4120,9 @@ def build_canonical_semantic_fragment_plan(
 
 __all__ = [
     "CanonicalSemanticFragmentRejected",
+    "DetachedDirectRoutePlan",
     "build_canonical_semantic_fragment_plan",
     "compose_canonical_semantic_boundary_fragment_plan",
     "compose_canonical_semantic_fragment_plan",
+    "plan_detached_reference_direct_route",
 ]

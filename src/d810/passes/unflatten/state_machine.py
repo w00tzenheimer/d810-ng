@@ -75,9 +75,11 @@ from d810.transforms.minimal_unflatten_emit import emit_minimal_unflatten
 from d810.transforms.dispatcher_cleanup import cleanup_residual_dispatcher
 from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
+    DetachedDirectRoutePlan,
     build_canonical_semantic_fragment_plan,
     compose_canonical_semantic_boundary_fragment_plan,
     compose_canonical_semantic_fragment_plan,
+    plan_detached_reference_direct_route,
 )
 from d810.transforms.fragment_plan import (
     FragmentPlan,
@@ -1022,6 +1024,25 @@ def _accepted_canonical_composition_attempt(
     return payload
 
 
+def _accepted_detached_direct_route_attempt(
+    plan: DetachedDirectRoutePlan,
+    route_candidate: CanonicalSemanticEvidence,
+) -> dict[str, object]:
+    """Serialize one complete C3 direct-route plan before off-side mutation."""
+    return {
+        "kind": "configured_reference_detached_direct_route",
+        "outcome": "accepted",
+        "route_proof_ids": tuple(
+            proof.proof_id for proof in route_candidate.route_proofs
+        ),
+        "route_source_anchor_eas": tuple(
+            f"0x{int(proof.source_anchor_ea):X}"
+            for proof in route_candidate.route_proofs
+        ),
+        **plan.diagnostic_payload(),
+    }
+
+
 def _with_canonical_composition_attempts(
     rejection: CanonicalSemanticFragmentRejected,
     attempts: tuple[dict[str, object], ...],
@@ -1192,6 +1213,47 @@ def _compose_configured_reference_scope_plan(
             tuple(composition_attempts),
         ) from exc
     if route_candidate is not None:
+        detached_direct_plan = None
+        if len(configured_scope.routes) == 1:
+            (configured_route,) = configured_scope.routes
+            try:
+                detached_direct_plan = plan_detached_reference_direct_route(
+                    normalization_plan,
+                    route_candidate,
+                    configured_route,
+                    normalization_authority=normalization_authority,
+                )
+            except CanonicalSemanticFragmentRejected as exc:
+                composition_attempts.append(
+                    _rejected_canonical_composition_attempt(
+                        kind="configured_reference_detached_direct_route",
+                        rejection=exc,
+                        route_candidate=route_candidate,
+                    )
+                )
+                raise _with_canonical_composition_attempts(
+                    exc,
+                    tuple(composition_attempts),
+                ) from exc
+        if detached_direct_plan is not None:
+            composition_attempts.append(
+                _accepted_detached_direct_route_attempt(
+                    detached_direct_plan,
+                    route_candidate,
+                )
+            )
+            detached_payload = detached_direct_plan.diagnostic_payload()
+            rejection = CanonicalSemanticFragmentRejected(
+                "configured reference direct route has complete detached C3 "
+                "intent but no off-side microcode projection",
+                reason_code=("canonical_detached_direct_route_projection_missing"),
+                anchor_ea=int(configured_route.rewrite_anchor_ea),
+                payload={"detached_direct_route_plan": detached_payload},
+            )
+            raise _with_canonical_composition_attempts(
+                rejection,
+                tuple(composition_attempts),
+            )
         try:
             configured_plan = compose_canonical_semantic_fragment_plan(
                 graph,
