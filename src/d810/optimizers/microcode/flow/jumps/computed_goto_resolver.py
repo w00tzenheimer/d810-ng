@@ -6311,9 +6311,7 @@ def _frontend_normalized_state_route_corridor(
     heads = tuple(int(instruction.ea) for instruction in ordered)
     if heads != tuple(sorted(set(heads))):
         return ()
-    if any(
-        int(instruction.ea) >= int(instruction.end_ea) for instruction in ordered
-    ):
+    if any(int(instruction.ea) >= int(instruction.end_ea) for instruction in ordered):
         return ()
     if any(
         int(current.end_ea) > int(following.ea)
@@ -6709,10 +6707,9 @@ def _discover_static_state_write_routes(
     for site, normalization_plan in delivery_sites:
         authority_transfer_ea: int | None = None
         preserved_call_instruction_eas: tuple[int, ...] = ()
-        uses_frontend_normalized_delivery = (
-            normalization_plan is not None
-            and int(site.delivery_ea) != int(normalization_plan.jmp_ea)
-        )
+        uses_frontend_normalized_delivery = normalization_plan is not None and int(
+            site.delivery_ea
+        ) != int(normalization_plan.jmp_ea)
         if (
             uses_frontend_normalized_delivery
             and normalization_plan is not None
