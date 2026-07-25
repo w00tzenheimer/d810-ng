@@ -194,7 +194,9 @@ def test_preopt_entry_bridge_requires_portable_original_predicate_identity() -> 
         ),
     )
 
-    assert computed_goto_resolver._preopt_entry_bridge_transfer(evidence, routes) is None
+    assert (
+        computed_goto_resolver._preopt_entry_bridge_transfer(evidence, routes) is None
+    )
 
 
 def test_stack_carried_consumer_reserves_imported_dispatcher_envelope() -> None:
@@ -339,9 +341,7 @@ def test_preopt_entry_bridge_publishes_unique_native_stack_consumer() -> None:
         state_carrier_ida_stkoff=0x40,
     )
 
-    native_cfg = NativeCfg(
-        {0x40BECC: NativeBlock(0x40BECC, 0x40BEE7)}
-    )
+    native_cfg = NativeCfg({0x40BECC: NativeBlock(0x40BECC, 0x40BEE7)})
     bound = computed_goto_resolver._project_preopt_entry_consumer_routes(
         (
             EntryBridgeEvidence(
@@ -569,9 +569,7 @@ def test_preopt_union_captures_terminal_carrier_into_session(
     monkeypatch.setattr(
         computed_goto_resolver,
         "_native_return_epilogue_instruction_ea",
-        lambda target_ea: (
-            terminal_return_ea if int(target_ea) == terminal_ea else None
-        ),
+        lambda target_ea: terminal_return_ea if int(target_ea) == terminal_ea else None,
     )
     from d810.analyses.control_flow.terminal_return_carrier_evidence import (
         TerminalReturnCarrierEvidence,
@@ -667,9 +665,7 @@ def test_preopt_union_captures_terminal_carrier_into_session(
     )
     assert captured_terminal_return_ea == terminal_return_ea
     assert state.portable_evidence.terminal_return_carrier_requests == (request,)
-    assert state.portable_evidence.terminal_return_carriers == tuple(
-        captured_evidence
-    )
+    assert state.portable_evidence.terminal_return_carriers == tuple(captured_evidence)
 
 
 def test_branch_state_choice_recovers_default_and_overriding_dispatch_states() -> None:
@@ -3222,7 +3218,9 @@ def test_stkpnts_merges_detached_call_push_delta_exactly_once(
         lambda candidate, ea: (
             native_call_spd
             if candidate is function and int(ea) == native_call_ea
-            else -1168 if candidate is function else 0
+            else -1168
+            if candidate is function
+            else 0
         ),
     )
     applied: list[tuple[object, int, int]] = []
@@ -5969,9 +5967,7 @@ def test_resolution_rejects_partial_concolic_normalization_evidence(
     )
 
     assert (
-        computed_goto_resolver._resolve_computed_goto_resolution(
-            resolution.function_ea
-        )
+        computed_goto_resolver._resolve_computed_goto_resolution(resolution.function_ea)
         is None
     )
 
@@ -9081,11 +9077,7 @@ def _install_requested_call_companion_harness(
         return SimpleNamespace(
             captured=capture_succeeds,
             call_eas=(call_ea,),
-            observed_call_eas=(
-                (call_ea,)
-                if capture_succeeds
-                else (call_ea + 1,)
-            ),
+            observed_call_eas=((call_ea,) if capture_succeeds else (call_ea + 1,)),
             reason=None if capture_succeeds else "call_ea_set_mismatch",
             mismatch_ea=None if capture_succeeds else call_ea,
         )
@@ -9101,9 +9093,7 @@ def _install_requested_call_companion_harness(
         "component_start_ea": component_start_ea,
         "call_ea": call_ea,
         "native_range": native_range,
-        "calls_native_ranges": (
-            (component_start_ea, resolver_exit_ea),
-        ),
+        "calls_native_ranges": ((component_start_ea, resolver_exit_ea),),
         "calls_mba": calls_mba,
         "calls_events": calls_events,
         "generated": generated,
@@ -9234,9 +9224,7 @@ def test_prepare_requested_call_companion_captures_exact_calls_component(
     )
     state = harness["state"]
 
-    outcomes = (
-        computed_goto_resolver.prepare_requested_detached_call_companions(state)
-    )
+    outcomes = computed_goto_resolver.prepare_requested_detached_call_companions(state)
 
     assert outcomes == (
         computed_goto_resolver.CallCompanionPreparationOutcome(
@@ -9270,9 +9258,7 @@ def test_prepare_requested_call_companion_captures_exact_calls_component(
             {
                 "calls_native_ranges": harness["calls_native_ranges"],
                 "owned_block_entry_eas": (harness["component_start_ea"],),
-                "native_stack_frame_offsets_by_ea": {
-                    harness["call_ea"]: (-8, -4)
-                },
+                "native_stack_frame_offsets_by_ea": {harness["call_ea"]: (-8, -4)},
             },
         )
     ]
@@ -9289,9 +9275,7 @@ def test_prepare_requested_call_companion_retains_failed_request(
     )
     state = harness["state"]
 
-    outcomes = (
-        computed_goto_resolver.prepare_requested_detached_call_companions(state)
-    )
+    outcomes = computed_goto_resolver.prepare_requested_detached_call_companions(state)
 
     assert len(outcomes) == 1
     assert not outcomes[0].captured
@@ -11733,9 +11717,7 @@ def test_portable_source_capture_defers_all_publication_to_frontend_fragment(
     monkeypatch.setattr(
         computed_goto_resolver,
         "_static_prepatch_union_source_transfers",
-        lambda _resolution: (
-            static_transfer_requests.append(_resolution) or ()
-        ),
+        lambda _resolution: static_transfer_requests.append(_resolution) or (),
     )
     monkeypatch.setattr(
         computed_goto_resolver,
@@ -11765,9 +11747,7 @@ def test_portable_source_capture_defers_all_publication_to_frontend_fragment(
         == 1
     )
     assert captured == [(state, resolution, ())]
-    assert static_transfer_requests == (
-        [resolution] if arch == "x86" else []
-    )
+    assert static_transfer_requests == ([resolution] if arch == "x86" else [])
 
 
 @pytest.mark.parametrize("union_behavior", ("abstain", "raise"))
@@ -11823,6 +11803,8 @@ def test_prepare_detached_snippets_union_failure_has_no_fallback(
         == 0
     )
     assert events == ["union_abstain"]
+
+
 def test_install_does_not_register_resolver_owned_preopt_mutation(
     monkeypatch,
 ) -> None:

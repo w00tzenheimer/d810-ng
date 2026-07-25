@@ -1269,9 +1269,7 @@ def test_contextual_patch_plan_promotion_is_unique_and_generation_owned() -> Non
     )
     assert state.evidence_generation == 2
     assert state.resolver_evidence is not None
-    assert state.resolver_evidence.promoted_contextual_patch_plans == (
-        bootstrap_plan,
-    )
+    assert state.resolver_evidence.promoted_contextual_patch_plans == (bootstrap_plan,)
     assert state.resolver_evidence.preopt_union_preparation is None
     assert state.resolver_evidence.prepatch_preopt_union_source is None
     assert state.set_preopt_union_preparation(NATIVE_KEY, stale_preparation)
@@ -1391,9 +1389,7 @@ def test_frontend_evidence_projects_only_promoted_contextual_plan() -> None:
         "native-indirect-transfer@0x401010",
         "native-contextual-indirect-transfer@0x40B6C8:0x40B6D4",
     }
-    contextual_proof = proofs[
-        "native-contextual-indirect-transfer@0x40B6C8:0x40B6D4"
-    ]
+    contextual_proof = proofs["native-contextual-indirect-transfer@0x40B6C8:0x40B6D4"]
     assert contextual_proof.shape is NativeTransferShape.CONDITIONAL
     assert (
         "contextual_owner",

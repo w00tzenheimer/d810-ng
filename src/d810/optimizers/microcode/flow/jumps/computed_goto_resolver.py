@@ -2924,9 +2924,7 @@ def _bake_patch_plans(
                             source_register_values=_sv_concrete_register_values(
                                 entry_state0
                             ),
-                            condition_producer_ea=info.get(
-                                "condition_producer_ea"
-                            ),
+                            condition_producer_ea=info.get("condition_producer_ea"),
                         )
                     )
                     done = True
@@ -7048,9 +7046,7 @@ def _bind_preopt_entry_consumer_owned_ranges(
         bound.append(
             replace(
                 transfer,
-                owned_native_ranges=(
-                    (int(block.start_ea), int(block.end_ea)),
-                ),
+                owned_native_ranges=((int(block.start_ea), int(block.end_ea)),),
             )
         )
     return tuple(bound)
@@ -8008,13 +8004,7 @@ def _analyze_select_block(jmp_ea: int, block_start: int, arch: str) -> dict | No
             key = int(insn.ops[1].value) & mask
         ea += length
 
-    if (
-        cmov is None
-        or cc is None
-        or key is None
-        or cmp_ea is None
-        or cmp_end is None
-    ):
+    if cmov is None or cc is None or key is None or cmp_ea is None or cmp_end is None:
         return None
     dst, src = cmov
     cell_false, cell_true = lea_cell.get(dst), lea_cell.get(src)
@@ -8169,17 +8159,11 @@ def _resolve_computed_goto_resolution(
 ) -> ComputedGotoResolution | None:
     """Resolve one computed goto without changing native bytes."""
     resolution = resolve_computed_gotos(int(function_ea), **kwargs)  # type: ignore[arg-type]
-    if (
-        resolution is not None
-        and resolution.jmp_targets
-        and not resolution.patch_plans
-    ):
+    if resolution is not None and resolution.jmp_targets and not resolution.patch_plans:
         plans = _concolic_frontend_normalization_plans(resolution)
-        if (
-            len(plans) == len(resolution.jmp_targets)
-            and {int(plan.jmp_ea) for plan in plans}
-            == {int(ea) for ea in resolution.jmp_targets}
-        ):
+        if len(plans) == len(resolution.jmp_targets) and {
+            int(plan.jmp_ea) for plan in plans
+        } == {int(ea) for ea in resolution.jmp_targets}:
             resolution = replace(resolution, patch_plans=plans)
         else:
             resolution = None
@@ -8236,11 +8220,7 @@ def stage_computed_goto_preanalysis(
 ) -> ComputedGotoResolution | None:
     """Publish portable computed-goto evidence without native CFG mutation."""
     resolution = _resolve_computed_goto_resolution(function_ea, **kwargs)
-    if (
-        resolution is None
-        or not resolution.jmp_targets
-        or not resolution.patch_plans
-    ):
+    if resolution is None or not resolution.jmp_targets or not resolution.patch_plans:
         return None
 
     state.begin_materialization(resolution)
@@ -8447,9 +8427,8 @@ def prepare_requested_detached_call_companions(
         return ()
     resolution = state.portable_evidence.computed_goto_resolution
     source = state.portable_evidence.prepatch_preopt_union_source
-    if (
-        not isinstance(resolution, ComputedGotoResolution)
-        or not isinstance(source, _PrepatchPreoptUnionSource)
+    if not isinstance(resolution, ComputedGotoResolution) or not isinstance(
+        source, _PrepatchPreoptUnionSource
     ):
         return tuple(
             CallCompanionPreparationOutcome(
@@ -8507,9 +8486,7 @@ def prepare_requested_detached_call_companions(
             component_owned_entries = tuple(
                 int(entry_ea)
                 for entry_ea in source.imported_block_entry_eas
-                if normalized_range[0]
-                <= int(entry_ea)
-                < normalized_range[1]
+                if normalized_range[0] <= int(entry_ea) < normalized_range[1]
             )
             if not component_owned_entries:
                 outcomes.append(
@@ -8567,10 +8544,7 @@ def prepare_requested_detached_call_companions(
                     ranges,
                     failure,
                     None,
-                    int(
-                        ida_hexrays.DECOMP_NO_WAIT
-                        | ida_hexrays.DECOMP_ALL_BLKS
-                    ),
+                    int(ida_hexrays.DECOMP_NO_WAIT | ida_hexrays.DECOMP_ALL_BLKS),
                     int(ida_hexrays.MMAT_CALLS),
                 )
             except Exception:
@@ -8593,10 +8567,7 @@ def prepare_requested_detached_call_companions(
                         preopt_call_eas=(),
                         calls_call_eas=(),
                         mismatch_ea=None,
-                        reason=(
-                            "calls_generation_failed:"
-                            f"{failure.desc()}"
-                        ),
+                        reason=(f"calls_generation_failed:{failure.desc()}"),
                     )
                 )
                 continue
@@ -8627,13 +8598,9 @@ def prepare_requested_detached_call_companions(
                 component_target_ea=component_target_ea,
                 captured=bool(capture.captured),
                 preopt_call_eas=tuple(int(ea) for ea in capture.call_eas),
-                calls_call_eas=tuple(
-                    int(ea) for ea in capture.observed_call_eas
-                ),
+                calls_call_eas=tuple(int(ea) for ea in capture.observed_call_eas),
                 mismatch_ea=(
-                    None
-                    if capture.mismatch_ea is None
-                    else int(capture.mismatch_ea)
+                    None if capture.mismatch_ea is None else int(capture.mismatch_ea)
                 ),
                 reason=str(capture.reason or "captured"),
             )
@@ -8893,13 +8860,9 @@ def _capture_preopt_union_terminal_return_carriers(
         ):
             continue
         terminal_target_ea = int(transfer.target_eas[0])
-        terminal_return_ea = _native_return_epilogue_instruction_ea(
-            terminal_target_ea
-        )
+        terminal_return_ea = _native_return_epilogue_instruction_ea(terminal_target_ea)
         if terminal_return_ea is not None:
-            terminal_return_eas_by_target[terminal_target_ea] = int(
-                terminal_return_ea
-            )
+            terminal_return_eas_by_target[terminal_target_ea] = int(terminal_return_ea)
     terminal_target_eas = tuple(sorted(terminal_return_eas_by_target))
     if not terminal_target_eas:
         return 0
@@ -9228,9 +9191,7 @@ def _plan_frontend_normalization_union_source(
         )
         return None
     resolver_targets_by_source = {
-        int(source_ea): tuple(
-            sorted({int(target_ea) for target_ea in target_eas})
-        )
+        int(source_ea): tuple(sorted({int(target_ea) for target_ea in target_eas}))
         for source_ea, target_eas in resolution.jmp_targets.items()
         if target_eas
     }
@@ -9282,9 +9243,7 @@ def _plan_frontend_normalization_union_source(
     }
     if any(
         sum(
-            int(native_range.start_ea)
-            <= int(seed_ea)
-            < int(native_range.end_ea)
+            int(native_range.start_ea) <= int(seed_ea) < int(native_range.end_ea)
             for native_range in native_ranges
         )
         != 1
@@ -9325,19 +9284,14 @@ def _plan_frontend_normalization_union_source(
                 for targets in resolver_targets_by_source.values()
                 for target_ea in targets
             }
-            | {
-                int(target_ea)
-                for target_ea in contextual_target_eas
-            }
+            | {int(target_ea) for target_ea in contextual_target_eas}
         )
     )
     cfg_result = build_native_semantic_cfg(
         function,
         live_native_eas=frozenset(),
         seed_eas=tuple(
-            dict.fromkeys(
-                (key, *source_entry_eas, *target_eas, *handler_entry_eas)
-            )
+            dict.fromkeys((key, *source_entry_eas, *target_eas, *handler_entry_eas))
         ),
         resolver_cut_eas=tuple(sorted(resolver_targets_by_source)),
         resolver_proven_unmarked_entry_eas=(
@@ -9372,10 +9326,7 @@ def _plan_frontend_normalization_union_source(
             (int(entry_ea), "contextual_computed_transfer_source"): ()
             for entry_ea in contextual_source_entry_eas
         },
-        **{
-            (int(entry_ea), "computed_transfer_target"): ()
-            for entry_ea in target_eas
-        },
+        **{(int(entry_ea), "computed_transfer_target"): () for entry_ea in target_eas},
         **{
             (int(entry_ea), "contextual_computed_transfer_target"): ()
             for entry_ea in contextual_target_eas
@@ -9403,9 +9354,7 @@ def _plan_frontend_normalization_union_source(
         cfg_result.cfg,
         seed_provenance,
     )
-    required_entries = frozenset(
-        (*source_entry_eas, *target_eas, *handler_entry_eas)
-    )
+    required_entries = frozenset((*source_entry_eas, *target_eas, *handler_entry_eas))
     missing_entries = required_entries - set(closure.included_block_eas)
     if closure.abstentions or missing_entries or not closure.native_ranges:
         logger.info(
@@ -9495,8 +9444,7 @@ def _capture_prepatch_preopt_union_source(
     terminal_return_entry_eas = tuple(
         int(entry_ea)
         for entry_ea in closure.included_block_eas
-        if native_cfg.blocks_by_ea[int(entry_ea)].terminal
-        is NativeTerminalKind.RETURN
+        if native_cfg.blocks_by_ea[int(entry_ea)].terminal is NativeTerminalKind.RETURN
     )
     required_generation_entry_eas = tuple(
         dict.fromkeys((*region.seed_eas, *terminal_return_entry_eas))
@@ -9600,9 +9548,7 @@ def _capture_prepatch_preopt_union_source(
         ),
         native_cfg=native_cfg,
     )
-    published_transfers = tuple(
-        dict.fromkeys((*enriched, *entry_consumer_routes))
-    )
+    published_transfers = tuple(dict.fromkeys((*enriched, *entry_consumer_routes)))
     source = _PrepatchPreoptUnionSource(
         primary_seed_ea=int(region.primary_seed_ea),
         seed_eas=tuple(int(seed_ea) for seed_ea in region.seed_eas),
@@ -10849,11 +10795,14 @@ def prepare_preopt_union_closure(
         consumer_load_eas_by_displacement=stack_carrier_consumer_load_eas,
     )
     if entry_consumer_routes:
-        transfers = tuple(
-            transfer
-            for transfer in transfers
-            if transfer not in entry_bridge_transfers
-        ) + entry_consumer_routes
+        transfers = (
+            tuple(
+                transfer
+                for transfer in transfers
+                if transfer not in entry_bridge_transfers
+            )
+            + entry_consumer_routes
+        )
     region = (
         PreoptUnionRegionPlan(
             seed_eas=prepatch_source.seed_eas,
@@ -11118,9 +11067,7 @@ def prepare_preopt_union_closure(
         seed_eas=tuple(int(seed_ea) for seed_ea in region.seed_eas),
         native_ranges=normalized_ranges,
         imported_block_entry_eas=tuple(effective_closure.included_block_eas),
-        entry_consumer_port_diagnostic=tuple(
-            entry_consumer_port_diagnostic.items()
-        ),
+        entry_consumer_port_diagnostic=tuple(entry_consumer_port_diagnostic.items()),
     )
 
     def generate(maturity: int):
@@ -11331,10 +11278,7 @@ def prepare_detached_handler_snippets(
         )
         return 1
     prepatch_source = state.portable_evidence.prepatch_preopt_union_source
-    if (
-        resolution.patch_plans
-        and prepatch_source is None
-    ):
+    if resolution.patch_plans and prepatch_source is None:
         source_transfers = (
             _static_prepatch_union_source_transfers(resolution)
             if resolution.arch == "x86"
@@ -11494,7 +11438,9 @@ def _first_x86_fastcall_register_accesses(
                 first[index] = (
                     "read"
                     if access_type & int(ida_idp.READ_ACCESS)
-                    else "write" if access_type == int(ida_idp.WRITE_ACCESS) else None
+                    else "write"
+                    if access_type == int(ida_idp.WRITE_ACCESS)
+                    else None
                 )
         if all(kind is not None for kind in first):
             break
@@ -11592,8 +11538,7 @@ def _on_stkpnts(
                 # hxe_stkpnts runs before this MBA's frame fields are populated.
                 # The native function already owns the authoritative frame size.
                 canonical_spd = -(
-                    int(getattr(function, "frsize"))
-                    + int(getattr(function, "frregs"))
+                    int(getattr(function, "frsize")) + int(getattr(function, "frregs"))
                 )
                 resolved_spd = project_detached_call_stack_point(
                     native_spd=native_spd,
@@ -11808,9 +11753,7 @@ def _on_build_callinfo(
                     state,
                     local_transfers,
                 )
-                published_generation = (
-                    state.native_preanalysis.normalization_published_postvalidated_generation
-                )
+                published_generation = state.native_preanalysis.normalization_published_postvalidated_generation
                 if (
                     calls_evidence_changed
                     and owns_live_profile_mba
@@ -11820,9 +11763,7 @@ def _on_build_callinfo(
                 ):
                     state.native_preanalysis.request_generated_restart(
                         evidence_family="materialized_transfers",
-                        reason=(
-                            "CALLS discovered detached local transfer evidence"
-                        ),
+                        reason=("CALLS discovered detached local transfer evidence"),
                     )
                 combined_transfers = state.materialized_transfers
                 proven_reentry_eas = _proven_callinfo_reentry_eas(

@@ -240,9 +240,7 @@ def test_imported_root_handles_are_current_mba_owned_and_serial_free() -> None:
     )
     state.bind_current_imported_root_handles(
         0x1234,
-        (
-            (target_ea, handle),
-        ),
+        ((target_ea, handle),),
     )
 
     assert state.imported_root_handles_for(0x1234) == ((target_ea, handle),)
@@ -451,19 +449,11 @@ def test_call_companion_requests_are_portable_monotonic_and_acknowledged() -> No
         (0x40B9A6, 0x40BB75),
         (0x40C26D, 0x40C2FB),
     )
-    assert not state.request_call_companion_ranges(
-        ((0x40C26D, 0x40C2FB),)
-    )
+    assert not state.request_call_companion_ranges(((0x40C26D, 0x40C2FB),))
 
-    assert state.acknowledge_call_companion_range(
-        (0x40B9A6, 0x40BB75)
-    )
-    assert state.pending_call_companion_ranges == (
-        (0x40C26D, 0x40C2FB),
-    )
-    assert not state.acknowledge_call_companion_range(
-        (0x40B9A6, 0x40BB75)
-    )
+    assert state.acknowledge_call_companion_range((0x40B9A6, 0x40BB75))
+    assert state.pending_call_companion_ranges == ((0x40C26D, 0x40C2FB),)
+    assert not state.acknowledge_call_companion_range((0x40B9A6, 0x40BB75))
 
     state.release_live_bindings()
     assert state.pending_call_companion_ranges == ()
@@ -1219,8 +1209,9 @@ def test_preflight_bootstrap_discovery_uses_the_portable_selector(
     monkeypatch.setattr(
         resolver,
         "_resolve_concrete_dispatch_corridor",
-        lambda source, **kwargs: replay_calls.append({"source": source, **kwargs})
-        or 0x40EAA7,
+        lambda source, **kwargs: (
+            replay_calls.append({"source": source, **kwargs}) or 0x40EAA7
+        ),
     )
 
     assert discover_static_native_bootstrap_routes(0x40D200, state)
@@ -1657,6 +1648,7 @@ def test_calls_done_retains_changed_evidence_during_active_materialization(
         "discover_static_native_bootstrap_routes",
         lambda _function_ea, _state: False,
     )
+
     def refresh_preopt(_state, _mba):
         if preopt_refresh_outcome == "raise":
             raise RuntimeError("refresh failed")

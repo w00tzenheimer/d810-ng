@@ -893,9 +893,7 @@ def _without_superseded_frontier_patch_proofs(
                     *(
                         ("superseded_patch_proof", proof_id)
                         for proof_id in sorted(
-                            superseded_by_semantic_owner[
-                                semantic_owner_proof.proof_id
-                            ]
+                            superseded_by_semantic_owner[semantic_owner_proof.proof_id]
                         )
                     ),
                 ),

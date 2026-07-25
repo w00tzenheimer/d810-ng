@@ -266,17 +266,14 @@ def _partial_canonical_composition_ready(
     generation = int(lifecycle.evidence_generation)
     if (
         generation <= 0
-        or lifecycle.normalization_published_postvalidated_generation
-        == generation
+        or lifecycle.normalization_published_postvalidated_generation == generation
         or lifecycle.normalization_work_item_publication_revision <= 0
         or lifecycle.normalization_last_published_work_item_id is None
         or not lifecycle.normalization_last_selected_obligation_ids
         or not lifecycle.normalization_last_remaining_obligation_ids
     ):
         return False
-    candidate = lifecycle.canonical_semantic_candidate_evidence_for(
-        state.native_key
-    )
+    candidate = lifecycle.canonical_semantic_candidate_evidence_for(state.native_key)
     frontend = lifecycle.frontend_normalization_evidence_for(state.native_key)
     return bool(
         isinstance(candidate, CanonicalSemanticEvidence)
@@ -306,9 +303,7 @@ def _validated_materialized_target_eas(
     )
     if preparation is not None:
         targets.update(
-            int(ea)
-            for ea in getattr(preparation, "seed_eas", ())
-            if int(ea) > 0
+            int(ea) for ea in getattr(preparation, "seed_eas", ()) if int(ea) > 0
         )
     return frozenset(targets)
 
@@ -638,9 +633,7 @@ def _rebind_portable_materialized_state_routes(
         )
         if portable.proof_kind == "terminal_state_route":
             if rebound_target is not None:
-                rebound_target_block = flow_graph.get_block(
-                    int(rebound_target.serial)
-                )
+                rebound_target_block = flow_graph.get_block(int(rebound_target.serial))
                 if (
                     rebound_target_block is not None
                     and getattr(rebound_target_block, "kind", None)
@@ -651,9 +644,7 @@ def _rebind_portable_materialized_state_routes(
                         for block in getattr(flow_graph, "blocks", {}).values()
                         if block.kind is BlockKind.STOP
                     )
-                    target_serial = (
-                        stop_serials[0] if len(stop_serials) == 1 else None
-                    )
+                    target_serial = stop_serials[0] if len(stop_serials) == 1 else None
                 else:
                     target_serial = int(rebound_target.serial)
             elif portable.target_native_ea is not None:
@@ -1345,9 +1336,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     consumer="state_machine_cff_unflattener",
                     strategy="canonical_semantic_composition",
                     fact_id=f"canonical_route:0x{anchor_ea:X}",
-                    maturity=maturity_to_string(
-                        int(getattr(mba, "maturity", 0))
-                    ),
+                    maturity=maturity_to_string(int(getattr(mba, "maturity", 0))),
                     decision="declined",
                     reason=rejection.reason_code,
                     payload=payload,
@@ -1361,8 +1350,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     ) -> bool:
         """Turn one exact unresolved imported boundary into newer evidence."""
         if (
-            rejection.reason_code
-            != "published_imported_boundary_topology_unresolved"
+            rejection.reason_code != "published_imported_boundary_topology_unresolved"
             or rejection.anchor_ea is None
         ):
             return False
@@ -1426,9 +1414,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     consumer="state_machine_cff_unflattener",
                     strategy="canonical_semantic_composition",
                     fact_id=f"canonical_pipeline:0x{anchor_ea:X}",
-                    maturity=maturity_to_string(
-                        int(getattr(mba, "maturity", 0))
-                    ),
+                    maturity=maturity_to_string(int(getattr(mba, "maturity", 0))),
                     decision="declined",
                     reason=reason_code,
                     payload=payload,
@@ -1871,9 +1857,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             return 0
         backend = HexRaysMutationBackend(
             mutation_gateway=mutation_gateway,
-            semantic_native_body_materializer=(
-                semantic_native_body_materializer
-            ),
+            semantic_native_body_materializer=(semantic_native_body_materializer),
         )
         capabilities = self._build_capabilities(
             mba,
@@ -2510,9 +2494,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 live_block_for_region_identity=(
                     None
                     if current_identity_index is None
-                    else lambda identity: current_identity_index.rebind_region_entry(
-                        identity
-                    ).block
+                    else lambda identity: (
+                        current_identity_index.rebind_region_entry(identity).block
+                    )
                 ),
                 live_block_for_applied_exit_receipt=(
                     live_block_for_applied_exit_receipt
@@ -3378,7 +3362,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
         if native_carrier_load_eas:
             logger.info(
-                "native stack-carrier consumer ownership: resolved=%s " "unresolved=%s",
+                "native stack-carrier consumer ownership: resolved=%s unresolved=%s",
                 {
                     f"0x{int(load_ea):X}": "blk%d@0x%X"
                     % (
@@ -3543,16 +3527,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     state=resolver_state.native_preanalysis,
                 )
             )
-            plan_provider = (
-                resolver_state.frontend_normalization_plan_provider
-            )
+            plan_provider = resolver_state.frontend_normalization_plan_provider
             if isinstance(
                 plan_provider,
                 FrontendNormalizationPlanCapability,
             ):
-                cap_instances[FrontendNormalizationPlanCapability] = (
-                    plan_provider
-                )
+                cap_instances[FrontendNormalizationPlanCapability] = plan_provider
         return CapabilitySet(cap_instances)
 
     def _select_family(
@@ -3567,12 +3547,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     ):
         """Poll the family registry (reduced-product bypass on opt-in). Returns family|None."""
         if (
-            (
-                materialized_evidence_ready
-                or canonical_composition_ready
-            )
-            and not self._uses_tigress_indirect_materialization(rule_config)
-        ):
+            materialized_evidence_ready or canonical_composition_ready
+        ) and not self._uses_tigress_indirect_materialization(rule_config):
             logger.info(
                 "unflat: materialized canonical evidence resumes pipeline "
                 "for func=0x%x at %s complete_identity=%s "
@@ -3837,9 +3813,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     dispatcher_kind=dmap.router_kind.name,
                     rows=dmap.rows,
                 )
-            except (
-                Exception
-            ):  # noqa: BLE001 — diagnostics must never break the optimize path
+            except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path
                 logger.debug(
                     "unflat: observe_state_dispatcher_rows failed", exc_info=True
                 )
@@ -3883,9 +3857,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if condition_chain is not None:
                 try:
                     dag_tr = _convert_condition_chain_to_result(condition_chain)
-                except (
-                    Exception
-                ):  # noqa: BLE001 — fall back to the unflatten transition_result
+                except Exception:  # noqa: BLE001 — fall back to the unflatten transition_result
                     dag_tr = tr
             if dag_tr is not None and getattr(dag_tr, "transitions", None):
                 dag = build_live_linearized_state_dag_from_graph(
@@ -3977,9 +3949,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     ),
                 )
                 observe_modifications(snap, _diag_modifications(plan))
-        except (
-            Exception
-        ):  # noqa: BLE001 — diagnostics must never break the optimize path
+        except Exception:  # noqa: BLE001 — diagnostics must never break the optimize path
             logger.debug(
                 "unflat: snapshot-correlated diagnostics failed", exc_info=True
             )

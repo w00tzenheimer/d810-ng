@@ -216,8 +216,14 @@ def test_native_fact_session_api_is_idempotent_and_generation_aware() -> None:
     assert state.evidence_generation == 1
     assert state._fragment_publication_mark_normalization_staged() is True
     assert state._fragment_publication_mark_normalization_validated() is True
-    assert state._fragment_publication_mark_normalization_published_and_postvalidated() is True
-    assert state._fragment_publication_mark_normalization_published_and_postvalidated() is False
+    assert (
+        state._fragment_publication_mark_normalization_published_and_postvalidated()
+        is True
+    )
+    assert (
+        state._fragment_publication_mark_normalization_published_and_postvalidated()
+        is False
+    )
     assert state.canonical_semantic_plan_generation is None
 
     changed = _native_facts(blocks=(NativeBlock(0x401000, 0x401010),))
@@ -244,7 +250,9 @@ def test_coordinator_owns_canonical_semantic_publication_lifecycle() -> None:
     assert coordinator.mark_canonical_semantic_plan_ready(NATIVE_KEY, 1)
     assert state._fragment_publication_mark_semantic_fragment_staged()
     assert state._fragment_publication_mark_semantic_fragment_validated()
-    assert state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()
+    assert (
+        state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()
+    )
     assert state._fragment_publication_mark_receipt_committed()
     assert state.receipt_committed_generation == 1
 

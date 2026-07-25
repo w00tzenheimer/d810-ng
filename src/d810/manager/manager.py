@@ -143,8 +143,7 @@ def _build_current_mba_identity_index(*, session, mba):
             candidates.append(
                 {
                     "block": (
-                        f"blk{int(candidate.serial)}@"
-                        f"0x{int(candidate_anchor_ea):X}"
+                        f"blk{int(candidate.serial)}@0x{int(candidate_anchor_ea):X}"
                     ),
                     "serial": int(candidate.serial),
                     "anchor_ea": int(candidate_anchor_ea),
@@ -241,6 +240,7 @@ def _new_semantic_native_body_materializer(*, session, mba):
             function_ea=int(session.function_ea),
         )
     if native_maturity is HexRaysMaturity.MMAT_CALLS:
+
         def request_call_companions(
             ranges: tuple[tuple[int, int], ...],
         ) -> bool:
@@ -252,16 +252,13 @@ def _new_semantic_native_body_materializer(*, session, mba):
 
             state = resolver_session_state(session)
             changed = state.request_call_companion_ranges(ranges)
-            restart_requested = (
-                session.native_preanalysis.request_generated_restart(
-                    evidence_family="call_companion_ranges",
-                    reason="CALLS requested analyzed native call companions",
-                )
+            restart_requested = session.native_preanalysis.request_generated_restart(
+                evidence_family="call_companion_ranges",
+                reason="CALLS requested analyzed native call companions",
             )
             accepted = bool(
                 all(
-                    tuple(map(int, native_range))
-                    in state.pending_call_companion_ranges
+                    tuple(map(int, native_range)) in state.pending_call_companion_ranges
                     for native_range in ranges
                 )
                 and (
@@ -468,9 +465,7 @@ class D810Manager:
                 state.begin_materialization(resolution)
             lifecycle.begin_native_preanalysis(session)
             try:
-                companion_outcomes = (
-                    prepare_requested_detached_call_companions(state)
-                )
+                companion_outcomes = prepare_requested_detached_call_companions(state)
                 if companion_outcomes:
                     from d810.core.observability import emit as emit_diagnostic
                     from d810.core.observability_events import (
@@ -482,9 +477,7 @@ class D810Manager:
                             LifecycleEventObserved(
                                 session_id=session.identity_key,
                                 func_ea=int(session.function_ea),
-                                event_kind=(
-                                    "semantic_native_body_companion_prepared"
-                                ),
+                                event_kind=("semantic_native_body_companion_prepared"),
                                 provider="manager_native_preanalysis",
                                 phase="detached_calls_preparation",
                                 evidence_generation=int(
@@ -502,12 +495,8 @@ class D810Manager:
                                 ),
                                 payload={
                                     "native_range": {
-                                        "start_ea": int(
-                                            outcome.native_range[0]
-                                        ),
-                                        "end_ea": int(
-                                            outcome.native_range[1]
-                                        ),
+                                        "start_ea": int(outcome.native_range[0]),
+                                        "end_ea": int(outcome.native_range[1]),
                                     },
                                     "calls_native_ranges": [
                                         {
@@ -521,17 +510,13 @@ class D810Manager:
                                     "component_target_ea": (
                                         None
                                         if outcome.component_target_ea is None
-                                        else int(
-                                            outcome.component_target_ea
-                                        )
+                                        else int(outcome.component_target_ea)
                                     ),
                                     "preopt_call_eas": [
-                                        int(ea)
-                                        for ea in outcome.preopt_call_eas
+                                        int(ea) for ea in outcome.preopt_call_eas
                                     ],
                                     "calls_call_eas": [
-                                        int(ea)
-                                        for ea in outcome.calls_call_eas
+                                        int(ea) for ea in outcome.calls_call_eas
                                     ],
                                     "mismatch_ea": (
                                         None
@@ -561,10 +546,7 @@ class D810Manager:
                 # flowchart fallback may already see materialization complete.
                 discover_static_native_bootstrap_routes(function_ea, state)
                 return (
-                    sum(
-                        int(outcome.captured)
-                        for outcome in companion_outcomes
-                    )
+                    sum(int(outcome.captured) for outcome in companion_outcomes)
                     + int(prepared_carriers)
                     + int(prepared_snippets)
                 )
@@ -1313,9 +1295,7 @@ class D810Manager:
                 if identity is None
                 else D810Manager._stable_identity_anchor(identity)
             ),
-            predecessor_version=(
-                None if predecessor is None else predecessor.version
-            ),
+            predecessor_version=(None if predecessor is None else predecessor.version),
             from_state=from_state,
             to_state=to_state,
         )
@@ -1429,9 +1409,7 @@ class D810Manager:
                     )
                 ),
                 fragment_failures=(
-                    D810Manager._fragment_failure_observations(
-                        event.fragment_failures
-                    )
+                    D810Manager._fragment_failure_observations(event.fragment_failures)
                 ),
                 version_transitions=(
                     D810Manager._aborted_version_transition_observations(
