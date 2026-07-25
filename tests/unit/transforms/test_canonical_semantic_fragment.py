@@ -1326,6 +1326,10 @@ def test_detached_component_rejects_current_imported_successor_with_topology() -
         "boundary_block_id": published_successor.block_id,
         "current_owner": "blk30@0x1250",
         "operation_id": "successor-normalization",
+        "incoming_operation_id": "detached-normalization",
+        "incoming_source_block_id": "detached-target",
+        "incoming_source_anchor_ea": "0x1200",
+        "incoming_edge_role": "direct",
         "nested_state_route_projection": (
             {
                 "route_proof_id": nested_proof.proof_id,
