@@ -366,8 +366,14 @@ def test_evidence_observer_sees_generated_restart_request_and_consumption() -> N
         event_observer=observed.append,
     )
 
-    assert state.request_generated_restart()
-    assert not state.request_generated_restart()
+    assert state.request_generated_restart(
+        evidence_family="calls_evidence",
+        reason="CALLS staged resolver evidence for PREOPT",
+    )
+    assert not state.request_generated_restart(
+        evidence_family="calls_evidence",
+        reason="CALLS staged resolver evidence for PREOPT",
+    )
     assert state.consume_generated_restart()
 
     assert [
@@ -377,14 +383,15 @@ def test_evidence_observer_sees_generated_restart_request_and_consumption() -> N
         (
             "generated_restart_requested",
             "accepted",
-            "controller_restart",
-            "CALLS staged a controller-owned generated-MBA restart",
+            "calls_evidence",
+            "CALLS staged resolver evidence for PREOPT",
         ),
         (
             "generated_restart_requested",
             "declined",
-            "controller_restart",
-            "evidence generation already owns a controlled redo",
+            "calls_evidence",
+            "CALLS staged resolver evidence for PREOPT; evidence generation "
+            "already owns a controlled redo",
         ),
         (
             "generated_restart_consumed",
@@ -1179,6 +1186,223 @@ def test_computed_goto_resolution_is_frontend_ready_without_detached_closure() -
     assert tuple(proof.source_anchor_ea for proof in evidence.transfer_proofs) == (
         plan.jmp_ea,
     )
+
+
+def test_contextual_patch_plan_promotion_is_unique_and_generation_owned() -> None:
+    bootstrap_plan = ComputedGotoPatchPlan(
+        jmp_ea=0x40B6D4,
+        block_entry=0x40B6C0,
+        patch_start=0x40B6C8,
+        patch_bytes=b"",
+        region_end=0x40B6D6,
+        insn_heads=(0x40B6C8, 0x40B6D4),
+        new_block_eas=(0x40B6C8, 0x40B6D4),
+        target_eas=(0x40B6D6, 0x40B790),
+        condition_code=12,
+        true_target_ea=0x40B6D6,
+        false_target_ea=0x40B790,
+        condition_producer_ea=0x40B6C2,
+    )
+    unrelated_plan = bootstrap_plan._replace(
+        jmp_ea=0x40C4DA,
+        block_entry=0x40C4B4,
+        patch_start=0x40C4C2,
+        region_end=0x40C4DC,
+        insn_heads=(0x40C4C2, 0x40C4DA),
+        new_block_eas=(0x40C4C2, 0x40C4DA),
+        target_eas=(0x40C4DC, 0x40A607),
+        true_target_ea=0x40C4DC,
+        false_target_ea=0x40A607,
+        condition_producer_ea=0x40C4BC,
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={
+            bootstrap_plan.jmp_ea: (0x40B790,),
+            unrelated_plan.jmp_ea: (0x40A607,),
+        },
+        reachable_eas=(),
+        arch="x86_64",
+        executed_insns=17,
+        seeds_run=1,
+        patch_plans=(bootstrap_plan,),
+        contextual_patch_plans=(bootstrap_plan, unrelated_plan),
+    )
+
+    state = NativePreanalysisSessionState()
+    assert state.set_computed_goto_resolution(NATIVE_KEY, resolution)
+    stale_preparation = PreoptUnionPreparationResult(
+        function_ea=0x40A560,
+        prepared=True,
+        published=True,
+        primary_seed_ea=0x40B790,
+    )
+    stale_source = PrepatchPreoptUnionSource(
+        primary_seed_ea=0x40B790,
+        seed_eas=(0x40B790,),
+        seed_native_ranges=((0x40B790, ((0x40B790, 0x40B7A0),)),),
+        native_ranges=((0x40B790, 0x40B7A0),),
+        imported_block_entry_eas=(0x40B790,),
+        cfg=NativeCfg({}),
+        closure=NativeSemanticClosure(
+            included_block_eas=(),
+            native_ranges=(),
+            proven_internal_edges=(),
+            abstentions=(),
+            seed_provenance=(),
+        ),
+    )
+    assert state.set_preopt_union_preparation(NATIVE_KEY, stale_preparation)
+    assert state.set_prepatch_preopt_union_source(NATIVE_KEY, stale_source)
+    assert state._fragment_publication_mark_normalization_staged()
+    assert state._fragment_publication_mark_normalization_validated()
+    assert not state._fragment_publication_commit_normalization_work_item(
+        work_item_id="frontend-normalization:g1:root@0x40A5F0",
+        selected_obligation_ids=("native-body-edge@0x40B6C0",),
+        remaining_obligation_ids=("native-body-edge@0x40C4B4",),
+        unreachable_obligation_ids=(),
+    )
+
+    assert state.promote_contextual_patch_plan_for_anchor(
+        NATIVE_KEY,
+        bootstrap_plan.block_entry,
+    )
+    assert state.evidence_generation == 2
+    assert state.resolver_evidence is not None
+    assert state.resolver_evidence.promoted_contextual_patch_plans == (
+        bootstrap_plan,
+    )
+    assert state.resolver_evidence.preopt_union_preparation is None
+    assert state.resolver_evidence.prepatch_preopt_union_source is None
+    assert state.set_preopt_union_preparation(NATIVE_KEY, stale_preparation)
+    assert state.set_prepatch_preopt_union_source(NATIVE_KEY, stale_source)
+    assert not state.promote_contextual_patch_plan_for_anchor(
+        NATIVE_KEY,
+        bootstrap_plan.block_entry,
+    )
+    assert state.evidence_generation == 2
+    assert state.resolver_evidence.preopt_union_preparation is stale_preparation
+    assert state.resolver_evidence.prepatch_preopt_union_source is stale_source
+
+    conflicting_plan = bootstrap_plan._replace(
+        target_eas=(0x40B6D6, 0x40B7A0),
+        false_target_ea=0x40B7A0,
+    )
+    conflicted = NativePreanalysisSessionState()
+    assert conflicted.set_computed_goto_resolution(
+        NATIVE_KEY,
+        replace(
+            resolution,
+            contextual_patch_plans=(
+                bootstrap_plan,
+                conflicting_plan,
+                unrelated_plan,
+            ),
+        ),
+    )
+    assert not conflicted.promote_contextual_patch_plan_for_anchor(
+        NATIVE_KEY,
+        bootstrap_plan.block_entry,
+    )
+    assert conflicted.evidence_generation == 1
+
+
+def test_frontend_evidence_projects_only_promoted_contextual_plan() -> None:
+    contextual_bootstrap = ComputedGotoPatchPlan(
+        jmp_ea=0x40B6D4,
+        block_entry=0x40B6C0,
+        patch_start=0x40B6C8,
+        patch_bytes=b"",
+        region_end=0x40B6D6,
+        insn_heads=(0x40B6C8, 0x40B6D4),
+        new_block_eas=(0x40B6C8, 0x40B6D4),
+        target_eas=(0x40B6D6, 0x40B790),
+        condition_code=12,
+        true_target_ea=0x40B6D6,
+        false_target_ea=0x40B790,
+        condition_producer_ea=0x40B6C2,
+    )
+    contextual_unrelated = contextual_bootstrap._replace(
+        jmp_ea=0x40C4DA,
+        block_entry=0x40C4B4,
+        patch_start=0x40C4C2,
+        region_end=0x40C4DC,
+        insn_heads=(0x40C4C2, 0x40C4DA),
+        new_block_eas=(0x40C4C2, 0x40C4DA),
+        target_eas=(0x40C4DC, 0x40A607),
+        true_target_ea=0x40C4DC,
+        false_target_ea=0x40A607,
+        condition_producer_ea=0x40C4BC,
+    )
+    generic_frontier = contextual_bootstrap._replace(
+        block_entry=0x40B6CA,
+        patch_start=0x40B6D0,
+        insn_heads=(0x40B6D0, 0x40B6D4),
+        new_block_eas=(0x40B6D0,),
+        target_eas=(0x40B790,),
+        condition_code=None,
+        true_target_ea=None,
+        false_target_ea=None,
+        condition_producer_ea=None,
+    )
+    ordinary_direct = ComputedGotoPatchPlan(
+        jmp_ea=0x401010,
+        block_entry=0x401000,
+        patch_start=0x401010,
+        patch_bytes=b"",
+        region_end=0x401012,
+        insn_heads=(0x401010,),
+        new_block_eas=(),
+        target_eas=(0x402000,),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={
+            ordinary_direct.jmp_ea: ordinary_direct.target_eas,
+            generic_frontier.jmp_ea: generic_frontier.target_eas,
+        },
+        reachable_eas=(),
+        arch="x86_64",
+        executed_insns=17,
+        seeds_run=1,
+        patch_plans=(ordinary_direct, generic_frontier),
+        contextual_patch_plans=(contextual_bootstrap, contextual_unrelated),
+    )
+    state = NativePreanalysisSessionState()
+    assert state.set_computed_goto_resolution(NATIVE_KEY, resolution)
+    assert state._fragment_publication_mark_normalization_staged()
+    assert state._fragment_publication_mark_normalization_validated()
+    assert not state._fragment_publication_commit_normalization_work_item(
+        work_item_id="frontend-normalization:g1:root@0x40A5F0",
+        selected_obligation_ids=("native-body-edge@0x40B6C0",),
+        remaining_obligation_ids=("native-body-edge@0x40C4B4",),
+        unreachable_obligation_ids=(),
+    )
+    assert state.promote_contextual_patch_plan_for_anchor(
+        NATIVE_KEY,
+        contextual_bootstrap.block_entry,
+    )
+
+    evidence = state.frontend_normalization_evidence_for(NATIVE_KEY)
+
+    assert evidence is not None
+    proofs = {proof.proof_id: proof for proof in evidence.transfer_proofs}
+    assert set(proofs) == {
+        "native-indirect-transfer@0x401010",
+        "native-contextual-indirect-transfer@0x40B6C8:0x40B6D4",
+    }
+    contextual_proof = proofs[
+        "native-contextual-indirect-transfer@0x40B6C8:0x40B6D4"
+    ]
+    assert contextual_proof.shape is NativeTransferShape.CONDITIONAL
+    assert (
+        "contextual_owner",
+        "canonical_rejection_promotion",
+    ) in contextual_proof.diagnostic_provenance
+    assert (
+        "superseded_patch_proof",
+        "native-indirect-transfer@0x40B6D4",
+    ) in contextual_proof.diagnostic_provenance
 
 
 def test_removing_frontend_ready_resolution_advances_the_evidence_generation() -> None:

@@ -1355,6 +1355,38 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
         )
 
+    def _promote_contextual_plan_after_canonical_rejection(
+        self,
+        rejection: CanonicalSemanticFragmentRejected,
+    ) -> bool:
+        """Turn one exact unresolved imported boundary into newer evidence."""
+        if (
+            rejection.reason_code
+            != "published_imported_boundary_topology_unresolved"
+            or rejection.anchor_ea is None
+        ):
+            return False
+        resolver_state = self.current_resolver_session_state()
+        if not isinstance(resolver_state, ResolverSessionState):
+            return False
+        lifecycle = resolver_state.native_preanalysis
+        if not lifecycle.promote_contextual_patch_plan_for_anchor(
+            resolver_state.native_key,
+            int(rejection.anchor_ea),
+        ):
+            return False
+        if not lifecycle.request_generated_restart(
+            evidence_family="contextual_patch_plans",
+            reason=(
+                "C3 promoted a contextual patch plan for native source "
+                f"0x{int(rejection.anchor_ea):X}"
+            ),
+        ):
+            raise RuntimeError(
+                "promoted contextual patch plan did not acquire a generated restart"
+            )
+        return True
+
     def _report_canonical_pipeline_exception(
         self,
         mba: object,
@@ -1418,12 +1450,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if not canonical_composition_ready:
                 raise
             self._report_canonical_composition_rejection(mba, rejection)
+            contextual_restart = (
+                self._promote_contextual_plan_after_canonical_rejection(rejection)
+            )
             logger.warning(
                 "unflat: canonical composition declined for func=0x%x "
-                "anchor=0x%x reason=%s",
+                "anchor=0x%x reason=%s contextual_restart=%s",
                 int(mba.entry_ea),
                 int(rejection.anchor_ea or mba.entry_ea),
                 rejection.reason_code,
+                contextual_restart,
             )
             return False
         except Exception as error:
