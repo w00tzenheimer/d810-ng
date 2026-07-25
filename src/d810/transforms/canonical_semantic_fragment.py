@@ -97,6 +97,15 @@ class _NestedStateRouteProjectionDecision:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class _CallBackedNestedRouteStaging:
+    """Exact imported owners that one call-backed route must keep staged."""
+
+    route_proof_id: str
+    block_ids: frozenset[str]
+    exact_instruction_eas_by_block_id: Mapping[str, frozenset[int]]
+
+
 def _identity_contains(
     owner: StableBlockIdentity,
     candidate: StableBlockIdentity,
@@ -1603,6 +1612,197 @@ def _with_nested_imported_state_routes(
     )
 
 
+def _call_backed_nested_route_staging_requirements(
+    plan: FragmentPlan,
+    available_evidence: CanonicalSemanticEvidence,
+    *,
+    native_body_id: str,
+    excluded_proof_ids: frozenset[str],
+) -> tuple[_CallBackedNestedRouteStaging, ...]:
+    """Keep only exact call-backed route corridors detached until projection."""
+    imported_blocks = tuple(
+        block
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+        and block.native_body_id == native_body_id
+        and block.stable_identity is not None
+    )
+    operation_by_source: dict[str, list[FragmentOperation]] = {}
+    for operation in plan.operations:
+        operation_by_source.setdefault(operation.source_block_id, []).append(operation)
+
+    requirements: list[_CallBackedNestedRouteStaging] = []
+    for proof in available_evidence.route_proofs:
+        state_write = proof.state_write
+        if (
+            proof.proof_id in excluded_proof_ids
+            or proof.proof_kind is not SemanticRouteProofKind.STATE_ASSIGNMENT
+            or proof.shape is not SemanticRouteShape.DIRECT
+            or state_write is None
+            or state_write.authority_transfer_ea is None
+        ):
+            continue
+        source_matches = tuple(
+            block
+            for block in imported_blocks
+            if block.stable_identity is not None
+            and block.stable_identity.native_ranges.contains(proof.source_anchor_ea)
+            and _identity_ranges_contain(
+                block.stable_identity,
+                proof.source_identity,
+            )
+        )
+        if not source_matches:
+            continue
+        if len(source_matches) != 1:
+            raise CanonicalSemanticFragmentRejected(
+                "call-backed nested route has multiple imported delivery owners",
+                reason_code="call_backed_route_source_owner_ambiguous",
+                anchor_ea=int(proof.source_anchor_ea),
+                payload={
+                    "route_proof_id": proof.proof_id,
+                    "source_block_ids": tuple(
+                        block.block_id for block in source_matches
+                    ),
+                },
+            )
+        (source,) = source_matches
+        source_operations = tuple(operation_by_source.get(source.block_id, ()))
+        normalization = (
+            None
+            if len(source_operations) != 1
+            else source_operations[0].computed_branch_normalization
+        )
+        if (
+            normalization is None
+            or int(normalization.normalization_start_ea)
+            != int(proof.source_anchor_ea)
+            or int(normalization.unresolved_transfer_ea)
+            != int(state_write.authority_transfer_ea)
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "call-backed nested route does not own its normalized transfer",
+                reason_code="call_backed_route_transfer_authority_mismatch",
+                anchor_ea=int(state_write.authority_transfer_ea),
+                payload={
+                    "route_proof_id": proof.proof_id,
+                    "source_block_id": source.block_id,
+                    "operation_ids": tuple(
+                        operation.operation_id for operation in source_operations
+                    ),
+                    "expected_normalization_start_ea": (
+                        f"0x{int(proof.source_anchor_ea):X}"
+                    ),
+                    "expected_authority_transfer_ea": (
+                        f"0x{int(state_write.authority_transfer_ea):X}"
+                    ),
+                },
+            )
+
+        corridor_owner_by_ea: dict[int, FragmentBlock] = {}
+        for corridor_ea in state_write.corridor_instruction_eas:
+            owners = tuple(
+                block
+                for block in imported_blocks
+                if block.stable_identity is not None
+                and block.stable_identity.native_ranges.contains(corridor_ea)
+            )
+            if len(owners) != 1:
+                raise CanonicalSemanticFragmentRejected(
+                    "call-backed nested route corridor lacks one imported owner",
+                    reason_code="call_backed_route_corridor_owner_mismatch",
+                    anchor_ea=int(corridor_ea),
+                    payload={
+                        "route_proof_id": proof.proof_id,
+                        "owner_block_ids": tuple(
+                            block.block_id for block in owners
+                        ),
+                    },
+                )
+            corridor_owner_by_ea[int(corridor_ea)] = owners[0]
+        corridor_owner_ids = tuple(
+            corridor_owner_by_ea[int(corridor_ea)].block_id
+            for corridor_ea in state_write.corridor_instruction_eas
+        )
+        ordered_owner_ids = tuple(
+            owner_id
+            for index, owner_id in enumerate(corridor_owner_ids)
+            if index == 0 or owner_id != corridor_owner_ids[index - 1]
+        )
+        state_write_owner = corridor_owner_by_ea[int(state_write.instruction_ea)]
+        if (
+            not ordered_owner_ids
+            or ordered_owner_ids[-1] != source.block_id
+            or len(ordered_owner_ids) != len(set(ordered_owner_ids))
+            or state_write_owner.stable_identity is None
+            or not _identity_ranges_contain(
+                state_write_owner.stable_identity,
+                state_write.identity,
+            )
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "call-backed nested route corridor is not an ordered delivery path",
+                reason_code="call_backed_route_corridor_order_mismatch",
+                anchor_ea=int(state_write.instruction_ea),
+                payload={
+                    "route_proof_id": proof.proof_id,
+                    "corridor_block_ids": ordered_owner_ids,
+                    "source_block_id": source.block_id,
+                },
+            )
+        for call_ea in state_write.preserved_call_instruction_eas:
+            call_owner = corridor_owner_by_ea[int(call_ea)]
+            call_operations = tuple(
+                operation_by_source.get(call_owner.block_id, ())
+            )
+            call_owner_index = ordered_owner_ids.index(call_owner.block_id)
+            expected_successor_id = (
+                None
+                if call_owner_index + 1 == len(ordered_owner_ids)
+                else ordered_owner_ids[call_owner_index + 1]
+            )
+            if (
+                len(call_operations) != 1
+                or expected_successor_id is None
+                or tuple(edge.role for edge in call_operations[0].edges)
+                != (SemanticEdgeRole.CALL_FALLTHROUGH,)
+                or call_operations[0].edges[0].target_block_id
+                != expected_successor_id
+            ):
+                raise CanonicalSemanticFragmentRejected(
+                    "call-backed nested route does not preserve its call edge",
+                    reason_code="call_backed_route_call_edge_mismatch",
+                    anchor_ea=int(call_ea),
+                    payload={
+                        "route_proof_id": proof.proof_id,
+                        "call_owner_block_id": call_owner.block_id,
+                        "expected_successor_block_id": expected_successor_id,
+                        "operation_ids": tuple(
+                            operation.operation_id for operation in call_operations
+                        ),
+                    },
+                )
+        required_exact_eas_by_block_id: dict[str, set[int]] = {}
+        for corridor_ea, owner in corridor_owner_by_ea.items():
+            required_exact_eas_by_block_id.setdefault(owner.block_id, set()).add(
+                int(corridor_ea)
+            )
+        requirements.append(
+            _CallBackedNestedRouteStaging(
+                route_proof_id=proof.proof_id,
+                block_ids=frozenset(required_exact_eas_by_block_id),
+                exact_instruction_eas_by_block_id={
+                    block_id: frozenset(exact_eas)
+                    for block_id, exact_eas in (
+                        required_exact_eas_by_block_id.items()
+                    )
+                },
+            )
+        )
+
+    return tuple(requirements)
+
+
 def _nested_terminal_effects(
     blocks: tuple[FragmentBlock, ...],
     operations: tuple[FragmentOperation, ...],
@@ -1756,6 +1956,24 @@ def _resolved_detached_target_component(
     tuple[FragmentTerminalRoute, ...],
 ]:
     """Resolve every nested state route before exposing one target component."""
+    target_native_body_id = target.native_body_id
+    if target_native_body_id is None:
+        raise CanonicalSemanticFragmentRejected(
+            "detached canonical target lacks native-body ownership"
+        )
+    call_backed_staging_requirements = (
+        _call_backed_nested_route_staging_requirements(
+            normalization_plan,
+            available_evidence,
+            native_body_id=target_native_body_id,
+            excluded_proof_ids=excluded_proof_ids,
+        )
+    )
+    provisional_required_staged_ids = frozenset(
+        block_id
+        for requirement in call_backed_staging_requirements
+        for block_id in requirement.block_ids
+    )
     effective_normalization_plan = normalization_plan
     selected_proof_ids = set(excluded_proof_ids)
     nested_route_proof_list: list[SemanticRouteProof] = []
@@ -1783,7 +2001,9 @@ def _resolved_detached_target_component(
                 allow_unresolved_published_boundaries=True,
                 prohibited_dispatcher_serials=prohibited_dispatcher_serials,
                 replaced_current_owner_serials=replaced_current_owner_serials,
-                required_staged_destination_ids=frozenset(),
+                required_staged_destination_ids=(
+                    provisional_required_staged_ids
+                ),
                 required_exact_instruction_eas_by_block_id={},
             )
         )
@@ -1862,8 +2082,28 @@ def _resolved_detached_target_component(
         if item.proof_id in nested_decision_by_proof_id
     )
     try:
-        required_staged_destination_ids: set[str] = set()
+        nested_route_proof_ids = frozenset(
+            proof.proof_id for proof in nested_route_proofs
+        )
+        selected_call_backed_requirements = tuple(
+            requirement
+            for requirement in call_backed_staging_requirements
+            if requirement.route_proof_id in nested_route_proof_ids
+        )
+        required_staged_destination_ids: set[str] = {
+            block_id
+            for requirement in selected_call_backed_requirements
+            for block_id in requirement.block_ids
+        }
         required_exact_instruction_eas_by_block_id: dict[str, set[int]] = {}
+        for requirement in selected_call_backed_requirements:
+            for block_id, exact_instruction_eas in (
+                requirement.exact_instruction_eas_by_block_id.items()
+            ):
+                required_exact_instruction_eas_by_block_id.setdefault(
+                    block_id,
+                    set(),
+                ).update(int(ea) for ea in exact_instruction_eas)
         operation_by_id = {
             operation.operation_id: operation
             for operation in effective_normalization_plan.operations

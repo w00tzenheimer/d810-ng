@@ -165,7 +165,7 @@ def _direct_bound_evidence() -> tuple[FlowGraph, object]:
                     width=4,
                     state_constant=0xAABBCCDD,
                     corridor_instruction_eas=(0x1100,),
-                ),
+                authority_transfer_ea = None, preserved_call_instruction_eas = ()),
             ),
         ),
     )
@@ -331,7 +331,7 @@ def _live_source_detached_target_case() -> tuple[
                     width=4,
                     state_constant=0xAABBCCDD,
                     corridor_instruction_eas=(0x1100,),
-                ),
+                authority_transfer_ea = None, preserved_call_instruction_eas = ()),
             ),
         ),
     )
@@ -815,7 +815,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
             width=4,
             state_constant=0x44,
             corridor_instruction_eas=(0x1210, 0x1218),
-        ),
+        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
     )
     available_evidence = replace(
         root_evidence,
@@ -1035,7 +1035,7 @@ def test_nested_imported_state_assignments_reach_fixpoint() -> None:
                 width=4,
                 state_constant=state_constant,
                 corridor_instruction_eas=(write_ea, delivery_ea),
-            ),
+            authority_transfer_ea = None, preserved_call_instruction_eas = ()),
         )
 
     first_proof = nested_proof(
@@ -1222,7 +1222,7 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
             width=4,
             state_constant=0x44,
             corridor_instruction_eas=(0x1210,),
-        ),
+        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
     )
     available_evidence = replace(
         root_evidence,
@@ -1478,7 +1478,7 @@ def test_published_boundary_projects_nested_terminal_route_atomically(
             width=4,
             state_constant=state_constant,
             corridor_instruction_eas=(0x1210, 0x1215, 0x1218),
-        ),
+        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
         terminal_return_carrier=carrier,
     )
     available_evidence = replace(
@@ -1610,7 +1610,7 @@ def test_nested_terminal_staging_rejection_inventories_both_endpoints() -> None:
             width=4,
             state_constant=state_constant,
             corridor_instruction_eas=(0x1210, 0x1215, 0x1218),
-        ),
+        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
         terminal_return_carrier=carrier,
     )
     operation = FragmentOperation(
@@ -2186,6 +2186,225 @@ def test_detached_component_stops_at_unique_current_imported_successor() -> None
     assert successor.stable_identity == current_identity_by_serial[30]
 
 
+@pytest.mark.parametrize("authority_matches", (False, True))
+def test_call_backed_nested_route_keeps_published_corridor_staged(
+    authority_matches: bool,
+) -> None:
+    graph, normalization_plan, root_evidence = _live_source_detached_target_case()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            30: _block(
+                30,
+                0x1250,
+                succs=(),
+                preds=(),
+                insn_eas=(0x1250, 0x1251, 0x1255),
+            ),
+            40: _block(
+                40,
+                0x1260,
+                succs=(),
+                preds=(),
+                insn_eas=(0x1260, 0x1264, 0x1268),
+            ),
+        },
+    )
+    current_identity_by_serial = _current_identity_authority(graph)
+    call_block = FragmentBlock(
+        block_id="call-backed-write",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=current_identity_by_serial[30],
+        native_body_id=normalization_plan.native_bodies[0].body_id,
+    )
+    route_source = FragmentBlock(
+        block_id="call-backed-delivery",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1260,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x1260, 0x1269),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(0x1260, 0x1264),
+        ),
+        native_body_id=normalization_plan.native_bodies[0].body_id,
+    )
+    raw_dispatcher = FragmentBlock(
+        block_id="call-backed-raw-dispatcher",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1350,
+        stable_identity=_identity(0x1350),
+        native_body_id=normalization_plan.native_bodies[0].body_id,
+    )
+    (native_body,) = normalization_plan.native_bodies
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *normalization_plan.blocks,
+            call_block,
+            route_source,
+            raw_dispatcher,
+        ),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="detached-normalization",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=call_block.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="call-backed-fallthrough@0x1255",
+                source_block_id=call_block.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                        target_block_id=route_source.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="native-indirect-transfer@0x1268",
+                source_block_id=route_source.block_id,
+                predicate_anchor_ea=0x1264,
+                computed_branch_normalization=FragmentComputedBranchNormalization(
+                    predicate_kind=PredicateKind.SLT,
+                    normalization_start_ea=0x1264,
+                    condition_producer_ea=0x1260,
+                    unresolved_transfer_ea=0x1268,
+                ),
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id=raw_dispatcher.block_id,
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        target_block_id="unrelated-exit",
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    call_block.block_id,
+                    route_source.block_id,
+                    raw_dispatcher.block_id,
+                ),
+                terminal_block_ids=(raw_dispatcher.block_id,),
+                native_ranges=(
+                    *native_body.native_ranges,
+                    *current_identity_by_serial[30].native_ranges.intervals,
+                    NativeEaInterval(0x1260, 0x1269),
+                    NativeEaInterval(0x1350, 0x1351),
+                ),
+                proof_ids=(
+                    *native_body.proof_ids,
+                    "call-backed-fallthrough@0x1255",
+                    "native-indirect-transfer@0x1268",
+                ),
+            ),
+        ),
+    )
+    nested_proof = SemanticRouteProof(
+        proof_id="state-assignment@0x1264:0x55",
+        atomic_group_id=root_evidence.atomic_group_id,
+        proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=route_source.stable_identity,
+        source_anchor_ea=0x1264,
+        delivery_region=NativeEaInterval(0x1264, 0x1269),
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.DIRECT,
+                state_constant=0x55,
+                target_identity=_identity(0x1500),
+                target_anchor_ea=0x1500,
+            ),
+        ),
+        state_write=SemanticStateWriteProof(
+            identity=current_identity_by_serial[30],
+            instruction_ea=0x1251,
+            state_variable=StorageIdentity(
+                StorageIdentityKind.REGISTER,
+                20,
+            ),
+            width=4,
+            state_constant=0x55,
+            corridor_instruction_eas=(0x1251, 0x1255, 0x1260, 0x1264),
+            authority_transfer_ea=0x1268 if authority_matches else 0x1267,
+            preserved_call_instruction_eas=(0x1255,),
+        ),
+    )
+    available_evidence = replace(
+        root_evidence,
+        route_proofs=(*root_evidence.route_proofs, nested_proof),
+    )
+
+    if not authority_matches:
+        with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
+            compose_canonical_semantic_fragment_plan(
+                graph,
+                normalization_plan,
+                root_evidence,
+                available_evidence=available_evidence,
+                current_identity_by_serial=current_identity_by_serial,
+                normalization_authority=_normalization_authority(
+                    normalization_plan,
+                    root_evidence,
+                ),
+                prohibited_dispatcher_serials=(90,),
+            )
+        assert exc_info.value.reason_code == (
+            "call_backed_route_transfer_authority_mismatch"
+        )
+        assert exc_info.value.anchor_ea == 0x1267
+        return
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        root_evidence,
+        available_evidence=available_evidence,
+        current_identity_by_serial=current_identity_by_serial,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            root_evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    operations = {operation.operation_id: operation for operation in plan.operations}
+    call_operation = operations["call-backed-fallthrough@0x1255"]
+    assert tuple(edge.role for edge in call_operation.edges) == (
+        SemanticEdgeRole.CALL_FALLTHROUGH,
+    )
+    route_operation = operations[f"route:{nested_proof.proof_id}"]
+    assert route_operation.direct_transfer_rewrite is not None
+    assert tuple(
+        plan.block(edge.target_block_id).semantic_anchor_ea
+        for edge in route_operation.edges
+    ) == (0x1500,)
+    imported_anchors = {
+        block.semantic_anchor_ea
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+    }
+    assert {0x1250, 0x1260}.issubset(imported_anchors)
+    assert 0x1350 not in imported_anchors
+
+
 @pytest.mark.parametrize("topology_receipted", (False, True))
 def test_detached_component_requires_receipted_current_imported_successor_topology(
     topology_receipted: bool,
@@ -2295,7 +2514,7 @@ def test_detached_component_requires_receipted_current_imported_successor_topolo
             width=4,
             state_constant=0x55,
             corridor_instruction_eas=(0x1600,),
-        ),
+        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
     )
     available_evidence = replace(
         evidence,
@@ -3429,7 +3648,7 @@ def test_terminal_route_groups_carrier_return_and_edge_atomically() -> None:
             width=4,
             state_constant=state_constant,
             corridor_instruction_eas=(0x1100,),
-        ),
+        authority_transfer_ea = None, preserved_call_instruction_eas = ()),
         terminal_return_carrier=carrier,
     )
     evidence = CanonicalSemanticEvidence(
@@ -3546,7 +3765,7 @@ def test_terminal_routes_share_one_owned_return_block_atomically() -> None:
                 width=4,
                 state_constant=state_constant,
                 corridor_instruction_eas=(source_ea,),
-            ),
+            authority_transfer_ea = None, preserved_call_instruction_eas = ()),
             terminal_return_carrier=carrier,
         )
 
@@ -3610,7 +3829,7 @@ def test_dispatcher_fed_semantic_target_remains_internal_not_a_root() -> None:
                 width=4,
                 state_constant=state_constant,
                 corridor_instruction_eas=(source_ea,),
-            ),
+            authority_transfer_ea = None, preserved_call_instruction_eas = ()),
         )
 
     graph = FlowGraph(
@@ -3689,7 +3908,7 @@ def test_shared_external_target_rejects_bound_identity_drift() -> None:
                 width=4,
                 state_constant=state_constant,
                 corridor_instruction_eas=(source_ea,),
-            ),
+            authority_transfer_ea = None, preserved_call_instruction_eas = ()),
         )
 
     graph = FlowGraph(

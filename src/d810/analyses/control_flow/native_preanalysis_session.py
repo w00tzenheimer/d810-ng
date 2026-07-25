@@ -1913,6 +1913,15 @@ class NativePreanalysisSessionState:
                         corridor_instruction_eas=tuple(
                             int(ea) for ea in route.corridor_instruction_eas
                         ),
+                        authority_transfer_ea=(
+                            None
+                            if route.authority_transfer_ea is None
+                            else int(route.authority_transfer_ea)
+                        ),
+                        preserved_call_instruction_eas=tuple(
+                            int(ea)
+                            for ea in route.preserved_call_instruction_eas
+                        ),
                     ),
                     terminal_return_carrier=terminal_carrier,
                     diagnostic_provenance=(

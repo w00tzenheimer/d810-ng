@@ -147,7 +147,7 @@ def _graph_and_bound_evidence():
                     width=4,
                     state_constant=0x11,
                     corridor_instruction_eas=(0x1100,),
-                ),
+                authority_transfer_ea = None, preserved_call_instruction_eas = ()),
             ),
         ),
     )
