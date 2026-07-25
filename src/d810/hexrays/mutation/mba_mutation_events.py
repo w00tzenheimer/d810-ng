@@ -987,9 +987,7 @@ class MbaMutationGateway:
                 and self._current_transaction_attempt is not None
                 and self._cfg_plan_refs != patch_plan_refs
             ):
-                raise ValueError(
-                    "patch plan references differ from planned authority"
-                )
+                raise ValueError("patch plan references differ from planned authority")
         serial_quantity = None if serial_quantity is None else int(serial_quantity)
         batch_id = (
             uuid.uuid4().hex

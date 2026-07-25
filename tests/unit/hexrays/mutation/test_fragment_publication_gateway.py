@@ -950,9 +950,7 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     ]
     assert [event.phase_index for event in authority_events] == list(range(7))
     assert len({event.attempt_id for event in authority_events}) == 1
-    assert all(
-        event.attempt_id.plan_id == plan.plan_id for event in authority_events
-    )
+    assert all(event.attempt_id.plan_id == plan.plan_id for event in authority_events)
 
 
 def test_gateway_commits_reference_matched_route_before_root_publication() -> None:
@@ -1537,9 +1535,7 @@ def test_live_divergence_poisons_generation_without_cleanup_and_restarts_once(
     assert gateway.generation_poisoned is True
     assert gateway.mutation_started is True
     assert gateway.transaction_failure == failure
-    assert authority_events[-1].phase is (
-        CfgTransactionPhase.POISONED_RESTART_REQUIRED
-    )
+    assert authority_events[-1].phase is (CfgTransactionPhase.POISONED_RESTART_REQUIRED)
     assert authority_events[-1].failure == failure
     assert authority_events[-1].poisoned
     assert [event.phase_index for event in authority_events] == list(

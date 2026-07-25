@@ -6863,6 +6863,7 @@ def test_conditional_staging_failure_poisons_with_helper_and_replacement(
         fallthrough=3,
         dispatcher=4,
     )
+
     def _reject_after_helper(*_blocks) -> None:
         raise RuntimeError("post-helper failure")
 
