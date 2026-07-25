@@ -1627,20 +1627,55 @@ class FragmentPlan:
                 reference_route = direct_rewrite.reference_route
                 if reference_route is not None:
                     target = block_by_id[operation.edges[0].target_block_id]
-                    if (
-                        source.stable_identity is None
-                        or not source.stable_identity.native_ranges.contains(
+                    source_identity = source.stable_identity
+                    target_identity = target.stable_identity
+                    reference_target_ea = reference_route.direct_target_ea
+                    owner_bound = (
+                        source_identity is not None
+                        and source_identity.native_ranges.contains(
                             reference_route.owner_ea
                         )
-                        or target.stable_identity is None
-                        or reference_route.direct_target_ea is None
-                        or not target.stable_identity.native_ranges.contains(
-                            reference_route.direct_target_ea
+                    )
+                    target_bound = (
+                        target_identity is not None
+                        and reference_target_ea is not None
+                        and target_identity.native_ranges.contains(
+                            reference_target_ea
                         )
-                    ):
+                    )
+                    if not owner_bound or not target_bound:
                         raise FragmentPlanRejected(
                             f"fragment operation {operation.operation_id!r} does not "
-                            "bind its reference route owner and target"
+                            "bind its reference route owner and target",
+                            reason_code=(
+                                "fragment_reference_route_identity_mismatch"
+                            ),
+                            anchor_ea=direct_rewrite.rewrite_anchor_ea,
+                            payload={
+                                "operation_id": operation.operation_id,
+                                "source_block_id": source.block_id,
+                                "source_identity": (
+                                    None
+                                    if source_identity is None
+                                    else source_identity.diagnostic_label()
+                                ),
+                                "reference_owner_ea": (
+                                    f"0x{reference_route.owner_ea:X}"
+                                ),
+                                "owner_bound": owner_bound,
+                                "target_block_id": target.block_id,
+                                "target_identity": (
+                                    None
+                                    if target_identity is None
+                                    else target_identity.diagnostic_label()
+                                ),
+                                "reference_target_ea": (
+                                    None
+                                    if reference_target_ea is None
+                                    else f"0x{reference_target_ea:X}"
+                                ),
+                                "target_bound": target_bound,
+                            },
                         )
                     reference_routes.append(reference_route)
 
