@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 
 from d810.core.semantic_route_oracle import (
     ReferenceRouteRewrite,
+    ReferenceRouteOracleSelection,
     RouteCaptureLane,
     RouteOracleComparison,
     SemanticRouteObservation,
@@ -59,6 +60,66 @@ class DetachedRouteOracleResult:
             ),
             None,
         )
+
+
+def bind_fragment_reference_oracle(
+    plan: FragmentPlan,
+    selection: ReferenceRouteOracleSelection,
+) -> FragmentPlan:
+    """Bind exact reference authority to every direct rewrite in one plan."""
+
+    if not isinstance(plan, FragmentPlan):
+        raise TypeError("reference oracle binding requires a FragmentPlan")
+    if not isinstance(selection, ReferenceRouteOracleSelection):
+        raise TypeError("reference oracle binding requires a route selection")
+    if plan.reference_oracle_run is not None or any(
+        operation.direct_transfer_rewrite is not None
+        and operation.direct_transfer_rewrite.reference_route is not None
+        for operation in plan.operations
+    ):
+        raise DetachedRouteOracleRejected(
+            "fragment plan already carries reference oracle authority"
+        )
+    operations_with_rewrites = tuple(
+        operation
+        for operation in plan.operations
+        if operation.direct_transfer_rewrite is not None
+    )
+    requested_anchors = tuple(
+        operation.direct_transfer_rewrite.rewrite_anchor_ea
+        for operation in operations_with_rewrites
+        if operation.direct_transfer_rewrite is not None
+    )
+    selected_anchors = tuple(route.rewrite_anchor_ea for route in selection.routes)
+    if (
+        not requested_anchors
+        or len(set(requested_anchors)) != len(requested_anchors)
+        or set(requested_anchors) != set(selected_anchors)
+    ):
+        raise DetachedRouteOracleRejected(
+            "fragment and reference selection require exact rewrite anchors"
+        )
+    route_by_anchor = {route.rewrite_anchor_ea: route for route in selection.routes}
+    bound_operations: list[FragmentOperation] = []
+    for operation in plan.operations:
+        rewrite = operation.direct_transfer_rewrite
+        if rewrite is None:
+            bound_operations.append(operation)
+            continue
+        bound_operations.append(
+            replace(
+                operation,
+                direct_transfer_rewrite=replace(
+                    rewrite,
+                    reference_route=route_by_anchor[rewrite.rewrite_anchor_ea],
+                ),
+            )
+        )
+    return replace(
+        plan,
+        operations=tuple(bound_operations),
+        reference_oracle_run=selection.run,
+    )
 
 
 def _reachable_block_ids(projection: ProjectedFragment) -> frozenset[str]:
@@ -298,5 +359,6 @@ def compare_detached_route_oracle(
 __all__ = [
     "DetachedRouteOracleRejected",
     "DetachedRouteOracleResult",
+    "bind_fragment_reference_oracle",
     "compare_detached_route_oracle",
 ]

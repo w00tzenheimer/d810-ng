@@ -25,6 +25,7 @@ from d810.core.diag.semantic_route_oracle import (
 from d810.core.diag.snapshot import snapshot_mba
 from d810.core.semantic_route_oracle import (
     ReferenceRouteRewrite,
+    ReferenceRouteOracleCatalog,
     RouteCaptureLane,
     RouteOracleCapture,
     RouteOracleRun,
@@ -90,15 +91,6 @@ def _parse_int(value: object, *, field: str) -> int:
     if isinstance(value, str):
         return int(value, 0)
     raise ValueError(f"{field} must be an integer or numeric string")
-
-
-def _manifest_version(manifest: dict[str, object]) -> None:
-    observed = manifest.get("schema_version")
-    if observed != _MANIFEST_SCHEMA_VERSION:
-        raise ValueError(
-            "semantic route oracle manifest schema version mismatch: "
-            f"expected={_MANIFEST_SCHEMA_VERSION} observed={observed!r}"
-        )
 
 
 def _transaction_for_anchor(
@@ -307,88 +299,13 @@ def build_manifest(
 
 
 def run_from_manifest(manifest: dict[str, object]) -> RouteOracleRun:
-    _manifest_version(manifest)
-    raw = manifest.get("run")
-    if not isinstance(raw, dict):
-        raise ValueError("semantic route oracle manifest has no run object")
-    return RouteOracleRun(
-        run_id=str(raw["run_id"]),
-        function_ea=_parse_int(raw["function_ea"], field="run function_ea"),
-        fixture_sha256=str(raw["fixture_sha256"]),
-        reference_binary_sha256=str(raw["reference_binary_sha256"]),
-        candidate_binary_sha256=str(raw["candidate_binary_sha256"]),
-        reference_commit=str(raw["reference_commit"]),
-        runtime_image=str(raw["runtime_image"]),
-        runtime_image_id=str(raw["runtime_image_id"]),
-        cache_disabled=bool(raw["cache_disabled"]),
-        metadata_json=json.dumps(raw.get("metadata", {}), sort_keys=True),
-    )
+    return ReferenceRouteOracleCatalog.from_manifest(manifest).run
 
 
 def routes_from_manifest(
     manifest: dict[str, object],
 ) -> tuple[ReferenceRouteRewrite, ...]:
-    _manifest_version(manifest)
-    raw_routes = manifest.get("routes")
-    if not isinstance(raw_routes, list) or not raw_routes:
-        raise ValueError("semantic route oracle manifest has no routes")
-    routes: list[ReferenceRouteRewrite] = []
-    for raw in raw_routes:
-        if not isinstance(raw, dict):
-            raise ValueError("semantic route oracle route is not an object")
-        corridor = raw.get("corridor")
-        if not isinstance(corridor, list):
-            raise ValueError("semantic route oracle route has no corridor")
-        routes.append(
-            ReferenceRouteRewrite(
-                route_id=str(raw["route_id"]),
-                function_ea=_parse_int(raw["function_ea"], field="function_ea"),
-                owner_ea=_parse_int(raw["owner_ea"], field="owner_ea"),
-                rewrite_anchor_ea=_parse_int(
-                    raw["rewrite_anchor_ea"], field="rewrite_anchor_ea"
-                ),
-                corridor=tuple(
-                    (
-                        _parse_int(item[0], field="corridor start"),
-                        _parse_int(item[1], field="corridor end"),
-                    )
-                    for item in corridor
-                    if isinstance(item, list) and len(item) == 2
-                ),
-                reference_phase=str(raw["reference_phase"]),
-                original_transfer_kind=SemanticTransferKind(
-                    str(raw["original_transfer_kind"])
-                ),
-                final_transfer_kind=SemanticTransferKind(
-                    str(raw["final_transfer_kind"])
-                ),
-                direct_target_ea=(
-                    None
-                    if raw.get("direct_target_ea") is None
-                    else _parse_int(raw["direct_target_ea"], field="direct target")
-                ),
-                true_target_ea=(
-                    None
-                    if raw.get("true_target_ea") is None
-                    else _parse_int(raw["true_target_ea"], field="true target")
-                ),
-                false_target_ea=(
-                    None
-                    if raw.get("false_target_ea") is None
-                    else _parse_int(raw["false_target_ea"], field="false target")
-                ),
-                predicate_kind=(
-                    None
-                    if raw.get("predicate_kind") is None
-                    else str(raw["predicate_kind"])
-                ),
-                reference_ledger_identity=str(raw["reference_ledger_identity"]),
-                reference_ledger_json=json.dumps(
-                    raw["reference_ledger"], sort_keys=True
-                ),
-            )
-        )
-    return tuple(routes)
+    return ReferenceRouteOracleCatalog.from_manifest(manifest).routes
 
 
 def initialize_oracle_db(manifest: dict[str, object], db_path: Path) -> None:

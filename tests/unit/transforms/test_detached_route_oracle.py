@@ -4,15 +4,22 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from d810.core.semantic_route_oracle import (
     ReferenceRouteRewrite,
+    ReferenceRouteOracleSelection,
     RouteOracleRun,
     SemanticTransferKind,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantic_edge import SemanticEdgeRole
-from d810.transforms.detached_route_oracle import compare_detached_route_oracle
+from d810.transforms.detached_route_oracle import (
+    DetachedRouteOracleRejected,
+    bind_fragment_reference_oracle,
+    compare_detached_route_oracle,
+)
 from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
@@ -273,6 +280,57 @@ def _projection(plan: FragmentPlan) -> ProjectedFragment:
             ),
         ),
     )
+
+
+def _unbound_plan() -> FragmentPlan:
+    plan = _plan()
+    operation = plan.operations[0]
+    rewrite = operation.direct_transfer_rewrite
+    assert rewrite is not None
+    return replace(
+        plan,
+        operations=(
+            replace(
+                operation,
+                direct_transfer_rewrite=replace(rewrite, reference_route=None),
+            ),
+        ),
+        reference_oracle_run=None,
+    )
+
+
+def test_bind_fragment_reference_oracle_attaches_exact_authority() -> None:
+    plan = _unbound_plan()
+    selection = ReferenceRouteOracleSelection(
+        run=_reference_run(),
+        routes=(_reference_route(),),
+    )
+
+    bound = bind_fragment_reference_oracle(plan, selection)
+
+    assert bound.reference_oracle_run == selection.run
+    rewrite = bound.operations[0].direct_transfer_rewrite
+    assert rewrite is not None
+    assert rewrite.reference_route == selection.routes[0]
+
+
+def test_bind_fragment_reference_oracle_rejects_partial_authority() -> None:
+    plan = _unbound_plan()
+    route = replace(
+        _reference_route(),
+        route_id="rhad:0x40A560:flow_route:0x40B52F",
+        owner_ea=0x40B51C,
+        rewrite_anchor_ea=0x40B52F,
+        direct_target_ea=0x40AE3F,
+        reference_ledger_identity="flow_route:0x40B52F",
+    )
+    selection = ReferenceRouteOracleSelection(
+        run=_reference_run(),
+        routes=(route,),
+    )
+
+    with pytest.raises(DetachedRouteOracleRejected, match="exact rewrite anchors"):
+        bind_fragment_reference_oracle(plan, selection)
 
 
 def test_detached_route_matches_reference_before_root_publication() -> None:

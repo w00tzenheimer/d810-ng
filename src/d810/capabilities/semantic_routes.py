@@ -8,6 +8,8 @@ if TYPE_CHECKING:
     from d810.analyses.control_flow.semantic_route_evidence import (
         CanonicalSemanticEvidence,
     )
+    from d810.core.native_preanalysis_key import NativePreanalysisKey
+    from d810.core.semantic_route_oracle import ReferenceRouteOracleSelection
 
 
 @runtime_checkable
@@ -34,7 +36,22 @@ class CanonicalSemanticCandidateEvidenceCapability(Protocol):
         ...
 
 
+@runtime_checkable
+class SemanticRouteReferenceOracleCapability(Protocol):
+    """Select pinned reference authority for exact fragment rewrite anchors."""
+
+    def reference_oracle_for(
+        self,
+        function_ea: int,
+        native_key: "NativePreanalysisKey",
+        rewrite_anchor_eas: tuple[int, ...],
+    ) -> "ReferenceRouteOracleSelection | None":
+        """Return authority only when input, function, and anchors match."""
+        ...
+
+
 __all__ = [
     "CanonicalSemanticCandidateEvidenceCapability",
     "CanonicalSemanticEvidenceCapability",
+    "SemanticRouteReferenceOracleCapability",
 ]
