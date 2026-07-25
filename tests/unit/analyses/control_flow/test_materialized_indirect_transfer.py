@@ -93,6 +93,8 @@ def test_portable_state_write_route_uses_typed_generic_semantics() -> None:
         state_constant=0x1234,
         target_identity=target,
         target_ea=0x402000,
+        authority_transfer_ea=None,
+        preserved_call_instruction_eas=(),
     )
 
     assert route.proof_kind is StateWriteRouteProofKind.STATE_ASSIGNMENT
@@ -126,6 +128,8 @@ def test_portable_state_write_route_requires_anchored_native_corridor() -> None:
             state_constant=0x1234,
             target_identity=target,
             target_ea=0x402000,
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
         )
 
     with pytest.raises(ValueError, match="corridor"):
@@ -141,6 +145,8 @@ def test_portable_state_write_route_requires_anchored_native_corridor() -> None:
             state_constant=0x1234,
             target_identity=target,
             target_ea=0x402000,
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
         )
 
 
