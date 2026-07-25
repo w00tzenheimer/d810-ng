@@ -3654,3 +3654,45 @@ carrier anchors: update the staged block identity, its token-derived block ID,
 and every plan reference together, only after proving the carrier corridor is
 inside the native range and owned by the selected terminal proof. Do not leave
 a stale tokenized block ID or relax exact-anchor validation.
+
+**2026-07-25T06:48:15Z**
+
+Commit `18412e5fa` refines only proof-owned terminal anchors inside their staged
+native ranges, retokenizes every changed imported block identity, and rewrites
+all operation, native-body, carrier, and terminal-return references coherently.
+The exact-anchor invariant remains strict. Commit `cd52a560c` is the separate
+repository-wide Ruff formatting change requested by the user; Ruff reformatted
+only the same two files and left the other 1,860 files unchanged.
+
+The canonical-fragment unit file is 36/36 green. The established Docker
+vertical gate is now 465/465 green across the semantic backend, manager native
+preanalysis, resolver session/runtime, canonical lowering, canonical fragment,
+and fragment-validation suites. Ruff is clean, ast-grep is clean, all 14 import
+contracts pass, and `graphify update .` completed.
+
+The mandatory cache-disabled A560 canary completed normally in 17.96 seconds
+inside pytest with no process crash or reported numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-terminal-identity-refinement-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-terminal-identity-refinement-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-terminal-identity-refinement-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+The pseudocode remains the same eight-line infinite-loop stub, so this is not
+A560 acceptance.
+
+The DB proves that the terminal exact-anchor rejection is gone and one complete
+C3 canonical plan now exists at native boundary `0x40AE3E`. Plan
+`canonical-boundary-composition:canonical-semantic:g1:0x40AE3E` contains 13
+blocks, 10 operations, one native body, six semantic route proofs including
+`terminal_return@0x40C7F6:0x19A7218A`, and the temporary dispatcher-entry port
+whose retirement obligation is anchored at native predecessor `0x40B51B`.
+
+The highest completed canary level is now C3. The first failed C4 obligation is
+`canonical_boundary_detached_oracle_required@0x40AE3E`: the bounded plan must
+receive detached reference-oracle proof before live publication. The DB still
+contains only the 260/260 frontend-normalization receipt and reports zero
+semantic-oracle runs or comparisons; therefore no semantic C5 publication is
+claimed.
+
+Continue with the v3.3 vertical loop at C4 for exactly this bounded
+`0x40AE3E` plan. Capture and compare its detached reference route oracle before
+publication; do not broaden to the 91-route batch or bypass the oracle gate.
