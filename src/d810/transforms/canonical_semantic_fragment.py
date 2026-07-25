@@ -1340,6 +1340,182 @@ def _with_nested_imported_state_assignments(
     )
 
 
+def _resolved_detached_target_component(
+    graph: FlowGraph,
+    normalization_plan: FragmentPlan,
+    target: FragmentBlock,
+    available_evidence: CanonicalSemanticEvidence,
+    *,
+    canonical_proof_ids: tuple[str, ...],
+    excluded_proof_ids: frozenset[str],
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
+    normalization_authority: NormalizationWorkItemAuthority,
+    prohibited_dispatcher_serials: frozenset[int],
+) -> tuple[
+    tuple[FragmentBlock, ...],
+    tuple[FragmentOperation, ...],
+    FragmentNativeBody,
+    tuple[SemanticRouteProof, ...],
+    tuple[_NestedStateAssignmentProjectionDecision, ...],
+]:
+    """Resolve every nested state route before exposing one target component."""
+    effective_normalization_plan = normalization_plan
+    selected_proof_ids = set(excluded_proof_ids)
+    nested_state_assignment_proof_list: list[SemanticRouteProof] = []
+    nested_decision_by_proof_id: dict[
+        str,
+        _NestedStateAssignmentProjectionDecision,
+    ] = {}
+    claimed_nested_source_ids: dict[str, str] = {}
+    claimed_nested_corridor_ids: dict[str, str] = {}
+    projection_round_limit = len(available_evidence.route_proofs) + 1
+    for projection_round in range(1, projection_round_limit + 1):
+        provisional_target_blocks, _operations, _native_body = (
+            _detached_target_component(
+                graph,
+                effective_normalization_plan,
+                target,
+                current_identity_by_serial=current_identity_by_serial,
+                canonical_proof_id="+".join(
+                    (
+                        *canonical_proof_ids,
+                        *(item.proof_id for item in nested_state_assignment_proof_list),
+                    )
+                ),
+                normalization_authority=normalization_authority,
+                allow_unresolved_published_boundaries=True,
+                prohibited_dispatcher_serials=prohibited_dispatcher_serials,
+            )
+        )
+        (
+            projected_plan,
+            projected_proofs,
+            projection_decisions,
+        ) = _with_nested_imported_state_assignments(
+            effective_normalization_plan,
+            available_evidence,
+            component_block_ids=frozenset(
+                block.block_id for block in provisional_target_blocks
+            ),
+            excluded_proof_ids=frozenset(selected_proof_ids),
+            projection_round=int(projection_round),
+            claimed_source_proof_ids=claimed_nested_source_ids,
+            claimed_corridor_proof_ids=claimed_nested_corridor_ids,
+        )
+        for decision in projection_decisions:
+            nested_decision_by_proof_id[decision.route_proof_id] = decision
+        if not projected_proofs:
+            break
+        projected_proof_ids = tuple(item.proof_id for item in projected_proofs)
+        if (
+            len(set(projected_proof_ids)) != len(projected_proof_ids)
+            or set(projected_proof_ids).intersection(selected_proof_ids)
+            or projected_plan == effective_normalization_plan
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "nested canonical state-route projection made no monotonic progress",
+                reason_code="nested_state_route_projection_no_progress",
+                anchor_ea=int(target.semantic_anchor_ea),
+                payload={"route_proof_ids": projected_proof_ids},
+            )
+        projected_decision_by_proof_id = {
+            decision.route_proof_id: decision
+            for decision in projection_decisions
+            if decision.disposition == "projected"
+        }
+        if set(projected_decision_by_proof_id) != set(projected_proof_ids):
+            raise CanonicalSemanticFragmentRejected(
+                "nested canonical state-route projection lost its ownership proof",
+                reason_code="nested_state_route_projection_receipt_mismatch",
+                anchor_ea=int(target.semantic_anchor_ea),
+                payload={"route_proof_ids": projected_proof_ids},
+            )
+        for projected_proof in projected_proofs:
+            decision = projected_decision_by_proof_id[projected_proof.proof_id]
+            if len(decision.source_block_ids) != 1 or not decision.corridor_block_ids:
+                raise CanonicalSemanticFragmentRejected(
+                    "nested canonical state-route projection lacks owned topology",
+                    reason_code="nested_state_route_projection_ownership_missing",
+                    anchor_ea=int(projected_proof.source_anchor_ea),
+                    payload={"route_proof_id": projected_proof.proof_id},
+                )
+            claimed_nested_source_ids[decision.source_block_ids[0]] = (
+                projected_proof.proof_id
+            )
+            for corridor_block_id in decision.corridor_block_ids:
+                claimed_nested_corridor_ids[corridor_block_id] = (
+                    projected_proof.proof_id
+                )
+        effective_normalization_plan = projected_plan
+        nested_state_assignment_proof_list.extend(projected_proofs)
+        selected_proof_ids.update(projected_proof_ids)
+    else:
+        raise CanonicalSemanticFragmentRejected(
+            "nested canonical state-route projection exceeded its proof bound",
+            reason_code="nested_state_route_projection_bound_exceeded",
+            anchor_ea=int(target.semantic_anchor_ea),
+        )
+    nested_state_assignment_proofs = tuple(nested_state_assignment_proof_list)
+    nested_state_assignment_decisions = tuple(
+        nested_decision_by_proof_id[item.proof_id]
+        for item in available_evidence.route_proofs
+        if item.proof_id in nested_decision_by_proof_id
+    )
+    try:
+        target_blocks, target_operations, native_body = _detached_target_component(
+            graph,
+            effective_normalization_plan,
+            target,
+            current_identity_by_serial=current_identity_by_serial,
+            canonical_proof_id="+".join(
+                (
+                    *canonical_proof_ids,
+                    *(item.proof_id for item in nested_state_assignment_proofs),
+                )
+            ),
+            normalization_authority=normalization_authority,
+            allow_unresolved_published_boundaries=False,
+            prohibited_dispatcher_serials=prohibited_dispatcher_serials,
+        )
+    except CanonicalSemanticFragmentRejected as exc:
+        if not nested_state_assignment_decisions:
+            raise
+        raise CanonicalSemanticFragmentRejected(
+            str(exc),
+            reason_code=exc.reason_code,
+            anchor_ea=exc.anchor_ea,
+            payload={
+                **exc.payload,
+                "nested_state_route_projection": tuple(
+                    decision.diagnostic_payload()
+                    for decision in nested_state_assignment_decisions
+                ),
+            },
+        ) from exc
+    nested_rewrite_by_operation_id = {
+        f"route:{item.proof_id}": _direct_transfer_rewrite(item)
+        for item in nested_state_assignment_proofs
+    }
+    target_operations = tuple(
+        replace(
+            operation,
+            direct_transfer_rewrite=nested_rewrite_by_operation_id[
+                operation.operation_id
+            ],
+        )
+        if operation.operation_id in nested_rewrite_by_operation_id
+        else operation
+        for operation in target_operations
+    )
+    return (
+        target_blocks,
+        target_operations,
+        native_body,
+        nested_state_assignment_proofs,
+        nested_state_assignment_decisions,
+    )
+
+
 def compose_canonical_semantic_fragment_plan(
     graph: FlowGraph,
     normalization_plan: FragmentPlan,
@@ -1491,152 +1667,22 @@ def compose_canonical_semantic_fragment_plan(
         roles=frozenset({FragmentBlockRole.IMPORTED}),
         description="canonical route target",
     )
-    excluded_nested_proof_ids = {item.proof_id for item in evidence.route_proofs}
-    nested_state_assignment_proof_list: list[SemanticRouteProof] = []
-    nested_decision_by_proof_id: dict[
-        str,
-        _NestedStateAssignmentProjectionDecision,
-    ] = {}
-    claimed_nested_source_ids: dict[str, str] = {}
-    claimed_nested_corridor_ids: dict[str, str] = {}
-    projection_round_limit = len(available_evidence.route_proofs) + 1
-    for projection_round in range(1, projection_round_limit + 1):
-        provisional_target_blocks, _operations, _native_body = (
-            _detached_target_component(
-                graph,
-                effective_normalization_plan,
-                target,
-                current_identity_by_serial=current_identity_by_serial,
-                canonical_proof_id="+".join(
-                    (
-                        *(item.proof_id for item in evidence.route_proofs),
-                        *(item.proof_id for item in nested_state_assignment_proof_list),
-                    )
-                ),
-                normalization_authority=normalization_authority,
-                allow_unresolved_published_boundaries=True,
-                prohibited_dispatcher_serials=prohibited_serial_set,
-            )
-        )
-        (
-            projected_plan,
-            projected_proofs,
-            projection_decisions,
-        ) = _with_nested_imported_state_assignments(
-            effective_normalization_plan,
-            available_evidence,
-            component_block_ids=frozenset(
-                block.block_id for block in provisional_target_blocks
-            ),
-            excluded_proof_ids=frozenset(excluded_nested_proof_ids),
-            projection_round=int(projection_round),
-            claimed_source_proof_ids=claimed_nested_source_ids,
-            claimed_corridor_proof_ids=claimed_nested_corridor_ids,
-        )
-        for decision in projection_decisions:
-            nested_decision_by_proof_id[decision.route_proof_id] = decision
-        if not projected_proofs:
-            break
-        projected_proof_ids = tuple(item.proof_id for item in projected_proofs)
-        if (
-            len(set(projected_proof_ids)) != len(projected_proof_ids)
-            or set(projected_proof_ids).intersection(excluded_nested_proof_ids)
-            or projected_plan == effective_normalization_plan
-        ):
-            raise CanonicalSemanticFragmentRejected(
-                "nested canonical state-route projection made no monotonic progress",
-                reason_code="nested_state_route_projection_no_progress",
-                anchor_ea=int(target.semantic_anchor_ea),
-                payload={"route_proof_ids": projected_proof_ids},
-            )
-        projected_decision_by_proof_id = {
-            decision.route_proof_id: decision
-            for decision in projection_decisions
-            if decision.disposition == "projected"
-        }
-        if set(projected_decision_by_proof_id) != set(projected_proof_ids):
-            raise CanonicalSemanticFragmentRejected(
-                "nested canonical state-route projection lost its ownership proof",
-                reason_code="nested_state_route_projection_receipt_mismatch",
-                anchor_ea=int(target.semantic_anchor_ea),
-                payload={"route_proof_ids": projected_proof_ids},
-            )
-        for projected_proof in projected_proofs:
-            decision = projected_decision_by_proof_id[projected_proof.proof_id]
-            if len(decision.source_block_ids) != 1 or not decision.corridor_block_ids:
-                raise CanonicalSemanticFragmentRejected(
-                    "nested canonical state-route projection lacks owned topology",
-                    reason_code="nested_state_route_projection_ownership_missing",
-                    anchor_ea=int(projected_proof.source_anchor_ea),
-                    payload={"route_proof_id": projected_proof.proof_id},
-                )
-            claimed_nested_source_ids[decision.source_block_ids[0]] = (
-                projected_proof.proof_id
-            )
-            for corridor_block_id in decision.corridor_block_ids:
-                claimed_nested_corridor_ids[corridor_block_id] = (
-                    projected_proof.proof_id
-                )
-        effective_normalization_plan = projected_plan
-        nested_state_assignment_proof_list.extend(projected_proofs)
-        excluded_nested_proof_ids.update(projected_proof_ids)
-    else:
-        raise CanonicalSemanticFragmentRejected(
-            "nested canonical state-route projection exceeded its proof bound",
-            reason_code="nested_state_route_projection_bound_exceeded",
-            anchor_ea=int(target.semantic_anchor_ea),
-        )
-    nested_state_assignment_proofs = tuple(nested_state_assignment_proof_list)
-    nested_state_assignment_decisions = tuple(
-        nested_decision_by_proof_id[item.proof_id]
-        for item in available_evidence.route_proofs
-        if item.proof_id in nested_decision_by_proof_id
-    )
-    try:
-        target_blocks, target_operations, native_body = _detached_target_component(
-            graph,
-            effective_normalization_plan,
-            target,
-            current_identity_by_serial=current_identity_by_serial,
-            canonical_proof_id="+".join(
-                (
-                    *(item.proof_id for item in evidence.route_proofs),
-                    *(item.proof_id for item in nested_state_assignment_proofs),
-                )
-            ),
-            normalization_authority=normalization_authority,
-            allow_unresolved_published_boundaries=False,
-            prohibited_dispatcher_serials=prohibited_serial_set,
-        )
-    except CanonicalSemanticFragmentRejected as exc:
-        if not nested_state_assignment_decisions:
-            raise
-        raise CanonicalSemanticFragmentRejected(
-            str(exc),
-            reason_code=exc.reason_code,
-            anchor_ea=exc.anchor_ea,
-            payload={
-                **exc.payload,
-                "nested_state_route_projection": tuple(
-                    decision.diagnostic_payload()
-                    for decision in nested_state_assignment_decisions
-                ),
-            },
-        ) from exc
-    nested_rewrite_by_operation_id = {
-        f"route:{item.proof_id}": _direct_transfer_rewrite(item)
-        for item in nested_state_assignment_proofs
-    }
-    target_operations = tuple(
-        replace(
-            operation,
-            direct_transfer_rewrite=nested_rewrite_by_operation_id[
-                operation.operation_id
-            ],
-        )
-        if operation.operation_id in nested_rewrite_by_operation_id
-        else operation
-        for operation in target_operations
+    (
+        target_blocks,
+        target_operations,
+        native_body,
+        _nested_state_assignment_proofs,
+        _nested_state_assignment_decisions,
+    ) = _resolved_detached_target_component(
+        graph,
+        effective_normalization_plan,
+        target,
+        available_evidence,
+        canonical_proof_ids=tuple(item.proof_id for item in evidence.route_proofs),
+        excluded_proof_ids=frozenset(item.proof_id for item in evidence.route_proofs),
+        current_identity_by_serial=current_identity_by_serial,
+        normalization_authority=normalization_authority,
+        prohibited_dispatcher_serials=prohibited_serial_set,
     )
     if imported_consumer is not None:
         predicate = imported_consumer.predicate
@@ -1988,6 +2034,352 @@ def compose_canonical_semantic_fragment_plan(
         normalization_authority=normalization_authority,
         native_bodies=(native_body,),
         data_flow_obligations=tuple(data_flow_obligations),
+    )
+
+
+def compose_canonical_semantic_boundary_fragment_plan(
+    graph: FlowGraph,
+    normalization_plan: FragmentPlan,
+    *,
+    boundary_anchor_ea: int,
+    available_evidence: CanonicalSemanticEvidence,
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
+    normalization_authority: NormalizationWorkItemAuthority,
+    prohibited_dispatcher_serials: Iterable[int] = (),
+) -> FragmentPlan:
+    """Resolve one published imported boundary as a closed canonical root."""
+    if not isinstance(graph, FlowGraph):
+        raise TypeError("canonical boundary composition requires a FlowGraph")
+    if not isinstance(normalization_plan, FragmentPlan):
+        raise TypeError("canonical boundary composition requires a normalization plan")
+    if (
+        normalization_plan.publication_purpose
+        is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical boundary composition requires frontend-normalization intent"
+        )
+    if not isinstance(available_evidence, CanonicalSemanticEvidence):
+        raise TypeError("canonical boundary composition requires canonical evidence")
+    if not isinstance(normalization_authority, NormalizationWorkItemAuthority):
+        raise TypeError(
+            "canonical boundary composition requires normalization work-item authority"
+        )
+    if (
+        available_evidence.native_key != normalization_plan.native_key
+        or normalization_authority.evidence_generation != available_evidence.generation
+        or normalization_authority.source_plan_id != normalization_plan.plan_id
+        or normalization_authority.source_atomic_group_id
+        != normalization_plan.atomic_group_id
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical boundary composition authority drifted",
+            reason_code="normalization_work_item_authority_drift",
+            anchor_ea=int(boundary_anchor_ea),
+        )
+    current_identity_by_serial = {
+        int(serial): identity for serial, identity in current_identity_by_serial.items()
+    }
+    if any(
+        not isinstance(identity, StableBlockIdentity)
+        for identity in current_identity_by_serial.values()
+    ):
+        raise TypeError("canonical boundary current identity authority is invalid")
+    unknown_serials = frozenset(current_identity_by_serial).difference(
+        int(serial) for serial in graph.blocks
+    )
+    if unknown_serials:
+        raise CanonicalSemanticFragmentRejected(
+            "canonical boundary current identity authority is stale",
+            reason_code="current_identity_authority_stale",
+            anchor_ea=int(boundary_anchor_ea),
+            payload={"unknown_serials": tuple(sorted(unknown_serials))},
+        )
+    if any(
+        identity.native_key != available_evidence.native_key
+        for identity in current_identity_by_serial.values()
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical boundary current identity authority drifted",
+            reason_code="current_identity_authority_native_key_drift",
+            anchor_ea=int(boundary_anchor_ea),
+        )
+
+    boundary_anchor_ea = int(boundary_anchor_ea)
+    boundary_candidates = tuple(
+        block
+        for block in normalization_plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+        and block.stable_identity is not None
+        and boundary_anchor_ea in block.stable_identity.exact_instruction_eas
+    )
+    if len(boundary_candidates) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            f"published canonical boundary 0x{boundary_anchor_ea:X} requires "
+            f"one normalization-plan owner, observed {len(boundary_candidates)}",
+            reason_code="normalization_plan_owner_count_mismatch",
+            anchor_ea=boundary_anchor_ea,
+            payload={
+                "description": "published canonical boundary",
+                "owner_count": len(boundary_candidates),
+            },
+        )
+    (target,) = boundary_candidates
+    target_identity = target.stable_identity
+    if target_identity is None:
+        raise CanonicalSemanticFragmentRejected(
+            "published canonical boundary lacks stable identity",
+            anchor_ea=boundary_anchor_ea,
+        )
+    current_owners = _current_owners_containing_identity(
+        graph,
+        target_identity,
+        current_identity_by_serial=current_identity_by_serial,
+    )
+    if len(current_owners) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "published canonical boundary requires one current owner",
+            reason_code="published_boundary_current_owner_count_mismatch",
+            anchor_ea=boundary_anchor_ea,
+            payload={
+                "owner_labels": tuple(
+                    f"blk{serial}@0x{anchor_ea:X}"
+                    for serial, anchor_ea, _identity in current_owners
+                ),
+            },
+        )
+    root_serial, root_anchor_ea, root_identity = current_owners[0]
+    prohibited_serials = frozenset(
+        int(serial) for serial in prohibited_dispatcher_serials
+    )
+    outside_predecessors = tuple(
+        int(predecessor)
+        for predecessor in graph.predecessors(root_serial)
+        if int(predecessor) not in prohibited_serials
+    )
+    if not outside_predecessors:
+        raise CanonicalSemanticFragmentRejected(
+            "published canonical boundary has no entry-connectable predecessor",
+            reason_code="published_boundary_predecessor_missing",
+            anchor_ea=boundary_anchor_ea,
+        )
+
+    (
+        target_blocks,
+        target_operations,
+        native_body,
+        nested_state_assignment_proofs,
+        _nested_state_assignment_decisions,
+    ) = _resolved_detached_target_component(
+        graph,
+        normalization_plan,
+        target,
+        available_evidence,
+        canonical_proof_ids=(f"published-boundary@0x{boundary_anchor_ea:X}",),
+        excluded_proof_ids=frozenset(),
+        current_identity_by_serial=current_identity_by_serial,
+        normalization_authority=normalization_authority,
+        prohibited_dispatcher_serials=prohibited_serials,
+    )
+    if not nested_state_assignment_proofs:
+        raise CanonicalSemanticFragmentRejected(
+            "published canonical boundary owns no semantic route",
+            reason_code="published_boundary_semantic_route_missing",
+            anchor_ea=boundary_anchor_ea,
+        )
+    imported_root_matches = tuple(
+        block
+        for block in target_blocks
+        if block.block_id == target.block_id
+        and block.role is FragmentBlockRole.IMPORTED
+    )
+    if len(imported_root_matches) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "resolved canonical boundary lost its imported root",
+            reason_code="published_boundary_imported_root_missing",
+            anchor_ea=boundary_anchor_ea,
+        )
+    root_operations = tuple(
+        operation
+        for operation in target_operations
+        if operation.source_block_id == target.block_id
+    )
+    if len(root_operations) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "resolved canonical boundary requires one root operation",
+            reason_code="published_boundary_root_operation_count_mismatch",
+            anchor_ea=boundary_anchor_ea,
+            payload={
+                "operation_ids": tuple(
+                    operation.operation_id for operation in root_operations
+                )
+            },
+        )
+
+    original_id = f"published-boundary@0x{boundary_anchor_ea:X}:original"
+    replacement_id = f"published-boundary@0x{boundary_anchor_ea:X}:replacement"
+    rewritten_operations = tuple(
+        replace(
+            operation,
+            source_block_id=(
+                replacement_id
+                if operation.source_block_id == target.block_id
+                else operation.source_block_id
+            ),
+            edges=tuple(
+                replace(
+                    edge,
+                    target_block_id=(
+                        replacement_id
+                        if edge.target_block_id == target.block_id
+                        else edge.target_block_id
+                    ),
+                )
+                for edge in operation.edges
+            ),
+        )
+        for operation in target_operations
+    )
+    remaining_imported_blocks = tuple(
+        block
+        for block in target_blocks
+        if block.role is FragmentBlockRole.IMPORTED
+        and block.block_id != target.block_id
+    )
+    remaining_imported_ids = frozenset(
+        block.block_id for block in remaining_imported_blocks
+    )
+    rewritten_root_operation = next(
+        operation
+        for operation in rewritten_operations
+        if operation.source_block_id == replacement_id
+    )
+    imported_entry_ids = tuple(
+        dict.fromkeys(
+            edge.target_block_id
+            for edge in rewritten_root_operation.edges
+            if edge.target_block_id in remaining_imported_ids
+        )
+    )
+    native_bodies: tuple[FragmentNativeBody, ...] = ()
+    if remaining_imported_blocks:
+        if not imported_entry_ids:
+            raise CanonicalSemanticFragmentRejected(
+                "resolved canonical boundary body lacks a root-owned entry",
+                reason_code="published_boundary_body_entry_missing",
+                anchor_ea=boundary_anchor_ea,
+            )
+        native_bodies = (
+            replace(
+                native_body,
+                block_ids=tuple(
+                    block_id
+                    for block_id in native_body.block_ids
+                    if block_id in remaining_imported_ids
+                ),
+                entry_block_ids=imported_entry_ids,
+                terminal_block_ids=tuple(
+                    block_id
+                    for block_id in native_body.terminal_block_ids
+                    if block_id in remaining_imported_ids
+                ),
+                native_ranges=_merged_imported_ranges(
+                    remaining_imported_blocks,
+                    rewritten_operations,
+                ),
+                proof_ids=tuple(
+                    proof_id
+                    for proof_id in native_body.proof_ids
+                    if proof_id != rewritten_root_operation.operation_id
+                ),
+            ),
+        )
+
+    block_by_id: dict[str, FragmentBlock] = {
+        block.block_id: block
+        for block in target_blocks
+        if block.role is FragmentBlockRole.EXTERNAL
+    }
+
+    def add_current_external(serial: int) -> str:
+        serial = int(serial)
+        block = graph.blocks.get(serial)
+        identity = current_identity_by_serial.get(serial)
+        if block is None or identity is None:
+            raise CanonicalSemanticFragmentRejected(
+                "canonical boundary external block lacks current identity authority",
+                reason_code="current_external_identity_missing",
+                anchor_ea=boundary_anchor_ea,
+            )
+        block_id = f"native[{stable_block_identity_token(identity)}]"
+        candidate = FragmentBlock(
+            block_id=block_id,
+            role=FragmentBlockRole.EXTERNAL,
+            materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+            semantic_anchor_ea=stable_block_identity_semantic_anchor(identity),
+            stable_identity=identity,
+        )
+        existing = block_by_id.get(block_id)
+        if existing is not None and existing != candidate:
+            raise CanonicalSemanticFragmentRejected(
+                "canonical boundary external identity conflicts",
+                reason_code="external_identity_conflict",
+                anchor_ea=int(block.start_ea),
+                payload={"block_id": block_id},
+            )
+        block_by_id[block_id] = candidate
+        return block_id
+
+    for predecessor in outside_predecessors:
+        add_current_external(predecessor)
+    prohibited_witness_serials = _portable_dispatcher_scc_witnesses(
+        graph,
+        tuple(int(serial) for serial in prohibited_dispatcher_serials),
+        current_identity_by_serial=current_identity_by_serial,
+        modified_current_serials=frozenset({int(root_serial)}),
+    )
+    prohibited_ids = tuple(
+        add_current_external(serial) for serial in prohibited_witness_serials
+    )
+    block_by_id[original_id] = FragmentBlock(
+        block_id=original_id,
+        role=FragmentBlockRole.ORIGINAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=int(root_anchor_ea),
+        stable_identity=root_identity,
+    )
+    block_by_id[replacement_id] = FragmentBlock(
+        block_id=replacement_id,
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=int(root_anchor_ea),
+        stable_identity=root_identity,
+        replaces_block_id=original_id,
+    )
+    for block in remaining_imported_blocks:
+        block_by_id[block.block_id] = block
+
+    route_group_id = "+".join(
+        proof.proof_id for proof in nested_state_assignment_proofs
+    )
+    return FragmentPlan(
+        plan_id=(
+            f"canonical-boundary-composition:{available_evidence.atomic_group_id}:"
+            f"0x{boundary_anchor_ea:X}"
+        ),
+        atomic_group_id=(
+            f"{available_evidence.atomic_group_id}:boundary@0x{boundary_anchor_ea:X}:"
+            f"{route_group_id}"
+        ),
+        publication_purpose=FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
+        native_key=available_evidence.native_key,
+        blocks=tuple(block_by_id.values()),
+        roots=(replacement_id,),
+        owned_originals=(original_id,),
+        prohibited_dispatcher_blocks=prohibited_ids,
+        operations=rewritten_operations,
+        normalization_authority=normalization_authority,
+        native_bodies=native_bodies,
     )
 
 
@@ -2426,5 +2818,6 @@ def build_canonical_semantic_fragment_plan(
 __all__ = [
     "CanonicalSemanticFragmentRejected",
     "build_canonical_semantic_fragment_plan",
+    "compose_canonical_semantic_boundary_fragment_plan",
     "compose_canonical_semantic_fragment_plan",
 ]
