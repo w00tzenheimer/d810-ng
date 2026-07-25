@@ -411,6 +411,7 @@ class _FragmentBackend:
         invalid_preprojection: bool = False,
         invalid_postobservation: bool = False,
         raise_during_stage: bool = False,
+        stage_cleanup_failed: bool = False,
         raise_during_discard: bool = False,
         raise_during_publish: bool = False,
         raise_during_rollback: bool = False,
@@ -424,6 +425,7 @@ class _FragmentBackend:
         self.invalid_preprojection = invalid_preprojection
         self.invalid_postobservation = invalid_postobservation
         self.raise_during_stage = raise_during_stage
+        self.stage_cleanup_failed = stage_cleanup_failed
         self.raise_during_discard = raise_during_discard
         self.raise_during_publish = raise_during_publish
         self.raise_during_rollback = raise_during_rollback
@@ -501,6 +503,8 @@ class _FragmentBackend:
                 verifier_error.d810_verification_context = (
                     "staged semantic fragment rollback sweep"
                 )
+                if self.stage_cleanup_failed:
+                    verifier_error.d810_semantic_stage_cleanup_failed = True
                 raise verifier_error
         index = self.gateway.identity_index
         original = index.handle_for_serial(1)
@@ -1407,6 +1411,33 @@ def test_stage_verifier_and_rollback_failures_remain_separate() -> None:
             None,
             "",
         ),
+    ]
+
+
+def test_failed_stage_cleanup_is_not_retried_after_possible_compaction() -> None:
+    plan = _plan()
+    gateway, committed, aborted = _gateway(plan)
+    backend = _FragmentBackend(
+        gateway,
+        raise_during_stage=True,
+        stage_cleanup_failed=True,
+        raise_during_discard=True,
+    )
+
+    with pytest.raises(SemanticFragmentRollbackFailed, match="INTERR: 50856"):
+        gateway.publish_semantic_fragment(backend, plan)
+
+    assert backend.calls == ["plan-roots", "stage"]
+    assert committed == []
+    assert len(aborted) == 1
+    assert aborted[0].rollback_attempted
+    assert not aborted[0].rollback_succeeded
+    assert [
+        (failure.failure_kind, failure.phase, failure.interr_code)
+        for failure in aborted[0].fragment_failures
+    ] == [
+        ("stage", "stage", None),
+        ("verifier", "stage_cleanup", 50856),
     ]
 
 

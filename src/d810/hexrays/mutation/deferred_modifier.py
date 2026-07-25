@@ -3892,7 +3892,8 @@ class DeferredGraphModifier:
                 and predecessor is not None
                 and stop is not None
                 and int(predecessor.type) == int(ida_hexrays.BLT_1WAY)
-                and predecessor_successors == (first_staged_serial,)
+                and predecessor_successors
+                in {(first_staged_serial,), (original_qty - 1,)}
                 and predecessor_tail is not None
                 and int(predecessor_tail.opcode) != int(ida_hexrays.m_goto)
                 and int(stop.type) == int(ida_hexrays.BLT_STOP)
