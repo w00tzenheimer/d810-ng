@@ -3696,3 +3696,48 @@ claimed.
 Continue with the v3.3 vertical loop at C4 for exactly this bounded
 `0x40AE3E` plan. Capture and compare its detached reference route oracle before
 publication; do not broaden to the 91-route batch or bypass the oracle gate.
+
+**2026-07-25T07:39:16Z**
+
+The C4 authority infrastructure is now split into three committed slices.
+Commit `bfac0c596` adds the exact-input reference catalog, capability protocol,
+and pure fragment-plan binder. Commit `64fec59a6` compares every proof-owned
+direct rewrite against its staged unpublished projection and rejects a mismatch
+before root preparation; the committed mutation receipt carries the passing
+detached-oracle result. Commit `f36a17375` advances the disposable diagnostic
+schema to version 8 and persists the run, ledger identity, oracle shape,
+candidate shape, first divergence, and failed invariant in
+`semantic_fragment_route_oracle_comparisons` through the normal gateway ->
+manager -> core-observability -> SQLite boundary. There is no compatibility
+schema or migration shim.
+
+The portable catalog/binder suite is 114/114 green. The gateway and manager
+gate is 43/43 green, including a malformed conditional staged terminator that
+emits `transfer_kind`, discards staging, and never calls root preparation. The
+diagnostic suite is 127/127 green. Ruff, ast-grep, the portable-shape gate, and
+all 14 import-linter contracts are green after every slice.
+
+The mandatory cache-disabled A560 diagnostic canary completed normally in
+15.85 seconds inside pytest with no worker crash or reported numeric `INTERR`.
+Log: `.tmp/rhad-a560-v33-c4-gateway-diag-v1.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-c4-gateway-diag-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-c4-gateway-diag-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+The pseudocode remains the same eight-line false `while ( 1 )` stub, so this is
+not A560 acceptance.
+
+The DB remains authoritative. Its frontend-normalization transaction commits
+260/260 operations and publishes its root with no rollback. At CALLS, fact
+consumer row `snapshot=3, consumer_index=2` records the bounded plan
+`canonical-boundary-composition:canonical-semantic:g1:0x40AE3E` with 13 blocks,
+10 operations, one native body, six direct route proofs, and the temporary
+dispatcher-entry port retired by semantic predecessor `0x40B51B`. It declines
+with `canonical_boundary_detached_oracle_required` at native boundary
+`0x40AE3E`. No semantic plan reaches the live gateway yet, so the new detached
+comparison table has zero rows and no semantic C5 receipt exists.
+
+The highest completed A560 level therefore remains C3. The first failed C4
+obligation remains `canonical_boundary_detached_oracle_required@0x40AE3E`.
+Next, prove one complete one-route C5 fragment using the exact audited reference
+transaction and schema-8 comparison/receipt path; only then wire the bounded
+six-route A560 selection. Do not broaden to the 91-route publication.
