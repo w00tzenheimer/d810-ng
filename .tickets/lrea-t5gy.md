@@ -3545,3 +3545,40 @@ Continue by enriching this invariant failure with the offending block ID,
 role, semantic anchor, and stable identity so the DB exposes the exact native
 coordinate mismatch. Do not guess that the terminal block is responsible or
 change anchor/identity semantics until the diagnostic proves it.
+
+**2026-07-25T06:21:12Z**
+
+Commit `9e8e0a320` gives `FragmentPlanRejected` the same structured diagnostic
+surface consumed by the canonical pipeline and populates it for fragment-block
+anchor/identity mismatches. The focused test first disproved the suspected
+terminal mismatch because `0x40C898` belongs to that terminal identity's native
+range, then proved the real out-of-range invariant payload. The combined
+canonical, resolver, fragment-plan, fragment-validation, and semantic-backend
+gate is 450/450 green; Ruff, ast-grep, `graphify update .`, and all 14 import
+contracts pass.
+
+The mandatory cache-disabled A560 canary completed normally in 19.27 seconds
+wall time (17.59 seconds inside pytest) with no process crash or numeric
+`INTERR`. Log: `.tmp/rhad-a560-v33-fragment-anchor-inventory-v1.txt`; primary
+DB:
+`.tmp/rhad-a560-v33-fragment-anchor-inventory-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-fragment-anchor-inventory-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red as the same eight-line infinite-loop stub; this is
+not A560 acceptance.
+
+The DB identifies the actual offender as
+`published-boundary@0x40AE3E:original`, not the terminal target. Its role is
+`original`, materialization is `reuse_published`, and its stored stable
+identity spans `0x40AE3E-0x40AE8B`, but composition assigns semantic anchor
+`0x40A560` from the maturity-local live owner. The rejection is now
+`fragment_block_semantic_anchor_identity_mismatch@0x40A560`. The only
+committed transaction remains the 260/260 frontend-normalization publication;
+there are zero semantic-oracle runs or comparisons. The highest completed
+semantic level remains C2.
+
+Continue with a focused boundary-composition test where the live owner's block
+start differs from the portable boundary identity. Original and replacement
+roots must use an anchor belonging to that portable identity; do not persist
+the live block start as semantic identity or weaken the FragmentBlock
+invariant.
