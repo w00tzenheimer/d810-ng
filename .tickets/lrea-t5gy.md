@@ -5193,3 +5193,39 @@ does not change frontend normalization, resolver ownership, maturity behavior,
 or a live MBA, so no new A560 canary was run and the highest accepted level
 remains the v21 C3 checkpoint. The first failed obligation remains mutation-free
 C4 projection of the direct route at stable rewrite anchor `0x40BB63`.
+
+**2026-07-25T18:25:21Z — immutable native-body preparation boundary**
+
+Commit `8dd0ab4d0` replaces the private SDK-bearing preparation record with two
+explicitly separated values. `PreparedNativeBodyFact` is immutable authority
+for plan and body scope, native ranges, stable block identities, instruction
+native EAs, raw opcodes, primitive operand shapes, block flags, semantic edge
+roles, predecessor topology, and portable terminator kinds. Block references
+inside operand shapes deliberately omit their live coordinates. The separate
+`PreparedNativeBodyPayload` retains the copied SDK instructions only for final
+backend realization and cannot serve as semantic identity.
+
+Construction recomputes and compares the payload's primitive signature against
+the facts, and staging repeats that check while also rebinding the exact plan,
+body, block identities, topology, and direct-transfer operation IDs. Mutable
+payload drift therefore rejects before staging. The shared backend protocol now
+requires `PreparedNativeBodyPreparation` and explicitly rejects the former
+tuple-shaped result; no compatibility branch remains. Both PREOPT and CALLS
+materializers use the existing detached template capture and importer, so this
+is an output-boundary refactor rather than a second importer.
+
+The focused runtime test prepares the same body twice and proves deterministic
+facts and payload signatures, no live-serial fields, no SDK object in semantic
+operand shapes, and no change to destination blocks, edges, fictitious-EA
+allocation, dirty state, or identity generation. It also proves fact/payload
+scope and opcode drift reject before mutation. Verification is 276/276 runtime
+tests plus the 169/169 lifecycle gate; Ruff, ast-grep, all 14 import contracts,
+cycle and portable-shape gates, diff checks, and `graphify update .` pass.
+Commit `7c2997243` contains only the separately requested repository-wide Ruff
+formatting, after which all 1,869 files pass `ruff format --check`.
+
+This phase changes the native-body preparation boundary but does not publish a
+root or alter frontend-normalization selection, resolver ownership, or maturity
+restart behavior. No new A560 canary was run, so the accepted level remains C3
+and the first failed obligation remains the mutation-free direct-route C4
+projection at stable rewrite anchor `0x40BB63`.
