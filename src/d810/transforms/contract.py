@@ -1,4 +1,4 @@
-"""Portable CFG contract orchestration.
+"""Portable CFG contract orchestration over plan-neutral projections.
 
 The contract TYPES and orchestration here are backend-agnostic (portable
 ``transforms`` layer): :class:`CfgContract`, the structural ``FlowGraph``
@@ -10,9 +10,7 @@ oracle with no change here.
 
 This portability is enforced: unit tests and other portable consumers import
 these types, so they must NOT sit in the ``hexrays`` namespace (the
-"unit tests must not import hexrays" contract). Future: once the
-``transforms.plan`` coupling is inverted, the Protocol + orchestration +
-records can lift further down to ``d810.capabilities`` (policy/protocol layer).
+"unit tests must not import hexrays" contract).
 """
 
 from __future__ import annotations
@@ -33,7 +31,6 @@ from d810.transforms.cfg_invariants import (
 from d810.transforms.report import InvariantViolation
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
-from d810.transforms.plan import PatchPlan
 
 ContractScope = str
 ContractPhase = str
@@ -89,7 +86,7 @@ class CfgContractViolationError(RuntimeError):
 
 
 class CfgContract:
-    """Backend-neutral contract checks for patch-plan validation."""
+    """Backend-neutral invariant checks for projected CFG snapshots."""
 
     def __init__(self, oracle: BackendContractOracle | None = None) -> None:
         self._oracle = oracle
@@ -103,74 +100,9 @@ class CfgContract:
         return _summarize_violations(violations, limit=limit)
 
     @staticmethod
-    def _maybe_add_serial(serials: set[int], value) -> None:
-        if isinstance(value, int):
-            serials.add(int(value))
-
-    def _collect_edge_serials(self, serials: set[int], edge) -> None:
-        if edge is None:
-            return
-        self._maybe_add_serial(serials, getattr(edge, "source", None))
-        self._maybe_add_serial(serials, getattr(edge, "target", None))
-
-    def _collect_serials_from_object(self, serials: set[int], obj) -> None:
-        if obj is None:
-            return
-        for attr_name in (
-            "apply_old_target",
-            "assigned_serial",
-            "block_serial",
-            "conditional_target",
-            "fallthrough_serial",
-            "fallthrough_target",
-            "from_serial",
-            "goto_target",
-            "new_target",
-            "old_target",
-            "pred_serial",
-            "ref_block",
-            "source_block",
-            "source_serial",
-            "succ_serial",
-            "target_block",
-            "target_serial",
-            "template_block",
-            "to_serial",
-            "via_pred",
-        ):
-            self._maybe_add_serial(serials, getattr(obj, attr_name, None))
-
-        for successor in getattr(obj, "source_successors", ()) or ():
-            self._maybe_add_serial(serials, successor)
-
-        self._collect_edge_serials(serials, getattr(obj, "incoming_edge", None))
-        for edge in getattr(obj, "outgoing_edges", ()) or ():
-            self._collect_edge_serials(serials, edge)
-
-        for _block_id, assigned_serial in getattr(obj, "assigned_serials", ()) or ():
-            self._maybe_add_serial(serials, assigned_serial)
-        for old_edge, new_edge in getattr(obj, "rewritten_edges", ()) or ():
-            self._collect_edge_serials(serials, old_edge)
-            self._collect_edge_serials(serials, new_edge)
-
-        self._maybe_add_serial(serials, getattr(obj, "stop_serial_before", None))
-        self._maybe_add_serial(serials, getattr(obj, "stop_serial_after", None))
-
-    def _focus_serials(self, plan: PatchPlan) -> list[int]:
-        serials: set[int] = set()
-        for step in getattr(plan, "steps", ()):
-            self._collect_serials_from_object(serials, step)
-            self._collect_serials_from_object(
-                serials, getattr(step, "modification", None)
-            )
-        for block_spec in getattr(plan, "new_blocks", ()):
-            self._collect_serials_from_object(serials, block_spec)
-        self._collect_serials_from_object(
-            serials, getattr(plan, "relocation_map", None)
-        )
-        for op in getattr(plan, "ops", ()):
-            self._collect_serials_from_object(serials, op)
-        return sorted(serials)
+    def _focus_serials(projection: CfgProjection) -> list[int]:
+        """Return live source coordinates when the projection exposes any."""
+        return []
 
     def verify_projection(
         self,
@@ -207,47 +139,20 @@ class CfgContract:
             focus_serials=focus,
         )
 
-    def verify_projected(
-        self,
-        pre_cfg: FlowGraph,
-        plan: PatchPlan,
-        *,
-        scope: ContractScope = "focused",
-    ) -> tuple[InvariantViolation, ...]:
-        violations = tuple(self.check_projected(pre_cfg, plan, scope=scope))
-        if violations:
-            raise CfgContractViolationError(phase="projected", violations=violations)
-        return violations
-
-    def check_projected(
-        self,
-        pre_cfg: FlowGraph,
-        plan: PatchPlan,
-        *,
-        scope: ContractScope = "focused",
-    ) -> list[InvariantViolation]:
-        from d810.transforms.edit_simulator import project_post_state
-
-        projected_cfg = project_post_state(pre_cfg, plan)
-        focus = None if scope == "full" else (self._focus_serials(plan) or None)
-        return self._check_projected(
-            projected_cfg,
-            phase="projected",
-            focus_serials=focus,
-        )
-
     def verify(
         self,
         graph,
-        plan: PatchPlan | None = None,
+        projection: CfgProjection | None = None,
         *,
         phase: ContractPhase = "post",
         scope: ContractScope = "focused",
         include_insn_checks: bool = False,
     ) -> tuple[InvariantViolation, ...]:
-        focus = None
-        if plan is not None and scope != "full":
-            focus = self._focus_serials(plan) or None
+        focus = (
+            None
+            if projection is None or scope == "full"
+            else (self._focus_serials(projection) or None)
+        )
         violations = tuple(
             self._check(
                 graph,

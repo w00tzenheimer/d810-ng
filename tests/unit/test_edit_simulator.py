@@ -9,6 +9,7 @@ from d810.transforms.edit_simulator import (
     graph_modifications_to_simulated_edits,
     patch_plan_to_simulated_edits,
     project_cumulative_state,
+    project_patch_plan,
     project_post_state,
     simulate_edits,
 )
@@ -33,7 +34,19 @@ from d810.transforms.graph_modification import (
     RedirectGoto,
     RemoveEdge,
 )
-from d810.transforms.plan import compile_patch_plan
+from d810.transforms.cfg_transaction import PlanBlockRef
+from d810.transforms.plan import PatchPlan
+from tests.typed_patch_authority import compile_patch_plan
+
+
+def _projected_plan_serial(
+    cfg: FlowGraph,
+    plan: PatchPlan,
+    ref: PlanBlockRef,
+) -> int:
+    assert isinstance(ref, PlanBlockRef)
+    assert ref.plan_id == plan.plan_id
+    return max(cfg.blocks) + tuple(spec.block_id for spec in plan.new_blocks).index(ref)
 
 
 def _block(
@@ -499,7 +512,12 @@ class TestProjectPostState:
         assert projected.blocks[10].succs == (11,)
         assert projected.blocks[10].kind == BlockKind.ONE_WAY
         assert projected.blocks[10].tail_kind == InsnKind.GOTO
-        assert CfgContract().check_projected(cfg, patch_plan) == []
+        assert (
+            CfgContract().check_projection(
+                project_patch_plan(cfg, patch_plan, snapshot_id=patch_plan.snapshot_id)
+            )
+            == []
+        )
 
 
 class TestModificationProjection:
@@ -634,14 +652,27 @@ class TestModificationProjection:
         )
 
         projected = project_post_state(cfg, patch_plan)
-        edge_split_serial = patch_plan.steps[0].assigned_serial
-        insert_serial = patch_plan.steps[1].assigned_serial
+        edge_split_serial = _projected_plan_serial(
+            cfg,
+            patch_plan,
+            patch_plan.steps[0].block_id,
+        )
+        insert_serial = _projected_plan_serial(
+            cfg,
+            patch_plan,
+            patch_plan.steps[1].block_id,
+        )
 
         assert projected.blocks[98].succs == (54, edge_split_serial)
         assert projected.blocks[100].succs == (insert_serial,)
         assert projected.blocks[edge_split_serial].succs == (180,)
         assert projected.blocks[insert_serial].succs == (75,)
-        assert CfgContract().check_projected(cfg, patch_plan) == []
+        assert (
+            CfgContract().check_projection(
+                project_patch_plan(cfg, patch_plan, snapshot_id=patch_plan.snapshot_id)
+            )
+            == []
+        )
 
     def test_direct_terminal_lowering_and_private_suffix_can_share_return_family(self):
         def semantic_block(
@@ -701,14 +732,27 @@ class TestModificationProjection:
         projected = project_post_state(cfg, patch_plan)
         dtl_step = patch_plan.steps[0]
         pts_step = patch_plan.steps[1]
-        dtl_clones = dtl_step.per_site_clone_assigned_serials[207]
-        pts_clones = pts_step.per_anchor_clone_assigned_serials[0]
+        dtl_clones = tuple(
+            _projected_plan_serial(cfg, patch_plan, ref)
+            for anchor, refs in dtl_step.per_site_clone_block_ids
+            if anchor == dtl_step.sites[0].anchor_serial
+            for ref in refs
+        )
+        pts_clones = tuple(
+            _projected_plan_serial(cfg, patch_plan, ref)
+            for ref in pts_step.per_anchor_clone_block_ids[0]
+        )
 
         assert projected.blocks[207].succs == (dtl_clones[0],)
         assert projected.blocks[dtl_clones[0]].succs == (dtl_clones[1],)
         assert projected.blocks[dtl_clones[1]].succs == ()
         assert projected.blocks[27].succs == (pts_clones[0],)
-        assert CfgContract().check_projected(cfg, patch_plan) == []
+        assert (
+            CfgContract().check_projection(
+                project_patch_plan(cfg, patch_plan, snapshot_id=patch_plan.snapshot_id)
+            )
+            == []
+        )
 
     def test_return_const_direct_terminal_lowering_rewrites_anchor_without_clone(self):
         def semantic_block(
@@ -760,10 +804,17 @@ class TestModificationProjection:
         projected = project_post_state(cfg, patch_plan)
         dtl_step = patch_plan.steps[0]
 
-        assert dtl_step.per_site_clone_assigned_serials[27] == ()
+        assert dict(dtl_step.per_site_clone_block_ids)[
+            dtl_step.sites[0].anchor_serial
+        ] == ()
         assert projected.blocks[27].succs == (219,)
         assert len(projected.blocks) == len(cfg.blocks)
-        assert CfgContract().check_projected(cfg, patch_plan) == []
+        assert (
+            CfgContract().check_projection(
+                project_patch_plan(cfg, patch_plan, snapshot_id=patch_plan.snapshot_id)
+            )
+            == []
+        )
 
     def test_patch_plan_insert_block_updates_sink_reasoning(self):
         cfg = FlowGraph(

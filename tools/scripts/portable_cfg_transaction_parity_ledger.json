@@ -63,7 +63,7 @@
       "donor_source": "src/d810/transforms/edit_simulator.py::def project_patch_plan(",
       "donor_test": "tests/unit/transforms/test_cfg_projection.py::def test_contract_module_has_no_patch_plan_binding",
       "current_production_seam": "src/d810/transforms/contract.py::class CfgContract:",
-      "current_status": "partial",
+      "current_status": "accepted",
       "required_port": "Make CfgContract consume CfgProjection and move PatchPlan-specific simulation and focus collection into edit_simulator.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_phase_events"],
@@ -80,7 +80,7 @@
       "donor_source": "src/d810/transforms/contract.py::class CfgContract:",
       "donor_test": "tests/unit/transforms/test_cfg_projection.py::def test_verify_projection_checks_created_blocks_when_focus_is_mixed",
       "current_production_seam": "src/d810/transforms/contract.py::class CfgContract:",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Widen projected validation to the complete graph whenever focus contains a PlanBlockRef.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_phase_events"],
@@ -97,7 +97,7 @@
       "donor_source": "src/d810/hexrays/contracts/cfg_contract.py::class IDACfgContract:",
       "donor_test": "tests/system/hexrays/contracts/test_transaction_engine_projection.py::def test_engine_uses_concrete_ida_projection_interface",
       "current_production_seam": "src/d810/hexrays/contracts/cfg_contract.py::class IDACfgContract:",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Implement the projection API in the concrete IDA contract and pass one projection through transaction precheck and validation.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_phase_events"],
@@ -510,7 +510,7 @@
       "donor_source": "src/d810/hexrays/mutation/deferred_modifier.py::gateway.bind_reserved_plan_block(",
       "donor_test": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_every_plan_created_block_requires_a_plan_ref_creation_witness",
       "current_production_seam": "src/d810/hexrays/mutation/deferred_modifier.py::class DeferredGraphModifier:",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Reserve and receipt every fallthrough, root, split, clone, replacement, and empty helper with exact PlanBlockRef lineage.",
       "diagnostic_proof": {
         "tables": ["cfg_creation_witnesses"],
@@ -527,7 +527,7 @@
       "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::def plan_refs_by_serial(",
       "donor_test": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_every_production_patch_plan_compiler_call_names_exact_block_authority",
       "current_production_seam": "src/d810/transforms/plan.py::def compile_patch_plan(",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Require every compiler call to pass the exact current serial-to-typed-ref mapping and reject missing, extra, swapped, stale, or ambiguous source coordinates before reservation.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts"],
@@ -578,7 +578,7 @@
       "donor_source": "src/d810/hexrays/mutation/deferred_modifier.py::def _observe_published_semantic_fragment_graph(",
       "donor_test": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_post_root_live_cfg_contract_runs_before_commit",
     "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_publication.py::def execute_patch_transaction(",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Capture the actual post-root live graph and require full CfgContract plus semantic postvalidation before receipt commit.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_phase_events", "semantic_fragment_validation_outcomes"],
@@ -612,7 +612,7 @@
       "donor_source": "src/d810/transforms/cfg_transaction.py::CfgBlockRef: TypeAlias = NativeBlockRef | LogicalBlockRef | PlanBlockRef",
       "donor_test": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_patch_plan_has_no_transitional_or_raw_block_references",
       "current_production_seam": "src/d810/transforms/cfg_transaction.py::CfgBlockRef: TypeAlias = NativeBlockRef | LogicalBlockRef | PlanBlockRef",
-      "current_status": "partial",
+      "current_status": "accepted",
       "required_port": "Preserve the absence of SnapshotBlockRef and also remove every raw-int, VirtualBlockId, and transitional patch reference without aliases.",
       "diagnostic_proof": {
         "tables": ["cfg_creation_witnesses"],
@@ -629,7 +629,7 @@
       "donor_source": "src/d810/hexrays/mutation/patch_binding.py::def bind_patch_plan(",
       "donor_test": "tests/unit/cfg/test_patch_plan.py::def test_compile_patch_plan_rejects_missing_typed_source_authority",
       "current_production_seam": "src/d810/transforms/plan.py::def compile_patch_plan(",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Fail closed before mutation on missing, extra, stale, swapped, or ambiguous compiler/binding authority; never infer from plan intent.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events"],
@@ -646,7 +646,7 @@
       "donor_source": "src/d810/hexrays/mutation/semantic_fragment_backend.py::def _terminal_return_can_append_after_opcode(",
       "donor_test": "tests/system/runtime/test_semantic_fragment_backend.py::def test_conditional_terminal_tail_rejects_in_immutable_preflight_without_writes",
       "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_backend.py::def _materialize_terminal_return(",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Use one conservative terminal-tail predicate in immutable preflight and live realization; reject conditional and non-goto tails before any SDK write.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts", "semantic_fragment_validation_outcomes"],

@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
 from d810.transforms.contract import CfgContractViolationError
 from d810.transforms.report import InvariantViolation
+from d810.ir.flowgraph import FlowGraph
 from d810.passes.transaction_engine import (
     CfgTransactionEngine,
     TransactionResult,
 )
+from d810.transforms.plan import PatchPlan
 
 
 MUTATION_GATEWAY = object()
@@ -39,13 +41,18 @@ def contract() -> MagicMock:
 
 
 @pytest.fixture()
-def plan() -> MagicMock:
-    return MagicMock()
+def plan() -> PatchPlan:
+    return PatchPlan(snapshot_id="test-snapshot")
 
 
 @pytest.fixture()
-def pre_cfg() -> MagicMock:
-    return MagicMock()
+def pre_cfg() -> FlowGraph:
+    return FlowGraph(
+        blocks={},
+        entry_serial=0,
+        func_ea=0,
+        metadata={"snapshot_id": "test-snapshot"},
+    )
 
 
 @pytest.fixture()
@@ -100,7 +107,7 @@ class TestCfgTransactionEngine:
         pre_cfg: MagicMock,
         mba: MagicMock,
     ) -> None:
-        contract.verify_projected.side_effect = _make_contract_error("projected")
+        contract.verify_projection.side_effect = _make_contract_error("projected")
         engine = CfgTransactionEngine(translator, contract=contract)
 
         result = engine.apply(
@@ -121,7 +128,7 @@ class TestCfgTransactionEngine:
         pre_cfg: MagicMock,
         mba: MagicMock,
     ) -> None:
-        contract.verify_projected.return_value = ()
+        contract.verify_projection.return_value = ()
         contract.verify.side_effect = _make_contract_error("pre")
         engine = CfgTransactionEngine(translator, contract=contract)
 
@@ -134,6 +141,12 @@ class TestCfgTransactionEngine:
         assert result.classification is not None
         assert result.classification.rollback_needed is False
         translator.lower.assert_not_called()
+        projection = contract.verify_projection.call_args.args[0]
+        contract.verify.assert_called_once_with(
+            mba,
+            projection=projection,
+            phase="pre",
+        )
 
     def test_apply_post_apply_contract_failure(
         self,
@@ -143,7 +156,7 @@ class TestCfgTransactionEngine:
         pre_cfg: MagicMock,
         mba: MagicMock,
     ) -> None:
-        contract.verify_projected.return_value = ()
+        contract.verify_projection.return_value = ()
         contract.verify.return_value = ()
         translator.lower.side_effect = _make_contract_error("post")
         engine = CfgTransactionEngine(translator, contract=contract)
@@ -294,10 +307,14 @@ class TestCfgTransactionEngine:
         pre_cfg: MagicMock,
         mba: MagicMock,
     ) -> None:
-        """When cumulative_pre_cfg is provided, verify_projected receives it
-        instead of pre_cfg."""
-        cumulative = MagicMock(name="cumulative_cfg")
-        contract.verify_projected.return_value = ()
+        """Cumulative state is projected before the contract consumes it."""
+        cumulative = FlowGraph(
+            blocks={},
+            entry_serial=0,
+            func_ea=0,
+            metadata={"snapshot_id": "test-snapshot"},
+        )
+        contract.verify_projection.return_value = ()
         contract.verify.return_value = ()
         translator.lower.return_value = 3
         engine = CfgTransactionEngine(translator, contract=contract)
@@ -311,8 +328,9 @@ class TestCfgTransactionEngine:
         )
 
         assert result.success is True
-        # verify_projected should be called with cumulative CFG, not pre_cfg
-        contract.verify_projected.assert_called_once_with(cumulative, plan)
+        contract.verify_projection.assert_called_once()
+        projection = contract.verify_projection.call_args.args[0]
+        assert projection.graph is not cumulative
 
     def test_apply_without_cumulative_uses_pre_cfg(
         self,
@@ -322,8 +340,8 @@ class TestCfgTransactionEngine:
         pre_cfg: MagicMock,
         mba: MagicMock,
     ) -> None:
-        """Without cumulative_pre_cfg, verify_projected uses pre_cfg (backward compat)."""
-        contract.verify_projected.return_value = ()
+        """The direct pre-CFG is projected before the contract consumes it."""
+        contract.verify_projection.return_value = ()
         contract.verify.return_value = ()
         translator.lower.return_value = 3
         engine = CfgTransactionEngine(translator, contract=contract)
@@ -333,7 +351,9 @@ class TestCfgTransactionEngine:
         )
 
         assert result.success is True
-        contract.verify_projected.assert_called_once_with(pre_cfg, plan)
+        contract.verify_projection.assert_called_once()
+        projection = contract.verify_projection.call_args.args[0]
+        assert projection.graph is not pre_cfg
 
     def test_apply_cumulative_projected_failure_rejects(
         self,
@@ -344,8 +364,13 @@ class TestCfgTransactionEngine:
         mba: MagicMock,
     ) -> None:
         """Projected contract failure with cumulative CFG still rejects."""
-        cumulative = MagicMock(name="cumulative_cfg")
-        contract.verify_projected.side_effect = _make_contract_error("projected")
+        cumulative = FlowGraph(
+            blocks={},
+            entry_serial=0,
+            func_ea=0,
+            metadata={"snapshot_id": "test-snapshot"},
+        )
+        contract.verify_projection.side_effect = _make_contract_error("projected")
         engine = CfgTransactionEngine(translator, contract=contract)
 
         result = engine.apply(
