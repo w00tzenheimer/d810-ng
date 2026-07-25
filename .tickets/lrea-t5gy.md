@@ -4128,3 +4128,49 @@ state carrier, selects a table address, and flows through indirect transfer
 Continue by recovering or composing its exact semantic route authority, keep
 both arms atomic, and rerun the same diagnostic canary without broadening to
 the 91-route publication.
+
+**2026-07-25T11:10:55Z**
+
+Commits `b8378a475` and `e0d66f4c7` add and separately format one exact
+call-backed state-route proof. Frontend-normalized state-route discovery may
+now cross a native call only when one unique `static_handler_exit_route`
+matches the original indirect transfer, source block, state register, state
+constant, semantic target, and complete dispatcher envelope. The portable
+fact records the original transfer authority and every preserved call head;
+ordinary routes cannot populate either field. No compatibility path or raw
+router promotion was added.
+
+Focused verification is 161/161 local portable-evidence, lifecycle, and
+diagnostic-publication tests plus 11/11 pinned-Docker state-route resolver
+tests. Changed production and unit files pass Ruff check, all seven changed
+files pass Ruff format, and both commits pass ast-grep, import-cycle analysis,
+the portable-shape gate, and all 14 import-linter contracts.
+
+The mandatory exact cache-disabled A560 canary completed normally in 32.27
+seconds with no process crash, numeric `INTERR`, or verifier event. Log:
+`.tmp/rhad-a560-v33-call-backed-route-v1.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-call-backed-route-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-call-backed-route-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+The eight-line pseudocode still contains the false `while ( 1 )`, so this is
+not A560 acceptance.
+
+The DB proves the intended route-level fact advanced even though the C level
+did not. The state-write-route inventory increased from 89 to 90 and now
+contains source write `0x40B469`, normalized delivery `0x40B4BA`, authority
+transfer `0x40B4C3`, preserved call `0x40B49E`, state `0xBD9A2C2A`, and target
+`0x40C592`. Generation 1 commits its 260/260 frontend transaction; generation
+2 commits 288/288. There is still no canonical semantic transaction, detached
+oracle comparison, or semantic publication receipt.
+
+Production therefore remains at C2. The first failed C3 obligation remains
+CALLS-native router `0x40B6C0`: nested projection sees the new
+`state_assignment@0x40B4BA:0xBD9A2C2A` proof but records
+`source_not_in_component`, then reports
+`published_boundary_semantic_route_missing` at `0x40B6C0`. This rejects the
+hypothesis that target recovery alone was the blocker. Continue by proving
+the detached call corridor from state write `0x40B469` through call
+`0x40B49E` to normalized delivery `0x40B4BA` belongs to the selected component
+and carries exact call-fallthrough ownership. Do not relabel router
+`0x40B6C0`, weaken component closure, or expand another route group until that
+specific ownership obligation is resolved.
