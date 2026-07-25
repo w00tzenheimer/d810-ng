@@ -801,8 +801,7 @@ def test_temporary_boundary_port_is_explicit_reachability_authority() -> None:
         0x6000,
     )
     retirement_obligation_id = (
-        "retire-temporary-dispatcher-entry@0x1000:"
-        "publish-semantic-predecessor@0x6000"
+        "retire-temporary-dispatcher-entry@0x1000:publish-semantic-predecessor@0x6000"
     )
     plan = replace(
         plan,
