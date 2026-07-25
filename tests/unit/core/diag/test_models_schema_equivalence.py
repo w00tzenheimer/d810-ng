@@ -141,6 +141,28 @@ EXPECTED_TABLE_INFO = {
         ("candidate_shape_json", "TEXT", 0, 0),
         ("reason", "TEXT", 1, 0),
     ],
+    "semantic_fragment_route_oracle_comparisons": [
+        ("event_id", "INTEGER", 1, 0),
+        ("mutation_batch_id", "TEXT", 1, 1),
+        ("comparison_index", "INTEGER", 1, 0),
+        ("run_id", "TEXT", 1, 0),
+        ("plan_id", "TEXT", 1, 0),
+        ("atomic_group_id", "TEXT", 1, 0),
+        ("route_id", "TEXT", 1, 2),
+        ("maturity", "TEXT", 1, 0),
+        ("candidate_variant", "TEXT", 1, 0),
+        ("outcome", "TEXT", 1, 0),
+        ("first_divergence", "INTEGER", 1, 0),
+        ("failed_invariant", "TEXT", 0, 0),
+        ("owner_ea_hex", "TEXT", 1, 0),
+        ("owner_ea_i64", "INTEGER", 1, 0),
+        ("rewrite_anchor_ea_hex", "TEXT", 1, 0),
+        ("rewrite_anchor_ea_i64", "INTEGER", 1, 0),
+        ("reference_ledger_identity", "TEXT", 1, 0),
+        ("oracle_shape_json", "TEXT", 0, 0),
+        ("candidate_shape_json", "TEXT", 0, 0),
+        ("reason", "TEXT", 1, 0),
+    ],
     "blocks": [
         ("snapshot_id", "INTEGER", 1, 1),
         ("serial", "INTEGER", 1, 2),
@@ -621,6 +643,12 @@ EXPECTED_INDEXES = {
         ("c", ("route_id", "maturity")),
         ("pk", ("run_id", "route_id", "maturity", "candidate_variant")),
     ],
+    "semantic_fragment_route_oracle_comparisons": [
+        ("c", ("event_id",)),
+        ("c", ("mutation_batch_id", "outcome", "first_divergence")),
+        ("c", ("rewrite_anchor_ea_i64", "outcome")),
+        ("pk", ("mutation_batch_id", "route_id")),
+    ],
     "blocks": [("pk", ("snapshot_id", "serial"))],
     "block_observations": [
         ("c", ("body_fingerprint",)),
@@ -900,4 +928,4 @@ class TestModeledSchemaEquivalence:
 
     def test_modeled_count(self) -> None:
         # Phase A models the non-slice-1, non-view tables.
-        assert len(EXPECTED_TABLE_INFO) == 37
+        assert len(EXPECTED_TABLE_INFO) == 38

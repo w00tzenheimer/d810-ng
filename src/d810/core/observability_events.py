@@ -12,6 +12,7 @@ from d810.core.observability_models import (
     DagNode,
     Modification,
 )
+from d810.core.semantic_route_oracle import RouteOracleComparison
 from d810.core.typing import Any
 
 
@@ -397,6 +398,60 @@ class MutationPlanObserved:
                 raise ValueError(
                     "fragment publication plan JSON identity does not match"
                 )
+
+
+@dataclass(frozen=True)
+class SemanticFragmentRouteOracleComparedObserved:
+    """One pre-root detached-route comparison batch for a fragment plan."""
+
+    session_id: str
+    func_ea: int
+    mutation_batch_id: str
+    run_id: str
+    plan_id: str
+    atomic_group_id: str
+    mba_generation: int
+    evidence_generation: int
+    maturity: str
+    reference_ledger_identities: tuple[tuple[str, str], ...]
+    comparisons: tuple[RouteOracleComparison, ...]
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not all(
+            str(value)
+            for value in (
+                self.session_id,
+                self.mutation_batch_id,
+                self.run_id,
+                self.plan_id,
+                self.atomic_group_id,
+                self.maturity,
+            )
+        ):
+            raise ValueError("fragment route oracle requires complete identity")
+        if int(self.mba_generation) < 0 or int(self.evidence_generation) < 0:
+            raise ValueError("fragment route oracle generations must be non-negative")
+        comparisons = tuple(self.comparisons)
+        if not comparisons or any(
+            not isinstance(comparison, RouteOracleComparison)
+            for comparison in comparisons
+        ):
+            raise ValueError("fragment route oracle requires comparisons")
+        ledger_identities = tuple(
+            (str(route_id), str(ledger_identity))
+            for route_id, ledger_identity in self.reference_ledger_identities
+        )
+        if tuple(route_id for route_id, _ledger in ledger_identities) != tuple(
+            comparison.route_id for comparison in comparisons
+        ) or any(not ledger_identity for _route, ledger_identity in ledger_identities):
+            raise ValueError("fragment route oracle requires aligned ledger identities")
+        object.__setattr__(self, "comparisons", comparisons)
+        object.__setattr__(
+            self,
+            "reference_ledger_identities",
+            ledger_identities,
+        )
 
 
 @dataclass(frozen=True)

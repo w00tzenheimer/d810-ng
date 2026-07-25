@@ -15,7 +15,9 @@ from d810.core.observability_events import (
     IdentityDecisionObserved,
     MutationReceiptObserved,
     SemanticFragmentFailureObserved,
+    SemanticFragmentRouteOracleComparedObserved,
 )
+from d810.core.semantic_route_oracle import RouteOracleComparison
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.ir.logical_block_proxy import (
     LogicalBlockVersion,
@@ -27,8 +29,10 @@ from d810.hexrays.mutation.fragment_publication_lifecycle import (
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationAborted,
     MbaMutationRootPublicationGroup,
+    MbaSemanticFragmentRouteOracleCompared,
     StructuralMutationKind,
 )
+from d810.transforms.detached_route_oracle import DetachedRouteOracleResult
 from d810.hexrays.mutation.semantic_fragment_failure import (
     MbaSemanticFragmentFailure,
 )
@@ -478,6 +482,53 @@ def test_manager_preserves_applied_work_on_aborted_mutation_receipt(
     assert transition.anchor_ea is None
     assert transition.predecessor_version == 0
     assert (transition.from_state, transition.to_state) == ("staged", "aborted")
+
+
+def test_manager_translates_detached_route_oracle_before_receipt(monkeypatch) -> None:
+    observed: list[SemanticFragmentRouteOracleComparedObserved] = []
+    monkeypatch.setattr("d810.core.observability.emit", observed.append)
+    comparison = RouteOracleComparison(
+        route_id="rhad:0x40A560:flow_route:0x40B52E",
+        maturity="DETACHED_PREPUBLICATION",
+        candidate_variant="detached_prepublication",
+        outcome="diverged",
+        first_divergence=True,
+        failed_invariant="transfer_kind",
+        owner_ea=0x40B51B,
+        rewrite_anchor_ea=0x40B52E,
+        oracle_shape=None,
+        candidate_shape=None,
+        reason="staged route remained conditional",
+    )
+    result = DetachedRouteOracleResult(
+        plan_id="a560-boundary",
+        atomic_group_id="route@0x40B52E",
+        comparisons=(comparison,),
+    )
+
+    D810Manager._on_semantic_fragment_route_oracle_compared(
+        MbaSemanticFragmentRouteOracleCompared(
+            session_id="a560-session",
+            function_ea=0x40A560,
+            maturity=1,
+            mba_generation=7,
+            evidence_generation=3,
+            mutation_batch_id="a560-route-batch",
+            run_id="a560-v33-boundary",
+            plan_id=result.plan_id,
+            atomic_group_id=result.atomic_group_id,
+            reference_ledger_identities=((comparison.route_id, "flow_route:0x40B52E"),),
+            result=result,
+        )
+    )
+
+    assert len(observed) == 1
+    assert observed[0].mutation_batch_id == "a560-route-batch"
+    assert observed[0].run_id == "a560-v33-boundary"
+    assert observed[0].comparisons == (comparison,)
+    assert observed[0].reference_ledger_identities == (
+        (comparison.route_id, "flow_route:0x40B52E"),
+    )
 
 
 def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(

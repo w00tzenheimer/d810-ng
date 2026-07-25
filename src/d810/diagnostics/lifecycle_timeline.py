@@ -97,6 +97,13 @@ def mutation_batch(conn: sqlite3.Connection, batch_id: str) -> dict[str, Any]:
             (batch_id,),
         )
     )
+    route_oracle_comparisons = _rows(
+        conn.execute(
+            "SELECT * FROM semantic_fragment_route_oracle_comparisons "
+            "WHERE mutation_batch_id=? ORDER BY comparison_index",
+            (batch_id,),
+        )
+    )
     root_publication_groups = _rows(
         conn.execute(
             "SELECT * FROM semantic_fragment_root_publication_groups "
@@ -127,6 +134,7 @@ def mutation_batch(conn: sqlite3.Connection, batch_id: str) -> dict[str, Any]:
         "semantic_fragment": fragment_rows[0] if fragment_rows else None,
         "root_publication_groups": root_publication_groups,
         "fragment_validations": fragment_validations,
+        "route_oracle_comparisons": route_oracle_comparisons,
         "version_transitions": version_transitions,
         "fragment_events": fragment_events,
     }
@@ -248,6 +256,16 @@ def render_mutation_batch(result: dict[str, Any]) -> str:
                 f"roles={group['edge_roles_json']} "
                 f"published={_bool_value(group['publication_succeeded'])} "
                 f"rollback={_bool_value(group['rollback_succeeded'])}"
+            )
+        for comparison in result["route_oracle_comparisons"]:
+            failure = comparison["failed_invariant"] or "-"
+            lines.append(
+                f"route-oracle[{comparison['comparison_index']}] "
+                f"{comparison['route_id']} outcome={comparison['outcome']} "
+                f"owner=ea@{comparison['owner_ea_hex']} "
+                f"anchor=ea@{comparison['rewrite_anchor_ea_hex']} "
+                f"ledger={comparison['reference_ledger_identity']} "
+                f"failed-invariant={failure}"
             )
         for event in result["fragment_events"]:
             detail = ""
