@@ -11,6 +11,7 @@ from d810.analyses.control_flow.frontend_normalization import (
 )
 from d810.core.observability import subscribe, unsubscribe
 from d810.core.observability_events import LifecycleEventObserved
+from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.ir.block_identity import (
     CurrentMbaBlockIdentityBinding,
     CurrentMbaIdentityBindingSnapshot,
@@ -18,13 +19,27 @@ from d810.ir.block_identity import (
     StableBlockIdentity,
 )
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.manager.decompilation_lifecycle import DecompilationSessionContext
-from d810.manager.frontend_normalization import FrontendNormalizationRunResult
+from d810.manager.frontend_normalization import (
+    FrontendNormalizationPublicationError,
+    FrontendNormalizationRunResult,
+)
 from d810.manager import hexrays_frontend_normalization as live_normalization
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     resolver_session_state,
 )
-from d810.transforms.fragment_plan import FragmentPlanRejected
+from d810.transforms.fragment_plan import (
+    FragmentBlock,
+    FragmentBlockMaterialization,
+    FragmentBlockRole,
+    FragmentEdge,
+    FragmentOperation,
+    FragmentPlan,
+    FragmentPlanRejected,
+    FragmentPublicationPurpose,
+    FragmentWorkItemScope,
+)
 from tests.native_preanalysis import make_native_key
 
 
@@ -55,6 +70,84 @@ def _session() -> DecompilationSessionContext:
     )
 
 
+def _record_complete_plan_intent(session: DecompilationSessionContext) -> FragmentPlan:
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1000, 0x1001),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1000,),
+    )
+    target_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1010, 0x1011),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1010,),
+    )
+    original = FragmentBlock(
+        block_id="source.original",
+        role=FragmentBlockRole.ORIGINAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x1000,
+        stable_identity=source_identity,
+    )
+    replacement = FragmentBlock(
+        block_id="source.replacement",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=0x1000,
+        stable_identity=source_identity,
+        replaces_block_id=original.block_id,
+    )
+    target = FragmentBlock(
+        block_id="target",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x1010,
+        stable_identity=target_identity,
+    )
+    plan = FragmentPlan(
+        plan_id="frontend-normalization:0x1000:g3",
+        atomic_group_id="frontend-normalization:g3",
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        native_key=NATIVE_KEY,
+        blocks=(original, replacement, target),
+        roots=(replacement.block_id,),
+        owned_originals=(original.block_id,),
+        prohibited_dispatcher_blocks=(),
+        operations=(
+            FragmentOperation(
+                operation_id="native-indirect-transfer@0x1000",
+                source_block_id=replacement.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=target.block_id,
+                    ),
+                ),
+            ),
+        ),
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="frontend-normalization:0x1000:g3:complete",
+            selected_obligation_ids=("native-indirect-transfer@0x1000",),
+            remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
+        ),
+    )
+    session.frontend_normalization_plan_authority.record_receipted_plan(
+        plan,
+        authority=NormalizationWorkItemAuthority(
+            evidence_generation=3,
+            publication_revision=1,
+            source_plan_id=plan.plan_id,
+            source_atomic_group_id=plan.atomic_group_id,
+            work_item_id="frontend-normalization:0x1000:g3:complete",
+            published_operation_ids=("native-indirect-transfer@0x1000",),
+            selected_obligation_ids=("native-indirect-transfer@0x1000",),
+            remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
+        ),
+    )
+    return plan
+
+
 def test_live_adapter_reports_only_receipt_backed_pipeline_result(
     monkeypatch,
 ) -> None:
@@ -65,6 +158,7 @@ def test_live_adapter_reports_only_receipt_backed_pipeline_result(
     ).semantic_route_reference_oracle_provider = reference_oracle_provider
     session.native_preanalysis.evidence_generation = 3
     session.native_preanalysis.portable_evidence_ready_generation = 3
+    _record_complete_plan_intent(session)
     mba = SimpleNamespace(
         this=0x5678,
         qty=0,
@@ -174,6 +268,52 @@ def test_live_adapter_abstains_without_lifecycle_owned_materializer(
     }
 
 
+def test_live_adapter_rejects_modified_result_without_complete_plan_intent(
+    monkeypatch,
+) -> None:
+    session = _session()
+    session.native_preanalysis.evidence_generation = 3
+    session.native_preanalysis.portable_evidence_ready_generation = 3
+    mba = SimpleNamespace(this=0x1234)
+    monkeypatch.setattr(
+        live_normalization,
+        "_lift_live_function",
+        lambda live_mba: SimpleNamespace(
+            flow_graph=GRAPH,
+            func_ea=0x1000,
+            live_source=live_mba,
+        ),
+    )
+    monkeypatch.setattr(
+        live_normalization,
+        "_new_live_backend",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        live_normalization,
+        "run_frontend_normalization_pipeline",
+        lambda **_kwargs: FrontendNormalizationRunResult(
+            graph=GRAPH,
+            microcode_modified=True,
+            published_generation=3,
+        ),
+    )
+
+    with pytest.raises(
+        FrontendNormalizationPublicationError,
+        match="lacks receipt-backed complete intent",
+    ):
+        live_normalization.run_live_frontend_normalization(
+            function_ea=0x1000,
+            mba=mba,
+            decision={
+                "session": session,
+                "mutation_gateway": object(),
+                "semantic_native_body_materializer": object(),
+            },
+        )
+
+
 def test_live_adapter_binds_committed_import_identity_to_current_mba(
     monkeypatch,
 ) -> None:
@@ -182,6 +322,7 @@ def test_live_adapter_binds_committed_import_identity_to_current_mba(
     session = _session()
     session.native_preanalysis.evidence_generation = 3
     session.native_preanalysis.portable_evidence_ready_generation = 3
+    complete_plan = _record_complete_plan_intent(session)
     state = resolver_session_state(session)
     mba = SimpleNamespace(this=0x1234)
     imported_origins = (
@@ -254,9 +395,19 @@ def test_live_adapter_binds_committed_import_identity_to_current_mba(
     assert state.current_mba_token == 0x1234
     assert state.current_mba_identity_binding_for(0x1234) is imported_binding
     assert state.imported_instruction_origins_for(0x1234) == imported_origins
-    assert len(observed) == 1
-    assert observed[0].event_kind == "current_mba_import_identity_bound"
-    assert observed[0].payload == {
+    assert len(observed) == 2
+    intent_event, identity_event = observed
+    assert intent_event.event_kind == "frontend_normalization_plan_intent_recorded"
+    assert intent_event.correlation_id == "frontend-normalization:0x1000:g3:complete"
+    assert intent_event.payload["outcome"] == "recorded"
+    assert intent_event.payload["plan_id"] == complete_plan.plan_id
+    assert intent_event.payload["atomic_group_id"] == complete_plan.atomic_group_id
+    assert intent_event.payload["publication_revision"] == 1
+    assert intent_event.payload["block_count"] == 3
+    assert intent_event.payload["operation_count"] == 1
+    assert intent_event.payload["complete_plan"]["plan_id"] == complete_plan.plan_id
+    assert identity_event.event_kind == "current_mba_import_identity_bound"
+    assert identity_event.payload == {
         "outcome": "bound",
         "origin_count": 2,
         "native_ea_count": 2,
