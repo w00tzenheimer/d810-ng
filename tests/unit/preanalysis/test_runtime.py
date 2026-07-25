@@ -372,7 +372,7 @@ def test_validated_fact_view_is_exposed_from_runtime() -> None:
     assert view.observations[0].fact_id == "induction:runtime"
 
 
-def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
+def test_record_fact_consumers_deduplicates_only_within_latest_diag_snapshot() -> None:
     db = make_bound_diag_db()
     conn = db.connection()
     Snapshot.insert(
@@ -426,12 +426,50 @@ def test_record_fact_consumers_persists_to_latest_diag_snapshot() -> None:
         assert json.loads(row[5]) == {"active": 0}
 
         with patch(
-            "d810.core.diag.event_handlers.get_diag_conn", return_value=conn,
+            "d810.core.diag.event_handlers.get_diag_conn",
+            return_value=conn,
         ):
             # New emit; subscriber sees the row already exists and dedups.
             rt.record_fact_consumers(_FUNC_EA, (record,))
 
         assert FactConsumer.select().count() == 1
+
+        Snapshot.insert(
+            id=8,
+            label="next-pre",
+            func_ea_hex=f"0x{_FUNC_EA:016x}",
+            func_ea_i64=_FUNC_EA,
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
+            block_count=4,
+            timestamp=1.0,
+        ).execute()
+        next_record = FactConsumerRecord(
+            consumer=record.consumer,
+            strategy=record.strategy,
+            fact_id=record.fact_id,
+            maturity=record.maturity,
+            decision=record.decision,
+            reason="next-generation",
+            payload={"active": 1},
+        )
+        with patch(
+            "d810.core.diag.event_handlers.get_diag_conn",
+            return_value=conn,
+        ):
+            rt.record_fact_consumers(_FUNC_EA, (next_record,))
+
+        rows = conn.execute(
+            "SELECT snapshot_id, reason, payload FROM fact_consumers "
+            "ORDER BY snapshot_id"
+        ).fetchall()
+        assert [
+            (snapshot_id, reason, json.loads(payload))
+            for snapshot_id, reason, payload in rows
+        ] == [
+            (7, "unit-test", {"active": 0}),
+            (8, "next-generation", {"active": 1}),
+        ]
     finally:
         uninstall_diag_event_handlers()
 
