@@ -721,7 +721,13 @@ class FragmentStoragePredicateMaterialization:
 
 @dataclass(frozen=True, slots=True)
 class FragmentDirectTransferRewrite:
-    """Proof-owned native envelope for one detached direct-route rewrite."""
+    """Proof-owned native envelope for one detached direct-route rewrite.
+
+    The proof corridor may begin in an earlier state-write block.  The owner
+    identifies the native block that contains the rewritten terminator; it is
+    therefore distinct from the first proof coordinate when evidence crosses a
+    native block boundary.
+    """
 
     route_proof_id: str
     owner_identity: StableBlockIdentity
@@ -774,15 +780,21 @@ class FragmentDirectTransferRewrite:
             not proof_corridor_instruction_eas
             or proof_corridor_instruction_eas
             != tuple(sorted(set(proof_corridor_instruction_eas)))
-            or proof_corridor_instruction_eas[0] != owner_anchor_ea
         ):
             raise FragmentPlanRejected(
-                "direct transfer corridor must run from its exact operation owner "
-                "in ordered unique native coordinates"
+                "direct transfer corridor requires ordered unique native coordinates"
             )
         if proof_corridor_instruction_eas[-1] != rewrite_anchor_ea:
             raise FragmentPlanRejected(
                 "direct transfer corridor must end at its rewrite anchor"
+            )
+        if (
+            proof_corridor_instruction_eas[0] > owner_anchor_ea
+            or owner_anchor_ea > rewrite_anchor_ea
+        ):
+            raise FragmentPlanRejected(
+                "direct transfer operation owner must lie between its proof "
+                "origin and rewrite anchor"
             )
         superseded_instruction_eas = tuple(
             _require_native_ea(ea, "superseded direct transfer instruction")
