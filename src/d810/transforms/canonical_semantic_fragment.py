@@ -2338,7 +2338,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
         target_operations,
         native_body,
         nested_state_assignment_proofs,
-        _nested_state_assignment_decisions,
+        nested_state_assignment_decisions,
     ) = _resolved_detached_target_component(
         graph,
         normalization_plan,
@@ -2355,6 +2355,18 @@ def compose_canonical_semantic_boundary_fragment_plan(
             "published canonical boundary owns no semantic route",
             reason_code="published_boundary_semantic_route_missing",
             anchor_ea=boundary_anchor_ea,
+            payload={
+                "boundary_block_id": target.block_id,
+                "boundary_identity": target_identity.diagnostic_label(),
+                "target_block_ids": tuple(block.block_id for block in target_blocks),
+                "target_operation_ids": tuple(
+                    operation.operation_id for operation in target_operations
+                ),
+                "nested_state_route_projection": tuple(
+                    decision.diagnostic_payload()
+                    for decision in nested_state_assignment_decisions
+                ),
+            },
         )
     imported_root_matches = tuple(
         block
