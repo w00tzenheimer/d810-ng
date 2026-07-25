@@ -4174,3 +4174,62 @@ the detached call corridor from state write `0x40B469` through call
 and carries exact call-fallthrough ownership. Do not relabel router
 `0x40B6C0`, weaken component closure, or expand another route group until that
 specific ownership obligation is resolved.
+
+**2026-07-25T11:39:23Z**
+
+Commits `d99f1e089`, `54dc4701d`, and `44b87212c` complete and separately
+format the typed call-backed-corridor staging slice. Canonical state-write
+proofs now preserve the exact authority transfer and ordered call corridor,
+reject inconsistent ownership, and require the matching imported call and
+delivery blocks plus their exact `CALL_FALLTHROUGH` edge whenever such a
+proof is projected. The follow-up evidence fix keeps the authority transfer
+inside the portable delivery region instead of incorrectly requiring it to
+fit the deliberately one-EA delivery anchor identity. No compatibility path,
+architecture ignore, or broad route publication was added.
+
+Focused local verification is 232/232, the pinned Docker resolver suite is
+279/279, and the existing real detached C5 oracle is 1/1. Repository-wide
+Ruff formatting was retained in the separate `54dc4701d` commit as explicitly
+authorized. All three commits pass ast-grep, import-cycle analysis, the
+portable-shape gate, and all 14 import-linter contracts.
+
+Two mandatory exact cache-disabled A560 canaries completed normally without a
+process crash, numeric `INTERR`, or verifier event. The first, at
+`.tmp/rhad-a560-v33-call-corridor-v1.txt`, exposed an evidence-construction
+regression caused by the too-narrow identity invariant; `44b87212c` repairs
+that contract. The current canary completed in 31.99 seconds. Log:
+`.tmp/rhad-a560-v33-call-corridor-v2.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-call-corridor-v2/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-call-corridor-v2/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects the false `while ( 1 )`, so this is not
+A560 acceptance.
+
+The current DB records committed generation-1 and generation-2 frontend
+transactions at 260/260 and 288/288 operations, respectively, but no canonical
+semantic transaction, detached oracle comparison, or semantic C5 receipt.
+Production therefore remains at C2. At CALLS snapshots 3 and 11, the exact
+call-backed proof `state_assignment@0x40B4BA:0xBD9A2C2A` remains
+`source_not_in_component`, with empty source and corridor block sets. The
+first failed C3 obligation remains
+`published_boundary_semantic_route_missing` at native router `0x40B6C0`.
+
+The complete generation-2 frontend plan does contain call block
+`native[0x40B3FF-0x40B4A4;exact=0x40B3FF]:imported`, delivery block
+`native[0x40B4A4-0x40B4C5;exact=0x40B4A4,0x40B4B4,0x40B4BA]:imported`, their
+`native-body-edge@0x40B3FF` call fallthrough, and normalized indirect transfer
+`native-indirect-transfer@0x40B4C3`. The diagnostic transaction JSON is only
+the selected publication work item, not that complete authority plan. The
+actual connectivity defect is that `0x40B3FF` is one of 325 disconnected
+native-body entry blocks and has no incoming operation edge. Forward component
+traversal therefore cannot reach it merely because it is marked required.
+
+This rejects the narrower required-staging hypothesis without invalidating the
+typed proof or corridor validation. Continue at the bounded entry-connectivity
+obligation: compose the smallest semantic-predecessor closure that connects a
+selected root to handler entry `0x40B3FF`, then stage its call-backed route and
+target as one closed detached fragment. Do not add all 325 entries, stage all
+91 routes, or treat successful mutation calls as semantic publication. Before
+changing closure behavior, make the diagnostic DB record each route-level
+composition attempt and the exact entry-connectivity rejection so later
+canaries do not collapse the evidence into one final rejection.
