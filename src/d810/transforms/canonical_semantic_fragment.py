@@ -644,6 +644,7 @@ def _detached_target_component(
     allow_unresolved_published_boundaries: bool,
     prohibited_dispatcher_serials: frozenset[int],
     replaced_current_owner_serials: frozenset[int],
+    required_staged_destination_ids: frozenset[str],
 ) -> tuple[
     tuple[FragmentBlock, ...],
     tuple[FragmentOperation, ...],
@@ -789,6 +790,9 @@ def _detached_target_component(
                             ),
                         },
                     )
+                if edge_target.block_id in required_staged_destination_ids:
+                    pending.append(edge_target.block_id)
+                    continue
                 if edge_target.block_id != target.block_id and len(current_owners) == 1:
                     if edge_target.block_id in proof_owned_reimport_source_ids:
                         pending.append(edge_target.block_id)
@@ -1668,6 +1672,7 @@ def _resolved_detached_target_component(
                 allow_unresolved_published_boundaries=True,
                 prohibited_dispatcher_serials=prohibited_dispatcher_serials,
                 replaced_current_owner_serials=replaced_current_owner_serials,
+                required_staged_destination_ids=frozenset(),
             )
         )
         (
@@ -1745,6 +1750,24 @@ def _resolved_detached_target_component(
         if item.proof_id in nested_decision_by_proof_id
     )
     try:
+        required_staged_destination_ids = frozenset(
+            _unique_plan_block(
+                effective_normalization_plan,
+                destination.target_identity,
+                destination.target_anchor_ea,
+                roles=frozenset(
+                    {
+                        FragmentBlockRole.EXTERNAL,
+                        FragmentBlockRole.IMPORTED,
+                        FragmentBlockRole.REPLACEMENT,
+                    }
+                ),
+                description="nested terminal destination",
+            ).block_id
+            for proof in nested_route_proofs
+            if proof.proof_kind is SemanticRouteProofKind.TERMINAL_RETURN
+            for destination in proof.destinations
+        )
         target_blocks, target_operations, native_body = _detached_target_component(
             graph,
             effective_normalization_plan,
@@ -1760,6 +1783,7 @@ def _resolved_detached_target_component(
             allow_unresolved_published_boundaries=False,
             prohibited_dispatcher_serials=prohibited_dispatcher_serials,
             replaced_current_owner_serials=replaced_current_owner_serials,
+            required_staged_destination_ids=required_staged_destination_ids,
         )
     except CanonicalSemanticFragmentRejected as exc:
         if not nested_route_decisions:
