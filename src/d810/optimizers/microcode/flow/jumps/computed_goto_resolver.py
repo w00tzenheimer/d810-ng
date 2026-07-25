@@ -2763,9 +2763,7 @@ def _live_tail_bytes(split_ea: int, jmp_ea: int) -> _RelocatableLiveTail | None:
             return None
         instruction_eas.append(int(ea))
         ea += length
-    data = bytes(
-        ida_bytes.get_bytes(int(split_ea), int(jmp_ea) - int(split_ea)) or b""
-    )
+    data = bytes(ida_bytes.get_bytes(int(split_ea), int(jmp_ea) - int(split_ea)) or b"")
     if len(data) != int(jmp_ea) - int(split_ea):
         return None
     return _RelocatableLiveTail(tuple(instruction_eas), data)

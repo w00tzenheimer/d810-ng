@@ -697,9 +697,9 @@ class FragmentDirectTransferRewrite:
     delivery_region: NativeEaInterval
     proof_corridor_instruction_eas: tuple[int, ...]
     superseded_instruction_eas: tuple[int, ...]
-    source_computed_branch_normalization: (
-        FragmentComputedBranchNormalization | None
-    ) = None
+    source_computed_branch_normalization: FragmentComputedBranchNormalization | None = (
+        None
+    )
     source_predicate_anchor_ea: int | None = None
     reference_route: ReferenceRouteRewrite | None = None
 
@@ -914,9 +914,7 @@ class FragmentOperation:
             superseded_normalization,
             FragmentComputedBranchNormalization,
         ):
-            raise TypeError(
-                "fragment operation superseded normalization is invalid"
-            )
+            raise TypeError("fragment operation superseded normalization is invalid")
         if (superseded_normalization is None) != (
             superseded_predicate_anchor_ea is None
         ):
