@@ -9,10 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GATE_PATH = REPO_ROOT / "tools" / "scripts" / "portable_cfg_transaction_parity_gate.py"
 LEDGER_PATH = (
-    REPO_ROOT
-    / "tools"
-    / "scripts"
-    / "portable_cfg_transaction_parity_ledger.json"
+    REPO_ROOT / "tools" / "scripts" / "portable_cfg_transaction_parity_ledger.json"
 )
 
 
@@ -37,9 +34,7 @@ def test_parity_ledger_is_complete_and_all_anchors_resolve() -> None:
     assert {entry["id"] for entry in ledger["guarantees"]} == set(
         gate.REQUIRED_GUARANTEE_IDS
     )
-    assert ledger["donor"]["commit"] == (
-        "ab769f182942f83191d883151d74b78fecac43cb"
-    )
+    assert ledger["donor"]["commit"] == ("ab769f182942f83191d883151d74b78fecac43cb")
 
 
 def test_strict_gate_refuses_to_call_partial_runtime_integration_complete() -> None:
