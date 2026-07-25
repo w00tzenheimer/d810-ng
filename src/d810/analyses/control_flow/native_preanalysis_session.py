@@ -1918,6 +1918,23 @@ class NativePreanalysisSessionState:
                     diagnostic_provenance=(
                         ("provider_proof_kind", route.proof_kind.value),
                         ("delivery_kind", route.delivery_kind.value),
+                        *(
+                            (
+                                (
+                                    "authority_transfer_ea",
+                                    f"0x{int(route.authority_transfer_ea):X}",
+                                ),
+                                (
+                                    "preserved_call_instruction_eas",
+                                    ",".join(
+                                        f"0x{int(ea):X}"
+                                        for ea in route.preserved_call_instruction_eas
+                                    ),
+                                ),
+                            )
+                            if route.authority_transfer_ea is not None
+                            else ()
+                        ),
                     ),
                 )
             )

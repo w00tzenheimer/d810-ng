@@ -531,6 +531,8 @@ def test_state_write_route_inventory_is_published_once_on_a_real_snapshot(
         state_constant=0x12345678,
         target_identity=target,
         target_ea=0x401100,
+        authority_transfer_ea=None,
+        preserved_call_instruction_eas=(),
     )
     assert session.native_preanalysis.merge_state_write_routes(NATIVE_KEY, (route,))
     published: list[object] = []
@@ -559,6 +561,8 @@ def test_state_write_route_inventory_is_published_once_on_a_real_snapshot(
         "state_var_reg": 20,
         "state_constant": "0x12345678",
         "target_ea": "0x401100",
+        "authority_transfer_ea": None,
+        "preserved_call_instruction_eas": [],
         "inventory_revision": 1,
     }
 

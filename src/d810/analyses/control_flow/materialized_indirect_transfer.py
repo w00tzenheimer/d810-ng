@@ -476,6 +476,8 @@ class PortableStateWriteRouteEvidence:
     state_constant: int
     target_identity: StableBlockIdentity
     target_ea: int
+    authority_transfer_ea: int | None
+    preserved_call_instruction_eas: tuple[int, ...]
     proof_kind: StateWriteRouteProofKind = StateWriteRouteProofKind.STATE_ASSIGNMENT
     delivery_kind: StateWriteRouteDeliveryKind = StateWriteRouteDeliveryKind.DISPATCHER
 
@@ -490,6 +492,14 @@ class PortableStateWriteRouteEvidence:
         delivery_region_end_ea = int(self.delivery_region_end_ea)
         target_ea = int(self.target_ea)
         corridor = tuple(int(ea) for ea in self.corridor_instruction_eas)
+        authority_transfer_ea = (
+            None
+            if self.authority_transfer_ea is None
+            else int(self.authority_transfer_ea)
+        )
+        preserved_call_instruction_eas = tuple(
+            int(ea) for ea in self.preserved_call_instruction_eas
+        )
         if not self.write_identity.native_ranges.contains(source_write_ea):
             raise ValueError("state-route source write is outside write identity")
         if not self.delivery_identity.native_ranges.contains(delivery_ea):
@@ -505,6 +515,34 @@ class PortableStateWriteRouteEvidence:
             raise ValueError("state-route corridor must span source write to delivery")
         if not self.target_identity.native_ranges.contains(target_ea):
             raise ValueError("state-route target is outside target identity")
+        if (authority_transfer_ea is None) != (
+            not preserved_call_instruction_eas
+        ):
+            raise ValueError(
+                "state-route call preservation requires one transfer authority"
+            )
+        if authority_transfer_ea is not None and not (
+            delivery_region_start_ea
+            <= authority_transfer_ea
+            < delivery_region_end_ea
+        ):
+            raise ValueError(
+                "state-route transfer authority is outside delivery region"
+            )
+        if preserved_call_instruction_eas:
+            if preserved_call_instruction_eas != tuple(
+                sorted(set(preserved_call_instruction_eas))
+            ) or not set(preserved_call_instruction_eas).issubset(corridor):
+                raise ValueError(
+                    "state-route preserved calls require unique corridor heads"
+                )
+            if any(
+                not source_write_ea < call_ea < delivery_ea
+                for call_ea in preserved_call_instruction_eas
+            ):
+                raise ValueError(
+                    "state-route preserved calls must lie between write and delivery"
+                )
         native_keys = {
             self.write_identity.native_key,
             self.delivery_identity.native_key,
@@ -527,6 +565,12 @@ class PortableStateWriteRouteEvidence:
         object.__setattr__(self, "state_var_reg", state_var_reg)
         object.__setattr__(self, "state_constant", int(self.state_constant))
         object.__setattr__(self, "target_ea", target_ea)
+        object.__setattr__(self, "authority_transfer_ea", authority_transfer_ea)
+        object.__setattr__(
+            self,
+            "preserved_call_instruction_eas",
+            preserved_call_instruction_eas,
+        )
 
     def diagnostic_payload(self, *, generation: int) -> dict[str, object]:
         """Return the portable route in DB-queryable native coordinates."""
@@ -544,6 +588,14 @@ class PortableStateWriteRouteEvidence:
             "state_var_reg": self.state_var_reg,
             "state_constant": f"0x{self.state_constant:X}",
             "target_ea": f"0x{self.target_ea:X}",
+            "authority_transfer_ea": (
+                None
+                if self.authority_transfer_ea is None
+                else f"0x{self.authority_transfer_ea:X}"
+            ),
+            "preserved_call_instruction_eas": [
+                f"0x{ea:X}" for ea in self.preserved_call_instruction_eas
+            ],
         }
 
 

@@ -6321,6 +6321,105 @@ def _select_frontend_normalized_state_write_assignment(
     )
 
 
+def _select_handler_exit_backed_frontend_state_write_assignment(
+    decoded: Sequence[_DecodedStateRouteInstruction],
+    *,
+    state_var_reg: int,
+    delivery_ea: int,
+) -> tuple[int, int, tuple[int, ...], tuple[int, ...]] | None:
+    """Select a normalized state route whose intervening calls are proven.
+
+    The caller must separately bind an exact ``static_handler_exit_route`` at
+    the original indirect transfer.  Neutralizing calls only for the pure
+    selector lets the existing straight-corridor checks prove every other
+    instruction while returning the exact call heads that require that exit
+    authority.
+    """
+    ordered = tuple(decoded)
+    call_instruction_eas = tuple(
+        int(instruction.ea)
+        for instruction in ordered
+        if str(instruction.mnemonic).lower() == "call"
+    )
+    if not call_instruction_eas:
+        return None
+    call_neutralized = tuple(
+        _DecodedStateRouteInstruction(
+            int(instruction.ea),
+            int(instruction.end_ea),
+            (
+                "nop"
+                if str(instruction.mnemonic).lower() == "call"
+                else str(instruction.mnemonic)
+            ),
+            instruction.destination_mreg,
+            bool(instruction.writes_destination),
+            instruction.immediate,
+        )
+        for instruction in ordered
+    )
+    selected = _select_frontend_normalized_state_write_assignment(
+        call_neutralized,
+        state_var_reg=int(state_var_reg),
+        delivery_ea=int(delivery_ea),
+    )
+    if selected is None:
+        return None
+    corridor_instruction_eas = tuple(int(ea) for ea in selected[2])
+    corridor_heads = frozenset(corridor_instruction_eas)
+    preserved_call_instruction_eas = tuple(
+        ea for ea in call_instruction_eas if ea in corridor_heads
+    )
+    if not preserved_call_instruction_eas:
+        return None
+    return (
+        int(selected[0]),
+        int(selected[1]),
+        corridor_instruction_eas,
+        preserved_call_instruction_eas,
+    )
+
+
+def _exact_handler_exit_authority_for_normalization(
+    plan: ComputedGotoPatchPlan,
+    transfers: Sequence[MaterializedIndirectTransfer],
+    *,
+    state_var_reg: int,
+    state_targets: Mapping[int, int],
+) -> MaterializedIndirectTransfer | None:
+    """Bind one normalized transfer to one exact post-call state proof."""
+    plan_targets = frozenset(int(target_ea) for target_ea in plan.target_eas)
+    candidates = tuple(
+        transfer
+        for transfer in transfers
+        if transfer.resolver_kind == "static_handler_exit_route"
+        and int(transfer.source_jmp_ea) == int(plan.jmp_ea)
+        and int(transfer.source_block_ea) == int(plan.block_entry)
+        and transfer.selector_state_var_reg is not None
+        and int(transfer.selector_state_var_reg) == int(state_var_reg)
+        and transfer.selector_state_constant is not None
+        and len(transfer.target_eas) == 1
+        and frozenset(
+            int(target_ea)
+            for target_ea in transfer.dispatcher_envelope_target_eas
+        )
+        == plan_targets
+    )
+    if len(candidates) != 1:
+        return None
+    authority = candidates[0]
+    state_constant = int(authority.selector_state_constant) & _MASK32
+    state_values = {
+        int(value) & _MASK32
+        for register, value in authority.source_register_values
+        if int(register) == int(state_var_reg)
+    }
+    target_ea = int(authority.target_eas[0])
+    if state_values != {state_constant} or state_targets.get(state_constant) != target_ea:
+        return None
+    return authority
+
+
 def _decode_native_flow_route_inventory(
     function_ea: int,
     envelope_end_ea: int,
@@ -6531,6 +6630,8 @@ def _discover_static_state_write_routes(
                 native_key=state.native_key,
             ),
             target_ea=int(route.target_ea),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
             proof_kind=StateWriteRouteProofKind.STATE_ASSIGNMENT,
             delivery_kind=StateWriteRouteDeliveryKind.DIRECT_TARGET,
         )
@@ -6553,6 +6654,8 @@ def _discover_static_state_write_routes(
         *((site, None) for site in direct_delivery_sites),
     )
     for site, normalization_plan in delivery_sites:
+        authority_transfer_ea: int | None = None
+        preserved_call_instruction_eas: tuple[int, ...] = ()
         decoded = _decode_static_state_route_corridor(
             int(site.block_entry_ea),
             int(site.delivery_ea),
@@ -6572,6 +6675,35 @@ def _discover_static_state_write_routes(
                 delivery_ea=int(site.delivery_ea),
             )
         )
+        if (
+            selected is None
+            and normalization_plan is not None
+            and int(site.delivery_ea) != int(normalization_plan.jmp_ea)
+        ):
+            exit_authority = _exact_handler_exit_authority_for_normalization(
+                normalization_plan,
+                transfers,
+                state_var_reg=int(state_var_reg),
+                state_targets=state_targets,
+            )
+            if exit_authority is not None:
+                backed = (
+                    _select_handler_exit_backed_frontend_state_write_assignment(
+                        decoded,
+                        state_var_reg=int(state_var_reg),
+                        delivery_ea=int(site.delivery_ea),
+                    )
+                )
+                if (
+                    backed is not None
+                    and (int(backed[1]) & _MASK32)
+                    == (int(exit_authority.selector_state_constant) & _MASK32)
+                    and state_targets.get(int(backed[1]) & _MASK32)
+                    == int(exit_authority.target_eas[0])
+                ):
+                    selected = (int(backed[0]), int(backed[1]), tuple(backed[2]))
+                    authority_transfer_ea = int(exit_authority.source_jmp_ea)
+                    preserved_call_instruction_eas = tuple(backed[3])
         if selected is None:
             continue
         assignment_count += 1
@@ -6608,6 +6740,8 @@ def _discover_static_state_write_routes(
                 native_key=state.native_key,
             ),
             target_ea=target_ea,
+            authority_transfer_ea=authority_transfer_ea,
+            preserved_call_instruction_eas=preserved_call_instruction_eas,
             delivery_kind=(
                 StateWriteRouteDeliveryKind.DIRECT_TARGET
                 if normalization_plan is not None

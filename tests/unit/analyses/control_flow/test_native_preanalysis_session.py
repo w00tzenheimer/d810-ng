@@ -453,6 +453,8 @@ def test_lifecycle_owns_native_state_write_delivery_routes() -> None:
         state_constant=0xABB95547,
         target_identity=target,
         target_ea=0x40BECC,
+        authority_transfer_ea=None,
+        preserved_call_instruction_eas=(),
     )
     observed = []
     state = NativePreanalysisSessionState(event_observer=observed.append)
@@ -567,6 +569,8 @@ def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() 
         state_constant=0xABB95547,
         target_identity=target_identity,
         target_ea=0x40BECC,
+        authority_transfer_ea=None,
+        preserved_call_instruction_eas=(),
         proof_kind=StateWriteRouteProofKind.STATE_ASSIGNMENT,
         delivery_kind=StateWriteRouteDeliveryKind.DIRECT_TARGET,
     )
@@ -684,6 +688,8 @@ def test_canonical_semantic_evidence_groups_terminal_carrier_with_its_route() ->
             native_key=NATIVE_KEY,
         ),
         target_ea=0x40C898,
+        authority_transfer_ea=None,
+        preserved_call_instruction_eas=(),
     )
     state = NativePreanalysisSessionState()
     assert state.merge_state_write_routes(NATIVE_KEY, (route,))
@@ -872,6 +878,8 @@ def test_canonical_semantic_evidence_projects_complete_entry_consumer() -> None:
                 state_constant=0x12345678,
                 target_identity=direct_target_identity,
                 target_ea=0x6000,
+                authority_transfer_ea=None,
+                preserved_call_instruction_eas=(),
             ),
         ),
     )
@@ -902,6 +910,8 @@ def test_state_write_delivery_route_rejects_mismatched_native_key() -> None:
             native_key=other_key,
         ),
         target_ea=0x40BECC,
+        authority_transfer_ea=None,
+        preserved_call_instruction_eas=(),
     )
 
     with pytest.raises(NativePreanalysisKeyMismatch):
