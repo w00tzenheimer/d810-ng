@@ -68,6 +68,7 @@ from d810.transforms.fragment_plan import (
     FragmentPlanRejected,
     FragmentPublicationPurpose,
 )
+from d810.transforms import frontend_normalization as frontend_normalization_transform
 from d810.transforms.frontend_normalization import (
     FrontendNormalizationCorridorRejected,
     plan_frontend_computed_branch_normalization,
@@ -1769,6 +1770,265 @@ def test_imported_state_choice_consumes_its_exact_three_block_envelope() -> None
                 for operation in plan.operations
             ),
         )
+
+
+@pytest.mark.parametrize("resolver_proven", (True, False))
+def test_same_native_block_select_envelope_requires_resolver_owned_join(
+    resolver_proven,
+) -> None:
+    source_ea = 0x1400
+    condition_ea = 0x1400
+    predicate_ea = 0x140C
+    selected_ea = 0x1420
+    join_ea = 0x1430
+    relocated_ea = 0x1434
+    transfer_ea = 0x143E
+    end_ea = 0x1440
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(source_ea, end_ea),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(condition_ea, predicate_ea, transfer_ea),
+    )
+    proof = NativeIndirectTransferProof(
+        proof_id=f"native-state-choice@0x{predicate_ea:X}",
+        atomic_group_id="frontend-normalization:g7",
+        shape=NativeTransferShape.CONDITIONAL,
+        source_identity=source_identity,
+        source_anchor_ea=predicate_ea,
+        source_transfer_ea=transfer_ea,
+        endpoints=(
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                identity=_identity(0x1500),
+                anchor_ea=0x1500,
+            ),
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                identity=_identity(0x1600),
+                anchor_ea=0x1600,
+            ),
+        ),
+        predicate_kind=PredicateKind.SLT,
+        predicate_anchor_ea=predicate_ea,
+        condition_producer_ea=condition_ea,
+        flag_corridor=(source_identity,),
+        permitted_flag_write_eas=frozenset({condition_ea}),
+        relocated_instruction_eas=(relocated_ea,),
+        conditional_select_ea=selected_ea,
+        conditional_select_join_ea=join_ea,
+    )
+    source = NativeBlock(
+        start_ea=source_ea,
+        end_ea=end_ea,
+        outgoing_edges=(
+            NativeEdge(
+                kind=NativeEdgeKind.INDIRECT,
+                target_ea=0x1500,
+                resolver_proven=resolver_proven,
+                provenance="resolver_proven_native_cut",
+                source_instruction_ea=transfer_ea,
+            ),
+            NativeEdge(
+                kind=NativeEdgeKind.INDIRECT,
+                target_ea=0x1600,
+                resolver_proven=resolver_proven,
+                provenance="resolver_proven_native_cut",
+                source_instruction_ea=transfer_ea,
+            ),
+        ),
+        terminal=NativeTerminalKind.STOP,
+    )
+    closure = NativeSemanticClosure(
+        included_block_eas=(source_ea,),
+        native_ranges=(NativeRange(source_ea, end_ea),),
+        proven_internal_edges=(),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    request = DetachedSemanticClosureImportRequest(
+        native_key=NATIVE_KEY,
+        generation=1,
+        atomic_group_id="frontend-normalization:g7",
+        required_entry_eas=(source_ea,),
+        native_ranges=(NativeRange(source_ea, end_ea),),
+        proof_ids=(proof.proof_id,),
+        semantic_closure=closure,
+        native_cfg=NativeCfg({source_ea: source}),
+    )
+    binding = frontend_normalization_transform._ImportedTransferProof(
+        proof=proof,
+        source=source,
+        endpoints=(),
+        corridor=(source,),
+    )
+
+    if not resolver_proven:
+        with pytest.raises(
+            FrontendNormalizationEvidenceRejected,
+            match="same-block conditional-select join lacks resolver ownership",
+        ):
+            frontend_normalization_transform._bind_imported_conditional_select_envelope(
+                request,
+                binding,
+            )
+        return
+
+    envelope = (
+        frontend_normalization_transform._bind_imported_conditional_select_envelope(
+            request,
+            binding,
+        )
+    )
+
+    assert envelope is not None
+    assert envelope.source_branch_ea == selected_ea
+    assert envelope.selected_value_ea == selected_ea
+    assert (envelope.selected_value.start_ea, envelope.selected_value.end_ea) == (
+        selected_ea,
+        join_ea,
+    )
+    assert (envelope.join.start_ea, envelope.join.end_ea) == (join_ea, end_ea)
+
+
+def test_same_native_block_select_envelope_is_one_explicit_imported_partition() -> (
+    None
+):
+    source_ea = 0x1400
+    condition_ea = 0x1404
+    normalization_start_ea = 0x1410
+    selected_ea = 0x1420
+    join_ea = 0x1430
+    predicate_ea = 0x1434
+    relocated_ea = 0x1438
+    transfer_ea = 0x143E
+    end_ea = 0x1440
+    true_target_ea = 0x1500
+    false_target_ea = 0x1600
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(source_ea, end_ea),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(condition_ea, predicate_ea, transfer_ea),
+    )
+    imported_proof = NativeIndirectTransferProof(
+        proof_id=f"native-state-choice@0x{predicate_ea:X}",
+        atomic_group_id="frontend-normalization:g7",
+        shape=NativeTransferShape.CONDITIONAL,
+        source_identity=source_identity,
+        source_anchor_ea=normalization_start_ea,
+        source_transfer_ea=transfer_ea,
+        endpoints=(
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                identity=_identity(true_target_ea),
+                anchor_ea=true_target_ea,
+            ),
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                identity=_identity(false_target_ea),
+                anchor_ea=false_target_ea,
+            ),
+        ),
+        predicate_kind=PredicateKind.SLT,
+        predicate_anchor_ea=predicate_ea,
+        condition_producer_ea=condition_ea,
+        flag_corridor=(source_identity,),
+        permitted_flag_write_eas=frozenset({condition_ea}),
+        relocated_instruction_eas=(relocated_ea,),
+        conditional_select_ea=selected_ea,
+        conditional_select_join_ea=join_ea,
+    )
+    live_proof = replace(
+        _conditional_proof(),
+        endpoints=(
+            _conditional_proof().endpoints[0],
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                identity=_identity(source_ea, end_ea),
+                anchor_ea=source_ea,
+            ),
+        ),
+    )
+    closure = NativeSemanticClosure(
+        included_block_eas=(source_ea, true_target_ea, false_target_ea),
+        native_ranges=(
+            NativeRange(source_ea, end_ea),
+            NativeRange(true_target_ea, 0x1510),
+            NativeRange(false_target_ea, 0x1610),
+        ),
+        proven_internal_edges=(),
+        abstentions=(),
+        seed_provenance=(),
+    )
+    native_cfg = NativeCfg(
+        {
+            source_ea: NativeBlock(
+                start_ea=source_ea,
+                end_ea=end_ea,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.INDIRECT,
+                        target_ea=true_target_ea,
+                        resolver_proven=True,
+                        provenance="resolver_proven_native_cut",
+                        source_instruction_ea=transfer_ea,
+                    ),
+                    NativeEdge(
+                        kind=NativeEdgeKind.INDIRECT,
+                        target_ea=false_target_ea,
+                        resolver_proven=True,
+                        provenance="resolver_proven_native_cut",
+                        source_instruction_ea=transfer_ea,
+                    ),
+                ),
+                terminal=NativeTerminalKind.STOP,
+            ),
+            true_target_ea: NativeBlock(
+                start_ea=true_target_ea,
+                end_ea=0x1510,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+            false_target_ea: NativeBlock(
+                start_ea=false_target_ea,
+                end_ea=0x1610,
+                terminal=NativeTerminalKind.RETURN,
+            ),
+        }
+    )
+    evidence = replace(
+        _evidence(closure=closure, native_cfg=native_cfg),
+        transfer_proofs=(live_proof, imported_proof),
+    )
+
+    plan = plan_frontend_computed_branch_normalization(
+        _graph(faithful=False, include_false_target=False),
+        evidence,
+    )
+
+    imported_operation = plan.operation(imported_proof.proof_id)
+    imported_source = plan.block(imported_operation.source_block_id)
+    assert imported_source.stable_identity == StableBlockIdentity.from_intervals(
+        (NativeEaInterval(source_ea, end_ea),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(source_ea, condition_ea, predicate_ea, transfer_ea),
+    )
+    normalization = imported_operation.computed_branch_normalization
+    assert normalization is not None
+    assert normalization.conditional_select_envelope == (
+        FragmentImportedConditionalSelectEnvelope(
+            source_branch_ea=selected_ea,
+            selected_value_ea=selected_ea,
+            selected_value_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(selected_ea, join_ea),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(selected_ea,),
+            ),
+            join_identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(join_ea, end_ea),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(join_ea, transfer_ea),
+            ),
+        )
+    )
 
 
 def test_imported_call_continuation_keeps_its_portable_fallthrough_role() -> None:

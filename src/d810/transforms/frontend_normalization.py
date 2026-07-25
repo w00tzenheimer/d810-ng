@@ -18,6 +18,7 @@ from d810.analyses.control_flow.frontend_normalization import (
 )
 from d810.analyses.control_flow.native_semantic_closure import (
     NativeBlock,
+    NativeEdge,
     NativeEdgeKind,
     NativeTerminalKind,
 )
@@ -783,7 +784,58 @@ def _bind_imported_conditional_select_envelope(
     if proof.shape is not NativeTransferShape.CONDITIONAL:
         return None
     if int(source.start_ea) <= transfer_ea < int(source.end_ea):
-        return None
+        selected_ea = proof.conditional_select_ea
+        join_ea = proof.conditional_select_join_ea
+        if selected_ea is None or join_ea is None:
+            return None
+        selected_ea = int(selected_ea)
+        join_ea = int(join_ea)
+        control_edges = tuple(
+            edge
+            for edge in source.outgoing_edges
+            if edge.kind is not NativeEdgeKind.CALL
+        )
+        endpoint_eas = {int(endpoint.anchor_ea) for endpoint in proof.endpoints}
+        if (
+            source.terminal is not NativeTerminalKind.STOP
+            or len(control_edges) != len(endpoint_eas)
+            or {int(edge.target_ea) for edge in control_edges if edge.target_ea is not None}
+            != endpoint_eas
+            or any(
+                edge.kind is not NativeEdgeKind.INDIRECT
+                or not edge.resolver_proven
+                or edge.provenance != "resolver_proven_native_cut"
+                or edge.target_ea is None
+                or edge.source_instruction_ea is None
+                or int(edge.source_instruction_ea) != transfer_ea
+                for edge in control_edges
+            )
+        ):
+            raise FrontendNormalizationEvidenceRejected(
+                f"transfer proof {proof.proof_id!r} same-block "
+                "conditional-select join lacks resolver ownership"
+            )
+        return _BoundImportedConditionalSelectEnvelope(
+            source_branch_ea=selected_ea,
+            selected_value_ea=selected_ea,
+            selected_value=NativeBlock(
+                start_ea=selected_ea,
+                end_ea=join_ea,
+                outgoing_edges=(
+                    NativeEdge(
+                        kind=NativeEdgeKind.FALLTHROUGH,
+                        target_ea=join_ea,
+                        source_instruction_ea=selected_ea,
+                    ),
+                ),
+            ),
+            join=NativeBlock(
+                start_ea=join_ea,
+                end_ea=int(source.end_ea),
+                outgoing_edges=control_edges,
+                terminal=NativeTerminalKind.STOP,
+            ),
+        )
 
     control_edges = tuple(
         edge for edge in source.outgoing_edges if edge.kind is not NativeEdgeKind.CALL

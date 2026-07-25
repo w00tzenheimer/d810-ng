@@ -1272,6 +1272,8 @@ def test_conditional_patch_proof_carries_relocated_native_instruction_inventory(
         true_target_ea=0x40C4B4,
         false_target_ea=0x40A5F0,
         condition_producer_ea=0x40ADF7,
+        conditional_select_ea=0x40AE05,
+        conditional_select_join_ea=0x40AE08,
         relocated_instruction_eas=relocated_instruction_eas,
     )
 
@@ -1283,6 +1285,8 @@ def test_conditional_patch_proof_carries_relocated_native_instruction_inventory(
 
     assert proof.shape is NativeTransferShape.CONDITIONAL
     assert proof.predicate_anchor_ea == 0x40AE09
+    assert proof.conditional_select_ea == 0x40AE05
+    assert proof.conditional_select_join_ea == 0x40AE08
     assert proof.relocated_instruction_eas == relocated_instruction_eas
 
 

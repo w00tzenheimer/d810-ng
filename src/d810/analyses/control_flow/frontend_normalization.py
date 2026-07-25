@@ -97,6 +97,8 @@ class NativeIndirectTransferProof:
     condition_producer_ea: int | None = None
     flag_corridor: tuple[StableBlockIdentity, ...] = ()
     permitted_flag_write_eas: frozenset[int] = frozenset()
+    conditional_select_ea: int | None = None
+    conditional_select_join_ea: int | None = None
     relocated_instruction_eas: tuple[int, ...] = ()
     diagnostic_provenance: tuple[tuple[str, str], ...] = ()
 
@@ -181,6 +183,28 @@ class NativeIndirectTransferProof:
             _native_ea(ea, "permitted native flag writer")
             for ea in self.permitted_flag_write_eas
         )
+        conditional_select_ea = (
+            None
+            if self.conditional_select_ea is None
+            else _native_ea(
+                self.conditional_select_ea,
+                "native conditional-select instruction",
+            )
+        )
+        conditional_select_join_ea = (
+            None
+            if self.conditional_select_join_ea is None
+            else _native_ea(
+                self.conditional_select_join_ea,
+                "native conditional-select join",
+            )
+        )
+        if (conditional_select_ea is None) != (
+            conditional_select_join_ea is None
+        ):
+            raise FrontendNormalizationEvidenceRejected(
+                "native conditional-select coordinates require a complete pair"
+            )
         relocated_instruction_eas = tuple(
             _native_ea(ea, "relocated native instruction")
             for ea in self.relocated_instruction_eas
@@ -202,6 +226,7 @@ class NativeIndirectTransferProof:
                 or predicate_kind is not None
                 or flag_corridor
                 or permitted_flag_write_eas
+                or conditional_select_ea is not None
                 or relocated_instruction_eas
             ):
                 raise FrontendNormalizationEvidenceRejected(
@@ -248,6 +273,25 @@ class NativeIndirectTransferProof:
                 raise FrontendNormalizationEvidenceRejected(
                     "flag corridor must permit its condition producer"
                 )
+            if conditional_select_ea is not None and (
+                not _identity_contains(
+                    self.source_identity,
+                    conditional_select_ea,
+                )
+                or not _identity_contains(
+                    self.source_identity,
+                    conditional_select_join_ea,
+                )
+                or not (
+                    conditional_select_ea
+                    < conditional_select_join_ea
+                    < source_transfer_ea
+                )
+            ):
+                raise FrontendNormalizationEvidenceRejected(
+                    "native conditional-select coordinates must form an ordered "
+                    "source-owned envelope"
+                )
             if any(
                 not any(_identity_contains(identity, ea) for identity in flag_corridor)
                 for ea in permitted_flag_write_eas
@@ -265,6 +309,14 @@ class NativeIndirectTransferProof:
                 raise FrontendNormalizationEvidenceRejected(
                     "relocated native instructions must lie between the synthetic "
                     "predicate and unresolved transfer"
+                )
+            if conditional_select_join_ea is not None and any(
+                not conditional_select_join_ea <= ea < source_transfer_ea
+                for ea in relocated_instruction_eas
+            ):
+                raise FrontendNormalizationEvidenceRejected(
+                    "relocated native instructions must belong to the "
+                    "conditional-select join suffix"
                 )
 
         provenance: list[tuple[str, str]] = []
@@ -293,6 +345,12 @@ class NativeIndirectTransferProof:
             self,
             "permitted_flag_write_eas",
             permitted_flag_write_eas,
+        )
+        object.__setattr__(self, "conditional_select_ea", conditional_select_ea)
+        object.__setattr__(
+            self,
+            "conditional_select_join_ea",
+            conditional_select_join_ea,
         )
         object.__setattr__(
             self,

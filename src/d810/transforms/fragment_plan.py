@@ -258,6 +258,39 @@ def _stable_identity_overlap_is_one_shared_anchor(
     )
 
 
+def _stable_identity_contains_conditional_select_partition(
+    source: StableBlockIdentity,
+    selected: StableBlockIdentity,
+    join: StableBlockIdentity,
+    *,
+    source_branch_ea: int,
+    selected_value_ea: int,
+) -> bool:
+    """Recognize one exact select/join suffix partition of a native source."""
+    source_intervals = source.native_ranges.intervals
+    selected_intervals = selected.native_ranges.intervals
+    join_intervals = join.native_ranges.intervals
+    if (
+        len(source_intervals) != 1
+        or len(selected_intervals) != 1
+        or len(join_intervals) != 1
+    ):
+        return False
+    source_interval = source_intervals[0]
+    selected_interval = selected_intervals[0]
+    join_interval = join_intervals[0]
+    return bool(
+        int(source_branch_ea)
+        == int(selected_value_ea)
+        == int(selected_interval.start_ea)
+        and int(source_interval.start_ea) < int(selected_interval.start_ea)
+        and int(selected_interval.start_ea) < int(selected_interval.end_ea)
+        and int(selected_interval.end_ea) == int(join_interval.start_ea)
+        and int(join_interval.start_ea) < int(join_interval.end_ea)
+        and int(join_interval.end_ea) == int(source_interval.end_ea)
+    )
+
+
 def _identity_belongs_to_native_body(
     identity: StableBlockIdentity,
     native_body: FragmentNativeBody,
@@ -2055,14 +2088,32 @@ class FragmentPlan:
                             anchor_ea=envelope.source_branch_ea,
                         )
                     )
-                    if (
-                        (source_selected_overlap and not role_shared_source_selected)
-                        or _stable_identities_overlap(identity, join_identity)
-                        or _stable_identities_overlap(
+                    nested_source_partition = (
+                        _stable_identity_contains_conditional_select_partition(
+                            identity,
+                            selected_identity,
+                            join_identity,
+                            source_branch_ea=envelope.source_branch_ea,
+                            selected_value_ea=envelope.selected_value_ea,
+                        )
+                    )
+                    invalid_overlap = (
+                        _stable_identities_overlap(
                             selected_identity,
                             join_identity,
                         )
-                    ):
+                        or (
+                            not nested_source_partition
+                            and (
+                                (
+                                    source_selected_overlap
+                                    and not role_shared_source_selected
+                                )
+                                or _stable_identities_overlap(identity, join_identity)
+                            )
+                        )
+                    )
+                    if invalid_overlap:
                         raise FragmentPlanRejected(
                             f"fragment operation {operation.operation_id!r} "
                             "imported conditional-select envelope overlaps "

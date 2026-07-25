@@ -2670,6 +2670,8 @@ def _replay_two_way(block_entry: int, entry_state0: dict, jmp_ea: int) -> dict |
             # not-taken: dst unchanged
             info = {"ea": ea, "cc": _select_cc_nibble(ea, length)}
             info["condition_producer_ea"] = condition_producer_ea
+            info["conditional_select_ea"] = int(ea)
+            info["conditional_select_join_ea"] = int(ea + length)
             if selector is not None:
                 info.update(selector)
         elif (
@@ -2950,6 +2952,10 @@ def _bake_patch_plans(
                                 entry_state0
                             ),
                             condition_producer_ea=info.get("condition_producer_ea"),
+                            conditional_select_ea=info.get("conditional_select_ea"),
+                            conditional_select_join_ea=info.get(
+                                "conditional_select_join_ea"
+                            ),
                             relocated_instruction_eas=tail.instruction_eas,
                         )
                     )

@@ -4409,6 +4409,110 @@ def test_static_transfer_setcc_updates_parent_of_separate_low_byte_register(
     assert state["edx"] == frozenset({0x12345600, 0x12345601})
 
 
+def test_two_way_replay_retains_cmov_select_and_join_coordinates(
+    monkeypatch,
+) -> None:
+    register_ids = {
+        name: reg for reg, name in computed_goto_resolver._SV_REG_NAMES.items()
+    }
+    eax = register_ids["eax"]
+    edx = register_ids["edx"]
+    ebx = register_ids["ebx"]
+
+    idaapi = ModuleType("idaapi")
+    idaapi.o_void = 0
+    idaapi.o_reg = 1
+    idaapi.o_imm = 2
+    idaapi.CF_CHG1 = 0x2
+    mnemonics = {
+        0x1000: "mov",
+        0x1005: "mov",
+        0x100A: "cmp",
+        0x1010: "cmovne",
+        0x1013: "jmp",
+    }
+    idaapi.print_insn_mnem = lambda ea: mnemonics.get(int(ea), "")
+    monkeypatch.setitem(sys.modules, "idaapi", idaapi)
+
+    class Operand:
+        def __init__(self, kind=0, *, reg=0, value=0):
+            self.type = kind
+            self.reg = reg
+            self.value = value
+
+    class Instruction:
+        def __init__(self):
+            self.ops = [Operand(), Operand()]
+            self._feature = 0
+
+        def get_canon_feature(self) -> int:
+            return self._feature
+
+    encoded = {
+        0x1000: (
+            5,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_reg, reg=edx),
+            Operand(idaapi.o_imm, value=0x2000),
+        ),
+        0x1005: (
+            5,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_reg, reg=eax),
+            Operand(idaapi.o_imm, value=0x3000),
+        ),
+        0x100A: (
+            6,
+            0,
+            Operand(idaapi.o_reg, reg=ebx),
+            Operand(idaapi.o_imm, value=0x64B9DC19),
+        ),
+        0x1010: (
+            3,
+            idaapi.CF_CHG1,
+            Operand(idaapi.o_reg, reg=edx),
+            Operand(idaapi.o_reg, reg=eax),
+        ),
+        0x1013: (
+            2,
+            0,
+            Operand(idaapi.o_reg, reg=edx),
+            Operand(),
+        ),
+    }
+
+    ida_ua = ModuleType("ida_ua")
+    ida_ua.insn_t = Instruction
+
+    def decode_insn(insn, ea):
+        length, feature, op0, op1 = encoded[int(ea)]
+        insn._feature = feature
+        insn.ops = [op0, op1]
+        return length
+
+    ida_ua.decode_insn = decode_insn
+    monkeypatch.setitem(sys.modules, "ida_ua", ida_ua)
+
+    ida_bytes = ModuleType("ida_bytes")
+    ida_bytes.get_bytes = lambda ea, size: b"\x0f\x45\xd0"
+    monkeypatch.setitem(sys.modules, "ida_bytes", ida_bytes)
+
+    info = computed_goto_resolver._replay_two_way(0x1000, {}, 0x1013)
+
+    assert info == {
+        "ea": 0x1010,
+        "cc": 5,
+        "condition_producer_ea": 0x100A,
+        "conditional_select_ea": 0x1010,
+        "conditional_select_join_ea": 0x1013,
+        "selector_register_name": "ebx",
+        "selector_compare_constant": 0x64B9DC19,
+        "selector_state_on_left": True,
+        "false": 0x2000,
+        "true": 0x3000,
+    }
+
+
 def test_two_way_replay_setcc_updates_parent_of_separate_low_byte_register(
     monkeypatch,
 ) -> None:
