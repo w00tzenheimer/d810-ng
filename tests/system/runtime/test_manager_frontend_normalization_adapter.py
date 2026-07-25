@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -39,6 +40,9 @@ from d810.transforms.fragment_plan import (
     FragmentPlanRejected,
     FragmentPublicationPurpose,
     FragmentWorkItemScope,
+)
+from d810.transforms.frontend_normalization import (
+    FrontendNormalizationGenerationPlan,
 )
 from tests.native_preanalysis import make_native_key
 
@@ -131,14 +135,29 @@ def _record_complete_plan_intent(session: DecompilationSessionContext) -> Fragme
             unreachable_obligation_ids=(),
         ),
     )
-    session.frontend_normalization_plan_authority.record_receipted_plan(
+    work_item_plan_id = "frontend-normalization:0x1000:g3:root@0x1000"
+    work_item_plan = replace(
         plan,
+        plan_id=work_item_plan_id,
+        atomic_group_id="frontend-normalization:g3:root@0x1000",
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id=work_item_plan_id,
+            selected_obligation_ids=("native-indirect-transfer@0x1000",),
+            remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
+        ),
+    )
+    session.frontend_normalization_plan_authority.record_receipted_generation(
+        FrontendNormalizationGenerationPlan(
+            complete_plan=plan,
+            work_item_plan=work_item_plan,
+        ),
         authority=NormalizationWorkItemAuthority(
             evidence_generation=3,
             publication_revision=1,
             source_plan_id=plan.plan_id,
             source_atomic_group_id=plan.atomic_group_id,
-            work_item_id="frontend-normalization:0x1000:g3:complete",
+            work_item_id=work_item_plan_id,
             published_operation_ids=("native-indirect-transfer@0x1000",),
             selected_obligation_ids=("native-indirect-transfer@0x1000",),
             remaining_obligation_ids=(),
@@ -398,7 +417,9 @@ def test_live_adapter_binds_committed_import_identity_to_current_mba(
     assert len(observed) == 2
     intent_event, identity_event = observed
     assert intent_event.event_kind == "frontend_normalization_plan_intent_recorded"
-    assert intent_event.correlation_id == "frontend-normalization:0x1000:g3:complete"
+    assert intent_event.correlation_id == (
+        "frontend-normalization:0x1000:g3:root@0x1000"
+    )
     assert intent_event.payload["outcome"] == "recorded"
     assert intent_event.payload["plan_id"] == complete_plan.plan_id
     assert intent_event.payload["atomic_group_id"] == complete_plan.atomic_group_id

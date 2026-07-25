@@ -31,6 +31,9 @@ from d810.manager.frontend_normalization import (
     SessionFrontendNormalizationPlanAuthority,
     run_frontend_normalization_pipeline,
 )
+from d810.transforms.frontend_normalization import (
+    FrontendNormalizationGenerationPlan,
+)
 from tests.native_preanalysis import make_native_key
 
 
@@ -111,6 +114,64 @@ def _graph(*, normalized: bool) -> FlowGraph:
     )
 
 
+def _two_route_graph() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            0: _block(
+                0,
+                0x1000,
+                succs=(1, 4),
+                preds=(),
+                kind=InsnKind.COND_JUMP,
+            ),
+            1: _block(
+                1,
+                0x1100,
+                succs=(2,),
+                preds=(0,),
+                kind=InsnKind.INDIRECT_JUMP,
+            ),
+            2: _block(
+                2,
+                0x1200,
+                succs=(),
+                preds=(1,),
+                kind=InsnKind.RET,
+            ),
+            3: _block(
+                3,
+                0x1300,
+                succs=(),
+                preds=(),
+                kind=InsnKind.RET,
+            ),
+            4: _block(
+                4,
+                0x1400,
+                succs=(5,),
+                preds=(0,),
+                kind=InsnKind.INDIRECT_JUMP,
+            ),
+            5: _block(
+                5,
+                0x1500,
+                succs=(),
+                preds=(4,),
+                kind=InsnKind.RET,
+            ),
+            6: _block(
+                6,
+                0x1600,
+                succs=(),
+                preds=(),
+                kind=InsnKind.RET,
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+
 def _evidence() -> FrontendNormalizationEvidence:
     atomic_group_id = f"frontend-normalization:g{GENERATION}"
     return FrontendNormalizationEvidence(
@@ -137,6 +198,26 @@ def _evidence() -> FrontendNormalizationEvidence:
     )
 
 
+def _two_route_evidence() -> FrontendNormalizationEvidence:
+    evidence = _evidence()
+    second = NativeIndirectTransferProof(
+        proof_id="direct@0x1400",
+        atomic_group_id=evidence.atomic_group_id,
+        shape=NativeTransferShape.DIRECT,
+        source_identity=_identity(0x1400),
+        source_anchor_ea=0x1400,
+        source_transfer_ea=0x1400,
+        endpoints=(
+            NativeTransferEndpoint(
+                role=SemanticEdgeRole.DIRECT,
+                identity=_identity(0x1600),
+                anchor_ea=0x1600,
+            ),
+        ),
+    )
+    return replace(evidence, transfer_proofs=(*evidence.transfer_proofs, second))
+
+
 class _Provider:
     def __init__(
         self,
@@ -157,11 +238,9 @@ class _Backend:
         state: NativePreanalysisSessionState,
         *,
         publish_receipt: bool,
-        partial_work_item: bool = False,
     ) -> None:
         self.state = state
         self.publish_receipt = publish_receipt
-        self.partial_work_item = partial_work_item
         self.plans: list[object] = []
 
     def capabilities(self) -> frozenset[str]:
@@ -177,28 +256,17 @@ class _Backend:
             # backend models only their successful observable state transition.
             self.state._fragment_publication_mark_normalization_staged()
             self.state._fragment_publication_mark_normalization_validated()
-            if self.partial_work_item:
-                self.state._fragment_publication_commit_normalization_work_item(
-                    work_item_id="frontend-normalization:g7:root@0x1100",
-                    published_operation_ids=tuple(
-                        operation.operation_id for operation in plan.operations
-                    ),
-                    selected_obligation_ids=("direct@0x1100",),
-                    remaining_obligation_ids=("direct@0x1400",),
-                    unreachable_obligation_ids=(),
-                )
-            else:
-                scope = plan.work_item_scope
-                assert scope is not None
-                self.state._fragment_publication_commit_normalization_work_item(
-                    work_item_id=scope.work_item_id,
-                    published_operation_ids=tuple(
-                        operation.operation_id for operation in plan.operations
-                    ),
-                    selected_obligation_ids=scope.selected_obligation_ids,
-                    remaining_obligation_ids=scope.remaining_obligation_ids,
-                    unreachable_obligation_ids=scope.unreachable_obligation_ids,
-                )
+            scope = plan.work_item_scope
+            assert scope is not None
+            self.state._fragment_publication_commit_normalization_work_item(
+                work_item_id=scope.work_item_id,
+                published_operation_ids=tuple(
+                    operation.operation_id for operation in plan.operations
+                ),
+                selected_obligation_ids=scope.selected_obligation_ids,
+                remaining_obligation_ids=scope.remaining_obligation_ids,
+                unreachable_obligation_ids=scope.unreachable_obligation_ids,
+            )
         return _graph(normalized=True)
 
 
@@ -332,13 +400,12 @@ def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance
     backend = _Backend(
         state,
         publish_receipt=True,
-        partial_work_item=True,
     )
 
     result = run_frontend_normalization_pipeline(
-        source=_source(_graph(normalized=False)),
+        source=_source(_two_route_graph()),
         backend=backend,
-        evidence_provider=_Provider(_evidence()),
+        evidence_provider=_Provider(_two_route_evidence()),
         plan_authority=plan_authority,
         lifecycle_state=state,
         native_key=NATIVE_KEY,
@@ -346,7 +413,10 @@ def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance
 
     assert result.microcode_modified is True
     assert result.published_generation is None
-    assert result.published_work_item_id == "frontend-normalization:g7:root@0x1100"
+    assert (
+        result.published_work_item_id
+        == "frontend-normalization:0x1000:g7:root@0x1100"
+    )
     assert result.remaining_obligation_count == 1
     assert state.normalization_published_postvalidated_generation is None
     assert len(backend.plans) == 1
@@ -355,23 +425,23 @@ def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance
     retained_plan, authority = retained
     assert authority.source_plan_id == retained_plan.plan_id
     assert authority.publication_revision == 1
-    assert authority.work_item_id == "frontend-normalization:g7:root@0x1100"
+    assert (
+        authority.work_item_id
+        == "frontend-normalization:0x1000:g7:root@0x1100"
+    )
     assert authority.published_operation_ids == ("direct@0x1100",)
     assert authority.selected_obligation_ids == ("direct@0x1100",)
     assert authority.remaining_obligation_ids == ("direct@0x1400",)
     assert authority.unreachable_obligation_ids == ()
 
 
-def test_plan_authority_advances_one_receipt_revision_without_changing_intent() -> None:
+def test_plan_authority_is_idempotent_and_rejects_skipped_receipt_revision() -> None:
     state = _state()
     plan_authority = _plan_authority()
+    backend = _Backend(state, publish_receipt=True)
     run_frontend_normalization_pipeline(
         source=_source(_graph(normalized=False)),
-        backend=_Backend(
-            state,
-            publish_receipt=True,
-            partial_work_item=True,
-        ),
+        backend=backend,
         evidence_provider=_Provider(_evidence()),
         plan_authority=plan_authority,
         lifecycle_state=state,
@@ -380,39 +450,27 @@ def test_plan_authority_advances_one_receipt_revision_without_changing_intent() 
     retained = plan_authority.plan_for(0x1000, GENERATION)
     assert retained is not None
     retained_plan, first_authority = retained
-    second_authority = replace(
-        first_authority,
-        publication_revision=2,
-        work_item_id="frontend-normalization:g7:root@0x1400",
-        published_operation_ids=("direct@0x1400",),
-        selected_obligation_ids=("direct@0x1400",),
-        remaining_obligation_ids=(),
+    generation_plan = FrontendNormalizationGenerationPlan(
+        complete_plan=retained_plan,
+        work_item_plan=backend.plans[0],
     )
 
-    plan_authority.record_receipted_plan(
-        retained_plan,
-        authority=second_authority,
+    plan_authority.record_receipted_generation(
+        generation_plan,
+        authority=first_authority,
     )
 
     assert plan_authority.plan_for(0x1000, GENERATION) == (
         retained_plan,
-        second_authority,
+        first_authority,
     )
     with pytest.raises(
         FrontendNormalizationPublicationError,
         match="receipt revision did not advance",
     ):
-        plan_authority.record_receipted_plan(
-            retained_plan,
-            authority=first_authority,
-        )
-    with pytest.raises(
-        FrontendNormalizationPublicationError,
-        match="receipt revision did not advance",
-    ):
-        plan_authority.record_receipted_plan(
-            retained_plan,
-            authority=replace(second_authority, publication_revision=4),
+        plan_authority.record_receipted_generation(
+            generation_plan,
+            authority=replace(first_authority, publication_revision=3),
         )
 
 
@@ -436,8 +494,11 @@ def test_plan_authority_rejects_untyped_receipt_authority() -> None:
         TypeError,
         match="typed receipt authority",
     ):
-        plan_authority.record_receipted_plan(
-            retained_plan,
+        plan_authority.record_receipted_generation(
+            FrontendNormalizationGenerationPlan(
+                complete_plan=retained_plan,
+                work_item_plan=backend.plans[0],
+            ),
             authority=object(),
         )
 

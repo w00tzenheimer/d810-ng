@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from d810.analyses.control_flow.frontend_normalization import (
     FrontendNormalizationEvidence,
@@ -22,18 +22,23 @@ from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.maturity import IRMaturity
 from d810.passes.frontend_normalization import (
-    FRONTEND_NORMALIZATION_PLAN_INTENT,
+    FRONTEND_NORMALIZATION_GENERATION_PLAN,
     standard_frontend_normalization_passes,
 )
 from d810.passes.function_pass_manager import FunctionPassManager
 from d810.transforms.fragment_plan import (
+    FragmentBlockRole,
     FragmentNativeBody,
     FragmentPlan,
     FragmentPublicationPurpose,
 )
+from d810.transforms.frontend_normalization import (
+    FrontendNormalizationGenerationPlan,
+)
 from d810.transforms.prepared_native_body import (
     PreparedNativeBodyFact,
     PreparedNativeBodyFactSnapshot,
+    PreparedNormalizationWorkItemSnapshot,
 )
 
 
@@ -53,6 +58,10 @@ class SessionFrontendNormalizationPlanAuthority:
     _pending_prepared_body_facts: dict[tuple[int, str, str], PreparedNativeBodyFact] = (
         field(default_factory=dict)
     )
+    _receipted_prepared_work_items: dict[
+        tuple[int, str, str],
+        PreparedNormalizationWorkItemSnapshot,
+    ] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         function_ea = int(self.function_ea)
@@ -64,17 +73,19 @@ class SessionFrontendNormalizationPlanAuthority:
             raise TypeError("frontend normalization plan requires a native key")
         object.__setattr__(self, "function_ea", function_ea)
 
-    def record_receipted_plan(
+    def record_receipted_generation(
         self,
-        plan: FragmentPlan,
+        generation_plan: FrontendNormalizationGenerationPlan,
         *,
         authority: NormalizationWorkItemAuthority,
     ) -> None:
-        """Retain complete intent only after one selected work item commits."""
-        if not isinstance(plan, FragmentPlan):
+        """Retain complete intent and the exact prepared work item that committed."""
+        if not isinstance(generation_plan, FrontendNormalizationGenerationPlan):
             raise TypeError(
-                "frontend normalization plan authority requires a FragmentPlan"
+                "frontend normalization authority requires a generation plan"
             )
+        plan = generation_plan.complete_plan
+        work_item_plan = generation_plan.work_item_plan
         if (
             plan.publication_purpose
             is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
@@ -98,12 +109,68 @@ class SessionFrontendNormalizationPlanAuthority:
             raise FrontendNormalizationPublicationError(
                 "frontend normalization receipt authority changed plan lineage"
             )
+        work_item_scope = work_item_plan.work_item_scope
+        if (
+            work_item_scope is None
+            or work_item_scope.work_item_id != work_item_plan.plan_id
+            or authority.work_item_id != work_item_plan.plan_id
+            or authority.published_operation_ids
+            != tuple(
+                operation.operation_id for operation in work_item_plan.operations
+            )
+            or authority.selected_obligation_ids
+            != work_item_scope.selected_obligation_ids
+            or authority.remaining_obligation_ids
+            != work_item_scope.remaining_obligation_ids
+            or authority.unreachable_obligation_ids
+            != work_item_scope.unreachable_obligation_ids
+        ):
+            raise FrontendNormalizationPublicationError(
+                "frontend normalization receipt changed work-item lineage"
+            )
+        complete_operations = {
+            operation.operation_id: operation for operation in plan.operations
+        }
+        if any(
+            complete_operations.get(operation.operation_id) != operation
+            for operation in work_item_plan.operations
+        ):
+            raise FrontendNormalizationPublicationError(
+                "frontend normalization work item changed complete-plan operations"
+            )
+        complete_blocks = {block.block_id: block for block in plan.blocks}
+        for work_item_block in work_item_plan.blocks:
+            complete_block = complete_blocks.get(work_item_block.block_id)
+            if complete_block is None:
+                raise FrontendNormalizationPublicationError(
+                    "frontend normalization work item invented a block owner"
+                )
+            if work_item_block.role is FragmentBlockRole.IMPORTED:
+                work_item_block = replace(
+                    work_item_block,
+                    native_body_id=complete_block.native_body_id,
+                )
+            if work_item_block != complete_block:
+                raise FrontendNormalizationPublicationError(
+                    "frontend normalization work item changed complete-plan blocks"
+                )
+        for work_item_body in work_item_plan.native_bodies:
+            complete_body_matches = tuple(
+                complete_body
+                for complete_body in plan.native_bodies
+                if set(work_item_body.block_ids).issubset(complete_body.block_ids)
+                and set(work_item_body.proof_ids).issubset(complete_body.proof_ids)
+            )
+            if len(complete_body_matches) != 1:
+                raise FrontendNormalizationPublicationError(
+                    "frontend normalization work item changed native-body ownership"
+                )
         missing_prepared_body_ids = tuple(
             native_body.body_id
-            for native_body in plan.native_bodies
+            for native_body in work_item_plan.native_bodies
             if (
                 generation,
-                plan.plan_id,
+                work_item_plan.plan_id,
                 native_body.body_id,
             )
             not in self._pending_prepared_body_facts
@@ -135,6 +202,35 @@ class SessionFrontendNormalizationPlanAuthority:
                     "frontend normalization receipt revision did not advance "
                     "exactly once within one generation"
                 )
+        if work_item_plan.native_bodies:
+            prepared_bodies = PreparedNativeBodyFactSnapshot(
+                plan_id=work_item_plan.plan_id,
+                evidence_generation=generation,
+                snapshot_id=(
+                    f"prepared-native-body:{work_item_plan.plan_id}:"
+                    f"g{generation}:r{int(authority.publication_revision)}"
+                ),
+                bodies=tuple(
+                    self._pending_prepared_body_facts[
+                        (generation, work_item_plan.plan_id, native_body.body_id)
+                    ]
+                    for native_body in work_item_plan.native_bodies
+                ),
+            )
+            prepared_work_item = PreparedNormalizationWorkItemSnapshot(
+                source_plan_id=plan.plan_id,
+                source_atomic_group_id=plan.atomic_group_id,
+                work_item_plan=work_item_plan,
+                authority=authority,
+                prepared_bodies=prepared_bodies,
+            )
+            work_item_key = (generation, plan.plan_id, work_item_plan.plan_id)
+            previous_work_item = self._receipted_prepared_work_items.get(work_item_key)
+            if previous_work_item is not None and previous_work_item != prepared_work_item:
+                raise FrontendNormalizationPublicationError(
+                    "prepared normalization work item changed after its receipt"
+                )
+            self._receipted_prepared_work_items[work_item_key] = prepared_work_item
         self._plan = plan
         self._authority = authority
         self._evidence_generation = generation
@@ -211,39 +307,45 @@ class SessionFrontendNormalizationPlanAuthority:
             return
         self._pending_prepared_body_facts[key] = fact
 
-    def prepared_body_facts_for(
+    def prepared_work_item_for(
         self,
         function_ea: int,
         evidence_generation: int,
-        plan_id: str,
-    ) -> PreparedNativeBodyFactSnapshot | None:
-        """Expose complete body facts only for exact receipt-associated intent."""
+        source_plan_id: str,
+        block_id: str,
+    ) -> PreparedNormalizationWorkItemSnapshot | None:
+        """Expose the exact receipted work item that prepared one imported block."""
         if (
             int(function_ea) != self.function_ea
             or int(evidence_generation) != self._evidence_generation
-            or str(plan_id) != (None if self._plan is None else self._plan.plan_id)
+            or str(source_plan_id)
+            != (None if self._plan is None else self._plan.plan_id)
             or self._plan is None
             or self._authority is None
         ):
             return None
-        body_facts = tuple(
-            self._pending_prepared_body_facts.get(
-                (int(evidence_generation), self._plan.plan_id, native_body.body_id)
+        matches = tuple(
+            snapshot
+            for (
+                generation,
+                retained_source_plan_id,
+                _work_item_id,
+            ), snapshot in self._receipted_prepared_work_items.items()
+            if generation == int(evidence_generation)
+            and retained_source_plan_id == str(source_plan_id)
+            and any(
+                candidate.block_id == str(block_id)
+                and candidate.role is FragmentBlockRole.IMPORTED
+                for candidate in snapshot.work_item_plan.blocks
             )
-            for native_body in self._plan.native_bodies
         )
-        if not body_facts or any(fact is None for fact in body_facts):
+        if not matches:
             return None
-        return PreparedNativeBodyFactSnapshot(
-            plan_id=self._plan.plan_id,
-            evidence_generation=int(evidence_generation),
-            snapshot_id=(
-                f"prepared-native-body:{self._plan.plan_id}:"
-                f"g{int(evidence_generation)}:"
-                f"r{int(self._authority.publication_revision)}"
-            ),
-            bodies=tuple(fact for fact in body_facts if fact is not None),
-        )
+        if len(matches) != 1:
+            raise FrontendNormalizationPublicationError(
+                "prepared normalization block has multiple receipt owners"
+            )
+        return matches[0]
 
     def plan_for(
         self,
@@ -422,26 +524,27 @@ def run_frontend_normalization_pipeline(
             "frontend normalization published multiple work items in one pass"
         )
     analysis_manager = manager.analysis_manager_for(function_ea)
-    complete_plan = (
+    generation_plan = (
         None
         if analysis_manager is None
         else analysis_manager.get_analysis(
-            FRONTEND_NORMALIZATION_PLAN_INTENT,
+            FRONTEND_NORMALIZATION_GENERATION_PLAN,
             None,
         )
     )
     if work_item_published:
-        if not isinstance(complete_plan, FragmentPlan):
+        if not isinstance(generation_plan, FrontendNormalizationGenerationPlan):
             raise FrontendNormalizationPublicationError(
-                "receipt-backed normalization lacks complete portable plan intent"
+                "receipt-backed normalization lacks its portable generation plan"
             )
         work_item_id = lifecycle_state.normalization_last_published_work_item_id
         if work_item_id is None:
             raise FrontendNormalizationPublicationError(
                 "receipt-backed normalization lacks its work-item identity"
             )
-        plan_authority.record_receipted_plan(
-            complete_plan,
+        complete_plan = generation_plan.complete_plan
+        plan_authority.record_receipted_generation(
+            generation_plan,
             authority=NormalizationWorkItemAuthority(
                 evidence_generation=generation,
                 publication_revision=after_work_item_revision,

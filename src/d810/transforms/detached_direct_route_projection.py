@@ -17,8 +17,8 @@ from d810.transforms.fragment_plan import (
     FragmentPublicationPurpose,
 )
 from d810.transforms.prepared_native_body import (
-    PreparedNativeBodyFact,
     PreparedNativeEdgeFact,
+    PreparedNormalizationWorkItemSnapshot,
 )
 
 
@@ -125,20 +125,15 @@ def _instruction_snapshots(
 def project_detached_direct_route(
     normalization_plan: FragmentPlan,
     detached_plan: DetachedDirectRoutePlan,
-    prepared_body: PreparedNativeBodyFact,
-    *,
-    snapshot_id: str,
+    prepared_work_item: PreparedNormalizationWorkItemSnapshot,
 ) -> CfgProjection:
     """Project one complete direct route without reserving or mutating live CFG state."""
     if not isinstance(normalization_plan, FragmentPlan):
         raise TypeError("detached projection requires a FragmentPlan")
     if not isinstance(detached_plan, DetachedDirectRoutePlan):
         raise TypeError("detached projection requires a DetachedDirectRoutePlan")
-    if not isinstance(prepared_body, PreparedNativeBodyFact):
-        raise TypeError("detached projection requires prepared native-body facts")
-    snapshot_id = str(snapshot_id).strip()
-    if not snapshot_id:
-        raise ValueError("detached projection requires a snapshot id")
+    if not isinstance(prepared_work_item, PreparedNormalizationWorkItemSnapshot):
+        raise TypeError("detached projection requires a prepared work-item snapshot")
 
     rewrite = detached_plan.operation.direct_transfer_rewrite
     assert rewrite is not None
@@ -152,7 +147,13 @@ def project_detached_direct_route(
         != normalization_plan.plan_id
         or detached_plan.normalization_authority.source_atomic_group_id
         != normalization_plan.atomic_group_id
-        or prepared_body.plan_id != normalization_plan.plan_id
+        or prepared_work_item.source_plan_id != normalization_plan.plan_id
+        or prepared_work_item.source_atomic_group_id
+        != normalization_plan.atomic_group_id
+        or prepared_work_item.authority.evidence_generation
+        != detached_plan.evidence_generation
+        or prepared_work_item.authority.publication_revision
+        > detached_plan.normalization_authority.publication_revision
     ):
         _reject(
             "detached route projection authority differs from prepared normalization",
@@ -160,10 +161,44 @@ def project_detached_direct_route(
             anchor_ea=rewrite_anchor_ea,
         )
 
+    work_item_plan = prepared_work_item.work_item_plan
+    try:
+        prepared_source_block = work_item_plan.block(
+            detached_plan.source_block.block_id
+        )
+        prepared_target_block = work_item_plan.block(
+            detached_plan.target_block.block_id
+        )
+        prepared_body = prepared_work_item.prepared_body_for(
+            detached_plan.source_block.block_id
+        )
+    except KeyError as exc:
+        _reject(
+            "detached route is outside its receipt-backed prepared work item",
+            reason_code="prepared_work_item_route_missing",
+            anchor_ea=rewrite_anchor_ea,
+            payload={"missing_block_id": str(exc.args[0])},
+        )
+    if (
+        prepared_source_block.semantic_anchor_ea
+        != detached_plan.source_block.semantic_anchor_ea
+        or prepared_source_block.stable_identity
+        != detached_plan.source_block.stable_identity
+        or prepared_target_block.semantic_anchor_ea
+        != detached_plan.target_block.semantic_anchor_ea
+        or prepared_target_block.stable_identity
+        != detached_plan.target_block.stable_identity
+    ):
+        _reject(
+            "prepared work-item route identity differs from complete intent",
+            reason_code="prepared_work_item_route_identity_drift",
+            anchor_ea=rewrite_anchor_ea,
+        )
+
     body_matches = tuple(
         body
-        for body in normalization_plan.native_bodies
-        if body.body_id == detached_plan.source_block.native_body_id
+        for body in work_item_plan.native_bodies
+        if body.body_id == prepared_source_block.native_body_id
     )
     if len(body_matches) != 1 or body_matches[0].body_id != prepared_body.body_id:
         _reject(
@@ -185,13 +220,13 @@ def project_detached_direct_route(
             },
         )
 
-    operations_by_source = _operations_by_source(normalization_plan)
+    operations_by_source = _operations_by_source(work_item_plan)
     expected_predecessors = _prepared_predecessors(
         native_body.block_ids,
         operations_by_source,
     )
     for prepared_block in prepared_body.blocks:
-        plan_block = normalization_plan.block(prepared_block.block_id)
+        plan_block = work_item_plan.block(prepared_block.block_id)
         expected_successors = _prepared_successors(
             operations_by_source.get(prepared_block.block_id, ())
         )
@@ -228,6 +263,13 @@ def project_detached_direct_route(
 
     source = prepared_body.block(detached_plan.source_block.block_id)
     target = prepared_body.block(detached_plan.target_block.block_id)
+    if not set(detached_plan.corridor_block_ids).issubset(block_ids):
+        _reject(
+            "prepared work item does not own the full direct-route corridor",
+            reason_code="prepared_work_item_corridor_incomplete",
+            anchor_ea=rewrite_anchor_ea,
+            payload={"corridor_block_ids": detached_plan.corridor_block_ids},
+        )
     raw_roles = tuple(edge.role for edge in source.successors)
     if (
         source.successors
@@ -356,6 +398,10 @@ def project_detached_direct_route(
         metadata={
             "projection_kind": "detached_direct_route",
             "normalization_plan_id": normalization_plan.plan_id,
+            "prepared_work_item_plan_id": work_item_plan.plan_id,
+            "prepared_work_item_revision": int(
+                prepared_work_item.authority.publication_revision
+            ),
             "detached_plan_id": detached_plan.plan_id,
             "evidence_generation": int(detached_plan.evidence_generation),
             "native_body_id": prepared_body.body_id,
@@ -393,7 +439,7 @@ def project_detached_direct_route(
     )
     return CfgProjection(
         plan_id=detached_plan.plan_id,
-        snapshot_id=snapshot_id,
+        snapshot_id=prepared_work_item.prepared_bodies.snapshot_id,
         graph=graph,
         focus_refs=tuple(
             PlanBlockRef(detached_plan.plan_id, block_id)

@@ -36,7 +36,7 @@ from d810.transforms.frontend_normalization import (
 
 FRONTEND_NORMALIZATION_EVIDENCE = "frontend_normalization_evidence"
 DETACHED_SEMANTIC_CLOSURE_IMPORT = "detached_semantic_closure_import"
-FRONTEND_NORMALIZATION_PLAN_INTENT = "frontend_normalization_plan_intent"
+FRONTEND_NORMALIZATION_GENERATION_PLAN = "frontend_normalization_generation_plan"
 NATIVE_INDIRECT_TRANSFER_EVIDENCE = "ir.branch_target"
 
 _EARLY_MATURITY = MaturityRange(
@@ -166,7 +166,7 @@ class NormalizeComputedBranch:
                 }
             ),
             analysis_outputs={
-                FRONTEND_NORMALIZATION_PLAN_INTENT: (generation_plan.complete_plan),
+                FRONTEND_NORMALIZATION_GENERATION_PLAN: generation_plan,
             },
         )
 
@@ -217,7 +217,7 @@ def standard_frontend_normalization_passes() -> tuple[PassSpec, ...]:
             maturity_gates=frozenset({IRMaturity.CANONICAL}),
             analyses=AnalysisContract(
                 required=frozenset({FRONTEND_NORMALIZATION_EVIDENCE}),
-                provided=frozenset({FRONTEND_NORMALIZATION_PLAN_INTENT}),
+                provided=frozenset({FRONTEND_NORMALIZATION_GENERATION_PLAN}),
             ),
             preservation=PreservedAnalyses.preserving(preserve_frontend_evidence),
             backend_route=BackendRoute.FRAGMENT_PUBLICATION,
@@ -232,7 +232,7 @@ def standard_frontend_normalization_passes() -> tuple[PassSpec, ...]:
 __all__ = [
     "DETACHED_SEMANTIC_CLOSURE_IMPORT",
     "FRONTEND_NORMALIZATION_EVIDENCE",
-    "FRONTEND_NORMALIZATION_PLAN_INTENT",
+    "FRONTEND_NORMALIZATION_GENERATION_PLAN",
     "NATIVE_INDIRECT_TRANSFER_EVIDENCE",
     "ImportDetachedSemanticClosure",
     "NormalizeComputedBranch",
