@@ -3943,3 +3943,45 @@ requirement that the region fit inside the anchor identity, and retain the
 full-region containment check when canonical planning binds an imported
 physical source. Rerun the same A560 DB canary before interpreting the new
 `0x40AA4F` cut result.
+
+**2026-07-25T09:15:00Z**
+
+Commit `c5fa61c90` corrects the proof contract with an explicit regression
+test: a one-anchor stable `delivery_identity` may carry a wider exact physical
+delivery interval. The anchor must still belong to both authorities, and the
+later canonical imported-source plan still proves full interval containment.
+Ruff produced no follow-up diff. The focused gate is now 397/397 green, and
+the commit passes ast-grep, the portable-shape gate, import-cycle analysis, and
+all 14 import-linter contracts.
+
+The mandatory exact cache-disabled A560 rerun completed normally in 18.44
+seconds inside pytest with no worker crash or reported numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-delivery-cut-v2.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-delivery-cut-v2/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-delivery-cut-v2/test_real_loader_matches_reach0/sub_40A560.c`.
+The pseudocode remains the same eight-line false `while ( 1 )` stub, so this is
+not A560 acceptance.
+
+The DB proves production C3 is restored. The six-route, 31-operation semantic
+plan reaches the gateway; the first attempt aborts with zero applied operations
+to request the exact CALLS companion for call `0x40AA30` over
+`0x40AA2C-0x40AA60`, then controlled redo repeats the 260/260 committed
+frontend transaction and retries the same semantic plan. The second semantic
+receipt again aborts with zero applied operations and successful rollback.
+
+The first failed C4 obligation is now the plan-owned terminal block
+`native[0x40C898-0x40C8A2;exact=0x40C898,0x40C89F]:imported@0x40C89F`:
+`CALLS native body cannot contain a return`. There are still zero detached
+route comparisons and no semantic C5 receipt; the new `0x40AA4F` delivery cut
+has not yet been reached on the redo path.
+
+The next vertical slice must not merely allow an arbitrary CALLS `m_ret`.
+CALLS preparation should identify exactly the `FragmentTerminalReturn` owned
+by this native body's terminal block, remove only that exact terminal tail from
+the detached prepared rows, reject every unplanned or ambiguous return, and
+leave the terminal block unpublished. The semantic backend already materializes
+return carriers and terminal returns before realizing route operations in the
+same staged transaction, and validates their connected terminal route before
+publication. Prove that deferral contract locally, then rerun the exact DB
+canary.
