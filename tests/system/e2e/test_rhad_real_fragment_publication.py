@@ -28,11 +28,113 @@ _TERMINAL_RETURN_EA = 0x40C89F
 _STATE_VAR_REG = 20
 _STATE_CONSTANT = 0x19A7218A
 _RETURN_STORAGE_EA = 0x48B8A4
+_FIXTURE_SHA256 = "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+_REFERENCE_BINARY_SHA256 = (
+    "6358957fe74360725b125bdc41b16df9952d95b338792fd3521249e5030ddd8c"
+)
+_REFERENCE_COMMIT = "21b0d4783703bc4fb6910cfae51d92cd683d2c65"
+_RUNTIME_IMAGE = "d810-idapro-9.3-test-runtime:py313-v1"
+_RUNTIME_IMAGE_ID = (
+    "sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a"
+)
+_REFERENCE_RUN_ID = "a560-v33-terminal-40c7f6-20260725"
+_REFERENCE_ROUTE_ID = "rhad:0x40A560:flow_route:0x40C7F6"
+_REFERENCE_LEDGER_IDENTITY = "flow_route:0x40C7F6"
 _FRAGMENT_RANGES = (
     (_STATE_WRITE_EA, _ORIGINAL_FALLTHROUGH_TARGET_EA),
     (_TERMINAL_TARGET_EA, 0x40C8A2),
 )
 _SIDECAR_SUFFIXES = (".id0", ".id1", ".id2", ".nam", ".til", ".i64")
+
+
+def _reference_oracle_manifest() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "run": {
+            "run_id": _REFERENCE_RUN_ID,
+            "function_ea": hex(_FUNCTION_EA),
+            "fixture_sha256": _FIXTURE_SHA256,
+            "reference_binary_sha256": _REFERENCE_BINARY_SHA256,
+            "candidate_binary_sha256": _FIXTURE_SHA256,
+            "reference_commit": _REFERENCE_COMMIT,
+            "runtime_image": _RUNTIME_IMAGE,
+            "runtime_image_id": _RUNTIME_IMAGE_ID,
+            "cache_disabled": True,
+            "metadata": {
+                "reference_ledger_binary_sha256": _FIXTURE_SHA256,
+                "reference_transaction_index": 636,
+            },
+        },
+        "routes": [
+            {
+                "route_id": _REFERENCE_ROUTE_ID,
+                "function_ea": hex(_FUNCTION_EA),
+                "owner_ea": hex(_STATE_WRITE_EA),
+                "rewrite_anchor_ea": hex(_DELIVERY_EA),
+                "corridor": [
+                    [hex(_STATE_WRITE_EA), hex(_ORIGINAL_FALLTHROUGH_TARGET_EA)]
+                ],
+                "reference_phase": "flow_route",
+                "original_transfer_kind": "conditional",
+                "final_transfer_kind": "direct",
+                "direct_target_ea": hex(_TERMINAL_TARGET_EA),
+                "true_target_ea": None,
+                "false_target_ea": None,
+                "predicate_kind": None,
+                "reference_ledger_identity": _REFERENCE_LEDGER_IDENTITY,
+                "reference_ledger": {
+                    "corridor": [
+                        {
+                            "bytes": "bb8a21a719",
+                            "ea": _STATE_WRITE_EA,
+                            "mnemonic": "mov",
+                            "op_str": "ebx, 0x19a7218a",
+                            "size": 5,
+                            "writes_flags": False,
+                        },
+                        {
+                            "bytes": "81fb65d3b20b",
+                            "ea": _DELIVERY_COMPARE_EA,
+                            "mnemonic": "cmp",
+                            "op_str": "ebx, 0xbb2d365",
+                            "size": 6,
+                            "writes_flags": True,
+                        },
+                        {
+                            "bytes": "0f8c4bfbffff",
+                            "ea": _DELIVERY_EA,
+                            "mnemonic": "jl",
+                            "op_str": "0x40c347",
+                            "size": 6,
+                            "writes_flags": False,
+                        },
+                    ],
+                    "corridor_start_ea": _STATE_WRITE_EA,
+                    "corridor_end_ea": _ORIGINAL_FALLTHROUGH_TARGET_EA,
+                    "flag_writer_eas": [_DELIVERY_COMPARE_EA],
+                    "flow_register": "ebx",
+                    "function_ea": _FUNCTION_EA,
+                    "phase": "flow_route",
+                    "planned_branches": [
+                        {
+                            "anchor_ea": _DELIVERY_EA,
+                            "opcode": "e9",
+                            "target_ea": _TERMINAL_TARGET_EA,
+                        }
+                    ],
+                    "state_writes": [
+                        {
+                            "ea": _STATE_WRITE_EA,
+                            "mnemonic": "mov",
+                            "value": _STATE_CONSTANT,
+                            "value_kind": "immediate",
+                        }
+                    ],
+                    "status": "committed",
+                },
+            }
+        ],
+    }
 
 
 def _clear_ida_sidecars(binary: pathlib.Path) -> None:
@@ -190,6 +292,7 @@ def _run_worker(
             build_native_preanalysis_key,
         )
         from d810.core.events import EventEmitter
+        from d810.core.semantic_route_oracle import ReferenceRouteOracleCatalog
         from d810.core.observability import emit as emit_diagnostic
         from d810.core.observability_events import (
             EvidenceGenerationObserved,
@@ -207,6 +310,7 @@ def _run_worker(
             MbaMutationCommitted,
             MbaMutationGateway,
             MbaMutationPlanned,
+            MbaSemanticFragmentRouteOracleCompared,
         )
         from d810.ir.block_identity import (
             stable_block_identity_from_snapshot,
@@ -227,6 +331,9 @@ def _run_worker(
             build_canonical_semantic_fragment_plan,
         )
         from d810.transforms.fragment_plan import FragmentPublicationPurpose
+        from d810.transforms.detached_route_oracle import (
+            bind_fragment_reference_oracle,
+        )
 
         native_key = build_native_preanalysis_key(
             _FUNCTION_EA,
@@ -381,9 +488,28 @@ def _run_worker(
             bound,
             prohibited_dispatcher_serials=prohibited_dispatcher_serials,
         )
+        catalog = ReferenceRouteOracleCatalog.from_manifest(
+            _reference_oracle_manifest()
+        )
+        selection = catalog.reference_oracle_for(
+            _FUNCTION_EA,
+            native_key,
+            (_DELIVERY_EA,),
+        )
+        assert selection is not None, (
+            "real C5 fragment requires exact cache-disabled reference authority; "
+            f"input={native_key.input_identity!r} anchor=0x{_DELIVERY_EA:X}"
+        )
+        plan = bind_fragment_reference_oracle(plan, selection)
         assert (
             plan.publication_purpose
             is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+        )
+        assert plan.reference_oracle_run == selection.run
+        assert (
+            plan.operations[0].direct_transfer_rewrite is not None
+            and plan.operations[0].direct_transfer_rewrite.reference_route
+            == selection.routes[0]
         )
         assert len(plan.roots) == 1
         assert len(plan.operations) == 1
@@ -491,6 +617,10 @@ def _run_worker(
         )
         emitter = EventEmitter()
         emitter.on(MbaMutationPlanned, D810Manager._on_mutation_planned)
+        emitter.on(
+            MbaSemanticFragmentRouteOracleCompared,
+            D810Manager._on_semantic_fragment_route_oracle_compared,
+        )
         emitter.on(MbaMutationCommitted, D810Manager._on_mutation_committed)
         emitter.on(MbaMutationAborted, D810Manager._on_mutation_aborted)
         gateway.event_emitter = emitter
@@ -654,6 +784,8 @@ def _run_worker(
                     "terminal_return_count": len(plan.terminal_returns),
                     "terminal_route_count": len(plan.terminal_routes),
                     "root_anchor_ea": root_anchor_ea,
+                    "reference_run_id": selection.run.run_id,
+                    "reference_route_id": selection.routes[0].route_id,
                 },
                 sort_keys=True,
             ),
@@ -725,6 +857,8 @@ def test_real_a560_terminal_fragment_reaches_c5_with_db_evidence(
     assert summary["terminal_return_count"] == 1
     assert summary["terminal_route_count"] == 1
     assert summary["root_anchor_ea"] == _DELIVERY_EA
+    assert summary["reference_run_id"] == _REFERENCE_RUN_ID
+    assert summary["reference_route_id"] == _REFERENCE_ROUTE_ID
 
     connection = sqlite3.connect(diag_path)
     try:
@@ -753,6 +887,7 @@ def test_real_a560_terminal_fragment_reaches_c5_with_db_evidence(
         assert transaction[3:] == ("committed", 1, 1, 0)
         persisted_plan = json.loads(transaction[2])
         assert persisted_plan["publication_purpose"] == "canonical_semantic_lowering"
+        assert persisted_plan["reference_oracle_run"]["run_id"] == _REFERENCE_RUN_ID
         assert len(persisted_plan["operations"]) == 1
         assert len(persisted_plan["return_carriers"]) == 1
         assert len(persisted_plan["terminal_returns"]) == 1
@@ -762,6 +897,39 @@ def test_real_a560_terminal_fragment_reaches_c5_with_db_evidence(
         )
         assert len(persisted_plan["terminal_routes"]) == 1
 
+        oracle = connection.execute(
+            "SELECT run_id,plan_id,atomic_group_id,route_id,maturity,"
+            "candidate_variant,outcome,first_divergence,failed_invariant,"
+            "owner_ea_i64,rewrite_anchor_ea_i64,reference_ledger_identity,"
+            "oracle_shape_json,candidate_shape_json,reason "
+            "FROM semantic_fragment_route_oracle_comparisons"
+        ).fetchone()
+        assert oracle is not None
+        assert oracle[:12] == (
+            _REFERENCE_RUN_ID,
+            summary["plan_id"],
+            summary["atomic_group_id"],
+            _REFERENCE_ROUTE_ID,
+            "DETACHED_PREPUBLICATION",
+            "detached_prepublication",
+            "matched",
+            0,
+            None,
+            _STATE_WRITE_EA,
+            _DELIVERY_EA,
+            _REFERENCE_LEDGER_IDENTITY,
+        )
+        oracle_shape = json.loads(oracle[12])
+        candidate_shape = json.loads(oracle[13])
+        assert oracle_shape["terminator_ea"] == f"0x{_DELIVERY_EA:X}"
+        assert oracle_shape["direct_target_ea"] == f"0x{_TERMINAL_TARGET_EA:X}"
+        assert candidate_shape["terminator_ea"] == f"0x{_DELIVERY_EA:X}"
+        assert candidate_shape["terminator_opcode"] == "goto"
+        assert candidate_shape["transfer_kind"] == "direct"
+        assert candidate_shape["direct_target_ea"] == f"0x{_TERMINAL_TARGET_EA:X}"
+        assert candidate_shape["reachable_from_entry"] is True
+        assert oracle[14] == ""
+
         receipt = connection.execute(
             "SELECT planned_operation_count,applied_operation_count,outcome "
             "FROM mutation_receipts"
@@ -769,6 +937,17 @@ def test_real_a560_terminal_fragment_reaches_c5_with_db_evidence(
         assert receipt is not None
         assert receipt[0] == receipt[1]
         assert receipt[2] == "committed"
+        transaction_events = connection.execute(
+            "SELECT event_index,event_kind,outcome "
+            "FROM semantic_fragment_transaction_events ORDER BY event_index"
+        ).fetchall()
+        oracle_event = next(
+            row for row in transaction_events if row[1] == "detached_route_oracle"
+        )
+        receipt_event = next(row for row in transaction_events if row[1] == "receipt")
+        assert oracle_event[2] == "passed"
+        assert receipt_event[2] == "committed"
+        assert oracle_event[0] < receipt_event[0]
         validation = connection.execute(
             "SELECT phase,passed FROM semantic_fragment_validation_outcomes"
         ).fetchall()
