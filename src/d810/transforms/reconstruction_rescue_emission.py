@@ -24,6 +24,7 @@ def execute_reconstruction_entry_island_rescues(
     dispatcher_region: set[int],
     collect_seeds,
     compute_reachable_blocks,
+    block_refs_by_serial,
 ) -> EntryIslandRescueRun:
     return plan_entry_island_rescues(
         dag=dag,
@@ -34,6 +35,7 @@ def execute_reconstruction_entry_island_rescues(
         dispatcher_region=dispatcher_region,
         collect_seeds=collect_seeds,
         compute_reachable_blocks=compute_reachable_blocks,
+        block_refs_by_serial=block_refs_by_serial,
     )
 
 
@@ -49,6 +51,7 @@ def execute_reconstruction_late_island_rescues(
     collect_diagnostics,
     compute_reachable_blocks,
     dispatcher=None,
+    block_refs_by_serial,
 ) -> LateReconstructionRescueRun:
     run = plan_entry_island_rescues(
         dag=dag,
@@ -59,6 +62,7 @@ def execute_reconstruction_late_island_rescues(
         dispatcher_region=dispatcher_region,
         collect_seeds=collect_seeds,
         compute_reachable_blocks=compute_reachable_blocks,
+        block_refs_by_serial=block_refs_by_serial,
     )
 
     diagnostics: tuple[object, ...] = ()

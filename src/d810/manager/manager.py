@@ -237,6 +237,7 @@ def _build_current_mba_identity_index(*, session, mba):
         generation=0,
         native_key=session.native_key,
         evidence_generation=session.native_preanalysis.evidence_generation,
+        maturity=int(mba.maturity),
         session_id=session.identity_key,
         current_mba_identity_binding=current_mba_identity_binding,
         decision_observer=_observe_identity,

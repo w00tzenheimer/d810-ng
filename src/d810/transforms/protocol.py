@@ -10,23 +10,21 @@ such as ``mba_t`` are allowed only at translation/lowering boundaries like
 Example:
     >>> backend = HexRaysBackend()
     >>> cfg = backend.lift(mba)
-    >>> modifications = some_pass.transform(cfg)
+    >>> patch_plan = compile_patch_plan(some_pass.transform(cfg), cfg=cfg)
     >>> count = backend.lower(
-    ...     modifications,
+    ...     patch_plan,
     ...     mba,
     ...     mutation_gateway=mutation_gateway,
     ... )
     >>> backend.verify(mba)
     True
 """
-
 from __future__ import annotations
 
 from d810.core.typing import Any, Protocol, runtime_checkable
 
 from d810.ir.flowgraph import FlowGraph
-from d810.transforms.graph_modification import GraphModification
-from d810.transforms.plan import LoweringInput
+from d810.transforms.plan import PatchPlan
 
 
 @runtime_checkable
@@ -36,7 +34,7 @@ class IRTranslator(Protocol):
 
     An IRTranslator provides three core operations:
         - lift: Convert ir-specific state to FlowGraph
-        - lower: Apply a PatchPlan (or compatibility GraphModifications) to ir state
+        - lower: Apply a PatchPlan to ir state
         - verify: Check ir state consistency after modifications
 
     IRTranslators are responsible for:
@@ -81,31 +79,27 @@ class IRTranslator(Protocol):
 
     def lower(
         self,
-        lowering_input: LoweringInput,
+        lowering_input: PatchPlan,
         state: Any,
         *,
         mutation_gateway: object,
     ) -> int:
         """Apply a finalized PatchPlan to backend state.
 
-        New callers should pass :class:`~d810.transforms.plan.PatchPlan`.
-        ``GraphModification`` lists remain accepted temporarily as a migration
-        compatibility input and should be compiled by callers whenever possible.
-
         Mutates the backend state according to the execution plan.
         Returns the count of successfully applied modifications.
 
         Args:
-            lowering_input: PatchPlan or compatibility GraphModification list.
+            lowering_input: Finalized PatchPlan.
             state: Backend-specific mutable state to modify.
 
         Returns:
-            Number of modifications successfully applied (0 to len(modifications)).
+            Number of patch steps successfully applied.
 
         Example:
-            >>> mods = [ConvertToGoto(serial=3), RemoveBlock(serial=5)]
+            >>> patch_plan = compile_patch_plan(planner_intents, cfg=cfg)
             >>> count = backend.lower(
-            ...     mods,
+            ...     patch_plan,
             ...     mba,
             ...     mutation_gateway=mutation_gateway,
             ... )

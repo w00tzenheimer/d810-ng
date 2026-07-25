@@ -48,6 +48,7 @@ from d810.analyses.control_flow.graph_checks import (
     reachable_from_adjacency,
 )
 from d810.ir.flowgraph import FlowGraph
+from d810.ir.maturity import MaturityEnvelope
 from d810.transforms.loop_bound_writer_guard import (
     detect_loop_counter_writeback_tail,
 )
@@ -105,9 +106,7 @@ from d810.analyses.control_flow.safeguards import (
     should_apply_bulk_cfg_modifications,
 )
 from d810.analyses.control_flow.terminal_return_audit import build_terminal_return_audit
-from d810.backends.hexrays.evidence.microcode_dump import (
-    mba_to_human_readable,
-)  # compatibility seam for legacy diagnostics/tests
+from d810.backends.hexrays.evidence.microcode_dump import mba_to_human_readable  # compatibility seam for legacy diagnostics/tests
 
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
@@ -182,11 +181,7 @@ def _preflight_priority(mod: GraphModification) -> int:
 
 def _preflight_simulated_priority(edit: SimulatedEdit) -> int:
     match edit.kind:
-        case (
-            "create_conditional_redirect"
-            | "duplicate_block"
-            | "clone_conditional_as_goto"
-        ):
+        case "create_conditional_redirect" | "duplicate_block" | "clone_conditional_as_goto":
             return 5
         case "edge_split_redirect":
             return 12 if edit.clone_until is not None else 8
@@ -206,17 +201,14 @@ class TransactionalExecutor:
         mba: ida_hexrays.mba_t,
         gate: VerificationGate | SemanticGate | None = None,
         translator: IDAIRTranslator | None = None,
-        allow_legacy_block_creation: bool = True,
         cfg_contract: IDACfgContract | None = None,
         safeguard_profile: str = "engine",
     ):
         self.mba = mba
         self.gate = gate or SemanticGate()
-        self.allow_legacy_block_creation = allow_legacy_block_creation
         self.cfg_contract = cfg_contract
         self.safeguard_profile = str(safeguard_profile).strip() or "engine"
         self.translator = translator or IDAIRTranslator(
-            allow_legacy_block_creation=allow_legacy_block_creation,
             contract=self.cfg_contract,
         )
         self._total_changes = 0
@@ -228,9 +220,7 @@ class TransactionalExecutor:
         """Attach per-round analysis context for fact-backed executor guards."""
         self.validated_fact_view = getattr(snapshot, "diagnostic_fact_view", None)
         try:
-            self.dispatcher_serial = int(
-                getattr(snapshot, "dispatcher_root_serial", -1)
-            )
+            self.dispatcher_serial = int(getattr(snapshot, "dispatcher_root_serial", -1))
         except (TypeError, ValueError):
             self.dispatcher_serial = -1
 
@@ -313,9 +303,7 @@ class TransactionalExecutor:
                 continue
 
             result = self.execute_stage(
-                fragment,
-                total_handlers,
-                cumulative_pre_cfg=cumulative_cfg,
+                fragment, total_handlers, cumulative_pre_cfg=cumulative_cfg,
             )
             results.append(result)
 
@@ -470,7 +458,8 @@ class TransactionalExecutor:
         stale_hazard_override_keys = frozenset(
             tuple(int(part) for part in key)
             for key in (
-                fragment.metadata.get("return_carrier_stale_hazard_overrides", ()) or ()
+                fragment.metadata.get("return_carrier_stale_hazard_overrides", ())
+                or ()
             )
             if isinstance(key, (tuple, list)) and len(key) == 3
         )
@@ -483,18 +472,20 @@ class TransactionalExecutor:
             if isinstance(key, (tuple, list)) and len(key) == 3
         )
 
-        modifications, return_carrier_rejections = filter_return_carrier_fact_redirects(
-            modifications,
-            mba=self.mba,
-            fact_view=self.validated_fact_view,
-            dispatcher_serial=self.dispatcher_serial,
-            flow_graph=pre_cfg,
-            stale_hazard_override_keys=stale_hazard_override_keys,
-            reject_carrier_writer_bypass=(
-                fragment.strategy_name == "dispatcher_loop_recovery"
-            ),
-            insn_kind_classifier=classify_live_insn_kind,
-            operand_kind_classifier=classify_live_operand_kind,
+        modifications, return_carrier_rejections = (
+            filter_return_carrier_fact_redirects(
+                modifications,
+                mba=self.mba,
+                fact_view=self.validated_fact_view,
+                dispatcher_serial=self.dispatcher_serial,
+                flow_graph=pre_cfg,
+                stale_hazard_override_keys=stale_hazard_override_keys,
+                reject_carrier_writer_bypass=(
+                    fragment.strategy_name == "dispatcher_loop_recovery"
+                ),
+                insn_kind_classifier=classify_live_insn_kind,
+                operand_kind_classifier=classify_live_operand_kind,
+            )
         )
         if return_carrier_rejections:
             bypass_rejections = sum(
@@ -520,7 +511,9 @@ class TransactionalExecutor:
                 fact_view=self.validated_fact_view,
                 dispatcher_serial=self.dispatcher_serial,
                 flow_graph=pre_cfg,
-                dag_frontier_override_keys=(terminal_byte_emit_dag_frontier_overrides),
+                dag_frontier_override_keys=(
+                    terminal_byte_emit_dag_frontier_overrides
+                ),
                 insn_kind_classifier=classify_live_insn_kind,
                 operand_kind_classifier=classify_live_operand_kind,
             )
@@ -553,15 +546,8 @@ class TransactionalExecutor:
             result.metadata["gate_accounting"] = gate_accounting
             return result
 
-        patch_plan_preview = compile_patch_plan(
-            modifications, pre_cfg, execution_policy
-        )
-        modifications, patch_plan_preview, backend_removed = (
-            self._filter_backend_unsupported_modifications(
-                pre_cfg,
-                modifications,
-                patch_plan_preview,
-            )
+        modifications, backend_removed = self._filter_backend_unsupported_modifications(
+            modifications
         )
         if backend_removed:
             gate_accounting = gate_accounting.with_backend_filter(backend_removed)
@@ -577,22 +563,36 @@ class TransactionalExecutor:
             result.metadata["gate_accounting"] = gate_accounting
             return result
 
-        if (
-            patch_plan_preview.legacy_block_operations
-            and not self.allow_legacy_block_creation
-        ):
-            return StageResult(
+        mutation_gateway = (
+            None
+            if self._mutation_gateway_factory is None
+            else self._mutation_gateway_factory()
+        )
+        if mutation_gateway is None:
+            result = StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
-                error="block-creating edits disabled by policy",
-                failure_phase="preflight",
+                error="coordinator-owned mutation gateway unavailable",
+                failure_phase="mutation_gateway",
             )
+            result.metadata["gate_accounting"] = gate_accounting
+            return result
+        source_index = mutation_gateway.identity_index
+        source_maturity = MaturityEnvelope(
+            ir=None,
+            provider="hexrays",
+            provider_id=int(source_index.maturity),
+        )
 
         modifications, patch_plan, preflight_error, cycle_removed = self._run_preflight(
             fragment,
             pre_cfg,
             modifications,
-            patch_plan_preview,
+            execution_policy,
+            snapshot_id=source_index.snapshot_id,
+            source_maturity=source_maturity,
+            source_generation=source_index.generation,
+            block_refs_by_serial=source_index.plan_refs_by_serial(),
             live_mba_pre_reachable_count=live_mba_pre_reachable_count,
         )
         if cycle_removed:
@@ -619,11 +619,10 @@ class TransactionalExecutor:
             return StageResult(strategy_name=fragment.strategy_name)
 
         executor_logger.info(
-            "Stage %s compiled PatchPlan: concrete=%d symbolic_blocks=%d legacy_block_steps=%d",
+            "Stage %s compiled PatchPlan once: operations=%d symbolic_blocks=%d",
             fragment.strategy_name,
             len(patch_plan.concrete_operations),
             len(patch_plan.new_blocks),
-            len(patch_plan.legacy_block_operations),
         )
 
         # uee-b7ze Phase 1 observer-only: log use-def dominance severance
@@ -661,21 +660,6 @@ class TransactionalExecutor:
             contract  # ensure translator has it for post-apply hook
         )
         engine = CfgTransactionEngine(translator=self.translator, contract=contract)
-
-        mutation_gateway = (
-            None
-            if self._mutation_gateway_factory is None
-            else self._mutation_gateway_factory()
-        )
-        if mutation_gateway is None:
-            result = StageResult(
-                strategy_name=fragment.strategy_name,
-                success=False,
-                error="coordinator-owned mutation gateway unavailable",
-                failure_phase="mutation_gateway",
-            )
-            result.metadata["gate_accounting"] = gate_accounting
-            return result
 
         tx_result = engine.apply(
             patch_plan,
@@ -733,12 +717,18 @@ class TransactionalExecutor:
         changes = tx_result.applied_count
         self._total_changes += changes
         post_cfg = self.translator.lift(self.mba)
-        self._log_new_block_origins(patch_plan, pre_cfg, post_cfg)
+        creation_receipts = mutation_gateway.plan_creation_receipts
+        realized_serials = {
+            receipt.plan_ref: int(receipt.returned_serial)
+            for receipt in creation_receipts
+        }
+        self._log_new_block_origins(
+            patch_plan, pre_cfg, post_cfg, realized_serials=realized_serials
+        )
 
         # --- Diagnostic snapshot (gated behind D810_DIAG_SNAPSHOT=1) ---
         try:
             from d810.hexrays.observability import request_capture_mba_snapshot
-
             request_capture_mba_snapshot(
                 blocks=_mba_to_block_snapshots(self.mba),
                 label=f"{fragment.strategy_name}_post_apply",
@@ -748,8 +738,7 @@ class TransactionalExecutor:
             )
         except Exception:
             executor_logger.debug(
-                "Diagnostic snapshot failed (non-critical)",
-                exc_info=True,
+                "Diagnostic snapshot failed (non-critical)", exc_info=True,
             )
 
         reachable_blocks = self._compute_reachability_from_cfg(post_cfg)
@@ -953,30 +942,32 @@ class TransactionalExecutor:
         patch_plan: PatchPlan,
         pre_cfg: FlowGraph,
         post_cfg: FlowGraph,
+        *,
+        realized_serials: dict[object, int],
     ) -> None:
         """Log concrete origin identity for all planner-created blocks."""
         if not patch_plan.new_blocks:
             return
         try:
             from d810.transforms.block_lineage import buffer_patch_plan_block_lineage
-
-            buffer_patch_plan_block_lineage(patch_plan, pre_cfg, post_cfg)
+            buffer_patch_plan_block_lineage(
+                patch_plan,
+                pre_cfg,
+                post_cfg,
+                realized_serials=realized_serials,
+            )
         except Exception:
             executor_logger.debug(
                 "BLOCK_ORIGIN lineage buffering failed (non-critical)",
                 exc_info=True,
             )
         try:
-            from d810.core.observability_cfg import (
-                observe_cfg_provenance as log_cfg_provenance,
-            )
+            from d810.core.observability_cfg import observe_cfg_provenance as log_cfg_provenance
         except Exception:
             log_cfg_provenance = None
 
         for spec in patch_plan.new_blocks:
-            assigned_serial = patch_plan.relocation_map.assigned_serial_for(
-                spec.block_id
-            )
+            assigned_serial = realized_serials.get(spec.block_id)
             if assigned_serial is None:
                 continue
             origin_serial = spec.template_block
@@ -1059,117 +1050,61 @@ class TransactionalExecutor:
 
     def _filter_backend_unsupported_modifications(
         self,
-        pre_cfg: FlowGraph,
         modifications: list[GraphModification],
-        patch_plan: PatchPlan,
-        gate_accounting: GateAccounting | None = None,
-    ) -> tuple[list[GraphModification], PatchPlan, int]:
-        """Filter edge-split modifications that fail backend preconditions.
-
-        Returns:
-            Tuple of (filtered_modifications, recompiled_patch_plan, removed_count).
-        """
-        removed_count = 0
-        reorder_materialized_targets: set[int] = set()
-        for step in patch_plan.steps:
-            if not isinstance(step, PatchReorderBlocks):
-                continue
-            reorder_materialized_targets.update(
-                int(new_serial) for _old_serial, new_serial in step.old_to_new
-            )
-            reorder_materialized_targets.update(
-                int(new_serial)
-                for _old_serial, new_serial in step.two_way_old_to_trampoline
-            )
-        if reorder_materialized_targets and patch_plan.planner_modifications:
-            if patch_plan.relocation_map.stop_serial_after is not None:
-                reorder_materialized_targets.add(
-                    int(patch_plan.relocation_map.stop_serial_after)
-                )
-            filtered_modifications: list[GraphModification] = []
-            removed_reorder_target_count = 0
-            for mod, step in zip(patch_plan.planner_modifications, patch_plan.steps):
-                step_target: int | None = None
-                if isinstance(step, (PatchRedirectGoto, PatchRedirectBranch)):
-                    step_target = int(step.new_target)
-                elif isinstance(step, PatchConvertToGoto):
-                    step_target = int(step.goto_target)
-                if (
-                    step_target is not None
-                    and step_target in reorder_materialized_targets
-                ):
-                    removed_reorder_target_count += 1
-                    executor_logger.warning(
-                        "executor filter: rejecting %s because it targets "
-                        "reorder-materialized blk[%d] before REORDER_BLOCKS "
-                        "can materialize it",
-                        type(mod).__name__,
-                        step_target,
-                    )
-                    continue
-                filtered_modifications.append(mod)
-            if removed_reorder_target_count:
-                modifications = filtered_modifications
-                patch_plan = compile_patch_plan(
-                    modifications,
-                    pre_cfg,
-                    patch_plan.execution_policy,
-                )
-                removed_count += removed_reorder_target_count
-
+    ) -> tuple[list[GraphModification], int]:
+        """Filter serial-local planner edits before their one-shot compilation."""
         if not self._supports_live_mba():
-            return modifications, patch_plan, removed_count
-        trampoline_steps = tuple(
-            step
-            for step in patch_plan.concrete_operations
-            if isinstance(step, PatchEdgeSplitTrampoline)
-        )
-        if not patch_plan.planner_modifications or not trampoline_steps:
-            return modifications, patch_plan, removed_count
+            return modifications, 0
 
         from d810.hexrays.mutation import deferred_modifier
 
         modifier = deferred_modifier.DeferredGraphModifier(self.mba)
         rejected_edges: set[tuple[int, int, int, int]] = set()
-        for step in trampoline_steps:
+        for modification in modifications:
+            if not isinstance(modification, EdgeRedirectViaPredSplit):
+                continue
+            if modification.clone_until is not None:
+                continue
             try:
                 preconditions_ok = modifier._check_edge_split_trampoline_preconditions(
-                    source_block_serial=step.source_serial,
-                    via_pred=step.via_pred,
-                    old_target=step.old_target,
-                    new_target=step.new_target,
+                    source_block_serial=modification.src_block,
+                    via_pred=modification.via_pred,
+                    old_target=modification.old_target,
+                    new_target=modification.new_target,
                     validate_new_target=False,
                 )
             except RuntimeError as exc:
                 executor_logger.warning(
                     "executor filter: edge-split live precondition probe failed "
                     "src=%s pred=%s old=%s new=%s: %s",
-                    step.source_serial,
-                    step.via_pred,
-                    step.old_target,
-                    step.new_target,
+                    modification.src_block,
+                    modification.via_pred,
+                    modification.old_target,
+                    modification.new_target,
                     exc,
                 )
                 preconditions_ok = False
             if preconditions_ok:
                 continue
             rejected_edges.add(
-                (step.source_serial, step.old_target, step.via_pred, step.new_target)
+                (
+                    int(modification.src_block),
+                    int(modification.old_target),
+                    int(modification.via_pred),
+                    int(modification.new_target),
+                )
             )
 
         if not rejected_edges:
-            return modifications, patch_plan, removed_count
+            return modifications, 0
 
         def _depends_on_rejected_edge_split(mod: GraphModification) -> bool:
             if isinstance(mod, EdgeRedirectViaPredSplit):
-                rewritten_new_target = patch_plan.relocation_map.rewrite_serial(
-                    int(mod.new_target)
-                )
                 return any(
                     int(mod.src_block) == source_serial
                     and int(mod.old_target) == old_target
                     and int(mod.via_pred) == via_pred
-                    and rewritten_new_target == new_target
+                    and int(mod.new_target) == new_target
                     for (
                         source_serial,
                         old_target,
@@ -1178,12 +1113,9 @@ class TransactionalExecutor:
                     ) in rejected_edges
                 )
             if isinstance(mod, InsertBlock) and mod.old_target_serial is not None:
-                rewritten_succ = patch_plan.relocation_map.rewrite_serial(
-                    int(mod.succ_serial)
-                )
                 return any(
                     int(mod.old_target_serial) == source_serial
-                    and rewritten_succ == new_target
+                    and int(mod.succ_serial) == new_target
                     for (
                         source_serial,
                         _old_target,
@@ -1194,27 +1126,19 @@ class TransactionalExecutor:
             return False
 
         filtered_modifications: list[GraphModification] = []
-        for mod in patch_plan.planner_modifications:
+        for mod in modifications:
             if _depends_on_rejected_edge_split(mod):
                 continue
             filtered_modifications.append(mod)
 
-        edge_split_removed_count = len(patch_plan.planner_modifications) - len(
-            filtered_modifications
-        )
+        edge_split_removed_count = len(modifications) - len(filtered_modifications)
         remaining_count = len(filtered_modifications)
         executor_logger.info(
             "executor filter: backend_removed=%d, remaining=%d",
             edge_split_removed_count,
             remaining_count,
         )
-        return (
-            filtered_modifications,
-            compile_patch_plan(
-                filtered_modifications, pre_cfg, patch_plan.execution_policy
-            ),
-            removed_count + edge_split_removed_count,
-        )
+        return filtered_modifications, edge_split_removed_count
 
     @property
     def total_changes(self) -> int:
@@ -1225,10 +1149,14 @@ class TransactionalExecutor:
         fragment: PlanFragment,
         pre_cfg: FlowGraph,
         modifications: list[GraphModification],
-        patch_plan: PatchPlan,
+        execution_policy: ExecutionPolicy,
         *,
+        snapshot_id: str,
+        source_maturity: MaturityEnvelope,
+        source_generation: int,
+        block_refs_by_serial,
         live_mba_pre_reachable_count: int | None = None,
-    ) -> tuple[list[GraphModification], PatchPlan, StageResult | None, int]:
+    ) -> tuple[list[GraphModification], PatchPlan | None, StageResult | None, int]:
         """Run preflight checks and cycle filtering.
 
         Returns:
@@ -1236,11 +1164,19 @@ class TransactionalExecutor:
             cycle_filter_removed_count).
         """
         simulated_edits = sorted(
-            patch_plan_to_simulated_edits(patch_plan),
+            graph_modifications_to_simulated_edits(modifications),
             key=_preflight_simulated_priority,
         )
         if not simulated_edits:
-            return modifications, patch_plan, None, 0
+            return modifications, compile_patch_plan(
+                modifications,
+                pre_cfg,
+                execution_policy,
+                snapshot_id=snapshot_id,
+                source_maturity=source_maturity,
+                source_generation=source_generation,
+                block_refs_by_serial=block_refs_by_serial,
+            ), None, 0
 
         pre_adj = pre_cfg.as_adjacency_dict()
         structural = check_edge_split_structural_legality(pre_adj, simulated_edits)
@@ -1252,7 +1188,7 @@ class TransactionalExecutor:
             )
             return (
                 modifications,
-                patch_plan,
+                None,
                 StageResult(
                     strategy_name=fragment.strategy_name,
                     success=False,
@@ -1295,7 +1231,7 @@ class TransactionalExecutor:
                 failure_phase="preflight",
             )
             result.metadata["terminal_reachability"] = terminal_reachability
-            return modifications, patch_plan, result, 0
+            return modifications, None, result, 0
 
         if fragment.strategy_name == "fake_jump":
             entry_reachability = check_entry_reachability_not_collapsed(
@@ -1347,7 +1283,7 @@ class TransactionalExecutor:
                     failure_phase="preflight",
                 )
                 result.metadata["entry_reachability"] = entry_reachability
-                return modifications, patch_plan, result, 0
+                return modifications, None, result, 0
 
         terminal_exits = set(fragment.metadata.get("terminal_exit_blocks", set()))
         handler_entries = set(fragment.metadata.get("handler_entry_serials", set()))
@@ -1372,7 +1308,7 @@ class TransactionalExecutor:
                 )
                 return (
                     modifications,
-                    patch_plan,
+                    None,
                     StageResult(
                         strategy_name=fragment.strategy_name,
                         success=False,
@@ -1396,7 +1332,7 @@ class TransactionalExecutor:
             )
             return (
                 modifications,
-                patch_plan,
+                None,
                 StageResult(
                     strategy_name=fragment.strategy_name,
                     success=False,
@@ -1405,20 +1341,25 @@ class TransactionalExecutor:
                 ),
                 cycle_removed,
             )
-        if filtered_modifications != modifications:
-            modifications = filtered_modifications
-            patch_plan = compile_patch_plan(
-                modifications, pre_cfg, patch_plan.execution_policy
-            )
-            simulated_edits = sorted(
-                patch_plan_to_simulated_edits(patch_plan),
-                key=_preflight_simulated_priority,
-            )
-            sim_result = simulate_edits(pre_adj, simulated_edits)
-            sim_adj = sim_result.adj
-            terminal_targets = self._derive_terminal_targets(
-                simulated_edits, terminal_exits
-            )
+        modifications = filtered_modifications
+        patch_plan = compile_patch_plan(
+            modifications,
+            pre_cfg,
+            execution_policy,
+            snapshot_id=snapshot_id,
+            source_maturity=source_maturity,
+            source_generation=source_generation,
+            block_refs_by_serial=block_refs_by_serial,
+        )
+        simulated_edits = sorted(
+            patch_plan_to_simulated_edits(patch_plan),
+            key=_preflight_simulated_priority,
+        )
+        sim_result = simulate_edits(pre_adj, simulated_edits)
+        sim_adj = sim_result.adj
+        terminal_targets = self._derive_terminal_targets(
+            simulated_edits, terminal_exits
+        )
 
         preflight_cycle_seeds = set(terminal_exits)
         preflight_cycle_seeds |= terminal_targets
@@ -1571,10 +1512,7 @@ class TransactionalExecutor:
 
             edits_to_remove: set[int] = set()
             for idx, (_, edit) in enumerate(current_pairs):
-                if edit.kind not in {
-                    "edge_split_redirect",
-                    "clone_conditional_as_goto",
-                }:
+                if edit.kind not in {"edge_split_redirect", "clone_conditional_as_goto"}:
                     continue
                 if edit.new_target in cycle_nodes or edit.source in cycle_nodes:
                     edits_to_remove.add(idx)

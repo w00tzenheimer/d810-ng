@@ -5,10 +5,7 @@ from __future__ import annotations
 from d810.core import logging, getLogger
 from d810.core.typing import Iterable, Literal
 
-from d810.hexrays.contracts.native_oracle import (
-    NATIVE_ORACLE_AVAILABLE,
-    check_mba_native,
-)
+from d810.hexrays.contracts.native_oracle import NATIVE_ORACLE_AVAILABLE, check_mba_native
 
 logger = getLogger(__name__)
 
@@ -17,6 +14,7 @@ if NATIVE_ORACLE_AVAILABLE:
 else:
     logger.info("Native CFG oracle unavailable - Python-only parity mode")
 from d810.transforms.contract import CfgContract, CfgContractViolationError
+from d810.transforms.cfg_transaction import CfgProjection
 from d810.hexrays.contracts.insn_invariants import check_all_insn_invariants
 from d810.hexrays.contracts.invariants import (
     block_address_range,
@@ -85,10 +83,8 @@ class IDACfgContract:
             return
         for attr_name in (
             "apply_old_target",
-            "assigned_serial",
             "block_serial",
             "conditional_target",
-            "fallthrough_serial",
             "fallthrough_target",
             "from_serial",
             "goto_target",
@@ -115,8 +111,6 @@ class IDACfgContract:
         for edge in getattr(obj, "outgoing_edges", ()) or ():
             self._collect_edge_serials(serials, edge)
 
-        for _block_id, assigned_serial in getattr(obj, "assigned_serials", ()) or ():
-            self._maybe_add_serial(serials, assigned_serial)
         for old_edge, new_edge in getattr(obj, "rewritten_edges", ()) or ():
             self._collect_edge_serials(serials, old_edge)
             self._collect_edge_serials(serials, new_edge)
@@ -128,65 +122,99 @@ class IDACfgContract:
         serials: set[int] = set()
         for step in getattr(plan, "steps", ()):
             self._collect_serials_from_object(serials, step)
-            self._collect_serials_from_object(
-                serials, getattr(step, "modification", None)
-            )
+            self._collect_serials_from_object(serials, getattr(step, "modification", None))
         for block_spec in getattr(plan, "new_blocks", ()):
             self._collect_serials_from_object(serials, block_spec)
-        self._collect_serials_from_object(
-            serials, getattr(plan, "relocation_map", None)
-        )
+        self._collect_serials_from_object(serials, getattr(plan, "relocation_map", None))
         for op in getattr(plan, "ops", ()):
             self._collect_serials_from_object(serials, op)
         return sorted(serials)
 
+    @staticmethod
+    def _projection_focus_serials(projection: CfgProjection) -> list[int]:
+        """Return only source-snapshot refs that exist in the live MBA."""
+        return []
+
+    def _live_focus_serials(
+        self,
+        *,
+        plan: PatchPlan | None,
+        projection: CfgProjection | None,
+        scope: ContractScope,
+    ) -> list[int] | None:
+        if scope == "full":
+            return None
+        if projection is not None:
+            return self._projection_focus_serials(projection) or None
+        if plan is not None:
+            return self._focus_serials(plan) or None
+        return None
+
     def check_pre(
         self,
         mba,
-        plan: PatchPlan,
+        plan: PatchPlan | None = None,
         *,
+        projection: CfgProjection | None = None,
         scope: ContractScope = "focused",
         include_insn_checks: bool = False,
     ) -> list[InvariantViolation]:
-        focus = None if scope == "full" else (self._focus_serials(plan) or None)
-        return self._check(
-            mba,
-            phase="pre",
-            focus_serials=focus,
-            include_insn_checks=include_insn_checks,
+        focus = self._live_focus_serials(
+            plan=plan,
+            projection=projection,
+            scope=scope,
         )
+        return self._check(mba, phase="pre", focus_serials=focus, include_insn_checks=include_insn_checks)
 
     def check_post(
         self,
         mba,
-        plan: PatchPlan,
+        plan: PatchPlan | None = None,
         *,
+        projection: CfgProjection | None = None,
         scope: ContractScope = "focused",
         include_insn_checks: bool = False,
     ) -> list[InvariantViolation]:
-        focus = None if scope == "full" else (self._focus_serials(plan) or None)
-        return self._check(
-            mba,
-            phase="post",
-            focus_serials=focus,
-            include_insn_checks=include_insn_checks,
+        focus = self._live_focus_serials(
+            plan=plan,
+            projection=projection,
+            scope=scope,
         )
+        return self._check(mba, phase="post", focus_serials=focus, include_insn_checks=include_insn_checks)
 
     def check_rollback(
         self,
         mba,
-        plan: PatchPlan,
+        plan: PatchPlan | None = None,
         *,
+        projection: CfgProjection | None = None,
         scope: ContractScope = "focused",
         include_insn_checks: bool = False,
     ) -> list[InvariantViolation]:
-        focus = None if scope == "full" else (self._focus_serials(plan) or None)
-        return self._check(
-            mba,
-            phase="rollback",
-            focus_serials=focus,
-            include_insn_checks=include_insn_checks,
+        focus = self._live_focus_serials(
+            plan=plan,
+            projection=projection,
+            scope=scope,
         )
+        return self._check(mba, phase="rollback", focus_serials=focus, include_insn_checks=include_insn_checks)
+
+    def check_projection(
+        self,
+        projection: CfgProjection,
+        *,
+        scope: ContractScope = "focused",
+    ) -> list[InvariantViolation]:
+        """Check a portable projection before any live MBA mutation."""
+        return CfgContract().check_projection(projection, scope=scope)
+
+    def verify_projection(
+        self,
+        projection: CfgProjection,
+        *,
+        scope: ContractScope = "focused",
+    ) -> tuple[InvariantViolation, ...]:
+        """Validate a portable projection using the transaction interface."""
+        return CfgContract().verify_projection(projection, scope=scope)
 
     def check_projected(
         self,
@@ -195,7 +223,14 @@ class IDACfgContract:
         *,
         scope: ContractScope = "focused",
     ) -> list[InvariantViolation]:
-        return CfgContract().check_projected(pre_cfg, plan, scope=scope)
+        from d810.transforms.edit_simulator import project_patch_plan
+
+        projection = project_patch_plan(
+            pre_cfg,
+            plan,
+            snapshot_id=f"flow-graph:{id(pre_cfg):x}",
+        )
+        return self.check_projection(projection, scope=scope)
 
     def verify_projected(
         self,
@@ -211,29 +246,35 @@ class IDACfgContract:
         :class:`CfgContractViolationError` with ``phase="projected"``
         when any invariant is violated.
 
-        Projected-state construction is delegated to
-        :func:`d810.transforms.edit_simulator.project_post_state` (called
-        internally by :meth:`check_projected`).
+        Projected-state construction is delegated to the plan-specific
+        :func:`d810.transforms.edit_simulator.project_patch_plan` adapter.
         """
-        violations = tuple(self.check_projected(pre_cfg, plan, scope=scope))
-        if violations:
-            raise CfgContractViolationError(phase="projected", violations=violations)
-        return violations
+        from d810.transforms.edit_simulator import project_patch_plan
+
+        projection = project_patch_plan(
+            pre_cfg,
+            plan,
+            snapshot_id=f"flow-graph:{id(pre_cfg):x}",
+        )
+        return self.verify_projection(projection, scope=scope)
 
     def verify(
         self,
         mba,
         plan: PatchPlan | None = None,
         *,
+        projection: CfgProjection | None = None,
         phase: ContractPhase = "post",
         scope: ContractScope = "focused",
         include_insn_checks: bool = False,
     ) -> tuple[InvariantViolation, ...]:
         if phase not in ("pre", "post", "rollback"):
             raise ValueError(f"Unknown cfg contract phase: {phase}")
-        focus = None
-        if plan is not None and scope != "full":
-            focus = self._focus_serials(plan) or None
+        focus = self._live_focus_serials(
+            plan=plan,
+            projection=projection,
+            scope=scope,
+        )
         violations = tuple(
             self._check(
                 mba,
@@ -286,7 +327,9 @@ class IDACfgContract:
         )
         if include_insn_checks:
             violations.extend(
-                check_all_insn_invariants(mba, phase=phase, focus_serials=focus_serials)
+                check_all_insn_invariants(
+                    mba, phase=phase, focus_serials=focus_serials
+                )
             )
         if NATIVE_ORACLE_AVAILABLE:
             for interr_code, block_serial, msg in check_mba_native(mba):

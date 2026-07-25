@@ -15,13 +15,15 @@ deferred backend half.
 ``transition_result`` (#2) / ``dispatch_map`` + ``dispatcher_entry_serial`` + ``state_var_stkoff``
 (#1) are the unflatten analysis dependencies; while any is missing the plan is empty.
 """
-
 from __future__ import annotations
+
+from collections.abc import Mapping
 
 from d810.core import logging
 from d810.core.typing import Optional, Protocol, runtime_checkable
 from d810.analyses.data_flow.abstract_value import Block, RouteResult
 from d810.ir.flowgraph import FlowGraph
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.analyses.value_flow.model import ValidatedFactView
 from d810.analyses.control_flow.transition_builder import TransitionResult
 from d810.analyses.control_flow.linearized_state_dag import (
@@ -136,37 +138,6 @@ def _resolve_target_via_route(model: "DispatcherModel", state_value: int) -> int
 _DispatcherMap = DispatcherModel
 
 
-def _patch_from_graph_modification(mod: object) -> object | None:
-    """Wrap a neutral spine ``GraphModification`` into the unflatten ``PatchPlan`` step type.
-
-    The shared :func:`emit_spine_modifications` emits backend-neutral ``GraphModification`` values
-    (the same currency the legacy LFG path appends); the unflatten backend consumes a ``PatchPlan``, so
-    each redirect is wrapped into its ``Patch*`` shadow. Only the two redirect shapes the spine
-    emitter produces are handled; anything else is dropped (returns ``None``).
-    """
-    if isinstance(mod, RedirectGoto):
-        return PatchRedirectGoto(
-            from_serial=mod.from_serial,
-            old_target=mod.old_target,
-            new_target=mod.new_target,
-        )
-    if isinstance(mod, RedirectBranch):
-        return PatchRedirectBranch(
-            from_serial=mod.from_serial,
-            old_target=mod.old_target,
-            new_target=mod.new_target,
-        )
-    if isinstance(mod, ConvertToGoto):
-        # The return planner reaches ``builder.goto_redirect`` on a 2-way anchor, which the builder
-        # lowers to a ``ConvertToGoto`` (keep the live arm, drop the other). Mirror it as the unflatten
-        # ``PatchConvertToGoto`` the backend already applies for the #4b back-edge disconnect.
-        return PatchConvertToGoto(
-            block_serial=mod.block_serial,
-            goto_target=mod.goto_target,
-        )
-    return None
-
-
 def _neutral_spine_mods(
     dag,
     dispatcher_entry_serial: int,
@@ -231,11 +202,7 @@ def _spine_redirects_from_dag(
         live_function=live_function,
         state_var_stkoff=state_var_stkoff,
     )
-    return tuple(
-        patch
-        for patch in (_patch_from_graph_modification(mod) for mod in mods)
-        if patch is not None
-    )
+    return tuple(mods)
 
 
 def _spine_members_from_dag(dag) -> frozenset[int]:
@@ -290,7 +257,7 @@ def _disconnect_residual_dispatcher_backedges(
         if int(plan.source_block) not in spine_members:
             continue  # only disconnect 2-way blocks that participate in the spine
         steps.append(
-            PatchConvertToGoto(
+            ConvertToGoto(
                 block_serial=int(plan.source_block),
                 goto_target=int(plan.keep_target),
             )
@@ -333,13 +300,7 @@ def _return_redirects_from_dag(
         artifact_return_blocks=set(int(b) for b in artifact_return_blocks),
         node_by_key=node_by_key,
     )
-    return tuple(
-        patch
-        for patch in (
-            _patch_from_graph_modification(mod) for mod in result.modifications
-        )
-        if patch is not None
-    )
+    return tuple(result.modifications)
 
 
 def _reconstruction_postprocess_mods(
@@ -356,6 +317,7 @@ def _reconstruction_postprocess_mods(
     constant_result=None,
     projected_flow_graph=None,
     exact_dispatcher_map=None,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
 ) -> tuple[tuple[object, ...], int, int]:
     """Run the portable reconstruction postprocess -> the rich neutral mod set (the returns=8 chain).
 
@@ -366,7 +328,7 @@ def _reconstruction_postprocess_mods(
     neutral direct-reconstruction set; ``owned_blocks`` is its source/target span. Returns the union of
     all sub-plan modifications (InsertBlock / EdgeRedirectViaPredSplit / ZeroStateWrite /
     CreateConditionalRedirect / RedirectGoto / RedirectBranch) as neutral ``GraphModification`` values
-    for the ``planner_modifications`` channel. ``constant_result`` None -> the fixpoint feeder no-ops.
+    before one-shot PatchPlan compilation. ``constant_result`` None -> the fixpoint feeder no-ops.
     """
     blocks = getattr(graph, "blocks", {})
     nsucc_map = {s: int(b.nsucc) for s, b in blocks.items()}
@@ -387,10 +349,13 @@ def _reconstruction_postprocess_mods(
     # legacy ``execute_reconstruction_postprocess`` projects through ``modifications`` the same way).
     # Best-effort: a projection failure falls back to the raw graph (feeder stays conservative).
     if projected_flow_graph is None:
+        patch_plan = compile_patch_plan(
+            list(spine_mods),
+            graph,
+            block_refs_by_serial=block_refs_by_serial,
+        )
         try:
-            projected_flow_graph = project_post_state(
-                graph, compile_patch_plan(list(spine_mods), graph)
-            )
+            projected_flow_graph = project_post_state(graph, patch_plan)
         except Exception:  # noqa: BLE001 — projection is best-effort diagnostics
             projected_flow_graph = graph
     # Diagnostics: stash the recovered topology for the D810_USE_STRUCTURER dump.
@@ -471,6 +436,7 @@ def lower_to_direct_graph(
     dispatcher=None,
     constant_result=None,
     projected_flow_graph=None,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef] | None = None,
 ) -> PatchPlan:
     """Build a ``PatchPlan`` reconnecting handlers into a direct spine (dispatcher bypassed).
 
@@ -487,7 +453,7 @@ def lower_to_direct_graph(
     ``dispatcher`` (the recovered ``IntervalDispatcher``) is the full-reconstruction signal: with both
     it and ``condition_chain_blocks`` present, #4 runs the entire portable postprocess orchestration
     (preheader/bridge/feeder/fixpoint/return — :func:`_reconstruction_postprocess_mods`) and returns
-    the rich neutral mod set via ``planner_modifications`` (the channel the backend applies for
+    the rich neutral mod set via one-shot PatchPlan compilation (the backend applies
     InsertBlock / ZeroStateWrite / …). ``None`` -> the redirect-only ``steps`` path below (the
     committed, production-byte-identical behaviour). ``constant_result`` / ``projected_flow_graph`` are
     optional postprocess inputs (``constant_result`` None -> the fixpoint feeder no-ops).
@@ -515,7 +481,7 @@ def lower_to_direct_graph(
     record_recovered_state_dag(dag)
     # Full reconstruction (unflatten gap3+gap4): with the recovered IntervalDispatcher AND the condition-chain node set,
     # run the entire portable postprocess orchestration over the enriched DAG and emit the rich neutral
-    # mod set through ``planner_modifications`` (the backend's apply channel for InsertBlock /
+    # mod set through one-shot PatchPlan compilation (the backend apply path for InsertBlock /
     # ZeroStateWrite / per-pred splits / returns). Mirrors StateWriteReconstructionStrategy.plan;
     # returns are EMERGENT from the full chain, not a discrete mod. Gated on ``dispatcher`` so the
     # committed redirect-only ``steps`` path below stays byte-identical when it is absent.
@@ -561,6 +527,7 @@ def lower_to_direct_graph(
             constant_result=constant_result,
             projected_flow_graph=projected_flow_graph,
             exact_dispatcher_map=dispatch_map,
+            block_refs_by_serial=dict(block_refs_by_serial or {}),
         )
         if logger.info_on:
             logger.info(
@@ -571,9 +538,13 @@ def lower_to_direct_graph(
             )
         # Compile the neutral GraphModification mods into applicable PatchPlan steps
         # (same bridge the legacy executor uses) so the unflatten backend's lower() — which
-        # applies ``steps``, not the ``planner_modifications`` channel — materializes
+        # applies typed ``steps`` and materializes
         # them. ``graph`` is the pre-mutation CFG for edge-split legality.
-        return compile_patch_plan(list(planner_mods), graph)
+        return compile_patch_plan(
+            list(planner_mods),
+            graph,
+            block_refs_by_serial=block_refs_by_serial,
+        )
     redirect_steps = _spine_redirects_from_dag(
         dag,
         int(dispatcher_entry_serial),
@@ -638,4 +609,8 @@ def lower_to_direct_graph(
             len(return_steps),
             "on" if condition_chain_blocks is not None else "off",
         )
-    return PatchPlan(steps=(*redirect_steps, *backedge_steps, *return_steps))
+    return compile_patch_plan(
+        [*redirect_steps, *backedge_steps, *return_steps],
+        graph,
+        block_refs_by_serial=block_refs_by_serial,
+    )

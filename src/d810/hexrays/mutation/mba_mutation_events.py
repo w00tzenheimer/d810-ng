@@ -917,6 +917,7 @@ class MbaMutationGateway:
             MbaMutationRootPublicationGroup
         ] = (),
         transaction_attempt: TransactionAttemptId | None = None,
+        patch_plan_id: str | None = None,
         patch_plan_refs: Iterable[PlanBlockRef] = (),
     ) -> None:
         self._require_generation_usable()
@@ -968,6 +969,10 @@ class MbaMutationGateway:
                 transaction_attempt.plan_id != fragment_plan.plan_id
             ):
                 raise ValueError("transaction attempt does not match fragment plan")
+            if patch_plan_id is not None and (
+                transaction_attempt.plan_id != str(patch_plan_id)
+            ):
+                raise ValueError("transaction attempt does not match patch plan")
             if any(
                 ref.plan_id != transaction_attempt.plan_id for ref in patch_plan_refs
             ):
@@ -1048,6 +1053,38 @@ class MbaMutationGateway:
         )
         if transaction_attempt is not None:
             self._emit_cfg_transaction_phase(CfgTransactionPhase.BOUND)
+
+    def register_patch_plan_reservations(
+        self,
+        reservations: Iterable[PlanBlockReservation],
+    ) -> None:
+        """Record the exact reservations produced during patch-plan binding."""
+        self._require_active()
+        declared = set(self._cfg_plan_refs)
+        for reservation in reservations:
+            if (
+                reservation.attempt_id != self._current_transaction_attempt
+                or reservation.plan_ref not in declared
+            ):
+                raise ValueError("patch plan reservation authority differs")
+            self._cfg_reservations[reservation.plan_ref] = reservation
+
+    def begin_patch_realization(
+        self,
+        attempt: TransactionAttemptId,
+        *,
+        plan_refs: Iterable[PlanBlockRef],
+    ) -> None:
+        """Cross the SDK-write boundary for exactly reserved patch blocks."""
+        self._require_active()
+        if attempt != self._current_transaction_attempt:
+            raise ValueError("patch realization attempt is not the active batch")
+        requested = tuple(plan_refs)
+        if not requested:
+            raise ValueError("patch realization requires planned block ownership")
+        if any(plan_ref not in self._cfg_reservations for plan_ref in requested):
+            raise ValueError("patch realization references an unreserved plan block")
+        self._record_cfg_mutation_started()
 
     def _emit_observation(
         self,

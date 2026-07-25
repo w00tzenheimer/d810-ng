@@ -4,7 +4,6 @@ The pipeline lifts backend state to FlowGraph, runs each pass's transform,
 compiles the resulting modifications to PatchPlan, lowers that plan, verifies,
 and re-lifts if changes occurred.
 """
-
 from __future__ import annotations
 
 from d810.core.logging import getLogger
@@ -51,30 +50,35 @@ class FlowGraphTransformPipeline:
                 logger.debug("Pass %s produced no modifications", pass_.name)
                 continue
 
-            patch_plan = compile_patch_plan(mods, cfg)
+            identity_index = getattr(mutation_gateway, "identity_index", None)
+            if identity_index is None:
+                raise TypeError(
+                    "FlowGraph transform compilation requires exact block authority"
+                )
+            patch_plan = compile_patch_plan(
+                mods,
+                cfg,
+                snapshot_id=identity_index.snapshot_id,
+                source_generation=identity_index.generation,
+                block_refs_by_serial=identity_index.plan_refs_by_serial(),
+            )
             count = self.backend.lower(
                 patch_plan,
                 backend_state,
                 mutation_gateway=mutation_gateway,
             )
             if count <= 0:
-                logger.debug(
-                    "Pass %s: lower returned %d, skipping verify", pass_.name, count
-                )
+                logger.debug("Pass %s: lower returned %d, skipping verify", pass_.name, count)
                 continue
 
             if not self.backend.verify(backend_state):
-                logger.warning(
-                    "Pass %s failed verification, aborting pipeline", pass_.name
-                )
+                logger.warning("Pass %s failed verification, aborting pipeline", pass_.name)
                 break  # Stop all further transform - MBA may be corrupted
 
             # Re-lift only when changes were applied successfully
             cfg = self.backend.lift(backend_state)
             total += count
-            logger.debug(
-                "Pass %s applied %d modifications (total: %d)", pass_.name, count, total
-            )
+            logger.debug("Pass %s applied %d modifications (total: %d)", pass_.name, count, total)
 
         return total
 

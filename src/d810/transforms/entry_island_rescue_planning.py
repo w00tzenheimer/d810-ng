@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.core import logging
+from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.entry_island_rescue import (
     EntryIslandRescueOption,
     build_entry_island_rescue_modification,
@@ -89,13 +91,16 @@ def score_entry_island_rescue_option(
     baseline_reachable_count: int,
     baseline_reachable_blocks: set[int],
     compute_reachable_blocks,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
 ) -> tuple[tuple[int, int, int, int, int], object, object] | None:
     candidate_mod = build_entry_island_rescue_modification(option, builder=builder)
 
+    patch_plan = compile_patch_plan(
+        modifications + [candidate_mod],
+        base_flow_graph,
+        block_refs_by_serial=block_refs_by_serial,
+    )
     try:
-        patch_plan = compile_patch_plan(
-            modifications + [candidate_mod], base_flow_graph
-        )
         projected_flow_graph = project_post_state(base_flow_graph, patch_plan)
     except Exception:
         return None
@@ -108,14 +113,10 @@ def score_entry_island_rescue_option(
     if reachable_count_delta < 0:
         return None
 
-    preserved_old_target = (
-        1
-        if (
-            option.old_target in baseline_reachable_blocks
-            and option.old_target in reachable_blocks
-        )
-        else 0
-    )
+    preserved_old_target = 1 if (
+        option.old_target in baseline_reachable_blocks
+        and option.old_target in reachable_blocks
+    ) else 0
     mode_rank = 1 if option.via_pred is None else 0
     via_rank = int(option.via_pred) if option.via_pred is not None else -1
     score = (
@@ -139,6 +140,7 @@ def select_entry_island_rescue(
     dispatcher_region: set[int],
     claimed_sources: set[int],
     compute_reachable_blocks,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
 ) -> EntryIslandRescueSelection:
     baseline_reachable_count = len(reachable_blocks)
     seen_options: set[tuple[int, int, int | None]] = set()
@@ -175,11 +177,19 @@ def select_entry_island_rescue(
                 baseline_reachable_count=baseline_reachable_count,
                 baseline_reachable_blocks=reachable_blocks,
                 compute_reachable_blocks=compute_reachable_blocks,
+                block_refs_by_serial=block_refs_by_serial,
             )
-            if int(option.source_block) == 34 and int(option.lifted_entry) == 212:
+            if (
+                int(option.source_block) == 34
+                and int(option.lifted_entry) == 212
+            ):
                 logger.info(
                     "RECON DAG: rescue option probe 34->212 via_pred=%s scored=%s",
-                    (int(option.via_pred) if option.via_pred is not None else None),
+                    (
+                        int(option.via_pred)
+                        if option.via_pred is not None
+                        else None
+                    ),
                     scored[0] if scored is not None else None,
                 )
             if scored is None:
@@ -193,11 +203,7 @@ def select_entry_island_rescue(
             best_modification = candidate_mod
             best_projected_flow_graph = candidate_projected
 
-    if (
-        best_option is None
-        or best_modification is None
-        or best_projected_flow_graph is None
-    ):
+    if best_option is None or best_modification is None or best_projected_flow_graph is None:
         return EntryIslandRescueSelection(accepted=False)
 
     return EntryIslandRescueSelection(
@@ -219,6 +225,7 @@ def plan_entry_island_rescues(
     dispatcher_region: set[int],
     collect_seeds,
     compute_reachable_blocks,
+    block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
 ) -> EntryIslandRescueRun:
     current_projected_flow_graph = projected_flow_graph
     emitted = 0
@@ -256,6 +263,7 @@ def plan_entry_island_rescues(
             dispatcher_region=dispatcher_region,
             claimed_sources=claimed_sources,
             compute_reachable_blocks=compute_reachable_blocks,
+            block_refs_by_serial=block_refs_by_serial,
         )
         iterations.append(
             EntryIslandRescueIteration(

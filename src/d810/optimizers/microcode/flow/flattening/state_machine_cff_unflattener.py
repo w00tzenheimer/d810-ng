@@ -4383,12 +4383,8 @@ def _diag_dag_edges(dag) -> list[_DiagDagEdge]:
 
 
 def _diag_modifications(plan) -> list[_DiagModification]:
-    try:
-        graph_mods = plan.as_graph_modifications()
-    except Exception:  # noqa: BLE001 — best-effort diagnostic conversion
-        graph_mods = ()
     mods: list[_DiagModification] = []
-    for idx, mod in enumerate(graph_mods):
+    for idx, mod in enumerate(getattr(plan, "steps", ())):
         source_block = getattr(mod, "from_serial", None)
         if source_block is None:
             source_block = getattr(mod, "block_serial", None)

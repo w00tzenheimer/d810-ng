@@ -11,14 +11,12 @@ Ownership:
 - CfgTransactionEngine: phase ordering, projected/live validation sequencing,
   rollback policy selection, failure classification
 """
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from d810.core import logging
 from d810.core.typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
     from d810.transforms.contract import CfgContract
     from d810.passes.transaction_policy import FailureClassification
@@ -113,16 +111,26 @@ class CfgTransactionEngine:
             internally via its own hook wiring.
         """
         from d810.transforms.contract import CfgContractViolationError
+        from d810.transforms.edit_simulator import project_patch_plan
 
         # Phase: projected_contract -- reject before any live mutation
         if self._contract is not None:
             # When a cumulative CFG is available, validate against the
             # accumulated state first (catches cross-strategy conflicts).
-            projected_base = (
-                cumulative_pre_cfg if cumulative_pre_cfg is not None else pre_cfg
+            projected_base = cumulative_pre_cfg if cumulative_pre_cfg is not None else pre_cfg
+            snapshot_value = projected_base.metadata.get("snapshot_id")
+            snapshot_id = (
+                str(snapshot_value)
+                if snapshot_value is not None and str(snapshot_value).strip()
+                else f"flow-graph:{id(projected_base):x}"
             )
             try:
-                self._contract.verify_projected(projected_base, plan)
+                projection = project_patch_plan(
+                    projected_base,
+                    plan,
+                    snapshot_id=snapshot_id,
+                )
+                self._contract.verify_projection(projection)
             except CfgContractViolationError as exc:
                 logger.info(
                     "projected_contract check failed (cumulative=%s): %s",
@@ -134,7 +142,7 @@ class CfgTransactionEngine:
         # Phase: live_pre_check -- reject before any live mutation
         if self._contract is not None:
             try:
-                self._contract.verify(mba, plan, phase="pre")
+                self._contract.verify(mba, projection=projection, phase="pre")
             except CfgContractViolationError as exc:
                 return TransactionResult.failed("live_pre_check", exc)
 
@@ -152,24 +160,20 @@ class CfgTransactionEngine:
             return TransactionResult.failed("post_apply_contract", exc)
         except Exception as exc:
             # Unexpected failure during lowering/apply
-            phase = (
-                getattr(self._translator, "last_lowering_phase", None)
-                or "backend_apply"
-            )
+            phase = getattr(self._translator, "last_lowering_phase", None) or "backend_apply"
             detail = getattr(self._translator, "last_lowering_subphase", None)
             return TransactionResult.failed(phase, exc, detail=detail)
 
         if count == 0:
             # lower() returned 0 -- use translator's reported phase to distinguish
             # pre-mutation rejections (lowering) from post-mutation failures (native_verify)
-            phase = (
-                getattr(self._translator, "last_lowering_phase", None)
-                or "backend_apply"
-            )
+            phase = getattr(self._translator, 'last_lowering_phase', None) or "backend_apply"
             detail = getattr(self._translator, "last_lowering_subphase", None)
             return TransactionResult.failed(
                 phase,
-                RuntimeError("translator.lower() returned 0 applied modifications"),
+                RuntimeError(
+                    "translator.lower() returned 0 applied modifications"
+                ),
                 detail=detail,
             )
 

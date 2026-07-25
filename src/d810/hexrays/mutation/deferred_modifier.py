@@ -238,7 +238,7 @@ from d810.hexrays.mutation.cfg_mutations import change_0way_block_successor
 from d810.hexrays.mutation.cfg_mutations import change_1way_block_successor
 from d810.hexrays.mutation.cfg_mutations import change_2way_block_conditional_successor
 from d810.hexrays.mutation.cfg_mutations import coalesce_jtbl_cases
-from d810.transforms.cfg_transaction import TransactionAttemptId
+from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
 from d810.hexrays.mutation.cfg_mutations import create_standalone_block
 from d810.hexrays.mutation.cfg_mutations import downgrade_nway_null_tail_to_1way
 from d810.hexrays.mutation.cfg_mutations import duplicate_block
@@ -951,7 +951,7 @@ class _StagedPendingRewire:
 
 
 @dataclass
-class GraphModification:
+class QueuedModification:
     """Represents a single queued graph modification."""
 
     mod_type: ModificationType
@@ -1132,7 +1132,7 @@ class DeferredGraphModifier:
     """
 
     mba: ida_hexrays.mba_t
-    modifications: list[GraphModification] = field(default_factory=list)
+    modifications: list[QueuedModification] = field(default_factory=list)
     _applied: bool = False
     verify_failed: bool = False
     last_apply_phase: str | None = None
@@ -1173,6 +1173,16 @@ class DeferredGraphModifier:
         init=False,
         repr=False,
     )
+    _patch_plan_ref_by_bound_serial: dict[int, PlanBlockRef] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _realized_patch_serial_by_bound_serial: dict[int, int] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self._mutation_gateway = self.mutation_gateway
@@ -1208,6 +1218,20 @@ class DeferredGraphModifier:
         self._optimizer_name = optimizer_name
         self._pass_id = pass_id
         self._session_id = uuid.uuid4().hex
+
+    def configure_patch_bindings(self, bound_plan) -> None:
+        """Install attempt-local creation ownership before queueing writes."""
+        attempt = bound_plan.attempt_id
+        gateway = self._mutation_gateway
+        if gateway is None or not gateway.active:
+            raise RuntimeError("patch binding requires an active mutation gateway")
+        if gateway.current_transaction_attempt != attempt:
+            raise ValueError("patch binding attempt is not the active gateway attempt")
+        self._patch_plan_ref_by_bound_serial = {
+            int(bound_plan.serial_for(spec.block_id)): spec.block_id
+            for spec in bound_plan.plan.new_blocks
+        }
+        self._realized_patch_serial_by_bound_serial.clear()
 
     def _emit(self, event: DeferredEvent, payload: dict) -> None:
         """Emit *event* with *payload* if an emitter is configured.
@@ -1335,7 +1359,7 @@ class DeferredGraphModifier:
         return result
 
     def _mod_payload(
-        self, mod: GraphModification, mod_index: int | None = None
+        self, mod: QueuedModification, mod_index: int | None = None
     ) -> dict:
         """Extend a base payload with modification-specific fields."""
         payload = self._base_payload()
@@ -1369,7 +1393,7 @@ class DeferredGraphModifier:
             pass
         return TargetRefKind.ABSOLUTE
 
-    def _resolve_target_serial(self, mod: GraphModification) -> int | None:
+    def _resolve_target_serial(self, mod: QueuedModification) -> int | None:
         """Resolve mod.new_target according to mod.target_ref_kind."""
         if mod.new_target is None:
             return None
@@ -1445,7 +1469,7 @@ class DeferredGraphModifier:
             else self._infer_target_ref_kind(new_target)
         )
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=block_serial,
                 new_target=new_target,
@@ -1479,6 +1503,7 @@ class DeferredGraphModifier:
         block_serial: int,
         new_target: int,
         old_target: int | None = None,
+        expected_helper_serial: int | None = None,
         description: str = "",
         target_ref_kind: TargetRefKind | None = None,
     ) -> None:
@@ -1489,11 +1514,12 @@ class DeferredGraphModifier:
             else self._infer_target_ref_kind(new_target)
         )
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_TARGET_CHANGE,
                 block_serial=block_serial,
                 new_target=new_target,
                 old_target=old_target,
+                expected_serial=expected_helper_serial,
                 priority=10,
                 description=description or f"jmp target {block_serial} -> {new_target}",
                 target_ref_kind=resolved_target_kind,
@@ -1525,7 +1551,7 @@ class DeferredGraphModifier:
             else self._infer_target_ref_kind(goto_target)
         )
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_CONVERT_TO_GOTO,
                 block_serial=block_serial,
                 new_target=goto_target,
@@ -1559,7 +1585,7 @@ class DeferredGraphModifier:
             else self._infer_target_ref_kind(goto_target)
         )
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_TERMINAL_GOTO_CHANGE,
                 block_serial=block_serial,
                 new_target=goto_target,
@@ -1586,7 +1612,7 @@ class DeferredGraphModifier:
     ) -> None:
         """Queue downgrade of a degenerate BLT_NWAY/null-tail block to 1-way."""
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_NWAY_NULL_TAIL_DOWNGRADE,
                 block_serial=block_serial,
                 dispatcher_entry_serial=dispatcher_entry_serial,
@@ -1616,7 +1642,7 @@ class DeferredGraphModifier:
     ) -> None:
         """Queue downgrade of BLT_NWAY+m_goto+single-successor to BLT_1WAY."""
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_NWAY_GOTO_TYPE_DOWNGRADE,
                 block_serial=block_serial,
                 priority=20,
@@ -1638,7 +1664,7 @@ class DeferredGraphModifier:
     ) -> None:
         """Queue removal of a specific instruction (by EA)."""
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.INSN_REMOVE,
                 block_serial=block_serial,
                 insn_ea=insn_ea,
@@ -1662,7 +1688,7 @@ class DeferredGraphModifier:
     ) -> None:
         """Queue NOP of a specific instruction (by EA)."""
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.INSN_NOP,
                 block_serial=block_serial,
                 insn_ea=insn_ea,
@@ -1697,7 +1723,7 @@ class DeferredGraphModifier:
         if replacement_body_index == nop_body_index:
             raise ValueError("replacement and NOP body indices must differ")
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.INSN_CONST_MOV_AND_NOP_PAIR,
                 block_serial=int(block_serial),
                 insn_body_index=int(replacement_body_index),
@@ -1737,7 +1763,7 @@ class DeferredGraphModifier:
         ``#0`` so the state variable's *previous* (entry) value is killed.
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.INSN_ZERO_STATE_WRITE,
                 block_serial=block_serial,
                 insn_ea=insn_ea,
@@ -1776,7 +1802,7 @@ class DeferredGraphModifier:
         if operand_side not in ("l", "r"):
             raise ValueError(f"operand_side must be 'l' or 'r', got {operand_side!r}")
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.INSN_PROMOTE_OPERAND_TO_SCALAR,
                 block_serial=block_serial,
                 insn_ea=host_ea,
@@ -1827,7 +1853,7 @@ class DeferredGraphModifier:
                 "alias_token and base_token must be non-empty local tokens"
             )
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS,
                 block_serial=block_serial,
                 insn_ea=host_ea,
@@ -1876,7 +1902,7 @@ class DeferredGraphModifier:
                 "alias_token and output_token must be non-empty local tokens"
             )
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.INSN_RETARGET_OUTPUT_STORE,
                 block_serial=block_serial,
                 insn_ea=host_ea,
@@ -1927,7 +1953,7 @@ class DeferredGraphModifier:
     ) -> None:
         """Queue replacement of a state-write-to-dispatcher edge with a 2-way edge."""
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
                 block_serial=source_serial,
                 new_target=true_target_serial,
@@ -1985,7 +2011,7 @@ class DeferredGraphModifier:
         fallthrough helper required by the MBA verifier.
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.MATERIALIZE_ZERO_WAY_CONDITIONAL,
                 block_serial=int(source_serial),
                 new_target=int(taken_target_serial),
@@ -2031,7 +2057,7 @@ class DeferredGraphModifier:
         cannot pass through an intermediate one-way conditional CFG state.
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.MATERIALIZE_ZERO_WAY_GOTO,
                 block_serial=int(source_serial),
                 new_target=int(target_serial),
@@ -2068,7 +2094,7 @@ class DeferredGraphModifier:
     ) -> None:
         """Queue a degenerate BLT_NWAY null-tail dispatcher-exit downgrade."""
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.NORMALIZE_NWAY_DISPATCHER_EXIT,
                 block_serial=block_serial,
                 old_target=dispatcher_entry_serial,
@@ -2107,7 +2133,7 @@ class DeferredGraphModifier:
     ) -> None:
         """Queue an exact-edge bypass from a dispatcher trampoline to its target."""
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BYPASS_DISPATCHER_TRAMPOLINE,
                 block_serial=source_serial,
                 old_target=trampoline_serial,
@@ -2144,7 +2170,7 @@ class DeferredGraphModifier:
     ) -> None:
         """Queue a jump-table case retarget/coalescing operation."""
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.CANONICALIZE_JTBL_CASE_OVERLAP,
                 block_serial=jtbl_serial,
                 retarget_map=tuple((int(old), int(new)) for old, new in retarget_map),
@@ -2197,7 +2223,7 @@ class DeferredGraphModifier:
             else 0
         )
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.PHASE_CYCLE_LOWERING,
                 block_serial=primary,
                 priority=20,
@@ -2264,7 +2290,7 @@ class DeferredGraphModifier:
         requirement) for the full rationale and the optblock_t pattern.
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_CREATE_WITH_REDIRECT,
                 block_serial=source_block_serial,
                 new_target=final_target_serial,  # Used as reference block for insert_nop_blk
@@ -2330,7 +2356,7 @@ class DeferredGraphModifier:
             description: Optional description for logging
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_CREATE_WITH_CONDITIONAL_REDIRECT,
                 block_serial=source_blk_serial,
                 new_target=ref_blk_serial,  # Reference block to copy from
@@ -2395,7 +2421,7 @@ class DeferredGraphModifier:
         original).
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
                 block_serial=source_block_serial,
                 new_target=target_serial,
@@ -2447,7 +2473,7 @@ class DeferredGraphModifier:
         replay block.
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_DUPLICATE_REPLAY_AND_REDIRECT,
                 block_serial=source_block_serial,
                 new_target=dispatcher_entry_serial,
@@ -2491,7 +2517,7 @@ class DeferredGraphModifier:
         to the clone.  The source conditional block remains unchanged.
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.CLONE_CONDITIONAL_AS_GOTO,
                 block_serial=source_block_serial,
                 new_target=goto_target_serial,
@@ -2547,7 +2573,7 @@ class DeferredGraphModifier:
                 f"only supports pred_arm=0 or 1, got pred_arm={pred_arm}"
             )
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.CLONE_CONDITIONAL_AS_GOTO_FROM_BRANCH_ARM,
                 block_serial=source_block_serial,
                 new_target=goto_target_serial,
@@ -2623,7 +2649,7 @@ class DeferredGraphModifier:
             return
 
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
                 block_serial=src_block,
                 new_target=new_target,
@@ -2674,7 +2700,7 @@ class DeferredGraphModifier:
         then redirect ``via_pred`` from ``source_block`` to that new block.
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.EDGE_SPLIT_TRAMPOLINE,
                 block_serial=via_pred,
                 new_target=new_target,
@@ -2718,7 +2744,7 @@ class DeferredGraphModifier:
         1-way becomes 0-way (goto NOP'd).
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.EDGE_REMOVE,
                 block_serial=from_serial,
                 new_target=to_serial,
@@ -6299,7 +6325,7 @@ class DeferredGraphModifier:
         the first suffix block.
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.PRIVATE_TERMINAL_SUFFIX,
                 block_serial=anchor_serial,
                 new_target=shared_entry_serial,
@@ -6345,7 +6371,7 @@ class DeferredGraphModifier:
         avoiding serial drift from sequential per-anchor application.
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.PRIVATE_TERMINAL_SUFFIX_GROUP,
                 block_serial=anchors[0],  # primary block for logging
                 new_target=shared_entry_serial,
@@ -6388,7 +6414,7 @@ class DeferredGraphModifier:
         and the backend creates per-anchor private return materializers.
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.DIRECT_TERMINAL_LOWERING_GROUP,
                 block_serial=sites[0].anchor_serial if sites else 0,
                 new_target=shared_entry_serial,
@@ -6439,7 +6465,7 @@ class DeferredGraphModifier:
             description: Logging description.
         """
         self.modifications.append(
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.REORDER_BLOCKS,
                 block_serial=dfs_block_order[0] if dfs_block_order else 0,
                 new_target=None,
@@ -6495,7 +6521,7 @@ class DeferredGraphModifier:
             ModificationType.PHASE_CYCLE_LOWERING,
             ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
         }
-        by_source: dict[int, list[tuple[int, GraphModification]]] = {}
+        by_source: dict[int, list[tuple[int, QueuedModification]]] = {}
         for idx, mod in enumerate(self.modifications):
             if mod.mod_type not in graph_mod_types:
                 continue
@@ -6638,7 +6664,7 @@ class DeferredGraphModifier:
         # Track seen modifications by (mod_type, block_serial, new_target) for deduplication
         seen_keys: set[tuple] = set()
         # Track blocks that have been modified to detect conflicts
-        block_modifications: dict[int, list[GraphModification]] = {}
+        block_modifications: dict[int, list[QueuedModification]] = {}
 
         unique_modifications = []
 
@@ -6835,9 +6861,9 @@ class DeferredGraphModifier:
                     same_type_mods = [m for m in mods if m.mod_type == mod_type]
                     if len(same_type_mods) > 1:
                         if mod_type == ModificationType.BLOCK_TARGET_CHANGE:
-                            grouped_same_type_mods: list[list[GraphModification]] = []
+                            grouped_same_type_mods: list[list[QueuedModification]] = []
                             target_groups: dict[
-                                int | None, list[GraphModification]
+                                int | None, list[QueuedModification]
                             ] = {}
                             for same_type_mod in same_type_mods:
                                 target_groups.setdefault(
@@ -6941,7 +6967,7 @@ class DeferredGraphModifier:
             edge_mods = [m for m in unique_modifications if m.mod_type == edge_type]
             if not edge_mods:
                 continue
-            edge_groups: dict[tuple, list[GraphModification]] = {}
+            edge_groups: dict[tuple, list[QueuedModification]] = {}
             for em in edge_mods:
                 if edge_type in (
                     ModificationType.CLONE_CONDITIONAL_AS_GOTO,
@@ -6975,7 +7001,7 @@ class DeferredGraphModifier:
                     if loser in unique_modifications:
                         unique_modifications.remove(loser)
 
-        remaining_by_block: dict[int, list[GraphModification]] = {}
+        remaining_by_block: dict[int, list[QueuedModification]] = {}
         for mod in unique_modifications:
             remaining_by_block.setdefault(mod.block_serial, []).append(mod)
 
@@ -7547,7 +7573,7 @@ class DeferredGraphModifier:
         # so one helper insertion cannot move a source that is still pending.
         # All other modifications retain their stable insertion order.
         def _apply_order(
-            item: tuple[int, GraphModification],
+            item: tuple[int, QueuedModification],
         ) -> tuple[int, int, int, int]:
             index, modification = item
             is_conditional = (
@@ -8557,7 +8583,7 @@ class DeferredGraphModifier:
 
     def _apply_staged_atomic(
         self,
-        sorted_mods: "list[GraphModification]",
+        sorted_mods: "list[QueuedModification]",
         *,
         recent_modifications: "list[dict]",
     ) -> "tuple[int, int]":
@@ -8598,7 +8624,7 @@ class DeferredGraphModifier:
         external_sdk_refresh_required = False
 
         # --- Phase 1: Classify ---------------------------------------
-        classified: list[tuple[int, GraphModification, StagedAtomicClassification]] = [
+        classified: list[tuple[int, QueuedModification, StagedAtomicClassification]] = [
             (i, mod, classify_for_staged_atomic(mod.mod_type))
             for i, mod in enumerate(sorted_mods)
         ]
@@ -8762,7 +8788,7 @@ class DeferredGraphModifier:
                 late_predecessor_count,
             )
 
-        def _maybe_redirect_to_copy(mod: "GraphModification") -> None:
+        def _maybe_redirect_to_copy(mod: "QueuedModification") -> None:
             if mod.new_target is None:
                 return
             copy_blk = original_serial_to_copy.get(int(mod.new_target))
@@ -9024,7 +9050,7 @@ class DeferredGraphModifier:
 
     def _stage_destructive_mod_via_copy(
         self,
-        mod: "GraphModification",
+        mod: "QueuedModification",
         *,
         index: int,
     ) -> "_StagedPendingRewire | None":
@@ -9248,7 +9274,7 @@ class DeferredGraphModifier:
     def _apply_destructive_on_copy(
         self,
         copy_blk: "ida_hexrays.mblock_t",
-        mod: "GraphModification",
+        mod: "QueuedModification",
         *,
         original_blk: "ida_hexrays.mblock_t | None" = None,
     ) -> bool:
@@ -9704,7 +9730,7 @@ class DeferredGraphModifier:
         successful: int,
         failed: int,
         rolled_back: int,
-        sorted_mods: "list[GraphModification]",
+        sorted_mods: "list[QueuedModification]",
         recent_modifications: "list[dict]",
         run_optimize_local: bool,
         run_deep_cleaning: bool,
@@ -9835,7 +9861,7 @@ class DeferredGraphModifier:
 
         return _finish(successful)
 
-    def _prepare_rollback(self, mod: GraphModification) -> tuple[str, callable] | None:
+    def _prepare_rollback(self, mod: QueuedModification) -> tuple[str, callable] | None:
         """Prepare a best-effort rollback closure for reversible modifications.
 
         Rollback support is intentionally limited to edge-rewrite operations that
@@ -9950,6 +9976,9 @@ class DeferredGraphModifier:
         """Resolve a planned serial through the current-MBA gateway."""
         if serial is None:
             return None
+        realized = self._realized_patch_serial_by_bound_serial.get(int(serial))
+        if realized is not None:
+            return int(realized)
         if self._mutation_gateway is None:
             return int(serial)
         return self._mutation_gateway.resolve_serial(int(serial))
@@ -9990,7 +10019,7 @@ class DeferredGraphModifier:
 
     def _build_mutation_plan_items(
         self,
-        modifications: Iterable[GraphModification],
+        modifications: Iterable[QueuedModification],
     ) -> tuple[MbaMutationPlanItem, ...]:
         gateway = self._mutation_gateway
         if gateway is None:
@@ -10061,6 +10090,7 @@ class DeferredGraphModifier:
         old_qty: int,
         *,
         created: MbaBlockHandle | None = None,
+        bound_serial: int | None = None,
     ) -> None:
         """Synchronously publish the +1 insertion shift to the gateway."""
         started_batch = (
@@ -10075,6 +10105,26 @@ class DeferredGraphModifier:
         gateway = self._mutation_gateway
         if gateway is None:
             raise RuntimeError("serial insertion could not start mutation gateway")
+        plan_ref = self._patch_plan_ref_by_bound_serial.get(
+            int(insertion_serial if bound_serial is None else bound_serial)
+        )
+        attempt = gateway.current_transaction_attempt
+        if plan_ref is not None:
+            if attempt is None:
+                raise RuntimeError("planned insertion lacks typed attempt authority")
+            gateway.bind_reserved_plan_block(
+                attempt,
+                plan_ref,
+                insertion_serial=int(insertion_serial),
+                returned_serial=int(insertion_serial),
+            )
+            if bound_serial is not None:
+                self._realized_patch_serial_by_bound_serial[int(bound_serial)] = int(
+                    insertion_serial
+                )
+            if started_batch:
+                gateway.commit()
+            return
         if created is None:
             gateway.record_observed_insert(
                 insertion_serial=int(insertion_serial),
@@ -10089,26 +10139,50 @@ class DeferredGraphModifier:
         if started_batch:
             gateway.commit()
 
-    def _record_realized_serial(
+    def _begin_patch_block_creation(self, *bound_serials: int) -> None:
+        """Cross the irreversible boundary for explicitly owned creations."""
+        gateway = self._mutation_gateway
+        if gateway is None or not gateway.active:
+            raise RuntimeError("patch creation requires an active mutation gateway")
+        attempt = gateway.current_transaction_attempt
+        if attempt is None:
+            raise RuntimeError("patch creation lacks typed attempt authority")
+        plan_refs = tuple(
+            self._patch_plan_ref_by_bound_serial[int(bound_serial)]
+            for bound_serial in bound_serials
+        )
+        gateway.begin_patch_realization(attempt, plan_refs=plan_refs)
+
+    def _bind_patch_block_creation(
         self,
-        expected_serial: int,
+        bound_serial: int,
         returned_serial: int,
     ) -> None:
+        """Publish one SDK-created block through its exact PlanBlockRef owner."""
         if self._mutation_gateway is None or not self._mutation_gateway.active:
             self._begin_mutation_batch()
         gateway = self._mutation_gateway
         if gateway is None:
-            raise RuntimeError("serial realization could not start mutation gateway")
-        gateway.record_realized_serial(
-            expected_serial=int(expected_serial),
+            raise RuntimeError("plan block binding could not start mutation gateway")
+        plan_ref = self._patch_plan_ref_by_bound_serial.get(int(bound_serial))
+        attempt = gateway.current_transaction_attempt
+        if plan_ref is None or attempt is None:
+            raise RuntimeError("created patch block lacks typed plan authority")
+        gateway.bind_reserved_plan_block(
+            attempt,
+            plan_ref,
+            insertion_serial=int(returned_serial),
             returned_serial=int(returned_serial),
+        )
+        self._realized_patch_serial_by_bound_serial[int(bound_serial)] = int(
+            returned_serial
         )
 
     # BISECT denylist: (block_serial, new_target) pairs to skip.
     # Set via environment: D810_BISECT_SKIP="173:111,76:158"
     _bisect_skip: set[tuple[int, int]] = field(default_factory=set, init=False)
 
-    def _apply_single(self, mod: GraphModification) -> bool:
+    def _apply_single(self, mod: QueuedModification) -> bool:
         """Apply a single modification. Returns True on success."""
         # Bisect skip gate.
         if not self._bisect_skip and os.environ.get("D810_BISECT_SKIP"):
@@ -10175,7 +10249,12 @@ class DeferredGraphModifier:
             return self._apply_goto_change(blk, mod.new_target)
 
         elif mod.mod_type == ModificationType.BLOCK_TARGET_CHANGE:
-            return self._apply_target_change(blk, mod.new_target, mod.old_target)
+            return self._apply_target_change(
+                blk,
+                mod.new_target,
+                mod.old_target,
+                expected_helper_serial=mod.expected_serial,
+            )
 
         elif mod.mod_type == ModificationType.BLOCK_TERMINAL_GOTO_CHANGE:
             return self._apply_terminal_goto_change(blk, mod.new_target)
@@ -10451,6 +10530,8 @@ class DeferredGraphModifier:
         blk: ida_hexrays.mblock_t,
         new_target: int,
         old_target: int | None = None,
+        *,
+        expected_helper_serial: int | None = None,
     ) -> bool:
         """Change a conditional jump's target."""
         if blk.tail is None:
@@ -10480,6 +10561,12 @@ class DeferredGraphModifier:
                 blk,
                 new_target,
                 old_target=int(old_target),
+                expected_helper_serial=expected_helper_serial,
+            )
+
+        if expected_helper_serial is not None:
+            raise RuntimeError(
+                "reserved fallthrough helper was not consumed by branch lowering"
             )
 
         return change_2way_block_conditional_successor(
@@ -10495,6 +10582,7 @@ class DeferredGraphModifier:
         new_target: int,
         *,
         old_target: int,
+        expected_helper_serial: int | None = None,
     ) -> bool:
         """Re-home a 2-way block's fallthrough via an adjacent NOP-goto helper.
 
@@ -10519,6 +10607,10 @@ class DeferredGraphModifier:
                 fallthrough_target,
             )
             return False
+        if expected_helper_serial is None:
+            raise RuntimeError(
+                "fallthrough branch rewrite lacks reserved PlanBlockRef helper"
+            )
 
         # ``new_target`` is already a live serial: _apply_single resolved it
         # through the mutation gateway before dispatching here.  Hold the live
@@ -10537,6 +10629,7 @@ class DeferredGraphModifier:
             return False
 
         old_qty = int(self.mba.qty)
+        self._begin_patch_block_creation(expected_helper_serial)
         nop_blk = insert_nop_blk(blk)
         if nop_blk is None:
             logger.warning(
@@ -10546,7 +10639,11 @@ class DeferredGraphModifier:
             return False
 
         insertion_serial = int(nop_blk.serial)
-        self._record_serial_insertion(insertion_serial, old_qty)
+        self._record_serial_insertion(
+            insertion_serial,
+            old_qty,
+            bound_serial=expected_helper_serial,
+        )
 
         effective_new_target = int(new_target_blk.serial)
         logger.info(
@@ -12528,6 +12625,8 @@ class DeferredGraphModifier:
                 str(None if actual_is_0_way else effective_final_target),
                 str(expected_serial),
             )
+            if expected_serial is not None:
+                self._begin_patch_block_creation(expected_serial)
             new_block = create_standalone_block(
                 ref_block,
                 instructions_to_copy,
@@ -12540,8 +12639,9 @@ class DeferredGraphModifier:
                 int(new_block.serial),
                 int(getattr(mba, "qty", 0) or 0),
             )
+            if expected_serial is not None:
+                self._bind_patch_block_creation(expected_serial, new_block.serial)
             if expected_serial is not None and new_block.serial != expected_serial:
-                self._record_realized_serial(expected_serial, new_block.serial)
                 logger.info(
                     "create_and_redirect: drift expected blk[%d] -> realized blk[%d] "
                     "recorded in mutation gateway",
@@ -12806,22 +12906,38 @@ class DeferredGraphModifier:
             # conditional tail instruction.
             # For conditional blocks, duplicate_block also creates a NOP
             # fallthrough block automatically (nop_blk).
+            planned_creations = tuple(
+                serial
+                for serial in (
+                    expected_conditional_serial,
+                    expected_fallthrough_serial,
+                )
+                if serial is not None
+            )
+            if planned_creations:
+                self._begin_patch_block_creation(*planned_creations)
             new_cond_blk, nop_blk = duplicate_block(ref_blk, verify=False)
 
+            if expected_conditional_serial is not None:
+                self._bind_patch_block_creation(
+                    expected_conditional_serial,
+                    new_cond_blk.serial,
+                )
             if nop_blk is None:
                 logger.warning(
                     "duplicate_block did not create NOP fallthrough for block %d",
                     new_cond_blk.serial,
                 )
                 return False
+            if expected_fallthrough_serial is not None:
+                self._bind_patch_block_creation(
+                    expected_fallthrough_serial,
+                    nop_blk.serial,
+                )
             if (
                 expected_conditional_serial is not None
                 and new_cond_blk.serial != expected_conditional_serial
             ):
-                self._record_realized_serial(
-                    expected_conditional_serial,
-                    new_cond_blk.serial,
-                )
                 logger.warning(
                     "create_conditional_redirect: created conditional blk[%d], expected blk[%d]; "
                     "continuing with actual serial and recording remap",
@@ -12832,10 +12948,6 @@ class DeferredGraphModifier:
                 expected_fallthrough_serial is not None
                 and nop_blk.serial != expected_fallthrough_serial
             ):
-                self._record_realized_serial(
-                    expected_fallthrough_serial,
-                    nop_blk.serial,
-                )
                 logger.warning(
                     "create_conditional_redirect: created fallthrough blk[%d], expected blk[%d]; "
                     "continuing with actual serial and recording remap",
@@ -13090,7 +13202,19 @@ class DeferredGraphModifier:
                         effective_conditional_target,
                     )
                     return False
+                planned_creations = tuple(
+                    serial
+                    for serial in (expected_serial, expected_secondary_serial)
+                    if serial is not None
+                )
+                if planned_creations:
+                    self._begin_patch_block_creation(*planned_creations)
                 duplicated_blk = copy_block_keep(self.mba, source_blk, self.mba.qty - 1)
+                if expected_serial is not None:
+                    self._bind_patch_block_creation(
+                        expected_serial,
+                        duplicated_blk.serial,
+                    )
                 prev_pred_serials = [x for x in duplicated_blk.predset]
                 for prev_serial in prev_pred_serials:
                     duplicated_blk.predset._del(prev_serial)
@@ -13136,6 +13260,11 @@ class DeferredGraphModifier:
                     is_0_way=False,
                     verify=False,
                 )
+                if expected_secondary_serial is not None:
+                    self._bind_patch_block_creation(
+                        expected_secondary_serial,
+                        duplicated_default.serial,
+                    )
                 duplicated_blk.flags &= ~ida_hexrays.MBL_GOTO
                 if not _rewire_edge(
                     duplicated_blk,
@@ -13169,6 +13298,8 @@ class DeferredGraphModifier:
                     instructions_to_copy.append(cloned_ins)
                     cur_ins = cur_ins.next
 
+                if expected_serial is not None:
+                    self._begin_patch_block_creation(expected_serial)
                 duplicated_blk = create_standalone_block(
                     source_blk,
                     instructions_to_copy,
@@ -13176,6 +13307,11 @@ class DeferredGraphModifier:
                     is_0_way=final_target is None,
                     verify=False,
                 )
+                if expected_serial is not None:
+                    self._bind_patch_block_creation(
+                        expected_serial,
+                        duplicated_blk.serial,
+                    )
                 duplicated_default = None
             new_stop_serial = self.mba.qty - 1
             transient_stop_targets = {duplicated_blk.serial}
@@ -13212,7 +13348,6 @@ class DeferredGraphModifier:
                     duplicated_blk.serial,
                     expected_serial,
                 )
-                self._record_realized_serial(expected_serial, duplicated_blk.serial)
             if expected_secondary_serial is not None:
                 if duplicated_default is None:
                     logger.warning(
@@ -13227,10 +13362,6 @@ class DeferredGraphModifier:
                         "(serial drift from prior mod); recording remap",
                         duplicated_default.serial,
                         expected_secondary_serial,
-                    )
-                    self._record_realized_serial(
-                        expected_secondary_serial,
-                        duplicated_default.serial,
                     )
 
             if pred_blk.nsucc() == 1:
@@ -13412,6 +13543,7 @@ class DeferredGraphModifier:
                 and blk.nsucc() == 1
                 and blk.succ(0) == old_stop_serial
             ]
+            self._begin_patch_block_creation(expected_serial)
             replay_blk = create_standalone_block(
                 source_blk,
                 instructions,
@@ -13419,8 +13551,8 @@ class DeferredGraphModifier:
                 is_0_way=False,
                 verify=False,
             )
+            self._bind_patch_block_creation(expected_serial, replay_blk.serial)
             if expected_serial is not None and replay_blk.serial != expected_serial:
-                self._record_realized_serial(expected_serial, replay_blk.serial)
                 logger.info(
                     "duplicate_replay: replay blk drift pred=%d expected=%d actual=%d",
                     pred_serial,
@@ -13571,6 +13703,8 @@ class DeferredGraphModifier:
             return False
 
         try:
+            if expected_serial is not None:
+                self._begin_patch_block_creation(expected_serial)
             cloned_blk = copy_block_keep(self.mba, source_blk, self.mba.qty - 1)
             if cloned_blk is None:
                 logger.warning(
@@ -13579,6 +13713,8 @@ class DeferredGraphModifier:
                 )
                 return False
             cloned_blk = self.mba.get_mblock(cloned_blk.serial) or cloned_blk
+            if expected_serial is not None:
+                self._bind_patch_block_creation(expected_serial, cloned_blk.serial)
 
             for prev_serial in list(cloned_blk.predset):
                 cloned_blk.predset._del(prev_serial)
@@ -13592,7 +13728,6 @@ class DeferredGraphModifier:
                     cloned_blk.serial,
                     expected_serial,
                 )
-                self._record_realized_serial(expected_serial, cloned_blk.serial)
 
             target_serial = self._resolve_serial(goto_target_serial)
             if self.mba.get_mblock(target_serial) is None:
@@ -13684,6 +13819,8 @@ class DeferredGraphModifier:
             return False
 
         try:
+            if expected_serial is not None:
+                self._begin_patch_block_creation(expected_serial)
             cloned_blk = copy_block_keep(self.mba, source_blk, self.mba.qty - 1)
             if cloned_blk is None:
                 logger.warning(
@@ -13692,6 +13829,8 @@ class DeferredGraphModifier:
                 )
                 return False
             cloned_blk = self.mba.get_mblock(cloned_blk.serial) or cloned_blk
+            if expected_serial is not None:
+                self._bind_patch_block_creation(expected_serial, cloned_blk.serial)
 
             for prev_serial in list(cloned_blk.predset):
                 cloned_blk.predset._del(prev_serial)
@@ -13705,7 +13844,6 @@ class DeferredGraphModifier:
                     cloned_blk.serial,
                     expected_serial,
                 )
-                self._record_realized_serial(expected_serial, cloned_blk.serial)
 
             target_serial = self._resolve_serial(goto_target_serial)
             if self.mba.get_mblock(target_serial) is None:
@@ -15387,6 +15525,8 @@ class DeferredGraphModifier:
                 and blk.nsucc() == 1
                 and blk.succ(0) == old_stop_serial
             ]
+            if expected_serial is not None:
+                self._begin_patch_block_creation(expected_serial)
             new_blk = create_standalone_block(
                 src_blk,
                 [],
@@ -15394,6 +15534,8 @@ class DeferredGraphModifier:
                 is_0_way=False,
                 verify=False,
             )
+            if expected_serial is not None:
+                self._bind_patch_block_creation(expected_serial, new_blk.serial)
             if new_blk.serial != expected_serial:
                 logger.info(
                     "edge_split_trampoline: created blk[%d], expected blk[%d] "
@@ -15401,8 +15543,6 @@ class DeferredGraphModifier:
                     new_blk.serial,
                     expected_serial,
                 )
-                if expected_serial is not None:
-                    self._record_realized_serial(expected_serial, new_blk.serial)
             new_stop_serial = mba.qty - 1
             for pred_serial in old_stop_pred_serials:
                 pred_blk = mba.get_mblock(pred_serial)
@@ -15454,10 +15594,10 @@ class DeferredGraphModifier:
 
     def _pre_reject_create_and_redirects(
         self,
-        sorted_mods: list[GraphModification],
-    ) -> tuple[list[GraphModification], int]:
+        sorted_mods: list[QueuedModification],
+    ) -> tuple[list[QueuedModification], int]:
         """Reject unsupported standalone block creation before live mutation."""
-        filtered_mods: list[GraphModification] = []
+        filtered_mods: list[QueuedModification] = []
         pre_rejected = 0
 
         for mod in sorted_mods:
@@ -15488,10 +15628,10 @@ class DeferredGraphModifier:
 
     def _pre_reject_edge_split_trampolines(
         self,
-        sorted_mods: list[GraphModification],
-    ) -> tuple[list[GraphModification], int]:
+        sorted_mods: list[QueuedModification],
+    ) -> tuple[list[QueuedModification], int]:
         """Reject trampoline edits with illegal live preconditions before mutation."""
-        filtered_mods: list[GraphModification] = []
+        filtered_mods: list[QueuedModification] = []
         pre_rejected = 0
 
         for mod in sorted_mods:
@@ -15523,10 +15663,10 @@ class DeferredGraphModifier:
 
     def _pre_reject_duplicate_blocks(
         self,
-        sorted_mods: list[GraphModification],
-    ) -> tuple[list[GraphModification], int]:
+        sorted_mods: list[QueuedModification],
+    ) -> tuple[list[QueuedModification], int]:
         """Reject unsupported duplicate-block edits before live mutation."""
-        filtered_mods: list[GraphModification] = []
+        filtered_mods: list[QueuedModification] = []
         pre_rejected = 0
 
         for mod in sorted_mods:
@@ -15559,10 +15699,10 @@ class DeferredGraphModifier:
 
     def _pre_reject_clone_conditional_as_goto(
         self,
-        sorted_mods: list[GraphModification],
-    ) -> tuple[list[GraphModification], int]:
+        sorted_mods: list[QueuedModification],
+    ) -> tuple[list[QueuedModification], int]:
         """Reject unsupported clone-as-goto edits before live mutation."""
-        filtered_mods: list[GraphModification] = []
+        filtered_mods: list[QueuedModification] = []
         pre_rejected = 0
 
         for mod in sorted_mods:
@@ -17155,6 +17295,8 @@ class ImmediateGraphModifier:
                 and blk.succ(0) == old_stop_serial
             ]
             # Create a standalone block -- ref_block's CFG edges are NOT modified.
+            if expected_serial is not None:
+                self._begin_patch_block_creation(expected_serial)
             new_block = create_standalone_block(
                 ref_block,
                 instructions_to_copy,
@@ -17162,8 +17304,9 @@ class ImmediateGraphModifier:
                 is_0_way=actual_is_0_way,
                 verify=False,
             )
+            if expected_serial is not None:
+                self._bind_patch_block_creation(expected_serial, new_block.serial)
             if expected_serial is not None and new_block.serial != expected_serial:
-                self._record_realized_serial(expected_serial, new_block.serial)
                 logger.info(
                     "create_and_redirect: drift expected blk[%d] -> realized blk[%d] "
                     "recorded in mutation gateway",
