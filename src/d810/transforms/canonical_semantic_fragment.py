@@ -501,6 +501,7 @@ def _detached_target_component(
     current_identity_by_serial: Mapping[int, StableBlockIdentity],
     canonical_proof_id: str,
     normalization_authority: NormalizationWorkItemAuthority,
+    allow_unresolved_published_boundaries: bool,
     prohibited_dispatcher_serials: frozenset[int],
 ) -> tuple[
     tuple[FragmentBlock, ...],
@@ -631,6 +632,7 @@ def _detached_target_component(
                             native_body,
                             normalization_authority,
                         )
+                        and not allow_unresolved_published_boundaries
                     ):
                         unresolved_operation = operation_by_source[edge_target.block_id]
                         owner_serial, owner_anchor_ea, _identity = current_owners[0]
@@ -1420,6 +1422,7 @@ def compose_canonical_semantic_fragment_plan(
                 item.proof_id for item in evidence.route_proofs
             ),
             normalization_authority=normalization_authority,
+            allow_unresolved_published_boundaries=True,
             prohibited_dispatcher_serials=prohibited_serial_set,
         )
     )
@@ -1446,6 +1449,7 @@ def compose_canonical_semantic_fragment_plan(
             )
         ),
         normalization_authority=normalization_authority,
+        allow_unresolved_published_boundaries=False,
         prohibited_dispatcher_serials=prohibited_serial_set,
     )
     nested_rewrite_by_operation_id = {

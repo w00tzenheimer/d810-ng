@@ -651,6 +651,13 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
 
 def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> None:
     graph, normalization_plan, root_evidence = _live_source_detached_target_case()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            30: _block(30, 0x1300, succs=(), preds=()),
+        },
+    )
     (native_body,) = normalization_plan.native_bodies
     route_source = FragmentBlock(
         block_id="nested-route-source",
@@ -674,10 +681,19 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
     )
     raw_dispatcher = FragmentBlock(
         block_id="nested-raw-dispatcher",
-        role=FragmentBlockRole.EXTERNAL,
-        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
-        semantic_anchor_ea=0x1400,
-        stable_identity=_identity(0x1400),
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1300,
+        stable_identity=_identity(0x1300),
+        native_body_id=native_body.body_id,
+    )
+    raw_dispatcher_terminal = FragmentBlock(
+        block_id="nested-raw-dispatcher-terminal",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1310,
+        stable_identity=_identity(0x1310),
+        native_body_id=native_body.body_id,
     )
     normalization_plan = replace(
         normalization_plan,
@@ -686,6 +702,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
             route_source,
             route_target,
             raw_dispatcher,
+            raw_dispatcher_terminal,
         ),
         operations=(
             *normalization_plan.operations,
@@ -709,6 +726,16 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
                     ),
                 ),
             ),
+            FragmentOperation(
+                operation_id="native-body-edge@0x1300",
+                source_block_id=raw_dispatcher.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=raw_dispatcher_terminal.block_id,
+                    ),
+                ),
+            ),
         ),
         native_bodies=(
             replace(
@@ -717,17 +744,25 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
                     *native_body.block_ids,
                     route_source.block_id,
                     route_target.block_id,
+                    raw_dispatcher.block_id,
+                    raw_dispatcher_terminal.block_id,
                 ),
-                terminal_block_ids=(route_target.block_id,),
+                terminal_block_ids=(
+                    route_target.block_id,
+                    raw_dispatcher_terminal.block_id,
+                ),
                 native_ranges=(
                     NativeEaInterval(0x1200, 0x1201),
                     NativeEaInterval(0x1210, 0x1220),
                     NativeEaInterval(0x1250, 0x1251),
+                    NativeEaInterval(0x1300, 0x1301),
+                    NativeEaInterval(0x1310, 0x1311),
                 ),
                 proof_ids=(
                     *native_body.proof_ids,
                     "native-body-edge@0x1200",
                     "native-body-edge@0x1210",
+                    "native-body-edge@0x1300",
                 ),
             ),
         ),
