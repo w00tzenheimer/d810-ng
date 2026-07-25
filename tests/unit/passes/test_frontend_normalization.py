@@ -1890,9 +1890,7 @@ def test_same_native_block_select_envelope_requires_resolver_owned_join(
     assert (envelope.join.start_ea, envelope.join.end_ea) == (join_ea, end_ea)
 
 
-def test_same_native_block_select_envelope_is_one_explicit_imported_partition() -> (
-    None
-):
+def test_same_native_block_select_envelope_is_one_explicit_imported_partition() -> None:
     source_ea = 0x1400
     condition_ea = 0x1404
     normalization_start_ea = 0x1410
