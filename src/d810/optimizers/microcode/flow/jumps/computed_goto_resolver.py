@@ -256,6 +256,8 @@ def _discover_immediate_native_state_routes(
             and is_state_operand
             and instruction.writes_destination
         ):
+            if mnemonic == "mov":
+                branch_assignment = None
             current_assignment = instruction
             target = None
             state_constant = None
@@ -6417,7 +6419,7 @@ def _discover_static_state_write_routes(
         state_var_reg=int(state_var_reg),
         state_targets=state_targets,
     )
-    immediate_semantic_keys: set[tuple[int, int, int, int]] = set()
+    immediate_assignment_keys: set[tuple[int, int, int]] = set()
     for route in immediate_routes:
         evidence = PortableStateWriteRouteEvidence(
             write_identity=StableBlockIdentity.from_intervals(
@@ -6459,7 +6461,13 @@ def _discover_static_state_write_routes(
             int(route.state_constant),
             int(state_var_reg),
         )
-        immediate_semantic_keys.add(semantic_key)
+        immediate_assignment_keys.add(
+            (
+                int(route.source_write_ea),
+                int(route.state_constant) & _MASK32,
+                int(state_var_reg),
+            )
+        )
         candidates.setdefault(semantic_key, set()).add(evidence)
     for site in (*patch_delivery_sites, *direct_delivery_sites):
         decoded = _decode_static_state_route_corridor(
@@ -6515,7 +6523,11 @@ def _discover_static_state_write_routes(
             int(state_constant),
             int(state_var_reg),
         )
-        if semantic_key in immediate_semantic_keys:
+        if (
+            int(write_ea),
+            int(state_constant) & _MASK32,
+            int(state_var_reg),
+        ) in immediate_assignment_keys:
             continue
         candidates.setdefault(semantic_key, set()).add(evidence)
 

@@ -2081,6 +2081,28 @@ def test_immediate_native_state_routes_abstain_on_branch_staging() -> None:
     assert routes == ()
 
 
+def test_immediate_native_state_routes_accept_branch_target_local_overwrite() -> None:
+    insn = computed_goto_resolver._DecodedNativeFlowInstruction
+    decoded = (
+        insn(0x40C600, 0x40C606, "mov", 16, True, 0x11111111),
+        insn(0x40C606, 0x40C60C, "jne", None, False, None, 0x40C62F),
+        insn(0x40C62F, 0x40C634, "mov", 16, True, 0xEC71CA67),
+        insn(0x40C634, 0x40C63A, "cmp", 16, False, 0x0BB2D365),
+        insn(0x40C63A, 0x40C640, "jl", None, False, None, 0x40B6C0),
+    )
+
+    (route,) = computed_goto_resolver._discover_immediate_native_state_routes(
+        decoded,
+        state_var_reg=16,
+        state_targets={0xEC71CA67: 0x40B9A6},
+    )
+
+    assert route.source_write_ea == 0x40C62F
+    assert route.delivery_ea == 0x40C63A
+    assert route.corridor_instruction_eas == (0x40C62F, 0x40C634, 0x40C63A)
+    assert route.target_ea == 0x40B9A6
+
+
 def test_static_state_write_routes_publish_before_live_mba(monkeypatch) -> None:
     plan = _PatchPlan(
         jmp_ea=0x40A5C8,
@@ -2262,6 +2284,89 @@ def test_static_state_write_routes_publish_immediate_native_inventory(
     assert evidence.target_ea == 0x40BECC
     assert evidence.proof_kind is StateWriteRouteProofKind.STATE_ASSIGNMENT
     assert evidence.delivery_kind is StateWriteRouteDeliveryKind.DIRECT_TARGET
+
+
+def test_static_state_write_routes_prefer_immediate_branch_over_indirect_tail(
+    monkeypatch,
+) -> None:
+    plan = _PatchPlan(
+        jmp_ea=0x40C649,
+        block_entry=0x40C62F,
+        patch_start=0x40C649,
+        patch_bytes=b"\x90",
+        region_end=0x40C64B,
+        insn_heads=(0x40C649,),
+        new_block_eas=(),
+        target_eas=(0x40B9A6,),
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={0x40C649: (0x40B9A6,)},
+        reachable_eas=(0x40A560, 0x40C62F),
+        arch="x86",
+        executed_insns=10,
+        seeds_run=0,
+        patch_plans=(plan,),
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40B98C,
+        source_block_ea=0x40B98C,
+        materialized_anchor_eas=(),
+        target_eas=(0x40B9A6,),
+        selector_state_var_reg=16,
+        selector_state_constant=0xEC71CA67,
+        resolver_kind="static_handler_entry_route",
+    )
+    native_insn = computed_goto_resolver._DecodedNativeFlowInstruction
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_decode_native_flow_route_inventory",
+        lambda *_args: (
+            native_insn(0x40C600, 0x40C606, "mov", 16, True, 0x11111111),
+            native_insn(
+                0x40C606,
+                0x40C60C,
+                "jne",
+                None,
+                False,
+                None,
+                0x40C62F,
+            ),
+            native_insn(0x40C62F, 0x40C634, "mov", 16, True, 0xEC71CA67),
+            native_insn(0x40C634, 0x40C63A, "cmp", 16, False, 0x0BB2D365),
+            native_insn(
+                0x40C63A,
+                0x40C640,
+                "jl",
+                None,
+                False,
+                None,
+                0x40B6C0,
+            ),
+        ),
+    )
+    patched_insn = computed_goto_resolver._DecodedStateRouteInstruction
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_decode_static_state_route_corridor",
+        lambda *_args: (
+            patched_insn(0x40C62F, 0x40C634, "mov", 16, True, 0xEC71CA67),
+            patched_insn(0x40C634, 0x40C63A, "cmp", 16, False, 0x0BB2D365),
+            patched_insn(0x40C649, 0x40C64B, "jmp", None, False, None),
+        ),
+    )
+    _session, state = _resolver_session(resolution)
+
+    (evidence,) = computed_goto_resolver._discover_static_state_write_routes(
+        state,
+        resolution,
+        (transfer,),
+    )
+
+    assert evidence.source_write_ea == 0x40C62F
+    assert evidence.delivery_ea == 0x40C63A
+    assert evidence.corridor_instruction_eas == (0x40C62F, 0x40C634, 0x40C63A)
+    assert evidence.target_ea == 0x40B9A6
 
 
 def test_static_conditional_state_choice_maps_both_unique_handler_arms() -> None:
