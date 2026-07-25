@@ -4384,3 +4384,43 @@ operation used another predicate materialization and had no computed
 normalization. Continue by pairing that temporary anchor only with an actual
 computed normalization; do not weaken the pair invariant, discard relocation
 evidence, broaden publication, or add compatibility behavior.
+
+**2026-07-25T13:03:03Z**
+
+Commit `314e7dddc` completes that narrow pair-invariant repair. A parameterized
+runtime contract now proves a temporary superseded predicate anchor is copied
+only when the replaced raw operation actually owns computed-branch
+normalization; a plain conditional keeps neither field. The 80 affected
+canonical/fragment-plan tests, Ruff checks, ast-grep, all 14 import contracts,
+`graphify update .`, and pre-commit gates pass.
+
+The mandatory cache-disabled A560 canary then completed normally in 23.47
+seconds without a process crash, numeric `INTERR`, or verifier event. Log:
+`.tmp/rhad-a560-v33-split-normalized-tail-v2.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-split-normalized-tail-v2/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-split-normalized-tail-v2/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects one false `while ( 1 )`, so this is not A560
+acceptance.
+
+The diagnostic DB proves the prior C2 failure is cleared. Both frontend passes
+commit their 260-operation normalization transaction, all 1278 prepublication
+and 2360 postpublication validations pass, and both canonical passes build the
+same 396-operation plan. The first pass atomically aborts to request CALLS
+companion evidence. Of 22 requested native components, 21 capture on the
+controlled restart. The second canonical pass again aborts before staging
+because native range `[0x40B3FF, 0x40B4E2)` still lacks analyzed companion
+authority. There is no canonical staging, detached-oracle comparison, or C5
+receipt. Main-path A560 therefore advances to C3; the first failed C4 obligation
+is exact CALLS companion ownership for that one range.
+
+Event 175 records the decisive mismatch: pristine PREOPT owns call
+`0x40B49E`, while detached CALLS observes `0x40B49E` plus `0x40B4C3` and reports
+`call_ea_set_mismatch` at `0x40B4C3`. Native disassembly proves `0x40B49E` is
+`call dword ptr [0x42E224]`, whereas `0x40B4C3` is the component's terminal
+`jmp eax`. CALLS has therefore classified a native indirect resolver exit as a
+call-like microinstruction; it is not a second native call. Continue by proving
+the portable resolver-cut ownership of exactly that extra CALLS instruction and
+excluding only such proven maturity-derived exits from companion comparison.
+Do not generally tolerate extra CALLS calls or weaken exact matching for the
+genuine PREOPT call inventory.
