@@ -3508,3 +3508,40 @@ external boundary and add the smallest ownership/closure test for that exact
 case. Do not merely permit an external terminal endpoint: the semantic route,
 carrier, and terminal return must all be staged in the same detached fragment
 before C3 can complete.
+
+**2026-07-25T06:15:18Z**
+
+Commit `d023352bd` keeps selected terminal-proof destinations inside the final
+detached component even when their stable identity already has one live owner.
+Ordinary published exits remain external; mixed, replaced, prohibited, and
+ambiguous current-owner checks are unchanged. The strengthened atomic-terminal
+test covers both detached-only and one-live-owner destinations. The combined
+canonical, resolver, fragment-plan, fragment-validation, and semantic-backend
+gate is 449/449 green; Ruff, ast-grep, `graphify update .`, and all 14 import
+contracts pass.
+
+The mandatory cache-disabled A560 canary completed normally in 20.64 seconds
+wall time (18.84 seconds inside pytest) with no process crash or numeric
+`INTERR`. Log: `.tmp/rhad-a560-v33-terminal-target-staged-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-terminal-target-staged-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-terminal-target-staged-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red as the same eight-line infinite-loop stub; this is
+not A560 acceptance.
+
+The intended route fact advanced: the prior
+`nested_terminal_route_staged_owner_missing@0x40C7F6` rejection is gone, so the
+terminal source, destination, carrier, and return now reach fragment
+construction together. The first failed obligation moved to
+`canonical_pipeline_exception@0x40A560` with
+`FragmentPlanRejected: fragment block semantic anchor must belong to its
+stable identity`. The DB does not identify the offending block, anchor, or
+identity. The only committed transaction remains the 260/260 frontend
+normalization publication; there are zero semantic-oracle runs or comparisons.
+The highest completed semantic level remains C2 because no complete canonical
+plan was produced.
+
+Continue by enriching this invariant failure with the offending block ID,
+role, semantic anchor, and stable identity so the DB exposes the exact native
+coordinate mismatch. Do not guess that the terminal block is responsible or
+change anchor/identity semantics until the diagnostic proves it.
