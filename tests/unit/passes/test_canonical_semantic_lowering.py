@@ -446,6 +446,48 @@ def test_candidate_normalization_rejects_missing_receipted_plan_intent() -> None
     }
 
 
+def test_semantic_predecessor_uses_proved_state_write_block_entry() -> None:
+    _graph, bound = _graph_and_bound_evidence()
+    candidate = bound.evidence
+    (proof,) = candidate.route_proofs
+    delivery_ea = 0x1110
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1100, delivery_ea + 1),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(delivery_ea,),
+    )
+    proof = replace(
+        proof,
+        proof_id=f"state-assignment@0x{delivery_ea:X}",
+        source_identity=source_identity,
+        source_anchor_ea=delivery_ea,
+        state_write=replace(
+            proof.state_write,
+            identity=_identity(0x1100),
+            instruction_ea=0x1100,
+            corridor_instruction_eas=(0x1100, delivery_ea),
+        ),
+    )
+    candidate = replace(candidate, route_proofs=(proof,))
+    rejection = CanonicalSemanticFragmentRejected(
+        "published imported boundary retains unresolved semantic topology",
+        reason_code="published_imported_boundary_topology_unresolved",
+        anchor_ea=0x1200,
+        payload={
+            "incoming_operation_id": f"route:{proof.proof_id}",
+            "incoming_source_anchor_ea": "0x1100",
+        },
+    )
+
+    assert (
+        state_machine_module._semantic_predecessor_boundary_anchor(
+            rejection,
+            candidate,
+        )
+        == 0x1100
+    )
+
+
 def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_oracle(
     monkeypatch,
 ) -> None:
