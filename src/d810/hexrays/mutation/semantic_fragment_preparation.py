@@ -544,9 +544,7 @@ class SemanticFragmentSnapshotAuthority:
             raise TypeError("snapshot authority requires typed projection input")
         native_bodies = tuple(self.native_bodies)
         carrier_constructions = tuple(self.return_carrier_constructions)
-        if any(
-            not isinstance(body, PreparedNativeBodyFact) for body in native_bodies
-        ):
+        if any(not isinstance(body, PreparedNativeBodyFact) for body in native_bodies):
             raise TypeError("snapshot native bodies must be typed facts")
         if any(body.plan_id != self.plan_id for body in native_bodies):
             raise ValueError("snapshot native body belongs to another plan")
@@ -585,12 +583,10 @@ class SemanticFragmentSnapshotPreparation:
             body_id for body_id, _rows in self.payload.native_body_rows
         )
         carrier_ids = tuple(
-            item.carrier_id
-            for item in self.authority.return_carrier_constructions
+            item.carrier_id for item in self.authority.return_carrier_constructions
         )
         payload_carrier_ids = tuple(
-            carrier_id
-            for carrier_id, _operand in self.payload.return_carrier_operands
+            carrier_id for carrier_id, _operand in self.payload.return_carrier_operands
         )
         if body_ids != payload_body_ids or carrier_ids != payload_carrier_ids:
             raise ValueError("semantic snapshot payload keysets differ from facts")
@@ -687,8 +683,7 @@ class PreparedSemanticFragment:
             for item in self.authority.snapshot.return_carrier_constructions
         )
         payload_carrier_ids = tuple(
-            carrier_id
-            for carrier_id, _operand in self.payload.return_carrier_operands
+            carrier_id for carrier_id, _operand in self.payload.return_carrier_operands
         )
         if body_ids != payload_body_ids or carrier_ids != payload_carrier_ids:
             raise ValueError("prepared fragment payload keysets differ from facts")

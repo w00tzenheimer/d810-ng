@@ -2438,10 +2438,7 @@ def test_backend_projects_opaque_published_fallthrough_witness() -> None:
         "function-block:logical:3",
         "function-block:logical:4",
     )
-    assert (
-        projected_target.adjacent_fallthrough_target_id
-        == "function-block:logical:3"
-    )
+    assert projected_target.adjacent_fallthrough_target_id == "function-block:logical:3"
     result = validate_fragment_projection(plan, projection)
     assert result.passed, result.failures
 
@@ -2827,8 +2824,8 @@ def test_gateway_receipts_terminal_effects_in_atomic_publication_inventory(
 def test_production_participant_preflights_before_realization_and_observes_live_state(
     monkeypatch,
 ) -> None:
-    mba, gateway, modifier, plan, _entry, _original = (
-        _terminal_effect_runtime_case(monkeypatch)
+    mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
+        monkeypatch
     )
     participant = SemanticFragmentTransactionParticipant(gateway, modifier)
     quantity = mba.qty
@@ -2942,8 +2939,9 @@ def test_backend_rejects_foreign_or_stale_prepared_authority_before_write(
     gateway.abort(reason="foreign prepared authority cleanup")
 
 
-def test_backend_rejects_swapped_projection_inside_scoped_authority_before_write(
-) -> None:
+def test_backend_rejects_swapped_projection_inside_scoped_authority_before_write() -> (
+    None
+):
     mba, gateway, modifier, plan, prepared = _direct_prepared_runtime_case()
     authority = prepared.authority
     alternate_entry = next(
@@ -3039,8 +3037,8 @@ def test_backend_consumes_prepared_authority_exactly_once() -> None:
 
 
 def test_malformed_native_payload_rejects_before_first_sdk_write(monkeypatch) -> None:
-    mba, gateway, modifier, plan, _entry, _original = (
-        _terminal_effect_runtime_case(monkeypatch)
+    mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
+        monkeypatch
     )
     prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
     instruction = prepared.payload.native_body_rows[0][1][0][2][0][1]
@@ -3064,8 +3062,8 @@ def test_malformed_native_payload_rejects_before_first_sdk_write(monkeypatch) ->
 def test_return_register_preflight_failure_performs_zero_sdk_writes(
     monkeypatch,
 ) -> None:
-    mba, gateway, modifier, plan, entry, original = (
-        _terminal_effect_runtime_case(monkeypatch)
+    mba, gateway, modifier, plan, entry, original = _terminal_effect_runtime_case(
+        monkeypatch
     )
     monkeypatch.setattr(
         sfb,
@@ -5345,9 +5343,7 @@ def test_gateway_validates_live_value_range_atomically(
     live_bounds: tuple[int, int],
 ) -> None:
     bounds = (live_bounds,) if live_bounds == (0, 2) else (live_bounds,) * 4
-    mba, gateway, modifier, plan, entry, original, target = _range_runtime_case(
-        *bounds
-    )
+    mba, gateway, modifier, plan, entry, original, target = _range_runtime_case(*bounds)
     _install_range_data_flow_queries(monkeypatch, target)
     _install_range_value_query(monkeypatch)
     original_handle = gateway.identity_index.handle_for_serial(original.serial)
