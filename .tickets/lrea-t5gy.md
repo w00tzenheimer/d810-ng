@@ -4513,3 +4513,50 @@ evidence, not permission to copy the four instructions without ownership.
 Continue by finding why imported conditional-select discovery did not attach
 the selected-value and join identities for this proof; do not relax the
 nonempty-relocation gate or infer an envelope inside the mutation backend.
+
+**2026-07-25T13:53:03Z**
+
+Commits `cc2c9327d` and `43ff2cf34` complete the same-native-block
+conditional-select ownership slice while keeping repository-wide Ruff
+formatting separate. Resolver replay now retains original CMOV select and join
+coordinates, portable frontend evidence validates the complete pair, and the
+frontend planner constructs one explicit selected/join suffix partition only
+when the native STOP block owns a complete two-target
+`resolver_proven_native_cut`. The fragment contract admits that narrowly
+specified nested suffix without weakening the existing wider-overlap
+rejection. The affected portable-evidence, resolver, frontend, and fragment
+suites are 373/373 green. Ruff format/check, ast-grep, all 14 worktree-local
+import contracts, `graphify update .`, diff checks, and both pre-commit gates
+pass.
+
+The mandatory cache-disabled A560 Docker canary completed in 22.74 seconds.
+Log: `.tmp/rhad-a560-v33-same-block-select-v5.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-same-block-select-v5/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-same-block-select-v5/test_real_loader_matches_reach0/sub_40A560.c`.
+The worker completed without a process segfault, but the semantic oracle still
+rejects one false `while ( 1 )`, so this is not A560 acceptance.
+
+The diagnostic DB proves the prior `0x40AE09` envelope and relocation failures
+are cleared. Its canonical operation now records selected range
+`[0x40AE05,0x40AE08)`, join range `[0x40AE08,0x40AE1A)`, relocations
+`0x40AE0C,0x40AE0E,0x40AE12,0x40AE16`, and unresolved transfer `0x40AE18`.
+The canonical fragment stages, all 1009 prepublication outcomes pass, and the
+receipt records 393/396 applied operations. Main-path A560 remains at C3
+because C4 requires a passing detached reference-oracle comparison. The first
+failed C4 obligation is now exactly `detached route oracle requires one pinned
+reference run`; no route comparison is recorded and live root publication is
+not attempted.
+
+Cleanup after that intentional prepublication rejection exposes a separate
+hard rollback defect. The transaction records `fragment_staged`, then rollback
+verification raises numeric `INTERR 51328`, so rollback is reported failed.
+The live IDA MCP confirms Hex-Rays `9.3.0.260213`, matching the diagnostic
+native key. Hex-Rays SDK `verifier/verify.cpp` maps `51328` to a `BLT_STOP`
+exit block with dirty use-def lists after `callinfo_built()`. The likely exact
+path is `_detach_semantic_fragment_block`: removing a staged block's edge into
+the published stop block unconditionally calls `stop.mark_lists_dirty()`.
+Continue with a red runtime contract for a staged successor edge into a
+calls-built STOP block and make rollback verifier-clean before establishing the
+pinned reference run. Do not skip rollback verification, dirty the STOP block,
+publish without the oracle, or classify this numeric INTERR as a segfault.
