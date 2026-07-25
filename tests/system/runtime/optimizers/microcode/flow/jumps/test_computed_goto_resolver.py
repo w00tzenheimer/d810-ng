@@ -2369,6 +2369,102 @@ def test_static_state_write_routes_prefer_immediate_branch_over_indirect_tail(
     assert evidence.target_ea == 0x40B9A6
 
 
+def test_static_state_write_routes_project_frontend_normalized_delivery_root(
+    monkeypatch,
+) -> None:
+    plan = _PatchPlan(
+        jmp_ea=0x40C649,
+        block_entry=0x40C62F,
+        patch_start=0x40C63A,
+        patch_bytes=b"",
+        region_end=0x40C64B,
+        insn_heads=(0x40C63A, 0x40C649),
+        new_block_eas=(0x40C63A, 0x40C649),
+        target_eas=(0x40B6C0, 0x40A607),
+        condition_code=12,
+        true_target_ea=0x40B6C0,
+        false_target_ea=0x40A607,
+        condition_producer_ea=0x40C634,
+    )
+    resolution = ComputedGotoResolution(
+        function_ea=0x40A560,
+        jmp_targets={plan.jmp_ea: plan.target_eas},
+        reachable_eas=(0x40A560, 0x40C62F),
+        arch="x86",
+        executed_insns=10,
+        seeds_run=0,
+        patch_plans=(plan,),
+    )
+    transfer = MaterializedIndirectTransfer(
+        source_jmp_ea=0x40B98C,
+        source_block_ea=0x40B98C,
+        materialized_anchor_eas=(),
+        target_eas=(0x40B9A6,),
+        selector_state_var_reg=16,
+        selector_state_constant=0xEC71CA67,
+        resolver_kind="static_handler_entry_route",
+    )
+    decoded = (
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40C62F, 0x40C634, "mov", 16, True, 0xEC71CA67
+        ),
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40C634, 0x40C63A, "cmp", 16, False, 0x0BB2D365
+        ),
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40C63A, 0x40C63C, "mov", 0, True, None
+        ),
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40C63C, 0x40C642, "lea", 7, True, None
+        ),
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40C642, 0x40C645, "cmovl", 0, True, None
+        ),
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40C645, 0x40C647, "mov", 0, True, None
+        ),
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40C647, 0x40C649, "add", 0, True, None
+        ),
+        computed_goto_resolver._DecodedStateRouteInstruction(
+            0x40C649, 0x40C64B, "jmp", 0, False, None
+        ),
+    )
+
+    def decode_corridor(_start_ea: int, delivery_ea: int):
+        return tuple(
+            instruction
+            for instruction in decoded
+            if int(instruction.ea) <= int(delivery_ea)
+        )
+
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_decode_static_state_route_corridor",
+        decode_corridor,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_decode_native_flow_route_inventory",
+        lambda *_args: (),
+    )
+    _session, state = _resolver_session(resolution)
+
+    (evidence,) = computed_goto_resolver._discover_static_state_write_routes(
+        state,
+        resolution,
+        (transfer,),
+    )
+
+    assert evidence.source_write_ea == 0x40C62F
+    assert evidence.delivery_ea == 0x40C63A
+    assert evidence.delivery_region_start_ea == 0x40C63A
+    assert evidence.delivery_region_end_ea == 0x40C64B
+    assert evidence.corridor_instruction_eas == (0x40C62F, 0x40C634, 0x40C63A)
+    assert evidence.target_ea == 0x40B9A6
+    assert evidence.delivery_kind is StateWriteRouteDeliveryKind.DIRECT_TARGET
+
+
 def test_static_conditional_state_choice_maps_both_unique_handler_arms() -> None:
     choice = _make_static_conditional_state_choice(
         source_block_ea=0x40D252,
