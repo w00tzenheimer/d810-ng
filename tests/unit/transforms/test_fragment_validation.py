@@ -13,6 +13,8 @@ from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentBoundaryPort,
+    FragmentBoundaryPortKind,
     FragmentDataFlowObligation,
     FragmentDataFlowRole,
     FragmentEdge,
@@ -789,6 +791,89 @@ def test_unreachable_replacement_root_is_rejected() -> None:
     failed = _failed_codes(_plan(), projection)
 
     assert FragmentValidationPostcondition.ROOT_REACHABILITY in failed
+
+
+def test_temporary_boundary_port_is_explicit_reachability_authority() -> None:
+    plan = _plan()
+    port_predecessor = _native_block(
+        "temporary.port.predecessor",
+        FragmentBlockRole.EXTERNAL,
+        0x6000,
+    )
+    retirement_obligation_id = (
+        "retire-temporary-dispatcher-entry@0x1000:"
+        "publish-semantic-predecessor@0x6000"
+    )
+    plan = replace(
+        plan,
+        blocks=plan.blocks + (port_predecessor,),
+        boundary_ports=(
+            FragmentBoundaryPort(
+                port_id="temporary-dispatcher-entry@0x1000",
+                kind=FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_ENTRY,
+                predecessor_block_id=port_predecessor.block_id,
+                root_block_id="replacement",
+                retirement_obligation_id=retirement_obligation_id,
+            ),
+        ),
+    )
+    projection = _projection(plan)
+    projection = _replace_blocks(
+        projection,
+        replace(
+            projection.block("entry"),
+            kind=BlockKind.ZERO_WAY,
+            successors=(),
+        ),
+        replace(
+            projection.block("replacement"),
+            predecessors=(port_predecessor.block_id,),
+        ),
+    )
+    projection = replace(
+        projection,
+        blocks=projection.blocks
+        + (
+            _projected_block(
+                port_predecessor.block_id,
+                BlockKind.ONE_WAY,
+                ("replacement",),
+                (),
+                7,
+                instruction_eas=(0x6000,),
+            ),
+        ),
+        identity_bindings=projection.identity_bindings
+        + (
+            _binding(
+                plan,
+                port_predecessor.block_id,
+                "logical:temporary-port-predecessor",
+                0,
+                2,
+                FragmentBindingState.PUBLISHED,
+            ),
+        ),
+    )
+
+    prepublication = validate_fragment_projection(plan, projection)
+    published = validate_published_fragment_projection(plan, projection)
+
+    assert prepublication.passed
+    assert published.passed
+    for result in (prepublication, published):
+        root_outcome = next(
+            outcome
+            for outcome in result.outcomes
+            if outcome.postcondition
+            is FragmentValidationPostcondition.ROOT_REACHABILITY
+        )
+        assert root_outcome.passed
+        assert retirement_obligation_id in root_outcome.reason
+        assert root_outcome.block_ids == (
+            port_predecessor.block_id,
+            "replacement",
+        )
 
 
 def test_operation_disconnected_from_fragment_roots_is_rejected() -> None:
