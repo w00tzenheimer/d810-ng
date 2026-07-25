@@ -1919,8 +1919,7 @@ class NativePreanalysisSessionState:
                             else int(route.authority_transfer_ea)
                         ),
                         preserved_call_instruction_eas=tuple(
-                            int(ea)
-                            for ea in route.preserved_call_instruction_eas
+                            int(ea) for ea in route.preserved_call_instruction_eas
                         ),
                     ),
                     terminal_return_carrier=terminal_carrier,

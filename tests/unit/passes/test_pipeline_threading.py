@@ -479,7 +479,9 @@ def test_recover_state_transitions_binds_portable_semantic_route_group() -> None
                     width=4,
                     state_constant=C1,
                     corridor_instruction_eas=(0x1001,),
-                authority_transfer_ea = None, preserved_call_instruction_eas = ()),
+                    authority_transfer_ea=None,
+                    preserved_call_instruction_eas=(),
+                ),
             ),
         ),
     )
