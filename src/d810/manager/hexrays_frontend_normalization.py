@@ -13,10 +13,15 @@ from d810.core.observability_events import LifecycleEventObserved
 from d810.ir.block_identity import CurrentMbaIdentityBindingSnapshot
 from d810.manager.decompilation_lifecycle import DecompilationSessionContext
 from d810.manager.frontend_normalization import (
+    FrontendNormalizationPublicationError,
     SessionFrontendNormalizationEvidenceProvider,
     run_frontend_normalization_pipeline,
 )
-from d810.transforms.fragment_plan import FragmentPlanRejected
+from d810.transforms.fragment_plan import (
+    FragmentBlockRole,
+    FragmentPlanRejected,
+    fragment_plan_to_dict,
+)
 
 
 logger = getLogger("D810.manager.frontend_normalization")
@@ -75,6 +80,66 @@ def _bind_committed_live_import_identity(
         binding,
     )
     return binding
+
+
+def _emit_receipted_complete_plan_intent(
+    *,
+    session: DecompilationSessionContext,
+    function_ea: int,
+    published_generation: int | None,
+) -> None:
+    """Persist complete detached intent before reporting its live identity."""
+    if published_generation is None:
+        raise FrontendNormalizationPublicationError(
+            "modified frontend normalization lacks a published generation"
+        )
+    receipted = session.frontend_normalization_plan_authority.plan_for(
+        int(function_ea),
+        int(published_generation),
+    )
+    if receipted is None:
+        raise FrontendNormalizationPublicationError(
+            "modified frontend normalization lacks receipt-backed complete intent"
+        )
+    plan, authority = receipted
+    imported_blocks = tuple(
+        block for block in plan.blocks if block.role is FragmentBlockRole.IMPORTED
+    )
+    emit_diagnostic(
+        LifecycleEventObserved(
+            session_id=session.identity_key,
+            func_ea=int(function_ea),
+            event_kind="frontend_normalization_plan_intent_recorded",
+            provider=_HANDLER_NAME,
+            phase="frontend_normalization",
+            evidence_generation=int(published_generation),
+            correlation_id=authority.work_item_id,
+            summary="receipt-backed complete normalization intent recorded",
+            payload={
+                "outcome": "recorded",
+                "plan_id": plan.plan_id,
+                "atomic_group_id": plan.atomic_group_id,
+                "publication_revision": int(authority.publication_revision),
+                "block_count": len(plan.blocks),
+                "operation_count": len(plan.operations),
+                "imported_block_count": len(imported_blocks),
+                "native_body_count": len(plan.native_bodies),
+                "published_operation_ids": list(
+                    authority.published_operation_ids
+                ),
+                "selected_obligation_ids": list(
+                    authority.selected_obligation_ids
+                ),
+                "remaining_obligation_ids": list(
+                    authority.remaining_obligation_ids
+                ),
+                "unreachable_obligation_ids": list(
+                    authority.unreachable_obligation_ids
+                ),
+                "complete_plan": fragment_plan_to_dict(plan),
+            },
+        )
+    )
 
 
 def run_live_frontend_normalization(
@@ -161,6 +226,12 @@ def run_live_frontend_normalization(
         raise
     if not result.microcode_modified:
         return
+
+    _emit_receipted_complete_plan_intent(
+        session=session,
+        function_ea=int(function_ea),
+        published_generation=result.published_generation,
+    )
 
     details = decision.setdefault("details", {})
     if not isinstance(details, MutableMapping):
