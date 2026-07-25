@@ -3896,7 +3896,7 @@ class DeferredGraphModifier:
             for identity in set(survivor_identities.values())
             if identity is not None
         }
-        temporary_protections = []
+        temporary_protections: list[tuple[int, str]] = []
         unsafe_survivors = []
         for serial, identity in survivor_identities.items():
             candidate = self.mba.get_mblock(serial)
@@ -3906,15 +3906,14 @@ class DeferredGraphModifier:
             if identity is None or len(survivor_identity_counts.get(identity, ())) != 1:
                 unsafe_survivors.append(label)
                 continue
-            temporary_protections.append((identity, label))
+            temporary_protections.append((serial, label))
         if unsafe_survivors:
             raise SemanticFragmentBackendRejected(
                 "staged semantic fragment discard cannot protect and rebind "
                 "survivors without unique native identity: "
                 + ", ".join(unsafe_survivors)
             )
-        for identity, _label in temporary_protections:
-            serial = survivor_identity_counts[identity][0]
+        for serial, _label in temporary_protections:
             survivor = self.mba.get_mblock(serial)
             if survivor is None:
                 raise SemanticFragmentBackendRejected(
@@ -3933,20 +3932,19 @@ class DeferredGraphModifier:
                     f"inventory: expected_qty={expected_qty} "
                     f"observed_qty={int(self.mba.qty)} changed={changed}"
                 )
-            post_sweep_index = MbaBlockIdentityIndex.from_mba(
-                self.mba,
-                generation=int(gateway.generation),
-                native_key=gateway.native_key,
-                evidence_generation=int(gateway.identity_index.evidence_generation),
-                session_id=f"{gateway.session_id}:rollback-post",
-            )
             restore_failures = []
-            for identity, label in temporary_protections:
-                rebound = post_sweep_index.rebind_identity(identity)
-                if rebound.block is None:
-                    restore_failures.append(label)
-                    continue
-                survivor = self.mba.get_mblock(int(rebound.block.serial))
+            for original_serial, label in temporary_protections:
+                # Every survivor was protected and every staged block was
+                # unprotected, while the exact quantity check above proves the
+                # sweep removed only ``serials``.  Hex-Rays compacts the
+                # remaining order, so this transaction-local coordinate is
+                # stronger than rebinding a content identity after the sweep
+                # has normalized survivor instructions.
+                compacted_serial = int(original_serial) - sum(
+                    int(removed_serial) < int(original_serial)
+                    for removed_serial in serials
+                )
+                survivor = self.mba.get_mblock(compacted_serial)
                 if survivor is None:
                     restore_failures.append(label)
                     continue
@@ -11278,6 +11276,7 @@ class DeferredGraphModifier:
             blk,
             int(target.serial),
             nop_previous_instruction=True,
+            instruction_ea=int(predicate_ea),
         )
         blk.type = int(ida_hexrays.BLT_1WAY)
         blk.flags |= int(ida_hexrays.MBL_GOTO)

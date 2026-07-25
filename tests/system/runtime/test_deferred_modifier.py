@@ -470,14 +470,25 @@ def test_materialize_zero_way_goto_replaces_predicate_and_binds_edge(
     target = _FakeBlock(9, start=0x40BCAF)
     mba.blocks = {3: source, 9: target}
     mba.qty = 10
-    inserted: list[tuple[int, int, bool]] = []
+    inserted: list[tuple[int, int, bool, int | None]] = []
 
-    def _insert_goto(block, target_serial, *, nop_previous_instruction):
+    def _insert_goto(
+        block,
+        target_serial,
+        *,
+        nop_previous_instruction,
+        instruction_ea=None,
+    ):
         inserted.append(
-            (int(block.serial), int(target_serial), bool(nop_previous_instruction))
+            (
+                int(block.serial),
+                int(target_serial),
+                bool(nop_previous_instruction),
+                None if instruction_ea is None else int(instruction_ea),
+            )
         )
         block.tail = SimpleNamespace(
-            ea=0x40A7DF,
+            ea=int(instruction_ea),
             opcode=ida_hexrays.m_goto,
             l=SimpleNamespace(t=ida_hexrays.mop_b, b=int(target_serial)),
         )
@@ -490,7 +501,7 @@ def test_materialize_zero_way_goto_replaces_predicate_and_binds_edge(
         predicate_ea=0x40A7DF,
         target_serial=9,
     )
-    assert inserted == [(3, 9, True)]
+    assert inserted == [(3, 9, True, 0x40A7DF)]
     assert source.tail.opcode == ida_hexrays.m_goto
     assert source.type == ida_hexrays.BLT_1WAY
     assert source.flags & ida_hexrays.MBL_GOTO
@@ -514,7 +525,7 @@ def test_materialize_zero_way_goto_replaces_predicate_and_binds_edge(
         predicate_ea=0x40B49E,
         target_serial=10,
     )
-    assert inserted[-1] == (4, 10, True)
+    assert inserted[-1] == (4, 10, True, 0x40B49E)
     assert indirect_source.tail.opcode == ida_hexrays.m_goto
     assert not indirect_source.flags & ida_hexrays.MBL_CALL
     assert indirect_source.succset._items == [10]

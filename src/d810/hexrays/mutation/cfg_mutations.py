@@ -176,11 +176,18 @@ def _rewire_edge(
 
 
 def insert_goto_instruction(
-    blk: ida_hexrays.mblock_t, goto_blk_serial: int, nop_previous_instruction=False
+    blk: ida_hexrays.mblock_t,
+    goto_blk_serial: int,
+    nop_previous_instruction: bool = False,
+    *,
+    instruction_ea: int | None = None,
 ):
-    # Use mba.entry_ea for synthesized goto instructions to guarantee the EA
-    # is within the decompiled function's address range (prevents INTERR 50863).
-    safe_ea = blk.mba.entry_ea
+    # Generic structural helpers use mba.entry_ea so the synthesized address
+    # remains inside the decompiled function (preventing INTERR 50863).  An
+    # exact semantic rewrite supplies its already-live native anchor instead.
+    safe_ea = (
+        int(blk.mba.entry_ea) if instruction_ea is None else int(instruction_ea)
+    )
     goto_ins = ida_hexrays.minsn_t(safe_ea)
     goto_ins.ea = safe_ea
 

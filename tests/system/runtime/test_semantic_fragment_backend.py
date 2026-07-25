@@ -757,12 +757,13 @@ def _insert_fake_goto_instruction(
     block: _Block,
     target_serial: int,
     nop_previous_instruction: bool = False,
+    instruction_ea: int | None = None,
 ) -> None:
     if nop_previous_instruction and block.tail is not None:
         block.make_nop(block.tail)
     goto = _Instruction(
         ida_hexrays.m_goto,
-        block.mba.entry_ea,
+        block.mba.entry_ea if instruction_ea is None else int(instruction_ea),
         int(target_serial),
     )
     block.insert_into_block(goto, block.tail)
@@ -2766,6 +2767,23 @@ def test_staged_block_discard_uses_protected_unreachable_sweep(
         raise AssertionError("low-level block removal leaves stale serials")
 
     monkeypatch.setattr(mba, "remove_blocks", reject_low_level_batch_removal)
+    build_identity_index = dm.MbaBlockIdentityIndex.from_mba
+    identity_index_builds = 0
+
+    def build_pre_sweep_identity_index(*args, **kwargs):
+        nonlocal identity_index_builds
+        identity_index_builds += 1
+        if identity_index_builds != 1:
+            raise AssertionError(
+                "rollback must not rebind content identity after a normalizing sweep"
+            )
+        return build_identity_index(*args, **kwargs)
+
+    monkeypatch.setattr(
+        dm.MbaBlockIdentityIndex,
+        "from_mba",
+        staticmethod(build_pre_sweep_identity_index),
+    )
 
     modifier._discard_semantic_fragment_blocks(
         (staged_first, staged_second),
@@ -2777,6 +2795,7 @@ def test_staged_block_discard_uses_protected_unreachable_sweep(
     assert int(stop.serial) == 2
     assert not int(original.flags) & int(ida_hexrays.MBL_KEEP)
     assert mba.verify_calls == 1
+    assert identity_index_builds == 1
 
 
 def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_work(
