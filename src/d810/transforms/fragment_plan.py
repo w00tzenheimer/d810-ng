@@ -1639,17 +1639,13 @@ class FragmentPlan:
                     target_bound = (
                         target_identity is not None
                         and reference_target_ea is not None
-                        and target_identity.native_ranges.contains(
-                            reference_target_ea
-                        )
+                        and target_identity.native_ranges.contains(reference_target_ea)
                     )
                     if not owner_bound or not target_bound:
                         raise FragmentPlanRejected(
                             f"fragment operation {operation.operation_id!r} does not "
                             "bind its reference route owner and target",
-                            reason_code=(
-                                "fragment_reference_route_identity_mismatch"
-                            ),
+                            reason_code=("fragment_reference_route_identity_mismatch"),
                             anchor_ea=direct_rewrite.rewrite_anchor_ea,
                             payload={
                                 "operation_id": operation.operation_id,
