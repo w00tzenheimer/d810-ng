@@ -3227,3 +3227,38 @@ the write and delivery into a larger live owner, omitted the write anchor from
 current identity authority, or left the source block unpublished. Do not relax
 identity containment, synthesize a live owner, or advance to C4 without that
 evidence.
+
+**2026-07-25T05:13:22Z**
+
+Commit `df7e343ea` makes a published-boundary owner mismatch self-contained.
+The rejection now records the normalization-plan block and stable identity plus
+every EA-anchored current identity that contains the boundary anchor or
+overlaps its native ranges. The focused canonical/resolver gate is 279/279
+green; Ruff, ast-grep, `graphify update .`, and all 14 import contracts pass.
+
+The mandatory cache-disabled A560 canary returned normally in 22.11 seconds
+(20.22 seconds inside pytest) with no process crash or numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-boundary-owner-inventory-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-boundary-owner-inventory-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-boundary-owner-inventory-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The DB proves that normalization-plan block
+`native[0x40B51B-0x40B534;exact=0x40B51B]:imported` has zero live owners and an
+empty overlapping/current-anchor inventory at snapshot 3 / `MMAT_CALLS`.
+Therefore the block is unpublished at this maturity; it is not hidden inside a
+coalesced live identity and cannot itself serve as a replacement root. The
+highest completed semantic level remains C2. No semantic transaction,
+validation outcome, oracle comparison, or semantic receipt exists.
+
+The portable state-route ledger contains no state assignment targeting
+`0x40B51B`. The isolated reference oracle instead shows its unique predecessor
+as the native conditional block starting at `0x40AB31`; its branch at
+`0x40AB50` targets `0x40B51B` and its other arm remains the native
+fallthrough. Continue by recording every normalization-plan operation entering
+the unpublished boundary, including source block identity, source anchor,
+operation id, edge role, and sibling arms. Then decide whether the bounded
+publication root must move to the live `0x40AB31` owner. Do not treat
+`0x40B51B` as a live root or fabricate a state-route predecessor.
