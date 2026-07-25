@@ -3436,3 +3436,38 @@ Continue from the `0x40A607` C3 boundary obligation. Determine whether the
 is a valid closed external boundary before changing publication logic. Do not
 classify `blk8@0x40A560` as replacement-owned, permit unresolved dispatcher
 residue, or advance to C4 without a complete route-backed plan.
+
+**2026-07-25T06:00:19Z**
+
+Commit `b6e7a4d47` extends nested canonical projection to terminal-return
+evidence instead of filtering it out as a non-state route. A projected
+terminal is one atomic effect containing its direct route, return carrier,
+terminal return, and terminal route; conflicting shared returns and unstaged
+endpoints remain hard rejections. The combined canonical, resolver,
+fragment-plan, fragment-validation, and semantic-backend gate is 447/447
+green; Ruff, ast-grep, `graphify update .`, and all 14 import contracts pass.
+
+The mandatory cache-disabled A560 canary completed normally in 21.26 seconds
+inside pytest with no process crash or numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-nested-terminal-route-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-nested-terminal-route-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-nested-terminal-route-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red as the same eight-line infinite-loop stub; this is
+not A560 acceptance.
+
+The intended route fact advanced again. Canonical composition now selects
+terminal proof `terminal_return@0x40C7F6:0x19A7218A` and reaches terminal
+effect construction, then rejects it as
+`nested_terminal_route_staged_owner_missing@0x40C7F6`. The current rejection
+payload records only the proof identity and does not identify which
+EA-anchored source or destination endpoint is unstaged. The only committed
+transaction remains the 260/260 frontend-normalization publication; there are
+zero semantic-oracle runs or comparisons. Therefore the highest completed
+semantic level remains C2.
+
+Continue by making this rejection inventory both terminal endpoints, their
+roles and stable identities, plus the operation and target identities. Do not
+change terminal ownership or staging acceptance until the DB identifies the
+specific missing endpoint, and do not weaken the requirement that the route,
+carrier, and return be wholly staged as one fragment-atomic operation.
