@@ -28,6 +28,10 @@ from d810.analyses.control_flow.terminal_return_carrier_evidence import (
     TerminalReturnCarrierSourceKind,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
+from d810.core.semantic_route_oracle import (
+    ReferenceRouteRewrite,
+    SemanticTransferKind,
+)
 from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
@@ -45,6 +49,7 @@ from d810.transforms.canonical_semantic_fragment import (
     build_canonical_semantic_fragment_plan,
     compose_canonical_semantic_boundary_fragment_plan,
     compose_canonical_semantic_fragment_plan,
+    plan_detached_reference_direct_route,
 )
 from d810.transforms.fragment_plan import (
     FragmentBlock,
@@ -411,6 +416,275 @@ def _normalization_authority(
         remaining_obligation_ids=scope.remaining_obligation_ids,
         unreachable_obligation_ids=scope.unreachable_obligation_ids,
     )
+
+
+def _detached_reference_direct_route_case() -> tuple[
+    FragmentPlan,
+    CanonicalSemanticEvidence,
+    NormalizationWorkItemAuthority,
+    ReferenceRouteRewrite,
+]:
+    _graph, normalization_plan, _evidence = _live_source_detached_target_case()
+    (native_body,) = normalization_plan.native_bodies
+    proof_block = FragmentBlock(
+        block_id="native@0x40BB3A",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x40BB3A,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40BB3A, 0x40BB51),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(0x40BB3A,),
+        ),
+        native_body_id=native_body.body_id,
+    )
+    route_source = FragmentBlock(
+        block_id="native@0x40BB51",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x40BB51,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40BB51, 0x40BB69),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(0x40BB51,),
+        ),
+        native_body_id=native_body.body_id,
+    )
+    route_target = FragmentBlock(
+        block_id="native@0x40ACF3",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x40ACF3,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40ACF3, 0x40AD06),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(0x40ACF3,),
+        ),
+        native_body_id=native_body.body_id,
+    )
+    raw_taken = FragmentBlock(
+        block_id="native@0x40C6F7",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x40C6F7,
+        stable_identity=_wide_identity(0x40C6F7, 0x40C705),
+        native_body_id=native_body.body_id,
+    )
+    raw_fallthrough = FragmentBlock(
+        block_id="native@0x40BB69",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x40BB69,
+        stable_identity=_wide_identity(0x40BB69, 0x40BB75),
+        native_body_id=native_body.body_id,
+    )
+    raw_operation = FragmentOperation(
+        operation_id="native-body-edge@0x40BB51",
+        source_block_id=route_source.block_id,
+        predicate_anchor_ea=0x40BB63,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                target_block_id=raw_taken.block_id,
+            ),
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                target_block_id=raw_fallthrough.block_id,
+            ),
+        ),
+    )
+    proof_operation = FragmentOperation(
+        operation_id="native-body-edge@0x40BB3A",
+        source_block_id=proof_block.block_id,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=route_source.block_id,
+            ),
+        ),
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *normalization_plan.blocks,
+            proof_block,
+            route_source,
+            route_target,
+            raw_taken,
+            raw_fallthrough,
+        ),
+        operations=(
+            *normalization_plan.operations,
+            proof_operation,
+            raw_operation,
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    proof_block.block_id,
+                    route_source.block_id,
+                    route_target.block_id,
+                    raw_taken.block_id,
+                    raw_fallthrough.block_id,
+                ),
+                terminal_block_ids=(
+                    *native_body.terminal_block_ids,
+                    route_target.block_id,
+                    raw_taken.block_id,
+                    raw_fallthrough.block_id,
+                ),
+                native_ranges=(
+                    *native_body.native_ranges,
+                    NativeEaInterval(0x40ACF3, 0x40AD06),
+                    NativeEaInterval(0x40BB3A, 0x40BB75),
+                    NativeEaInterval(0x40C6F7, 0x40C705),
+                ),
+                proof_ids=(
+                    *native_body.proof_ids,
+                    proof_operation.operation_id,
+                    raw_operation.operation_id,
+                    "rhad:0x40A560:flow_route:0x40BB63",
+                ),
+            ),
+        ),
+    )
+    route_proof = SemanticRouteProof(
+        proof_id="state_assignment@0x40BB63:0xE9795EF",
+        atomic_group_id="canonical-semantic:g3:route@0x40BB63",
+        proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x40BB63, 0x40BB69),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(0x40BB63,),
+        ),
+        source_anchor_ea=0x40BB63,
+        delivery_region=NativeEaInterval(0x40BB63, 0x40BB69),
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.DIRECT,
+                state_constant=0x0E9795EF,
+                target_identity=route_target.stable_identity,
+                target_anchor_ea=0x40ACF3,
+            ),
+        ),
+        state_write=SemanticStateWriteProof(
+            identity=StableBlockIdentity.from_intervals(
+                (NativeEaInterval(0x40BB44, 0x40BB4F),),
+                native_key=NATIVE_KEY,
+                exact_instruction_eas=(0x40BB44,),
+            ),
+            instruction_ea=0x40BB44,
+            state_variable=StorageIdentity(StorageIdentityKind.REGISTER, 3),
+            width=4,
+            state_constant=0x0E9795EF,
+            corridor_instruction_eas=(0x40BB44, 0x40BB4B, 0x40BB63),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+        ),
+    )
+    evidence = CanonicalSemanticEvidence(
+        native_key=NATIVE_KEY,
+        generation=3,
+        atomic_group_id=route_proof.atomic_group_id,
+        route_proofs=(route_proof,),
+    )
+    reference_route = ReferenceRouteRewrite(
+        route_id="rhad:0x40A560:flow_route:0x40BB63",
+        function_ea=0x40A560,
+        owner_ea=0x40BB51,
+        rewrite_anchor_ea=0x40BB63,
+        corridor=((0x40BB44, 0x40BB69),),
+        reference_phase="flow_route",
+        original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        final_transfer_kind=SemanticTransferKind.DIRECT,
+        direct_target_ea=0x40ACF3,
+        reference_ledger_identity="flow_route:0x40BB63",
+    )
+    return (
+        normalization_plan,
+        evidence,
+        _normalization_authority(normalization_plan, evidence),
+        reference_route,
+    )
+
+
+def test_detached_direct_route_binds_imported_operation_anchor_and_owner() -> None:
+    normalization_plan, evidence, authority, reference_route = (
+        _detached_reference_direct_route_case()
+    )
+
+    detached_plan = plan_detached_reference_direct_route(
+        normalization_plan,
+        evidence,
+        reference_route,
+        normalization_authority=authority,
+    )
+
+    assert detached_plan is not None
+    assert detached_plan.source_block.semantic_anchor_ea == 0x40BB51
+    assert detached_plan.target_block.semantic_anchor_ea == 0x40ACF3
+    assert detached_plan.superseded_operation.operation_id == (
+        "native-body-edge@0x40BB51"
+    )
+    assert detached_plan.operation.source_block_id == detached_plan.source_block.block_id
+    assert tuple(
+        (
+            edge.role,
+            edge.target_block_id,
+        )
+        for edge in detached_plan.operation.edges
+    ) == ((SemanticEdgeRole.DIRECT, detached_plan.target_block.block_id),)
+    rewrite = detached_plan.operation.direct_transfer_rewrite
+    assert rewrite is not None
+    assert rewrite.owner_anchor_ea == 0x40BB51
+    assert rewrite.owner_identity == detached_plan.source_block.stable_identity
+    assert rewrite.rewrite_anchor_ea == 0x40BB63
+    assert rewrite.proof_corridor_instruction_eas == (
+        0x40BB44,
+        0x40BB4B,
+        0x40BB63,
+    )
+    assert rewrite.reference_route == reference_route
+    assert detached_plan.corridor_block_ids == (
+        "native@0x40BB3A",
+        "native@0x40BB51",
+    )
+
+
+@pytest.mark.parametrize(
+    ("reference_change", "reason_code"),
+    (
+        (
+            {"owner_ea": 0x40BB50},
+            "detached_direct_route_reference_owner_mismatch",
+        ),
+        (
+            {"direct_target_ea": 0x40ACF4},
+            "detached_direct_route_reference_target_mismatch",
+        ),
+    ),
+)
+def test_detached_direct_route_rejects_reference_binding_drift(
+    reference_change,
+    reason_code,
+) -> None:
+    normalization_plan, evidence, authority, reference_route = (
+        _detached_reference_direct_route_case()
+    )
+
+    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
+        plan_detached_reference_direct_route(
+            normalization_plan,
+            evidence,
+            replace(reference_route, **reference_change),
+            normalization_authority=authority,
+        )
+
+    assert exc_info.value.reason_code == reason_code
+    assert exc_info.value.anchor_ea == 0x40BB63
 
 
 def test_canonical_route_composes_live_source_with_detached_target_body() -> None:

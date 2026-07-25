@@ -1151,6 +1151,110 @@ def test_configured_reference_scope_drives_live_route_composition_before_boundar
     ]
 
 
+def test_configured_reference_direct_route_records_c3_before_projection(
+    monkeypatch,
+) -> None:
+    graph, bound = _graph_and_bound_evidence()
+    candidate = bound.evidence
+    plan = build_canonical_semantic_fragment_plan(
+        graph,
+        bound,
+        prohibited_dispatcher_serials=(30,),
+    )
+    reference_route = ReferenceRouteRewrite(
+        route_id="test:0x1000:flow_route:0x1100",
+        function_ea=graph.func_ea,
+        owner_ea=0x1100,
+        rewrite_anchor_ea=0x1100,
+        corridor=((0x1100, 0x1101),),
+        reference_phase="flow_route",
+        original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        final_transfer_kind=SemanticTransferKind.DIRECT,
+        direct_target_ea=0x1200,
+        reference_ledger_identity="flow_route:0x1100",
+    )
+    selection = ReferenceRouteOracleSelection(
+        run=RouteOracleRun(
+            run_id="test-configured-detached-direct-route",
+            function_ea=graph.func_ea,
+            fixture_sha256="a" * 64,
+            reference_binary_sha256="b" * 64,
+            candidate_binary_sha256="a" * 64,
+            reference_commit="deadbeef",
+            runtime_image="test-image",
+            runtime_image_id="sha256:" + "c" * 64,
+            cache_disabled=True,
+        ),
+        publication_root_ea=0x1100,
+        routes=(reference_route,),
+    )
+    expected_payload = {
+        "plan_id": "detached-direct:test",
+        "route_proof_id": candidate.route_proofs[0].proof_id,
+        "owner_anchor_ea": "0x1100",
+        "rewrite_anchor_ea": "0x1100",
+        "direct_target_ea": "0x1200",
+    }
+    detached_plan = SimpleNamespace(
+        diagnostic_payload=lambda: dict(expected_payload),
+    )
+    planner_calls = []
+
+    def plan_detached(*args, **kwargs):
+        planner_calls.append((args, kwargs))
+        return detached_plan
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "plan_detached_reference_direct_route",
+        plan_detached,
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "compose_canonical_semantic_fragment_plan",
+        lambda *_args, **_kwargs: pytest.fail(
+            "detached C3 intent must stop before live route composition"
+        ),
+    )
+    attempts: list[dict[str, object]] = []
+    normalization_authority = object()
+
+    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
+        state_machine_module._compose_configured_reference_scope_plan(
+            graph=graph,
+            normalization_plan=plan,
+            configured_scope=selection,
+            available_evidence=candidate,
+            current_identity_by_serial={
+                serial: _identity(block.start_ea)
+                for serial, block in graph.blocks.items()
+            },
+            normalization_authority=normalization_authority,
+            prohibited_dispatcher_serials=(30,),
+            composition_attempts=attempts,
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == "canonical_detached_direct_route_projection_missing"
+    assert rejection.anchor_ea == 0x1100
+    assert rejection.payload["detached_direct_route_plan"] == expected_payload
+    assert attempts == [
+        {
+            "kind": "configured_reference_detached_direct_route",
+            "outcome": "accepted",
+            "route_proof_ids": (candidate.route_proofs[0].proof_id,),
+            "route_source_anchor_eas": ("0x1100",),
+            **expected_payload,
+        }
+    ]
+    assert planner_calls == [
+        (
+            (plan, candidate, reference_route),
+            {"normalization_authority": normalization_authority},
+        )
+    ]
+
+
 def test_configured_reference_scope_reuses_proved_temporary_entry_port(
     monkeypatch,
 ) -> None:
