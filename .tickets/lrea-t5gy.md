@@ -4731,3 +4731,42 @@ validated typed-port predecessors when computing candidate route reachability,
 and keep the port plus retirement obligation in the plan/DB as the explanation
 for that normalization. Do not mark every disconnected staged block reachable,
 weaken route-shape comparison, or skip the six-route oracle.
+
+**2026-07-25T15:00:56Z**
+
+Commit `cb5cb0f83` makes detached-oracle reachability consume the same pure
+publication-authority normalization as fragment validation. The literal
+function entry remains authority, and a temporary boundary predecessor is
+added only when the projected predecessor-to-root edge or registered
+fallthrough helper exactly witnesses the typed port. The negative contract
+still rejects a disconnected route without that port. The affected portable
+and runtime suite is 186/186 green; changed-file Ruff, repository-wide Ruff
+format, ast-grep, all 14 import contracts, diff checks, `graphify update .`,
+and pre-commit gates pass. Repository-wide Ruff formatting changed none of the
+1,865 files, so no empty style commit was created.
+
+The mandatory full cache-disabled A560 canary completed normally in 19.05
+seconds without a process crash, numeric `INTERR`, verifier failure, or
+diagnostic-write error. Log: `.tmp/rhad-a560-v33-oracle-port-v10.txt`; primary
+schema-8 DB:
+`.tmp/rhad-a560-v33-oracle-port-v10/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-oracle-port-v10/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects one false `while ( 1 )`, so this is not A560
+acceptance.
+
+The DB proves C4 is now complete for the bounded six-route fragment. After the
+expected CALLS companion request and redo, all 84/84 prepublication validation
+outcomes pass and all six detached route comparisons match at anchors
+`0x40AA4F`, `0x40AE7A`, `0x40AB64`, `0x40B52E`, `0x40C341`, and `0x40C7F6`.
+The 31-operation transaction stages 29 operations, then aborts during root
+preparation before any publication write; rollback succeeds.
+
+Main-path A560 has therefore reached C4. The first failed C5 obligation is
+exact ownership of the typed publication predecessor anchored at `0x40AE2E`
+for root `0x40AE3E`: the live backend reports that the predecessor is not owned
+by exactly one fragment binding. Continue by making root preparation consume
+the already-pinned inventory/port owner and prove that its live version is the
+captured predecessor, while retaining rejection for physical-version aliases.
+Do not weaken ownership to arbitrary serial matching, publish on ambiguity, or
+skip the prepublication and route-oracle proofs that are now green.
