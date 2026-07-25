@@ -585,7 +585,8 @@ def _handle_fact_consumers_latest(ev: FactConsumersForLatestSnapshot) -> None:
             exists = (
                 FactConsumer.select(FactConsumer.consumer_index)
                 .where(
-                    (FactConsumer.func_ea_hex == func_hex)
+                    (FactConsumer.snapshot == int(snap_id))
+                    & (FactConsumer.func_ea_hex == func_hex)
                     & (FactConsumer.consumer == getattr(consumer, "consumer", None))
                     & (FactConsumer.strategy == getattr(consumer, "strategy", None))
                     & (FactConsumer.fact_id == getattr(consumer, "fact_id", None))
