@@ -4593,3 +4593,53 @@ for one complete route fragment, proving its detached equivalence, and
 publishing only that fragment through C5 before attempting the broad 91-route
 composition. Do not interpret the clean rollback as semantic acceptance or
 bypass the pinned oracle gate.
+
+**2026-07-25T14:29:23Z**
+
+Commit `649358fdb` makes the publication root part of the exact-input reference
+authority with schema 2 and no compatibility path. Canonical composition now
+consults that complete configured scope before an otherwise successful generic
+entry-root plan, and the binder requires the detached plan's sole root anchor
+to equal the selected publication root. The affected local suite is 59/59
+green; Ruff format/check, ast-grep, all 14 import contracts, diff checks, and
+`graphify update .` pass.
+
+The existing real one-route C5 vertical remains green after commit
+`f381ad0f5` corrected its synthetic manifest to declare the plan's actual
+delivery root `0x40C7F6`. Docker log:
+`.tmp/rhad-a560-c5-pinned-root-v8.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-c5-pinned-root-v8/test_real_a560_terminal_fragme0/real-terminal-fragment.diag.sqlite3`.
+The DB records one matched reference comparison for
+`0x40C7F6 -> 0x40C898`, 32/32 prepublication checks, one successful root
+publication, 59/59 postpublication checks, and a committed receipt with no
+rollback. This preserves the required complete C5 vertical without broad
+publication.
+
+The mandatory full cache-disabled A560 canary then completed normally in
+19.11 seconds without a process crash, numeric `INTERR`, or verifier failure.
+Log: `.tmp/rhad-a560-v33-pinned-root-v7.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-pinned-root-v7/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-pinned-root-v7/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects one false `while ( 1 )`, so this is not A560
+acceptance.
+
+The DB proves configured authority is now selected, but the new fast path
+stops at `published_boundary_predecessor_missing@0x40AE3E` before producing a
+canonical plan. The sole incoming edge is the prohibited dispatcher-side
+`blk47@0x40A560`, whose stable native identity is anchored at `0x40AE2E` over
+range `[0x40AE26,0x40AE3E)`. Only the earlier 260/260 frontend-normalization
+transaction commits; there is no semantic transaction, detached-oracle
+comparison, or semantic receipt. Main-path A560 therefore reaches C2, and its
+first failed obligation is C3 entry connection for the exact configured
+boundary.
+
+This is a control-flow regression in configured-scope selection, not new Rhad
+semantics and not evidence that the pinned root is wrong. The ticket already
+proves `0x40AE3E` is the only live root and must use the typed temporary
+dispatcher-entry port whose stable retirement obligation is semantic
+predecessor `0x40B51B`. Continue by routing the configured exact scope through
+that existing evidence-backed port path, then bind all six selected routes and
+rerun the mandatory A560 DB canary. Do not admit the prohibited edge as
+reference topology, lose the retirement obligation, or fall back to the broad
+396-operation entry-root plan.
