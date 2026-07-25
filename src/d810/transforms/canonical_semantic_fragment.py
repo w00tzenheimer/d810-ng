@@ -1500,10 +1500,7 @@ def plan_detached_reference_direct_route(
     (native_body,) = native_bodies
     missing_proof_ids = tuple(
         proof_id
-        for proof_id in (
-            superseded_operation.operation_id,
-            reference_route.route_id,
-        )
+        for proof_id in (reference_route.route_id,)
         if proof_id not in native_body.proof_ids
     )
     if missing_proof_ids:
