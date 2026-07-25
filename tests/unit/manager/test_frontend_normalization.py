@@ -297,8 +297,7 @@ def test_pipeline_exposes_reference_oracle_to_portable_frontend_passes() -> None
     assert result.microcode_modified is False
     assert manager.capabilities is not None
     assert (
-        manager.capabilities.require(SemanticRouteReferenceOracleCapability)
-        is provider
+        manager.capabilities.require(SemanticRouteReferenceOracleCapability) is provider
     )
 
 
