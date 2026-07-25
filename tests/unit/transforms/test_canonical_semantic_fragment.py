@@ -1471,6 +1471,118 @@ def test_published_boundary_projects_nested_terminal_route_atomically() -> None:
     )
 
 
+def test_nested_terminal_staging_rejection_inventories_both_endpoints() -> None:
+    source_identity = StableBlockIdentity.from_instruction_eas(
+        (0x1210, 0x1215, 0x1218),
+        native_key=NATIVE_KEY,
+    )
+    destination_identity = StableBlockIdentity.from_instruction_eas(
+        (0x1320, 0x1328),
+        native_key=NATIVE_KEY,
+    )
+    source = FragmentBlock(
+        block_id="terminal-source",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1210,
+        stable_identity=source_identity,
+        native_body_id="terminal-body",
+    )
+    destination = FragmentBlock(
+        block_id="terminal-destination",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x1320,
+        stable_identity=destination_identity,
+    )
+    state_constant = 0x19A7218A
+    carrier = TerminalReturnCarrierEvidence(
+        request=TerminalReturnCarrierRequest(
+            source_handler_ea=0x1210,
+            terminal_target_ea=0x1320,
+            state_var_reg=20,
+            state_constant=state_constant,
+        ),
+        capture_identity=source_identity,
+        terminal_identity=destination_identity,
+        state_write_ea=0x1210,
+        carrier_ea=0x1215,
+        terminal_return_ea=0x1328,
+        operation=ValueOpKind.MOVE,
+        source=TerminalReturnCarrierSource(
+            kind=TerminalReturnCarrierSourceKind.STORAGE_VALUE,
+            width=4,
+            storage_identity=StorageIdentity(
+                StorageIdentityKind.GLOBAL,
+                0x48B8A4,
+            ),
+        ),
+        return_width=4,
+        corridor_instruction_eas=(0x1210, 0x1215),
+    )
+    proof = SemanticRouteProof(
+        proof_id="terminal-return@0x1218:0x19A7218A",
+        atomic_group_id="canonical-semantic:g3",
+        proof_kind=SemanticRouteProofKind.TERMINAL_RETURN,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=source_identity,
+        source_anchor_ea=0x1218,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.DIRECT,
+                state_constant=state_constant,
+                target_identity=destination_identity,
+                target_anchor_ea=0x1320,
+                terminal=True,
+            ),
+        ),
+        state_write=SemanticStateWriteProof(
+            identity=source_identity,
+            instruction_ea=0x1210,
+            state_variable=StorageIdentity(
+                StorageIdentityKind.REGISTER,
+                20,
+            ),
+            width=4,
+            state_constant=state_constant,
+            corridor_instruction_eas=(0x1210, 0x1215, 0x1218),
+        ),
+        terminal_return_carrier=carrier,
+    )
+    operation = FragmentOperation(
+        operation_id=f"route:{proof.proof_id}",
+        source_block_id=source.block_id,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=destination.block_id,
+            ),
+        ),
+    )
+
+    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
+        canonical_fragment._nested_terminal_effects(
+            (source, destination),
+            (operation,),
+            (proof,),
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == "nested_terminal_route_staged_owner_missing"
+    assert rejection.anchor_ea == 0x1218
+    assert rejection.payload == {
+        "route_proof_id": proof.proof_id,
+        "operation_id": operation.operation_id,
+        "source_block_id": source.block_id,
+        "source_role": FragmentBlockRole.IMPORTED.value,
+        "source_identity": source_identity.diagnostic_label(),
+        "destination_block_id": destination.block_id,
+        "destination_role": FragmentBlockRole.EXTERNAL.value,
+        "destination_identity": destination_identity.diagnostic_label(),
+        "target_block_id": destination.block_id,
+    }
+
+
 def test_published_boundary_rejection_records_prohibited_predecessor() -> None:
     _graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = FlowGraph(

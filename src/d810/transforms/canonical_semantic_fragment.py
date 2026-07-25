@@ -1542,7 +1542,29 @@ def _nested_terminal_effects(
                 "nested terminal route is not wholly staged",
                 reason_code="nested_terminal_route_staged_owner_missing",
                 anchor_ea=int(proof.source_anchor_ea),
-                payload={"route_proof_id": proof.proof_id},
+                payload={
+                    "route_proof_id": proof.proof_id,
+                    "operation_id": operation.operation_id,
+                    "source_block_id": (None if source is None else source.block_id),
+                    "source_role": (None if source is None else source.role.value),
+                    "source_identity": (
+                        None
+                        if source is None
+                        else source.stable_identity.diagnostic_label()
+                    ),
+                    "destination_block_id": (
+                        None if destination is None else destination.block_id
+                    ),
+                    "destination_role": (
+                        None if destination is None else destination.role.value
+                    ),
+                    "destination_identity": (
+                        None
+                        if destination is None
+                        else destination.stable_identity.diagnostic_label()
+                    ),
+                    "target_block_id": operation.edges[0].target_block_id,
+                },
             )
         carrier_id = f"return-carrier:{proof.proof_id}"
         return_carriers.append(
