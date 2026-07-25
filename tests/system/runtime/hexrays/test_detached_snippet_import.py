@@ -842,8 +842,8 @@ def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
     materializer = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
         mba=destination,
         function_ea=function_ea,
-        prepared_fact_observer=lambda plan, body, fact: (
-            observed_prepared_facts.append((plan, body, fact))
+        prepared_fact_observer=lambda plan, body, fact: observed_prepared_facts.append(
+            (plan, body, fact)
         ),
     )
     destination_before = (
@@ -2028,7 +2028,8 @@ def test_preopt_native_body_lowers_owned_direct_transfer_while_unpublished(
     assert tuple(live_root.succset) == ()
     assert tuple(live_root.predset) == ()
     assert all(
-        live_root.serial not in tuple(block.predset) for block in context.blocks.values()
+        live_root.serial not in tuple(block.predset)
+        for block in context.blocks.values()
     )
 
 

@@ -87,4 +87,3 @@ def test_prepared_body_authority_rejects_fact_lineage_drift() -> None:
             replace(fact, plan_id="another-plan"),
             evidence_generation=evidence.generation,
         )
-

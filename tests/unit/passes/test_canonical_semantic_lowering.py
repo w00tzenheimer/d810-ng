@@ -1243,7 +1243,9 @@ def test_configured_reference_direct_route_records_c4_before_publication(
     projection = SimpleNamespace(
         plan_id="detached-direct:test",
         snapshot_id=prepared_snapshot.snapshot_id,
-        graph=SimpleNamespace(blocks={0: object(), 1: object()}, metadata=projected_metadata),
+        graph=SimpleNamespace(
+            blocks={0: object(), 1: object()}, metadata=projected_metadata
+        ),
     )
     projection_calls = []
 
@@ -1268,17 +1270,16 @@ def test_configured_reference_direct_route_records_c4_before_publication(
             current_identity_by_serial={
                 serial: _identity(block.start_ea)
                 for serial, block in graph.blocks.items()
-                },
-                normalization_authority=normalization_authority,
-                prepared_body_provider=prepared_body_provider,
-                prohibited_dispatcher_serials=(30,),
+            },
+            normalization_authority=normalization_authority,
+            prepared_body_provider=prepared_body_provider,
+            prohibited_dispatcher_serials=(30,),
             composition_attempts=attempts,
         )
 
     rejection = exc_info.value
     assert (
-        rejection.reason_code
-        == "canonical_detached_direct_route_publication_deferred"
+        rejection.reason_code == "canonical_detached_direct_route_publication_deferred"
     )
     assert rejection.anchor_ea == 0x1100
     assert rejection.payload["detached_direct_route_plan"] == expected_payload
