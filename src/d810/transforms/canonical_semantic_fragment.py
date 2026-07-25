@@ -645,6 +645,7 @@ def _detached_target_component(
     prohibited_dispatcher_serials: frozenset[int],
     replaced_current_owner_serials: frozenset[int],
     required_staged_destination_ids: frozenset[str],
+    required_exact_instruction_eas_by_block_id: Mapping[str, frozenset[int]],
 ) -> tuple[
     tuple[FragmentBlock, ...],
     tuple[FragmentOperation, ...],
@@ -858,6 +859,34 @@ def _detached_target_component(
         selected_ids.intersection(reimportable_replacement_ids)
     )
     selected_import_source_ids = selected_native_imported_ids | selected_reimported_ids
+    required_exact_instruction_eas_by_block_id = {
+        str(block_id): frozenset(int(ea) for ea in exact_instruction_eas)
+        for block_id, exact_instruction_eas in (
+            required_exact_instruction_eas_by_block_id.items()
+        )
+        if exact_instruction_eas
+    }
+    unstaged_required_ids = frozenset(
+        required_exact_instruction_eas_by_block_id
+    ).difference(selected_import_source_ids)
+    if unstaged_required_ids:
+        first_block_id = min(unstaged_required_ids)
+        required_eas = required_exact_instruction_eas_by_block_id[first_block_id]
+        raise CanonicalSemanticFragmentRejected(
+            "proof-owned exact anchors require a staged imported block",
+            reason_code="proof_owned_exact_anchor_staged_owner_missing",
+            anchor_ea=(
+                int(target.semantic_anchor_ea)
+                if not required_eas
+                else min(required_eas)
+            ),
+            payload={
+                "block_id": first_block_id,
+                "required_exact_instruction_eas": tuple(
+                    f"0x{int(ea):X}" for ea in sorted(required_eas)
+                ),
+            },
+        )
     scoped_body_id = f"{native_body.body_id}:canonical:{canonical_proof_id}"
     boundary_id_by_source_id: dict[str, str] = {}
     projected_boundary_by_id: dict[str, FragmentBlock] = {}
@@ -912,28 +941,76 @@ def _detached_target_component(
         boundary_id_by_source_id[block.block_id] = projected_id
 
     imported_id_by_source_id: dict[str, str] = {}
+    imported_identity_by_source_id: dict[str, StableBlockIdentity] = {}
     occupied_block_ids = {
         *(block.block_id for block in plan.blocks),
         *projected_boundary_by_id,
     }
-    for source_id in selected_reimported_ids:
+    for source_id in sorted(selected_import_source_ids):
         source = plan.block(source_id)
         identity = source.stable_identity
         if identity is None:
             raise CanonicalSemanticFragmentRejected(
-                "prohibited frontend replacement lacks stable identity",
-                reason_code="prohibited_replacement_identity_missing",
+                "detached imported block lacks stable identity",
+                reason_code=(
+                    "prohibited_replacement_identity_missing"
+                    if source_id in selected_reimported_ids
+                    else "detached_import_identity_missing"
+                ),
                 anchor_ea=int(source.semantic_anchor_ea),
-                payload={"replacement_block_id": source_id},
+                payload={"source_block_id": source_id},
             )
-        imported_id = f"native[{stable_block_identity_token(identity)}]:imported"
+        required_exact_eas = required_exact_instruction_eas_by_block_id.get(
+            source_id,
+            frozenset(),
+        )
+        out_of_range_eas = tuple(
+            ea
+            for ea in sorted(required_exact_eas)
+            if not identity.native_ranges.contains(ea)
+        )
+        if out_of_range_eas:
+            raise CanonicalSemanticFragmentRejected(
+                "proof-owned exact anchor escapes its staged native ranges",
+                reason_code="proof_owned_exact_anchor_range_mismatch",
+                anchor_ea=int(out_of_range_eas[0]),
+                payload={
+                    "block_id": source_id,
+                    "block_identity": identity.diagnostic_label(),
+                    "out_of_range_eas": tuple(
+                        f"0x{int(ea):X}" for ea in out_of_range_eas
+                    ),
+                },
+            )
+        refined_identity = identity
+        if not required_exact_eas.issubset(identity.exact_instruction_eas):
+            refined_identity = StableBlockIdentity.from_intervals(
+                identity.native_ranges.intervals,
+                native_key=identity.native_key,
+                exact_instruction_eas=(
+                    identity.exact_instruction_eas | required_exact_eas
+                ),
+            )
+        imported_identity_by_source_id[source_id] = refined_identity
+        if (
+            source_id not in selected_reimported_ids
+            and refined_identity == identity
+        ):
+            continue
+        imported_id = (
+            f"native[{stable_block_identity_token(refined_identity)}]:imported"
+        )
         if imported_id in occupied_block_ids and imported_id != source_id:
             raise CanonicalSemanticFragmentRejected(
-                "prohibited frontend replacement import identity conflicts",
-                reason_code="prohibited_replacement_import_id_conflict",
+                "detached imported block identity conflicts",
+                reason_code=(
+                    "prohibited_replacement_import_id_conflict"
+                    if source_id in selected_reimported_ids
+                    else "detached_import_id_conflict"
+                ),
                 anchor_ea=int(source.semantic_anchor_ea),
                 payload={
-                    "replacement_block_id": source_id,
+                    "source_block_id": source_id,
                     "imported_block_id": imported_id,
                 },
             )
@@ -944,7 +1021,15 @@ def _detached_target_component(
     for block in plan.blocks:
         if block.block_id in selected_native_imported_ids:
             selected_imported_blocks.append(
-                replace(block, native_body_id=scoped_body_id)
+                replace(
+                    block,
+                    block_id=imported_id_by_source_id.get(
+                        block.block_id,
+                        block.block_id,
+                    ),
+                    stable_identity=imported_identity_by_source_id[block.block_id],
+                    native_body_id=scoped_body_id,
+                )
             )
             continue
         if block.block_id not in selected_reimported_ids:
@@ -955,7 +1040,7 @@ def _detached_target_component(
                 role=FragmentBlockRole.IMPORTED,
                 materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
                 semantic_anchor_ea=int(block.semantic_anchor_ea),
-                stable_identity=block.stable_identity,
+                stable_identity=imported_identity_by_source_id[block.block_id],
                 native_body_id=scoped_body_id,
             )
         )
@@ -997,7 +1082,9 @@ def _detached_target_component(
     selected_native_body = FragmentNativeBody(
         body_id=scoped_body_id,
         block_ids=tuple(block.block_id for block in selected_imported_blocks),
-        entry_block_ids=(target.block_id,),
+        entry_block_ids=(
+            imported_id_by_source_id.get(target.block_id, target.block_id),
+        ),
         terminal_block_ids=tuple(
             imported_id_by_source_id.get(block_id, block_id)
             for block_id in native_body.terminal_block_ids
@@ -1673,6 +1760,7 @@ def _resolved_detached_target_component(
                 prohibited_dispatcher_serials=prohibited_dispatcher_serials,
                 replaced_current_owner_serials=replaced_current_owner_serials,
                 required_staged_destination_ids=frozenset(),
+                required_exact_instruction_eas_by_block_id={},
             )
         )
         (
@@ -1750,24 +1838,47 @@ def _resolved_detached_target_component(
         if item.proof_id in nested_decision_by_proof_id
     )
     try:
-        required_staged_destination_ids = frozenset(
-            _unique_plan_block(
-                effective_normalization_plan,
-                destination.target_identity,
-                destination.target_anchor_ea,
-                roles=frozenset(
-                    {
-                        FragmentBlockRole.EXTERNAL,
-                        FragmentBlockRole.IMPORTED,
-                        FragmentBlockRole.REPLACEMENT,
-                    }
-                ),
-                description="nested terminal destination",
-            ).block_id
-            for proof in nested_route_proofs
-            if proof.proof_kind is SemanticRouteProofKind.TERMINAL_RETURN
-            for destination in proof.destinations
-        )
+        required_staged_destination_ids: set[str] = set()
+        required_exact_instruction_eas_by_block_id: dict[str, set[int]] = {}
+        operation_by_id = {
+            operation.operation_id: operation
+            for operation in effective_normalization_plan.operations
+        }
+        for proof in nested_route_proofs:
+            if proof.proof_kind is not SemanticRouteProofKind.TERMINAL_RETURN:
+                continue
+            carrier = proof.terminal_return_carrier
+            operation = operation_by_id.get(f"route:{proof.proof_id}")
+            if carrier is None or operation is None:
+                raise CanonicalSemanticFragmentRejected(
+                    "nested terminal proof lacks its staged operation or carrier",
+                    reason_code="nested_terminal_route_operation_missing",
+                    anchor_ea=int(proof.source_anchor_ea),
+                    payload={"route_proof_id": proof.proof_id},
+                )
+            required_exact_instruction_eas_by_block_id.setdefault(
+                operation.source_block_id,
+                set(),
+            ).update(int(ea) for ea in carrier.corridor_instruction_eas)
+            for destination in proof.destinations:
+                destination_block = _unique_plan_block(
+                    effective_normalization_plan,
+                    destination.target_identity,
+                    destination.target_anchor_ea,
+                    roles=frozenset(
+                        {
+                            FragmentBlockRole.EXTERNAL,
+                            FragmentBlockRole.IMPORTED,
+                            FragmentBlockRole.REPLACEMENT,
+                        }
+                    ),
+                    description="nested terminal destination",
+                )
+                required_staged_destination_ids.add(destination_block.block_id)
+                required_exact_instruction_eas_by_block_id.setdefault(
+                    destination_block.block_id,
+                    set(),
+                ).add(int(carrier.terminal_return_ea))
         target_blocks, target_operations, native_body = _detached_target_component(
             graph,
             effective_normalization_plan,
@@ -1783,7 +1894,15 @@ def _resolved_detached_target_component(
             allow_unresolved_published_boundaries=False,
             prohibited_dispatcher_serials=prohibited_dispatcher_serials,
             replaced_current_owner_serials=replaced_current_owner_serials,
-            required_staged_destination_ids=required_staged_destination_ids,
+            required_staged_destination_ids=frozenset(
+                required_staged_destination_ids
+            ),
+            required_exact_instruction_eas_by_block_id={
+                block_id: frozenset(exact_instruction_eas)
+                for block_id, exact_instruction_eas in (
+                    required_exact_instruction_eas_by_block_id.items()
+                )
+            },
         )
     except CanonicalSemanticFragmentRejected as exc:
         if not nested_route_decisions:
@@ -2325,6 +2444,14 @@ def compose_canonical_semantic_fragment_plan(
     prohibited_ids = tuple(
         external_block_id(serial) for serial in prohibited_witness_serials
     )
+    if len(native_body.entry_block_ids) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "canonical detached target requires one imported entry",
+            reason_code="detached_target_entry_count_mismatch",
+            anchor_ea=int(target.semantic_anchor_ea),
+            payload={"entry_block_ids": native_body.entry_block_ids},
+        )
+    (target_entry_block_id,) = native_body.entry_block_ids
 
     operations = (
         FragmentOperation(
@@ -2334,7 +2461,7 @@ def compose_canonical_semantic_fragment_plan(
             edges=(
                 FragmentEdge(
                     role=destination.role,
-                    target_block_id=target.block_id,
+                    target_block_id=target_entry_block_id,
                 ),
             ),
         ),
@@ -2577,10 +2704,18 @@ def compose_canonical_semantic_boundary_fragment_plan(
                 ),
             },
         )
+    if len(native_body.entry_block_ids) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "resolved canonical boundary requires one detached root",
+            reason_code="published_boundary_imported_root_count_mismatch",
+            anchor_ea=boundary_anchor_ea,
+            payload={"entry_block_ids": native_body.entry_block_ids},
+        )
+    (detached_root_id,) = native_body.entry_block_ids
     imported_root_matches = tuple(
         block
         for block in target_blocks
-        if block.block_id == target.block_id
+        if block.block_id == detached_root_id
         and block.role is FragmentBlockRole.IMPORTED
     )
     if len(imported_root_matches) != 1:
@@ -2592,7 +2727,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
     root_operations = tuple(
         operation
         for operation in target_operations
-        if operation.source_block_id == target.block_id
+        if operation.source_block_id == detached_root_id
     )
     if len(root_operations) != 1:
         raise CanonicalSemanticFragmentRejected(
@@ -2613,7 +2748,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
             operation,
             source_block_id=(
                 replacement_id
-                if operation.source_block_id == target.block_id
+                if operation.source_block_id == detached_root_id
                 else operation.source_block_id
             ),
             edges=tuple(
@@ -2621,7 +2756,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
                     edge,
                     target_block_id=(
                         replacement_id
-                        if edge.target_block_id == target.block_id
+                        if edge.target_block_id == detached_root_id
                         else edge.target_block_id
                     ),
                 )
@@ -2635,7 +2770,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
             carrier,
             block_id=(
                 replacement_id
-                if carrier.block_id == target.block_id
+                if carrier.block_id == detached_root_id
                 else carrier.block_id
             ),
         )
@@ -2646,7 +2781,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
             terminal_return,
             block_id=(
                 replacement_id
-                if terminal_return.block_id == target.block_id
+                if terminal_return.block_id == detached_root_id
                 else terminal_return.block_id
             ),
         )
@@ -2656,7 +2791,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
         block
         for block in target_blocks
         if block.role is FragmentBlockRole.IMPORTED
-        and block.block_id != target.block_id
+        and block.block_id != detached_root_id
     )
     remaining_imported_ids = frozenset(
         block.block_id for block in remaining_imported_blocks
