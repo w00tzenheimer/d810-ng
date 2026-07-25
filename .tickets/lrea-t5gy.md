@@ -5366,3 +5366,47 @@ lifecycle restart and transaction diagnostics; then the sole shared
 coordinator with displaced runtime paths deleted and no compatibility layer.
 The donor focused transaction gate and exact creation-witness C5 canary must
 both pass at one clean integration SHA before returning to `0x40BB63`.
+
+**2026-07-25T20:27:13Z — typed creation authority integrated and committed**
+
+Rhad composition remains paused at the same C2/C3 boundary. Functional commit
+`70660a65d` ports the first donor runtime slice, and formatting-only commit
+`799b8dcde` contains the required repository-wide `pyenv exec ruff format .`
+result. No donor commit was merged or cherry-picked.
+
+The live identity index now reserves a `PlanBlockRef` under the exact
+four-part `TransactionAttemptId` before SDK creation, binds the exact returned
+coordinate afterward, and produces immutable `PlanBlockCreationReceipt`
+authority. Anonymous SDK discoveries use `OBSERVED_EPHEMERAL`; the old
+`SYNTHETIC` enum spelling, `MbaBlockHandle.synthetic()`, and
+`create_synthetic_handle()` are removed with no compatibility alias. The
+gateway records `planned -> bound -> observed -> committed`, and the manager
+translates its typed authority into `cfg_transaction_attempts`,
+`cfg_transaction_phase_events`, and `cfg_creation_witnesses`. A production
+diagnostic-session test proves the reserved witness is queryable with no
+returned coordinate before the simulated SDK creation, then proves the exact
+creation receipt survives through committed diagnostic state. A separate
+file-backed restart test proves the mapping remains queryable after SQLite is
+closed and reopened. The diagnostic schema is now version 9.
+
+Verification at `799b8dcde`:
+
+- focused identity/gateway/diagnostic/ledger gate: 94 passed;
+- affected manager, semantic-fragment, byte-emitter, and identity runtime gate:
+  380 passed;
+- executable parity ledger: PASS;
+- strict parity gate: intentionally INCOMPLETE with 34 runtime guarantees
+  pending;
+- ast-grep: clean;
+- import cycles: none across 945 modules;
+- import-linter: all 14 contracts kept;
+- portable shape-lint: no real-category regression.
+
+The ledger now accepts pre-SDK synthetic reservation, exact returned-coordinate
+binding, creation-receipt atomicity, and creation-witness persistence. Abort
+diagnostics, anonymous-observation diagnostics, the complete transaction phase
+timeline, and normalized attempt failure/poison authority remain partial. The
+next authorized implementation slice is immutable transaction preflight plus
+the production participant implementing project/preflight/bind/realize/observe.
+No Rhad route may enter live gateway staging or root publication before that
+participant is executable and proven.
