@@ -515,16 +515,12 @@ class PortableStateWriteRouteEvidence:
             raise ValueError("state-route corridor must span source write to delivery")
         if not self.target_identity.native_ranges.contains(target_ea):
             raise ValueError("state-route target is outside target identity")
-        if (authority_transfer_ea is None) != (
-            not preserved_call_instruction_eas
-        ):
+        if (authority_transfer_ea is None) != (not preserved_call_instruction_eas):
             raise ValueError(
                 "state-route call preservation requires one transfer authority"
             )
         if authority_transfer_ea is not None and not (
-            delivery_region_start_ea
-            <= authority_transfer_ea
-            < delivery_region_end_ea
+            delivery_region_start_ea <= authority_transfer_ea < delivery_region_end_ea
         ):
             raise ValueError(
                 "state-route transfer authority is outside delivery region"

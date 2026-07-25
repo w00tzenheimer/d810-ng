@@ -6400,8 +6400,7 @@ def _exact_handler_exit_authority_for_normalization(
         and transfer.selector_state_constant is not None
         and len(transfer.target_eas) == 1
         and frozenset(
-            int(target_ea)
-            for target_ea in transfer.dispatcher_envelope_target_eas
+            int(target_ea) for target_ea in transfer.dispatcher_envelope_target_eas
         )
         == plan_targets
     )
@@ -6415,7 +6414,10 @@ def _exact_handler_exit_authority_for_normalization(
         if int(register) == int(state_var_reg)
     }
     target_ea = int(authority.target_eas[0])
-    if state_values != {state_constant} or state_targets.get(state_constant) != target_ea:
+    if (
+        state_values != {state_constant}
+        or state_targets.get(state_constant) != target_ea
+    ):
         return None
     return authority
 
@@ -6687,12 +6689,10 @@ def _discover_static_state_write_routes(
                 state_targets=state_targets,
             )
             if exit_authority is not None:
-                backed = (
-                    _select_handler_exit_backed_frontend_state_write_assignment(
-                        decoded,
-                        state_var_reg=int(state_var_reg),
-                        delivery_ea=int(site.delivery_ea),
-                    )
+                backed = _select_handler_exit_backed_frontend_state_write_assignment(
+                    decoded,
+                    state_var_reg=int(state_var_reg),
+                    delivery_ea=int(site.delivery_ea),
                 )
                 if (
                     backed is not None
