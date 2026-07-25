@@ -3803,3 +3803,47 @@ therefore remains at C3, with that C4 authority binding as the first failed
 obligation. Continue by selecting and binding exactly the audited six ledger
 routes to this bounded plan, then rerun the diagnostic canary. Do not broaden
 to the 91-route publication.
+
+**2026-07-25T08:39:19Z**
+
+Commits `5eb033a0d`, `6b783462a`, and `adff26f68` bind the bounded canonical
+plan to an exact configured six-route reference catalog through the routed
+config-v2 runtime project. Commit `cfd2e09b9` is the separate Ruff-only
+formatting change. The current resolver runtime suite is 278/278 green in
+Docker; the inherited 303-test command is stale because its removed test file
+collects no tests.
+
+The first authority-enabled A560 canary selected the catalog but exposed an
+opaque plan-construction failure at route anchor `0x40AB64`. Commit
+`c36cbad58` adds a structured route-identity mismatch with the operation,
+source and target block IDs, stable identities, reference owner and target
+EAs, and independent containment booleans. Commit `2934925ec` is the separate
+Ruff-only formatting follow-up. The focused fragment-plan, detached-oracle,
+and canonical-lowering gate is 48/48 green; both commits pass ast-grep, the
+portable-shape gate, import-cycle analysis, and all 14 import-linter contracts.
+
+The mandatory exact cache-disabled A560 canary completed normally in 17.03
+seconds inside pytest with no worker crash or reported numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-reference-identity-diag-v3.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-reference-identity-diag-v3/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-reference-identity-diag-v3/test_real_loader_matches_reach0/sub_40A560.c`.
+The pseudocode remains the same eight-line false `while ( 1 )` stub, so this is
+not A560 acceptance.
+
+The DB identifies the first failed C4 obligation precisely. Route
+`state_assignment@0x40AB64:0x23B8E806` targets
+`native[0x40AA2C-0x40AA35;exact=0x40AA2C]:imported`, and target containment is
+true for reference target `0x40AA2C`. Its delivery source is
+`native[0x40AB56-0x40AB6A;exact=0x40AB56]:imported`, while the reference
+operation owner is the earlier state write at `0x40AB4B`; owner containment is
+therefore false. The canonical fact records the full proof corridor
+`0x40AB4B, 0x40AB50, 0x40AB64`. No semantic oracle comparison or semantic
+receipt exists; the only committed receipt remains the 260/260 frontend
+normalization publication. Production A560 therefore remains at C3.
+
+Continue by adding the stable operation owner explicitly to the portable
+direct-rewrite contract and proving that its corridor is wholly owned by the
+selected detached component. Do not change the authoritative reference owner,
+merge it into the delivery block identity, or weaken containment. Validate one
+route at `0x40AB64` before considering the remaining five routes.
