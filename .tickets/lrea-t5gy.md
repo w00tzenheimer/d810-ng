@@ -4472,3 +4472,44 @@ at `0x40A730`, `cmovl` at `0x40A736`, `mov` at `0x40A739`, `add` at
 non-split normalization retained no relocation inventory and why the detached
 template has zero unique join owners; do not synthesize an envelope, weaken
 exact ownership, or broaden publication.
+
+**2026-07-25T13:24:31Z**
+
+Commit `9aa5158f3` clears the zero-length normalized-tail obligation without
+weakening relocated-tail ownership. Detached preflight still proves the full
+split conditional-select topology, exact zero source-to-predicate size, empty
+relocation inventory, proof corridor, synthetic cut, and delivery extent; it
+requires a portable imported join identity exactly when instructions will be
+copied from that join. A paired contract proves the zero-length case succeeds
+while a nonempty unowned relocation still rejects before staging. The complete
+affected suite is 683/683 green, with Ruff format/check, ast-grep, all 14 import
+contracts, diff checks, `graphify update .`, and pre-commit gates passing.
+
+The mandatory cache-disabled A560 canary completed normally in 21.44 seconds
+without a process crash, numeric `INTERR`, or verifier event. Log:
+`.tmp/rhad-a560-v33-zero-length-normalized-tail-v4.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-zero-length-normalized-tail-v4/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-zero-length-normalized-tail-v4/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects one false `while ( 1 )`, so this is not A560
+acceptance.
+
+The DB proves `route:state_assignment@0x40A72E:0x7C4FB03D` now passes its
+detached preflight and advances the first failure to the intentionally protected
+relocated-tail route `route:state_assignment@0x40AE09:0xF6A636EF`. All 22 CALLS
+companions still capture, both frontend 260-operation transactions commit, and
+both 396-operation canonical plans are produced. The second canonical
+transaction aborts before staging with no route-oracle comparison or semantic
+C5 receipt. Main-path A560 remains at C3; the first failed C4 obligations are
+`imported_envelope_owned` and `relocated_inventory_complete` at `0x40AE09`.
+
+The canonical operation owns source write `0x40ADF2`, condition producer
+`0x40ADF7`, normalization start `0x40ADFD`, predicate/rewrite `0x40AE09`,
+relocations `0x40AE0C,0x40AE0E,0x40AE12,0x40AE16`, unresolved transfer
+`0x40AE18`, and delivery region `[0x40ADFD,0x40AE1A)`. Crucially, its serialized
+`source_computed_branch_normalization.conditional_select_envelope` is null.
+The zero join matches are therefore caused by missing portable envelope
+evidence, not permission to copy the four instructions without ownership.
+Continue by finding why imported conditional-select discovery did not attach
+the selected-value and join identities for this proof; do not relax the
+nonempty-relocation gate or infer an envelope inside the mutation backend.
