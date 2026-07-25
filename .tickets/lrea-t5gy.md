@@ -5328,3 +5328,41 @@ validate that operation's imported source block by stable native range and
 identity before composing the canonical route. This must not add a block-EA
 fallback, weaken stable identity matching, or broaden publication beyond the
 single `0x40BB63` vertical fragment.
+
+**2026-07-25T19:55:47Z — donor transaction-parity pause and executable ledger**
+
+Rhad-specific vertical composition is paused. Commit `2e7b30aa0` is preserved
+after the `403d798e6` canary checkpoint; no reset, revert, donor merge, or
+cherry-pick was used. Its v25 canary completed normally without a segfault or
+numeric INTERR, but the canonical boundary still rejected because imported
+source `0x40BB51` and incoming corridor owner `0x40BB3A` had no current-MBA
+owner at CALLS. The strict canary level remains C2 and the authorized Rhad
+resume point remains `C3_complete_vertical_fragment_plan` at `0x40BB63`.
+
+The portable representation foundation is accepted, but donor tip
+`ab769f182942f83191d883151d74b78fecac43cb` is not transactionally integrated.
+Commits `9b87d4bed` and `fd086d55b` add and separately format an executable
+41-row parity ledger at
+`tools/scripts/portable_cfg_transaction_parity_ledger.json`, enforced by
+`tools/scripts/portable_cfg_transaction_parity_gate.py` and its unit test. The
+ledger resolves every donor source/test anchor, names the current production
+seam and status, and requires a concrete port, diagnostic proof, and acceptance
+test for every guarantee. Normal audit passes; `--require-integrated` fails
+with 38 pending guarantees. Three nominal representation/protocol guarantees
+are accepted, four seams are partial, and all runtime creation, preflight,
+poison/restart, diagnostic-authority, typed PatchPlan, coordinator, C5, and
+protected-family obligations remain explicitly open.
+
+The latest immutable v25 diagnostic database contains the existing semantic
+fragment transaction and committed frontend-normalization receipt, but has no
+`cfg_transaction_attempts`, `cfg_transaction_phase_events`, or
+`cfg_creation_witnesses` tables. This is direct evidence that similarly named
+portable types are not yet executable transaction authority. Before Rhad may
+resume, port in order: typed pre-SDK PlanBlockRef reservation plus exact
+post-SDK binding/creation receipts/witness persistence; immutable preflight and
+a production five-phase participant; shared generation poisoning plus bounded
+lifecycle restart and transaction diagnostics; then the sole shared
+`FragmentPlan -> PatchPlan -> final binding -> DeferredGraphModifier`
+coordinator with displaced runtime paths deleted and no compatibility layer.
+The donor focused transaction gate and exact creation-witness C5 canary must
+both pass at one clean integration SHA before returning to `0x40BB63`.
