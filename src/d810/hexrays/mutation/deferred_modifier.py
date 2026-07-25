@@ -218,12 +218,12 @@ from d810.hexrays.mutation.semantic_fragment_backend import (
     SemanticFragmentRootPublicationToken,
     SemanticNativeBodyMaterializer,
     discard_staged_semantic_fragment,
-    observe_published_semantic_fragment,
+    observe_published_semantic_fragment_graph,
     observe_staged_semantic_fragment,
     plan_semantic_fragment_root_inventory,
     prepare_semantic_fragment_root_publication,
     snapshot_semantic_fragment_inputs,
-    stage_semantic_fragment,
+    realize_semantic_patch_plan,
 )
 from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventory,
@@ -3602,6 +3602,8 @@ class DeferredGraphModifier:
         self,
         operation: LogicalSemanticEdgeOperation,
         edge: LogicalSemanticEdge,
+        *,
+        helper_plan_ref: PlanBlockRef,
     ) -> LogicalBlockVersion:
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         target_binding, target = self._semantic_edge_live_binding(edge.target)
@@ -3631,6 +3633,7 @@ class DeferredGraphModifier:
             source,
             target,
             target_handle=target_binding.handle,
+            plan_ref=helper_plan_ref,
         )
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         target_binding, target = self._semantic_edge_live_binding(edge.target)
@@ -3696,6 +3699,8 @@ class DeferredGraphModifier:
         self,
         operation: LogicalSemanticEdgeOperation,
         edge: LogicalSemanticEdge,
+        *,
+        helper_plan_ref: PlanBlockRef,
     ) -> LogicalBlockVersion:
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         target_binding, target = self._semantic_edge_live_binding(edge.target)
@@ -3725,6 +3730,7 @@ class DeferredGraphModifier:
             source,
             target,
             target_handle=target_binding.handle,
+            plan_ref=helper_plan_ref,
         )
 
         source_binding, source = self._semantic_edge_live_binding(operation.source)
@@ -3766,6 +3772,8 @@ class DeferredGraphModifier:
     def _semantic_edge_reconstruct_conditional(
         self,
         operation: LogicalSemanticEdgeOperation,
+        *,
+        helper_plan_ref: PlanBlockRef,
     ) -> LogicalBlockVersion:
         by_role = {edge.role: edge for edge in operation.edges}
         taken_edge = by_role[SemanticEdgeRole.CONDITIONAL_TAKEN]
@@ -3845,6 +3853,7 @@ class DeferredGraphModifier:
             source,
             fallthrough,
             target_handle=fallthrough_binding.handle,
+            plan_ref=helper_plan_ref,
         )
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         taken_binding, taken = self._semantic_edge_live_binding(taken_edge.target)
@@ -3907,6 +3916,8 @@ class DeferredGraphModifier:
     def _realize_semantic_edge_operation(
         self,
         operation: LogicalSemanticEdgeOperation,
+        *,
+        helper_plan_ref: PlanBlockRef | None = None,
     ) -> LogicalBlockVersion | None:
         """Backend-only role dispatcher for the gateway operation.
 
@@ -3920,22 +3931,39 @@ class DeferredGraphModifier:
         result: LogicalBlockVersion | None = None
         try:
             if len(operation.edges) == 2:
-                result = self._semantic_edge_reconstruct_conditional(operation)
+                if helper_plan_ref is None:
+                    raise SemanticEdgeOperationRejected(
+                        "conditional reconstruction requires PlanBlockRef helper authority"
+                    )
+                result = self._semantic_edge_reconstruct_conditional(
+                    operation,
+                    helper_plan_ref=helper_plan_ref,
+                )
             else:
                 edge = operation.edges[0]
                 if edge.role is SemanticEdgeRole.DIRECT:
                     self._semantic_edge_redirect_direct(operation, edge)
                 elif edge.role is SemanticEdgeRole.CALL_FALLTHROUGH:
+                    if helper_plan_ref is None:
+                        raise SemanticEdgeOperationRejected(
+                            "call fallthrough requires PlanBlockRef helper authority"
+                        )
                     result = self._semantic_edge_materialize_call_fallthrough(
                         operation,
                         edge,
+                        helper_plan_ref=helper_plan_ref,
                     )
                 elif edge.role is SemanticEdgeRole.CONDITIONAL_TAKEN:
                     self._semantic_edge_redirect_taken(operation, edge)
                 elif edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH:
+                    if helper_plan_ref is None:
+                        raise SemanticEdgeOperationRejected(
+                            "conditional fallthrough requires PlanBlockRef helper authority"
+                        )
                     result = self._semantic_edge_redirect_fallthrough(
                         operation,
                         edge,
+                        helper_plan_ref=helper_plan_ref,
                     )
                 else:
                     raise SemanticEdgeOperationRejected(
@@ -3957,13 +3985,13 @@ class DeferredGraphModifier:
         """Backend-only immutable preflight snapshot port."""
         return snapshot_semantic_fragment_inputs(self, plan)
 
-    def _stage_semantic_fragment(
+    def _realize_semantic_patch_plan(
         self,
-        plan: FragmentPlan,
+        patch_plan,
         prepared_fragment: PreparedSemanticFragment,
     ):
-        """Backend-only detached materialization port used by the gateway."""
-        return stage_semantic_fragment(self, plan, prepared_fragment)
+        """Execute typed semantic PatchSteps under this gateway."""
+        return realize_semantic_patch_plan(self, patch_plan, prepared_fragment)
 
     def _observe_staged_semantic_fragment(self, plan: FragmentPlan):
         """Backend-only live observation of an unpublished fragment."""
@@ -4233,6 +4261,7 @@ class DeferredGraphModifier:
         self,
         *,
         original_version: LogicalBlockVersion,
+        plan_ref: PlanBlockRef,
     ) -> LogicalBlockVersion:
         """Clone and detach one replacement behind its logical proxy."""
         gateway = self._mutation_gateway
@@ -4253,25 +4282,37 @@ class DeferredGraphModifier:
                 "semantic fragment cannot clone a special Hex-Rays block"
             )
 
-        gateway._record_fragment_mutation_started()
+        attempt = gateway.current_transaction_attempt
+        if attempt is None:
+            raise SemanticFragmentBackendRejected(
+                "semantic clone creation has no transaction attempt"
+            )
+        replacement_handle = gateway.identity_index.create_native_handle(
+            original_version.handle.stable_identity,
+            provenance=original_version.handle.provenance,
+        )
+        gateway.reserve_plan_block(
+            attempt,
+            plan_ref,
+            handle=replacement_handle,
+            replaces=original_version.handle,
+        )
+        if gateway.current_transaction_attempt is not None:
+            gateway._record_fragment_mutation_started()
         clone = copy_block_keep(self.mba, original, int(self.mba.qty) - 1)
         if clone is None:
             raise SemanticFragmentBackendRejected(
                 "Hex-Rays could not clone semantic fragment block"
-            )
+        )
         try:
-            replacement_handle = gateway.identity_index.create_native_handle(
-                original_version.handle.stable_identity,
-                provenance=original_version.handle.provenance,
-            )
-            staged = gateway.stage_inserted_replacement(
-                original=original_version.handle,
-                replacement=replacement_handle,
+            receipt = gateway.bind_reserved_plan_block(
+                attempt,
+                plan_ref,
                 insertion_serial=int(clone.serial),
                 returned_serial=int(clone.serial),
             )
             self._detach_semantic_fragment_block(clone)
-            return staged
+            return receipt.logical_version
         except Exception:
             if not gateway.mutation_started:
                 self._discard_semantic_fragment_blocks((clone,))
@@ -4281,15 +4322,21 @@ class DeferredGraphModifier:
         self,
         *,
         reference_version: LogicalBlockVersion,
+        plan_ref: PlanBlockRef,
     ) -> LogicalBlockVersion:
         """Create one detached zero-way block with a new synthetic lineage."""
         gateway = self._mutation_gateway
         if gateway is None:
             raise SemanticFragmentBackendRejected(
                 "semantic fragment materialization has no gateway"
-            )
+        )
         reference = self._resolve_semantic_fragment_version(reference_version)
-        created_handle = gateway.identity_index.create_observed_ephemeral_handle()
+        attempt = gateway.current_transaction_attempt
+        if attempt is None:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment creation has no transaction attempt"
+            )
+        gateway.reserve_plan_block(attempt, plan_ref)
         gateway._record_fragment_mutation_started()
         created = create_standalone_block(
             ref_blk=reference,
@@ -4300,21 +4347,21 @@ class DeferredGraphModifier:
         if created is None:
             raise SemanticFragmentBackendRejected(
                 "Hex-Rays could not create an empty semantic fragment block"
-            )
+        )
         try:
-            gateway.record_insert(
+            receipt = gateway.bind_reserved_plan_block(
+                attempt,
+                plan_ref,
                 insertion_serial=int(created.serial),
                 returned_serial=int(created.serial),
-                created=created_handle,
             )
+            created_handle = receipt.logical_version.handle
             proxy = gateway.identity_index.logical_proxy_for_handle(created_handle)
             if proxy is None:
                 raise SemanticFragmentBackendRejected(
                     "empty semantic fragment block has no logical proxy"
                 )
-            staged = proxy.resolve(
-                transaction_id=self._semantic_fragment_transaction_id()
-            )
+            staged = receipt.logical_version
             if staged is None:
                 raise SemanticFragmentBackendRejected(
                     "empty semantic fragment block has no staged version"
@@ -4330,6 +4377,7 @@ class DeferredGraphModifier:
         *,
         reference_version: LogicalBlockVersion,
         stable_identity: StableBlockIdentity,
+        plan_ref: PlanBlockRef,
     ) -> LogicalBlockVersion:
         """Create one unpublished block with exact imported-native identity."""
         gateway = self._mutation_gateway
@@ -4340,8 +4388,21 @@ class DeferredGraphModifier:
         if stable_identity.native_key != gateway.native_key:
             raise SemanticFragmentBackendRejected(
                 "native body block identity belongs to another native key"
-            )
+        )
         reference = self._resolve_semantic_fragment_version(reference_version)
+        attempt = gateway.current_transaction_attempt
+        if attempt is None:
+            raise SemanticFragmentBackendRejected(
+                "native body creation has no transaction attempt"
+            )
+        created_handle = gateway.identity_index.create_imported_native_handle(
+            stable_identity
+        )
+        gateway.reserve_plan_block(
+            attempt,
+            plan_ref,
+            handle=created_handle,
+        )
         gateway._record_fragment_mutation_started()
         created = create_standalone_block(
             ref_blk=reference,
@@ -4353,7 +4414,6 @@ class DeferredGraphModifier:
             raise SemanticFragmentBackendRejected(
                 "Hex-Rays could not create an imported native-body block"
             )
-        created_handle = None
         recorded = False
         try:
             staged_initializers = self._block_instructions(created)
@@ -4369,13 +4429,11 @@ class DeferredGraphModifier:
                 raise SemanticFragmentBackendRejected(
                     "imported native-body placeholder removal was incomplete"
                 )
-            created_handle = gateway.identity_index.create_imported_native_handle(
-                stable_identity
-            )
-            gateway.record_insert(
+            receipt = gateway.bind_reserved_plan_block(
+                attempt,
+                plan_ref,
                 insertion_serial=int(created.serial),
                 returned_serial=int(created.serial),
-                created=created_handle,
             )
             recorded = True
             proxy = gateway.identity_index.logical_proxy_for_handle(created_handle)
@@ -4383,9 +4441,7 @@ class DeferredGraphModifier:
                 raise SemanticFragmentBackendRejected(
                     "imported native-body block has no logical proxy"
                 )
-            staged = proxy.resolve(
-                transaction_id=self._semantic_fragment_transaction_id()
-            )
+            staged = receipt.logical_version
             if staged is None:
                 raise SemanticFragmentBackendRejected(
                     "imported native-body block has no staged version"
@@ -4499,6 +4555,7 @@ class DeferredGraphModifier:
         target,
         *,
         target_handle: MbaBlockHandle,
+        plan_ref: PlanBlockRef,
     ) -> tuple[int, LogicalBlockVersion]:
         """Create one adjacent helper with a new transaction-local lineage."""
         gateway = self._mutation_gateway
@@ -4506,7 +4563,13 @@ class DeferredGraphModifier:
             raise SemanticEdgeOperationRejected(
                 "semantic fallthrough helper materialization has no gateway"
             )
-        created_handle = gateway.identity_index.create_observed_ephemeral_handle()
+        attempt = gateway.current_transaction_attempt
+        if attempt is None:
+            raise SemanticEdgeOperationRejected(
+                "semantic helper creation has no transaction attempt"
+            )
+        reservation = gateway.reserve_plan_block(attempt, plan_ref)
+        created_handle = reservation.logical_version.handle
         expected_serial = int(source.serial) + 1
         old_qty = int(self.mba.qty)
         try:
@@ -4515,6 +4578,7 @@ class DeferredGraphModifier:
                 target,
                 created_handle=created_handle,
                 target_handle=target_handle,
+                creation_plan_ref=plan_ref,
             )
         except Exception:
             if not gateway.mutation_started and int(self.mba.qty) == old_qty + 1:
@@ -4723,6 +4787,7 @@ class DeferredGraphModifier:
             edge.role is not SemanticEdgeRole.DIRECT
             or not edge.requires_helper
             or helper_binding is None
+            or helper_binding.creation_ref is None
             or gateway is None
         ):
             raise SemanticFragmentBackendRejected(
@@ -4756,6 +4821,7 @@ class DeferredGraphModifier:
             replacement,
             created_handle=helper_binding.version.handle,
             target_handle=edge.replacement.version.handle,
+            creation_plan_ref=helper_binding.creation_ref,
         )
         if helper_serial is None:
             raise SemanticFragmentBackendRejected(
@@ -4889,6 +4955,10 @@ class DeferredGraphModifier:
             raise SemanticFragmentBackendRejected(
                 "conditional root fallthrough has no reserved helper"
             )
+        if helper_binding.creation_ref is None:
+            raise SemanticFragmentBackendRejected(
+                "conditional root fallthrough lacks planned helper authority"
+            )
         predecessor = self._resolve_semantic_fragment_version(edge.predecessor.version)
         original = self._resolve_semantic_fragment_version(edge.original.version)
         replacement = self._resolve_semantic_fragment_version(edge.replacement.version)
@@ -4925,6 +4995,7 @@ class DeferredGraphModifier:
             replacement,
             created_handle=helper_binding.version.handle,
             target_handle=edge.replacement.version.handle,
+            creation_plan_ref=helper_binding.creation_ref,
         )
         if helper_serial is None:
             raise SemanticFragmentBackendRejected(
@@ -5051,6 +5122,7 @@ class DeferredGraphModifier:
         if (
             gateway is None
             or helper_binding is None
+            or helper_binding.creation_ref is None
             or original_fallthrough_binding is None
             or group.original_call_opcode is None
             or edge.original.version is not original_fallthrough_binding.version
@@ -5099,6 +5171,7 @@ class DeferredGraphModifier:
             replacement,
             created_handle=helper_binding.version.handle,
             target_handle=edge.replacement.version.handle,
+            creation_plan_ref=helper_binding.creation_ref,
         )
         if helper_serial is None:
             raise SemanticFragmentBackendRejected(
@@ -5427,7 +5500,7 @@ class DeferredGraphModifier:
             original_fallthrough,
         )
 
-    def _publish_semantic_fragment_roots(
+    def _publish_semantic_root_groups(
         self,
         plan: FragmentPlan,
         rollback_token: object,
@@ -5466,6 +5539,58 @@ class DeferredGraphModifier:
                 group.group_id,
             )
 
+    def _publish_semantic_patch_roots(self, patch_plan, rollback_token) -> None:
+        """Authorize every physical root write from its typed PatchStep."""
+        from d810.transforms.plan import PatchFragmentRootPublication, PatchPlan
+
+        if not isinstance(patch_plan, PatchPlan) or patch_plan.semantic_contract is None:
+            raise TypeError("root publication requires a contracted PatchPlan")
+        root_steps = tuple(
+            step
+            for step in patch_plan.steps
+            if isinstance(step, PatchFragmentRootPublication)
+        )
+        plan = patch_plan.semantic_contract.fragment_plan
+        token = self._semantic_fragment_publication_token(plan, rollback_token)
+        edges = tuple(edge for group in token.groups for edge in group.edges)
+        edge_by_key = {
+            (edge.root_block_id, edge.predecessor.block_id, edge.role): edge
+            for edge in edges
+        }
+        if len(edge_by_key) != len(edges) or len(root_steps) != len(edges):
+            raise SemanticFragmentBackendRejected(
+                "semantic PatchPlan root operation inventory differs"
+            )
+        for step in root_steps:
+            if step.predecessor_ref is None:
+                raise SemanticFragmentBackendRejected(
+                    "semantic PatchPlan root operation lacks predecessor authority"
+                )
+            key = (
+                step.root_ref.local_block_id,
+                step.predecessor_ref.local_block_id,
+                step.edge_role,
+            )
+            edge = edge_by_key.pop(key, None)
+            helper_id = (
+                None
+                if edge is None or edge.publication_helper is None
+                else edge.publication_helper.block_id
+            )
+            if (
+                edge is None
+                or step.original_ref.local_block_id != edge.original.block_id
+                or step.fallthrough_helper_id != helper_id
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "semantic PatchPlan root identity authority differs"
+                )
+        if edge_by_key:
+            raise SemanticFragmentBackendRejected(
+                "semantic PatchPlan root operation inventory differs"
+            )
+        self._publish_semantic_root_groups(plan, rollback_token)
+
     def _rebuild_semantic_fragment_chains(self, plan: FragmentPlan) -> None:
         """Invalidate live chains after publication or rollback."""
         state = self._semantic_fragment_state
@@ -5479,9 +5604,9 @@ class DeferredGraphModifier:
             )
         self.mba.mark_chains_dirty()
 
-    def _observe_published_semantic_fragment(self, plan: FragmentPlan):
-        """Return read-only semantics from the actual published live graph."""
-        return observe_published_semantic_fragment(self, plan)
+    def _observe_published_semantic_fragment_graph(self, plan: FragmentPlan):
+        """Return one post-root live projection plus derived semantics."""
+        return observe_published_semantic_fragment_graph(self, plan)
 
     def _rollback_semantic_fragment_roots(
         self,
@@ -12167,6 +12292,7 @@ class DeferredGraphModifier:
         state_value: int | None = None,
         created_handle: MbaBlockHandle | None = None,
         target_handle: MbaBlockHandle | None = None,
+        creation_plan_ref: PlanBlockRef | None = None,
     ) -> int | None:
         """Create an empty 1-way goto block immediately after ``blk``.
 
@@ -12201,11 +12327,24 @@ class DeferredGraphModifier:
         nop_block = mba.insert_block(int(blk.serial) + 1)
         if nop_block is None:
             return None
-        self._record_serial_insertion(
-            int(nop_block.serial),
-            old_qty,
-            created=created_handle,
-        )
+        if creation_plan_ref is None:
+            self._record_serial_insertion(
+                int(nop_block.serial),
+                old_qty,
+                created=created_handle,
+            )
+        else:
+            attempt = gateway.current_transaction_attempt
+            if attempt is None:
+                raise SemanticEdgeOperationRejected(
+                    "planned fallthrough helper has no transaction attempt"
+                )
+            gateway.bind_reserved_plan_block(
+                attempt,
+                creation_plan_ref,
+                insertion_serial=int(nop_block.serial),
+                returned_serial=int(nop_block.serial),
+            )
         if (
             nop_block.head is not None
             or nop_block.tail is not None

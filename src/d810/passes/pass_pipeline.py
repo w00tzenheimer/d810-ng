@@ -2,9 +2,8 @@
 
 This is the target call-graph vocabulary the optimizers-thinning end-state is built around
 (see docs/plans/2026-05-31-optimizers-thinning-execution-workflow-spec.md unflatten). Families return
-``PassSpec``s; passes schedule analyses and exactly one transform authority:
-a ``PatchPlan`` through ``MutationBackend`` or a complete ``FragmentPlan``
-through ``FragmentPublicationBackend``. Both return a fresh ``FlowGraph``
+``PassSpec``s; passes schedule analyses and exactly one typed transform
+authority through ``MutationBackend.apply``. It returns a fresh ``FlowGraph``
 snapshot (the sound invalidation epoch).
 
 Additive + behavior-neutral: nothing here is wired into the runtime yet. Net-new types only;
@@ -990,19 +989,7 @@ class MutationBackend(Protocol):
 
     def apply(
         self,
-        rewrite_plan: PatchPlan,
-        live_source: object,
-        safety_policy: SafetyPolicy,
-    ) -> FlowGraph: ...
-
-
-@runtime_checkable
-class FragmentPublicationBackend(Protocol):
-    """Backend boundary for validated, receipt-backed fragment publication."""
-
-    def publish_fragment(
-        self,
-        fragment_plan: FragmentPlan,
+        rewrite_plan: PatchPlan | FragmentPlan,
         live_source: object,
         safety_policy: SafetyPolicy,
     ) -> FlowGraph: ...

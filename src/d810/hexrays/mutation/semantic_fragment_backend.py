@@ -60,6 +60,7 @@ from d810.ir.predicate_expressions import exact_branch_predicate_kind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind, inverted_predicate_kind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
+from d810.transforms.cfg_transaction import PlanBlockRef
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
@@ -87,6 +88,7 @@ from d810.transforms.contract import CfgContract, CfgContractViolationError
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
     FragmentValidationPostcondition,
+    PublishedFragmentGraphObservation,
     PublishedFragmentObservation,
     ProjectedDataFlowRelation,
     ProjectedFallthroughHelper,
@@ -161,6 +163,7 @@ class SemanticFragmentRuntimeBinding:
     proxy: LogicalBlockProxy
     version: LogicalBlockVersion
     state: FragmentBindingState
+    creation_ref: PlanBlockRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,6 +248,7 @@ class SemanticFragmentBackendState:
         PreparedReturnCarrierConstruction,
     ] = field(default_factory=dict)
     return_carrier_operands: dict[str, object] = field(default_factory=dict)
+    materialized_native_body_ids: set[str] = field(default_factory=set)
 
     def binding(self, block_id: str) -> SemanticFragmentRuntimeBinding:
         try:
@@ -371,6 +375,7 @@ class SemanticNativeBodyStagingContext:
         version = self._modifier._stage_imported_native_semantic_block(
             reference_version=self.reference_version,
             stable_identity=block.stable_identity,
+            plan_ref=PlanBlockRef(self.plan.plan_id, block_id),
         )
         if (
             version.handle.provenance is not BlockHandleProvenance.IMPORTED_NATIVE
@@ -855,6 +860,7 @@ def _stage_native_bodies(
     *,
     reference_version: LogicalBlockVersion,
     preparations: tuple[tuple[str, PreparedNativeBodyPreparation], ...],
+    native_body_id: str,
 ) -> None:
     if not plan.native_bodies:
         if preparations:
@@ -873,24 +879,35 @@ def _stage_native_bodies(
         )
     gateway = _gateway(modifier)
     transaction_id = _transaction_id(modifier)
-    _stage_native_body_address_ranges(modifier, plan, state)
-    for native_body in plan.native_bodies:
-        context = SemanticNativeBodyStagingContext(
-            _modifier=modifier,
-            plan=plan,
-            native_body=native_body,
-            reference_version=reference_version,
-            state=state,
-            transaction_id=transaction_id,
-            _receipt_count=len(gateway.receipts),
-            _identity_generation=gateway.identity_index.generation,
+    native_body = next(
+        (item for item in plan.native_bodies if item.body_id == native_body_id),
+        None,
+    )
+    if native_body is None:
+        raise SemanticFragmentBackendRejected(
+            f"semantic PatchStep names unknown native body {native_body_id!r}"
         )
-        materializer.stage_native_body(
-            context=context,
-            native_body=native_body,
-            preparation=preparation_by_body_id[native_body.body_id],
-        )
-        context.validate_complete()
+    if native_body_id in state.materialized_native_body_ids:
+        return
+    if not state.materialized_native_body_ids:
+        _stage_native_body_address_ranges(modifier, plan, state)
+    context = SemanticNativeBodyStagingContext(
+        _modifier=modifier,
+        plan=plan,
+        native_body=native_body,
+        reference_version=reference_version,
+        state=state,
+        transaction_id=transaction_id,
+        _receipt_count=len(gateway.receipts),
+        _identity_generation=gateway.identity_index.generation,
+    )
+    materializer.stage_native_body(
+        context=context,
+        native_body=native_body,
+        preparation=preparation_by_body_id[native_body.body_id],
+    )
+    context.validate_complete()
+    state.materialized_native_body_ids.add(native_body_id)
 
 
 def _published_binding(
@@ -947,10 +964,14 @@ def _clone_replacement(
     modifier: DeferredGraphModifier,
     state: SemanticFragmentBackendState,
     replacement_block,
+    *,
+    source_block_id: str,
+    plan_ref: PlanBlockRef,
 ) -> None:
-    original_binding = state.binding(str(replacement_block.replaces_block_id))
+    original_binding = state.binding(source_block_id)
     staged = modifier._stage_detached_semantic_replacement(
         original_version=original_binding.version,
+        plan_ref=plan_ref,
     )
 
     state.bindings[replacement_block.block_id] = SemanticFragmentRuntimeBinding(
@@ -958,6 +979,7 @@ def _clone_replacement(
         proxy=original_binding.proxy,
         version=staged,
         state=FragmentBindingState.STAGED,
+        creation_ref=plan_ref,
     )
     state.staged_block_ids.append(replacement_block.block_id)
 
@@ -1152,8 +1174,9 @@ def _normalize_replacement_computed_branches(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
     state: SemanticFragmentBackendState,
+    operations: tuple[FragmentOperation, ...],
 ) -> None:
-    for operation in plan.operations:
+    for operation in operations:
         normalization = operation.computed_branch_normalization
         if normalization is None or normalization.conditional_select_envelope is None:
             continue
@@ -1171,9 +1194,11 @@ def _create_empty_block(
     block,
     *,
     reference_version: LogicalBlockVersion,
+    plan_ref: PlanBlockRef,
 ) -> None:
     staged = modifier._stage_empty_semantic_block(
         reference_version=reference_version,
+        plan_ref=plan_ref,
     )
     gateway = _gateway(modifier)
     proxy = gateway.identity_index.logical_proxy_for_handle(staged.handle)
@@ -1186,6 +1211,7 @@ def _create_empty_block(
         proxy=proxy,
         version=staged,
         state=FragmentBindingState.STAGED,
+        creation_ref=plan_ref,
     )
     state.staged_block_ids.append(block.block_id)
 
@@ -1194,7 +1220,10 @@ def _realize_operations(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
     state: SemanticFragmentBackendState,
+    operation_steps: tuple[object, ...],
 ) -> None:
+    from d810.transforms.plan import PatchFragmentOperation
+
     detached_capable_operation_ids = {
         operation.operation_id
         for operation in plan.operations
@@ -1207,7 +1236,13 @@ def _realize_operations(
         raise SemanticFragmentBackendRejected(
             "detached native-body lowering consumed an ineligible operation"
         )
-    for operation in plan.operations:
+    for item in operation_steps:
+        if not isinstance(item, PatchFragmentOperation):
+            raise SemanticFragmentBackendRejected(
+                "semantic operation realization requires typed PatchSteps"
+            )
+        operation = item.operation
+        helper_plan_ref = item.fallthrough_helper_ref
         if operation.operation_id in state.detached_operation_ids:
             continue
         source = state.binding(operation.source_block_id)
@@ -1242,7 +1277,8 @@ def _realize_operations(
                 ),
                 rewrite_anchor_ea=direct_rewrite_anchor_ea,
                 description=f"fragment operation {operation.operation_id}",
-            )
+            ),
+            helper_plan_ref=helper_plan_ref,
         )
         helper_edges = tuple(
             edge
@@ -1281,6 +1317,7 @@ def _realize_operations(
             proxy=helper_proxy,
             version=helper_version,
             state=FragmentBindingState.STAGED,
+            creation_ref=helper_plan_ref,
         )
         state.staged_block_ids.append(helper_block_id)
         fallthrough_target = helper_edges[0].target_block_id
@@ -3574,40 +3611,41 @@ def snapshot_semantic_fragment_inputs(
 
 def _reserve_root_fallthrough_helpers(
     modifier: DeferredGraphModifier,
-    plan: FragmentPlan,
     state: SemanticFragmentBackendState,
+    root_steps: tuple[object, ...],
 ) -> None:
-    candidates: list[tuple[str, str]] = []
-    for root_block_id in plan.roots:
-        original_block_id = str(plan.block(root_block_id).replaces_block_id)
-        original = state.binding(original_block_id)
-        original_live = _live_block_for_binding(modifier, original)
-        for predecessor_serial in tuple(int(value) for value in original_live.predset):
-            predecessor = _binding_for_live_serial(
-                modifier,
-                state,
-                predecessor_serial,
-            )
-            predecessor_live = _live_block_for_binding(modifier, predecessor)
-            role = _incoming_root_edge_role(predecessor_live, original_live)
-            if _root_edge_requires_helper(
-                predecessor_live,
-                original_live,
-                role,
-            ):
-                candidates.append((predecessor.block_id, root_block_id))
+    from d810.transforms.plan import PatchFragmentRootPublication
 
     gateway = _gateway(modifier)
-    for predecessor_block_id, root_block_id in candidates:
-        helper_block_id = (
-            f"root-fallthrough-helper:{predecessor_block_id}:{root_block_id}"
-        )
+    for step in root_steps:
+        if not isinstance(step, PatchFragmentRootPublication):
+            raise SemanticFragmentBackendRejected(
+                "root helper reservation requires typed PatchSteps"
+            )
+        helper_block_id = step.fallthrough_helper_id
+        if helper_block_id is None:
+            continue
+        if step.fallthrough_helper_ref is None or step.predecessor_ref is None:
+            raise SemanticFragmentBackendRejected(
+                "root helper PatchStep lacks typed authority"
+            )
+        predecessor_block_id = step.predecessor_ref.local_block_id
+        root_block_id = step.root_ref.local_block_id
         if helper_block_id in state.bindings:
             raise SemanticFragmentBackendRejected(
                 f"root fallthrough helper id collision: {helper_block_id!r}"
             )
-        handle = gateway.identity_index.create_observed_ephemeral_handle()
-        staged = gateway.reserve_new_proxy(handle)
+        attempt = gateway.current_transaction_attempt
+        if attempt is None:
+            raise SemanticFragmentBackendRejected(
+                "root helper reservation has no transaction attempt"
+            )
+        reservation = gateway.reserve_plan_block(
+            attempt,
+            step.fallthrough_helper_ref,
+        )
+        staged = reservation.logical_version
+        handle = staged.handle
         proxy = gateway.identity_index.logical_proxy_for_handle(handle)
         if proxy is None:
             raise SemanticFragmentBackendRejected(
@@ -3618,6 +3656,7 @@ def _reserve_root_fallthrough_helpers(
             proxy=proxy,
             version=staged,
             state=FragmentBindingState.STAGED,
+            creation_ref=step.fallthrough_helper_ref,
         )
         state.root_fallthrough_helpers.append(
             ProjectedRootFallthroughHelper(
@@ -3943,10 +3982,10 @@ def prepare_semantic_fragment_root_publication(
     )
 
 
-def observe_published_semantic_fragment(
+def observe_published_semantic_fragment_graph(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
-) -> PublishedFragmentObservation:
+) -> PublishedFragmentGraphObservation:
     """Observe the actual live graph without projecting another root rewrite."""
     state = modifier._semantic_fragment_state
     if state is None:
@@ -4017,7 +4056,7 @@ def observe_published_semantic_fragment(
             for outcome in validation.outcomes
         )
     )
-    return PublishedFragmentObservation(
+    semantics = PublishedFragmentObservation(
         plan_id=plan.plan_id,
         atomic_group_id=plan.atomic_group_id,
         published_root_ids=tuple(published_roots),
@@ -4028,16 +4067,23 @@ def observe_published_semantic_fragment(
         observable_return_carriers=observable_return_carriers,
         observable_terminal_returns=observable_terminal_returns,
     )
+    return PublishedFragmentGraphObservation(
+        projection=projection,
+        semantics=semantics,
+    )
 
 
-def stage_semantic_fragment(
+def realize_semantic_patch_plan(
     modifier: DeferredGraphModifier,
-    plan: FragmentPlan,
+    patch_plan: object,
     prepared_fragment: PreparedSemanticFragment,
 ) -> ProjectedFragment:
-    """Stage direct replacement routes without exposing any publication root."""
-    if not isinstance(plan, FragmentPlan):
-        raise TypeError("semantic fragment backend requires a FragmentPlan")
+    """Realize operation-granular semantic PatchSteps without publishing roots."""
+    from d810.transforms.plan import PatchPlan
+
+    if not isinstance(patch_plan, PatchPlan) or patch_plan.semantic_contract is None:
+        raise TypeError("semantic fragment realization requires a contracted PatchPlan")
+    plan = patch_plan.semantic_contract.fragment_plan
     if modifier._semantic_fragment_state is not None:
         raise RuntimeError("a semantic fragment is already staged")
     if not isinstance(prepared_fragment, PreparedSemanticFragment):
@@ -4185,40 +4231,126 @@ def stage_semantic_fragment(
     )
     modifier._semantic_fragment_state = state
     try:
-        for block in plan.blocks:
-            if block.materialization is FragmentBlockMaterialization.REUSE_PUBLISHED:
-                state.bindings[block.block_id] = _published_binding(
-                    modifier,
-                    block.block_id,
-                    block.stable_identity,
-                )
-        for block in plan.blocks:
-            if block.role is FragmentBlockRole.REPLACEMENT:
-                _clone_replacement(modifier, state, block)
-        _normalize_replacement_computed_branches(
-            modifier,
-            plan,
-            state,
+        from d810.transforms.plan import (
+            PatchFragmentBlockMaterialization,
+            PatchFragmentOperation,
+            PatchFragmentOperationNormalization,
+            PatchFragmentRootPublication,
+            PatchFragmentTerminalEffects,
         )
-        reference_version = state.binding(plan.roots[0]).version
-        _stage_native_bodies(
-            modifier,
-            plan,
-            state,
-            reference_version=reference_version,
-            preparations=preparations,
+
+        computed_branches_normalized = False
+        terminal_effects_materialized = False
+        root_helpers_reserved = False
+        root_steps = tuple(
+            step
+            for step in patch_plan.steps
+            if isinstance(step, PatchFragmentRootPublication)
         )
-        for block in plan.blocks:
-            if block.materialization is FragmentBlockMaterialization.CREATE_EMPTY:
-                _create_empty_block(
+        for step in patch_plan.steps:
+            if isinstance(step, PatchFragmentBlockMaterialization):
+                block = step.block
+                if step.materialization is FragmentBlockMaterialization.REUSE_PUBLISHED:
+                    state.bindings[block.block_id] = _published_binding(
+                        modifier,
+                        block.block_id,
+                        block.stable_identity,
+                    )
+                elif step.materialization is FragmentBlockMaterialization.CLONE_PUBLISHED:
+                    if step.source_ref is None:
+                        raise SemanticFragmentBackendRejected(
+                            "clone PatchStep lacks source authority"
+                        )
+                    _clone_replacement(
+                        modifier,
+                        state,
+                        block,
+                        source_block_id=step.source_ref.local_block_id,
+                        plan_ref=step.block_ref,
+                    )
+                elif step.materialization is FragmentBlockMaterialization.IMPORT_NATIVE:
+                    if step.native_body_id is None:
+                        raise SemanticFragmentBackendRejected(
+                            "native-body PatchStep lacks body authority"
+                        )
+                    _stage_native_bodies(
+                        modifier,
+                        plan,
+                        state,
+                        reference_version=state.binding(plan.roots[0]).version,
+                        preparations=preparations,
+                        native_body_id=step.native_body_id,
+                    )
+                    state.binding(block.block_id)
+                elif step.materialization is FragmentBlockMaterialization.CREATE_EMPTY:
+                    _create_empty_block(
+                        modifier,
+                        state,
+                        block,
+                        reference_version=state.binding(plan.roots[0]).version,
+                        plan_ref=step.block_ref,
+                    )
+            elif isinstance(step, PatchFragmentOperationNormalization):
+                if computed_branches_normalized:
+                    raise SemanticFragmentBackendRejected(
+                        "semantic PatchPlan duplicated operation normalization"
+                    )
+                _normalize_replacement_computed_branches(
                     modifier,
+                    plan,
                     state,
-                    block,
-                    reference_version=reference_version,
+                    step.operations,
                 )
-        _materialize_terminal_effects(modifier, plan, state)
-        _realize_operations(modifier, plan, state)
-        _reserve_root_fallthrough_helpers(modifier, plan, state)
+                computed_branches_normalized = True
+            elif isinstance(step, PatchFragmentOperation):
+                _realize_operations(modifier, plan, state, (step,))
+            elif isinstance(step, PatchFragmentTerminalEffects):
+                if terminal_effects_materialized:
+                    raise SemanticFragmentBackendRejected(
+                        "semantic PatchPlan duplicated terminal effects"
+                    )
+                terminal_plan = replace(
+                    plan,
+                    return_carriers=step.return_carriers,
+                    terminal_returns=step.terminal_returns,
+                    terminal_routes=step.terminal_routes,
+                )
+                _materialize_terminal_effects(modifier, terminal_plan, state)
+                terminal_effects_materialized = True
+            elif isinstance(step, PatchFragmentRootPublication):
+                if not root_helpers_reserved:
+                    _reserve_root_fallthrough_helpers(
+                        modifier,
+                        state,
+                        root_steps,
+                    )
+                    root_helpers_reserved = True
+            else:
+                raise SemanticFragmentBackendRejected(
+                    f"unsupported semantic PatchStep {type(step).__name__}"
+                )
+        gateway._record_fragment_plan_bindings(
+            plan,
+            tuple(
+                dict.fromkeys(
+                    (
+                        *(
+                            (
+                                PlanBlockRef(plan.plan_id, block.block_id),
+                                state.binding(block.block_id).version,
+                            )
+                            for block in plan.blocks
+                        ),
+                        *(
+                            (binding.creation_ref, binding.version)
+                            for binding in state.bindings.values()
+                            if binding.creation_ref is not None
+                            and _try_live_block_for_binding(modifier, binding) is not None
+                        ),
+                    )
+                )
+            ),
+        )
         projection = _project_fragment(modifier, plan, state)
         state.projection = projection
         return projection
@@ -4280,10 +4412,10 @@ __all__ = [
     "SemanticNativeBodyMaterializer",
     "SemanticNativeBodyStagingContext",
     "discard_staged_semantic_fragment",
+    "realize_semantic_patch_plan",
     "observe_staged_semantic_fragment",
-    "observe_published_semantic_fragment",
+    "observe_published_semantic_fragment_graph",
     "plan_semantic_fragment_root_inventory",
     "prepare_semantic_fragment_root_publication",
     "snapshot_semantic_fragment_inputs",
-    "stage_semantic_fragment",
 ]

@@ -7,7 +7,7 @@ pseudocode (spec unflatten):
     family.detect -> for spec in family.pipeline_for(match, ctx):
         validate_capabilities; result = spec.pass_factory().run(ctx)
         if result.rewrite_plan has work: ctx = ctx(graph=backend.apply(...)); facts.invalidate_to(...)
-        elif result.fragment_plan: ctx = ctx(graph=backend.publish_fragment(...)); facts.invalidate_to(...)
+        elif result.fragment_plan: ctx = ctx(graph=backend.apply(...)); facts.invalidate_to(...)
 
 Fragment publication defers pass-output visibility until the backend returns a
 committed, postvalidated graph snapshot. The live backend + lifter are supplied
@@ -484,13 +484,7 @@ def _run_pass_spec(
             ctx = replace(ctx, graph=new_graph)
     fragment_plan = result.fragment_plan
     if fragment_plan is not None:
-        publish_fragment = getattr(backend, "publish_fragment", None)
-        if not callable(publish_fragment):
-            raise BackendRouteError(
-                f"fragment-publication pass {spec.pass_id!r} requires a "
-                "fragment-capable backend"
-            )
-        new_graph = publish_fragment(
+        new_graph = backend.apply(
             fragment_plan,
             ctx.source.live_source,
             effective_safety_policy(spec),

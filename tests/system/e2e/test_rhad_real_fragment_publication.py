@@ -742,20 +742,20 @@ def _run_worker(
                         f"ranges={range_rows!r}"
                     ) from exc
 
-            def _stage_semantic_fragment(self, fragment_plan, prepared_fragment):
-                projection = super()._stage_semantic_fragment(
-                    fragment_plan,
+            def _realize_semantic_patch_plan(self, patch_plan, prepared_fragment):
+                projection = super()._realize_semantic_patch_plan(
+                    patch_plan,
                     prepared_fragment,
                 )
                 self._verify_phase("fragment staging")
                 return projection
 
-            def _publish_semantic_fragment_roots(
+            def _publish_semantic_patch_roots(
                 self,
                 fragment_plan,
                 rollback_token,
             ) -> None:
-                super()._publish_semantic_fragment_roots(
+                super()._publish_semantic_patch_roots(
                     fragment_plan,
                     rollback_token,
                 )
@@ -775,7 +775,7 @@ def _run_worker(
             ),
         )
 
-        post_graph = backend.publish_fragment(plan, mba)
+        post_graph = backend.apply(plan, mba)
         mba.verify(True)
         assert lifecycle.semantic_fragment_published_postvalidated_generation == 1
         assert lifecycle.receipt_committed_generation == 1

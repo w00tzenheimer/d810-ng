@@ -1,4 +1,4 @@
-"""Hex-Rays mutation and semantic-fragment publication backend.
+"""Hex-Rays mutation backend for typed patch and semantic-fragment plans.
 
 The ONLY place a unflatten ``PatchPlan`` becomes live ``mba`` edits. ``apply`` lowers the plan through the
 existing ``IDAIRTranslator`` (PatchPlan -> DeferredGraphModifier queue) and then RE-LIFTS the
@@ -6,11 +6,9 @@ post-apply ``mba`` to a fresh ``FlowGraph`` snapshot — the new snapshot identi
 invalidation epoch (Hex-Rays re-runs its own optimizer during/after apply, so the re-lift captures
 the vendor's re-optimization, per unflatten / the LLVM AnalysisManager invalidation model).
 
-``publish_fragment`` uses a fresh receipt-backed gateway transaction and
-re-lifts only after semantic postvalidation commits. The class structurally
-satisfies both portable backend protocols without importing either upward.
+Semantic fragments use a fresh receipt-backed gateway transaction and re-lift
+only after semantic postvalidation commits. ``apply`` is the sole live entry.
 """
-
 from __future__ import annotations
 
 from d810.analyses.control_flow.graph_checks import (
@@ -84,7 +82,9 @@ class HexRaysMutationBackend:
         return DeferredGraphModifier(
             live_source,
             mutation_gateway=gateway,
-            semantic_native_body_materializer=(self._semantic_native_body_materializer),
+            semantic_native_body_materializer=(
+                self._semantic_native_body_materializer
+            ),
         )
 
     def capabilities(self) -> frozenset[str]:
@@ -96,11 +96,37 @@ class HexRaysMutationBackend:
 
     def apply(
         self,
+        rewrite_plan: PatchPlan | FragmentPlan,
+        live_source: object,
+        safety_policy: object = None,
+    ) -> FlowGraph:
+        """The sole live transaction entry point for PatchPlan and FragmentPlan."""
+        if isinstance(rewrite_plan, FragmentPlan):
+            return self._apply_fragment(rewrite_plan, live_source, safety_policy)
+        if not isinstance(rewrite_plan, PatchPlan):
+            raise TypeError("HexRaysMutationBackend.apply requires a typed plan")
+        from d810.transforms.fragment_to_patch import (
+            ApplyPatchLifecycle,
+            CfgTransactionCoordinator,
+            PatchTransactionParticipant,
+        )
+
+        coordinator = CfgTransactionCoordinator(
+            ApplyPatchLifecycle(lambda plan: self._apply_patch_plan(
+                plan,
+                live_source,
+                safety_policy,
+            ))
+        )
+        return coordinator.execute(PatchTransactionParticipant(), rewrite_plan)  # type: ignore[return-value]
+
+    def _apply_patch_plan(
+        self,
         rewrite_plan: PatchPlan,
         live_source: object,
         safety_policy: object = None,
     ) -> FlowGraph:
-        """Lower the plan to live edits, then re-lift to a fresh snapshot (the new epoch)."""
+        """Execute one already-lowered PatchPlan through the shared coordinator."""
         pre_cfg = self._translator.lift(live_source)
         simulation = simulate_edits(
             pre_cfg.as_adjacency_dict(),
@@ -139,18 +165,18 @@ class HexRaysMutationBackend:
         )
         return self._translator.lift(live_source)
 
-    def publish_fragment(
+    def _apply_fragment(
         self,
         fragment_plan: FragmentPlan,
         live_source: object,
         safety_policy: object = None,
     ) -> FlowGraph:
-        """Publish one complete fragment through an independent gateway batch."""
+        """Prepare and execute a fragment through the shared ``apply`` entry."""
         del safety_policy
         self._committed_fragment_receipt = None
         gateway = self._mutation_gateway.new_transaction()
         fragment_backend = self._fragment_backend_factory(live_source, gateway)
-        self._committed_fragment_receipt = gateway.publish_semantic_fragment(
+        self._committed_fragment_receipt = gateway.execute_patch_transaction(
             fragment_backend,
             fragment_plan,
         )

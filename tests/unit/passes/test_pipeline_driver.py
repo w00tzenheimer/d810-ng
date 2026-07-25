@@ -37,7 +37,8 @@ from d810.passes.pass_pipeline import (
 from d810.passes.pipeline_shadow import PipelineShadowMismatchError
 from d810.passes.scheduler import PassScheduler, RunLater, RunLaterDomain
 from d810.passes.registry import PassRegistry
-from d810.transforms.plan import PatchPlan
+from d810.transforms.cfg_transaction import LogicalBlockRef
+from d810.transforms.plan import PatchNopInstructions, PatchPlan
 from d810.passes.driver import (
     AnalysisContractError,
     BackendRouteError,
@@ -124,13 +125,12 @@ class _Backend:
         return self._caps
 
     def apply(self, plan, live_source, safety_policy):
+        if isinstance(plan, FragmentPlan):
+            self.published_fragments.append((plan, live_source, safety_policy))
+            return "GF1"
         self.applied += 1
         self.safety_policies.append(safety_policy)
         return "G1"  # fresh snapshot identity
-
-    def publish_fragment(self, plan, live_source, safety_policy):
-        self.published_fragments.append((plan, live_source, safety_policy))
-        return "GF1"
 
 
 class _RecordingScheduler:
@@ -194,7 +194,15 @@ class _MutatingPass:
     name = "mutating"
 
     def run(self, ctx) -> PassResult:
-        return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+        return PassResult(rewrite_plan=_nonempty_patch_plan())
+
+
+def _nonempty_patch_plan() -> PatchPlan:
+    block_ref = LogicalBlockRef("pipeline-test", "block:0", 0)
+    return PatchPlan(
+        steps=(PatchNopInstructions(block_ref, (0x1000,)),),
+        source_coordinates=((block_ref, 0),),
+    )
 
 
 def _fragment_identity(start_ea: int) -> StableBlockIdentity:
@@ -596,8 +604,8 @@ def test_run_pipeline_applies_nonempty_plan_and_invalidates():
         name = "mutate"
 
         def run(self, ctx) -> PassResult:
-            # Non-empty plan via the planner_modifications channel the driver checks.
-            plan = PatchPlan(planner_modifications=(object(),))
+            # Non-empty typed execution plan through the sole backend entry.
+            plan = _nonempty_patch_plan()
             return PassResult(rewrite_plan=plan)
 
     class _OneShot:
@@ -1208,7 +1216,7 @@ def test_graph_changing_mutation_clears_evidence_before_later_requirement():
 
         def run(self, ctx) -> PassResult:
             assert ctx.facts.has_evidence("branch_targets")
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _NeedsEvidence:
         name = "needs_evidence"
@@ -1658,7 +1666,7 @@ def test_output_evidence_is_cleared_after_graph_epoch_mutation():
         name = "mutator"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _NeedsEvidence:
         name = "needs_evidence"
@@ -1697,7 +1705,7 @@ def test_native_contract_invalidation_drops_fact_while_preserving_analysis():
         name = "mutator"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _Reader:
         name = "reader"
@@ -1735,7 +1743,7 @@ def test_native_contract_preserves_analyses_when_result_omits_policy():
         name = "mutator"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _Reader:
         name = "reader"
@@ -1770,7 +1778,7 @@ def test_result_level_preservation_overrides_native_contract_preserves():
 
         def run(self, ctx) -> PassResult:
             return PassResult(
-                rewrite_plan=PatchPlan(planner_modifications=(object(),)),
+                rewrite_plan=_nonempty_patch_plan(),
                 preserved=PreservedAnalyses.preserving({"value_ranges"}),
             )
 
@@ -1806,7 +1814,7 @@ def test_native_contract_preserves_facts_after_graph_changing_mutation():
         name = "mutator"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _Reader:
         name = "reader"
@@ -1843,7 +1851,7 @@ def test_native_contract_invalidates_facts_override_preserves_facts():
         name = "mutator"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _Reader:
         name = "reader"
@@ -1883,7 +1891,7 @@ def test_empty_native_fact_preservation_keeps_legacy_fact_behavior_on_mutation()
         name = "mutator"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _Reader:
         name = "reader"
@@ -1917,7 +1925,7 @@ def test_native_fact_preservation_does_not_preserve_analyses():
         name = "mutator"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _Reader:
         name = "reader"
@@ -1955,7 +1963,7 @@ def test_preserved_fact_and_analysis_do_not_preserve_evidence_after_mutation():
         name = "mutator"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _Reader:
         name = "reader"
@@ -2007,7 +2015,7 @@ def test_real_lower_contract_preserves_only_declared_mutation_state():
             assert ctx.facts.has_fact("state_transition")
             return PassResult(
                 facts=(recovered_edge,),
-                rewrite_plan=PatchPlan(planner_modifications=(object(),)),
+                rewrite_plan=_nonempty_patch_plan(),
             )
 
     class _Reader:
@@ -2195,7 +2203,7 @@ def test_analysis_only_pass_with_rewrite_plan_fails_before_apply():
         def run(self, ctx) -> PassResult:
             return PassResult(
                 analysis_outputs={"domtree": "D"},
-                rewrite_plan=PatchPlan(planner_modifications=(object(),)),
+                rewrite_plan=_nonempty_patch_plan(),
             )
 
     class _OneShot:
@@ -2349,8 +2357,10 @@ def test_failed_fragment_publication_does_not_publish_pass_outputs():
             )
 
     class _FailingBackend(_Backend):
-        def publish_fragment(self, plan, live_source, safety_policy):
-            raise RuntimeError("fragment rejected")
+        def apply(self, plan, live_source, safety_policy):
+            if isinstance(plan, FragmentPlan):
+                raise RuntimeError("fragment rejected")
+            return super().apply(plan, live_source, safety_policy)
 
     facts = AnalysisManager(_GRAPH)
     with pytest.raises(RuntimeError, match="fragment rejected"):
@@ -2385,7 +2395,7 @@ def test_mutation_backend_pass_with_rewrite_plan_still_applies():
         name = "mutator"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _OneShot:
         name = "one_shot"
@@ -2417,7 +2427,7 @@ def test_noop_backend_apply_preserves_analysis_epoch():
         name = "mutator"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _Reader:
         name = "reader"
@@ -2463,7 +2473,7 @@ def test_spec_preservation_applies_when_result_omits_preservation():
         name = "mutator"
 
         def run(self, ctx) -> PassResult:
-            return PassResult(rewrite_plan=PatchPlan(planner_modifications=(object(),)))
+            return PassResult(rewrite_plan=_nonempty_patch_plan())
 
     class _OneShot:
         name = "one_shot"
@@ -2502,7 +2512,7 @@ def test_result_preservation_overrides_spec_default():
 
         def run(self, ctx) -> PassResult:
             return PassResult(
-                rewrite_plan=PatchPlan(planner_modifications=(object(),)),
+                rewrite_plan=_nonempty_patch_plan(),
                 preserved=PreservedAnalyses.none(),
             )
 

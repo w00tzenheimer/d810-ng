@@ -246,10 +246,7 @@ class _Backend:
     def capabilities(self) -> frozenset[str]:
         return frozenset()
 
-    def apply(self, plan, live_source, safety_policy):
-        raise AssertionError("frontend normalization must use fragment publication")
-
-    def publish_fragment(self, plan, live_source, safety_policy) -> FlowGraph:
+    def apply(self, plan, live_source, safety_policy) -> FlowGraph:
         self.plans.append(plan)
         if self.publish_receipt:
             # Gateway/lifecycle tests prove the receipt checks themselves. This
