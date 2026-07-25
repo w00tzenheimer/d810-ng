@@ -13,6 +13,7 @@ from d810.capabilities.frontend_normalization import (
 from d810.capabilities.semantic_routes import (
     CanonicalSemanticCandidateEvidenceCapability,
     CanonicalSemanticEvidenceCapability,
+    SemanticRouteReferenceOracleCapability,
 )
 from d810.optimizers.microcode.flow.flattening import (
     state_machine_cff_unflattener as unflattener_module,
@@ -35,6 +36,13 @@ def test_live_unflattener_injects_session_canonical_semantic_evidence(
     expected_evidence = object()
     expected_candidate = object()
     expected_frontend = object()
+
+    class _ReferenceOracleProvider:
+        @staticmethod
+        def reference_oracle_for(function_ea, key, rewrite_anchor_eas):
+            return None
+
+    expected_reference_oracle = _ReferenceOracleProvider()
     monkeypatch.setattr(
         NativePreanalysisSessionState,
         "canonical_semantic_evidence_for",
@@ -74,6 +82,7 @@ def test_live_unflattener_injects_session_canonical_semantic_evidence(
     resolver_state = ResolverSessionState(
         native_preanalysis=state,
         native_key=native_key,
+        semantic_route_reference_oracle_provider=expected_reference_oracle,
     )
     rule = StateMachineCffUnflattener()
     rule.config = {}
@@ -96,3 +105,7 @@ def test_live_unflattener_injects_session_canonical_semantic_evidence(
     frontend_provider = capabilities.require(FrontendNormalizationEvidenceCapability)
     assert frontend_provider.evidence_for(function_ea) is expected_frontend
     assert frontend_provider.evidence_for(function_ea + 1) is None
+    assert (
+        capabilities.require(SemanticRouteReferenceOracleCapability)
+        is expected_reference_oracle
+    )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import ida_hexrays
@@ -17,6 +18,7 @@ from d810.core.observability_events import (
     SemanticFragmentFailureObserved,
     SemanticFragmentRouteOracleComparedObserved,
 )
+from d810.core.config import ProjectConfiguration
 from d810.core.semantic_route_oracle import RouteOracleComparison
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.ir.logical_block_proxy import (
@@ -48,6 +50,7 @@ from d810.manager.manager import (
     D810Manager,
     _build_current_mba_identity_index,
     _initialize_resolver_attachment,
+    _load_semantic_route_reference_oracle_registry,
     _new_current_mba_mutation_gateway,
     _new_semantic_native_body_materializer,
 )
@@ -93,6 +96,137 @@ def test_resolver_attachment_reads_manager_owned_normalization_plan_port() -> No
     assert (
         state.frontend_normalization_plan_provider
         is session.frontend_normalization_plan_authority
+    )
+
+
+def test_resolver_attachment_reads_manager_owned_reference_oracle_port() -> None:
+    session = DecompilationSessionContext(
+        function_ea=0x40A560,
+        database_identity="test",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+
+    class _ReferenceOracleProvider:
+        @staticmethod
+        def reference_oracle_for(function_ea, native_key, rewrite_anchor_eas):
+            return None
+
+    provider = _ReferenceOracleProvider()
+    state = _initialize_resolver_attachment(
+        session,
+        semantic_route_reference_oracle_provider=provider,
+    )
+
+    assert state.semantic_route_reference_oracle_provider is provider
+
+
+def test_manager_loads_only_configured_relative_oracle_manifests(tmp_path) -> None:
+    manifest = {
+        "schema_version": 1,
+        "run": {
+            "run_id": "configured-a560-boundary",
+            "function_ea": "0x40A560",
+            "fixture_sha256": "a" * 64,
+            "reference_binary_sha256": "b" * 64,
+            "candidate_binary_sha256": "a" * 64,
+            "reference_commit": "deadbeef",
+            "runtime_image": "test-image",
+            "runtime_image_id": "sha256:" + "c" * 64,
+            "cache_disabled": True,
+        },
+        "routes": [
+            {
+                "route_id": "test:0x40A560:flow_route:0x40B52E",
+                "function_ea": "0x40A560",
+                "owner_ea": "0x40B51B",
+                "rewrite_anchor_ea": "0x40B52E",
+                "corridor": [["0x40B51B", "0x40B534"]],
+                "reference_phase": "flow_route",
+                "original_transfer_kind": "conditional",
+                "final_transfer_kind": "direct",
+                "direct_target_ea": "0x40AE3E",
+                "true_target_ea": None,
+                "false_target_ea": None,
+                "predicate_kind": None,
+                "reference_ledger_identity": "flow_route:0x40B52E",
+                "reference_ledger": {"status": "committed"},
+            }
+        ],
+    }
+    (tmp_path / "a560.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    registry = _load_semantic_route_reference_oracle_registry(
+        {"semantic_route_oracle_manifests": ["a560.json"]},
+        config_root=tmp_path,
+    )
+
+    assert registry is not None
+    selection = registry.reference_oracle_for(
+        0x40A560,
+        make_native_key(
+            input_identity="sha256:" + "a" * 64,
+            function_rva=0xA560,
+        ),
+        (0x40B52E,),
+    )
+    assert selection is not None
+    assert selection.run.run_id == "configured-a560-boundary"
+    assert (
+        _load_semantic_route_reference_oracle_registry({}, config_root=tmp_path)
+        is None
+    )
+    with pytest.raises(ValueError, match="non-empty array"):
+        _load_semantic_route_reference_oracle_registry(
+            {"semantic_route_oracle_manifests": "a560.json"},
+            config_root=tmp_path,
+        )
+    with pytest.raises(ValueError, match="inside the configuration root"):
+        _load_semantic_route_reference_oracle_registry(
+            {"semantic_route_oracle_manifests": ["../a560.json"]},
+            config_root=tmp_path,
+        )
+
+
+def test_default_ollvm_profile_selects_pinned_six_route_oracle() -> None:
+    project = ProjectConfiguration.from_file(
+        Path(__file__).parents[3]
+        / "src"
+        / "d810"
+        / "conf"
+        / "default_unflattening_ollvm.json"
+    )
+
+    registry = _load_semantic_route_reference_oracle_registry(
+        project.additional_configuration
+    )
+
+    assert registry is not None
+    selection = registry.reference_oracle_for(
+        0x40A560,
+        make_native_key(
+            input_identity=(
+                "sha256:"
+                "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+            ),
+            function_rva=0xA560,
+        ),
+        (0x40AA4F, 0x40AE7A, 0x40AB64, 0x40B52E, 0x40C341, 0x40C7F6),
+    )
+    assert selection is not None
+    assert selection.run.reference_commit == (
+        "21b0d4783703bc4fb6910cfae51d92cd683d2c65"
+    )
+    assert selection.run.runtime_image_id == (
+        "sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a"
+    )
+    assert tuple(route.rewrite_anchor_ea for route in selection.routes) == (
+        0x40AA4F,
+        0x40AE7A,
+        0x40AB64,
+        0x40B52E,
+        0x40C341,
+        0x40C7F6,
     )
 
 

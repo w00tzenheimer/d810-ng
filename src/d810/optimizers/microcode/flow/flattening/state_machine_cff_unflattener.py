@@ -129,6 +129,7 @@ from d810.capabilities.resolver import CapabilitySet
 from d810.capabilities.semantic_routes import (
     CanonicalSemanticCandidateEvidenceCapability,
     CanonicalSemanticEvidenceCapability,
+    SemanticRouteReferenceOracleCapability,
 )
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
 from d810.capabilities.value_range import ValRangeCapability
@@ -3533,6 +3534,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 FrontendNormalizationPlanCapability,
             ):
                 cap_instances[FrontendNormalizationPlanCapability] = plan_provider
+            reference_oracle_provider = (
+                resolver_state.semantic_route_reference_oracle_provider
+            )
+            if isinstance(
+                reference_oracle_provider,
+                SemanticRouteReferenceOracleCapability,
+            ):
+                cap_instances[SemanticRouteReferenceOracleCapability] = (
+                    reference_oracle_provider
+                )
         return CapabilitySet(cap_instances)
 
     def _select_family(
