@@ -3475,7 +3475,11 @@ def stage_semantic_fragment(
         state.projection = projection
         return projection
     except Exception:
-        discard_staged_semantic_fragment(modifier, plan)
+        try:
+            discard_staged_semantic_fragment(modifier, plan)
+        except Exception as cleanup_error:
+            cleanup_error.d810_semantic_stage_cleanup_failed = True
+            raise
         raise
 
 

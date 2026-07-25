@@ -366,14 +366,24 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
         failure_phase = "commit"
         receipt = gateway.commit()
     except Exception as original_error:
+        primary_error = _exception_chain(original_error)[0]
         _record_primary_failure(
             gateway,
             plan,
             phase=failure_phase,
             error=original_error,
         )
-        recovery_error: Exception | None = None
-        recovery_succeeded = True
+        stage_cleanup_failed = bool(
+            getattr(
+                original_error,
+                "d810_semantic_stage_cleanup_failed",
+                False,
+            )
+        )
+        recovery_error: Exception | None = (
+            original_error if stage_cleanup_failed else None
+        )
+        recovery_succeeded = not stage_cleanup_failed
         if root_attempted:
             try:
                 backend._rollback_semantic_fragment_roots(plan, rollback_token)
@@ -382,7 +392,7 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
                 _record_rollback_failure(gateway, plan, exc)
                 recovery_error = exc
                 recovery_succeeded = False
-        if stage_attempted:
+        if stage_attempted and not stage_cleanup_failed:
             try:
                 backend._discard_staged_semantic_fragment(plan)
             except Exception as exc:
@@ -401,7 +411,7 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
                 recovery_succeeded = False
                 if recovery_error is None:
                     recovery_error = exc
-        reason = _failure_message(_exception_chain(original_error)[0])
+        reason = _failure_message(primary_error)
         if recovery_error is not None:
             reason += (
                 f"; rollback failed: {type(recovery_error).__name__}: {recovery_error}"
@@ -424,7 +434,7 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
                     recovery_error = exc
         if recovery_error is not None:
             raise SemanticFragmentRollbackFailed(
-                original_error,
+                primary_error,
                 recovery_error,
             ) from recovery_error
         raise

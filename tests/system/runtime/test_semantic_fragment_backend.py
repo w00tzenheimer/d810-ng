@@ -2849,6 +2849,55 @@ def test_staged_block_discard_restores_published_tail_fallthrough_to_stop(
     assert mba.verify_calls == 1
 
 
+def test_staged_block_discard_restores_shifted_stop_fallthrough_after_sweep(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    published_tail = _Block(
+        1,
+        start=0x401010,
+        block_type=ida_hexrays.BLT_1WAY,
+    )
+    staged = _Block(2, start=0xF10000, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(3, start=0x401020, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, published_tail)
+    published_tail.head = _Instruction(ida_hexrays.m_mov, published_tail.start)
+    published_tail.tail = published_tail.head
+    published_tail.succset.push_back(stop.serial)
+    stop.predset.push_back(published_tail.serial)
+    mba = _Mba((entry, published_tail, staged, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    sweep = mba.remove_empty_and_unreachable_blocks
+    basic_verify = mba.verify
+
+    def sweep_and_drop_implicit_stop_edge() -> bool:
+        changed = sweep()
+        published_tail.succset.clear()
+        stop.predset._del(published_tail.serial)
+        return changed
+
+    def verify_successor_arity(always: bool) -> None:
+        basic_verify(always)
+        if int(published_tail.nsucc()) != 1:
+            raise RuntimeError("INTERR: 50856")
+
+    monkeypatch.setattr(
+        mba,
+        "remove_empty_and_unreachable_blocks",
+        sweep_and_drop_implicit_stop_edge,
+    )
+    monkeypatch.setattr(mba, "verify", verify_successor_arity)
+
+    modifier._discard_semantic_fragment_blocks((staged,))
+
+    assert mba.qty == 3
+    assert mba.get_mblock(2) is stop
+    assert tuple(published_tail.succset) == (stop.serial,)
+    assert tuple(stop.predset) == (published_tail.serial,)
+    assert mba.verify_calls == 1
+
+
 def test_staged_block_discard_invalidates_state_after_cleanup_failure(
     monkeypatch,
 ) -> None:
