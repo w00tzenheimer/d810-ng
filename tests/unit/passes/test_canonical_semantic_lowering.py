@@ -322,6 +322,17 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
         source_plan_id=normalization_plan.plan_id,
         source_atomic_group_id=normalization_plan.atomic_group_id,
         work_item_id=normalization_scope.work_item_id,
+        published_operation_ids=tuple(
+            dict.fromkeys(
+                (
+                    *normalization_scope.selected_obligation_ids,
+                    *(
+                        operation.operation_id
+                        for operation in normalization_plan.operations
+                    ),
+                )
+            )
+        ),
         selected_obligation_ids=normalization_scope.selected_obligation_ids,
         remaining_obligation_ids=normalization_scope.remaining_obligation_ids,
         unreachable_obligation_ids=normalization_scope.unreachable_obligation_ids,
@@ -566,6 +577,17 @@ def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_orac
         source_plan_id=normalization_plan.plan_id,
         source_atomic_group_id=normalization_plan.atomic_group_id,
         work_item_id=normalization_scope.work_item_id,
+        published_operation_ids=tuple(
+            dict.fromkeys(
+                (
+                    *normalization_scope.selected_obligation_ids,
+                    *(
+                        operation.operation_id
+                        for operation in normalization_plan.operations
+                    ),
+                )
+            )
+        ),
         selected_obligation_ids=normalization_scope.selected_obligation_ids,
         remaining_obligation_ids=normalization_scope.remaining_obligation_ids,
         unreachable_obligation_ids=normalization_scope.unreachable_obligation_ids,

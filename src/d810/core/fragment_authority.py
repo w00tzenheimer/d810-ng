@@ -21,6 +21,7 @@ class NormalizationWorkItemAuthority:
     source_plan_id: str
     source_atomic_group_id: str
     work_item_id: str
+    published_operation_ids: tuple[str, ...]
     selected_obligation_ids: tuple[str, ...]
     remaining_obligation_ids: tuple[str, ...]
     unreachable_obligation_ids: tuple[str, ...]
@@ -36,6 +37,10 @@ class NormalizationWorkItemAuthority:
             raise ValueError(
                 "normalization work-item authority revision must be positive"
             )
+        published_operations = tuple(
+            _identifier(value, "published normalization operation")
+            for value in self.published_operation_ids
+        )
         selected = tuple(
             _identifier(value, "selected normalization obligation")
             for value in self.selected_obligation_ids
@@ -48,9 +53,14 @@ class NormalizationWorkItemAuthority:
             _identifier(value, "unreachable normalization obligation")
             for value in self.unreachable_obligation_ids
         )
-        if not selected:
+        if not published_operations or not selected:
             raise ValueError(
-                "normalization work-item authority requires selected obligations"
+                "normalization work-item authority requires published operations "
+                "and selected obligations"
+            )
+        if len(published_operations) != len(set(published_operations)):
+            raise ValueError(
+                "normalization work-item authority operations must be unique"
             )
         obligation_sets = tuple(map(set, (selected, remaining, unreachable)))
         if any(
@@ -64,6 +74,14 @@ class NormalizationWorkItemAuthority:
             raise ValueError(
                 "normalization work-item authority obligations must be unique "
                 "and disjoint"
+            )
+        if not set(selected).issubset(published_operations):
+            raise ValueError(
+                "selected normalization obligations must be published operations"
+            )
+        if set(published_operations).intersection((*remaining, *unreachable)):
+            raise ValueError(
+                "unpublished normalization obligations cannot be published operations"
             )
         object.__setattr__(self, "evidence_generation", evidence_generation)
         object.__setattr__(self, "publication_revision", publication_revision)
@@ -85,6 +103,7 @@ class NormalizationWorkItemAuthority:
             "work_item_id",
             _identifier(self.work_item_id, "normalization work-item id"),
         )
+        object.__setattr__(self, "published_operation_ids", published_operations)
         object.__setattr__(self, "selected_obligation_ids", selected)
         object.__setattr__(self, "remaining_obligation_ids", remaining)
         object.__setattr__(self, "unreachable_obligation_ids", unreachable)

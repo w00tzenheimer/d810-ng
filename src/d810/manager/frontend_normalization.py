@@ -309,6 +309,9 @@ def run_frontend_normalization_pipeline(
                 source_plan_id=complete_plan.plan_id,
                 source_atomic_group_id=complete_plan.atomic_group_id,
                 work_item_id=work_item_id,
+                published_operation_ids=(
+                    lifecycle_state.normalization_last_published_operation_ids
+                ),
                 selected_obligation_ids=(
                     lifecycle_state.normalization_last_selected_obligation_ids
                 ),

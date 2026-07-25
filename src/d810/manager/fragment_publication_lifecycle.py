@@ -167,6 +167,9 @@ class SessionFragmentPublicationLifecycleAuthority:
                 )
             self.state._fragment_publication_commit_normalization_work_item(
                 work_item_id=scope.work_item_id,
+                published_operation_ids=tuple(
+                    operation.operation_id for operation in plan.operations
+                ),
                 selected_obligation_ids=scope.selected_obligation_ids,
                 remaining_obligation_ids=scope.remaining_obligation_ids,
                 unreachable_obligation_ids=scope.unreachable_obligation_ids,

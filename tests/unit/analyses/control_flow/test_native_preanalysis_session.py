@@ -190,6 +190,7 @@ def test_receipted_work_item_can_authorize_one_canonical_plan() -> None:
     assert state._fragment_publication_mark_normalization_validated()
     assert not state._fragment_publication_commit_normalization_work_item(
         work_item_id="frontend-normalization:g1:root@0x40A5F0",
+        published_operation_ids=("native-indirect-transfer@0x40A605",),
         selected_obligation_ids=("native-indirect-transfer@0x40A605",),
         remaining_obligation_ids=("native-indirect-transfer@0x40A5E3",),
         unreachable_obligation_ids=(),
@@ -200,6 +201,7 @@ def test_receipted_work_item_can_authorize_one_canonical_plan() -> None:
         source_plan_id="frontend-normalization:0xA560:g1",
         source_atomic_group_id="frontend-normalization:g1",
         work_item_id="frontend-normalization:g1:root@0x40A5F0",
+        published_operation_ids=("native-indirect-transfer@0x40A605",),
         selected_obligation_ids=("native-indirect-transfer@0x40A605",),
         remaining_obligation_ids=("native-indirect-transfer@0x40A5E3",),
         unreachable_obligation_ids=(),
@@ -214,6 +216,7 @@ def test_receipted_work_item_can_authorize_one_canonical_plan() -> None:
     assert state._fragment_publication_mark_normalization_validated()
     assert not state._fragment_publication_commit_normalization_work_item(
         work_item_id="frontend-normalization:g1:root@0x40A5E3",
+        published_operation_ids=("native-indirect-transfer@0x40A5E3",),
         selected_obligation_ids=("native-indirect-transfer@0x40A5E3",),
         remaining_obligation_ids=("native-indirect-transfer@0x40A5D0",),
         unreachable_obligation_ids=(),
@@ -222,6 +225,7 @@ def test_receipted_work_item_can_authorize_one_canonical_plan() -> None:
         authority,
         publication_revision=2,
         work_item_id="frontend-normalization:g1:root@0x40A5E3",
+        published_operation_ids=("native-indirect-transfer@0x40A5E3",),
         selected_obligation_ids=("native-indirect-transfer@0x40A5E3",),
         remaining_obligation_ids=("native-indirect-transfer@0x40A5D0",),
     )
@@ -578,6 +582,7 @@ def test_canonical_semantic_evidence_projects_only_postvalidated_state_routes() 
     assert state._fragment_publication_mark_normalization_validated()
     assert not state._fragment_publication_commit_normalization_work_item(
         work_item_id="frontend-normalization:g1:first",
+        published_operation_ids=("native-transfer:first",),
         selected_obligation_ids=("native-transfer:first",),
         remaining_obligation_ids=("native-transfer:remaining",),
         unreachable_obligation_ids=(),
@@ -1258,6 +1263,7 @@ def test_contextual_patch_plan_promotion_is_unique_and_generation_owned() -> Non
     assert state._fragment_publication_mark_normalization_validated()
     assert not state._fragment_publication_commit_normalization_work_item(
         work_item_id="frontend-normalization:g1:root@0x40A5F0",
+        published_operation_ids=("native-body-edge@0x40B6C0",),
         selected_obligation_ids=("native-body-edge@0x40B6C0",),
         remaining_obligation_ids=("native-body-edge@0x40C4B4",),
         unreachable_obligation_ids=(),
@@ -1372,6 +1378,7 @@ def test_frontend_evidence_projects_only_promoted_contextual_plan() -> None:
     assert state._fragment_publication_mark_normalization_validated()
     assert not state._fragment_publication_commit_normalization_work_item(
         work_item_id="frontend-normalization:g1:root@0x40A5F0",
+        published_operation_ids=("native-body-edge@0x40B6C0",),
         selected_obligation_ids=("native-body-edge@0x40B6C0",),
         remaining_obligation_ids=("native-body-edge@0x40C4B4",),
         unreachable_obligation_ids=(),

@@ -9720,6 +9720,7 @@ def test_prepatch_capture_selects_only_promoted_contextual_plan(
     assert state.native_preanalysis._fragment_publication_mark_normalization_validated()
     assert not state.native_preanalysis._fragment_publication_commit_normalization_work_item(
         work_item_id="frontend-normalization:g1:root@0x1000",
+        published_operation_ids=("native-body-edge@0x1300",),
         selected_obligation_ids=("native-body-edge@0x1300",),
         remaining_obligation_ids=("native-body-edge@0x1600",),
         unreachable_obligation_ids=(),
