@@ -50,6 +50,7 @@ from d810.transforms.fragment_validation import (
     FragmentValidationPostcondition,
     FragmentValidationResult,
     ProjectedFragment,
+    PublishedFragmentGraphObservation,
     PublishedFragmentObservation,
     validate_fragment_projection,
     validate_published_fragment_observation,
@@ -62,14 +63,14 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
 _BACKEND_PORT = (
     "_plan_semantic_fragment_root_publication_inventory",
     "_snapshot_semantic_fragment_inputs",
-    "_stage_semantic_fragment",
+    "_realize_semantic_patch_plan",
     "_observe_staged_semantic_fragment",
     "_semantic_fragment_current_mba_identity_binding",
     "_discard_staged_semantic_fragment",
     "_prepare_semantic_fragment_root_publication",
-    "_publish_semantic_fragment_roots",
+    "_publish_semantic_patch_roots",
     "_rebuild_semantic_fragment_chains",
-    "_observe_published_semantic_fragment",
+    "_observe_published_semantic_fragment_graph",
     "_rollback_semantic_fragment_roots",
     "_complete_semantic_fragment_publication",
 )
@@ -146,6 +147,7 @@ class BoundSemanticCfgTransaction(BoundCfgTransaction):
 
     plan: FragmentPlan | None = field(default=None, repr=False, compare=False)
     fragment: PreparedSemanticFragment | None = field(default=None, repr=False)
+    patch_plan: object | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         BoundCfgTransaction.__post_init__(self)
@@ -157,6 +159,16 @@ class BoundSemanticCfgTransaction(BoundCfgTransaction):
             raise ValueError(
                 "bound semantic transaction changed exact fragment authority"
             )
+        from d810.transforms.plan import PatchPlan
+
+        if self.patch_plan is not None and not isinstance(self.patch_plan, PatchPlan):
+            raise TypeError("bound semantic transaction PatchPlan is malformed")
+        if self.patch_plan is not None and (
+            self.patch_plan.plan_id != self.plan.plan_id
+            or self.patch_plan.semantic_contract is None
+            or self.patch_plan.semantic_contract.fragment_plan is not self.plan
+        ):
+            raise ValueError("bound semantic transaction changed PatchPlan authority")
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,8 +359,11 @@ class SemanticFragmentTransactionParticipant:
             raise RuntimeError("semantic realization requires an idle gateway")
         plan = bound.plan
         fragment = bound.fragment
+        patch_plan = bound.patch_plan
         assert plan is not None
         assert fragment is not None
+        if patch_plan is None:
+            raise RuntimeError("semantic realization lacks final PatchPlan binding")
         gateway._begin_semantic_fragment_batch(
             self.backend,
             plan,
@@ -356,8 +371,9 @@ class SemanticFragmentTransactionParticipant:
             fragment.authority.attempt_id,
             fragment.authority.snapshot_id,
             fragment,
+            patch_plan,
         )
-        return self.backend._stage_semantic_fragment(plan, fragment)
+        return self.backend._realize_semantic_patch_plan(patch_plan, fragment)
 
     def observe(self, receipt: object, live_graph: object) -> object:
         if not isinstance(receipt, ProjectedFragment):
@@ -627,14 +643,285 @@ def _commit_lifecycle(
     authority.commit_fragment_publication(plan, receipt)
 
 
-def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPlan):
-    """Publish one plan, cleaning pre-write rejection or poisoning after writes."""
-    if not isinstance(plan, FragmentPlan):
-        raise TypeError("semantic fragment publication requires a FragmentPlan")
-    if bool(getattr(gateway, "active", False)):
-        raise RuntimeError(
-            "semantic fragment publication requires an independent batch"
+@dataclass
+class _SemanticPatchLifecycle:
+    """Hex-Rays lifecycle port driven exclusively by the shared coordinator."""
+
+    gateway: object
+    backend: object
+    participant: SemanticFragmentTransactionParticipant
+    bound: BoundSemanticCfgTransaction
+    plan: FragmentPlan
+    prepared: PreparedSemanticFragment
+    projection: ProjectedFragment
+    prepublication: FragmentValidationResult
+    root_inventory: SemanticFragmentRootInventory
+    lifecycle_authority: FragmentPublicationLifecycleAuthority
+    stage_attempted: bool = False
+    lifecycle_staged: bool = False
+    root_attempted: bool = False
+    rollback_token: object | None = None
+    failure_phase: str = "begin"
+
+    def begin(self, patch_plan):
+        from dataclasses import replace
+        from d810.transforms.plan import PatchPlan
+
+        self.failure_phase = "begin"
+        if (
+            not isinstance(patch_plan, PatchPlan)
+            or patch_plan.plan_id != self.plan.plan_id
+            or patch_plan.semantic_contract is None
+            or patch_plan.semantic_contract.fragment_plan is not self.plan
+        ):
+            raise ValueError("coordinator PatchPlan authority differs from preflight")
+        return replace(self.bound, patch_plan=patch_plan)
+
+    def realize(self, patch_plan, begun):
+        self.failure_phase = "stage"
+        self.stage_attempted = True
+        staged = self.participant.realize(begun, self.gateway)
+        if not isinstance(staged, ProjectedFragment):
+            raise TypeError("semantic-fragment backend returned an invalid projection")
+        staged = self.participant.observe(staged, self.backend.mba)
+        self.gateway._record_fragment_staged(self.plan)
+        _mark_lifecycle_staged(self.lifecycle_authority, self.plan)
+        self.lifecycle_staged = True
+
+        self.failure_phase = "current_identity_binding"
+        self.gateway._record_fragment_current_mba_identity_binding(
+            self.plan,
+            self.backend._semantic_fragment_current_mba_identity_binding(self.plan),
         )
+
+        self.failure_phase = "prepublication_validation"
+        staged_validation = validate_fragment_projection(self.plan, staged)
+        if not staged_validation.passed:
+            raise SemanticFragmentPublicationRejected(
+                "staged_observation",
+                staged_validation,
+            )
+        divergence = compare_fragment_projection_obligations(
+            self.projection,
+            staged,
+        )
+        if divergence:
+            raise RuntimeError(
+                "staged semantic fragment diverged from immutable preflight: "
+                + ", ".join(divergence)
+            )
+        staged_cfg = fragment_cfg_projection(
+            self.plan,
+            self.prepared.authority.snapshot.projection_input,
+            staged,
+        )
+        CfgContract().verify_projection(staged_cfg, scope="full")
+        self.gateway._record_fragment_validation(
+            plan=self.plan,
+            phase="prepublication",
+            validation=self.prepublication,
+        )
+        if not self.prepublication.passed:
+            raise SemanticFragmentPublicationRejected(
+                "prepublication",
+                self.prepublication,
+            )
+        if any(
+            operation.direct_transfer_rewrite is not None
+            for operation in self.plan.operations
+        ):
+            self.failure_phase = "detached_route_oracle"
+            detached_oracle = compare_detached_route_oracle(self.plan, staged)
+            self.gateway._record_fragment_route_oracle(self.plan, detached_oracle)
+            if not detached_oracle.passed:
+                failure = detached_oracle.first_failure
+                assert failure is not None
+                raise DetachedRouteOracleRejected(
+                    "detached route oracle rejected "
+                    f"{failure.route_id}: {failure.failed_invariant}: "
+                    f"{failure.reason}"
+                )
+        _mark_lifecycle_validated(
+            self.lifecycle_authority,
+            self.plan,
+            self.prepublication,
+        )
+
+        self.failure_phase = "root_preparation"
+        self.rollback_token = self.backend._prepare_semantic_fragment_root_publication(
+            self.plan,
+            self.root_inventory,
+        )
+        self.root_attempted = True
+        self.gateway._record_fragment_root_publication_attempted(self.plan)
+        self.failure_phase = "root_publication"
+        self.gateway._record_fragment_mutation_started(self.plan)
+        self.backend._publish_semantic_patch_roots(
+            patch_plan,
+            self.rollback_token,
+        )
+        self.gateway._record_fragment_root_publication_succeeded(self.plan)
+        for _root_edge in self.root_inventory.items:
+            self.gateway.record_edge_redirect()
+        self.failure_phase = "root_rebuild"
+        self.backend._rebuild_semantic_fragment_chains(self.plan)
+        return staged
+
+    def observe(self, patch_plan, realized):
+        self.failure_phase = "postpublication_observation"
+        observed = self.backend._observe_published_semantic_fragment_graph(self.plan)
+        if not isinstance(observed, PublishedFragmentGraphObservation):
+            raise TypeError(
+                "semantic-fragment backend returned an invalid published graph observation"
+            )
+        return observed
+
+    def validate(self, patch_plan, observed):
+        self.failure_phase = "postpublication_validation"
+        post_cfg = fragment_cfg_projection(
+            self.plan,
+            self.prepared.authority.snapshot.projection_input,
+            observed.projection,
+        )
+        CfgContract().verify_projection(post_cfg, scope="full")
+        postpublication = validate_published_fragment_observation(
+            self.plan,
+            observed.semantics,
+            self.projection,
+        )
+        self.gateway._record_fragment_observed(self.plan)
+        self.gateway._record_fragment_validation(
+            plan=self.plan,
+            phase="postpublication",
+            validation=postpublication,
+        )
+        if not postpublication.passed:
+            raise SemanticFragmentPublicationRejected(
+                "postpublication",
+                postpublication,
+            )
+        self.gateway._record_fragment_semantic_validation(
+            plan=self.plan,
+            prepublication=self.prepublication,
+            postpublication=postpublication,
+        )
+        return postpublication
+
+    def commit(self, patch_plan, validated):
+        self.failure_phase = "commit"
+        receipt = self.gateway.commit()
+        _commit_lifecycle(self.lifecycle_authority, self.plan, receipt)
+        self.backend._complete_semantic_fragment_publication(self.plan)
+        return receipt
+
+    def fail(self, patch_plan, original_error: Exception, phase: str) -> None:
+        primary_error = _exception_chain(original_error)[0]
+        if bool(getattr(self.gateway, "active", False)):
+            _record_primary_failure(
+                self.gateway,
+                self.plan,
+                phase=self.failure_phase,
+                error=original_error,
+            )
+        if self.gateway.mutation_started:
+            failure = self.gateway._poison_fragment_generation(
+                self.plan,
+                reason=_failure_message(primary_error),
+                failure_phase=self.failure_phase,
+                first_failed_obligation=_first_failed_obligation(
+                    original_error,
+                    failure_phase=self.failure_phase,
+                ),
+                interr_code=_interr_code(primary_error),
+            )
+            self.lifecycle_authority.request_poisoned_generation_restart(
+                self.plan,
+                failure,
+            )
+            raise CfgGenerationPoisoned(failure) from original_error
+
+        if self.gateway.transaction_failure is None:
+            self.gateway._record_clean_fragment_failure(
+                reason=_failure_message(primary_error),
+                failure_phase=self.failure_phase,
+                first_failed_obligation=_first_failed_obligation(
+                    original_error,
+                    failure_phase=self.failure_phase,
+                ),
+                interr_code=_interr_code(primary_error),
+            )
+        stage_cleanup_failed = bool(
+            getattr(
+                original_error,
+                "d810_semantic_stage_cleanup_failed",
+                False,
+            )
+        )
+        recovery_error: Exception | None = (
+            original_error if stage_cleanup_failed else None
+        )
+        recovery_succeeded = not stage_cleanup_failed
+        if self.root_attempted:
+            try:
+                self.backend._rollback_semantic_fragment_roots(
+                    self.plan,
+                    self.rollback_token,
+                )
+                self.backend._rebuild_semantic_fragment_chains(self.plan)
+            except Exception as error:
+                _record_rollback_failure(self.gateway, self.plan, error)
+                recovery_error = error
+                recovery_succeeded = False
+        if self.stage_attempted and not stage_cleanup_failed:
+            try:
+                self.backend._discard_staged_semantic_fragment(self.plan)
+            except Exception as error:
+                _record_rollback_failure(self.gateway, self.plan, error)
+                recovery_succeeded = False
+                recovery_error = recovery_error or error
+        if self.root_attempted or self.stage_attempted:
+            try:
+                self.gateway._record_fragment_rollback(
+                    self.plan,
+                    succeeded=recovery_succeeded,
+                )
+            except Exception as error:
+                _record_rollback_failure(self.gateway, self.plan, error)
+                recovery_succeeded = False
+                recovery_error = recovery_error or error
+        reason = _failure_message(primary_error)
+        if recovery_error is not None:
+            reason += (
+                f"; rollback failed: {type(recovery_error).__name__}: "
+                f"{recovery_error}"
+            )
+        try:
+            if bool(getattr(self.gateway, "active", False)):
+                self.gateway.abort(reason=reason)
+        except Exception as error:
+            recovery_error = recovery_error or error
+        if self.lifecycle_staged:
+            try:
+                _abort_lifecycle(
+                    self.lifecycle_authority,
+                    self.plan,
+                    reason=reason,
+                )
+            except Exception as error:
+                recovery_error = recovery_error or error
+        if recovery_error is not None:
+            raise SemanticFragmentRollbackFailed(
+                primary_error,
+                recovery_error,
+            ) from recovery_error
+
+
+def execute_patch_transaction(gateway: object, backend: object, plan: FragmentPlan):
+    """Project, preflight, bind, lower, realize, and commit one typed transaction."""
+    if not isinstance(plan, FragmentPlan):
+        raise TypeError("semantic fragment transaction requires a FragmentPlan")
+    if bool(getattr(gateway, "active", False)):
+        raise RuntimeError("semantic fragment transaction requires an independent batch")
     _require_backend_port(backend)
     lifecycle_authority = _require_lifecycle_authority(gateway)
     transaction_attempt = TransactionAttemptId.new(
@@ -650,14 +937,11 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
         transaction_attempt,
     )
     try:
-        projected_transaction = participant.project(plan, None)
+        projected = participant.project(plan, None)
         gateway._record_fragment_projected()
-        prepared_transaction = participant.preflight(projected_transaction)
+        prepared = participant.preflight(projected)
         gateway._record_fragment_preflighted()
-        bound_transaction = participant.bind(
-            prepared_transaction,
-            gateway.identity_index,
-        )
+        bound = participant.bind(prepared, gateway.identity_index)
     except FragmentProjectionFailure as error:
         rejection = FragmentValidationResult(
             plan_id=plan.plan_id,
@@ -675,237 +959,38 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             "preflight_projection",
             rejection,
         ) from error
-    if not isinstance(prepared_transaction, PreparedSemanticCfgTransaction):
+    if not isinstance(prepared, PreparedSemanticCfgTransaction):
         raise TypeError("semantic participant returned invalid preflight authority")
-    prepared_fragment = prepared_transaction.fragment
+    if not isinstance(bound, BoundSemanticCfgTransaction):
+        raise TypeError("semantic participant returned invalid bound authority")
+    prepared_fragment = prepared.fragment
+    prepublication = prepared.validation
     assert prepared_fragment is not None
-    root_inventory = prepared_fragment.authority.root_inventory
-    preflight_projection = prepared_fragment.authority.projection
-    prepublication = prepared_transaction.validation
     assert prepublication is not None
-    stage_attempted = False
-    lifecycle_staged = False
-    root_attempted = False
-    rollback_token = None
-    receipt = None
-    failure_phase = "stage"
-    try:
-        stage_attempted = True
-        projection = participant.realize(bound_transaction, gateway)
-        if not isinstance(projection, ProjectedFragment):
-            raise TypeError("semantic-fragment backend returned an invalid projection")
-        projection = participant.observe(projection, backend.mba)
-        gateway._record_fragment_staged(plan)
-        _mark_lifecycle_staged(
-            lifecycle_authority,
-            plan,
-        )
-        lifecycle_staged = True
-        failure_phase = "current_identity_binding"
-        gateway._record_fragment_current_mba_identity_binding(
-            plan,
-            backend._semantic_fragment_current_mba_identity_binding(plan),
-        )
-        failure_phase = "prepublication_validation"
-        staged_validation = validate_fragment_projection(plan, projection)
-        if not staged_validation.passed:
-            raise SemanticFragmentPublicationRejected(
-                "staged_observation",
-                staged_validation,
-            )
-        divergence = compare_fragment_projection_obligations(
-            preflight_projection,
-            projection,
-        )
-        if divergence:
-            raise RuntimeError(
-                "staged semantic fragment diverged from immutable preflight: "
-                + ", ".join(divergence)
-            )
-        gateway._record_fragment_validation(
-            plan=plan,
-            phase="prepublication",
-            validation=prepublication,
-        )
-        if not prepublication.passed:
-            raise SemanticFragmentPublicationRejected(
-                "prepublication",
-                prepublication,
-            )
-        if any(
-            operation.direct_transfer_rewrite is not None
-            for operation in plan.operations
-        ):
-            failure_phase = "detached_route_oracle"
-            detached_oracle = compare_detached_route_oracle(plan, projection)
-            gateway._record_fragment_route_oracle(plan, detached_oracle)
-            if not detached_oracle.passed:
-                failure = detached_oracle.first_failure
-                assert failure is not None
-                raise DetachedRouteOracleRejected(
-                    "detached route oracle rejected "
-                    f"{failure.route_id}: {failure.failed_invariant}: "
-                    f"{failure.reason}"
-                )
-        _mark_lifecycle_validated(
-            lifecycle_authority,
-            plan,
-            prepublication,
-        )
 
-        failure_phase = "root_preparation"
-        rollback_token = backend._prepare_semantic_fragment_root_publication(
-            plan,
-            root_inventory,
-        )
-        root_attempted = True
-        gateway._record_fragment_root_publication_attempted(plan)
-        failure_phase = "root_publication"
-        gateway._record_fragment_mutation_started(plan)
-        backend._publish_semantic_fragment_roots(plan, rollback_token)
-        gateway._record_fragment_root_publication_succeeded(plan)
-        for _root_edge in root_inventory.items:
-            gateway.record_edge_redirect()
-        failure_phase = "root_rebuild"
-        backend._rebuild_semantic_fragment_chains(plan)
-        failure_phase = "postpublication_observation"
-        observation = backend._observe_published_semantic_fragment(plan)
-        if not isinstance(observation, PublishedFragmentObservation):
-            raise TypeError(
-                "semantic-fragment backend returned an invalid published observation"
-            )
-        gateway._record_fragment_observed(plan)
-        failure_phase = "postpublication_validation"
-        postpublication = validate_published_fragment_observation(
-            plan,
-            observation,
-            projection,
-        )
-        gateway._record_fragment_validation(
-            plan=plan,
-            phase="postpublication",
-            validation=postpublication,
-        )
-        if not postpublication.passed:
-            raise SemanticFragmentPublicationRejected(
-                "postpublication",
-                postpublication,
-            )
-        gateway._record_fragment_semantic_validation(
-            plan=plan,
-            prepublication=prepublication,
-            postpublication=postpublication,
-        )
-        failure_phase = "commit"
-        receipt = gateway.commit()
-    except Exception as original_error:
-        primary_error = _exception_chain(original_error)[0]
-        _record_primary_failure(
-            gateway,
-            plan,
-            phase=failure_phase,
-            error=original_error,
-        )
-        if gateway.mutation_started:
-            primary = _exception_chain(original_error)[0]
-            failure = gateway._poison_fragment_generation(
-                plan,
-                reason=_failure_message(primary),
-                failure_phase=failure_phase,
-                first_failed_obligation=_first_failed_obligation(
-                    original_error,
-                    failure_phase=failure_phase,
-                ),
-                interr_code=_interr_code(primary),
-            )
-            lifecycle_authority.request_poisoned_generation_restart(
-                plan,
-                failure,
-            )
-            raise CfgGenerationPoisoned(failure) from original_error
-        if gateway.transaction_failure is None:
-            primary = _exception_chain(original_error)[0]
-            gateway._record_clean_fragment_failure(
-                reason=_failure_message(primary),
-                failure_phase=failure_phase,
-                first_failed_obligation=_first_failed_obligation(
-                    original_error,
-                    failure_phase=failure_phase,
-                ),
-                interr_code=_interr_code(primary),
-            )
-        stage_cleanup_failed = bool(
-            getattr(
-                original_error,
-                "d810_semantic_stage_cleanup_failed",
-                False,
-            )
-        )
-        recovery_error: Exception | None = (
-            original_error if stage_cleanup_failed else None
-        )
-        recovery_succeeded = not stage_cleanup_failed
-        if root_attempted:
-            try:
-                backend._rollback_semantic_fragment_roots(plan, rollback_token)
-                backend._rebuild_semantic_fragment_chains(plan)
-            except Exception as exc:
-                _record_rollback_failure(gateway, plan, exc)
-                recovery_error = exc
-                recovery_succeeded = False
-        if stage_attempted and not stage_cleanup_failed:
-            try:
-                backend._discard_staged_semantic_fragment(plan)
-            except Exception as exc:
-                _record_rollback_failure(gateway, plan, exc)
-                recovery_succeeded = False
-                if recovery_error is None:
-                    recovery_error = exc
-        if root_attempted or stage_attempted:
-            try:
-                gateway._record_fragment_rollback(
-                    plan,
-                    succeeded=recovery_succeeded,
-                )
-            except Exception as exc:
-                _record_rollback_failure(gateway, plan, exc)
-                recovery_succeeded = False
-                if recovery_error is None:
-                    recovery_error = exc
-        reason = _failure_message(primary_error)
-        if recovery_error is not None:
-            reason += (
-                f"; rollback failed: {type(recovery_error).__name__}: {recovery_error}"
-            )
-        try:
-            if bool(getattr(gateway, "active", False)):
-                gateway.abort(reason=reason)
-        except Exception as exc:
-            if recovery_error is None:
-                recovery_error = exc
-        if lifecycle_staged:
-            try:
-                _abort_lifecycle(
-                    lifecycle_authority,
-                    plan,
-                    reason=reason,
-                )
-            except Exception as exc:
-                if recovery_error is None:
-                    recovery_error = exc
-        if recovery_error is not None:
-            raise SemanticFragmentRollbackFailed(
-                primary_error,
-                recovery_error,
-            ) from recovery_error
-        raise
-    _commit_lifecycle(
-        lifecycle_authority,
-        plan,
-        receipt,
+    from d810.transforms.fragment_to_patch import (
+        CfgTransactionCoordinator,
+        FragmentTransactionParticipant,
     )
-    backend._complete_semantic_fragment_publication(plan)
-    return receipt
+
+    lifecycle = _SemanticPatchLifecycle(
+        gateway=gateway,
+        backend=backend,
+        participant=participant,
+        bound=bound,
+        plan=plan,
+        prepared=prepared_fragment,
+        projection=prepared_fragment.authority.projection,
+        prepublication=prepublication,
+        root_inventory=prepared_fragment.authority.root_inventory,
+        lifecycle_authority=lifecycle_authority,
+    )
+    coordinator = CfgTransactionCoordinator(lifecycle)
+    return coordinator.execute(
+        FragmentTransactionParticipant(),
+        plan,
+        prepared_projection=prepared_fragment,
+    )
 
 
 __all__ = [
@@ -915,5 +1000,5 @@ __all__ = [
     "SemanticFragmentPublicationRejected",
     "SemanticFragmentRollbackFailed",
     "SemanticFragmentTransactionParticipant",
-    "publish_semantic_fragment",
+    "execute_patch_transaction",
 ]

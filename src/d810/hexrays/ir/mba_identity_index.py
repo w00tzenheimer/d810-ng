@@ -860,8 +860,6 @@ class MbaBlockIdentityIndex:
             or self.resolve(handle) is not None
         ):
             raise ValueError("plan reservation requires an owned unbound handle")
-        if handle.provenance is not BlockHandleProvenance.CREATED_SYNTHETIC:
-            raise ValueError("plan reservation requires created-synthetic provenance")
         if replaces is None:
             logical_version = self._reserve_new_proxy(
                 transaction_id=transaction_id,

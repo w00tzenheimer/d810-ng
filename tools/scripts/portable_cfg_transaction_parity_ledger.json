@@ -213,10 +213,10 @@
       }
     },
     {
-      "id": "pure_preflight_zero_write",
+    "id": "pure_preflight_zero_write",
       "donor_source": "src/d810/transforms/fragment_projection.py::def project_fragment(",
       "donor_test": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_every_preflight_obligation_rejects_before_any_mutation",
-      "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_publication.py::def publish_semantic_fragment(",
+    "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_publication.py::def execute_patch_transaction(",
       "current_status": "partial",
       "required_port": "Run portable fragment and CFG contracts before batch creation so every knowable failure is REJECTED_CLEAN with zero SDK writes.",
       "remaining_gap": "Production preflight rejects known malformed evidence with zero writes; exhaustive obligation coverage and REJECTED_CLEAN diagnostics remain in the diagnostics slice.",
@@ -438,11 +438,11 @@
       }
     },
     {
-      "id": "typed_patch_block_refs",
+    "id": "typed_patch_block_refs",
       "donor_source": "src/d810/transforms/plan.py::PatchBlockRef: TypeAlias",
       "donor_test": "tests/unit/cfg/test_patch_plan.py::def test_patch_operations_reject_bare_block_serials",
       "current_production_seam": "src/d810/transforms/plan.py::class PatchPlan:",
-      "current_status": "missing",
+    "current_status": "accepted",
       "required_port": "Require NativeBlockRef, LogicalBlockRef, or PlanBlockRef in every block-bearing PatchOperation and nested payload; reject raw integers.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts", "cfg_creation_witnesses"],
@@ -455,11 +455,11 @@
       }
     },
     {
-      "id": "final_boundary_binding",
+    "id": "final_boundary_binding",
       "donor_source": "src/d810/hexrays/mutation/patch_binding.py::def bind_patch_plan(",
       "donor_test": "tests/system/runtime/hexrays/test_ir_translator.py::class TestTypedPatchBinding:",
       "current_production_seam": "src/d810/hexrays/mutation/ir_translator.py::class IDAIRTranslator:",
-      "current_status": "missing",
+    "current_status": "accepted",
       "required_port": "Validate snapshot, maturity, generation, and exact source authority, reserve all PlanBlockRefs, then release ephemeral serials only at DeferredGraphModifier queue calls.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_phase_events", "cfg_creation_witnesses"],
@@ -472,11 +472,11 @@
       }
     },
     {
-      "id": "prewrite_binding_cleanup",
+    "id": "prewrite_binding_cleanup",
       "donor_source": "src/d810/hexrays/mutation/ir_translator.py::def lower(",
       "donor_test": "tests/system/runtime/hexrays/test_ir_translator.py::def test_queue_exception_aborts_all_prewrite_identity_residue_and_retry_works",
       "current_production_seam": "src/d810/hexrays/mutation/ir_translator.py::class IDAIRTranslator:",
-      "current_status": "missing",
+    "current_status": "accepted",
       "required_port": "Treat begin, binding, modifier construction, configuration, and queueing as one prewrite boundary whose failure discards every reservation and child transaction.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts", "cfg_creation_witnesses"],
@@ -489,11 +489,11 @@
       }
     },
     {
-      "id": "no_serial_compatibility_channels",
+    "id": "no_serial_compatibility_channels",
       "donor_source": "src/d810/transforms/plan.py::class PatchPlan:",
       "donor_test": "tests/unit/architecture/test_patch_plan_no_compatibility_channels.py::def test_removed_patch_plan_compatibility_names_are_absent_from_production",
-      "current_production_seam": "src/d810/transforms/plan.py::class LegacyBlockOperation:",
-      "current_status": "missing",
+    "current_production_seam": "src/d810/transforms/plan.py::class PatchPlan:",
+    "current_status": "accepted",
       "required_port": "Delete LegacyBlockOperation, planner_modifications, as_graph_modifications, raw GraphModification lowering, VirtualBlockId, and predicted-serial aliases; add no fallback.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts"],
@@ -540,11 +540,11 @@
       }
     },
     {
-      "id": "fragment_to_patch_lowering",
+    "id": "fragment_to_patch_lowering",
       "donor_source": "src/d810/transforms/fragment_to_patch.py::def lower_fragment_plan(",
       "donor_test": "tests/unit/transforms/test_fragment_to_patch.py::def test_lowering_preserves_plan_refs_and_complete_semantic_contract",
       "current_production_seam": "src/d810/backends/hexrays/mutation/backend.py::class HexRaysMutationBackend:",
-      "current_status": "missing",
+    "current_status": "accepted",
       "required_port": "Lower only a preflighted FragmentPlan into typed PatchOperations that retain block, operation, terminal, normalization, root, and validation authority.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts", "mutation_plan_items"],
@@ -557,11 +557,11 @@
       }
     },
     {
-      "id": "shared_transaction_coordinator",
+    "id": "shared_transaction_coordinator",
       "donor_source": "src/d810/transforms/fragment_to_patch.py::class CfgTransactionCoordinator:",
       "donor_test": "tests/unit/transforms/test_fragment_to_patch.py::def test_coordinator_owns_complete_lifecycle_for_both_participants",
-      "current_production_seam": "src/d810/passes/transaction_engine.py::class CfgTransactionEngine:",
-      "current_status": "missing",
+    "current_production_seam": "src/d810/transforms/fragment_to_patch.py::class CfgTransactionCoordinator:",
+    "current_status": "accepted",
       "required_port": "Route FragmentPlan and PatchPlan production participants through one coordinator that owns begin, project, preflight, bind, realize, observe, validate, commit, and fail.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_phase_events"],
@@ -574,10 +574,10 @@
       }
     },
     {
-      "id": "observed_postroot_contract",
+    "id": "observed_postroot_contract",
       "donor_source": "src/d810/hexrays/mutation/deferred_modifier.py::def _observe_published_semantic_fragment_graph(",
       "donor_test": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_post_root_live_cfg_contract_runs_before_commit",
-      "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_publication.py::def publish_semantic_fragment(",
+    "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_publication.py::def execute_patch_transaction(",
       "current_status": "missing",
       "required_port": "Capture the actual post-root live graph and require full CfgContract plus semantic postvalidation before receipt commit.",
       "diagnostic_proof": {
@@ -591,11 +591,11 @@
       }
     },
     {
-      "id": "sole_mutation_entrypoint",
+    "id": "sole_mutation_entrypoint",
       "donor_source": "src/d810/backends/hexrays/mutation/backend.py::def apply(",
       "donor_test": "tests/unit/transforms/test_fragment_to_patch.py::def test_old_fragment_stage_and_root_executors_are_absent_from_production",
       "current_production_seam": "src/d810/backends/hexrays/mutation/backend.py::class HexRaysMutationBackend:",
-      "current_status": "missing",
+    "current_status": "accepted",
       "required_port": "Make HexRaysMutationBackend.apply the sole production mutation entry and delete publish_semantic_fragment plus separate stage/root executors.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts"],

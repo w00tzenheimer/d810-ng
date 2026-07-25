@@ -1135,6 +1135,50 @@ def test_plan_block_receipt_preserves_requested_and_returned_coordinates() -> No
     assert index.resolve(original, transaction_id=attempt.attempt_id).serial == 5
 
 
+def test_plan_replacement_reserves_native_identity_before_sdk_binding() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="session-a",
+        generation=4,
+        bindings=((identity, 2),),
+        native_key=NATIVE_KEY,
+    )
+    original = index.handle_for_serial(2)
+    assert original is not None
+    replacement = index.create_native_handle(identity)
+    attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="attempt-native-replacement",
+    )
+    plan_ref = PlanBlockRef("plan-a", "replacement")
+    index.begin_transaction(attempt, 3)
+
+    reservation = index.reserve_plan_block(
+        attempt,
+        plan_ref,
+        handle=replacement,
+        replaces=original,
+    )
+
+    assert reservation.logical_version.handle is replacement
+    assert index.resolve(replacement, transaction_id=attempt.attempt_id) is None
+
+    receipt = index.bind_reserved_plan_block(
+        attempt,
+        plan_ref,
+        insertion_serial=2,
+        returned_serial=2,
+    )
+
+    assert receipt.logical_version is reservation.logical_version
+    assert receipt.block.serial == 2
+    assert index.resolve(original, transaction_id=attempt.attempt_id) == receipt.block
+
+
 def test_generic_insert_cannot_consume_a_typed_plan_reservation() -> None:
     identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY

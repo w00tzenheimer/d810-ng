@@ -13,12 +13,104 @@ from d810.ir.block_identity import (
     StableBlockIdentity,
 )
 from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
+from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.transforms.cfg_transaction import LogicalBlockRef
+from d810.transforms.fragment_plan import (
+    FragmentBlock,
+    FragmentBlockMaterialization,
+    FragmentBlockRole,
+    FragmentEdge,
+    FragmentOperation,
+    FragmentPlan,
+    FragmentPublicationPurpose,
+)
 from d810.transforms.plan import PatchConvertToGoto, PatchPlan, PatchRedirectGoto
 from tests.native_preanalysis import make_native_key
 
 
 MUTATION_GATEWAY = object()
 NATIVE_KEY = make_native_key()
+
+
+def _ref(serial: int) -> LogicalBlockRef:
+    return LogicalBlockRef("backend-test", f"block:{int(serial)}", 0)
+
+
+def _source_coordinates(*serials: int):
+    return tuple((_ref(serial), int(serial)) for serial in serials)
+
+
+def _fragment_identity(start_ea: int) -> StableBlockIdentity:
+    return StableBlockIdentity.from_intervals(
+        (NativeEaInterval(start_ea, start_ea + 0x10),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(start_ea,),
+    )
+
+
+def _fragment_plan() -> FragmentPlan:
+    original_identity = _fragment_identity(0x401000)
+    return FragmentPlan(
+        plan_id="backend-fragment",
+        atomic_group_id="backend-route",
+        publication_purpose=(
+            FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+        ),
+        native_key=NATIVE_KEY,
+        blocks=(
+            FragmentBlock(
+                block_id="entry",
+                role=FragmentBlockRole.EXTERNAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x400000,
+                stable_identity=_fragment_identity(0x400000),
+            ),
+            FragmentBlock(
+                block_id="original",
+                role=FragmentBlockRole.ORIGINAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x401000,
+                stable_identity=original_identity,
+            ),
+            FragmentBlock(
+                block_id="replacement",
+                role=FragmentBlockRole.REPLACEMENT,
+                materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+                semantic_anchor_ea=0x401000,
+                stable_identity=original_identity,
+                replaces_block_id="original",
+            ),
+            FragmentBlock(
+                block_id="target",
+                role=FragmentBlockRole.EXTERNAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x402000,
+                stable_identity=_fragment_identity(0x402000),
+            ),
+            FragmentBlock(
+                block_id="dispatcher",
+                role=FragmentBlockRole.EXTERNAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x403000,
+                stable_identity=_fragment_identity(0x403000),
+            ),
+        ),
+        roots=("replacement",),
+        owned_originals=("original",),
+        prohibited_dispatcher_blocks=("dispatcher",),
+        operations=(
+            FragmentOperation(
+                operation_id="backend-direct-route",
+                source_block_id="replacement",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="target",
+                    ),
+                ),
+            ),
+        ),
+    )
 
 
 def _current_mba_identity_binding() -> CurrentMbaIdentityBindingSnapshot:
@@ -117,7 +209,14 @@ def test_apply_rejects_plan_that_orphans_reachable_terminal() -> None:
         translator=translator,
     )
     plan = PatchPlan(
-        steps=(PatchRedirectGoto(from_serial=2, old_target=3, new_target=1),),
+        steps=(
+            PatchRedirectGoto(
+                from_serial=_ref(2),
+                old_target=_ref(3),
+                new_target=_ref(1),
+            ),
+        ),
+        source_coordinates=_source_coordinates(1, 2, 3),
     )
 
     result = backend.apply(plan, live_source=object())
@@ -135,7 +234,14 @@ def test_apply_rejects_plan_that_collapses_entry_reachability() -> None:
         translator=translator,
     )
     plan = PatchPlan(
-        steps=(PatchRedirectGoto(from_serial=0, old_target=1, new_target=0),),
+        steps=(
+            PatchRedirectGoto(
+                from_serial=_ref(0),
+                old_target=_ref(1),
+                new_target=_ref(0),
+            ),
+        ),
+        source_coordinates=_source_coordinates(0, 1),
     )
 
     result = backend.apply(plan, live_source=object())
@@ -156,7 +262,13 @@ def test_apply_lowers_plan_when_reachability_is_preserved() -> None:
         translator=translator,
     )
     plan = PatchPlan(
-        steps=(PatchConvertToGoto(block_serial=0, goto_target=1),),
+        steps=(
+            PatchConvertToGoto(
+                block_serial=_ref(0),
+                goto_target=_ref(1),
+            ),
+        ),
+        source_coordinates=_source_coordinates(0, 1),
     )
 
     result = backend.apply(plan, live_source=object())
@@ -172,7 +284,7 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
         stop_serials=(3,),
     )
     translator = _FakeTranslator(cfg)
-    plan = object()
+    plan = _fragment_plan()
     published = []
     snapshot = _current_mba_identity_binding()
 
@@ -183,7 +295,7 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
         def new_transaction(self):
             return _Gateway("fragment")
 
-        def publish_semantic_fragment(self, fragment_backend, fragment_plan):
+        def execute_patch_transaction(self, fragment_backend, fragment_plan):
             published.append((self.name, fragment_backend, fragment_plan))
             return SimpleNamespace(
                 current_mba_identity_binding=snapshot,
@@ -200,7 +312,7 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
         ),
     )
 
-    result = backend.publish_fragment(plan, live_source="LIVE")
+    result = backend.apply(plan, live_source="LIVE")
 
     assert result is cfg
     assert published == [("fragment", fragment_backend, plan)]
@@ -219,7 +331,7 @@ def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
         def new_transaction(self):
             return self
 
-        def publish_semantic_fragment(self, _fragment_backend, _fragment_plan):
+        def execute_patch_transaction(self, _fragment_backend, _fragment_plan):
             if self.fail:
                 raise RuntimeError("publication aborted")
             return SimpleNamespace(
@@ -232,12 +344,13 @@ def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
         translator=translator,
         fragment_backend_factory=lambda _live_source, _transaction: object(),
     )
-    backend.publish_fragment(object(), live_source=object())
+    plan = _fragment_plan()
+    backend.apply(plan, live_source=object())
     assert backend.committed_current_mba_identity_binding() is snapshot
 
     gateway.fail = True
     with pytest.raises(RuntimeError, match="publication aborted"):
-        backend.publish_fragment(object(), live_source=object())
+        backend.apply(plan, live_source=object())
 
     assert backend.committed_current_mba_identity_binding() is None
 

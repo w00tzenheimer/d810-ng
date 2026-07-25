@@ -442,6 +442,23 @@ class MbaMutationObservationFailure:
 
 
 @dataclass(frozen=True, slots=True)
+class MbaCfgPlanBlockBindingObserved:
+    """Actual logical binding for one plan-owned block reference."""
+
+    plan_ref: PlanBlockRef
+    logical_version: LogicalBlockVersion
+    returned_serial: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.plan_ref, PlanBlockRef):
+            raise TypeError("plan binding witness requires a PlanBlockRef")
+        if not isinstance(self.logical_version, LogicalBlockVersion):
+            raise TypeError("plan binding witness requires a logical version")
+        if int(self.returned_serial) < 0:
+            raise ValueError("plan binding witness requires a live coordinate")
+
+
+@dataclass(frozen=True, slots=True)
 class MbaCfgTransactionAuthorityObserved:
     """Typed runtime authority for one portable transaction phase."""
 
@@ -455,7 +472,9 @@ class MbaCfgTransactionAuthorityObserved:
     evidence_generation: int
     mutation_started: bool
     poisoned: bool
+    insertion_quantity_initial: int | None = None
     plan_refs: tuple[PlanBlockRef, ...] = ()
+    plan_bindings: tuple[MbaCfgPlanBlockBindingObserved, ...] = ()
     reservations: tuple[PlanBlockReservation, ...] = ()
     creation_receipts: tuple[PlanBlockCreationReceipt, ...] = ()
     creation_quantities: tuple[tuple[PlanBlockRef, int, int], ...] = ()
@@ -479,11 +498,24 @@ class MbaCfgTransactionAuthorityObserved:
             raise ValueError("CFG transaction plan reference authority differs")
         if len(set(self.plan_refs)) != len(self.plan_refs):
             raise ValueError("CFG transaction plan references are not unique")
+        if self.insertion_quantity_initial is not None and int(
+            self.insertion_quantity_initial
+        ) < 0:
+            raise ValueError("CFG transaction initial quantity must be non-negative")
         declared = set(self.plan_refs)
+        observed_bindings = {item.plan_ref: item for item in self.plan_bindings}
+        if len(observed_bindings) != len(self.plan_bindings):
+            raise ValueError("CFG transaction plan bindings are not unique")
+        if any(item.plan_ref not in declared for item in self.plan_bindings):
+            raise ValueError("CFG transaction plan binding is not declared")
         if any(item.plan_ref not in declared for item in self.reservations):
             raise ValueError("CFG transaction reservation is not declared")
         if any(item.plan_ref not in declared for item in self.creation_receipts):
             raise ValueError("CFG transaction creation receipt is not declared")
+        for receipt in self.creation_receipts:
+            binding = observed_bindings.get(receipt.plan_ref)
+            if binding is not None and binding.logical_version is not receipt.logical_version:
+                raise ValueError("CFG transaction creation binding differs")
         if any(item[0] not in declared for item in self.creation_quantities):
             raise ValueError("CFG transaction creation quantity is not declared")
         if any(item not in declared for item in self.invalidated_refs):
@@ -603,6 +635,11 @@ class MbaMutationGateway:
         init=False,
         repr=False,
     )
+    _cfg_plan_bindings: dict[PlanBlockRef, MbaCfgPlanBlockBindingObserved] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
     _cfg_reservations: dict[PlanBlockRef, PlanBlockReservation] = field(
         default_factory=dict,
         init=False,
@@ -624,6 +661,7 @@ class MbaMutationGateway:
         init=False,
         repr=False,
     )
+    _cfg_initial_quantity: int | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.generation = int(self.generation)
@@ -694,10 +732,12 @@ class MbaMutationGateway:
         self._current_transaction_attempt = None
         self._cfg_phase_index = 0
         self._cfg_plan_refs = ()
+        self._cfg_plan_bindings.clear()
         self._cfg_reservations.clear()
         self._cfg_creation_receipts.clear()
         self._cfg_creation_quantities.clear()
         self._cfg_invalidated_refs.clear()
+        self._cfg_initial_quantity = None
         self._mutation_started = False
 
     def _require_generation_usable(self) -> None:
@@ -749,7 +789,9 @@ class MbaMutationGateway:
                 evidence_generation=int(self.identity_index.evidence_generation),
                 mutation_started=bool(self._mutation_started),
                 poisoned=(phase is CfgTransactionPhase.POISONED_RESTART_REQUIRED),
+                insertion_quantity_initial=self._cfg_initial_quantity,
                 plan_refs=self._cfg_plan_refs,
+                plan_bindings=tuple(self._cfg_plan_bindings.values()),
                 reservations=tuple(self._cfg_reservations.values()),
                 creation_receipts=tuple(self._cfg_creation_receipts.values()),
                 creation_quantities=tuple(
@@ -994,6 +1036,8 @@ class MbaMutationGateway:
             ):
                 raise ValueError("patch plan references differ from planned authority")
         serial_quantity = None if serial_quantity is None else int(serial_quantity)
+        if transaction_attempt is not None:
+            self._cfg_initial_quantity = serial_quantity
         batch_id = (
             uuid.uuid4().hex
             if transaction_attempt is None
@@ -1286,6 +1330,7 @@ class MbaMutationGateway:
         transaction_attempt: TransactionAttemptId,
         snapshot_id: str,
         prepared_fragment: PreparedSemanticFragment,
+        patch_plan: object,
     ) -> None:
         mba = getattr(backend, "mba", None)
         if mba is None:
@@ -1300,6 +1345,40 @@ class MbaMutationGateway:
             raise ValueError(
                 "prepared semantic-fragment authority differs from batch scope"
             )
+        from d810.transforms.plan import (
+            PatchFragmentOperation,
+            PatchFragmentRootPublication,
+            PatchPlan,
+        )
+
+        if not isinstance(patch_plan, PatchPlan):
+            raise TypeError("semantic fragment lowering requires PatchPlan")
+        if (
+            patch_plan.plan_id != plan.plan_id
+            or patch_plan.semantic_contract is None
+            or patch_plan.semantic_contract.fragment_plan is not plan
+        ):
+            raise ValueError("lowered fragment PatchPlan authority differs")
+        helper_refs = tuple(
+            step.fallthrough_helper_ref
+            for step in patch_plan.steps
+            if isinstance(
+                step,
+                (PatchFragmentOperation, PatchFragmentRootPublication),
+            )
+            and step.fallthrough_helper_ref is not None
+        )
+        self._cfg_plan_refs = tuple(
+            dict.fromkeys(
+                (
+                    *(
+                        PlanBlockRef(plan.plan_id, block.block_id)
+                        for block in plan.blocks
+                    ),
+                    *helper_refs,
+                )
+            )
+        )
         items = self._fragment_plan_items(plan, root_inventory)
         root_publication_groups = self._fragment_root_publication_groups(
             plan,
@@ -1317,6 +1396,8 @@ class MbaMutationGateway:
             fragment_plan=plan,
             fragment_root_publication_groups=root_publication_groups,
             transaction_attempt=transaction_attempt,
+            patch_plan_id=patch_plan.plan_id,
+            patch_plan_refs=self._cfg_plan_refs,
         )
         self._active_fragment_root_inventory_signature = tuple(
             (
@@ -1356,9 +1437,49 @@ class MbaMutationGateway:
         self._require_active_fragment(plan)
         self._active_fragment_staged = True
 
-    def _record_fragment_observed(self, plan: FragmentPlan) -> None:
-        """Record live postpublication observation for this exact attempt."""
+    def _record_fragment_plan_bindings(
+        self,
+        plan: FragmentPlan,
+        bindings: Iterable[tuple[PlanBlockRef, LogicalBlockVersion]],
+    ) -> None:
+        """Capture exact runtime versions for every declared plan block."""
         self._require_active_fragment(plan)
+        observed: dict[PlanBlockRef, MbaCfgPlanBlockBindingObserved] = {}
+        expected_refs = set(self._cfg_plan_refs)
+        for plan_ref, version in bindings:
+            if plan_ref not in expected_refs:
+                raise ValueError("runtime plan binding is not declared by this plan")
+            if plan_ref in observed:
+                raise ValueError("runtime plan binding was observed more than once")
+            bound = self.identity_index.resolve_logical_version(
+                version,
+                transaction_id=str(self._active_batch_id),
+            )
+            if bound is None:
+                raise ValueError("runtime plan binding has no live coordinate")
+            observed[plan_ref] = MbaCfgPlanBlockBindingObserved(
+                plan_ref=plan_ref,
+                logical_version=version,
+                returned_serial=int(bound.serial),
+            )
+        missing = expected_refs - set(observed)
+        if any(ref not in self._cfg_reservations for ref in missing):
+            raise ValueError("runtime plan binding inventory is incomplete")
+        self._cfg_plan_bindings = observed
+
+    def _record_fragment_observed(self, plan: FragmentPlan) -> None:
+        """Record complete live observation after staged and root realization."""
+        self._require_active_fragment(plan)
+        for plan_ref, receipt in self._cfg_creation_receipts.items():
+            if plan_ref in self._cfg_plan_bindings:
+                continue
+            self._cfg_plan_bindings[plan_ref] = MbaCfgPlanBlockBindingObserved(
+                plan_ref=plan_ref,
+                logical_version=receipt.logical_version,
+                returned_serial=int(receipt.returned_serial),
+            )
+        if set(self._cfg_plan_bindings) != set(self._cfg_plan_refs):
+            raise RuntimeError("fragment observation lacks complete plan bindings")
         self._emit_cfg_transaction_phase(CfgTransactionPhase.OBSERVED)
 
     def _record_fragment_failure(
@@ -1624,20 +1745,20 @@ class MbaMutationGateway:
         self._active_postpublication_validation = postpublication
         self._active_root_publication_confirmed = True
 
-    def publish_semantic_fragment(
+    def execute_patch_transaction(
         self,
         backend: object,
         plan: FragmentPlan,
     ) -> MbaMutationReceipt:
-        """Stage, prove, publish, post-prove, and receipt one whole fragment."""
+        """Lower, bind, realize, observe, and commit one semantic PatchPlan."""
         self._require_generation_usable()
         from d810.hexrays.mutation.semantic_fragment_publication import (
             _first_failed_obligation,
-            publish_semantic_fragment,
+            execute_patch_transaction,
         )
 
         try:
-            return publish_semantic_fragment(self, backend, plan)
+            return execute_patch_transaction(self, backend, plan)
         except CfgGenerationPoisoned:
             raise
         except Exception as exc:

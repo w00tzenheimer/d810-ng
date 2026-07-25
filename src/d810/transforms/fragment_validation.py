@@ -580,6 +580,22 @@ class PublishedFragmentObservation:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class PublishedFragmentGraphObservation:
+    """One live post-root graph read and its derived semantic observation."""
+
+    projection: ProjectedFragment
+    semantics: PublishedFragmentObservation
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.projection, ProjectedFragment):
+            raise TypeError("published graph observation requires ProjectedFragment")
+        if not isinstance(self.semantics, PublishedFragmentObservation):
+            raise TypeError(
+                "published graph observation requires PublishedFragmentObservation"
+            )
+
+
 def _outcome(
     outcomes: list[FragmentValidationOutcome],
     postcondition: FragmentValidationPostcondition,
