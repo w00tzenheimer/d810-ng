@@ -24,6 +24,7 @@ from d810.hexrays.mutation.semantic_fragment_preparation import (
 )
 from d810.transforms.cfg_transaction import (
     BoundCfgTransaction,
+    CfgGenerationPoisoned,
     CfgProjection,
     PlanBlockRef,
     PreparedCfgTransaction,
@@ -164,6 +165,7 @@ class SemanticFragmentTransactionParticipant:
 
     gateway: object
     backend: object
+    attempt_id: TransactionAttemptId | None = None
 
     def project(self, plan: object, snapshot: object) -> CfgProjection:
         if not isinstance(plan, FragmentPlan):
@@ -247,11 +249,17 @@ class SemanticFragmentTransactionParticipant:
         root_inventory = projection.root_inventory
         assert snapshot_preparation is not None
         assert root_inventory is not None
-        attempt = TransactionAttemptId.new(
+        attempt = self.attempt_id or TransactionAttemptId.new(
             plan.plan_id,
             str(self.gateway.session_id),
             int(self.gateway.generation),
         )
+        if (
+            attempt.plan_id != plan.plan_id
+            or attempt.session_id != str(self.gateway.session_id)
+            or attempt.generation != int(self.gateway.generation)
+        ):
+            raise ValueError("semantic participant attempt authority drifted")
         fragment = PreparedSemanticFragment(
             authority=PreparedSemanticFragmentAuthority(
                 plan_id=plan.plan_id,
@@ -470,6 +478,19 @@ def _failure_message(error: Exception) -> str:
     return str(error) or "<no exception message>"
 
 
+def _first_failed_obligation(error: Exception, *, failure_phase: str) -> str:
+    """Return the first typed validation obligation, or a runtime phase id."""
+    for candidate in _exception_chain(error):
+        if isinstance(candidate, SemanticFragmentPublicationRejected):
+            failures = candidate.validation.failures
+            if failures:
+                failure = failures[0]
+                return f"{failure.postcondition.value}:{failure.subject_id}"
+        if isinstance(candidate, FragmentProjectionFailure):
+            return f"{candidate.postcondition.value}:{candidate.subject_id}"
+    return f"runtime:{str(failure_phase)}"
+
+
 def _record_primary_failure(
     gateway: object,
     plan: FragmentPlan,
@@ -607,7 +628,7 @@ def _commit_lifecycle(
 
 
 def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPlan):
-    """Publish one plan through a rollback-capable two-phase transaction."""
+    """Publish one plan, cleaning pre-write rejection or poisoning after writes."""
     if not isinstance(plan, FragmentPlan):
         raise TypeError("semantic fragment publication requires a FragmentPlan")
     if bool(getattr(gateway, "active", False)):
@@ -616,11 +637,23 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
         )
     _require_backend_port(backend)
     lifecycle_authority = _require_lifecycle_authority(gateway)
+    transaction_attempt = TransactionAttemptId.new(
+        plan.plan_id,
+        str(gateway.session_id),
+        int(gateway.generation),
+    )
+    gateway._record_fragment_attempt_planned(plan, transaction_attempt)
     _mark_lifecycle_plan_ready(lifecycle_authority, plan)
-    participant = SemanticFragmentTransactionParticipant(gateway, backend)
+    participant = SemanticFragmentTransactionParticipant(
+        gateway,
+        backend,
+        transaction_attempt,
+    )
     try:
         projected_transaction = participant.project(plan, None)
+        gateway._record_fragment_projected()
         prepared_transaction = participant.preflight(projected_transaction)
+        gateway._record_fragment_preflighted()
         bound_transaction = participant.bind(
             prepared_transaction,
             gateway.identity_index,
@@ -728,6 +761,7 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
         root_attempted = True
         gateway._record_fragment_root_publication_attempted(plan)
         failure_phase = "root_publication"
+        gateway._record_fragment_mutation_started(plan)
         backend._publish_semantic_fragment_roots(plan, rollback_token)
         gateway._record_fragment_root_publication_succeeded(plan)
         for _root_edge in root_inventory.items:
@@ -740,6 +774,7 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             raise TypeError(
                 "semantic-fragment backend returned an invalid published observation"
             )
+        gateway._record_fragment_observed(plan)
         failure_phase = "postpublication_validation"
         postpublication = validate_published_fragment_observation(
             plan,
@@ -771,6 +806,34 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
             phase=failure_phase,
             error=original_error,
         )
+        if gateway.mutation_started:
+            primary = _exception_chain(original_error)[0]
+            failure = gateway._poison_fragment_generation(
+                plan,
+                reason=_failure_message(primary),
+                failure_phase=failure_phase,
+                first_failed_obligation=_first_failed_obligation(
+                    original_error,
+                    failure_phase=failure_phase,
+                ),
+                interr_code=_interr_code(primary),
+            )
+            lifecycle_authority.request_poisoned_generation_restart(
+                plan,
+                failure,
+            )
+            raise CfgGenerationPoisoned(failure) from original_error
+        if gateway.transaction_failure is None:
+            primary = _exception_chain(original_error)[0]
+            gateway._record_clean_fragment_failure(
+                reason=_failure_message(primary),
+                failure_phase=failure_phase,
+                first_failed_obligation=_first_failed_obligation(
+                    original_error,
+                    failure_phase=failure_phase,
+                ),
+                interr_code=_interr_code(primary),
+            )
         stage_cleanup_failed = bool(
             getattr(
                 original_error,

@@ -895,6 +895,7 @@ def test_gateway_reserves_before_sdk_creation_and_binds_exact_returned_block() -
     assert gateway.plan_creation_receipts == ()
 
     sdk_returned_serial = 2
+    gateway._record_cfg_mutation_started()
     receipt = gateway.bind_reserved_plan_block(
         attempt,
         plan_ref,

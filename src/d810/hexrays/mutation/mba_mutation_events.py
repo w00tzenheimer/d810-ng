@@ -50,6 +50,7 @@ from d810.transforms.fragment_plan import (
 from d810.transforms.detached_route_oracle import DetachedRouteOracleResult
 from d810.transforms.fragment_validation import FragmentValidationResult
 from d810.transforms.cfg_transaction import (
+    CfgGenerationPoisoned,
     CfgTransactionFailure,
     CfgTransactionPhase,
     PlanBlockRef,
@@ -458,6 +459,7 @@ class MbaCfgTransactionAuthorityObserved:
     reservations: tuple[PlanBlockReservation, ...] = ()
     creation_receipts: tuple[PlanBlockCreationReceipt, ...] = ()
     creation_quantities: tuple[tuple[PlanBlockRef, int, int], ...] = ()
+    invalidated_refs: tuple[PlanBlockRef, ...] = ()
     failure: CfgTransactionFailure | None = None
 
     def __post_init__(self) -> None:
@@ -484,6 +486,8 @@ class MbaCfgTransactionAuthorityObserved:
             raise ValueError("CFG transaction creation receipt is not declared")
         if any(item[0] not in declared for item in self.creation_quantities):
             raise ValueError("CFG transaction creation quantity is not declared")
+        if any(item not in declared for item in self.invalidated_refs):
+            raise ValueError("CFG transaction invalidation is not declared")
 
 
 @dataclass(slots=True)
@@ -588,6 +592,11 @@ class MbaMutationGateway:
         init=False,
         repr=False,
     )
+    _transaction_failure: CfgTransactionFailure | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     _cfg_phase_index: int = field(default=0, init=False, repr=False)
     _cfg_plan_refs: tuple[PlanBlockRef, ...] = field(
         default=(),
@@ -609,7 +618,12 @@ class MbaMutationGateway:
         init=False,
         repr=False,
     )
-    _cfg_mutation_started: bool = field(default=False, init=False, repr=False)
+    _mutation_started: bool = field(default=False, init=False, repr=False)
+    _cfg_invalidated_refs: set[PlanBlockRef] = field(
+        default_factory=set,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.generation = int(self.generation)
@@ -656,6 +670,18 @@ class MbaMutationGateway:
         return self._active_batch_id
 
     @property
+    def mutation_started(self) -> bool:
+        return bool(self._mutation_started or self.identity_index.generation_poisoned)
+
+    @property
+    def generation_poisoned(self) -> bool:
+        return self.identity_index.generation_poisoned
+
+    @property
+    def transaction_failure(self) -> CfgTransactionFailure | None:
+        return self.identity_index.poisoned_failure or self._transaction_failure
+
+    @property
     def current_transaction_attempt(self) -> TransactionAttemptId | None:
         return self._current_transaction_attempt
 
@@ -671,9 +697,41 @@ class MbaMutationGateway:
         self._cfg_reservations.clear()
         self._cfg_creation_receipts.clear()
         self._cfg_creation_quantities.clear()
-        self._cfg_mutation_started = False
+        self._cfg_invalidated_refs.clear()
+        self._mutation_started = False
 
-    def _emit_cfg_transaction_phase(self, phase: CfgTransactionPhase) -> None:
+    def _require_generation_usable(self) -> None:
+        self.identity_index.require_generation_usable()
+
+    def _record_fragment_attempt_planned(
+        self,
+        plan: FragmentPlan,
+        attempt: TransactionAttemptId,
+    ) -> None:
+        """Install one immutable four-part attempt before projection begins."""
+        self._require_generation_usable()
+        if self.active:
+            raise RuntimeError("cannot plan a fragment attempt inside an active batch")
+        if attempt.plan_id != plan.plan_id:
+            raise ValueError("fragment attempt belongs to another plan")
+        if attempt.session_id != self.session_id:
+            raise ValueError("fragment attempt belongs to another session")
+        if attempt.generation != self.identity_index.generation:
+            raise ValueError("fragment attempt belongs to another generation")
+        self._reset_cfg_context()
+        self._current_transaction_attempt = attempt
+        self._transaction_failure = None
+        self._cfg_plan_refs = tuple(
+            PlanBlockRef(plan.plan_id, block.block_id) for block in plan.blocks
+        )
+        self._emit_cfg_transaction_phase(CfgTransactionPhase.PLANNED)
+
+    def _emit_cfg_transaction_phase(
+        self,
+        phase: CfgTransactionPhase,
+        *,
+        failure: CfgTransactionFailure | None = None,
+    ) -> None:
         attempt = self._current_transaction_attempt
         if attempt is None:
             raise RuntimeError("CFG transaction phase has no attempt authority")
@@ -689,8 +747,8 @@ class MbaMutationGateway:
                 phase_index=int(self._cfg_phase_index),
                 mba_generation=int(attempt.generation),
                 evidence_generation=int(self.identity_index.evidence_generation),
-                mutation_started=bool(self._cfg_mutation_started),
-                poisoned=False,
+                mutation_started=bool(self._mutation_started),
+                poisoned=(phase is CfgTransactionPhase.POISONED_RESTART_REQUIRED),
                 plan_refs=self._cfg_plan_refs,
                 reservations=tuple(self._cfg_reservations.values()),
                 creation_receipts=tuple(self._cfg_creation_receipts.values()),
@@ -701,10 +759,109 @@ class MbaMutationGateway:
                         after,
                     ) in self._cfg_creation_quantities.items()
                 ),
+                invalidated_refs=tuple(
+                    sorted(
+                        self._cfg_invalidated_refs,
+                        key=lambda ref: ref.local_block_id,
+                    )
+                ),
+                failure=failure,
             ),
             mutation_batch_id=attempt.attempt_id,
         )
         self._cfg_phase_index += 1
+
+    def _record_fragment_projected(self) -> None:
+        self._emit_cfg_transaction_phase(CfgTransactionPhase.PROJECTED)
+
+    def _record_fragment_preflighted(self) -> None:
+        self._emit_cfg_transaction_phase(CfgTransactionPhase.PREFLIGHTED)
+
+    def _record_clean_fragment_failure(
+        self,
+        *,
+        reason: str,
+        failure_phase: str,
+        first_failed_obligation: str,
+        interr_code: int | None = None,
+    ) -> CfgTransactionFailure:
+        self._require_generation_usable()
+        if self._mutation_started:
+            raise RuntimeError("live mutation cannot be recorded as a clean rejection")
+        attempt = self._current_transaction_attempt
+        if attempt is None:
+            raise RuntimeError("clean rejection has no transaction attempt")
+        failure = CfgTransactionFailure(
+            attempt_id=attempt,
+            phase=CfgTransactionPhase.REJECTED_CLEAN,
+            reason=str(reason),
+            live_mutation_started=False,
+            first_failed_obligation=str(first_failed_obligation),
+            failure_phase=str(failure_phase),
+            interr_code=interr_code,
+        )
+        self._transaction_failure = failure
+        self._cfg_invalidated_refs.update(self._cfg_reservations)
+        self._emit_cfg_transaction_phase(
+            CfgTransactionPhase.REJECTED_CLEAN,
+            failure=failure,
+        )
+        return failure
+
+    def _record_cfg_mutation_started(self) -> None:
+        """Cross the irreversible boundary immediately before the first SDK write."""
+        self._require_active()
+        if self._current_transaction_attempt is None:
+            raise RuntimeError("CFG mutation has no transaction attempt authority")
+        if self._mutation_started:
+            return
+        self._mutation_started = True
+        self._emit_cfg_transaction_phase(CfgTransactionPhase.REALIZING)
+
+    def _record_fragment_mutation_started(
+        self,
+        plan: FragmentPlan | None = None,
+    ) -> None:
+        if plan is None:
+            plan = self._active_fragment_plan
+        if not isinstance(plan, FragmentPlan):
+            raise RuntimeError("fragment mutation has no active plan authority")
+        self._require_active_fragment(plan)
+        self._record_cfg_mutation_started()
+
+    def _poison_fragment_generation(
+        self,
+        plan: FragmentPlan,
+        *,
+        reason: str,
+        failure_phase: str,
+        first_failed_obligation: str,
+        interr_code: int | None = None,
+    ) -> CfgTransactionFailure:
+        self._require_active_fragment(plan)
+        if not self._mutation_started:
+            raise RuntimeError("cannot poison a generation before live mutation")
+        attempt = self._current_transaction_attempt
+        if attempt is None:
+            raise RuntimeError("poisoned generation has no transaction attempt")
+        failure = CfgTransactionFailure(
+            attempt_id=attempt,
+            phase=CfgTransactionPhase.POISONED_RESTART_REQUIRED,
+            reason=str(reason),
+            live_mutation_started=True,
+            first_failed_obligation=str(first_failed_obligation),
+            failure_phase=str(failure_phase),
+            interr_code=interr_code,
+        )
+        self._transaction_failure = failure
+        self._cfg_invalidated_refs.update(self._cfg_reservations)
+        self.identity_index.poison_generation(failure)
+        self._emit_cfg_transaction_phase(
+            CfgTransactionPhase.POISONED_RESTART_REQUIRED,
+            failure=failure,
+        )
+        self.abort(reason=str(reason))
+        return failure
 
     def _reset_fragment_context(self) -> None:
         self._active_fragment_plan = None
@@ -735,6 +892,7 @@ class MbaMutationGateway:
         The returned gateway shares only that index and observer port; it
         carries neither this gateway's active batch nor its receipt history.
         """
+        self._require_generation_usable()
         return MbaMutationGateway(
             native_key=self.native_key,
             generation=int(self.identity_index.generation),
@@ -761,6 +919,7 @@ class MbaMutationGateway:
         transaction_attempt: TransactionAttemptId | None = None,
         patch_plan_refs: Iterable[PlanBlockRef] = (),
     ) -> None:
+        self._require_generation_usable()
         if self.active:
             raise RuntimeError("a structural mutation batch is already active")
         if not isinstance(kind, StructuralMutationKind):
@@ -817,6 +976,20 @@ class MbaMutationGateway:
                 raise ValueError("patch plan references are not unique")
         elif patch_plan_refs:
             raise ValueError("patch plan references require transaction authority")
+        if transaction_attempt is not None:
+            if (
+                self._current_transaction_attempt is not None
+                and self._current_transaction_attempt != transaction_attempt
+            ):
+                raise ValueError("active CFG attempt authority differs from batch")
+            if (
+                patch_plan_refs
+                and self._current_transaction_attempt is not None
+                and self._cfg_plan_refs != patch_plan_refs
+            ):
+                raise ValueError(
+                    "patch plan references differ from planned authority"
+                )
         serial_quantity = None if serial_quantity is None else int(serial_quantity)
         batch_id = (
             uuid.uuid4().hex
@@ -829,10 +1002,13 @@ class MbaMutationGateway:
         )
 
         self._reset_fragment_context()
-        self._reset_cfg_context()
-        if transaction_attempt is not None:
+        if transaction_attempt is None:
+            self._reset_cfg_context()
+        elif self._current_transaction_attempt is None:
+            self._reset_cfg_context()
             self._current_transaction_attempt = transaction_attempt
             self._cfg_plan_refs = patch_plan_refs
+            self._emit_cfg_transaction_phase(CfgTransactionPhase.PLANNED)
         self._active_fragment_plan = fragment_plan
         self._active_kind = kind
         self._active_description = str(description)
@@ -873,7 +1049,7 @@ class MbaMutationGateway:
             mutation_batch_id=batch_id,
         )
         if transaction_attempt is not None:
-            self._emit_cfg_transaction_phase(CfgTransactionPhase.PLANNED)
+            self._emit_cfg_transaction_phase(CfgTransactionPhase.BOUND)
 
     def _emit_observation(
         self,
@@ -1145,6 +1321,11 @@ class MbaMutationGateway:
         self._require_active_fragment(plan)
         self._active_fragment_staged = True
 
+    def _record_fragment_observed(self, plan: FragmentPlan) -> None:
+        """Record live postpublication observation for this exact attempt."""
+        self._require_active_fragment(plan)
+        self._emit_cfg_transaction_phase(CfgTransactionPhase.OBSERVED)
+
     def _record_fragment_failure(
         self,
         plan: FragmentPlan,
@@ -1414,13 +1595,35 @@ class MbaMutationGateway:
         plan: FragmentPlan,
     ) -> MbaMutationReceipt:
         """Stage, prove, publish, post-prove, and receipt one whole fragment."""
+        self._require_generation_usable()
         from d810.hexrays.mutation.semantic_fragment_publication import (
+            _first_failed_obligation,
             publish_semantic_fragment,
         )
 
-        return publish_semantic_fragment(self, backend, plan)
+        try:
+            return publish_semantic_fragment(self, backend, plan)
+        except CfgGenerationPoisoned:
+            raise
+        except Exception as exc:
+            if (
+                not self._mutation_started
+                and self._current_transaction_attempt is not None
+                and self._transaction_failure is None
+            ):
+                failure_phase = str(getattr(exc, "phase", "preflight"))
+                self._record_clean_fragment_failure(
+                    reason=str(exc) or type(exc).__name__,
+                    failure_phase=failure_phase,
+                    first_failed_obligation=_first_failed_obligation(
+                        exc,
+                        failure_phase=failure_phase,
+                    ),
+                )
+            raise
 
     def _require_active(self) -> None:
+        self._require_generation_usable()
         if not self.active:
             raise RuntimeError("structural mutation must be inside a gateway batch")
 
@@ -1429,6 +1632,7 @@ class MbaMutationGateway:
             self._affected_identities.add(handle.stable_identity)
 
     def resolve_serial(self, serial: int | None) -> int | None:
+        self._require_generation_usable()
         if serial is None:
             return None
         serial = int(serial)
@@ -1694,6 +1898,10 @@ class MbaMutationGateway:
         self._require_active()
         if attempt != self._current_transaction_attempt:
             raise ValueError("plan binding attempt is not the active batch")
+        if not self._mutation_started:
+            raise RuntimeError(
+                "plan binding requires a pre-SDK mutation-start authority marker"
+            )
         before = self.identity_index.transaction_quantity(str(self._active_batch_id))
         receipt = self.identity_index.bind_reserved_plan_block(
             attempt,
@@ -1704,7 +1912,6 @@ class MbaMutationGateway:
         after = self.identity_index.transaction_quantity(str(self._active_batch_id))
         self._cfg_creation_receipts[plan_ref] = receipt
         self._cfg_creation_quantities[plan_ref] = (before, after)
-        self._cfg_mutation_started = True
         self._record_handle(receipt.logical_version.handle)
         self._operation_count += 1
         if set(self._cfg_creation_receipts) == set(self._cfg_plan_refs):

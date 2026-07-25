@@ -433,6 +433,14 @@ class DecompilationLifecycleCoordinator:
             and session.native_preanalysis.has_pending_generated_restart
         )
 
+    def has_exhausted_poison_restart(self, function_ea: int) -> bool:
+        """Return whether poison recurred after this epoch's recovery retry."""
+        session = self.current_session(int(function_ea))
+        return bool(
+            session is not None
+            and session.native_preanalysis.has_exhausted_poison_restart
+        )
+
     def begin_native_preanalysis(self, session: DecompilationSessionContext) -> None:
         """Reserve a session while its manager-owned preflight uses Hex-Rays.
 
@@ -931,11 +939,13 @@ class DecompilationLifecycleCoordinator:
             return None
         if (
             activation.owns_session
-            and activation.session.native_preanalysis.has_pending_generated_restart
+            and (
+                activation.session.native_preanalysis.has_pending_generated_restart
+                or activation.session.native_preanalysis.has_exhausted_poison_restart
+            )
         ):
-            # CALLS cannot restart generated/PREOPT microcode itself. Retain
-            # the evidence owner until a manager-controlled follow-up reaches
-            # flowchart and consumes the one staged MERR_REDO request.
+            # Retain the evidence owner until the manager drives the staged
+            # MERR_REDO or refuses a terminally exhausted poisoned result.
             return None
         self._active_sessions.pop()
         if not activation.owns_session:

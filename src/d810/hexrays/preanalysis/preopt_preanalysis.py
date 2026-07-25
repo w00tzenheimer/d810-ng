@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, MutableMapping
 
 from d810.core.logging import getLogger
+from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 
 logger = getLogger("D810.hexrays.preanalysis.preopt")
 
@@ -41,7 +42,9 @@ def run_preopt_preanalysis_handlers(
                 mba=mba,
                 decision=decision,
             )
-        except Exception:  # noqa: BLE001 - preanalysis must fail open
+        except CfgGenerationPoisoned:
+            raise
+        except Exception:  # noqa: BLE001 - non-mutation preanalysis fails open
             logger.debug(
                 "PREOPT preanalysis handler %s failed for 0x%X",
                 name,

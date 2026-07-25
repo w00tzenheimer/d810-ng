@@ -1219,6 +1219,9 @@ class NativePreanalysisSessionState:
     bound_state_write_route_generation: int | None = None
     redo_generation: int | None = None
     pending_generated_restart_generation: int | None = None
+    pending_generated_restart_family: str | None = None
+    poisoned_restart_generation: int | None = None
+    exhausted_poison_restart_generation: int | None = None
     event_observer: Callable[[EvidenceLifecycleTransition], None] | None = field(
         default=None,
         repr=False,
@@ -2657,6 +2660,7 @@ class NativePreanalysisSessionState:
         if (
             self.normalization_published_postvalidated_generation is None
             and self.evidence_generation > 0
+            and not self.has_exhausted_poison_restart
         ):
             self.portable_evidence_ready_generation = self.evidence_generation
             self._observe_transition(
@@ -2682,12 +2686,19 @@ class NativePreanalysisSessionState:
         """Advance one evidence epoch without first-pass coalescing."""
         previous_generation = int(self.evidence_generation)
         restart_pending = self.pending_generated_restart_generation is not None
+        poisoned_restart_pending = (
+            restart_pending and self.poisoned_restart_generation == previous_generation
+        )
         self.evidence_generation += 1
         self.portable_evidence_ready_generation = self.evidence_generation
         self.redo_generation = None
         self.pending_generated_restart_generation = (
             self.evidence_generation if restart_pending else None
         )
+        self.poisoned_restart_generation = (
+            self.evidence_generation if poisoned_restart_pending else None
+        )
+        self.exhausted_poison_restart_generation = None
         self._observe_transition(
             operation="evidence_changed",
             previous_generation=previous_generation,
@@ -2846,6 +2857,11 @@ class NativePreanalysisSessionState:
         """Whether CALLS staged a controller-owned generated-MBA restart."""
         return self.pending_generated_restart_generation == self.evidence_generation
 
+    @property
+    def has_exhausted_poison_restart(self) -> bool:
+        """Whether poison recurred after this evidence epoch's recovery retry."""
+        return self.exhausted_poison_restart_generation == self.evidence_generation
+
     def request_generated_restart(
         self,
         *,
@@ -2875,10 +2891,45 @@ class NativePreanalysisSessionState:
             )
             return False
         self.pending_generated_restart_generation = self.evidence_generation
+        self.pending_generated_restart_family = evidence_family
         self._observe_transition(
             operation="generated_restart_requested",
             previous_generation=generation,
             evidence_family=evidence_family,
+            reason=reason,
+        )
+        return True
+
+    def request_poisoned_generation_restart(self, *, reason: str) -> bool:
+        """Stage one poison recovery even after an ordinary redo was consumed."""
+        reason = str(reason).strip()
+        if not reason:
+            raise ValueError("poisoned restart requires a reason")
+        generation = int(self.evidence_generation)
+        if self.poisoned_restart_generation == generation:
+            if not self.has_pending_generated_restart:
+                self.exhausted_poison_restart_generation = generation
+            self._observe_transition(
+                operation="generated_restart_requested",
+                previous_generation=generation,
+                evidence_family="poisoned_generation_restart",
+                outcome=(
+                    "declined" if self.has_pending_generated_restart else "exhausted"
+                ),
+                reason=(
+                    "active poison incident already owns a pending restart"
+                    if self.has_pending_generated_restart
+                    else "distinct poison incident exhausted the generation retry"
+                ),
+            )
+            return False
+        self.poisoned_restart_generation = generation
+        self.pending_generated_restart_generation = generation
+        self.pending_generated_restart_family = "poisoned_generation_restart"
+        self._observe_transition(
+            operation="generated_restart_requested",
+            previous_generation=generation,
+            evidence_family="poisoned_generation_restart",
             reason=reason,
         )
         return True
@@ -2889,10 +2940,12 @@ class NativePreanalysisSessionState:
             return False
         generation = int(self.evidence_generation)
         self.pending_generated_restart_generation = None
+        evidence_family = self.pending_generated_restart_family or "controller_restart"
+        self.pending_generated_restart_family = None
         self._observe_transition(
             operation="generated_restart_consumed",
             previous_generation=generation,
-            evidence_family="controller_restart",
+            evidence_family=evidence_family,
             reason="flowchart consumed the staged generated-MBA restart",
         )
         return True

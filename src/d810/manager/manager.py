@@ -633,7 +633,7 @@ class D810Manager:
         decompile: typing.Callable[[], typing.Any],
         invalidate_cached_cfunc: typing.Callable[[], None],
     ) -> typing.Any:
-        """Run one top-level decompile plus at most one generated retry.
+        """Run one top-level decompile plus bounded generated retries.
 
         CALLS can stage evidence for PREOPT but cannot restart generated
         microcode. This manager-owned controller performs the follow-up only
@@ -642,17 +642,29 @@ class D810Manager:
         """
         function_ea = int(function_ea)
         result: typing.Any = None
-        for _round in range(2):
+        for _round in range(3):
             self.prepare_native_preanalysis(function_ea)
             # Native preanalysis may generate top-level or snippet cfuncs while
             # capturing pristine templates.  None of those cache entries owns
             # the live decompile that follows this preparation round.
             invalidate_cached_cfunc()
             result = decompile()
+            if self.decompilation_lifecycle.has_exhausted_poison_restart(
+                function_ea
+            ):
+                raise RuntimeError(
+                    "native preanalysis poison restart exhausted for "
+                    f"0x{function_ea:X}; refusing poisoned output"
+                )
             if not self.decompilation_lifecycle.has_pending_generated_restart(
                 function_ea
             ):
                 break
+        else:
+            raise RuntimeError(
+                "native preanalysis generated-restart budget exhausted with "
+                f"a restart still pending for 0x{function_ea:X}"
+            )
         return result
 
     @property
@@ -1561,6 +1573,7 @@ class D810Manager:
 
         reservations = {item.plan_ref: item for item in event.reservations}
         receipts = {item.plan_ref: item for item in event.creation_receipts}
+        invalidated = set(event.invalidated_refs)
         quantities_by_ref = {
             plan_ref: (before, after)
             for plan_ref, before, after in event.creation_quantities
@@ -1580,6 +1593,8 @@ class D810Manager:
                 state = "reserved"
             if receipt is not None:
                 state = "committed" if event.phase.value == "committed" else "bound"
+            if plan_ref in invalidated:
+                state = "invalidated"
             witnesses.append(
                 CfgCreationWitnessObserved(
                     local_block_id=plan_ref.local_block_id,
@@ -1620,6 +1635,7 @@ class D810Manager:
                     returned_serial=(
                         None if receipt is None else int(receipt.returned_serial)
                     ),
+                    invalidated=plan_ref in invalidated,
                     state=state,
                 )
             )

@@ -100,6 +100,7 @@ from d810.transforms.fragment_validation import (  # noqa: E402
 )
 from d810.transforms.cfg_transaction import (  # noqa: E402
     BoundCfgTransaction,
+    CfgGenerationPoisoned,
     CfgProjection,
     PreparedCfgTransaction,
 )
@@ -3207,7 +3208,7 @@ def test_live_fragment_publication_is_reconstructible_from_diagnostic_db(
     assert root_group[7:] == (1, 1, 0, None)
 
 
-def test_failed_live_staging_restores_graph_and_records_rollback(
+def test_failed_live_staging_poisons_without_graph_rollback(
     monkeypatch,
 ) -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
@@ -3259,22 +3260,22 @@ def test_failed_live_staging_restores_graph_and_records_rollback(
 
     monkeypatch.setattr(modifier, "_semantic_edge_mark", _reject_after_helper)
     try:
-        with pytest.raises(RuntimeError, match="post-helper failure"):
+        with pytest.raises(CfgGenerationPoisoned, match="post-helper failure"):
             gateway.publish_semantic_fragment(modifier, plan)
     finally:
         uninstall_diag_event_handlers()
         reset_diagnostic_bus()
 
-    assert mba.qty == 6
+    assert mba.qty == 8
     assert tuple(entry.succset) == (1,)
     assert tuple(original.succset) == ()
-    assert tuple(taken.predset) == ()
-    assert tuple(fallthrough.predset) == ()
+    assert tuple(taken.predset)
     assert gateway.receipts == ()
     assert gateway.active is False
     assert len(aborted) == 1
-    assert aborted[0].rollback_attempted
-    assert aborted[0].rollback_succeeded
+    assert not aborted[0].rollback_attempted
+    assert aborted[0].rollback_succeeded is None
+    assert gateway.generation_poisoned
     assert diag_conn.execute(
         "SELECT outcome,fragment_staged,root_publication_attempted,"
         "rollback_attempted,rollback_succeeded,reason "
@@ -3283,8 +3284,8 @@ def test_failed_live_staging_restores_graph_and_records_rollback(
         "aborted",
         0,
         0,
-        1,
-        1,
+        0,
+        None,
         "post-helper failure",
     )
     assert diag_conn.execute(
@@ -3294,7 +3295,6 @@ def test_failed_live_staging_restores_graph_and_records_rollback(
         ("plan_recorded", "planned"),
         ("stage_failure", "failed"),
         ("fragment_staged", "failed"),
-        ("rollback", "succeeded"),
         ("receipt", "aborted"),
     ]
 
@@ -3522,7 +3522,7 @@ def test_staged_block_discard_invalidates_state_after_cleanup_failure(
     gateway.abort(reason="runtime failed-cleanup state invalidation")
 
 
-def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_work(
+def test_gateway_poisons_disappeared_terminal_effect_and_receipts_applied_work(
     monkeypatch,
 ) -> None:
     mba, gateway, modifier, plan, entry, original = _terminal_effect_runtime_case(
@@ -3579,7 +3579,7 @@ def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_wor
 
     try:
         with pytest.raises(
-            SemanticFragmentPublicationRejected,
+            CfgGenerationPoisoned,
             match="postpublication.*observable_return_carrier:return-value",
         ):
             gateway.publish_semantic_fragment(modifier, plan)
@@ -3587,9 +3587,7 @@ def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_wor
         uninstall_diag_event_handlers()
         reset_diagnostic_bus()
 
-    assert mba.qty == 5
-    assert tuple(entry.succset) == (1,)
-    assert tuple(original.succset) == (3,)
+    assert mba.qty > 5
     assert gateway.receipts == ()
     assert gateway.active is False
     assert len(aborted) == 1
@@ -3601,8 +3599,8 @@ def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_wor
     assert aborted[0].fragment_staged
     assert aborted[0].root_publication_attempted
     assert aborted[0].root_publication_succeeded
-    assert aborted[0].rollback_attempted
-    assert aborted[0].rollback_succeeded
+    assert not aborted[0].rollback_attempted
+    assert aborted[0].rollback_succeeded is None
     assert aborted[0].prepublication_validation is not None
     assert aborted[0].prepublication_validation.passed
     assert aborted[0].postpublication_validation is not None
@@ -3621,7 +3619,7 @@ def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_wor
         "SELECT group_id,publication_attempted,publication_succeeded,"
         "rollback_attempted,rollback_succeeded "
         "FROM semantic_fragment_root_publication_groups"
-    ).fetchone() == ("root-group:entry", 1, 1, 1, 1)
+    ).fetchone() == ("root-group:entry", 1, 1, 0, None)
     assert diag_conn.execute(
         "SELECT event_kind,outcome,detail_json "
         "FROM semantic_fragment_transaction_events "
@@ -3630,11 +3628,6 @@ def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_wor
         (
             "root_group_publication",
             "published",
-            '{"group_id":"root-group:entry"}',
-        ),
-        (
-            "root_group_rollback",
-            "succeeded",
             '{"group_id":"root-group:entry"}',
         ),
     ]
@@ -4416,18 +4409,15 @@ def test_native_body_rejects_an_unbound_materialized_instruction(
         target=2,
         dispatcher=3,
     )
-    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
-
     with pytest.raises(
-        sfb.SemanticFragmentBackendRejected,
+        CfgGenerationPoisoned,
         match="unbound live instruction",
     ):
-        modifier._stage_semantic_fragment(plan, prepared)
+        gateway.publish_semantic_fragment(modifier, plan)
 
-    assert mba.qty == 5
-    assert gateway.active
+    assert mba.qty == 7
+    assert gateway.generation_poisoned
     assert gateway.receipts == ()
-    gateway.abort(reason="runtime unbound imported instruction cleanup")
 
 
 def test_gateway_publishes_native_body_in_one_balanced_receipt(monkeypatch) -> None:
@@ -5166,7 +5156,7 @@ def test_backend_groups_native_flag_producer_microinstructions() -> None:
     gateway.abort(reason="runtime grouped flag producer cleanup")
 
 
-def test_gateway_rolls_back_postpublication_flag_clobber(monkeypatch) -> None:
+def test_gateway_poisons_on_staged_flag_clobber(monkeypatch) -> None:
     mba, gateway, modifier, plan, entry, original = _flag_corridor_runtime_case(
         intervening_clobber=True,
     )
@@ -5193,7 +5183,7 @@ def test_gateway_rolls_back_postpublication_flag_clobber(monkeypatch) -> None:
     monkeypatch.setattr(sfb, "condition_code_write_eas", _changing_flag_writes)
 
     with pytest.raises(
-        SemanticFragmentPublicationRejected,
+        CfgGenerationPoisoned,
         match="staged_observation.*flag_corridor_integrity:branch-flags",
     ):
         gateway.publish_semantic_fragment(modifier, plan)
@@ -5202,9 +5192,10 @@ def test_gateway_rolls_back_postpublication_flag_clobber(monkeypatch) -> None:
     assert proxy.resolve() is published
     assert tuple(entry.succset) == (original.serial,)
     assert tuple(original.predset) == (entry.serial,)
-    assert mba.qty == 5
+    assert mba.qty == 6
     assert gateway.active is False
-    assert modifier._semantic_fragment_state is None
+    assert gateway.generation_poisoned
+    assert modifier._semantic_fragment_state is not None
 
 
 def _range_runtime_case(
@@ -5385,7 +5376,7 @@ def test_gateway_validates_live_value_range_atomically(
     assert modifier._semantic_fragment_state is None
 
 
-def test_gateway_rolls_back_postpublication_value_range_drift(
+def test_gateway_poisons_on_staged_value_range_drift(
     monkeypatch,
 ) -> None:
     mba, gateway, modifier, plan, entry, original, target = _range_runtime_case(
@@ -5402,7 +5393,7 @@ def test_gateway_rolls_back_postpublication_value_range_drift(
     assert published is not None
 
     with pytest.raises(
-        SemanticFragmentPublicationRejected,
+        CfgGenerationPoisoned,
         match="staged_observation.*value_range_proven:selector-domain",
     ):
         gateway.publish_semantic_fragment(modifier, plan)
@@ -5410,9 +5401,10 @@ def test_gateway_rolls_back_postpublication_value_range_drift(
     assert proxy.resolve() is published
     assert tuple(entry.succset) == (original.serial,)
     assert tuple(original.predset) == (entry.serial,)
-    assert mba.qty == 5
+    assert mba.qty == 6
     assert gateway.active is False
-    assert modifier._semantic_fragment_state is None
+    assert gateway.generation_poisoned
+    assert modifier._semantic_fragment_state is not None
 
 
 class TestExactValueRangeSdk:
@@ -5542,7 +5534,7 @@ def test_gateway_revalidates_data_flow_after_root_publication(
 
     if postpublication_extra_use:
         with pytest.raises(
-            SemanticFragmentPublicationRejected,
+            CfgGenerationPoisoned,
             match="staged_observation",
         ):
             gateway.publish_semantic_fragment(modifier, plan)
@@ -5550,9 +5542,10 @@ def test_gateway_revalidates_data_flow_after_root_publication(
         assert proxy.resolve() is published
         assert tuple(entry.succset) == (original.serial,)
         assert tuple(original.predset) == (entry.serial,)
-        assert mba.qty == 5
+        assert mba.qty == 6
         assert gateway.active is False
-        assert modifier._semantic_fragment_state is None
+        assert gateway.generation_poisoned
+        assert modifier._semantic_fragment_state is not None
         return
 
     receipt = gateway.publish_semantic_fragment(modifier, plan)
@@ -5880,7 +5873,7 @@ def test_gateway_allows_staged_internal_predecessor_for_publication_root() -> No
     assert receipt.root_publication_confirmed
 
 
-def test_direct_root_partial_write_restores_previous_authority(monkeypatch) -> None:
+def test_direct_root_partial_write_poisons_previous_authority(monkeypatch) -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
     target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
@@ -5910,18 +5903,15 @@ def test_direct_root_partial_write_restores_previous_authority(monkeypatch) -> N
 
     monkeypatch.setattr(modifier, "_semantic_edge_mark", _fail_once_after_entry_write)
 
-    with pytest.raises(RuntimeError, match="failure after entry root write"):
+    with pytest.raises(CfgGenerationPoisoned, match="failure after entry root write"):
         gateway.publish_semantic_fragment(modifier, plan)
 
     assert entry_write_failed
-    assert mba.qty == 5
-    assert tuple(entry.succset) == (original.serial,)
-    assert tuple(original.predset) == (entry.serial,)
-    assert tuple(original.succset) == (dispatcher.serial,)
-    assert tuple(target.predset) == ()
+    assert mba.qty == 6
     assert proxy.resolve() is published
     assert gateway.active is False
-    assert modifier._semantic_fragment_state is None
+    assert gateway.generation_poisoned
+    assert modifier._semantic_fragment_state is not None
 
 
 @pytest.mark.parametrize("fail_during_taken_write", (False, True))
@@ -6011,24 +6001,16 @@ def test_gateway_publishes_shared_conditional_roots_as_one_atomic_group(
 
     if fail_during_taken_write:
         with pytest.raises(
-            RuntimeError,
+            CfgGenerationPoisoned,
             match="partial shared conditional root write",
         ):
             gateway.publish_semantic_fragment(modifier, plan)
-        assert mba.qty == 7
-        assert predecessor.type == int(ida_hexrays.BLT_2WAY)
-        assert predecessor.nextb is fallthrough_original
-        assert predecessor.tail.d.b == taken_original.serial
-        assert tuple(predecessor.succset) == (
-            fallthrough_original.serial,
-            taken_original.serial,
-        )
-        assert tuple(fallthrough_original.predset) == (predecessor.serial,)
-        assert tuple(taken_original.predset) == (predecessor.serial,)
+        assert mba.qty == 9
         assert fallthrough_proxy.resolve() is fallthrough_published
         assert taken_proxy.resolve() is taken_published
         assert gateway.active is False
-        assert modifier._semantic_fragment_state is None
+        assert gateway.generation_poisoned
+        assert modifier._semantic_fragment_state is not None
         return
 
     receipt = gateway.publish_semantic_fragment(modifier, plan)
@@ -6154,19 +6136,16 @@ def test_gateway_publishes_one_way_call_root_through_owned_helper(
 
     if fail_after_root_write:
         with pytest.raises(
-            RuntimeError,
+            CfgGenerationPoisoned,
             match="failure after one-way call root write",
         ):
             gateway.publish_semantic_fragment(modifier, plan)
         assert root_write_failed
-        assert mba.qty == 6
-        assert call_predecessor.nextb is original
-        assert call_predecessor.tail.opcode == int(ida_hexrays.m_call)
-        assert tuple(call_predecessor.succset) == (original.serial,)
-        assert tuple(original.predset) == (call_predecessor.serial,)
+        assert mba.qty == 8
         assert proxy.resolve() is published
         assert gateway.active is False
-        assert modifier._semantic_fragment_state is None
+        assert gateway.generation_poisoned
+        assert modifier._semantic_fragment_state is not None
         return
 
     receipt = gateway.publish_semantic_fragment(modifier, plan)
@@ -6244,19 +6223,16 @@ def test_gateway_publishes_conditional_taken_fragment_root(
 
     if fail_after_root_write:
         with pytest.raises(
-            RuntimeError,
+            CfgGenerationPoisoned,
             match="failure after conditional taken root write",
         ):
             gateway.publish_semantic_fragment(modifier, plan)
         assert root_write_failed
-        assert mba.qty == 7
-        assert predecessor.tail.d.b == original.serial
-        assert tuple(predecessor.succset) == (sibling.serial, original.serial)
-        assert tuple(original.predset) == (predecessor.serial,)
-        assert tuple(sibling.predset) == (predecessor.serial,)
+        assert mba.qty == 8
         assert proxy.resolve() is published
         assert gateway.active is False
-        assert modifier._semantic_fragment_state is None
+        assert gateway.generation_poisoned
+        assert modifier._semantic_fragment_state is not None
         return
 
     receipt = gateway.publish_semantic_fragment(modifier, plan)
@@ -6350,26 +6326,19 @@ def test_gateway_publishes_conditional_fallthrough_fragment_root(
     assert proxy is not None
     published = proxy.resolve()
     assert published is not None
-    proxy_count = gateway.identity_index.logical_proxy_count
 
     if fail_after_root_write:
         with pytest.raises(
-            RuntimeError,
+            CfgGenerationPoisoned,
             match="failure after conditional fallthrough root write",
         ):
             gateway.publish_semantic_fragment(modifier, plan)
         assert root_write_failed
-        assert mba.qty == 7
-        assert predecessor.nextb is original
-        assert tuple(predecessor.succset) == (original.serial, sibling.serial)
-        assert predecessor.tail.d.b == sibling.serial
-        assert tuple(original.predset) == (predecessor.serial,)
-        assert tuple(sibling.predset) == (predecessor.serial,)
-        assert tuple(target.predset) == ()
+        assert mba.qty == 9
         assert proxy.resolve() is published
-        assert gateway.identity_index.logical_proxy_count == proxy_count
         assert gateway.active is False
-        assert modifier._semantic_fragment_state is None
+        assert gateway.generation_poisoned
+        assert modifier._semantic_fragment_state is not None
         return
 
     receipt = gateway.publish_semantic_fragment(modifier, plan)
@@ -6869,7 +6838,7 @@ def test_backend_stages_conditional_with_transaction_local_targets(
     assert gateway.active is False
 
 
-def test_conditional_staging_failure_discards_helper_and_replacement(
+def test_conditional_staging_failure_poisons_with_helper_and_replacement(
     monkeypatch,
 ) -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
@@ -6894,20 +6863,17 @@ def test_conditional_staging_failure_discards_helper_and_replacement(
         fallthrough=3,
         dispatcher=4,
     )
-    prepared = _begin_preflight_fragment_batch(gateway, modifier, plan)
-
     def _reject_after_helper(*_blocks) -> None:
         raise RuntimeError("post-helper failure")
 
     monkeypatch.setattr(modifier, "_semantic_edge_mark", _reject_after_helper)
 
-    with pytest.raises(RuntimeError, match="post-helper failure"):
-        modifier._stage_semantic_fragment(plan, prepared)
-    gateway.abort(reason="runtime conditional failure cleanup")
+    with pytest.raises(CfgGenerationPoisoned, match="post-helper failure"):
+        gateway.publish_semantic_fragment(modifier, plan)
 
-    assert mba.qty == 6
+    assert mba.qty == 8
     assert tuple(entry.succset) == (1,)
     assert tuple(original.succset) == ()
-    assert tuple(taken.predset) == ()
-    assert tuple(fallthrough.predset) == ()
+    assert tuple(taken.predset)
     assert gateway.active is False
+    assert gateway.generation_poisoned

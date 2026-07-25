@@ -240,6 +240,62 @@ def test_cfg_transaction_authority_and_creation_witness_survive_restart(
     )
 
 
+def test_cfg_transaction_persists_only_the_first_failure(diag_conn) -> None:
+    base = {
+        "session_id": "s1",
+        "func_ea": 0x40C8B0,
+        "plan_id": "portable-plan",
+        "attempt_id": "failed-attempt",
+        "mba_generation": 8,
+        "evidence_generation": 3,
+        "mutation_started": True,
+        "poisoned": True,
+    }
+    emit(
+        CfgTransactionAttemptObserved(
+            **base,
+            phase="poisoned_restart_required",
+            phase_index=4,
+            first_failure_obligation="route:0x40CA3D",
+            first_failure_phase="realize",
+            first_failure_reason="first SDK write diverged",
+            interr_code=52719,
+        )
+    )
+    emit(
+        CfgTransactionAttemptObserved(
+            **base,
+            phase="poisoned_restart_required",
+            phase_index=5,
+            first_failure_obligation="later-observation",
+            first_failure_phase="observe",
+            first_failure_reason="later observer also failed",
+            interr_code=50860,
+        )
+    )
+
+    assert diag_conn.execute(
+        "SELECT first_failure_obligation,first_failure_phase,"
+        "first_failure_reason,interr_code FROM cfg_transaction_attempts "
+        "WHERE plan_id=? AND attempt_id=?",
+        ("portable-plan", "failed-attempt"),
+    ).fetchone() == (
+        "route:0x40CA3D",
+        "realize",
+        "first SDK write diverged",
+        52719,
+    )
+    assert diag_conn.execute(
+        "SELECT failure_obligation,failure_phase,failure_reason,interr_code "
+        "FROM cfg_transaction_phase_events WHERE plan_id=? AND attempt_id=? "
+        "ORDER BY phase_index",
+        ("portable-plan", "failed-attempt"),
+    ).fetchall() == [
+        ("route:0x40CA3D", "realize", "first SDK write diverged", 52719),
+        ("later-observation", "observe", "later observer also failed", 50860),
+    ]
+
+
 def test_committed_cfg_creation_mapping_is_queryable_after_database_restart(
     tmp_path,
 ) -> None:
@@ -302,6 +358,66 @@ def test_committed_cfg_creation_mapping_is_queryable_after_database_restart(
             7,
             8,
             "committed",
+        )
+    finally:
+        reopened.close()
+
+
+def test_failed_cfg_transaction_authority_is_queryable_after_database_restart(
+    tmp_path,
+) -> None:
+    path = tmp_path / "cfg-transaction-failure.sqlite3"
+    db = create_diag_database(str(path))
+    conn = db.connection()
+    from d810.core.diag.lifecycle import (
+        persist_cfg_transaction_attempt,
+        persist_diagnostic_session,
+    )
+
+    persist_diagnostic_session(
+        conn,
+        DiagnosticSessionObserved("restart-session", 0x40C8B0, 1, "{}", "active"),
+    )
+    persist_cfg_transaction_attempt(
+        conn,
+        CfgTransactionAttemptObserved(
+            session_id="restart-session",
+            func_ea=0x40C8B0,
+            plan_id="failed-plan",
+            attempt_id="failed-attempt",
+            phase="poisoned_restart_required",
+            phase_index=5,
+            mba_generation=9,
+            evidence_generation=4,
+            mutation_started=True,
+            poisoned=True,
+            first_failure_obligation="route:0x40CA3D",
+            first_failure_phase="realize",
+            first_failure_reason="first SDK write diverged",
+            interr_code=52719,
+        ),
+    )
+    conn.commit()
+    db.close()
+
+    reopened = open_diag_database(str(path))
+    try:
+        assert reopened.connection().execute(
+            "SELECT current_phase,mba_generation,evidence_generation,"
+            "mutation_started,poisoned,first_failure_obligation,"
+            "first_failure_phase,first_failure_reason,interr_code "
+            "FROM cfg_transaction_attempts WHERE plan_id=? AND attempt_id=?",
+            ("failed-plan", "failed-attempt"),
+        ).fetchone() == (
+            "poisoned_restart_required",
+            9,
+            4,
+            1,
+            1,
+            "route:0x40CA3D",
+            "realize",
+            "first SDK write diverged",
+            52719,
         )
     finally:
         reopened.close()

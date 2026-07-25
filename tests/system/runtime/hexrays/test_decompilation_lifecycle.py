@@ -6,16 +6,16 @@ manager composition. It does not substitute a fake Hex-Rays API.
 
 from __future__ import annotations
 
-from tests.native_preanalysis import make_native_key
-
-NATIVE_KEY = make_native_key()
-
 import ast
 from pathlib import Path
 from types import SimpleNamespace
 
 import ida_hexrays
+import pytest
 
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativePreanalysisSessionState,
+)
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.decompilation_session import DecompilationEvent
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
@@ -24,8 +24,16 @@ from d810.manager.decompilation_lifecycle import (
     DecompilationLifecycleCoordinator,
     FlowgraphReadyPayload,
 )
+from d810.transforms.cfg_transaction import (
+    CfgGenerationPoisoned,
+    CfgTransactionFailure,
+    CfgTransactionPhase,
+    TransactionAttemptId,
+)
+from tests.native_preanalysis import make_native_key
 
 
+NATIVE_KEY = make_native_key()
 _ROOT = Path(__file__).resolve().parents[4]
 _HOOK = _ROOT / "src/d810/hexrays/hooks/hexrays_hooks.py"
 _OPTBLOCK = _ROOT / "src/d810/hexrays/hooks/optblock_adapter.py"
@@ -35,6 +43,104 @@ _MANAGER = _ROOT / "src/d810/manager/manager.py"
 _COORDINATOR = _ROOT / "src/d810/manager/decompilation_lifecycle.py"
 _ANALYSIS_RUNTIME = _ROOT / "src/d810/passes/runtime.py"
 _PREANALYSIS_RUNTIME = _ROOT / "src/d810/passes/preanalysis_runtime.py"
+
+
+def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo(
+    monkeypatch,
+) -> None:
+    state = NativePreanalysisSessionState(evidence_generation=4)
+    assert state.request_poisoned_generation_restart(
+        reason="post-write fragment failure"
+    )
+    decision = {"request_redo": False}
+
+    def callback(event, **kwargs) -> None:
+        if (
+            event is DecompilationEvent.HEXRAYS_FLOWCHART_READY
+            and state.consume_generated_restart()
+        ):
+            kwargs["decision"]["request_redo"] = True
+            kwargs["decision"]["reason"] = "poisoned_generation_restart"
+
+    hook = SimpleNamespace(
+        callback=callback,
+        _decompilation_lifecycle=None,
+    )
+    mba = SimpleNamespace(entry_ea=0x40A560)
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_decision_for_mba",
+        staticmethod(lambda _self, _mba: decision),
+    )
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_function_owner_ea",
+        staticmethod(lambda _mba: 0x40A560),
+    )
+
+    assert (
+        HexraysDecompilationHook.flowchart(hook, object(), mba, object(), 0)
+        == ida_hexrays.MERR_REDO
+    )
+    decision["request_redo"] = False
+    assert HexraysDecompilationHook.flowchart(
+        hook,
+        object(),
+        mba,
+        object(),
+        0,
+    ) == 0
+    assert not state.has_pending_generated_restart
+
+
+def test_preoptimized_hook_propagates_poison_instead_of_continuing(
+    monkeypatch,
+) -> None:
+    failure = CfgTransactionFailure(
+        attempt_id=TransactionAttemptId.new(
+            "hook-preopt-poison",
+            "hook-session",
+            4,
+        ),
+        phase=CfgTransactionPhase.POISONED_RESTART_REQUIRED,
+        reason="INTERR: 50856 after PREOPT insertion",
+        live_mutation_started=True,
+        failure_phase="stage",
+        interr_code=50856,
+    )
+
+    def callback(event, **_kwargs) -> None:
+        assert event is DecompilationEvent.HEXRAYS_PREOPT_READY
+        raise CfgGenerationPoisoned(failure)
+
+    hook = SimpleNamespace(
+        callback=callback,
+        _decompilation_lifecycle=SimpleNamespace(
+            preopt_ready_was_emitted=lambda **_kwargs: False,
+        ),
+    )
+    mba = SimpleNamespace(
+        entry_ea=0x40A560,
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_function_owner_ea",
+        staticmethod(lambda _mba: 0x40A560),
+    )
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_decision_for_mba",
+        staticmethod(
+            lambda _self, _mba, **_kwargs: {
+                "request_redo": False,
+                "session": object(),
+            }
+        ),
+    )
+
+    with pytest.raises(CfgGenerationPoisoned):
+        HexraysDecompilationHook.preoptimized(hook, mba)
 
 
 def _method_source(path: Path, class_name: str, method_name: str) -> str:
