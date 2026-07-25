@@ -3471,3 +3471,40 @@ roles and stable identities, plus the operation and target identities. Do not
 change terminal ownership or staging acceptance until the DB identifies the
 specific missing endpoint, and do not weaken the requirement that the route,
 carrier, and return be wholly staged as one fragment-atomic operation.
+
+**2026-07-25T06:07:34Z**
+
+Commit `9133a59a4` makes the terminal staging rejection inventory the route
+operation, both block IDs, both roles, both stable identities, and the direct
+target ID while preserving the same hard rejection. A focused red test proved
+the former proof-ID-only payload before the bounded implementation change. The
+combined canonical, resolver, fragment-plan, fragment-validation, and
+semantic-backend gate is 448/448 green; Ruff, ast-grep, `graphify update .`,
+and all 14 import contracts pass.
+
+The mandatory cache-disabled A560 canary completed normally in 19.37 seconds
+wall time (17.62 seconds inside pytest) with no process crash or numeric
+`INTERR`. It used image
+`d810-idapro-9.3-test-runtime:py313-v1` and fixture SHA-256
+`2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c`.
+Log: `.tmp/rhad-a560-v33-terminal-owner-inventory-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-terminal-owner-inventory-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-terminal-owner-inventory-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red as the same eight-line infinite-loop stub; this is
+not A560 acceptance.
+
+The DB now identifies the precise first failed C3 obligation. Terminal proof
+`terminal_return@0x40C7F6:0x19A7218A` has an imported source identity spanning
+`0x40C7E5-0x40C7FC`, but its destination identity spanning
+`0x40C898-0x40C8A2` is classified `external`. Canonical composition therefore
+rejects with `nested_terminal_route_staged_owner_missing@0x40C7F6`. The only
+committed transaction remains the 260/260 frontend-normalization publication;
+there are zero semantic-oracle runs or comparisons. The highest completed
+semantic level remains C2.
+
+Continue by tracing why the proved terminal-return destination becomes an
+external boundary and add the smallest ownership/closure test for that exact
+case. Do not merely permit an external terminal endpoint: the semantic route,
+carrier, and terminal return must all be staged in the same detached fragment
+before C3 can complete.
