@@ -2873,3 +2873,44 @@ anchor on the unresolved-boundary rejection, then rerun the exact canary and
 follow the resulting EA-keyed edge. Do not add another route proof, relax the
 boundary, or broaden publication until that predecessor is identified in the
 diagnostic DB.
+
+**2026-07-25T03:33:45Z**
+
+Commit `cbd209bc1` adds the unresolved boundary's incoming operation, source
+block identity, native source anchor, and edge role to the same fact-consumer
+payload. The canonical transform suite remains 28/28 green, Ruff is clean,
+and the pre-commit architecture/import gates pass.
+
+The mandatory cache-disabled A560 diagnostic canary returned normally in
+33.20 seconds with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-boundary-predecessor-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-boundary-predecessor-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-boundary-predecessor-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The highest completed level remains C5 through generation-2 receipt event
+287. The snapshot 11 / `MMAT_CALLS` first post-C5 boundary is still
+`0x40A607`, but its incoming edge is now exact:
+`native-indirect-transfer@0x40C649` from imported source
+`native[0x40C62F-0x40C64B;exact=0x40C62F,0x40C634,0x40C63A]`, with
+`conditional_fallthrough` selecting `0x40A607`. Its sibling taken edge selects
+the already-receipted `0x40B6C0` boundary.
+
+The existing portable route `state_assignment@0x40C649:0xEC71CA67` was
+skipped because `0x40C62F` becomes reachable only after projecting
+`0x40C2E9 -> 0x40C62F`; this exposes a single-pass projection limitation.
+However, a projection fixpoint alone would be semantically wrong. Reference
+ledger transaction `rhad:0x40A560:flow_route:0x40C63A` owns state write
+`0x40C62F`, flag writer `0x40C634`, and conditional branch `0x40C63A`, then
+commits the direct target `0x40B9A6`. Our current proof instead anchors
+`0x40C649` and records corridor `0x40C62F,0x40C634,0x40C649`, omitting the
+decisive conditional.
+
+Continue at C3 by correcting static state-route discovery to select the first
+deterministic conditional after the proved state write as the delivery/rewrite
+anchor and include it in the proof corridor. Prove the `0x40C62F` /
+`0x40C634` / `0x40C63A` transaction in a narrow resolver test before adding
+fixpoint projection. Do not rewrite `0x40C649`, add a boundary exception, or
+iterate the current incorrect proof.
