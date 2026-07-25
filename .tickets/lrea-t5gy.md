@@ -4858,3 +4858,59 @@ root plus only the downstream direct rewrites required to close its detached
 target component, then require C4 and literal-entry C5 before adding another
 route group. Do not broaden to the 91 immediate routes or treat the provisional
 `0x40AE3E` receipt as architecture acceptance.
+
+**2026-07-25T15:52:30Z**
+
+Commit `50969defa` replaces the six-route detached-boundary manifest with the
+smallest reference-proved entry route: state-write owner `0x40A5B2`, rewrite
+anchor `0x40A5C8`, state `0xABB95547`, and direct target `0x40BECC`. The
+parser/manager suite is 25/25 green. The first exact canary with that manifest,
+`.tmp/rhad-a560-v33-entry-root-v13.txt`, rejected while staging
+`native-body-edge@0x40AE3E` because a CALLS-built imported block retained its
+analyzed call, continuation, and stale synthetic `m_goto` in one
+`BLT_1WAY`/zero-successor block. Its rollback then raised `INTERR 50856`, which
+the matching SDK decodes at `verifier/verify.cpp:1082` as a block successor-set
+size mismatch. The primary DB did not persist that semantic rejection or
+verifier event, so the focused log and verifier artifact were required to
+identify this observability defect.
+
+Commit `d4c753e47` adds a focused imported-native CALLS regression and permits
+the existing exact call/continuation splitter to accept transaction-local
+`IMPORTED_NATIVE` provenance without a predecessor version. All call opcode,
+analyzed-authority, native-EA ownership, continuation ownership, suffix, and
+transaction checks remain unchanged. The new test first failed at the
+lineage-only guard and then passed; the complete semantic-fragment backend is
+96/96 green, changed-file Ruff lint passes, graphify is current, and all
+pre-commit architecture gates pass. Repository-wide `pyenv exec ruff format
+.` changed none of 1,865 files, so there is no style-only commit.
+
+The mandatory fresh cache-disabled v14 A560 canary completed normally in
+18.68 seconds. Output:
+`.tmp/rhad-a560-v33-imported-call-split-v14.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-imported-call-split-v14/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-imported-call-split-v14/test_real_loader_matches_reach0/sub_40A560.c`.
+The worker returned normally, and the current DB contains no rollback,
+verifier, or diagnostic-error event. The shared text log predates v14 by more
+than six hours and its traceback line numbers match pre-`d4c753e47` source, so
+it is explicitly not evidence for this canary.
+
+The v14 DB proves that the imported-call slice advances staging: transaction
+`7f68a211318d43bbb2f659161fdabdbc` stages and commits 260/260 mutations for a
+102-block, 93-operation plan, with 639/639 prepublication and 1180/1180
+postpublication outcomes passing and no rollback. However, that transaction
+is still `frontend-normalization:0xA560:g1:root@0x40A5F0`, its publication
+purpose is `frontend_normalization`, it names no prohibited dispatcher blocks,
+and it contains no operation for the selected owner `0x40A5B2` or rewrite
+anchor `0x40A5C8`. Both route-oracle tables contain zero comparisons. The
+output remains only the initial `memset` followed by one false `while ( 1 )`.
+
+Under v3.3 this is C2, not C5. The broad frontend-normalization receipt is
+mechanically valid but does not satisfy canonical planning, detached proof, or
+publication for the selected reference route. The first failed obligation is
+C3: produce and persist the canonical one-route plan for owner `0x40A5B2`,
+rewrite `0x40A5C8`, and target `0x40BECC`. Continue from the route selector or
+its first rejection and make that decision visible in the diagnostic DB.
+Require the detached route comparison before live publication; do not debug
+the broad plan's downstream false loop, count its receipt as v3.3 C5, or add
+another route group.
