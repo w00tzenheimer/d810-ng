@@ -4643,3 +4643,49 @@ that existing evidence-backed port path, then bind all six selected routes and
 rerun the mandatory A560 DB canary. Do not admit the prohibited edge as
 reference topology, lose the retirement obligation, or fall back to the broad
 396-operation entry-root plan.
+
+**2026-07-25T14:44:03Z**
+
+Commits `c59390351` and `a5afc0299` restore the previously proved typed
+temporary-port path for an exact configured reference scope and keep the
+requested Ruff formatting mechanical and separate. The configured root first
+rejects its prohibited live predecessor, the sole selected reference route
+entering that root identifies semantic predecessor `0x40B51B`, and the port is
+admitted only after canonical composition proves that predecessor and its
+incoming normalization source have no live owner. The stable retirement
+obligation remains explicit. The affected portable, validation, gateway, and
+runtime suite is 164/164 green; changed-file Ruff, ast-grep, all 14 import
+contracts, diff checks, `graphify update .`, and pre-commit gates pass.
+
+The mandatory full cache-disabled A560 canary completed normally in 18.48
+seconds without a process crash, numeric `INTERR`, or verifier failure. Log:
+`.tmp/rhad-a560-v33-pinned-port-v8.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-pinned-port-v8/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-pinned-port-v8/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects one false `while ( 1 )`, so this is not A560
+acceptance.
+
+The DB proves the intended bounded plan is restored and broad publication is
+suppressed. Plan
+`canonical-boundary-composition:canonical-semantic:g1:0x40AE3E` carries the
+exact pinned run, six direct reference routes, ten canonical operations, and
+one `temporary_dispatcher_entry` port from the external native identity
+anchored at `0x40AE2E` to root `0x40AE3E`; its retirement obligation remains
+`publish-semantic-predecessor@0x40B51B`. The gateway budgets 31 mutations, not
+396. The first attempt aborts cleanly before staging to request CALLS companion
+`0x40AA30`; after redo, the fragment stages with 29/31 applied mutations and
+passes every recorded prepublication invariant except one. Rollback succeeds
+in both attempts.
+
+Main-path A560 is back at C3. The first failed C4 obligation is exactly
+`root_reachability:published-boundary@0x40AE3E:replacement`: the projected root
+is unreachable from ordinary function entry, so validation stops before the
+detached reference comparison and live root publication. This is the missing
+semantic integration of the already-serialized boundary port: plan validation
+understands the typed port, but projected reachability does not yet use it as
+temporary publication authority. Continue with the red validator contract that
+requires predecessor-to-root reachability through that exact port, includes
+the retirement obligation in the outcome, and leaves ordinary disconnected
+roots rejected. Do not exempt arbitrary unreachable roots or erase the
+obligation.
