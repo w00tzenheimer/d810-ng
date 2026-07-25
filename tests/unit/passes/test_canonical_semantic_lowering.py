@@ -1197,7 +1197,10 @@ def test_configured_reference_direct_route_records_c4_before_publication(
     }
     detached_plan = SimpleNamespace(
         evidence_generation=candidate.generation,
-        source_block=SimpleNamespace(native_body_id="prepared-body"),
+        source_block=SimpleNamespace(
+            block_id="prepared-source",
+            native_body_id="prepared-body",
+        ),
         diagnostic_payload=lambda: dict(expected_payload),
     )
     planner_calls = []
@@ -1218,19 +1221,15 @@ def test_configured_reference_direct_route_records_c4_before_publication(
             "detached C4 projection must stop before live route composition"
         ),
     )
-    prepared_body = object()
-    prepared_snapshot = SimpleNamespace(
-        snapshot_id="prepared-native-body:test:g3:r1",
-        body=lambda body_id: (
-            prepared_body
-            if body_id == "prepared-body"
-            else pytest.fail("projection requested another prepared body")
-        ),
+    prepared_work_item = SimpleNamespace(
+        prepared_bodies=SimpleNamespace(
+            snapshot_id="prepared-native-body:test:g3:r1",
+        )
     )
     provider_calls = []
     prepared_body_provider = SimpleNamespace(
-        prepared_body_facts_for=lambda *args: (
-            provider_calls.append(args) or prepared_snapshot
+        prepared_work_item_for=lambda *args: (
+            provider_calls.append(args) or prepared_work_item
         )
     )
     projected_metadata = {
@@ -1242,7 +1241,7 @@ def test_configured_reference_direct_route_records_c4_before_publication(
     }
     projection = SimpleNamespace(
         plan_id="detached-direct:test",
-        snapshot_id=prepared_snapshot.snapshot_id,
+        snapshot_id=prepared_work_item.prepared_bodies.snapshot_id,
         graph=SimpleNamespace(
             blocks={0: object(), 1: object()}, metadata=projected_metadata
         ),
@@ -1316,12 +1315,17 @@ def test_configured_reference_direct_route_records_c4_before_publication(
         )
     ]
     assert provider_calls == [
-        (graph.func_ea, candidate.generation, plan.plan_id),
+        (
+            graph.func_ea,
+            candidate.generation,
+            plan.plan_id,
+            "prepared-source",
+        ),
     ]
     assert projection_calls == [
         (
-            (plan, detached_plan, prepared_body),
-            {"snapshot_id": "prepared-native-body:test:g3:r1"},
+            (plan, detached_plan, prepared_work_item),
+            {},
         )
     ]
 

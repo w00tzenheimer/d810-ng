@@ -16,11 +16,14 @@ from d810.transforms.detached_direct_route_projection import (
     DetachedDirectRouteProjectionRejected,
     project_detached_direct_route,
 )
+from d810.transforms.fragment_plan import FragmentBlockRole
 from d810.transforms.prepared_native_body import (
     PreparedNativeBlockFact,
     PreparedNativeBodyFact,
+    PreparedNativeBodyFactSnapshot,
     PreparedNativeEdgeFact,
     PreparedNativeInstructionFact,
+    PreparedNormalizationWorkItemSnapshot,
 )
 from tests.unit.transforms.test_canonical_semantic_fragment import (
     _detached_reference_direct_route_case,
@@ -129,7 +132,48 @@ def _case():
         normalization_authority=authority,
     )
     assert detached_plan is not None
-    return normalization_plan, detached_plan, _prepared_body_fact(normalization_plan)
+    prepared_body = _prepared_body_fact(normalization_plan)
+    (native_body,) = normalization_plan.native_bodies
+    suffix = "root@0x40BB51"
+    work_item_plan_id = f"{normalization_plan.plan_id}:{suffix}"
+    work_item_body_id = f"{native_body.body_id}:{suffix}"
+    scope = normalization_plan.work_item_scope
+    assert scope is not None
+    work_item_plan = replace(
+        normalization_plan,
+        plan_id=work_item_plan_id,
+        atomic_group_id=f"{normalization_plan.atomic_group_id}:{suffix}",
+        blocks=tuple(
+            replace(block, native_body_id=work_item_body_id)
+            if block.role is FragmentBlockRole.IMPORTED
+            else block
+            for block in normalization_plan.blocks
+        ),
+        work_item_scope=replace(scope, work_item_id=work_item_plan_id),
+        native_bodies=(replace(native_body, body_id=work_item_body_id),),
+    )
+    work_item_authority = replace(authority, work_item_id=work_item_plan_id)
+    prepared_body = replace(
+        prepared_body,
+        plan_id=work_item_plan_id,
+        body_id=work_item_body_id,
+    )
+    return (
+        normalization_plan,
+        detached_plan,
+        PreparedNormalizationWorkItemSnapshot(
+            source_plan_id=normalization_plan.plan_id,
+            source_atomic_group_id=normalization_plan.atomic_group_id,
+            work_item_plan=work_item_plan,
+            authority=work_item_authority,
+            prepared_bodies=PreparedNativeBodyFactSnapshot(
+                plan_id=work_item_plan_id,
+                evidence_generation=work_item_authority.evidence_generation,
+                snapshot_id="preopt:g3:prepared-body",
+                bodies=(prepared_body,),
+            ),
+        ),
+    )
 
 
 def _block_at(projection, native_ea: int):
@@ -143,13 +187,12 @@ def _block_at(projection, native_ea: int):
 
 
 def test_detached_direct_route_projects_both_raw_arms_to_one_portable_goto() -> None:
-    normalization_plan, detached_plan, prepared_body = _case()
+    normalization_plan, detached_plan, prepared_work_item = _case()
 
     projection = project_detached_direct_route(
         normalization_plan,
         detached_plan,
-        prepared_body,
-        snapshot_id="preopt:g3:prepared-body",
+        prepared_work_item,
     )
 
     source = _block_at(projection, 0x40BB51)
@@ -172,9 +215,11 @@ def test_detached_direct_route_projects_both_raw_arms_to_one_portable_goto() -> 
     assert projection.graph.metadata == {
         "projection_kind": "detached_direct_route",
         "normalization_plan_id": normalization_plan.plan_id,
+        "prepared_work_item_plan_id": prepared_work_item.work_item_plan.plan_id,
+        "prepared_work_item_revision": 1,
         "detached_plan_id": detached_plan.plan_id,
         "evidence_generation": 3,
-        "native_body_id": prepared_body.body_id,
+        "native_body_id": prepared_work_item.prepared_bodies.bodies[0].body_id,
         "reference_route_id": "rhad:0x40A560:flow_route:0x40BB63",
         "source_block_id": "native@0x40BB51",
         "source_owner_ea": 0x40BB51,
@@ -202,7 +247,8 @@ def test_detached_direct_route_projects_both_raw_arms_to_one_portable_goto() -> 
 
 
 def test_detached_direct_route_rejects_partial_prepared_arm_supersession() -> None:
-    normalization_plan, detached_plan, prepared_body = _case()
+    normalization_plan, detached_plan, prepared_work_item = _case()
+    (prepared_body,) = prepared_work_item.prepared_bodies.bodies
     source = prepared_body.block(detached_plan.source_block.block_id)
     partial = replace(
         source,
@@ -221,13 +267,19 @@ def test_detached_direct_route_rejects_partial_prepared_arm_supersession() -> No
             for block in prepared_body.blocks
         ),
     )
+    prepared_work_item = replace(
+        prepared_work_item,
+        prepared_bodies=replace(
+            prepared_work_item.prepared_bodies,
+            bodies=(prepared_body,),
+        ),
+    )
 
     with pytest.raises(DetachedDirectRouteProjectionRejected) as exc_info:
         project_detached_direct_route(
             normalization_plan,
             detached_plan,
-            prepared_body,
-            snapshot_id="preopt:g3:partial-body",
+            prepared_work_item,
         )
 
     rejection = exc_info.value

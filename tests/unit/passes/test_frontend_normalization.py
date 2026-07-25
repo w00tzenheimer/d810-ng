@@ -57,7 +57,7 @@ from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.frontend_normalization import (
     DETACHED_SEMANTIC_CLOSURE_IMPORT,
     FRONTEND_NORMALIZATION_EVIDENCE,
-    FRONTEND_NORMALIZATION_PLAN_INTENT,
+    FRONTEND_NORMALIZATION_GENERATION_PLAN,
     NATIVE_INDIRECT_TRANSFER_EVIDENCE,
     ImportDetachedSemanticClosure,
     NormalizeComputedBranch,
@@ -2718,7 +2718,9 @@ def test_normalize_pass_retains_reference_roots_only_in_complete_intent() -> Non
     work_item = result.fragment_plan
     assert work_item is not None
     assert not work_item.native_bodies
-    complete_plan = result.analysis_outputs[FRONTEND_NORMALIZATION_PLAN_INTENT]
+    generation_plan = result.analysis_outputs[FRONTEND_NORMALIZATION_GENERATION_PLAN]
+    assert generation_plan.work_item_plan is work_item
+    complete_plan = generation_plan.complete_plan
     imported = tuple(
         block
         for block in complete_plan.blocks
@@ -2756,9 +2758,11 @@ def test_import_and_normalize_passes_consume_the_resolved_analysis() -> None:
         normalize_result.fragment_plan.publication_purpose
         is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
     )
-    complete_plan = normalize_result.analysis_outputs[
-        FRONTEND_NORMALIZATION_PLAN_INTENT
+    generation_plan = normalize_result.analysis_outputs[
+        FRONTEND_NORMALIZATION_GENERATION_PLAN
     ]
+    assert generation_plan.work_item_plan is normalize_result.fragment_plan
+    complete_plan = generation_plan.complete_plan
     assert (
         complete_plan.publication_purpose
         is FragmentPublicationPurpose.FRONTEND_NORMALIZATION

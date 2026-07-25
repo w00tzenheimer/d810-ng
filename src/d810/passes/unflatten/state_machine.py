@@ -1279,16 +1279,17 @@ def _compose_configured_reference_scope_plan(
                     rejection,
                     tuple(composition_attempts),
                 )
-            prepared_snapshot = prepared_body_provider.prepared_body_facts_for(
+            prepared_work_item = prepared_body_provider.prepared_work_item_for(
                 int(graph.func_ea),
                 int(detached_direct_plan.evidence_generation),
                 normalization_plan.plan_id,
+                detached_direct_plan.source_block.block_id,
             )
-            if prepared_snapshot is None:
+            if prepared_work_item is None:
                 rejection = CanonicalSemanticFragmentRejected(
                     "configured reference direct route lacks exact receipt-associated "
-                    "prepared native-body facts",
-                    reason_code="prepared_native_body_snapshot_missing",
+                    "prepared work-item facts",
+                    reason_code="prepared_normalization_work_item_missing",
                     anchor_ea=int(configured_route.rewrite_anchor_ea),
                     payload={"detached_direct_route_plan": detached_payload},
                 )
@@ -1297,30 +1298,10 @@ def _compose_configured_reference_scope_plan(
                     tuple(composition_attempts),
                 )
             try:
-                prepared_body = prepared_snapshot.body(
-                    str(detached_direct_plan.source_block.native_body_id)
-                )
-            except KeyError as exc:
-                rejection = CanonicalSemanticFragmentRejected(
-                    "configured reference direct route prepared snapshot lacks "
-                    "its native body",
-                    reason_code="prepared_native_body_fact_missing",
-                    anchor_ea=int(configured_route.rewrite_anchor_ea),
-                    payload={
-                        "detached_direct_route_plan": detached_payload,
-                        "prepared_snapshot_id": prepared_snapshot.snapshot_id,
-                    },
-                )
-                raise _with_canonical_composition_attempts(
-                    rejection,
-                    tuple(composition_attempts),
-                ) from exc
-            try:
                 projection = project_detached_direct_route(
                     normalization_plan,
                     detached_direct_plan,
-                    prepared_body,
-                    snapshot_id=prepared_snapshot.snapshot_id,
+                    prepared_work_item,
                 )
             except DetachedDirectRouteProjectionRejected as exc:
                 rejection = CanonicalSemanticFragmentRejected(

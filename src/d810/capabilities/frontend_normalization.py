@@ -10,7 +10,9 @@ if TYPE_CHECKING:
         FrontendNormalizationEvidence,
     )
     from d810.transforms.fragment_plan import FragmentPlan
-    from d810.transforms.prepared_native_body import PreparedNativeBodyFactSnapshot
+    from d810.transforms.prepared_native_body import (
+        PreparedNormalizationWorkItemSnapshot,
+    )
 
 
 @runtime_checkable
@@ -42,13 +44,14 @@ class FrontendNormalizationPlanCapability(Protocol):
 class FrontendNormalizationPreparedBodyCapability(Protocol):
     """Supply receipt-associated immutable PREOPT native-body facts."""
 
-    def prepared_body_facts_for(
+    def prepared_work_item_for(
         self,
         function_ea: int,
         evidence_generation: int,
-        plan_id: str,
-    ) -> "PreparedNativeBodyFactSnapshot | None":
-        """Return exact prepared facts only after their plan receipt commits."""
+        source_plan_id: str,
+        block_id: str,
+    ) -> "PreparedNormalizationWorkItemSnapshot | None":
+        """Return the receipt-backed work item that prepared one block."""
         ...
 
 

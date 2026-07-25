@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.transforms.fragment_plan import FragmentBlockRole, FragmentPlan
 
 
 def _identifier(value: object, label: str) -> str:
@@ -279,10 +281,69 @@ class PreparedNativeBodyFactSnapshot:
         raise KeyError(body_id)
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedNormalizationWorkItemSnapshot:
+    """One exact receipt-backed publication plan and its prepared bodies."""
+
+    source_plan_id: str
+    source_atomic_group_id: str
+    work_item_plan: FragmentPlan
+    authority: NormalizationWorkItemAuthority
+    prepared_bodies: PreparedNativeBodyFactSnapshot
+
+    def __post_init__(self) -> None:
+        source_plan_id = _identifier(
+            self.source_plan_id,
+            "prepared normalization source plan id",
+        )
+        source_atomic_group_id = _identifier(
+            self.source_atomic_group_id,
+            "prepared normalization source atomic group id",
+        )
+        work_item_plan = self.work_item_plan
+        authority = self.authority
+        prepared_bodies = self.prepared_bodies
+        if not isinstance(work_item_plan, FragmentPlan):
+            raise TypeError("prepared work item requires a FragmentPlan")
+        if not isinstance(authority, NormalizationWorkItemAuthority):
+            raise TypeError("prepared work item requires receipt authority")
+        if not isinstance(prepared_bodies, PreparedNativeBodyFactSnapshot):
+            raise TypeError("prepared work item requires typed body facts")
+        scope = work_item_plan.work_item_scope
+        if (
+            authority.source_plan_id != source_plan_id
+            or authority.source_atomic_group_id != source_atomic_group_id
+            or scope is None
+            or scope.work_item_id != work_item_plan.plan_id
+            or authority.work_item_id != scope.work_item_id
+            or prepared_bodies.plan_id != work_item_plan.plan_id
+            or prepared_bodies.evidence_generation != authority.evidence_generation
+        ):
+            raise ValueError("prepared work-item receipt lineage differs")
+        if tuple(body.body_id for body in work_item_plan.native_bodies) != tuple(
+            body.body_id for body in prepared_bodies.bodies
+        ):
+            raise ValueError("prepared work-item body inventory differs")
+        object.__setattr__(self, "source_plan_id", source_plan_id)
+        object.__setattr__(
+            self,
+            "source_atomic_group_id",
+            source_atomic_group_id,
+        )
+
+    def prepared_body_for(self, block_id: str) -> PreparedNativeBodyFact:
+        """Return the prepared body that owns one imported work-item block."""
+        block = self.work_item_plan.block(str(block_id))
+        if block.role is not FragmentBlockRole.IMPORTED or block.native_body_id is None:
+            raise KeyError(block_id)
+        return self.prepared_bodies.body(block.native_body_id)
+
+
 __all__ = [
     "PreparedNativeBlockFact",
     "PreparedNativeBodyFact",
     "PreparedNativeBodyFactSnapshot",
     "PreparedNativeEdgeFact",
     "PreparedNativeInstructionFact",
+    "PreparedNormalizationWorkItemSnapshot",
 ]
