@@ -6,7 +6,7 @@ from dataclasses import replace
 
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
-from d810.ir.flowgraph import BlockKind
+from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.fragment_plan import (
@@ -191,6 +191,8 @@ def _projected_block(
         predecessors=predecessors,
         physical_position=position,
         adjacent_fallthrough_target_id=adjacent_fallthrough_target_id,
+        terminator_ea=None,
+        terminator_kind=InsnKind.UNKNOWN,
         instruction_eas=instruction_eas,
         flag_write_eas=flag_write_eas,
     )
