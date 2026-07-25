@@ -35,8 +35,6 @@ def test_patch_steps_do_not_reconstruct_planner_graph_modifications() -> None:
 
 
 def test_translator_protocol_accepts_only_patch_plans() -> None:
-    source = (_PRODUCTION / "transforms" / "protocol.py").read_text(
-        encoding="utf-8"
-    )
+    source = (_PRODUCTION / "transforms" / "protocol.py").read_text(encoding="utf-8")
     assert "GraphModification" not in source
     assert "lowering_input: PatchPlan" in source

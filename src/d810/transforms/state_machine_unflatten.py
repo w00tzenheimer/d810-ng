@@ -15,6 +15,7 @@ deferred backend half.
 ``transition_result`` (#2) / ``dispatch_map`` + ``dispatcher_entry_serial`` + ``state_var_stkoff``
 (#1) are the unflatten analysis dependencies; while any is missing the plan is empty.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping

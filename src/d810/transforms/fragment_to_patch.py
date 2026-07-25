@@ -70,7 +70,9 @@ class PreparedFragmentProjection(Protocol):
 
 
 class _SharedTransactionParticipant(Protocol):
-    def lower(self, plan: object, prepared_projection: object | None = None) -> object: ...
+    def lower(
+        self, plan: object, prepared_projection: object | None = None
+    ) -> object: ...
 
 
 class PatchTransactionLifecycle(Protocol):
@@ -116,7 +118,9 @@ class ApplyPatchLifecycle:
 class PatchTransactionParticipant:
     """Participant for plans already expressed in the shared execution IR."""
 
-    def lower(self, plan: object, prepared_projection: object | None = None) -> PatchPlan:
+    def lower(
+        self, plan: object, prepared_projection: object | None = None
+    ) -> PatchPlan:
         if prepared_projection is not None:
             raise ValueError("PatchPlan participant does not accept fragment preflight")
         if not isinstance(plan, PatchPlan):
@@ -128,7 +132,9 @@ class PatchTransactionParticipant:
 class FragmentTransactionParticipant:
     """Participant lowering preflighted FragmentPlan intent into PatchPlan."""
 
-    def lower(self, plan: object, prepared_projection: object | None = None) -> PatchPlan:
+    def lower(
+        self, plan: object, prepared_projection: object | None = None
+    ) -> PatchPlan:
         if not isinstance(plan, FragmentPlan):
             raise TypeError("FragmentTransactionParticipant requires FragmentPlan")
         if prepared_projection is None:
@@ -180,7 +186,9 @@ def _prepared_authority(prepared_projection: object) -> PreparedFragmentProjecti
         "root_inventory",
     )
     if any(not hasattr(authority, name) for name in required):
-        raise TypeError("fragment lowering requires complete prepared projection authority")
+        raise TypeError(
+            "fragment lowering requires complete prepared projection authority"
+        )
     return authority  # type: ignore[return-value]
 
 
@@ -222,9 +230,7 @@ def lower_fragment_plan(
         key=lambda item: materialization_order[item.materialization],
     ):
         source_ref = (
-            None
-            if block.replaces_block_id is None
-            else refs[block.replaces_block_id]
+            None if block.replaces_block_id is None else refs[block.replaces_block_id]
         )
         steps.append(
             PatchFragmentBlockMaterialization(
@@ -264,7 +270,9 @@ def lower_fragment_plan(
         steps.append(
             PatchFragmentOperation(
                 source_ref=refs[operation.source_block_id],
-                target_refs=tuple(refs[edge.target_block_id] for edge in operation.edges),
+                target_refs=tuple(
+                    refs[edge.target_block_id] for edge in operation.edges
+                ),
                 operation=operation,
                 fallthrough_helper_id=fallthrough_helper_id,
                 fallthrough_helper_ref=(

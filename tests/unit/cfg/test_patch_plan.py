@@ -1,4 +1,5 @@
 """Tests for the Phase B PatchPlan execution layer."""
+
 from __future__ import annotations
 
 import ast
@@ -220,7 +221,9 @@ def test_redirect_branch_direct_arm_declares_no_helper() -> None:
     assert plan.new_blocks == ()
 
 
-def test_redirect_branch_rejects_nonconditional_two_way_tail_before_reservation() -> None:
+def test_redirect_branch_rejects_nonconditional_two_way_tail_before_reservation() -> (
+    None
+):
     cfg = FlowGraph(
         blocks={
             9: _block(9, (10,), ()),
@@ -261,11 +264,15 @@ def test_patch_operations_reject_bare_block_serials() -> None:
     with pytest.raises(TypeError, match="goto_target must be a typed block reference"):
         PatchConvertToGoto(block_serial=snapshot, goto_target=10)
 
-    with pytest.raises(TypeError, match="anchor_serial must be a typed block reference"):
+    with pytest.raises(
+        TypeError, match="anchor_serial must be a typed block reference"
+    ):
         PatchExitPathLoweringSite(anchor_serial=9, kind=object())
 
     created = PlanBlockRef("typed-plan", "reorder:0")
-    with pytest.raises(TypeError, match="copy_lineage source must be a typed block reference"):
+    with pytest.raises(
+        TypeError, match="copy_lineage source must be a typed block reference"
+    ):
         PatchReorderBlocks(
             dfs_block_order=(snapshot,),
             copy_lineage=((9, created),),
@@ -380,7 +387,11 @@ def _conditional_duplicate_cfg() -> FlowGraph:
 def _duplicate_replay_cfg() -> FlowGraph:
     return FlowGraph(
         blocks={
-            2: _block(2, (3, 4), (10,),),
+            2: _block(
+                2,
+                (3, 4),
+                (10,),
+            ),
             3: _block(3, (), (2,)),
             4: _block(4, (), (2,)),
             8: _block(8, (10,), ()),
@@ -439,9 +450,7 @@ def test_compile_patch_plan_converts_existing_block_rewrites():
 
 def test_compile_patch_plan_rejects_missing_typed_source_authority() -> None:
     with pytest.raises(TypeError, match="block serial 1 has no typed source authority"):
-        _compile_patch_plan(
-            [RedirectGoto(from_serial=1, old_target=2, new_target=3)]
-        )
+        _compile_patch_plan([RedirectGoto(from_serial=1, old_target=2, new_target=3)])
 
 
 def test_compile_patch_plan_requires_cfg_for_edge_split_trampoline():
@@ -682,7 +691,9 @@ def test_compile_patch_plan_finalizes_duplicate_block_for_private_target_split()
     assert [spec.kind for spec in patch_plan.new_blocks] == ["duplicate_block_clone"]
 
 
-def test_compile_patch_plan_finalizes_duplicate_replay_and_redirect_without_legacy() -> None:
+def test_compile_patch_plan_finalizes_duplicate_replay_and_redirect_without_legacy() -> (
+    None
+):
     left_body = _captured_body()
     right_body = _captured_body()
     modification = DuplicateReplayAndRedirect(
@@ -707,11 +718,14 @@ def test_compile_patch_plan_finalizes_duplicate_replay_and_redirect_without_lega
     assert patch_plan.contains_block_creation
     step = patch_plan.steps[0]
     assert isinstance(step, PatchDuplicateReplayAndRedirect)
-    assert [_snapshot_serial(row.pred_serial, patch_plan) for row in step.per_pred_replays] == [8, 9]
-    assert [_snapshot_serial(row.target_serial, patch_plan) for row in step.per_pred_replays] == [3, 4]
+    assert [
+        _snapshot_serial(row.pred_serial, patch_plan) for row in step.per_pred_replays
+    ] == [8, 9]
+    assert [
+        _snapshot_serial(row.target_serial, patch_plan) for row in step.per_pred_replays
+    ] == [3, 4]
     assert all(
-        isinstance(row.replay_block_id, PlanBlockRef)
-        for row in step.per_pred_replays
+        isinstance(row.replay_block_id, PlanBlockRef) for row in step.per_pred_replays
     )
     assert all(
         row.replay_block_id.plan_id == patch_plan.plan_id
@@ -908,7 +922,9 @@ def test_compile_patch_plan_records_symbolic_block_specs_for_block_creation():
     assert patch_plan.contains_block_creation
     assert len(patch_plan.new_blocks) == 4
     assert all(isinstance(spec, PatchBlockSpec) for spec in patch_plan.new_blocks)
-    assert all(isinstance(spec.block_id, PlanBlockRef) for spec in patch_plan.new_blocks)
+    assert all(
+        isinstance(spec.block_id, PlanBlockRef) for spec in patch_plan.new_blocks
+    )
     assert [spec.kind for spec in patch_plan.new_blocks] == [
         "edge_split_trampoline",
         "conditional_redirect_clone",
@@ -921,9 +937,11 @@ def test_compile_patch_plan_records_symbolic_block_specs_for_block_creation():
 
 
 def test_ensure_patch_plan_is_idempotent():
-    patch_plan = compile_patch_plan([
-        RedirectGoto(from_serial=1, old_target=2, new_target=3),
-    ])
+    patch_plan = compile_patch_plan(
+        [
+            RedirectGoto(from_serial=1, old_target=2, new_target=3),
+        ]
+    )
 
     assert ensure_patch_plan(patch_plan) is patch_plan
 
@@ -954,10 +972,16 @@ def test_patch_remove_edge_exists_but_unused_in_strategies():
         assert py_file.is_file(), f"Hodur strategy source not found: {py_file}"
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
         for node in ast.walk(tree):
-            if isinstance(node, ast.Name) and node.id in {"RemoveEdge", "PatchRemoveEdge"}:
+            if isinstance(node, ast.Name) and node.id in {
+                "RemoveEdge",
+                "PatchRemoveEdge",
+            }:
                 violations.append(py_file.name)
                 break
-            if isinstance(node, ast.Attribute) and node.attr in {"RemoveEdge", "PatchRemoveEdge"}:
+            if isinstance(node, ast.Attribute) and node.attr in {
+                "RemoveEdge",
+                "PatchRemoveEdge",
+            }:
                 violations.append(py_file.name)
                 break
 
@@ -983,7 +1007,9 @@ def test_modification_builder_has_no_remove_edge_method():
         / "transforms"
         / "modification_builder.py"
     )
-    assert bridge_path.exists(), f"ModificationBuilder source not found at {bridge_path}"
+    assert bridge_path.exists(), (
+        f"ModificationBuilder source not found at {bridge_path}"
+    )
     source = bridge_path.read_text()
     assert "def remove_edge" not in source, (
         "ModificationBuilder gained a remove_edge method. "
@@ -1005,7 +1031,6 @@ def test_compile_patch_plan_compiles_remove_edge():
     assert isinstance(step, PatchRemoveEdge)
     assert _snapshot_serial(step.from_serial, patch_plan) == 5
     assert _snapshot_serial(step.to_serial, patch_plan) == 10
-
 
 
 def _branch_arm_clone_cfg() -> FlowGraph:

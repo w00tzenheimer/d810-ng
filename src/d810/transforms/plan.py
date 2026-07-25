@@ -9,6 +9,7 @@ compiler in this module lowers those intents once into an ordered plan made of:
 This lets callers reason about block creation explicitly and reject incomplete
 source authority before mutating backend state.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, replace
@@ -35,6 +36,7 @@ class ExecutionPolicy(str, Enum):
     STRICT = "strict"
     NOP_CLEANUP_RELAXED = "nop_cleanup_relaxed"
     NOP_MERGE_BLOCKS_RELAXED = "nop_merge_blocks_relaxed"
+
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -114,7 +116,9 @@ def projected_source_coordinate(
         raise ValueError("typed reference has no projected source coordinate") from exc
 
 
-def _require_patch_ref(value: object, field_name: str, *, optional: bool = False) -> None:
+def _require_patch_ref(
+    value: object, field_name: str, *, optional: bool = False
+) -> None:
     if optional and value is None:
         return
     if not isinstance(value, _PATCH_BLOCK_REF_TYPES):
@@ -151,7 +155,9 @@ class _PatchRefValidated:
         for field_name in self._REF_TUPLE_FIELDS:
             values = getattr(self, field_name)
             if not isinstance(values, tuple):
-                raise TypeError(f"{field_name} must be a tuple of typed block references")
+                raise TypeError(
+                    f"{field_name} must be a tuple of typed block references"
+                )
             values = tuple(_coerce_compiler_ref(value) for value in values)
             object.__setattr__(self, field_name, values)
             for value in values:
@@ -236,18 +242,19 @@ class PatchRedirectGoto(_PatchRefValidated):
     new_target: PatchBlockRef
     _REF_FIELDS: ClassVar[tuple[str, ...]] = ("from_serial", "old_target", "new_target")
 
+
 @dataclass(frozen=True)
 class PatchRedirectBranch(PatchRedirectGoto):
     fallthrough_helper_block_id: PlanBlockRef | None = None
-    _OPTIONAL_REF_FIELDS: ClassVar[tuple[str, ...]] = (
-        "fallthrough_helper_block_id",
-    )
+    _OPTIONAL_REF_FIELDS: ClassVar[tuple[str, ...]] = ("fallthrough_helper_block_id",)
+
 
 @dataclass(frozen=True)
 class PatchConvertToGoto(_PatchRefValidated):
     block_serial: PatchBlockRef
     goto_target: PatchBlockRef
     _REF_FIELDS: ClassVar[tuple[str, ...]] = ("block_serial", "goto_target")
+
 
 @dataclass(frozen=True)
 class PatchRemoveEdge(_PatchRefValidated):
@@ -284,13 +291,13 @@ class PatchFragmentBlockMaterialization(_PatchRefValidated):
             self.source_ref, PlanBlockRef
         ):
             raise TypeError("fragment materialization source requires PlanBlockRef")
-        if (
-            self.materialization is FragmentBlockMaterialization.CLONE_PUBLISHED
-        ) != (self.source_ref is not None):
+        if (self.materialization is FragmentBlockMaterialization.CLONE_PUBLISHED) != (
+            self.source_ref is not None
+        ):
             raise ValueError("only cloned fragment blocks require a source ref")
-        if (
-            self.materialization is FragmentBlockMaterialization.IMPORT_NATIVE
-        ) != (self.native_body_id is not None):
+        if (self.materialization is FragmentBlockMaterialization.IMPORT_NATIVE) != (
+            self.native_body_id is not None
+        ):
             raise ValueError("only imported fragment blocks require a native body id")
 
 
@@ -329,8 +336,7 @@ class PatchFragmentOperation(_PatchRefValidated):
             raise ValueError("fragment helper id and PlanBlockRef must agree")
         if (
             self.fallthrough_helper_ref is not None
-            and self.fallthrough_helper_ref.local_block_id
-            != self.fallthrough_helper_id
+            and self.fallthrough_helper_ref.local_block_id != self.fallthrough_helper_id
         ):
             raise ValueError("fragment helper PlanBlockRef differs from its id")
 
@@ -342,10 +348,14 @@ class PatchFragmentOperationNormalization:
     operations: tuple[FragmentOperation, ...]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.operations, tuple) or not self.operations or any(
-            not isinstance(operation, FragmentOperation)
-            or operation.computed_branch_normalization is None
-            for operation in self.operations
+        if (
+            not isinstance(self.operations, tuple)
+            or not self.operations
+            or any(
+                not isinstance(operation, FragmentOperation)
+                or operation.computed_branch_normalization is None
+                for operation in self.operations
+            )
         ):
             raise TypeError("fragment normalization requires typed operations")
 
@@ -403,7 +413,9 @@ class PatchFragmentRootPublication(_PatchRefValidated):
         ):
             raise TypeError("fragment root publication requires semantic edge role")
         if self.predecessor_ref is None or self.edge_role is None:
-            raise ValueError("fragment root publication requires predecessor edge authority")
+            raise ValueError(
+                "fragment root publication requires predecessor edge authority"
+            )
         if self.fallthrough_helper_id is not None and not self.fallthrough_helper_id:
             raise ValueError("fragment root helper id must not be empty")
         if (self.fallthrough_helper_id is None) != (
@@ -412,8 +424,7 @@ class PatchFragmentRootPublication(_PatchRefValidated):
             raise ValueError("fragment root helper id and PlanBlockRef must agree")
         if (
             self.fallthrough_helper_ref is not None
-            and self.fallthrough_helper_ref.local_block_id
-            != self.fallthrough_helper_id
+            and self.fallthrough_helper_ref.local_block_id != self.fallthrough_helper_id
         ):
             raise ValueError("fragment root helper PlanBlockRef differs from its id")
 
@@ -458,27 +469,33 @@ class FragmentContractBundle:
         if set(self.fragment_postconditions) != set(FragmentValidationPostcondition):
             raise ValueError("fragment contract postcondition inventory is incomplete")
 
+
 @dataclass(frozen=True)
 class PatchNopInstructions(_PatchRefValidated):
     block_serial: PatchBlockRef
     insn_eas: tuple[int, ...]
     _REF_FIELDS: ClassVar[tuple[str, ...]] = ("block_serial",)
 
+
 @dataclass(frozen=True)
 class PatchZeroStateWrite(_PatchRefValidated):
     """Zero the source operand of a state variable write instruction."""
+
     block_serial: PatchBlockRef
     insn_ea: int
     _REF_FIELDS: ClassVar[tuple[str, ...]] = ("block_serial",)
 
+
 @dataclass(frozen=True)
 class PatchPromoteOperandToScalar(_PatchRefValidated):
     """Promote a fused sub-instruction operand into a fresh kreg standalone insn."""
+
     block_serial: PatchBlockRef
     host_ea: int
     host_opcode: int
     operand_side: str  # "l" | "r"
     _REF_FIELDS: ClassVar[tuple[str, ...]] = ("block_serial",)
+
 
 @dataclass(frozen=True)
 class PatchLowerConditionalStateTransition(_PatchRefValidated):
@@ -496,8 +513,12 @@ class PatchLowerConditionalStateTransition(_PatchRefValidated):
     false_state_write_ea: int | None = None
     true_state_write_ea: int | None = None
     _REF_FIELDS: ClassVar[tuple[str, ...]] = (
-        "source_serial", "old_dispatcher_serial", "false_target_serial", "true_target_serial"
+        "source_serial",
+        "old_dispatcher_serial",
+        "false_target_serial",
+        "true_target_serial",
     )
+
 
 @dataclass(frozen=True)
 class PatchNormalizeNWayDispatcherExit(_PatchRefValidated):
@@ -507,12 +528,18 @@ class PatchNormalizeNWayDispatcherExit(_PatchRefValidated):
     _REF_FIELDS: ClassVar[tuple[str, ...]] = ("block_serial", "dispatcher_entry_serial")
     _OPTIONAL_REF_FIELDS: ClassVar[tuple[str, ...]] = ("keep_target_serial",)
 
+
 @dataclass(frozen=True)
 class PatchBypassDispatcherTrampoline(_PatchRefValidated):
     source_serial: PatchBlockRef
     trampoline_serial: PatchBlockRef
     target_serial: PatchBlockRef
-    _REF_FIELDS: ClassVar[tuple[str, ...]] = ("source_serial", "trampoline_serial", "target_serial")
+    _REF_FIELDS: ClassVar[tuple[str, ...]] = (
+        "source_serial",
+        "trampoline_serial",
+        "target_serial",
+    )
+
 
 @dataclass(frozen=True)
 class PatchCanonicalizeJumpTableCaseOverlap(_PatchRefValidated):
@@ -533,6 +560,7 @@ class PatchCanonicalizeJumpTableCaseOverlap(_PatchRefValidated):
             _require_patch_ref(source, "retarget_map source")
             _require_patch_ref(target, "retarget_map target")
 
+
 @dataclass(frozen=True)
 class PatchScalarizeLocalAliasAccess(_PatchRefValidated):
     block_serial: PatchBlockRef
@@ -544,6 +572,7 @@ class PatchScalarizeLocalAliasAccess(_PatchRefValidated):
     value_size: int | None = None
     _REF_FIELDS: ClassVar[tuple[str, ...]] = ("block_serial",)
 
+
 @dataclass(frozen=True)
 class PatchRetargetOutputStore(_PatchRefValidated):
     block_serial: PatchBlockRef
@@ -554,6 +583,7 @@ class PatchRetargetOutputStore(_PatchRefValidated):
     host_text_sha1: str | None = None
     value_size: int | None = None
     _REF_FIELDS: ClassVar[tuple[str, ...]] = ("block_serial",)
+
 
 @dataclass(frozen=True)
 class PatchPhaseCycleLowering(_PatchRefValidated):
@@ -567,11 +597,19 @@ class PatchPhaseCycleLowering(_PatchRefValidated):
     terminal_target: PatchBlockRef | None = None
     state_roles: tuple[tuple[str, int], ...] = ()
     reason: str = "dispatcher_phase_cycle"
-    _REF_FIELDS: ClassVar[tuple[str, ...]] = ("header_target", "body_target", "next_phase_target")
+    _REF_FIELDS: ClassVar[tuple[str, ...]] = (
+        "header_target",
+        "body_target",
+        "next_phase_target",
+    )
     _OPTIONAL_REF_FIELDS: ClassVar[tuple[str, ...]] = ("terminal_target",)
     _REF_TUPLE_FIELDS: ClassVar[tuple[str, ...]] = (
-        "header_entries", "body_entries", "next_phase_entries", "terminal_entries"
+        "header_entries",
+        "body_entries",
+        "next_phase_entries",
+        "terminal_entries",
     )
+
 
 @dataclass(frozen=True)
 class PatchEdgeSplitTrampoline(_PatchRefValidated):
@@ -585,7 +623,13 @@ class PatchEdgeSplitTrampoline(_PatchRefValidated):
     new_target: PatchBlockRef
     template_block: PatchBlockRef
     _REF_FIELDS: ClassVar[tuple[str, ...]] = (
-        "block_id", "source_serial", "via_pred", "old_target", "apply_old_target", "new_target", "template_block"
+        "block_id",
+        "source_serial",
+        "via_pred",
+        "old_target",
+        "apply_old_target",
+        "new_target",
+        "template_block",
     )
 
 
@@ -602,9 +646,19 @@ class PatchEdgeSplitCorridor(_PatchRefValidated):
     corridor_serials: tuple[PatchBlockRef, ...]
     source_new_target: PatchBlockRef | None = None
     rule_priority: int = 0
-    _REF_FIELDS: ClassVar[tuple[str, ...]] = ("source_serial", "via_pred", "old_target", "new_target", "clone_until")
+    _REF_FIELDS: ClassVar[tuple[str, ...]] = (
+        "source_serial",
+        "via_pred",
+        "old_target",
+        "new_target",
+        "clone_until",
+    )
     _OPTIONAL_REF_FIELDS: ClassVar[tuple[str, ...]] = ("source_new_target",)
-    _REF_TUPLE_FIELDS: ClassVar[tuple[str, ...]] = ("clone_block_ids", "corridor_serials")
+    _REF_TUPLE_FIELDS: ClassVar[tuple[str, ...]] = (
+        "clone_block_ids",
+        "corridor_serials",
+    )
+
 
 @dataclass(frozen=True)
 class PatchConditionalRedirect(_PatchRefValidated):
@@ -619,9 +673,15 @@ class PatchConditionalRedirect(_PatchRefValidated):
     old_target_serial: PatchBlockRef | None = None
     instructions: tuple[InsnSnapshot, ...] = ()
     _REF_FIELDS: ClassVar[tuple[str, ...]] = (
-        "block_id", "fallthrough_block_id", "source_serial", "ref_block", "conditional_target", "fallthrough_target"
+        "block_id",
+        "fallthrough_block_id",
+        "source_serial",
+        "ref_block",
+        "conditional_target",
+        "fallthrough_target",
     )
     _OPTIONAL_REF_FIELDS: ClassVar[tuple[str, ...]] = ("old_target_serial",)
+
 
 @dataclass(frozen=True)
 class PatchInsertBlock(_PatchRefValidated):
@@ -636,6 +696,7 @@ class PatchInsertBlock(_PatchRefValidated):
     _REF_FIELDS: ClassVar[tuple[str, ...]] = ("block_id", "pred_serial", "succ_serial")
     _OPTIONAL_REF_FIELDS: ClassVar[tuple[str, ...]] = ("old_target_serial",)
 
+
 @dataclass(frozen=True)
 class PatchDuplicateBlock(_PatchRefValidated):
     """Finalized materialization of a duplicated block plus predecessor redirect."""
@@ -649,11 +710,13 @@ class PatchDuplicateBlock(_PatchRefValidated):
     conditional_target: PatchBlockRef | None = None
     fallthrough_target: PatchBlockRef | None = None
     fallthrough_block_id: PlanBlockRef | None = None
-    _REF_FIELDS: ClassVar[tuple[str, ...]] = (
-        "block_id", "source_serial"
-    )
+    _REF_FIELDS: ClassVar[tuple[str, ...]] = ("block_id", "source_serial")
     _OPTIONAL_REF_FIELDS: ClassVar[tuple[str, ...]] = (
-        "pred_serial", "target_serial", "conditional_target", "fallthrough_target", "fallthrough_block_id"
+        "pred_serial",
+        "target_serial",
+        "conditional_target",
+        "fallthrough_target",
+        "fallthrough_block_id",
     )
     _REF_TUPLE_FIELDS: ClassVar[tuple[str, ...]] = ("source_successors",)
 
@@ -661,6 +724,7 @@ class PatchDuplicateBlock(_PatchRefValidated):
         super().__post_init__()
         if not isinstance(self.block_id, PlanBlockRef):
             raise TypeError("block_id must be a PlanBlockRef")
+
 
 @dataclass(frozen=True)
 class PatchDuplicateReplayEntry(_PatchRefValidated):
@@ -671,7 +735,11 @@ class PatchDuplicateReplayEntry(_PatchRefValidated):
     replay_block_id: PlanBlockRef
     captured_body: CapturedBlockBody
     clone_block_id: PlanBlockRef | None = None
-    _REF_FIELDS: ClassVar[tuple[str, ...]] = ("pred_serial", "target_serial", "replay_block_id")
+    _REF_FIELDS: ClassVar[tuple[str, ...]] = (
+        "pred_serial",
+        "target_serial",
+        "replay_block_id",
+    )
     _OPTIONAL_REF_FIELDS: ClassVar[tuple[str, ...]] = ("clone_block_id",)
 
     def __post_init__(self) -> None:
@@ -702,6 +770,7 @@ class PatchDuplicateReplayAndRedirect(_PatchRefValidated):
                 "per_pred_replays must contain PatchDuplicateReplayEntry values"
             )
 
+
 @dataclass(frozen=True)
 class PatchCloneConditionalAsGoto(_PatchRefValidated):
     """Finalized clone-conditional-as-goto materialization step."""
@@ -715,9 +784,15 @@ class PatchCloneConditionalAsGoto(_PatchRefValidated):
     fallthrough_target: PatchBlockRef
     reason: str = "fix_predecessor_clone_as_goto"
     _REF_FIELDS: ClassVar[tuple[str, ...]] = (
-        "block_id", "source_serial", "pred_serial", "goto_target", "conditional_target", "fallthrough_target"
+        "block_id",
+        "source_serial",
+        "pred_serial",
+        "goto_target",
+        "conditional_target",
+        "fallthrough_target",
     )
     _REF_TUPLE_FIELDS: ClassVar[tuple[str, ...]] = ("source_successors",)
+
 
 @dataclass(frozen=True)
 class PatchCloneConditionalAsGotoFromBranchArm(_PatchRefValidated):
@@ -743,10 +818,20 @@ class PatchCloneConditionalAsGotoFromBranchArm(_PatchRefValidated):
     fallthrough_target: PatchBlockRef
     reason: str = "fix_predecessor_clone_as_goto_from_branch_arm"
     _REF_FIELDS: ClassVar[tuple[str, ...]] = (
-        "block_id", "source_serial", "pred_serial", "goto_target", "pred_branch_target_serial",
-        "pred_fallthrough_target_serial", "conditional_target", "fallthrough_target"
+        "block_id",
+        "source_serial",
+        "pred_serial",
+        "goto_target",
+        "pred_branch_target_serial",
+        "pred_fallthrough_target_serial",
+        "conditional_target",
+        "fallthrough_target",
     )
-    _REF_TUPLE_FIELDS: ClassVar[tuple[str, ...]] = ("source_successors", "pred_successors")
+    _REF_TUPLE_FIELDS: ClassVar[tuple[str, ...]] = (
+        "source_successors",
+        "pred_successors",
+    )
+
 
 @dataclass(frozen=True)
 class PatchPrivateTerminalSuffix(_PatchRefValidated):
@@ -768,8 +853,13 @@ class PatchPrivateTerminalSuffix(_PatchRefValidated):
     return_block_serial: PatchBlockRef
     suffix_serials: tuple[PatchBlockRef, ...]
     clone_block_ids: tuple[PlanBlockRef, ...]
-    _REF_FIELDS: ClassVar[tuple[str, ...]] = ("anchor_serial", "shared_entry_serial", "return_block_serial")
+    _REF_FIELDS: ClassVar[tuple[str, ...]] = (
+        "anchor_serial",
+        "shared_entry_serial",
+        "return_block_serial",
+    )
     _REF_TUPLE_FIELDS: ClassVar[tuple[str, ...]] = ("suffix_serials", "clone_block_ids")
+
 
 @dataclass(frozen=True)
 class PatchPrivateTerminalSuffixGroup(_PatchRefValidated):
@@ -796,7 +886,10 @@ class PatchPrivateTerminalSuffixGroup(_PatchRefValidated):
                 _require_patch_ref(ref, field_name)
         for refs in self.per_anchor_clone_block_ids:
             if any(not isinstance(ref, PlanBlockRef) for ref in refs):
-                raise TypeError("per_anchor_clone_block_ids must contain PlanBlockRef values")
+                raise TypeError(
+                    "per_anchor_clone_block_ids must contain PlanBlockRef values"
+                )
+
 
 @dataclass(frozen=True)
 class PatchExitPathLoweringSite(_PatchRefValidated):
@@ -822,7 +915,10 @@ class PatchExitPathLoweringGroup(_PatchRefValidated):
     suffix_serials: tuple[PatchBlockRef, ...]
     sites: tuple[PatchExitPathLoweringSite, ...]
     per_site_clone_block_ids: tuple[tuple[PatchBlockRef, tuple[PlanBlockRef, ...]], ...]
-    _REF_FIELDS: ClassVar[tuple[str, ...]] = ("shared_entry_serial", "return_block_serial")
+    _REF_FIELDS: ClassVar[tuple[str, ...]] = (
+        "shared_entry_serial",
+        "return_block_serial",
+    )
     _REF_TUPLE_FIELDS: ClassVar[tuple[str, ...]] = ("suffix_serials",)
 
     def __post_init__(self) -> None:
@@ -832,7 +928,9 @@ class PatchExitPathLoweringGroup(_PatchRefValidated):
         for anchor, refs in self.per_site_clone_block_ids:
             _require_patch_ref(anchor, "per_site_clone_block_ids anchor")
             if any(not isinstance(ref, PlanBlockRef) for ref in refs):
-                raise TypeError("per_site_clone_block_ids must contain PlanBlockRef values")
+                raise TypeError(
+                    "per_site_clone_block_ids must contain PlanBlockRef values"
+                )
 
 
 @dataclass(frozen=True)
@@ -845,7 +943,9 @@ class PatchReorderBlocks(_PatchRefValidated):
     copy_lineage: tuple[tuple[PatchBlockRef, PlanBlockRef], ...] = ()
     two_way_trampoline_lineage: tuple[tuple[PatchBlockRef, PlanBlockRef], ...] = ()
     _REF_TUPLE_FIELDS: ClassVar[tuple[str, ...]] = (
-        "dfs_block_order", "non_2way_serials", "two_way_serials"
+        "dfs_block_order",
+        "non_2way_serials",
+        "two_way_serials",
     )
 
     def __post_init__(self) -> None:
@@ -863,6 +963,7 @@ class PatchReorderBlocks(_PatchRefValidated):
                 _require_patch_ref(source, f"{field_name} source")
                 if not isinstance(created, PlanBlockRef):
                     raise TypeError(f"{field_name} target must be a PlanBlockRef")
+
 
 BlockCreatingGraphModification = Union[
     EdgeRedirectViaPredSplit,
@@ -1091,7 +1192,8 @@ class PatchPlan:
         ):
             raise TypeError("source_maturity must be a portable MaturityEnvelope")
         if self.source_generation is not None and (
-            not isinstance(self.source_generation, int) or isinstance(self.source_generation, bool)
+            not isinstance(self.source_generation, int)
+            or isinstance(self.source_generation, bool)
             or self.source_generation < 0
         ):
             raise TypeError("source_generation must be a non-negative integer")
@@ -1112,12 +1214,16 @@ class PatchPlan:
             or serial < 0
             for ref, serial in self.source_coordinates
         ):
-            raise TypeError("source coordinates require typed refs and non-negative coordinates")
+            raise TypeError(
+                "source coordinates require typed refs and non-negative coordinates"
+            )
         if len({ref for ref, _serial in self.source_coordinates}) != len(
             self.source_coordinates
         ):
             raise ValueError("source coordinates contain duplicate typed refs")
-        refs = tuple(_iter_patch_refs((self.steps, self.new_blocks, self.relocation_map)))
+        refs = tuple(
+            _iter_patch_refs((self.steps, self.new_blocks, self.relocation_map))
+        )
         for ref in refs:
             if isinstance(ref, PlanBlockRef) and ref.plan_id != self.plan_id:
                 raise ValueError("PatchPlan plan authority differs from PlanBlockRef")
@@ -1125,7 +1231,6 @@ class PatchPlan:
     @property
     def concrete_operations(self) -> tuple[PatchOperation, ...]:
         return self.steps
-
 
     @property
     def contains_block_creation(self) -> bool:
@@ -1258,6 +1363,7 @@ class _PendingExitPathLoweringGroup:
 @dataclass(frozen=True)
 class _PendingReorderBlocks:
     """Pre-resolution ReorderBlocks with virtual block IDs (not yet concrete serials)."""
+
     dfs_block_order: tuple[int, ...]
     non_2way_serials: tuple[int, ...]
     virtual_ids: tuple[PlanBlockRef, ...]  # one per block in non_2way_serials, in order
@@ -1284,13 +1390,17 @@ def is_block_creating_modification(modification: GraphModification) -> bool:
     )
 
 
-def _rewrite_block_ref(block_ref: PatchBlockRef, relocation_map: PatchRelocationMap) -> PatchBlockRef:
+def _rewrite_block_ref(
+    block_ref: PatchBlockRef, relocation_map: PatchRelocationMap
+) -> PatchBlockRef:
     if isinstance(block_ref, PlanBlockRef):
         return block_ref
     return relocation_map.rewrite_serial(block_ref)
 
 
-def _rewrite_edge_ref(edge: PatchEdgeRef, relocation_map: PatchRelocationMap) -> PatchEdgeRef:
+def _rewrite_edge_ref(
+    edge: PatchEdgeRef, relocation_map: PatchRelocationMap
+) -> PatchEdgeRef:
     return PatchEdgeRef(
         source=_rewrite_block_ref(edge.source, relocation_map),
         target=_rewrite_block_ref(edge.target, relocation_map),
@@ -1376,8 +1486,7 @@ def _build_relocation_map(
 ) -> PatchRelocationMap:
     return PatchRelocationMap(
         planned_lineage=tuple(
-            (spec.block_id, spec.template_block)
-            for spec in new_blocks
+            (spec.block_id, spec.template_block) for spec in new_blocks
         ),
         source_stop=(None if cfg is None or not cfg.blocks else max(cfg.blocks)),
     )
@@ -1617,7 +1726,10 @@ def _compile_clone_conditional_as_goto_from_branch_arm_step(
             f"CloneConditionalAsGotoFromBranchArm pred_arm=1 but pred branch target is "
             f"{pred_branch_target}, not source {modification.source_block}"
         )
-    if modification.pred_arm == 0 and modification.source_block != pred_fallthrough_target:
+    if (
+        modification.pred_arm == 0
+        and modification.source_block != pred_fallthrough_target
+    ):
         raise ValueError(
             f"CloneConditionalAsGotoFromBranchArm pred_arm=0 but pred fallthrough is "
             f"{pred_fallthrough_target}, not source {modification.source_block}"
@@ -1778,9 +1890,13 @@ def _compile_duplicate_block_step(
                 block_id=fallthrough_block_id,
                 kind="duplicate_block_fallthrough",
                 template_block=modification.source_block,
-                incoming_edge=PatchEdgeRef(source=block_id, target=fallthrough_block_id),
+                incoming_edge=PatchEdgeRef(
+                    source=block_id, target=fallthrough_block_id
+                ),
                 outgoing_edges=(
-                    PatchEdgeRef(source=fallthrough_block_id, target=fallthrough_target),
+                    PatchEdgeRef(
+                        source=fallthrough_block_id, target=fallthrough_target
+                    ),
                 ),
             )
         )
@@ -1872,9 +1988,7 @@ def _compile_edge_split_corridor_step(
         )
     if modification.source_new_target is not None:
         if modification.source_new_target == modification.src_block:
-            raise ValueError(
-                "EdgeRedirectViaPredSplit source target would self-loop"
-            )
+            raise ValueError("EdgeRedirectViaPredSplit source target would self-loop")
         if cfg.get_block(modification.source_new_target) is None:
             raise ValueError(
                 f"EdgeRedirectViaPredSplit source target {modification.source_new_target} not found"
@@ -1930,12 +2044,17 @@ def _compile_duplicate_replay_and_redirect_step(
         raise ValueError(
             f"DuplicateReplayAndRedirect dispatcher {modification.dispatcher_entry} not found"
         )
-    if source_block.nsucc != 1 or source_block.succs[0] != modification.dispatcher_entry:
+    if (
+        source_block.nsucc != 1
+        or source_block.succs[0] != modification.dispatcher_entry
+    ):
         raise ValueError(
             "DuplicateReplayAndRedirect requires source to be one-way to dispatcher"
         )
     if len(modification.per_pred_replays) < 2:
-        raise ValueError("DuplicateReplayAndRedirect requires at least two predecessors")
+        raise ValueError(
+            "DuplicateReplayAndRedirect requires at least two predecessors"
+        )
 
     source_preds = set(source_block.preds)
     seen_preds: set[int] = set()
@@ -1966,7 +2085,9 @@ def _compile_duplicate_replay_and_redirect_step(
             modification.source_serial,
             modification.dispatcher_entry,
         }:
-            raise ValueError("DuplicateReplayAndRedirect target loops through cleanup source")
+            raise ValueError(
+                "DuplicateReplayAndRedirect target loops through cleanup source"
+            )
         if target_block.nsucc > 1:
             raise ValueError("DuplicateReplayAndRedirect target requires trampoline")
         if (
@@ -1978,10 +2099,14 @@ def _compile_duplicate_replay_and_redirect_step(
             )
 
         replay_ids.append(allocator.alloc("duplicate_replay_insert"))
-        clone_ids.append(None if index == 0 else allocator.alloc("duplicate_replay_clone"))
+        clone_ids.append(
+            None if index == 0 else allocator.alloc("duplicate_replay_clone")
+        )
 
     if seen_preds != source_preds:
-        raise ValueError("DuplicateReplayAndRedirect must cover every source predecessor")
+        raise ValueError(
+            "DuplicateReplayAndRedirect must cover every source predecessor"
+        )
 
     specs: list[PatchBlockSpec] = []
     for entry, replay_id, clone_id in zip(
@@ -2000,7 +2125,9 @@ def _compile_duplicate_replay_and_redirect_step(
                     source=replay_source,
                     target=modification.dispatcher_entry,
                 ),
-                outgoing_edges=(PatchEdgeRef(source=replay_id, target=entry.target_serial),),
+                outgoing_edges=(
+                    PatchEdgeRef(source=replay_id, target=entry.target_serial),
+                ),
                 captured_body=entry.captured_body,
             )
         )
@@ -2036,7 +2163,19 @@ def _compile_duplicate_replay_and_redirect_step(
 
 
 def _finalize_step(
-    step: PatchStep | _PendingEdgeSplitTrampoline | _PendingEdgeSplitCorridor | _PendingConditionalRedirect | _PendingInsertBlock | _PendingDuplicateBlock | _PendingDuplicateReplayAndRedirect | _PendingCloneConditionalAsGoto | _PendingCloneConditionalAsGotoFromBranchArm | _PendingPrivateTerminalSuffix | _PendingPrivateTerminalSuffixGroup | _PendingExitPathLoweringGroup | _PendingReorderBlocks,
+    step: PatchStep
+    | _PendingEdgeSplitTrampoline
+    | _PendingEdgeSplitCorridor
+    | _PendingConditionalRedirect
+    | _PendingInsertBlock
+    | _PendingDuplicateBlock
+    | _PendingDuplicateReplayAndRedirect
+    | _PendingCloneConditionalAsGoto
+    | _PendingCloneConditionalAsGotoFromBranchArm
+    | _PendingPrivateTerminalSuffix
+    | _PendingPrivateTerminalSuffixGroup
+    | _PendingExitPathLoweringGroup
+    | _PendingReorderBlocks,
     relocation_map: PatchRelocationMap,
 ) -> PatchStep:
     match step:
@@ -2162,7 +2301,9 @@ def _finalize_step(
                     if old_target is None
                     else relocation_map.rewrite_serial(old_target)
                 ),
-                instructions=_rewrite_instruction_snapshots(instructions, relocation_map),
+                instructions=_rewrite_instruction_snapshots(
+                    instructions, relocation_map
+                ),
             )
 
         case _PendingInsertBlock(
@@ -2207,7 +2348,8 @@ def _finalize_step(
                 pred_serial=pred,
                 pred_redirect_kind=pred_redirect_kind,
                 source_successors=tuple(
-                    relocation_map.rewrite_serial(serial) for serial in source_successors
+                    relocation_map.rewrite_serial(serial)
+                    for serial in source_successors
                 ),
                 target_serial=(
                     relocation_map.rewrite_serial(target)
@@ -2245,7 +2387,9 @@ def _finalize_step(
                 finalized_replays.append(
                     PatchDuplicateReplayEntry(
                         pred_serial=entry.pred_serial,
-                        target_serial=relocation_map.rewrite_serial(entry.target_serial),
+                        target_serial=relocation_map.rewrite_serial(
+                            entry.target_serial
+                        ),
                         replay_block_id=replay_id,
                         captured_body=entry.captured_body,
                         clone_block_id=clone_id,
@@ -2310,8 +2454,7 @@ def _finalize_step(
                     for serial in source_successors
                 ),
                 pred_successors=tuple(
-                    relocation_map.rewrite_serial(serial)
-                    for serial in pred_successors
+                    relocation_map.rewrite_serial(serial) for serial in pred_successors
                 ),
                 pred_branch_target_serial=relocation_map.rewrite_serial(
                     pred_branch_target
@@ -2511,9 +2654,7 @@ def _compile_patch_plan_impl(
                     )
                 helper_block_id = None
                 if old == fallthrough_target and old != conditional_target:
-                    helper_block_id = allocator.alloc(
-                        "redirect_branch_fallthrough"
-                    )
+                    helper_block_id = allocator.alloc("redirect_branch_fallthrough")
                     new_blocks.append(
                         PatchBlockSpec(
                             block_id=helper_block_id,
@@ -2541,13 +2682,17 @@ def _compile_patch_plan_impl(
                 )
 
             case ConvertToGoto(block_serial=serial, goto_target=target):
-                raw_steps.append(PatchConvertToGoto(block_serial=serial, goto_target=target))
+                raw_steps.append(
+                    PatchConvertToGoto(block_serial=serial, goto_target=target)
+                )
 
             case RemoveEdge(from_serial=src, to_serial=dst):
                 raw_steps.append(PatchRemoveEdge(from_serial=src, to_serial=dst))
 
             case NopInstructions(block_serial=serial, insn_eas=eas):
-                raw_steps.append(PatchNopInstructions(block_serial=serial, insn_eas=eas))
+                raw_steps.append(
+                    PatchNopInstructions(block_serial=serial, insn_eas=eas)
+                )
 
             case ZeroStateWrite(block_serial=serial, insn_ea=ea):
                 raw_steps.append(PatchZeroStateWrite(block_serial=serial, insn_ea=ea))
@@ -2558,12 +2703,14 @@ def _compile_patch_plan_impl(
                 host_opcode=opcode,
                 operand_side=side,
             ):
-                raw_steps.append(PatchPromoteOperandToScalar(
-                    block_serial=serial,
-                    host_ea=host_ea,
-                    host_opcode=opcode,
-                    operand_side=side,
-                ))
+                raw_steps.append(
+                    PatchPromoteOperandToScalar(
+                        block_serial=serial,
+                        host_ea=host_ea,
+                        host_opcode=opcode,
+                        operand_side=side,
+                    )
+                )
 
             case LowerConditionalStateTransition(
                 source_serial=src,
@@ -2580,54 +2727,62 @@ def _compile_patch_plan_impl(
                 false_state_write_ea=false_state_write_ea,
                 true_state_write_ea=true_state_write_ea,
             ):
-                raw_steps.append(PatchLowerConditionalStateTransition(
-                    source_serial=src,
-                    old_dispatcher_serial=dispatcher,
-                    rewrite_from_ea=ea,
-                    condition_operand=condition,
-                    false_target_serial=false_target,
-                    true_target_serial=true_target,
-                    proof_id=proof_id,
-                    state_register=state_register,
-                    state_size=state_size,
-                    false_state=false_state,
-                    true_state=true_state,
-                    false_state_write_ea=false_state_write_ea,
-                    true_state_write_ea=true_state_write_ea,
-                ))
+                raw_steps.append(
+                    PatchLowerConditionalStateTransition(
+                        source_serial=src,
+                        old_dispatcher_serial=dispatcher,
+                        rewrite_from_ea=ea,
+                        condition_operand=condition,
+                        false_target_serial=false_target,
+                        true_target_serial=true_target,
+                        proof_id=proof_id,
+                        state_register=state_register,
+                        state_size=state_size,
+                        false_state=false_state,
+                        true_state=true_state,
+                        false_state_write_ea=false_state_write_ea,
+                        true_state_write_ea=true_state_write_ea,
+                    )
+                )
 
             case NormalizeNWayDispatcherExit(
                 block_serial=serial,
                 dispatcher_entry_serial=dispatcher,
                 keep_target_serial=keep,
             ):
-                raw_steps.append(PatchNormalizeNWayDispatcherExit(
-                    block_serial=serial,
-                    dispatcher_entry_serial=dispatcher,
-                    keep_target_serial=keep,
-                ))
+                raw_steps.append(
+                    PatchNormalizeNWayDispatcherExit(
+                        block_serial=serial,
+                        dispatcher_entry_serial=dispatcher,
+                        keep_target_serial=keep,
+                    )
+                )
 
             case BypassDispatcherTrampoline(
                 source_serial=src,
                 trampoline_serial=trampoline,
                 target_serial=target,
             ):
-                raw_steps.append(PatchBypassDispatcherTrampoline(
-                    source_serial=src,
-                    trampoline_serial=trampoline,
-                    target_serial=target,
-                ))
+                raw_steps.append(
+                    PatchBypassDispatcherTrampoline(
+                        source_serial=src,
+                        trampoline_serial=trampoline,
+                        target_serial=target,
+                    )
+                )
 
             case CanonicalizeJumpTableCaseOverlap(
                 jtbl_serial=serial,
                 retarget_map=retarget_map,
                 deduplicate=deduplicate,
             ):
-                raw_steps.append(PatchCanonicalizeJumpTableCaseOverlap(
-                    jtbl_serial=serial,
-                    retarget_map=retarget_map,
-                    deduplicate=deduplicate,
-                ))
+                raw_steps.append(
+                    PatchCanonicalizeJumpTableCaseOverlap(
+                        jtbl_serial=serial,
+                        retarget_map=retarget_map,
+                        deduplicate=deduplicate,
+                    )
+                )
 
             case ScalarizeLocalAliasAccess(
                 block_serial=serial,
@@ -2638,15 +2793,17 @@ def _compile_patch_plan_impl(
                 host_text_sha1=host_text_sha1,
                 value_size=value_size,
             ):
-                raw_steps.append(PatchScalarizeLocalAliasAccess(
-                    block_serial=serial,
-                    host_ea=host_ea,
-                    host_opcode=opcode,
-                    alias_token=alias,
-                    base_token=base,
-                    host_text_sha1=host_text_sha1,
-                    value_size=value_size,
-                ))
+                raw_steps.append(
+                    PatchScalarizeLocalAliasAccess(
+                        block_serial=serial,
+                        host_ea=host_ea,
+                        host_opcode=opcode,
+                        alias_token=alias,
+                        base_token=base,
+                        host_text_sha1=host_text_sha1,
+                        value_size=value_size,
+                    )
+                )
 
             case RetargetOutputStore(
                 block_serial=serial,
@@ -2657,15 +2814,17 @@ def _compile_patch_plan_impl(
                 host_text_sha1=host_text_sha1,
                 value_size=value_size,
             ):
-                raw_steps.append(PatchRetargetOutputStore(
-                    block_serial=serial,
-                    host_ea=host_ea,
-                    host_opcode=opcode,
-                    alias_token=alias,
-                    output_token=output,
-                    host_text_sha1=host_text_sha1,
-                    value_size=value_size,
-                ))
+                raw_steps.append(
+                    PatchRetargetOutputStore(
+                        block_serial=serial,
+                        host_ea=host_ea,
+                        host_opcode=opcode,
+                        alias_token=alias,
+                        output_token=output,
+                        host_text_sha1=host_text_sha1,
+                        value_size=value_size,
+                    )
+                )
 
             case PhaseCycleLowering(
                 header_entries=header_entries,
@@ -2679,18 +2838,20 @@ def _compile_patch_plan_impl(
                 state_roles=state_roles,
                 reason=reason,
             ):
-                raw_steps.append(PatchPhaseCycleLowering(
-                    header_entries=header_entries,
-                    header_target=header_target,
-                    body_entries=body_entries,
-                    body_target=body_target,
-                    next_phase_entries=next_phase_entries,
-                    next_phase_target=next_phase_target,
-                    terminal_entries=terminal_entries,
-                    terminal_target=terminal_target,
-                    state_roles=state_roles,
-                    reason=reason,
-                ))
+                raw_steps.append(
+                    PatchPhaseCycleLowering(
+                        header_entries=header_entries,
+                        header_target=header_target,
+                        body_entries=body_entries,
+                        body_target=body_target,
+                        next_phase_entries=next_phase_entries,
+                        next_phase_target=next_phase_target,
+                        terminal_entries=terminal_entries,
+                        terminal_target=terminal_target,
+                        state_roles=state_roles,
+                        reason=reason,
+                    )
+                )
 
             case EdgeRedirectViaPredSplit(
                 src_block=src,
@@ -2723,7 +2884,9 @@ def _compile_patch_plan_impl(
                     )
                 )
                 raw_steps.append(
-                    _PendingEdgeSplitTrampoline(modification=modification, block_id=block_id)
+                    _PendingEdgeSplitTrampoline(
+                        modification=modification, block_id=block_id
+                    )
                 )
 
             case CreateConditionalRedirect(
@@ -2740,7 +2903,9 @@ def _compile_patch_plan_impl(
                     )
                 else:
                     block_id = allocator.alloc("conditional_redirect")
-                    fallthrough_block_id = allocator.alloc("conditional_redirect_fallthrough")
+                    fallthrough_block_id = allocator.alloc(
+                        "conditional_redirect_fallthrough"
+                    )
                     new_blocks.append(
                         PatchBlockSpec(
                             block_id=block_id,
@@ -2803,13 +2968,17 @@ def _compile_patch_plan_impl(
                                 source=pred,
                                 target=effective_old_target,
                             ),
-                            outgoing_edges=(PatchEdgeRef(source=block_id, target=succ),),
+                            outgoing_edges=(
+                                PatchEdgeRef(source=block_id, target=succ),
+                            ),
                             instructions=insns,
                             captured_body=captured_body,
                         )
                     )
                     raw_steps.append(
-                        _PendingInsertBlock(modification=modification, block_id=block_id)
+                        _PendingInsertBlock(
+                            modification=modification, block_id=block_id
+                        )
                     )
 
             case DuplicateBlock():
@@ -2838,10 +3007,12 @@ def _compile_patch_plan_impl(
                         "compile_patch_plan requires FlowGraph context for "
                         "DuplicateReplayAndRedirect"
                     )
-                pending_step, replay_specs = _compile_duplicate_replay_and_redirect_step(
-                    modification,
-                    cfg,
-                    allocator,
+                pending_step, replay_specs = (
+                    _compile_duplicate_replay_and_redirect_step(
+                        modification,
+                        cfg,
+                        allocator,
+                    )
                 )
                 raw_steps.append(pending_step)
                 new_blocks.extend(replay_specs)
@@ -2883,7 +3054,9 @@ def _compile_patch_plan_impl(
                 suffix_serials=suffix,
             ):
                 if not suffix:
-                    raise ValueError("PrivateTerminalSuffix requires non-empty suffix_serials")
+                    raise ValueError(
+                        "PrivateTerminalSuffix requires non-empty suffix_serials"
+                    )
                 clone_ids: list[PlanBlockRef] = []
                 for idx, suffix_serial in enumerate(suffix):
                     clone_id = allocator.alloc(f"private_suffix_a{anchor}")
@@ -2892,7 +3065,9 @@ def _compile_patch_plan_impl(
                     # others chain to next clone.
                     if idx < len(suffix) - 1:
                         next_clone_id = allocator.peek(f"private_suffix_a{anchor}")
-                        outgoing = (PatchEdgeRef(source=clone_id, target=next_clone_id),)
+                        outgoing = (
+                            PatchEdgeRef(source=clone_id, target=next_clone_id),
+                        )
                     else:
                         outgoing = ()
                     # First clone gets incoming from anchor
@@ -2922,7 +3097,9 @@ def _compile_patch_plan_impl(
                 suffix_serials=suffix,
             ):
                 if not suffix:
-                    raise ValueError("PrivateTerminalSuffixGroup requires non-empty suffix_serials")
+                    raise ValueError(
+                        "PrivateTerminalSuffixGroup requires non-empty suffix_serials"
+                    )
                 per_anchor_clone_ids: list[tuple[PlanBlockRef, ...]] = []
                 for anchor in anchors:
                     anchor_clone_ids: list[PlanBlockRef] = []
@@ -2933,7 +3110,9 @@ def _compile_patch_plan_impl(
                             next_clone_id = allocator.peek(
                                 f"private_suffix_g_a{anchor}"
                             )
-                            outgoing = (PatchEdgeRef(source=clone_id, target=next_clone_id),)
+                            outgoing = (
+                                PatchEdgeRef(source=clone_id, target=next_clone_id),
+                            )
                         else:
                             outgoing = ()
                         incoming = None
@@ -3025,43 +3204,52 @@ def _compile_patch_plan_impl(
             ):
                 # Allocate one PlanBlockRef per non-2way block that will be copied
                 virtual_ids = tuple(
-                    allocator.alloc(f"reorder_copy_{old}")
-                    for old in non_2way
+                    allocator.alloc(f"reorder_copy_{old}") for old in non_2way
                 )
                 # Register PatchBlockSpec entries so _build_relocation_map assigns concrete serials
                 for vid, old_serial in zip(virtual_ids, non_2way):
-                    new_blocks.append(PatchBlockSpec(
-                        block_id=vid,
-                        kind="reorder_block_copy",
-                        template_block=old_serial,
-                    ))
+                    new_blocks.append(
+                        PatchBlockSpec(
+                            block_id=vid,
+                            kind="reorder_block_copy",
+                            template_block=old_serial,
+                        )
+                    )
 
                 two_way_pairs: list[tuple[PlanBlockRef, PlanBlockRef]] = []
                 for old_serial in two_way:
                     copy_vid = allocator.alloc(f"reorder_2way_copy_{old_serial}")
                     tramp_vid = allocator.alloc(f"reorder_2way_tramp_{old_serial}")
-                    new_blocks.append(PatchBlockSpec(
-                        block_id=copy_vid,
-                        kind="reorder_block_2way_copy",
-                        template_block=old_serial,
-                    ))
-                    new_blocks.append(PatchBlockSpec(
-                        block_id=tramp_vid,
-                        kind="reorder_block_2way_trampoline",
-                        template_block=old_serial,
-                    ))
+                    new_blocks.append(
+                        PatchBlockSpec(
+                            block_id=copy_vid,
+                            kind="reorder_block_2way_copy",
+                            template_block=old_serial,
+                        )
+                    )
+                    new_blocks.append(
+                        PatchBlockSpec(
+                            block_id=tramp_vid,
+                            kind="reorder_block_2way_trampoline",
+                            template_block=old_serial,
+                        )
+                    )
                     two_way_pairs.append((copy_vid, tramp_vid))
 
-                raw_steps.append(_PendingReorderBlocks(
-                    dfs_block_order=order,
-                    non_2way_serials=non_2way,
-                    virtual_ids=virtual_ids,
-                    two_way_serials=two_way,
-                    two_way_virtual_id_pairs=tuple(two_way_pairs),
-                ))
+                raw_steps.append(
+                    _PendingReorderBlocks(
+                        dfs_block_order=order,
+                        non_2way_serials=non_2way,
+                        virtual_ids=virtual_ids,
+                        two_way_serials=two_way,
+                        two_way_virtual_id_pairs=tuple(two_way_pairs),
+                    )
+                )
 
             case _:
-                raise TypeError(f"Unsupported GraphModification: {type(modification).__name__}")
+                raise TypeError(
+                    f"Unsupported GraphModification: {type(modification).__name__}"
+                )
 
     relocation_map = _build_relocation_map(new_blocks, cfg)
     steps = tuple(_finalize_step(step, relocation_map) for step in raw_steps)

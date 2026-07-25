@@ -1,4 +1,5 @@
 """Hex-Rays materialization helpers for dispatcher rewrite batches."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -153,8 +154,7 @@ def _downgrade_nway_goto_blocks(
             continue
         _log_debug(
             logger,
-            "generic: block %d BLT_NWAY+m_goto+nsucc==1 -> BLT_1WAY "
-            "(pre-apply sweep)",
+            "generic: block %d BLT_NWAY+m_goto+nsucc==1 -> BLT_1WAY (pre-apply sweep)",
             blk_serial,
         )
         modifier = DeferredGraphModifier(

@@ -224,9 +224,7 @@ class MbaBlockIdentityIndex:
                 raise ValueError("MBA identity maturity must be non-negative")
         if self.snapshot_id is None:
             maturity_label = "unknown" if self.maturity is None else str(self.maturity)
-            self.snapshot_id = (
-                f"{self.session_id}:m{maturity_label}:g{self.generation}"
-            )
+            self.snapshot_id = f"{self.session_id}:m{maturity_label}:g{self.generation}"
         elif not isinstance(self.snapshot_id, str) or not self.snapshot_id.strip():
             raise ValueError("MBA identity snapshot_id must be a non-empty string")
 
@@ -950,7 +948,10 @@ class MbaBlockIdentityIndex:
         active = self._attempt_by_transaction.get(attempt_id.attempt_id)
         if active != attempt_id:
             raise ValueError("transaction attempt is not active in this identity index")
-        if self._generation_by_transaction.get(attempt_id.attempt_id) != self.generation:
+        if (
+            self._generation_by_transaction.get(attempt_id.attempt_id)
+            != self.generation
+        ):
             raise ValueError("transaction attempt belongs to a stale MBA generation")
 
     def resolve_planned_serial(

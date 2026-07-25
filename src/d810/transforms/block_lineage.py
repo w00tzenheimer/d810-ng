@@ -4,6 +4,7 @@ The executor records lineage after a PatchPlan is successfully applied, before
 the post-apply diagnostic snapshot is captured.  ``snapshot_mba`` can later
 drain this process-local buffer and persist the rows under its new snapshot_id.
 """
+
 from __future__ import annotations
 
 import json
@@ -121,7 +122,9 @@ def build_patch_plan_block_lineage(
             BlockLineageEntry(
                 serial=int(assigned_serial),
                 origin_snapshot_id=origin_snapshot_id,
-                origin_serial=(int(origin_serial) if origin_serial is not None else None),
+                origin_serial=(
+                    int(origin_serial) if origin_serial is not None else None
+                ),
                 origin_start_ea_hex=origin_start_ea_hex,
                 origin_body_fingerprint=origin_fingerprint,
                 creation_kind=creation_kind,
@@ -237,9 +240,7 @@ def _infer_insert_block_origin_serial(
     synthetic rather than recording a false origin.
     """
     assigned_block = (
-        post_cfg.get_block(assigned_serial)
-        if post_cfg is not None
-        else None
+        post_cfg.get_block(assigned_serial) if post_cfg is not None else None
     )
     if pre_cfg is not None and assigned_block is not None:
         assigned_opcodes = _opcode_tuple(assigned_block.insn_snapshots)
@@ -360,7 +361,9 @@ def _entry_extra(
     post_cfg: FlowGraph | None,
     source_coordinates: Mapping[LogicalBlockRef | NativeBlockRef, int],
 ) -> dict[str, Any]:
-    assigned_block = post_cfg.get_block(assigned_serial) if post_cfg is not None else None
+    assigned_block = (
+        post_cfg.get_block(assigned_serial) if post_cfg is not None else None
+    )
     return {
         "assigned_label": block_label(post_cfg, assigned_serial),
         "assigned_start_ea_hex": (

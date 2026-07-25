@@ -498,9 +498,10 @@ class MbaCfgTransactionAuthorityObserved:
             raise ValueError("CFG transaction plan reference authority differs")
         if len(set(self.plan_refs)) != len(self.plan_refs):
             raise ValueError("CFG transaction plan references are not unique")
-        if self.insertion_quantity_initial is not None and int(
-            self.insertion_quantity_initial
-        ) < 0:
+        if (
+            self.insertion_quantity_initial is not None
+            and int(self.insertion_quantity_initial) < 0
+        ):
             raise ValueError("CFG transaction initial quantity must be non-negative")
         declared = set(self.plan_refs)
         observed_bindings = {item.plan_ref: item for item in self.plan_bindings}
@@ -514,7 +515,10 @@ class MbaCfgTransactionAuthorityObserved:
             raise ValueError("CFG transaction creation receipt is not declared")
         for receipt in self.creation_receipts:
             binding = observed_bindings.get(receipt.plan_ref)
-            if binding is not None and binding.logical_version is not receipt.logical_version:
+            if (
+                binding is not None
+                and binding.logical_version is not receipt.logical_version
+            ):
                 raise ValueError("CFG transaction creation binding differs")
         if any(item[0] not in declared for item in self.creation_quantities):
             raise ValueError("CFG transaction creation quantity is not declared")

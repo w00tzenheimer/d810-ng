@@ -9,6 +9,7 @@ compiles them into a typed ``PatchPlan`` while the source graph is available.
 wiring pending) the plan is empty. Portable composition — no extraction from the live cleanup
 backend needed; the candidate -> modification lowering already lives in ``transforms.cleanup_evidence``.
 """
+
 from __future__ import annotations
 
 from d810.core.typing import Mapping, Sequence

@@ -75,7 +75,7 @@ def _candidate_anchor_for_suffix(
     suffix_serials: tuple[int, ...],
     projected_flow_graph,
 ) -> int | None:
-    if candidate.path[-len(suffix_serials):] != suffix_serials:
+    if candidate.path[-len(suffix_serials) :] != suffix_serials:
         return None
     if len(candidate.path) > len(suffix_serials):
         anchor_serial = int(candidate.path[-len(suffix_serials) - 1])
@@ -98,7 +98,9 @@ def build_terminal_family_split_proposals(
     projected_flow_graph,
     excluded_anchors: frozenset[int] = frozenset(),
 ) -> tuple[TerminalFamilySplitProposal, ...]:
-    groups_by_suffix: dict[tuple[int, ...], list[tuple[int, TerminalFamilySplitCandidate]]] = {}
+    groups_by_suffix: dict[
+        tuple[int, ...], list[tuple[int, TerminalFamilySplitCandidate]]
+    ] = {}
     for index, candidate in enumerate(candidates):
         for suffix_len in range(2, len(candidate.path) + 1):
             suffix = candidate.path[-suffix_len:]
@@ -131,7 +133,9 @@ def build_terminal_family_split_proposals(
         ] = defaultdict(list)
         for member in members:
             index, candidate = member
-            signature_buckets[candidate.value_family_signature].append((index, candidate))
+            signature_buckets[candidate.value_family_signature].append(
+                (index, candidate)
+            )
         if len(signature_buckets) < 2:
             continue
 
@@ -379,7 +383,10 @@ def select_terminal_family_split(
             continue
 
         candidate_reachable = compute_reachable_blocks(candidate_projected)
-        if candidate_reachable is None or len(candidate_reachable) < baseline_reachable_count:
+        if (
+            candidate_reachable is None
+            or len(candidate_reachable) < baseline_reachable_count
+        ):
             continue
 
         return TerminalFamilySplitSelection(

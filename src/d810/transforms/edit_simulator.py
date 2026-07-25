@@ -72,6 +72,7 @@ def _focus_refs_for_patch_plan(
 ) -> tuple[CfgBlockRef, ...]:
     """Translate plan-local focus into immutable, authority-qualified refs."""
     refs: set[CfgBlockRef] = set()
+
     def add(value: object) -> None:
         if isinstance(value, (PlanBlockRef, NativeBlockRef, LogicalBlockRef)):
             refs.add(value)
@@ -134,9 +135,7 @@ def _focus_refs_for_patch_plan(
             refs,
             key=lambda ref: (
                 type(ref).__name__,
-                ref.local_block_id
-                if isinstance(ref, PlanBlockRef)
-                else repr(ref),
+                ref.local_block_id if isinstance(ref, PlanBlockRef) else repr(ref),
             ),
         )
     )
@@ -170,9 +169,8 @@ def _tail_opcode_for_existing_block(
             case PatchConvertToGoto(block_serial=serial) if serial == block.serial:
                 tail_kind = InsnKind.GOTO
                 break
-            case PatchRedirectGoto(from_serial=serial) if (
-                serial == block.serial
-                and (block.kind == BlockKind.ONE_WAY or block.nsucc == 1)
+            case PatchRedirectGoto(from_serial=serial) if serial == block.serial and (
+                block.kind == BlockKind.ONE_WAY or block.nsucc == 1
             ):
                 tail_kind = InsnKind.GOTO
                 break
@@ -820,9 +818,7 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
             ):
                 for idx, clone_serial in enumerate(clone_serials):
                     next_serial = (
-                        clone_serials[idx + 1]
-                        if idx < len(clone_serials) - 1
-                        else new
+                        clone_serials[idx + 1] if idx < len(clone_serials) - 1 else new
                     )
                     simulated.append(
                         SimulatedEdit(
@@ -1161,9 +1157,16 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
                 continue
 
     scalar_fields = (
-        "source", "old_target", "new_target", "via_pred", "clone_until",
-        "fallthrough_target", "duplicate_target", "conditional_target",
-        "created_serial", "secondary_created_serial",
+        "source",
+        "old_target",
+        "new_target",
+        "via_pred",
+        "clone_until",
+        "fallthrough_target",
+        "duplicate_target",
+        "conditional_target",
+        "created_serial",
+        "secondary_created_serial",
     )
     normalized: list[SimulatedEdit] = []
     for edit in simulated:

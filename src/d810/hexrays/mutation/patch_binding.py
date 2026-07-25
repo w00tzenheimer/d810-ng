@@ -38,7 +38,9 @@ class BoundPatchPlan:
     def serial_for(self, ref: CfgBlockRef | None) -> int | None:
         if ref is None:
             return None
-        matches = tuple(serial for candidate, serial in self.bindings if candidate == ref)
+        matches = tuple(
+            serial for candidate, serial in self.bindings if candidate == ref
+        )
         if len(matches) != 1:
             raise PatchBindingRejected(
                 f"typed block reference has {len(matches)} live bindings"
@@ -145,20 +147,19 @@ def bind_patch_plan(
     if plan.source_generation != identity_index.generation:
         raise PatchBindingRejected("source generation authority differs")
     source_provider_stage = (
-        None
-        if plan.source_maturity is None
-        else plan.source_maturity.provider_id
+        None if plan.source_maturity is None else plan.source_maturity.provider_id
     )
     if source_provider_stage != identity_index.maturity:
         raise PatchBindingRejected("source maturity authority differs")
 
-    refs = tuple(dict.fromkeys(_iter_refs((plan.steps, plan.new_blocks, plan.relocation_map))))
+    refs = tuple(
+        dict.fromkeys(_iter_refs((plan.steps, plan.new_blocks, plan.relocation_map)))
+    )
     planned_refs = tuple(spec.block_id for spec in plan.new_blocks)
     if len(set(planned_refs)) != len(planned_refs):
         raise PatchBindingRejected("plan contains duplicate planned block creations")
     unknown_planned = tuple(
-        ref for ref in refs
-        if isinstance(ref, PlanBlockRef) and ref not in planned_refs
+        ref for ref in refs if isinstance(ref, PlanBlockRef) and ref not in planned_refs
     )
     if unknown_planned:
         raise PatchBindingRejected("PlanBlockRef lacks a creation specification")
@@ -172,7 +173,9 @@ def bind_patch_plan(
             "source coordinate coverage differs from executable block authority"
         )
 
-    initial_quantity = identity_index.transaction_quantity(transaction_attempt.attempt_id)
+    initial_quantity = identity_index.transaction_quantity(
+        transaction_attempt.attempt_id
+    )
     planned_coordinates = {
         ref: initial_quantity + offset for offset, ref in enumerate(planned_refs)
     }
@@ -196,7 +199,9 @@ def bind_patch_plan(
         else:  # pragma: no cover - PatchPlan validation owns this boundary.
             raise PatchBindingRejected("unsupported block reference")
         if serial is None:
-            raise PatchBindingRejected("typed block reference has no unique live binding")
+            raise PatchBindingRejected(
+                "typed block reference has no unique live binding"
+            )
         if int(source_coordinates[ref]) != int(serial):
             raise PatchBindingRejected(
                 "source coordinate differs from current binder resolution"
