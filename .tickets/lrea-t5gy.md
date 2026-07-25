@@ -4946,3 +4946,52 @@ reference shape and first candidate divergence, then build the smallest
 detached rewrite and require its C4 oracle proof before any live publication.
 The v14/v15 broad frontend receipt remains diagnostic evidence only and does
 not raise the v3.3 canary above C2.
+
+**2026-07-25T16:18:22Z — exact-corridor selector and first direct-fixture canary**
+
+Commit `d3185d7ff` removes the obsolete assumption that a configured reference
+owner EA must equal the candidate state-write EA. A direct candidate now
+matches only when its complete write-to-delivery span equals the pinned
+reference corridor and its rewrite anchor and direct target also agree
+exactly. The focused positive fixture separates the owner, state write, and
+rewrite coordinates; a companion test proves that matching rewrite and target
+cannot conceal corridor drift. The canonical-lowering file is 12/12 green,
+Ruff passes, Graphify is current, and both architecture gates pass.
+
+Commit `4a56bc12d` replaces the superseded A560 entry-route manifest with the
+single schema-2 v3.3 fixture proved by the reproducible differential-oracle
+runs: native owner `0x40BB51`, state write `0x40BB44`, rewrite anchor
+`0x40BB63`, corridor `[0x40BB44, 0x40BB69)`, and direct target `0x40ACF3`.
+The manager, catalog, and canonical-lowering suites are 37/37 green. The old
+manifest was removed rather than retained as compatibility. Repository-wide
+`pyenv exec ruff format .` changed none of 1,865 files after either commit.
+
+The mandatory fresh cache-disabled v16 A560 canary completed normally in
+21.43 seconds without a crash, numeric INTERR, rollback, or diagnostic-write
+failure. Output: `.tmp/rhad-a560-v33-direct-route-v16.txt`; primary schema-8
+DB:
+`.tmp/rhad-a560-v33-direct-route-v16/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-direct-route-v16/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle remains red on one false `while ( 1 )`.
+
+The diagnostic DB proves the exact route is discovered and selected at
+`MMAT_CALLS` as
+`state_assignment@0x40BB63:0xE9795EF`. Canonical composition then rejects
+before creating a route plan: `normalization_plan_owner_count_mismatch` at
+stable route source `0x40BB63`, with zero normalization-plan owners. No
+captured live snapshot contains `0x40BB44`, `0x40BB51`, `0x40BB63`, or target
+`0x40ACF3`, so the configured fixture is disproved as a live-root route in the
+current representation. The unrelated frontend-normalization transaction at
+root `0x40A5F0` remains mechanically healthy: 260/260 operations commit, all
+639 prepublication and 1,180 postpublication validations pass, and no rollback
+occurs.
+
+The v3.3 canary therefore remains C2. The first failed C3 obligation is to
+give the selected detached fragment exactly one portable normalization-plan
+owner for rewrite source `0x40BB63`, then apply the direct rewrite off-side and
+persist its oracle comparison before any root publication. Do not weaken the
+owner count, reinterpret `0x40BB51` as live, or extend the broad `0x40A5F0`
+transaction. The next vertical slice must model the reference-owned
+`0x40BB44`-`0x40BB69` corridor as detached normalization input and prove the
+smallest closed component that contains it.
