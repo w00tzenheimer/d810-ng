@@ -295,7 +295,7 @@ def test_live_adapter_rejects_modified_result_without_complete_plan_intent(
         lambda **_kwargs: FrontendNormalizationRunResult(
             graph=GRAPH,
             microcode_modified=True,
-            published_generation=3,
+            published_generation=None,
         ),
     )
 
@@ -373,7 +373,7 @@ def test_live_adapter_binds_committed_import_identity_to_current_mba(
         lambda **_kwargs: FrontendNormalizationRunResult(
             graph=GRAPH,
             microcode_modified=True,
-            published_generation=3,
+            published_generation=None,
         ),
     )
 

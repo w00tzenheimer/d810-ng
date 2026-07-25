@@ -86,16 +86,12 @@ def _emit_receipted_complete_plan_intent(
     *,
     session: DecompilationSessionContext,
     function_ea: int,
-    published_generation: int | None,
+    evidence_generation: int,
 ) -> None:
     """Persist complete detached intent before reporting its live identity."""
-    if published_generation is None:
-        raise FrontendNormalizationPublicationError(
-            "modified frontend normalization lacks a published generation"
-        )
     receipted = session.frontend_normalization_plan_authority.plan_for(
         int(function_ea),
-        int(published_generation),
+        int(evidence_generation),
     )
     if receipted is None:
         raise FrontendNormalizationPublicationError(
@@ -112,7 +108,7 @@ def _emit_receipted_complete_plan_intent(
             event_kind="frontend_normalization_plan_intent_recorded",
             provider=_HANDLER_NAME,
             phase="frontend_normalization",
-            evidence_generation=int(published_generation),
+            evidence_generation=int(evidence_generation),
             correlation_id=authority.work_item_id,
             summary="receipt-backed complete normalization intent recorded",
             payload={
@@ -224,7 +220,7 @@ def run_live_frontend_normalization(
     _emit_receipted_complete_plan_intent(
         session=session,
         function_ea=int(function_ea),
-        published_generation=result.published_generation,
+        evidence_generation=int(session.native_preanalysis.evidence_generation),
     )
 
     details = decision.setdefault("details", {})
