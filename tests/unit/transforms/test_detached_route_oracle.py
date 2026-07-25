@@ -160,6 +160,8 @@ def _plan() -> FragmentPlan:
                 source_block_id=replacement.block_id,
                 direct_transfer_rewrite=FragmentDirectTransferRewrite(
                     route_proof_id="state_assignment@0x40B52E:0x13B0D3B2",
+                    owner_identity=source_identity,
+                    owner_anchor_ea=_OWNER_EA,
                     rewrite_anchor_ea=_REWRITE_ANCHOR_EA,
                     proof_corridor_instruction_eas=(
                         _OWNER_EA,
@@ -354,8 +356,12 @@ def test_bind_fragment_reference_oracle_reports_identity_mismatch() -> None:
     assert error.anchor_ea == _REWRITE_ANCHOR_EA
     assert error.payload == {
         "operation_id": "route:state_assignment@0x40B52E:0x13B0D3B2",
-        "source_block_id": "route.replacement",
-        "source_identity": plan.block(
+        "operation_owner_anchor_ea": "0x40B51B",
+        "operation_owner_identity": plan.block(
+            "route.replacement"
+        ).stable_identity.diagnostic_label(),
+        "delivery_source_block_id": "route.replacement",
+        "delivery_source_identity": plan.block(
             "route.replacement"
         ).stable_identity.diagnostic_label(),
         "reference_owner_ea": "0x40B51A",
@@ -365,6 +371,52 @@ def test_bind_fragment_reference_oracle_reports_identity_mismatch() -> None:
         "reference_target_ea": "0x40AE3E",
         "target_bound": True,
     }
+
+
+def test_reference_owner_is_independent_of_delivery_block_identity() -> None:
+    plan = _plan()
+    owner_identity = plan.block("route.replacement").stable_identity
+    delivery_identity = _identity(
+        _REWRITE_ANCHOR_EA,
+        _REWRITE_ANCHOR_EA + 1,
+        _REWRITE_ANCHOR_EA,
+    )
+    operation = plan.operations[0]
+    rewrite = operation.direct_transfer_rewrite
+    assert owner_identity is not None
+    assert rewrite is not None
+
+    split_plan = replace(
+        plan,
+        blocks=tuple(
+            replace(
+                block,
+                semantic_anchor_ea=_REWRITE_ANCHOR_EA,
+                stable_identity=delivery_identity,
+            )
+            if block.block_id in {"route.original", "route.replacement"}
+            else block
+            for block in plan.blocks
+        ),
+        operations=(
+            replace(
+                operation,
+                direct_transfer_rewrite=replace(
+                    rewrite,
+                    owner_identity=owner_identity,
+                    owner_anchor_ea=_OWNER_EA,
+                ),
+            ),
+        ),
+    )
+
+    split_rewrite = split_plan.operations[0].direct_transfer_rewrite
+    assert split_rewrite is not None
+    assert split_rewrite.owner_identity == owner_identity
+    assert split_rewrite.owner_anchor_ea == _OWNER_EA
+    assert not split_plan.block(
+        split_plan.operations[0].source_block_id
+    ).stable_identity.native_ranges.contains(_OWNER_EA)
 
 
 def test_detached_route_matches_reference_before_root_publication() -> None:

@@ -255,6 +255,8 @@ def test_fragment_operation_supports_explicit_call_fallthrough() -> None:
 def test_direct_transfer_rewrite_owns_reference_delivery_corridor() -> None:
     rewrite = FragmentDirectTransferRewrite(
         route_proof_id="flow_route:0x40BB63",
+        owner_identity=_identity(0x40BB44, 0x40BB64),
+        owner_anchor_ea=0x40BB44,
         rewrite_anchor_ea=0x40BB63,
         proof_corridor_instruction_eas=(0x40BB44, 0x40BB4B, 0x40BB63),
         superseded_instruction_eas=(0x40BB63,),
@@ -281,6 +283,8 @@ def test_direct_transfer_rewrite_rejects_incomplete_or_conditional_ownership() -
     with pytest.raises(FragmentPlanRejected, match="end at its rewrite anchor"):
         FragmentDirectTransferRewrite(
             route_proof_id="flow_route:0x40BB63",
+            owner_identity=_identity(0x40BB44, 0x40BB64),
+            owner_anchor_ea=0x40BB44,
             rewrite_anchor_ea=0x40BB63,
             proof_corridor_instruction_eas=(0x40BB44, 0x40BB4B),
             superseded_instruction_eas=(0x40BB63,),
@@ -289,6 +293,8 @@ def test_direct_transfer_rewrite_rejects_incomplete_or_conditional_ownership() -
     with pytest.raises(FragmentPlanRejected, match="proof-corridor subset"):
         FragmentDirectTransferRewrite(
             route_proof_id="flow_route:0x40BB63",
+            owner_identity=_identity(0x40BB44, 0x40BB64),
+            owner_anchor_ea=0x40BB44,
             rewrite_anchor_ea=0x40BB63,
             proof_corridor_instruction_eas=(0x40BB44, 0x40BB63),
             superseded_instruction_eas=(0x40BB4B, 0x40BB63),
@@ -301,6 +307,8 @@ def test_direct_transfer_rewrite_rejects_incomplete_or_conditional_ownership() -
             predicate_anchor_ea=0x40BB63,
             direct_transfer_rewrite=FragmentDirectTransferRewrite(
                 route_proof_id="flow_route:0x40BB63",
+                owner_identity=_identity(0x40BB44, 0x40BB64),
+                owner_anchor_ea=0x40BB44,
                 rewrite_anchor_ea=0x40BB63,
                 proof_corridor_instruction_eas=(0x40BB44, 0x40BB63),
                 superseded_instruction_eas=(0x40BB63,),
@@ -338,6 +346,8 @@ def test_fragment_plan_rejects_competing_semantic_transfer_envelopes() -> None:
         source_block_id=direct_replacement.block_id,
         direct_transfer_rewrite=FragmentDirectTransferRewrite(
             route_proof_id="flow-route@0x40BECD",
+            owner_identity=_identity(0x40BECC, 0x40BECE),
+            owner_anchor_ea=0x40BECC,
             rewrite_anchor_ea=0x40BECD,
             proof_corridor_instruction_eas=(0x40BECC, 0x40BECD),
             superseded_instruction_eas=(0x40BECD,),
@@ -382,6 +392,8 @@ def test_fragment_plan_allows_preserved_proof_corridor_overlap() -> None:
         source_block_id=direct_replacement.block_id,
         direct_transfer_rewrite=FragmentDirectTransferRewrite(
             route_proof_id="flow-route@0x40BECF",
+            owner_identity=_identity(0x40BECC, 0x40BED0),
+            owner_anchor_ea=0x40BECC,
             rewrite_anchor_ea=0x40BECF,
             proof_corridor_instruction_eas=(
                 0x40BECC,
@@ -415,6 +427,8 @@ def test_fragment_plan_rejects_direct_rewrite_outside_canonical_lowering() -> No
         source_block_id="predicate.replacement",
         direct_transfer_rewrite=FragmentDirectTransferRewrite(
             route_proof_id="flow-route@0x40BECC",
+            owner_identity=_identity(0x40BECC),
+            owner_anchor_ea=0x40BECC,
             rewrite_anchor_ea=0x40BECC,
             proof_corridor_instruction_eas=(0x40BECC,),
             superseded_instruction_eas=(0x40BECC,),

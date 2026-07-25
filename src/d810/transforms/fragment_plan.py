@@ -671,6 +671,8 @@ class FragmentDirectTransferRewrite:
     """Proof-owned native envelope for one detached direct-route rewrite."""
 
     route_proof_id: str
+    owner_identity: StableBlockIdentity
+    owner_anchor_ea: int
     rewrite_anchor_ea: int
     proof_corridor_instruction_eas: tuple[int, ...]
     superseded_instruction_eas: tuple[int, ...]
@@ -681,6 +683,20 @@ class FragmentDirectTransferRewrite:
             self.route_proof_id,
             "direct transfer route proof id",
         )
+        owner_identity = self.owner_identity
+        if not isinstance(owner_identity, StableBlockIdentity):
+            raise TypeError("direct transfer rewrite requires stable owner identity")
+        owner_anchor_ea = _require_native_ea(
+            self.owner_anchor_ea,
+            "direct transfer operation owner",
+        )
+        if (
+            not owner_identity.native_ranges.contains(owner_anchor_ea)
+            or owner_anchor_ea not in owner_identity.exact_instruction_eas
+        ):
+            raise FragmentPlanRejected(
+                "direct transfer operation owner requires an exact stable anchor"
+            )
         rewrite_anchor_ea = _require_native_ea(
             self.rewrite_anchor_ea,
             "direct transfer rewrite anchor",
@@ -693,9 +709,11 @@ class FragmentDirectTransferRewrite:
             not proof_corridor_instruction_eas
             or proof_corridor_instruction_eas
             != tuple(sorted(set(proof_corridor_instruction_eas)))
+            or proof_corridor_instruction_eas[0] != owner_anchor_ea
         ):
             raise FragmentPlanRejected(
-                "direct transfer corridor must be non-empty, ordered, and unique"
+                "direct transfer corridor must run from its exact operation owner "
+                "in ordered unique native coordinates"
             )
         if proof_corridor_instruction_eas[-1] != rewrite_anchor_ea:
             raise FragmentPlanRejected(
@@ -719,6 +737,8 @@ class FragmentDirectTransferRewrite:
                 "proof-corridor subset ending at the rewrite anchor"
             )
         object.__setattr__(self, "route_proof_id", route_proof_id)
+        object.__setattr__(self, "owner_identity", owner_identity)
+        object.__setattr__(self, "owner_anchor_ea", owner_anchor_ea)
         object.__setattr__(self, "rewrite_anchor_ea", rewrite_anchor_ea)
         object.__setattr__(
             self,
@@ -1624,6 +1644,11 @@ class FragmentPlan:
                         f"fragment operation {operation.operation_id!r} direct "
                         "transfer anchor is outside its imported source"
                     )
+                if direct_rewrite.owner_identity.native_key != self.native_key:
+                    raise FragmentPlanRejected(
+                        f"fragment operation {operation.operation_id!r} direct "
+                        "transfer owner belongs to another native input"
+                    )
                 reference_route = direct_rewrite.reference_route
                 if reference_route is not None:
                     target = block_by_id[operation.edges[0].target_block_id]
@@ -1631,8 +1656,8 @@ class FragmentPlan:
                     target_identity = target.stable_identity
                     reference_target_ea = reference_route.direct_target_ea
                     owner_bound = (
-                        source_identity is not None
-                        and source_identity.native_ranges.contains(
+                        direct_rewrite.owner_anchor_ea == reference_route.owner_ea
+                        and direct_rewrite.owner_identity.native_ranges.contains(
                             reference_route.owner_ea
                         )
                     )
@@ -1649,8 +1674,14 @@ class FragmentPlan:
                             anchor_ea=direct_rewrite.rewrite_anchor_ea,
                             payload={
                                 "operation_id": operation.operation_id,
-                                "source_block_id": source.block_id,
-                                "source_identity": (
+                                "operation_owner_anchor_ea": (
+                                    f"0x{direct_rewrite.owner_anchor_ea:X}"
+                                ),
+                                "operation_owner_identity": (
+                                    direct_rewrite.owner_identity.diagnostic_label()
+                                ),
+                                "delivery_source_block_id": source.block_id,
+                                "delivery_source_identity": (
                                     None
                                     if source_identity is None
                                     else source_identity.diagnostic_label()

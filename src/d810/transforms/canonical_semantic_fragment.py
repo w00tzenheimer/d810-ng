@@ -1164,6 +1164,19 @@ def _direct_transfer_rewrite(
     """Carry one proved direct route into detached rewrite coordinates."""
     if proof.shape is not SemanticRouteShape.DIRECT:
         return None
+    if proof.state_write is not None:
+        owner_identity = proof.state_write.identity
+        owner_anchor_ea = int(proof.state_write.instruction_ea)
+    elif proof.source_owner_identity is not None:
+        if proof.source_owner_anchor_ea is None:
+            raise CanonicalSemanticFragmentRejected(
+                "direct semantic route owner lacks its exact anchor"
+            )
+        owner_identity = proof.source_owner_identity
+        owner_anchor_ea = int(proof.source_owner_anchor_ea)
+    else:
+        owner_identity = proof.source_identity
+        owner_anchor_ea = int(proof.source_anchor_ea)
     corridor_instruction_eas = (
         (int(proof.source_anchor_ea),)
         if proof.state_write is None
@@ -1178,6 +1191,8 @@ def _direct_transfer_rewrite(
         )
     return FragmentDirectTransferRewrite(
         route_proof_id=proof.proof_id,
+        owner_identity=owner_identity,
+        owner_anchor_ea=owner_anchor_ea,
         rewrite_anchor_ea=int(proof.source_anchor_ea),
         proof_corridor_instruction_eas=corridor_instruction_eas,
         superseded_instruction_eas=(int(proof.source_anchor_ea),),

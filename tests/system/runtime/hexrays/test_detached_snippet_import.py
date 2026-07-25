@@ -663,6 +663,17 @@ def _imported_fragment_block(
     )
 
 
+def _direct_rewrite_owner_identity(
+    owner_anchor_ea: int,
+    rewrite_anchor_ea: int,
+) -> StableBlockIdentity:
+    return StableBlockIdentity.from_intervals(
+        (NativeEaInterval(owner_anchor_ea, rewrite_anchor_ea + 1),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(owner_anchor_ea,),
+    )
+
+
 def _single_block_native_body_runtime(
     *,
     function_ea: int,
@@ -1737,6 +1748,11 @@ def test_preopt_native_body_lowers_owned_direct_transfer_while_unpublished(
                     source_block_id=source_block.block_id,
                     direct_transfer_rewrite=FragmentDirectTransferRewrite(
                         route_proof_id="proof:direct-transfer",
+                        owner_identity=_direct_rewrite_owner_identity(
+                            corridor_start_ea,
+                            rewrite_anchor_ea,
+                        ),
+                        owner_anchor_ea=corridor_start_ea,
                         rewrite_anchor_ea=rewrite_anchor_ea,
                         proof_corridor_instruction_eas=(
                             corridor_start_ea,
@@ -1832,6 +1848,8 @@ def _direct_transfer_preflight_case(
 def test_preopt_direct_transfer_rejects_rewrite_anchor_tail_mismatch() -> None:
     rewrite = FragmentDirectTransferRewrite(
         route_proof_id="proof:tail-mismatch",
+        owner_identity=_direct_rewrite_owner_identity(0x3604, 0x3610),
+        owner_anchor_ea=0x3604,
         rewrite_anchor_ea=0x3610,
         proof_corridor_instruction_eas=(0x3604, 0x3610),
         superseded_instruction_eas=(0x3610,),
@@ -1865,6 +1883,8 @@ def test_preopt_direct_transfer_rejects_rewrite_anchor_tail_mismatch() -> None:
 def test_preopt_direct_transfer_rejects_corridor_outside_native_body() -> None:
     rewrite = FragmentDirectTransferRewrite(
         route_proof_id="proof:corridor-escape",
+        owner_identity=_direct_rewrite_owner_identity(0x35FC, 0x3610),
+        owner_anchor_ea=0x35FC,
         rewrite_anchor_ea=0x3610,
         proof_corridor_instruction_eas=(0x35FC, 0x3610),
         superseded_instruction_eas=(0x3610,),

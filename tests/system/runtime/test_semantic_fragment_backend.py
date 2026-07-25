@@ -931,6 +931,8 @@ def _plan_with_prepared_imported_direct_transfer(
         source_block_id=imported.block_id,
         direct_transfer_rewrite=FragmentDirectTransferRewrite(
             route_proof_id="proof:prepared-direct",
+            owner_identity=imported.stable_identity,
+            owner_anchor_ea=rewrite_anchor_ea,
             rewrite_anchor_ea=rewrite_anchor_ea,
             proof_corridor_instruction_eas=(rewrite_anchor_ea,),
             superseded_instruction_eas=(rewrite_anchor_ea,),
