@@ -96,8 +96,7 @@ def sdk_operand_shape(operand: object, *, depth: int = 3) -> tuple[object, ...]:
 
 def sdk_instruction_operand_shape(instruction: object) -> tuple[object, ...]:
     return tuple(
-        sdk_operand_shape(getattr(instruction, slot, None))
-        for slot in ("l", "r", "d")
+        sdk_operand_shape(getattr(instruction, slot, None)) for slot in ("l", "r", "d")
     )
 
 
@@ -282,8 +281,7 @@ class PreparedNativeBodyFact:
         ):
             raise TypeError("prepared body requires typed native ranges")
         entry_block_ids = tuple(
-            _identifier(value, "prepared entry block")
-            for value in self.entry_block_ids
+            _identifier(value, "prepared entry block") for value in self.entry_block_ids
         )
         terminal_block_ids = tuple(
             _identifier(value, "prepared terminal block")
@@ -420,8 +418,7 @@ def _predecessors(
                 if edge.target_block_id in predecessors:
                     predecessors[edge.target_block_id].append(source_block_id)
     return {
-        block_id: tuple(source_ids)
-        for block_id, source_ids in predecessors.items()
+        block_id: tuple(source_ids) for block_id, source_ids in predecessors.items()
     }
 
 
@@ -577,7 +574,9 @@ class PreparedNativeBodyPreparation:
 
     def assert_payload_consistent(self) -> None:
         if self.fact.payload_signature != self.payload.semantic_signature:
-            raise ValueError("native preparation payload differs from instruction facts")
+            raise ValueError(
+                "native preparation payload differs from instruction facts"
+            )
 
     def assert_authority(
         self,
@@ -634,8 +633,7 @@ class PreparedNativeBodyPreparation:
                 block_fact.semantic_anchor_ea != plan_block.semantic_anchor_ea
                 or block_fact.stable_identity != plan_block.stable_identity
                 or block_fact.successors != expected_successors
-                or block_fact.predecessor_block_ids
-                != predecessors[block_fact.block_id]
+                or block_fact.predecessor_block_ids != predecessors[block_fact.block_id]
                 or block_fact.kind is not expected_kind
                 or (block_fact.terminator_ea, block_fact.terminator_kind)
                 != expected_terminator
