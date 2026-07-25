@@ -3991,7 +3991,7 @@ class DeferredGraphModifier:
                     "staged semantic fragment sweep removed an unexpected "
                     f"inventory: expected_qty={expected_qty} "
                     f"observed_qty={int(self.mba.qty)} changed={changed}"
-            )
+                )
             if tail_fallthrough_restore is not None:
                 predecessor, _prior_stop = tail_fallthrough_restore
                 expected_stop_serial = expected_qty - 1
