@@ -17,6 +17,10 @@ from d810.hexrays.mutation.semantic_fragment_failure import (
     MbaSemanticFragmentFailure,
 )
 from d810.transforms.fragment_plan import FragmentPlan
+from d810.transforms.detached_route_oracle import (
+    DetachedRouteOracleRejected,
+    compare_detached_route_oracle,
+)
 from d810.transforms.fragment_validation import (
     FragmentValidationResult,
     ProjectedFragment,
@@ -297,6 +301,21 @@ def publish_semantic_fragment(gateway: object, backend: object, plan: FragmentPl
                 "prepublication",
                 prepublication,
             )
+        if any(
+            operation.direct_transfer_rewrite is not None
+            for operation in plan.operations
+        ):
+            failure_phase = "detached_route_oracle"
+            detached_oracle = compare_detached_route_oracle(plan, projection)
+            gateway._record_fragment_route_oracle(plan, detached_oracle)
+            if not detached_oracle.passed:
+                failure = detached_oracle.first_failure
+                assert failure is not None
+                raise DetachedRouteOracleRejected(
+                    "detached route oracle rejected "
+                    f"{failure.route_id}: {failure.failed_invariant}: "
+                    f"{failure.reason}"
+                )
         _mark_lifecycle_validated(
             lifecycle_authority,
             plan,

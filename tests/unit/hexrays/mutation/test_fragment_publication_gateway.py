@@ -11,6 +11,11 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
 from d810.core.events import EventEmitter
+from d810.core.semantic_route_oracle import (
+    ReferenceRouteRewrite,
+    RouteOracleRun,
+    SemanticTransferKind,
+)
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationAborted,
@@ -18,6 +23,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
     MbaMutationPlanned,
     MbaMutationRootPublicationGroup,
+    MbaSemanticFragmentRouteOracleCompared,
     StructuralMutationKind,
 )
 from d810.hexrays.mutation.semantic_fragment_publication import (
@@ -44,6 +50,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentDirectTransferRewrite,
     FragmentEdge,
     FragmentNativeBody,
     FragmentOperation,
@@ -56,6 +63,7 @@ from d810.transforms.fragment_plan import (
     FragmentTerminalRoute,
     FragmentWorkItemScope,
 )
+from d810.transforms.detached_route_oracle import DetachedRouteOracleRejected
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
     FragmentValidationPostcondition,
@@ -68,7 +76,11 @@ from d810.transforms.fragment_validation import (
 from tests.native_preanalysis import make_native_key
 
 
-NATIVE_KEY = make_native_key(function_rva=0x40A560)
+_FIXTURE_SHA256 = "a" * 64
+NATIVE_KEY = make_native_key(
+    input_identity=f"sha256:{_FIXTURE_SHA256}",
+    function_rva=0x40A560,
+)
 _DEFAULT_LIFECYCLE = object()
 
 
@@ -141,6 +153,65 @@ def _plan() -> FragmentPlan:
                     ),
                 ),
             ),
+        ),
+    )
+
+
+def _plan_with_reference_route() -> FragmentPlan:
+    plan = _plan()
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x401000, 0x401004),
+    )
+    operation = FragmentOperation(
+        operation_id="route:state_assignment@0x401004:0x1",
+        source_block_id="replacement",
+        direct_transfer_rewrite=FragmentDirectTransferRewrite(
+            route_proof_id="state_assignment@0x401004:0x1",
+            rewrite_anchor_ea=0x401004,
+            proof_corridor_instruction_eas=(0x401000, 0x401004),
+            superseded_instruction_eas=(0x401004,),
+            reference_route=ReferenceRouteRewrite(
+                route_id="rhad:0x40A560:flow_route:0x401004",
+                function_ea=0x40A560,
+                owner_ea=0x401000,
+                rewrite_anchor_ea=0x401004,
+                corridor=((0x401000, 0x401010),),
+                reference_phase="flow_route",
+                original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+                final_transfer_kind=SemanticTransferKind.DIRECT,
+                direct_target_ea=0x402000,
+                reference_ledger_identity="flow_route:0x401004",
+                reference_ledger_json='{"status":"committed"}',
+            ),
+        ),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="target",
+            ),
+        ),
+    )
+    return replace(
+        plan,
+        blocks=tuple(
+            replace(block, stable_identity=source_identity)
+            if block.block_id in {"original", "replacement"}
+            else block
+            for block in plan.blocks
+        ),
+        operations=(operation,),
+        reference_oracle_run=RouteOracleRun(
+            run_id="a560-v33-gateway-route",
+            function_ea=0x40A560,
+            fixture_sha256=_FIXTURE_SHA256,
+            reference_binary_sha256="b" * 64,
+            candidate_binary_sha256=_FIXTURE_SHA256,
+            reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+            runtime_image="d810-idapro-9.3-test-runtime:py313-v1",
+            runtime_image_id="sha256:" + "c" * 64,
+            cache_disabled=True,
         ),
     )
 
@@ -343,6 +414,7 @@ class _FragmentBackend:
         omit_semantic_edge_record: bool = False,
         disconnect_root_after_publication: bool = False,
         current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None,
+        malformed_route_projection: bool = False,
     ) -> None:
         self.mba = SimpleNamespace(qty=4)
         self.gateway = gateway
@@ -359,6 +431,7 @@ class _FragmentBackend:
             if current_mba_identity_binding is None
             else current_mba_identity_binding
         )
+        self.malformed_route_projection = malformed_route_projection
         self.calls: list[str] = []
         self.root_published = False
         self.projection: ProjectedFragment | None = None
@@ -452,6 +525,22 @@ class _FragmentBackend:
         entry_successor = "original" if self.invalid_preprojection else "replacement"
         original_predecessors = ("entry",) if self.invalid_preprojection else ()
         replacement_predecessors = () if self.invalid_preprojection else ("entry",)
+        route_rewrite = plan.operations[0].direct_transfer_rewrite
+        route_instruction_eas = (
+            ()
+            if route_rewrite is None
+            else route_rewrite.proof_corridor_instruction_eas
+        )
+        route_terminator_ea = (
+            None if route_rewrite is None else route_rewrite.rewrite_anchor_ea
+        )
+        route_terminator_kind = (
+            InsnKind.UNKNOWN
+            if route_rewrite is None
+            else (
+                InsnKind.COND_JUMP if self.malformed_route_projection else InsnKind.GOTO
+            )
+        )
         projection = ProjectedFragment(
             entry_block_id="entry",
             blocks=(
@@ -472,8 +561,9 @@ class _FragmentBackend:
                     predecessors=replacement_predecessors,
                     physical_position=1,
                     adjacent_fallthrough_target_id=None,
-                    terminator_ea=None,
-                    terminator_kind=InsnKind.UNKNOWN,
+                    instruction_eas=route_instruction_eas,
+                    terminator_ea=route_terminator_ea,
+                    terminator_kind=route_terminator_kind,
                 ),
                 ProjectedFragmentBlock(
                     block_id="target",
@@ -703,6 +793,50 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     assert proxy.resolve().handle is backend.replacement_handle
     assert len(committed) == 1
     assert aborted == []
+
+
+def test_gateway_commits_reference_matched_route_before_root_publication() -> None:
+    plan = _plan_with_reference_route()
+    gateway, committed, aborted = _gateway(plan)
+    backend = _FragmentBackend(gateway)
+    compared: list[MbaSemanticFragmentRouteOracleCompared] = []
+    gateway.event_emitter.on(
+        MbaSemanticFragmentRouteOracleCompared,
+        compared.append,
+    )
+
+    receipt = gateway.publish_semantic_fragment(backend, plan)
+
+    assert len(compared) == 1
+    assert compared[0].result.passed
+    assert receipt.detached_route_oracle == compared[0].result
+    assert backend.calls.index("stage") < backend.calls.index("prepare-roots")
+    assert len(committed) == 1
+    assert aborted == []
+
+
+def test_gateway_rejects_route_mismatch_before_root_preparation() -> None:
+    plan = _plan_with_reference_route()
+    gateway, committed, aborted = _gateway(plan)
+    backend = _FragmentBackend(gateway, malformed_route_projection=True)
+    compared: list[MbaSemanticFragmentRouteOracleCompared] = []
+    gateway.event_emitter.on(
+        MbaSemanticFragmentRouteOracleCompared,
+        compared.append,
+    )
+
+    with pytest.raises(DetachedRouteOracleRejected, match="transfer_kind"):
+        gateway.publish_semantic_fragment(backend, plan)
+
+    assert backend.calls == ["plan-roots", "stage", "discard"]
+    assert not backend.root_published
+    assert len(compared) == 1
+    assert not compared[0].result.passed
+    assert compared[0].result.first_failure is not None
+    assert compared[0].result.first_failure.failed_invariant == "transfer_kind"
+    assert committed == []
+    assert len(aborted) == 1
+    assert not aborted[0].root_publication_attempted
 
 
 def test_gateway_receipts_current_mba_identity_binding_only_after_commit() -> None:
