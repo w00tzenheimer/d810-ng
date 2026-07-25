@@ -9,6 +9,7 @@ realizing the whole plan in one unpublished transaction.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 import json
@@ -27,6 +28,19 @@ _BADADDR = 0xFFFFFFFFFFFFFFFF
 
 class FragmentPlanRejected(ValueError):
     """A fragment plan is incomplete or internally inconsistent."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str = "fragment_plan_rejected",
+        anchor_ea: int | None = None,
+        payload: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason_code = str(reason_code)
+        self.anchor_ea = None if anchor_ea is None else int(anchor_ea)
+        self.payload = dict(payload or {})
 
 
 class FragmentBlockRole(str, Enum):
@@ -304,7 +318,16 @@ class FragmentBlock:
             )
         elif not self.stable_identity.native_ranges.contains(semantic_anchor_ea):
             raise FragmentPlanRejected(
-                "fragment block semantic anchor must belong to its stable identity"
+                "fragment block semantic anchor must belong to its stable identity",
+                reason_code="fragment_block_semantic_anchor_identity_mismatch",
+                anchor_ea=semantic_anchor_ea,
+                payload={
+                    "block_id": block_id,
+                    "block_role": self.role.value,
+                    "block_materialization": self.materialization.value,
+                    "semantic_anchor_ea": f"0x{semantic_anchor_ea:X}",
+                    "stable_identity": self.stable_identity.diagnostic_label(),
+                },
             )
 
         replaces_block_id = self.replaces_block_id
