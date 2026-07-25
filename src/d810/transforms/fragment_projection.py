@@ -152,7 +152,9 @@ class FragmentProjectionInput:
 
     def __post_init__(self) -> None:
         if not self.snapshot_id or not self.entry_block_id:
-            raise ValueError("fragment projection input requires snapshot and entry ids")
+            raise ValueError(
+                "fragment projection input requires snapshot and entry ids"
+            )
         object.__setattr__(self, "blocks", tuple(self.blocks))
         object.__setattr__(self, "identity_bindings", tuple(self.identity_bindings))
         object.__setattr__(
@@ -232,9 +234,7 @@ def project_fragment(
     flag_write_eas = {
         block_id: block.flag_write_eas for block_id, block in evidence.items()
     }
-    bindings = {
-        binding.block_id: binding for binding in snapshot.identity_bindings
-    }
+    bindings = {binding.block_id: binding for binding in snapshot.identity_bindings}
     if len(bindings) != len(snapshot.identity_bindings):
         raise FragmentProjectionFailure(
             FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
@@ -393,9 +393,7 @@ def project_fragment(
             adjacency[operation.source_block_id] = None
         successors[operation.source_block_id] = projected_targets
         kinds[operation.source_block_id] = (
-            BlockKind.TWO_WAY
-            if len(projected_targets) == 2
-            else BlockKind.ONE_WAY
+            BlockKind.TWO_WAY if len(projected_targets) == 2 else BlockKind.ONE_WAY
         )
 
     root_helpers: list[ProjectedRootFallthroughHelper] = []
@@ -478,9 +476,7 @@ def project_fragment(
     return ProjectedFragment(
         entry_block_id=snapshot.entry_block_id,
         blocks=projected_blocks,
-        identity_bindings=tuple(
-            bindings[block.block_id] for block in projected_blocks
-        ),
+        identity_bindings=tuple(bindings[block.block_id] for block in projected_blocks),
         fallthrough_helpers=tuple(fallthrough_helpers),
         root_fallthrough_helpers=tuple(root_helpers),
         return_carriers=tuple(snapshot.return_carriers),
