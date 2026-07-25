@@ -94,6 +94,11 @@ from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
 from d810.capabilities.semantic_routes import (
     CanonicalSemanticCandidateEvidenceCapability,
     CanonicalSemanticEvidenceCapability,
+    SemanticRouteReferenceOracleCapability,
+)
+from d810.transforms.detached_route_oracle import (
+    DetachedRouteOracleRejected,
+    bind_fragment_reference_oracle,
 )
 from d810.analyses.data_flow.concolic import EmulationCapability
 from d810.core import logging
@@ -852,6 +857,94 @@ def _temporary_boundary_port_retirement_obligation(
     )
 
 
+def _boundary_reference_oracle_rejection(
+    *,
+    boundary_anchor_ea: int,
+    boundary_plan: FragmentPlan,
+) -> CanonicalSemanticFragmentRejected:
+    route_proof_ids = tuple(
+        operation.operation_id.removeprefix("route:")
+        for operation in boundary_plan.operations
+        if operation.operation_id.startswith("route:")
+    )
+    return CanonicalSemanticFragmentRejected(
+        "bounded canonical boundary plan requires detached reference-oracle "
+        "proof before live publication",
+        reason_code="canonical_boundary_detached_oracle_required",
+        anchor_ea=boundary_anchor_ea,
+        payload={
+            "atomic_group_id": boundary_plan.atomic_group_id,
+            "block_count": len(boundary_plan.blocks),
+            "boundary_anchor_ea": f"0x{boundary_anchor_ea:X}",
+            "boundary_ports": tuple(
+                {
+                    "kind": port.kind.value,
+                    "port_id": port.port_id,
+                    "predecessor_block_id": port.predecessor_block_id,
+                    "retirement_obligation_id": port.retirement_obligation_id,
+                    "root_block_id": port.root_block_id,
+                }
+                for port in boundary_plan.boundary_ports
+            ),
+            "native_body_count": len(boundary_plan.native_bodies),
+            "operation_count": len(boundary_plan.operations),
+            "operation_ids": tuple(
+                operation.operation_id for operation in boundary_plan.operations
+            ),
+            "plan_id": boundary_plan.plan_id,
+            "route_proof_ids": route_proof_ids,
+        },
+    )
+
+
+def _bind_boundary_reference_oracle(
+    context: FunctionPipelineContext,
+    *,
+    function_ea: int,
+    boundary_anchor_ea: int,
+    boundary_plan: FragmentPlan,
+) -> FragmentPlan:
+    oracle_provider = context.capabilities.optional(
+        SemanticRouteReferenceOracleCapability
+    )
+    rewrite_anchor_eas = tuple(
+        rewrite.rewrite_anchor_ea
+        for operation in boundary_plan.operations
+        if (rewrite := operation.direct_transfer_rewrite) is not None
+    )
+    selection = (
+        None
+        if oracle_provider is None
+        else oracle_provider.reference_oracle_for(
+            int(function_ea),
+            boundary_plan.native_key,
+            rewrite_anchor_eas,
+        )
+    )
+    if selection is None:
+        raise _boundary_reference_oracle_rejection(
+            boundary_anchor_ea=boundary_anchor_ea,
+            boundary_plan=boundary_plan,
+        )
+    try:
+        return bind_fragment_reference_oracle(boundary_plan, selection)
+    except (DetachedRouteOracleRejected, TypeError) as exc:
+        rejection = _boundary_reference_oracle_rejection(
+            boundary_anchor_ea=boundary_anchor_ea,
+            boundary_plan=boundary_plan,
+        )
+        raise CanonicalSemanticFragmentRejected(
+            "bounded canonical boundary plan has invalid detached "
+            "reference-oracle authority",
+            reason_code="canonical_boundary_detached_oracle_invalid",
+            anchor_ea=boundary_anchor_ea,
+            payload={
+                **rejection.payload,
+                "cause_detail": str(exc),
+            },
+        ) from exc
+
+
 def _compose_candidate_semantic_fragment(
     context: FunctionPipelineContext,
     *,
@@ -1073,38 +1166,14 @@ def _compose_candidate_semantic_fragment(
                 item[1].plan_id,
             ),
         )
-        route_proof_ids = tuple(
-            operation.operation_id.removeprefix("route:")
-            for operation in boundary_plan.operations
-            if operation.operation_id.startswith("route:")
-        )
-        raise CanonicalSemanticFragmentRejected(
-            "bounded canonical boundary plan requires detached reference-oracle "
-            "proof before live publication",
-            reason_code="canonical_boundary_detached_oracle_required",
-            anchor_ea=boundary_anchor_ea,
-            payload={
-                "atomic_group_id": boundary_plan.atomic_group_id,
-                "block_count": len(boundary_plan.blocks),
-                "boundary_anchor_ea": f"0x{boundary_anchor_ea:X}",
-                "boundary_ports": tuple(
-                    {
-                        "kind": port.kind.value,
-                        "port_id": port.port_id,
-                        "predecessor_block_id": port.predecessor_block_id,
-                        "retirement_obligation_id": (port.retirement_obligation_id),
-                        "root_block_id": port.root_block_id,
-                    }
-                    for port in boundary_plan.boundary_ports
-                ),
-                "native_body_count": len(boundary_plan.native_bodies),
-                "operation_count": len(boundary_plan.operations),
-                "operation_ids": tuple(
-                    operation.operation_id for operation in boundary_plan.operations
-                ),
-                "plan_id": boundary_plan.plan_id,
-                "route_proof_ids": route_proof_ids,
-            },
+        return (
+            _bind_boundary_reference_oracle(
+                context,
+                function_ea=function_ea,
+                boundary_anchor_ea=boundary_anchor_ea,
+                boundary_plan=boundary_plan,
+            ),
+            int(candidate.generation),
         )
     if not plans:
         if first_boundary_rejection is not None:

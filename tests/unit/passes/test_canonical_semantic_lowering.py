@@ -33,8 +33,15 @@ from d810.capabilities.frontend_normalization import (
 from d810.capabilities.resolver import CapabilitySet
 from d810.capabilities.semantic_routes import (
     CanonicalSemanticCandidateEvidenceCapability,
+    SemanticRouteReferenceOracleCapability,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
+from d810.core.semantic_route_oracle import (
+    ReferenceRouteOracleSelection,
+    ReferenceRouteRewrite,
+    RouteOracleRun,
+    SemanticTransferKind,
+)
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -60,11 +67,15 @@ from d810.transforms.fragment_plan import (
     FragmentPublicationPurpose,
     FragmentWorkItemScope,
 )
+from d810.transforms.detached_route_oracle import bind_fragment_reference_oracle
 from d810.transforms.plan import PatchPlan
 from tests.native_preanalysis import make_native_key
 
 
-NATIVE_KEY = make_native_key(function_rva=0x1000)
+NATIVE_KEY = make_native_key(
+    input_identity="sha256:" + "a" * 64,
+    function_rva=0x1000,
+)
 
 
 def _identity(ea: int) -> StableBlockIdentity:
@@ -714,6 +725,71 @@ def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_orac
         "normalization_authority": normalization_authority,
         "prohibited_dispatcher_serials": (30,),
     }
+
+
+def test_bounded_candidate_plan_binds_exact_reference_oracle_capability() -> None:
+    graph, bound = _graph_and_bound_evidence()
+    plan = build_canonical_semantic_fragment_plan(
+        graph,
+        bound,
+        prohibited_dispatcher_serials=(30,),
+    )
+    run = RouteOracleRun(
+        run_id="test-exact-bounded-route",
+        function_ea=graph.func_ea,
+        fixture_sha256="a" * 64,
+        reference_binary_sha256="b" * 64,
+        candidate_binary_sha256="a" * 64,
+        reference_commit="deadbeef",
+        runtime_image="test-image",
+        runtime_image_id="sha256:" + "c" * 64,
+        cache_disabled=True,
+    )
+    selection = ReferenceRouteOracleSelection(
+        run=run,
+        routes=(
+            ReferenceRouteRewrite(
+                route_id="test:0x1000:flow_route:0x1100",
+                function_ea=graph.func_ea,
+                owner_ea=0x1100,
+                rewrite_anchor_ea=0x1100,
+                corridor=((0x1100, 0x1101),),
+                reference_phase="flow_route",
+                original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+                final_transfer_kind=SemanticTransferKind.DIRECT,
+                direct_target_ea=0x1200,
+                reference_ledger_identity="flow_route:0x1100",
+            ),
+        ),
+    )
+    calls: list[tuple[int, object, tuple[int, ...]]] = []
+
+    class _ReferenceOracleProvider:
+        def reference_oracle_for(
+            self,
+            function_ea: int,
+            native_key,
+            rewrite_anchor_eas: tuple[int, ...],
+        ):
+            calls.append((function_ea, native_key, rewrite_anchor_eas))
+            return selection
+
+    context = SimpleNamespace(
+        capabilities=CapabilitySet().with_capability(
+            SemanticRouteReferenceOracleCapability,
+            _ReferenceOracleProvider(),
+        )
+    )
+
+    result = state_machine_module._bind_boundary_reference_oracle(
+        context,
+        function_ea=graph.func_ea,
+        boundary_anchor_ea=0x1100,
+        boundary_plan=plan,
+    )
+
+    assert calls == [(graph.func_ea, NATIVE_KEY, (0x1100,))]
+    assert result == bind_fragment_reference_oracle(plan, selection)
 
 
 def test_semantic_evidence_spine_declares_fragment_publication_authority() -> None:
