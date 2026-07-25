@@ -51,6 +51,10 @@ from d810.hexrays.opcode_lift import (
 from d810.hexrays.mutation.semantic_fragment_backend import (
     SemanticFragmentBackendRejected,
 )
+from d810.hexrays.mutation.semantic_fragment_preparation import (
+    PreparedNativeBodyPreparation,
+    build_prepared_native_body,
+)
 from d810.hexrays.mutation.cfg_verify import (
     clear_owned_fake_block_registrations,
     clear_resolver_proven_live_predicates,
@@ -122,16 +126,6 @@ class _DirectTransferRewritePlan:
     rewrite: FragmentDirectTransferRewrite
     cut_index: int
     relocated_instructions: tuple[object, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class _PreparedSemanticNativeBody:
-    """Read-only native-body realization prepared before live MBA staging."""
-
-    plan_id: str
-    body_id: str
-    rows: tuple[tuple[str, int, tuple[tuple[int, object], ...]], ...]
-    direct_transfer_operation_ids: tuple[str, ...]
 
 
 def _diagnostic_operand_shape(operand: object, *, depth: int = 2) -> tuple:
@@ -2920,10 +2914,10 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         matched: Mapping[str, DetachedSnippetBlockTemplate],
         prepared: Mapping[str, tuple[tuple[int, object], ...]],
         direct_transfer_operation_ids: tuple[str, ...],
-    ) -> _PreparedSemanticNativeBody:
-        return _PreparedSemanticNativeBody(
-            plan_id=plan.plan_id,
-            body_id=native_body.body_id,
+    ) -> PreparedNativeBodyPreparation:
+        return build_prepared_native_body(
+            plan=plan,
+            native_body=native_body,
             rows=tuple(
                 (
                     block_id,
@@ -2940,7 +2934,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         *,
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> object:
+    ) -> PreparedNativeBodyPreparation:
         """Prepare one PREOPT body without changing the destination MBA."""
         # Hex-Rays invokes hxe_preoptimized after PREOPT has completed but
         # before advancing mba.maturity from GENERATED to PREOPTIMIZED.
@@ -2973,27 +2967,31 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         *,
         context: object,
         native_body: FragmentNativeBody,
-        preparation: object,
+        preparation: PreparedNativeBodyPreparation,
     ) -> None:
         """Populate one body from an already complete preparation."""
-        if (
-            not isinstance(preparation, _PreparedSemanticNativeBody)
-            or preparation.plan_id != context.plan.plan_id
-            or preparation.body_id != native_body.body_id
-            or tuple(row[0] for row in preparation.rows) != native_body.block_ids
-        ):
+        if not isinstance(preparation, PreparedNativeBodyPreparation):
             raise SemanticFragmentBackendRejected(
                 "prepared native body does not match the staging context"
             )
+        try:
+            preparation.assert_authority(
+                plan=context.plan,
+                native_body=native_body,
+            )
+        except (TypeError, ValueError) as exc:
+            raise SemanticFragmentBackendRejected(
+                "prepared native body does not match the staging context"
+            ) from exc
         for block_id in native_body.block_ids:
             context.stage_block(block_id)
-        for block_id, block_flags, instructions in preparation.rows:
+        for block_id, block_flags, instructions in preparation.payload.rows:
             context.populate_block(
                 block_id=block_id,
                 instructions=instructions,
                 block_flags=block_flags,
             )
-        for operation_id in preparation.direct_transfer_operation_ids:
+        for operation_id in preparation.fact.direct_transfer_operation_ids:
             context.materialize_direct_transfer(operation_id=operation_id)
         for operation in context.plan.operations:
             if (
@@ -3395,7 +3393,7 @@ class CallsSemanticNativeBodyMaterializer(PreoptUnionSemanticNativeBodyMateriali
         *,
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> object:
+    ) -> PreparedNativeBodyPreparation:
         """Prepare one analyzed CALLS body without changing the live graph."""
         if int(self.mba.maturity) != int(ida_hexrays.MMAT_CALLS):
             raise SemanticFragmentBackendRejected(
@@ -3508,9 +3506,9 @@ class CallsSemanticNativeBodyMaterializer(PreoptUnionSemanticNativeBodyMateriali
             rows=transformed_without_terminal_returns,
             expected_call_eas=raw_calls,
         )
-        return _PreparedSemanticNativeBody(
-            plan_id=plan.plan_id,
-            body_id=native_body.body_id,
+        return build_prepared_native_body(
+            plan=plan,
+            native_body=native_body,
             rows=tuple(
                 (
                     block_id,

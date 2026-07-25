@@ -39,6 +39,10 @@ from d810.hexrays.ir.exact_value_ranges import (  # noqa: E402
 from d810.hexrays.mutation.semantic_fragment_publication import (  # noqa: E402
     SemanticFragmentPublicationRejected,
 )
+from d810.hexrays.mutation.semantic_fragment_preparation import (  # noqa: E402
+    PreparedNativeBodyPreparation,
+    build_prepared_native_body,
+)
 from d810.ir.expressions import ValueOpKind  # noqa: E402
 from d810.ir.block_identity import (  # noqa: E402
     BlockHandleProvenance,
@@ -966,6 +970,27 @@ def _plan_with_prepared_imported_direct_transfer(
     )
 
 
+def _native_body_preparation(
+    plan: FragmentPlan,
+    native_body: FragmentNativeBody,
+    rows: tuple[tuple[str, int, tuple[tuple[int, object], ...]], ...] | None = None,
+) -> PreparedNativeBodyPreparation:
+    rows = rows or tuple((block_id, 0, ()) for block_id in native_body.block_ids)
+    direct_transfer_operation_ids = tuple(
+        operation.operation_id
+        for block_id in native_body.block_ids
+        for operation in plan.operations
+        if operation.source_block_id == block_id
+        and operation.direct_transfer_rewrite is not None
+    )
+    return build_prepared_native_body(
+        plan=plan,
+        native_body=native_body,
+        rows=rows,
+        direct_transfer_operation_ids=direct_transfer_operation_ids,
+    )
+
+
 class _RecordingNativeBodyMaterializer:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str | None]] = []
@@ -975,17 +1000,18 @@ class _RecordingNativeBodyMaterializer:
         *,
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> object:
-        return (plan.plan_id, native_body.body_id)
+    ) -> PreparedNativeBodyPreparation:
+        return _native_body_preparation(plan, native_body)
 
     def stage_native_body(
         self,
         *,
         context,
         native_body: FragmentNativeBody,
-        preparation: object,
+        preparation: PreparedNativeBodyPreparation,
     ) -> None:
-        assert preparation == (context.plan.plan_id, native_body.body_id)
+        assert preparation.fact.plan_id == context.plan.plan_id
+        assert preparation.fact.body_id == native_body.body_id
         self.calls.append(
             (
                 context.plan.plan_id,
@@ -1007,7 +1033,7 @@ class _RejectingNativeBodyMaterializer:
         *,
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> object:
+    ) -> PreparedNativeBodyPreparation:
         self.prepare_calls += 1
         assert plan.plan_id == "runtime-imported-native-body"
         assert native_body.body_id == "native-body"
@@ -1020,10 +1046,29 @@ class _RejectingNativeBodyMaterializer:
         *,
         context,
         native_body: FragmentNativeBody,
-        preparation: object,
+        preparation: PreparedNativeBodyPreparation,
     ) -> None:
         self.stage_calls += 1
         raise AssertionError("rejected preparation must not reach staging")
+
+
+class _MalformedNativeBodyMaterializer:
+    def prepare_native_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> PreparedNativeBodyPreparation:
+        return (plan.plan_id, native_body.body_id)  # type: ignore[return-value]
+
+    def stage_native_body(
+        self,
+        *,
+        context,
+        native_body: FragmentNativeBody,
+        preparation: PreparedNativeBodyPreparation,
+    ) -> None:
+        raise AssertionError("malformed preparation must not reach staging")
 
 
 class _PreparedDirectNativeBodyMaterializer:
@@ -1032,22 +1077,34 @@ class _PreparedDirectNativeBodyMaterializer:
         *,
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> object:
-        return (plan.plan_id, native_body.body_id)
+    ) -> PreparedNativeBodyPreparation:
+        return _native_body_preparation(
+            plan,
+            native_body,
+            (
+                (
+                    "imported-direct-source",
+                    0,
+                    ((0x500000, _Instruction(ida_hexrays.m_goto, 0x500000)),),
+                ),
+            ),
+        )
 
     def stage_native_body(
         self,
         *,
         context,
         native_body: FragmentNativeBody,
-        preparation: object,
+        preparation: PreparedNativeBodyPreparation,
     ) -> None:
-        assert preparation == (context.plan.plan_id, native_body.body_id)
+        assert preparation.fact.plan_id == context.plan.plan_id
+        assert preparation.fact.body_id == native_body.body_id
         assert native_body.block_ids == ("imported-direct-source",)
         context.stage_block("imported-direct-source")
+        instructions = preparation.payload.rows[0][2]
         context.populate_block(
             block_id="imported-direct-source",
-            instructions=((0x500000, _Instruction(ida_hexrays.m_goto, 0x500000)),),
+            instructions=instructions,
             block_flags=0,
         )
         context.materialize_direct_transfer(
@@ -1064,41 +1121,52 @@ class _CallsBuiltImportedNativeBodyMaterializer:
         *,
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> object:
-        return (plan.plan_id, native_body.body_id)
+    ) -> PreparedNativeBodyPreparation:
+        analyzed_call = _Instruction(ida_hexrays.m_icall, 0x40AE60)
+        analyzed_call.d.t = int(ida_hexrays.mop_f)
+        analyzed_call.d.f = object()
+        call_owner = _Instruction(ida_hexrays.m_mov, 0x40AE60)
+        call_owner.l.create_from_insn(analyzed_call)
+        return _native_body_preparation(
+            plan,
+            native_body,
+            (
+                (
+                    "imported-call",
+                    int(ida_hexrays.MBL_GOTO),
+                    (
+                        (0x40AE5D, _Instruction(ida_hexrays.m_ldx, 0x40AE5D)),
+                        (0x40AE60, call_owner),
+                        (0x40AE69, _Instruction(ida_hexrays.m_mov, 0x40AE69)),
+                        (0x40AE6F, _Instruction(ida_hexrays.m_mov, 0x40AE6F)),
+                        (
+                            0x40AE7A,
+                            _Instruction(
+                                ida_hexrays.m_goto,
+                                0x40AE7A,
+                                self.stale_target_serial,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
 
     def stage_native_body(
         self,
         *,
         context,
         native_body: FragmentNativeBody,
-        preparation: object,
+        preparation: PreparedNativeBodyPreparation,
     ) -> None:
-        assert preparation == (context.plan.plan_id, native_body.body_id)
+        assert preparation.fact.plan_id == context.plan.plan_id
+        assert preparation.fact.body_id == native_body.body_id
         assert native_body.block_ids == ("imported-call",)
         block = context.stage_block("imported-call")
-
-        analyzed_call = _Instruction(ida_hexrays.m_icall, 0x40AE60)
-        analyzed_call.d.t = int(ida_hexrays.mop_f)
-        analyzed_call.d.f = object()
-        call_owner = _Instruction(ida_hexrays.m_mov, 0x40AE60)
-        call_owner.l.create_from_insn(analyzed_call)
+        instructions = preparation.payload.rows[0][2]
         context.populate_block(
             block_id="imported-call",
-            instructions=(
-                (0x40AE5D, _Instruction(ida_hexrays.m_ldx, 0x40AE5D)),
-                (0x40AE60, call_owner),
-                (0x40AE69, _Instruction(ida_hexrays.m_mov, 0x40AE69)),
-                (0x40AE6F, _Instruction(ida_hexrays.m_mov, 0x40AE6F)),
-                (
-                    0x40AE7A,
-                    _Instruction(
-                        ida_hexrays.m_goto,
-                        0x40AE7A,
-                        self.stale_target_serial,
-                    ),
-                ),
-            ),
+            instructions=instructions,
             block_flags=int(ida_hexrays.MBL_GOTO),
         )
         block.type = int(ida_hexrays.BLT_1WAY)
@@ -1114,45 +1182,51 @@ class _TerminalEffectNativeBodyMaterializer:
         *,
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> object:
-        return (plan.plan_id, native_body.body_id)
+    ) -> PreparedNativeBodyPreparation:
+        carrier_instructions = [
+            (0x500000, _Instruction(ida_hexrays.m_mov, 0x500000)),
+        ]
+        if self.conflicting_carrier:
+            carrier_instructions.append(
+                (0x500004, _Instruction(ida_hexrays.m_add, 0x500004))
+            )
+        return _native_body_preparation(
+            plan,
+            native_body,
+            (
+                ("imported-carrier", 0, tuple(carrier_instructions)),
+                ("imported-return", 0, ()),
+            ),
+        )
 
     def stage_native_body(
         self,
         *,
         context,
         native_body: FragmentNativeBody,
-        preparation: object,
+        preparation: PreparedNativeBodyPreparation,
     ) -> None:
-        assert preparation == (context.plan.plan_id, native_body.body_id)
+        assert preparation.fact.plan_id == context.plan.plan_id
+        assert preparation.fact.body_id == native_body.body_id
         assert native_body.block_ids == (
             "imported-carrier",
             "imported-return",
         )
         for block_id in native_body.block_ids:
             context.stage_block(block_id)
-        carrier_instructions = [
-            (
-                0x500000,
-                _Instruction(ida_hexrays.m_mov, 0x500000),
-            ),
-        ]
-        if self.conflicting_carrier:
-            carrier_instructions.append(
-                (
-                    0x500004,
-                    _Instruction(ida_hexrays.m_add, 0x500004),
-                )
-            )
+        rows = {
+            block_id: (block_flags, instructions)
+            for block_id, block_flags, instructions in preparation.payload.rows
+        }
         context.populate_block(
             block_id="imported-carrier",
-            instructions=tuple(carrier_instructions),
-            block_flags=0,
+            instructions=rows["imported-carrier"][1],
+            block_flags=rows["imported-carrier"][0],
         )
         context.populate_block(
             block_id="imported-return",
-            instructions=(),
-            block_flags=0,
+            instructions=rows["imported-return"][1],
+            block_flags=rows["imported-return"][0],
         )
 
 
@@ -1337,21 +1411,37 @@ class _OriginBoundConditionalNativeBodyMaterializer:
         *,
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> object:
-        return (plan.plan_id, native_body.body_id)
+    ) -> PreparedNativeBodyPreparation:
+        return _native_body_preparation(
+            plan,
+            native_body,
+            (
+                (
+                    native_body.block_ids[0],
+                    0,
+                    (
+                        (
+                            self.native_ea,
+                            _Instruction(ida_hexrays.m_jz, self.live_ea),
+                        ),
+                    ),
+                ),
+            ),
+        )
 
     def stage_native_body(
         self,
         *,
         context,
         native_body: FragmentNativeBody,
-        preparation: object,
+        preparation: PreparedNativeBodyPreparation,
     ) -> None:
-        assert preparation == (context.plan.plan_id, native_body.body_id)
+        assert preparation.fact.plan_id == context.plan.plan_id
+        assert preparation.fact.body_id == native_body.body_id
         assert len(native_body.block_ids) == 1
         block_id = native_body.block_ids[0]
         block = context.stage_block(block_id)
-        conditional = _Instruction(ida_hexrays.m_jz, self.live_ea)
+        conditional = preparation.payload.rows[0][2][0][1]
         block.insert_into_block(conditional, block.tail)
         context.bind_instruction_origin(
             block_id=block_id,
@@ -1366,23 +1456,31 @@ class _UnboundNativeBodyMaterializer:
         *,
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> object:
-        return (plan.plan_id, native_body.body_id)
+    ) -> PreparedNativeBodyPreparation:
+        return _native_body_preparation(
+            plan,
+            native_body,
+            (
+                (
+                    native_body.block_ids[0],
+                    0,
+                    ((0x500000, _Instruction(ida_hexrays.m_nop, 0xF10000)),),
+                ),
+            ),
+        )
 
     def stage_native_body(
         self,
         *,
         context,
         native_body: FragmentNativeBody,
-        preparation: object,
+        preparation: PreparedNativeBodyPreparation,
     ) -> None:
-        assert preparation == (context.plan.plan_id, native_body.body_id)
+        assert preparation.fact.plan_id == context.plan.plan_id
+        assert preparation.fact.body_id == native_body.body_id
         assert len(native_body.block_ids) == 1
         block = context.stage_block(native_body.block_ids[0])
-        block.insert_into_block(
-            _Instruction(ida_hexrays.m_nop, 0xF10000),
-            block.tail,
-        )
+        block.insert_into_block(preparation.payload.rows[0][2][0][1], block.tail)
 
 
 def _plan_with_imported_conditional(
@@ -2440,6 +2538,41 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
     assert _outline_ranges(mba) == original_ranges
     assert not int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
     assert gateway.active is False
+    assert gateway.receipts == ()
+
+
+def test_backend_rejects_untyped_native_body_preparation_before_mutation() -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(
+        mba,
+        mutation_gateway=gateway,
+        semantic_native_body_materializer=_MalformedNativeBodyMaterializer(),
+    )
+    plan = _plan_with_imported_terminal(
+        gateway,
+        entry=0,
+        original=1,
+        target=2,
+        dispatcher=3,
+    )
+    identity_generation = gateway.identity_index.generation
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="malformed preparation facts",
+    ):
+        sfb._prepare_native_bodies(modifier, plan)
+
+    assert mba.qty == 5
+    assert gateway.identity_index.generation == identity_generation
     assert gateway.receipts == ()
 
 

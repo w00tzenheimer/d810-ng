@@ -43,6 +43,9 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventoryItem,
     semantic_fragment_root_group_id,
 )
+from d810.hexrays.mutation.semantic_fragment_preparation import (
+    PreparedNativeBodyPreparation,
+)
 from d810.ir.block_identity import BlockHandleProvenance
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockKind, InsnKind, InsnSnapshot
@@ -290,7 +293,7 @@ class SemanticNativeBodyMaterializer(Protocol):
         *,
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
-    ) -> object:
+    ) -> PreparedNativeBodyPreparation:
         """Prove and prepare one body without mutating the destination MBA."""
 
     def stage_native_body(
@@ -298,7 +301,7 @@ class SemanticNativeBodyMaterializer(Protocol):
         *,
         context: "SemanticNativeBodyStagingContext",
         native_body: FragmentNativeBody,
-        preparation: object,
+        preparation: PreparedNativeBodyPreparation,
     ) -> None:
         """Stage one already-prepared body without recovering semantic intent."""
 
@@ -797,12 +800,12 @@ def _native_body_materializer(
 def _prepare_native_bodies(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
-) -> tuple[tuple[str, object], ...]:
+) -> tuple[tuple[str, PreparedNativeBodyPreparation], ...]:
     """Prepare every native body before the first destination-MBA mutation."""
     materializer = _native_body_materializer(modifier, plan)
     if materializer is None:
         return ()
-    return tuple(
+    preparations = tuple(
         (
             native_body.body_id,
             materializer.prepare_native_body(
@@ -812,6 +815,14 @@ def _prepare_native_bodies(
         )
         for native_body in plan.native_bodies
     )
+    if any(
+        not isinstance(preparation, PreparedNativeBodyPreparation)
+        for _body_id, preparation in preparations
+    ):
+        raise SemanticFragmentBackendRejected(
+            "native-body materializer returned malformed preparation facts"
+        )
+    return preparations
 
 
 def _stage_native_bodies(
@@ -820,7 +831,7 @@ def _stage_native_bodies(
     state: SemanticFragmentBackendState,
     *,
     reference_version: LogicalBlockVersion,
-    preparations: tuple[tuple[str, object], ...],
+    preparations: tuple[tuple[str, PreparedNativeBodyPreparation], ...],
 ) -> None:
     if not plan.native_bodies:
         if preparations:
