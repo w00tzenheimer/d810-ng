@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from d810.analyses.control_flow.frontend_normalization import (
     FrontendNormalizationEvidence,
@@ -27,8 +27,13 @@ from d810.passes.frontend_normalization import (
 )
 from d810.passes.function_pass_manager import FunctionPassManager
 from d810.transforms.fragment_plan import (
+    FragmentNativeBody,
     FragmentPlan,
     FragmentPublicationPurpose,
+)
+from d810.transforms.prepared_native_body import (
+    PreparedNativeBodyFact,
+    PreparedNativeBodyFactSnapshot,
 )
 
 
@@ -45,6 +50,9 @@ class SessionFrontendNormalizationPlanAuthority:
     _plan: FragmentPlan | None = None
     _authority: NormalizationWorkItemAuthority | None = None
     _evidence_generation: int | None = None
+    _pending_prepared_body_facts: dict[
+        tuple[int, str, str], PreparedNativeBodyFact
+    ] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         function_ea = int(self.function_ea)
@@ -90,6 +98,21 @@ class SessionFrontendNormalizationPlanAuthority:
             raise FrontendNormalizationPublicationError(
                 "frontend normalization receipt authority changed plan lineage"
             )
+        missing_prepared_body_ids = tuple(
+            native_body.body_id
+            for native_body in plan.native_bodies
+            if (
+                generation,
+                plan.plan_id,
+                native_body.body_id,
+            )
+            not in self._pending_prepared_body_facts
+        )
+        if missing_prepared_body_ids:
+            raise FrontendNormalizationPublicationError(
+                "frontend normalization receipt lacks prepared native-body facts: "
+                f"{missing_prepared_body_ids!r}"
+            )
         previous_generation = self._evidence_generation
         if previous_generation is not None and generation < previous_generation:
             raise FrontendNormalizationPublicationError(
@@ -115,6 +138,113 @@ class SessionFrontendNormalizationPlanAuthority:
         self._plan = plan
         self._authority = authority
         self._evidence_generation = generation
+
+    def record_prepared_body_fact(
+        self,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+        fact: PreparedNativeBodyFact,
+        *,
+        evidence_generation: int,
+    ) -> None:
+        """Retain portable preparation privately until its exact plan commits."""
+        if not isinstance(plan, FragmentPlan):
+            raise TypeError("prepared body authority requires a FragmentPlan")
+        if not isinstance(native_body, FragmentNativeBody):
+            raise TypeError("prepared body authority requires a FragmentNativeBody")
+        if not isinstance(fact, PreparedNativeBodyFact):
+            raise TypeError("prepared body authority requires typed portable facts")
+        generation = int(evidence_generation)
+        if generation < 0:
+            raise ValueError("prepared body evidence generation must be non-negative")
+        if (
+            plan.publication_purpose
+            is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+            or plan.native_key != self.native_key
+        ):
+            raise FrontendNormalizationPublicationError(
+                "prepared body belongs to another normalization authority"
+            )
+        planned_bodies = tuple(
+            candidate
+            for candidate in plan.native_bodies
+            if candidate.body_id == native_body.body_id
+        )
+        if len(planned_bodies) != 1 or planned_bodies[0] != native_body:
+            raise FrontendNormalizationPublicationError(
+                "prepared body changed native-body ownership"
+            )
+        if fact.plan_id != plan.plan_id or fact.body_id != native_body.body_id:
+            raise FrontendNormalizationPublicationError(
+                "prepared body fact changed plan lineage"
+            )
+        if (
+            fact.native_ranges != native_body.native_ranges
+            or fact.entry_block_ids != native_body.entry_block_ids
+            or fact.terminal_block_ids != native_body.terminal_block_ids
+            or tuple(block.block_id for block in fact.blocks)
+            != native_body.block_ids
+        ):
+            raise FrontendNormalizationPublicationError(
+                "prepared body fact changed native-body inventory"
+            )
+        for block in fact.blocks:
+            plan_block = plan.block(block.block_id)
+            if (
+                block.semantic_anchor_ea != plan_block.semantic_anchor_ea
+                or block.stable_identity != plan_block.stable_identity
+            ):
+                raise FrontendNormalizationPublicationError(
+                    "prepared body fact changed block identity"
+                )
+        current_generation = self._evidence_generation
+        if current_generation is not None and generation < current_generation:
+            raise FrontendNormalizationPublicationError(
+                "prepared body evidence generation regressed"
+            )
+        key = (generation, plan.plan_id, native_body.body_id)
+        previous = self._pending_prepared_body_facts.get(key)
+        if previous is not None:
+            if previous != fact:
+                raise FrontendNormalizationPublicationError(
+                    "prepared body facts changed within one plan generation"
+                )
+            return
+        self._pending_prepared_body_facts[key] = fact
+
+    def prepared_body_facts_for(
+        self,
+        function_ea: int,
+        evidence_generation: int,
+        plan_id: str,
+    ) -> PreparedNativeBodyFactSnapshot | None:
+        """Expose complete body facts only for exact receipt-associated intent."""
+        if (
+            int(function_ea) != self.function_ea
+            or int(evidence_generation) != self._evidence_generation
+            or str(plan_id) != (None if self._plan is None else self._plan.plan_id)
+            or self._plan is None
+            or self._authority is None
+        ):
+            return None
+        body_facts = tuple(
+            self._pending_prepared_body_facts.get(
+                (int(evidence_generation), self._plan.plan_id, native_body.body_id)
+            )
+            for native_body in self._plan.native_bodies
+        )
+        if not body_facts or any(fact is None for fact in body_facts):
+            return None
+        return PreparedNativeBodyFactSnapshot(
+            plan_id=self._plan.plan_id,
+            evidence_generation=int(evidence_generation),
+            snapshot_id=(
+                f"prepared-native-body:{self._plan.plan_id}:"
+                f"g{int(evidence_generation)}:"
+                f"r{int(self._authority.publication_revision)}"
+            ),
+            bodies=tuple(fact for fact in body_facts if fact is not None),
+        )
 
     def plan_for(
         self,

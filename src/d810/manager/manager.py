@@ -286,9 +286,20 @@ def _new_semantic_native_body_materializer(*, session, mba):
         HexRaysMaturity.MMAT_GENERATED,
         HexRaysMaturity.MMAT_PREOPTIMIZED,
     }:
+        evidence_generation = int(session.native_preanalysis.evidence_generation)
+
+        def observe_prepared_body_fact(plan, native_body, fact) -> None:
+            session.frontend_normalization_plan_authority.record_prepared_body_fact(
+                plan,
+                native_body,
+                fact,
+                evidence_generation=evidence_generation,
+            )
+
         return PreoptUnionSemanticNativeBodyMaterializer(
             mba=mba,
             function_ea=int(session.function_ea),
+            prepared_fact_observer=observe_prepared_body_fact,
         )
     if native_maturity is HexRaysMaturity.MMAT_CALLS:
 
