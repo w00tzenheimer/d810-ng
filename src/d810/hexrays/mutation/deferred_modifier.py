@@ -4303,7 +4303,7 @@ class DeferredGraphModifier:
         if clone is None:
             raise SemanticFragmentBackendRejected(
                 "Hex-Rays could not clone semantic fragment block"
-        )
+            )
         try:
             receipt = gateway.bind_reserved_plan_block(
                 attempt,
@@ -4329,7 +4329,7 @@ class DeferredGraphModifier:
         if gateway is None:
             raise SemanticFragmentBackendRejected(
                 "semantic fragment materialization has no gateway"
-        )
+            )
         reference = self._resolve_semantic_fragment_version(reference_version)
         attempt = gateway.current_transaction_attempt
         if attempt is None:
@@ -4347,7 +4347,7 @@ class DeferredGraphModifier:
         if created is None:
             raise SemanticFragmentBackendRejected(
                 "Hex-Rays could not create an empty semantic fragment block"
-        )
+            )
         try:
             receipt = gateway.bind_reserved_plan_block(
                 attempt,
@@ -4388,7 +4388,7 @@ class DeferredGraphModifier:
         if stable_identity.native_key != gateway.native_key:
             raise SemanticFragmentBackendRejected(
                 "native body block identity belongs to another native key"
-        )
+            )
         reference = self._resolve_semantic_fragment_version(reference_version)
         attempt = gateway.current_transaction_attempt
         if attempt is None:
@@ -5543,7 +5543,10 @@ class DeferredGraphModifier:
         """Authorize every physical root write from its typed PatchStep."""
         from d810.transforms.plan import PatchFragmentRootPublication, PatchPlan
 
-        if not isinstance(patch_plan, PatchPlan) or patch_plan.semantic_contract is None:
+        if (
+            not isinstance(patch_plan, PatchPlan)
+            or patch_plan.semantic_contract is None
+        ):
             raise TypeError("root publication requires a contracted PatchPlan")
         root_steps = tuple(
             step

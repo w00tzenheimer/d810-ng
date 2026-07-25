@@ -9,6 +9,7 @@ the vendor's re-optimization, per unflatten / the LLVM AnalysisManager invalidat
 Semantic fragments use a fresh receipt-backed gateway transaction and re-lift
 only after semantic postvalidation commits. ``apply`` is the sole live entry.
 """
+
 from __future__ import annotations
 
 from d810.analyses.control_flow.graph_checks import (
@@ -82,9 +83,7 @@ class HexRaysMutationBackend:
         return DeferredGraphModifier(
             live_source,
             mutation_gateway=gateway,
-            semantic_native_body_materializer=(
-                self._semantic_native_body_materializer
-            ),
+            semantic_native_body_materializer=(self._semantic_native_body_materializer),
         )
 
     def capabilities(self) -> frozenset[str]:
@@ -112,11 +111,13 @@ class HexRaysMutationBackend:
         )
 
         coordinator = CfgTransactionCoordinator(
-            ApplyPatchLifecycle(lambda plan: self._apply_patch_plan(
-                plan,
-                live_source,
-                safety_policy,
-            ))
+            ApplyPatchLifecycle(
+                lambda plan: self._apply_patch_plan(
+                    plan,
+                    live_source,
+                    safety_policy,
+                )
+            )
         )
         return coordinator.execute(PatchTransactionParticipant(), rewrite_plan)  # type: ignore[return-value]
 

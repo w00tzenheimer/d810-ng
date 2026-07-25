@@ -4256,7 +4256,9 @@ def realize_semantic_patch_plan(
                         block.block_id,
                         block.stable_identity,
                     )
-                elif step.materialization is FragmentBlockMaterialization.CLONE_PUBLISHED:
+                elif (
+                    step.materialization is FragmentBlockMaterialization.CLONE_PUBLISHED
+                ):
                     if step.source_ref is None:
                         raise SemanticFragmentBackendRejected(
                             "clone PatchStep lacks source authority"
@@ -4345,7 +4347,8 @@ def realize_semantic_patch_plan(
                             (binding.creation_ref, binding.version)
                             for binding in state.bindings.values()
                             if binding.creation_ref is not None
-                            and _try_live_block_for_binding(modifier, binding) is not None
+                            and _try_live_block_for_binding(modifier, binding)
+                            is not None
                         ),
                     )
                 )

@@ -5,6 +5,7 @@ IRTranslator protocol and exposes the expected interface.
 
 Runs in IDA environment (system/runtime); skips gracefully without IDA.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -53,7 +54,10 @@ from d810.transforms.plan import (
     compile_patch_plan,
 )
 from d810.transforms.cfg_transaction import LogicalBlockRef, PlanBlockRef
-from d810.transforms.materialization_payload import CapturedBlockBody, CapturedBlockBodySummary
+from d810.transforms.materialization_payload import (
+    CapturedBlockBody,
+    CapturedBlockBodySummary,
+)
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.ir.mba_identity_index import BlockHandleProvenance
 from d810.hexrays.mutation.patch_binding import PatchBindingRejected
@@ -68,7 +72,9 @@ from d810.hexrays.mutation.ir_translator import (
 from tests.system.runtime.mutation_gateway import make_mutation_gateway
 
 
-_DEFAULT_TEST_BINARY = "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+_DEFAULT_TEST_BINARY = (
+    "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
+)
 _TEST_MATURITY = MaturityEnvelope(ir=None, provider="hexrays", provider_id=4)
 _MANUAL_PLAN_ID = "system-ir-translator"
 _MANUAL_SNAPSHOT_ID = "system-ir-translator:m4:g0"
@@ -111,9 +117,7 @@ def _manual_plan(*steps, execution_policy=ExecutionPolicy.STRICT) -> PatchPlan:
         source_generation=0,
         steps=tuple(steps),
         execution_policy=execution_policy,
-        source_coordinates=tuple(
-            (ref, _MANUAL_COORDINATES[ref]) for ref in refs
-        ),
+        source_coordinates=tuple((ref, _MANUAL_COORDINATES[ref]) for ref in refs),
     )
 
 
@@ -136,8 +140,7 @@ class _FakeVars:
     def __init__(self, locations: tuple[_FakeLocation, ...]) -> None:
         self.size_called = False
         self.values = tuple(
-            SimpleNamespace(location=location)
-            for location in locations
+            SimpleNamespace(location=location) for location in locations
         )
 
     def size(self) -> int:
@@ -177,7 +180,9 @@ class _BlockRef:
     block_num: int
 
 
-def _block(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
+def _block(
+    serial: int, succs: tuple[int, ...], preds: tuple[int, ...]
+) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
         block_type=1 if succs else 0,
@@ -326,22 +331,12 @@ def test_capture_mop_snapshot_preserves_nested_value_op_kind():
 
 
 def test_hexrays_branch_opcodes_map_to_backend_neutral_predicates():
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jnz) is (
-        PredicateKind.NE
-    )
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jnz) is (PredicateKind.NE)
     assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jz) is PredicateKind.EQ
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jae) is (
-        PredicateKind.UGE
-    )
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jb) is (
-        PredicateKind.ULT
-    )
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jg) is (
-        PredicateKind.SGT
-    )
-    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jle) is (
-        PredicateKind.SLE
-    )
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jae) is (PredicateKind.UGE)
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jb) is (PredicateKind.ULT)
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jg) is (PredicateKind.SGT)
+    assert _branch_predicate_only_from_hexrays(ida_hexrays.m_jle) is (PredicateKind.SLE)
 
 
 def _conditional_duplicate_cfg() -> FlowGraph:
@@ -487,7 +482,9 @@ def _find_conditional_duplicate_candidate(mba) -> tuple[int, int] | None:
             continue
         if source_blk.nsucc() != 2:
             continue
-        if source_blk.tail is None or not ida_hexrays.is_mcode_jcond(source_blk.tail.opcode):
+        if source_blk.tail is None or not ida_hexrays.is_mcode_jcond(
+            source_blk.tail.opcode
+        ):
             continue
 
         for pred_idx in range(source_blk.npred()):
@@ -524,7 +521,11 @@ def _find_fallthrough_redirect_candidate(
             continue
         branch_target = int(block.tail.d.b)
         fallthrough = next(
-            (int(block.succ(index)) for index in range(2) if int(block.succ(index)) != branch_target),
+            (
+                int(block.succ(index))
+                for index in range(2)
+                if int(block.succ(index)) != branch_target
+            ),
             None,
         )
         if fallthrough is None:
@@ -534,7 +535,8 @@ def _find_fallthrough_redirect_candidate(
             if (
                 target not in {block.serial, branch_target, fallthrough}
                 and target_block is not None
-                and target_block.type not in (ida_hexrays.BLT_XTRN, ida_hexrays.BLT_STOP)
+                and target_block.type
+                not in (ida_hexrays.BLT_XTRN, ida_hexrays.BLT_STOP)
             ):
                 return int(block.serial), fallthrough, target
     return None
@@ -697,7 +699,8 @@ class TestIDAIRTranslatorBasics:
             backend.lower(  # type: ignore[arg-type]
                 [RedirectGoto(from_serial=1, old_target=2, new_target=3)],
                 object(),
-            mutation_gateway = make_mutation_gateway())
+                mutation_gateway=make_mutation_gateway(),
+            )
 
 
 class _FakeDeferredGraphModifier:
@@ -725,7 +728,9 @@ class _FakeDeferredGraphModifier:
             ("branch", src, new, old_target, description, expected_helper_serial)
         )
 
-    def queue_convert_to_goto(self, serial: int, target: int, description: str = "") -> None:
+    def queue_convert_to_goto(
+        self, serial: int, target: int, description: str = ""
+    ) -> None:
         self.calls.append(("convert", serial, target, description))
 
     def queue_edge_redirect(
@@ -875,8 +880,7 @@ class _FakeDeferredGraphModifier:
                         clone_serial,
                         len(instructions),
                     )
-                    for pred, target, replay_serial, clone_serial, instructions
-                    in per_pred_replays
+                    for pred, target, replay_serial, clone_serial, instructions in per_pred_replays
                 ),
                 description,
             )
@@ -905,7 +909,9 @@ class _FakeDeferredGraphModifier:
     def queue_insn_nop(self, serial: int, ea: int, description: str = "") -> None:
         self.calls.append(("nop", serial, ea, description))
 
-    def queue_remove_edge(self, from_serial: int, to_serial: int, description: str = "") -> None:
+    def queue_remove_edge(
+        self, from_serial: int, to_serial: int, description: str = ""
+    ) -> None:
         self.calls.append(("remove_edge", from_serial, to_serial, description))
 
     def _check_edge_split_trampoline_preconditions(
@@ -1020,6 +1026,7 @@ class TestTypedPatchBinding:
             child_gateways.append(kwargs["mutation_gateway"])
             modifier = _FakeDeferredGraphModifier(mba)
             if call_count == 1:
+
                 def _explode(**_kwargs) -> None:
                     raise RuntimeError("queue exploded before SDK write")
 
@@ -1122,7 +1129,9 @@ class TestIDAIntegration:
         assert hasattr(backend, "verify")
         assert callable(backend.verify)
 
-    def test_lower_applies_insert_block_patch_plan_to_real_mba(self, libobfuscated_setup):
+    def test_lower_applies_insert_block_patch_plan_to_real_mba(
+        self, libobfuscated_setup
+    ):
         mba = _get_real_mba()
         edge = _find_insertable_edge(mba)
         if edge is None:
@@ -1139,7 +1148,9 @@ class TestIDAIntegration:
                 InsertBlock(
                     pred_serial=pred_serial,
                     succ_serial=succ_serial,
-                    instructions=(InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),),
+                    instructions=(
+                        InsnSnapshot(opcode=ida_hexrays.m_nop, ea=0, operands=()),
+                    ),
                 )
             ],
         )
@@ -1203,11 +1214,15 @@ class TestIDAIntegration:
         assert helper.nsucc() == 1
         assert helper.succ(0) == new_target
 
-    def test_lower_applies_duplicate_block_patch_plan_to_real_mba(self, libobfuscated_setup):
+    def test_lower_applies_duplicate_block_patch_plan_to_real_mba(
+        self, libobfuscated_setup
+    ):
         mba = _get_real_mba()
         candidate = _find_duplicate_candidate(mba)
         if candidate is None:
-            pytest.skip("No supported predecessor/source pair available for DuplicateBlock runtime test")
+            pytest.skip(
+                "No supported predecessor/source pair available for DuplicateBlock runtime test"
+            )
 
         pred_serial, source_serial = candidate
         backend = IDAIRTranslator()
@@ -1246,7 +1261,9 @@ class TestIDAIntegration:
         assert duplicated_blk is not None
         assert duplicated_blk.nsucc() == len(duplicate_step.source_successors)
 
-    def test_lower_applies_conditional_duplicate_block_patch_plan_to_real_mba(self, libobfuscated_setup):
+    def test_lower_applies_conditional_duplicate_block_patch_plan_to_real_mba(
+        self, libobfuscated_setup
+    ):
         mba = _get_real_mba()
         candidate = _find_conditional_duplicate_candidate(mba)
         if candidate is None:
@@ -1283,9 +1300,7 @@ class TestIDAIntegration:
         pred_blk = mba.get_mblock(pred_serial)
         assert pred_blk is not None
         duplicated_serial = _created_serial(gateway, duplicate_step.block_id)
-        assert duplicated_serial in {
-            pred_blk.succ(i) for i in range(pred_blk.nsucc())
-        }
+        assert duplicated_serial in {pred_blk.succ(i) for i in range(pred_blk.nsucc())}
 
         duplicated_blk = mba.get_mblock(duplicated_serial)
         assert duplicated_blk is not None
@@ -1478,7 +1493,9 @@ class TestIDAIntegration:
                     InsertBlock(
                         pred_serial=45,
                         succ_serial=2,
-                        instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),),
+                        instructions=(
+                            InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),
+                        ),
                     )
                 ]
             )
@@ -1735,7 +1752,7 @@ class TestIDAIntegration:
                         ),
                     ),
                 ),
-            )
+            ),
         )
 
         count = _lower(backend, patch_plan, object())
@@ -1783,7 +1800,11 @@ class TestIDAIntegration:
         step = patch_plan.steps[0]
         bound = created[0].bound_plan
         assert created[0].calls[0][1:8] == (
-            45, 44, None, 2, 3,
+            45,
+            44,
+            None,
+            2,
+            3,
             bound.serial_for(step.block_id),
             bound.serial_for(step.fallthrough_block_id),
         )
@@ -1830,7 +1851,11 @@ class TestIDAIntegration:
         step = patch_plan.steps[0]
         bound = created[0].bound_plan
         assert created[0].calls[0][1:8] == (
-            45, 44, None, 199, 3,
+            45,
+            44,
+            None,
+            199,
+            3,
             bound.serial_for(step.block_id),
             bound.serial_for(step.fallthrough_block_id),
         )
@@ -1904,7 +1929,9 @@ class TestIDAIntegration:
                     InsertBlock(
                         pred_serial=45,
                         succ_serial=2,
-                        instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),),
+                        instructions=(
+                            InsnSnapshot(opcode=0x77, ea=0x1000, operands=()),
+                        ),
                     )
                 ]
             )
@@ -1936,7 +1963,9 @@ class TestIDAIntegration:
                 InsertBlock(
                     pred_serial=45,
                     succ_serial=199,
-                    instructions=(InsnSnapshot(opcode=0x77, ea=0x1000, operands=(object(),)),),
+                    instructions=(
+                        InsnSnapshot(opcode=0x77, ea=0x1000, operands=(object(),)),
+                    ),
                 )
             ],
             _cfg(),
@@ -2007,9 +2036,7 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        patch_plan = _compile_test_patch_plan(
-            [RemoveEdge(from_serial=45, to_serial=2)]
-        )
+        patch_plan = _compile_test_patch_plan([RemoveEdge(from_serial=45, to_serial=2)])
 
         count = _lower(backend, patch_plan, object())
 
@@ -2053,7 +2080,9 @@ class TestExecutionPolicyGuard:
             created.append(modifier)
             return modifier
 
-        deferred_modifier = importlib.import_module("d810.hexrays.mutation.deferred_modifier")
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
 
         backend = IDAIRTranslator()
@@ -2074,7 +2103,9 @@ class TestExecutionPolicyGuard:
         )
         count = _lower(backend, plan, object())
 
-        assert count == 0, "CFG-edit plan must be rejected when policy is NOP_CLEANUP_RELAXED"
+        assert count == 0, (
+            "CFG-edit plan must be rejected when policy is NOP_CLEANUP_RELAXED"
+        )
         assert created == [], "Modifier must not be created when guard rejects the plan"
 
     def test_nop_only_plan_passes_guard(
@@ -2093,7 +2124,9 @@ class TestExecutionPolicyGuard:
             created.append(modifier)
             return modifier
 
-        deferred_modifier = importlib.import_module("d810.hexrays.mutation.deferred_modifier")
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
 
         backend = IDAIRTranslator()

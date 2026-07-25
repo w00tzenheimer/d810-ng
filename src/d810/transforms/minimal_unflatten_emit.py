@@ -4841,9 +4841,7 @@ def _prefer_exact_terminal_route_fragments(
             result.append(modification)
 
     for source, (old_target, new_target) in sorted(authoritative.items()):
-        result.append(
-            terminal_mod_by_key[(source, old_target, new_target)]
-        )
+        result.append(terminal_mod_by_key[(source, old_target, new_target)])
     return result
 
 
@@ -5093,21 +5091,24 @@ def build_materialized_conditional_handler_bridges(
         # the rewrite lands on a block Hex-Rays later deletes and leaves the
         # reachable clone routed through stale state handlers.
         authoritative_source_matches = (
-            handler_source_matches
-            if len(handler_source_matches) == 1
-            else set()
+            handler_source_matches if len(handler_source_matches) == 1 else set()
         )
-        source_matches = authoritative_source_matches or predicate_matches or {
-            int(block.serial)
-            for block in flow_graph.blocks.values()
-            if (
-                int(block.start_ea) == int(transfer.source_block_ea)
-                and int(block.serial) not in imported_native_eas
-            )
-            or any(
-                int(insn.ea) in predicate_anchor_eas for insn in block.insn_snapshots
-            )
-        }
+        source_matches = (
+            authoritative_source_matches
+            or predicate_matches
+            or {
+                int(block.serial)
+                for block in flow_graph.blocks.values()
+                if (
+                    int(block.start_ea) == int(transfer.source_block_ea)
+                    and int(block.serial) not in imported_native_eas
+                )
+                or any(
+                    int(insn.ea) in predicate_anchor_eas
+                    for insn in block.insn_snapshots
+                )
+            }
+        )
         if len(source_matches) != 1:
             if trace_exact_live:
                 logger.info(
@@ -6293,8 +6294,7 @@ def _plan_imported_conditional_entry_bridges(
     if not roots:
         if logger.info_on:
             logger.info(
-                "imported conditional entry forest abstained: "
-                "gate=no_roots nodes=%s",
+                "imported conditional entry forest abstained: gate=no_roots nodes=%s",
                 [
                     _format_block_label(flow_graph, source)
                     for source in sorted(candidates)
@@ -6344,8 +6344,7 @@ def _plan_imported_conditional_entry_bridges(
     proofs = tuple(candidates[source][0] for source in sorted(candidates))
     if logger.info_on:
         logger.info(
-            "imported conditional entry forest proven: roots=%s nodes=%d "
-            "predicates=%s",
+            "imported conditional entry forest proven: roots=%s nodes=%d predicates=%s",
             [_format_block_label(flow_graph, source) for source in roots],
             len(proofs),
             ["0x%X" % proof.predicate_ea for proof in proofs],
@@ -7645,7 +7644,7 @@ def emit_minimal_unflatten(
     )
     if native_stack_carrier_closure and logger.info_on:
         logger.info(
-            "imported conditional entry forest superseded: " "native_stack_carriers=%d",
+            "imported conditional entry forest superseded: native_stack_carriers=%d",
             native_stack_carrier_choice_count,
         )
     if imported_conditional_entry_bridge is not None:

@@ -2886,9 +2886,7 @@ def _direct_prepared_runtime_case():
 def test_backend_rejects_foreign_or_stale_prepared_authority_before_write(
     drift: str,
 ) -> None:
-    mba, gateway, modifier, plan, prepared, patch_plan = (
-        _direct_prepared_runtime_case()
-    )
+    mba, gateway, modifier, plan, prepared, patch_plan = _direct_prepared_runtime_case()
     authority = prepared.authority
     if drift == "plan":
         object.__setattr__(authority, "plan_id", "foreign-plan")
@@ -2950,9 +2948,7 @@ def test_backend_rejects_foreign_or_stale_prepared_authority_before_write(
 def test_backend_rejects_swapped_projection_inside_scoped_authority_before_write() -> (
     None
 ):
-    mba, gateway, modifier, plan, prepared, patch_plan = (
-        _direct_prepared_runtime_case()
-    )
+    mba, gateway, modifier, plan, prepared, patch_plan = _direct_prepared_runtime_case()
     authority = prepared.authority
     alternate_entry = next(
         block.block_id
@@ -2982,9 +2978,7 @@ def test_backend_rejects_swapped_projection_inside_scoped_authority_before_write
 
 
 def test_backend_rejects_same_id_distinct_plan_object_before_write() -> None:
-    mba, gateway, modifier, plan, prepared, patch_plan = (
-        _direct_prepared_runtime_case()
-    )
+    mba, gateway, modifier, plan, prepared, patch_plan = _direct_prepared_runtime_case()
     same_id_plan = replace(plan)
     assert same_id_plan is not plan
     quantity = mba.qty
@@ -3013,9 +3007,7 @@ def test_backend_rejects_same_id_distinct_plan_object_before_write() -> None:
 
 
 def test_backend_rejects_same_id_distinct_snapshot_token_before_write() -> None:
-    mba, gateway, modifier, plan, prepared, patch_plan = (
-        _direct_prepared_runtime_case()
-    )
+    mba, gateway, modifier, plan, prepared, patch_plan = _direct_prepared_runtime_case()
     distinct_snapshot = replace(prepared.authority.snapshot)
     assert distinct_snapshot is not prepared.authority.snapshot
     candidate = replace(
@@ -3042,9 +3034,7 @@ def test_backend_rejects_same_id_distinct_snapshot_token_before_write() -> None:
 
 
 def test_backend_consumes_prepared_authority_exactly_once() -> None:
-    mba, gateway, modifier, plan, prepared, patch_plan = (
-        _direct_prepared_runtime_case()
-    )
+    mba, gateway, modifier, plan, prepared, patch_plan = _direct_prepared_runtime_case()
     projection = modifier._realize_semantic_patch_plan(patch_plan, prepared)
     assert validate_fragment_projection(plan, projection).passed
     modifier._discard_staged_semantic_fragment(plan)

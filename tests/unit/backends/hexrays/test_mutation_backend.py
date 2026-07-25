@@ -53,9 +53,7 @@ def _fragment_plan() -> FragmentPlan:
     return FragmentPlan(
         plan_id="backend-fragment",
         atomic_group_id="backend-route",
-        publication_purpose=(
-            FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
-        ),
+        publication_purpose=(FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING),
         native_key=NATIVE_KEY,
         blocks=(
             FragmentBlock(

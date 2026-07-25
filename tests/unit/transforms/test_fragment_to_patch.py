@@ -84,7 +84,9 @@ def test_lowering_preserves_plan_refs_and_complete_semantic_contract() -> None:
     assert {step.block_ref for step in block_steps} == {
         PlanBlockRef(plan.plan_id, block.block_id) for block in plan.blocks
     }
-    replacement = next(step for step in block_steps if step.block_ref.local_block_id == "replacement")
+    replacement = next(
+        step for step in block_steps if step.block_ref.local_block_id == "replacement"
+    )
     assert replacement.source_ref == PlanBlockRef(plan.plan_id, "original")
 
     operation_steps = tuple(
@@ -152,18 +154,23 @@ def test_coordinator_owns_complete_lifecycle_for_both_participants() -> None:
         def begin(self, patch):
             phases.append("begin")
             return patch
+
         def realize(self, patch, begun):
             phases.append("realize")
             return begun
+
         def observe(self, patch, realized):
             phases.append("observe")
             return realized
+
         def validate(self, patch, observed):
             phases.append("validate")
             return observed
+
         def commit(self, patch, validated):
             phases.append("commit")
             return validated
+
         def fail(self, patch, error, phase):
             phases.append(f"fail:{phase}")
 
@@ -173,8 +180,16 @@ def test_coordinator_owns_complete_lifecycle_for_both_participants() -> None:
     )
     coordinator.execute(PatchTransactionParticipant(), lowered)
     assert phases == [
-        "begin", "realize", "observe", "validate", "commit",
-        "begin", "realize", "observe", "validate", "commit",
+        "begin",
+        "realize",
+        "observe",
+        "validate",
+        "commit",
+        "begin",
+        "realize",
+        "observe",
+        "validate",
+        "commit",
     ]
 
 
@@ -224,7 +239,8 @@ def test_semantic_patch_steps_reject_forged_block_terminal_and_root_authority() 
     prepared.root_inventory.items = ()
     terminal_lowered = lower_fragment_plan(terminal_plan, prepared)
     terminal_index = next(
-        index for index, step in enumerate(terminal_lowered.steps)
+        index
+        for index, step in enumerate(terminal_lowered.steps)
         if step.__class__.__name__ == "PatchFragmentTerminalEffects"
     )
     forged_terminal = list(terminal_lowered.steps)
@@ -276,10 +292,7 @@ def test_both_production_paths_use_the_shared_transaction_coordinator() -> None:
         source_root / "backends" / "hexrays" / "mutation" / "backend.py"
     ).read_text(encoding="utf-8")
     publication = (
-        source_root
-        / "hexrays"
-        / "mutation"
-        / "semantic_fragment_publication.py"
+        source_root / "hexrays" / "mutation" / "semantic_fragment_publication.py"
     ).read_text(encoding="utf-8")
     assert "CfgTransactionCoordinator(" in backend
     assert "PatchTransactionParticipant()" in backend

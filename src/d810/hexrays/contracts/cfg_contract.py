@@ -5,7 +5,10 @@ from __future__ import annotations
 from d810.core import logging, getLogger
 from d810.core.typing import Iterable, Literal
 
-from d810.hexrays.contracts.native_oracle import NATIVE_ORACLE_AVAILABLE, check_mba_native
+from d810.hexrays.contracts.native_oracle import (
+    NATIVE_ORACLE_AVAILABLE,
+    check_mba_native,
+)
 
 logger = getLogger(__name__)
 
@@ -122,10 +125,14 @@ class IDACfgContract:
         serials: set[int] = set()
         for step in getattr(plan, "steps", ()):
             self._collect_serials_from_object(serials, step)
-            self._collect_serials_from_object(serials, getattr(step, "modification", None))
+            self._collect_serials_from_object(
+                serials, getattr(step, "modification", None)
+            )
         for block_spec in getattr(plan, "new_blocks", ()):
             self._collect_serials_from_object(serials, block_spec)
-        self._collect_serials_from_object(serials, getattr(plan, "relocation_map", None))
+        self._collect_serials_from_object(
+            serials, getattr(plan, "relocation_map", None)
+        )
         for op in getattr(plan, "ops", ()):
             self._collect_serials_from_object(serials, op)
         return sorted(serials)
@@ -164,7 +171,12 @@ class IDACfgContract:
             projection=projection,
             scope=scope,
         )
-        return self._check(mba, phase="pre", focus_serials=focus, include_insn_checks=include_insn_checks)
+        return self._check(
+            mba,
+            phase="pre",
+            focus_serials=focus,
+            include_insn_checks=include_insn_checks,
+        )
 
     def check_post(
         self,
@@ -180,7 +192,12 @@ class IDACfgContract:
             projection=projection,
             scope=scope,
         )
-        return self._check(mba, phase="post", focus_serials=focus, include_insn_checks=include_insn_checks)
+        return self._check(
+            mba,
+            phase="post",
+            focus_serials=focus,
+            include_insn_checks=include_insn_checks,
+        )
 
     def check_rollback(
         self,
@@ -196,7 +213,12 @@ class IDACfgContract:
             projection=projection,
             scope=scope,
         )
-        return self._check(mba, phase="rollback", focus_serials=focus, include_insn_checks=include_insn_checks)
+        return self._check(
+            mba,
+            phase="rollback",
+            focus_serials=focus,
+            include_insn_checks=include_insn_checks,
+        )
 
     def check_projection(
         self,
@@ -327,9 +349,7 @@ class IDACfgContract:
         )
         if include_insn_checks:
             violations.extend(
-                check_all_insn_invariants(
-                    mba, phase=phase, focus_serials=focus_serials
-                )
+                check_all_insn_invariants(mba, phase=phase, focus_serials=focus_serials)
             )
         if NATIVE_ORACLE_AVAILABLE:
             for interr_code, block_serial, msg in check_mba_native(mba):

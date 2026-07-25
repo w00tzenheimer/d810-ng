@@ -34,7 +34,9 @@ def _make_mutation_gateway(
         if lifecycle_authority is None
         else int(lifecycle_authority.evidence_generation)
     )
-    maturity = int(getattr(mba, "maturity", 0) or 0) if maturity is None else int(maturity)
+    maturity = (
+        int(getattr(mba, "maturity", 0) or 0) if maturity is None else int(maturity)
+    )
     if callable(getattr(mba, "get_mblock", None)):
         index = MbaBlockIdentityIndex.from_mba(
             mba,

@@ -892,8 +892,7 @@ class _SemanticPatchLifecycle:
         reason = _failure_message(primary_error)
         if recovery_error is not None:
             reason += (
-                f"; rollback failed: {type(recovery_error).__name__}: "
-                f"{recovery_error}"
+                f"; rollback failed: {type(recovery_error).__name__}: {recovery_error}"
             )
         try:
             if bool(getattr(self.gateway, "active", False)):
@@ -921,7 +920,9 @@ def execute_patch_transaction(gateway: object, backend: object, plan: FragmentPl
     if not isinstance(plan, FragmentPlan):
         raise TypeError("semantic fragment transaction requires a FragmentPlan")
     if bool(getattr(gateway, "active", False)):
-        raise RuntimeError("semantic fragment transaction requires an independent batch")
+        raise RuntimeError(
+            "semantic fragment transaction requires an independent batch"
+        )
     _require_backend_port(backend)
     lifecycle_authority = _require_lifecycle_authority(gateway)
     transaction_attempt = TransactionAttemptId.new(
