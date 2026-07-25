@@ -5566,3 +5566,42 @@ transaction authority, post-root contract acceptance, and the focused
 transaction gate before attempting the exact creation-witness C5 checksum.
 Rhad must not resume from `0x40BB63` before those non-semantic rows are accepted
 at one clean SHA.
+
+**2026-07-25T16:43:27-0700 — reconstructible donor C5 checksum**
+
+Rhad composition remained paused while the remaining donor transaction
+guarantees were made executable. Commit `30da35989` made `CfgContract`
+projection authority plan-neutral, functional commit `8f8f7a77e` closed the
+focused transaction matrix, and their formatting-only companions are
+`6c43fdf17` and `630cdddc8`. Commit `3597158f5` then strengthened the exact
+real A560 terminal-fragment canary and connected its isolated emitter to the
+same production transaction-authority adapter installed by `D810Manager`.
+
+The preserved checksum database is
+`.tmp/lrea-portable-cfg-c5-v3/real-terminal-fragment.diag.sqlite3`. Transaction
+attempt `02d042ae0e964299b7cd04cb86d657c4` belongs to plan
+`canonical-semantic-plan:rhad-terminal-route@0x40C7F6:g1`, session
+`rhad-real-terminal-fragment-c5`, live-MBA generation 0, and evidence
+generation 1. It records the exact ordered phases `planned -> projected ->
+preflighted -> bound -> realizing -> observed -> committed`; mutation begins
+only at `realizing`, and the final authority is committed and unpoisoned. The
+same attempt is receipt authority for a 7/7 committed fragment publication.
+
+The diagnostic DB records 32/32 passed prepublication obligations, 59/59
+passed postpublication obligations, two committed clone-replacement creation
+witnesses, and one committed planned root-fallthrough-helper witness. The
+canary asserts all three requested and returned SDK creation coordinates, the
+full phase order, exact session/generation authority, the detached reference
+route comparison, the committed mutation receipt, root publication, block
+version transitions, and semantic lifecycle operations. Focused diagnostic
+persistence verification is 11/11 green, and the exact canary is 1/1 green.
+
+The executable 41-row donor ledger is now 40 accepted and one pending. The
+sole pending donor row is `protected_family_behavior_preserved`; the strict
+gate must remain incomplete until Hodur, Sub7ffd, Tigress, and Approov are
+proved at the final integration SHA. The pre-Rhad non-semantic transaction
+gate and one reconstructible C5 checksum are complete, so the v3.1 vertical
+loop may resume from its previously recorded first semantic obligation at
+native rewrite anchor `0x40BB63`. Broad 91-route publication remains
+prohibited until that one fragment is carried vertically through the live
+path.
