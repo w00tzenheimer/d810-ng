@@ -296,6 +296,65 @@ class ReferenceRouteOracleCatalog:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ReferenceRouteOracleRegistry:
+    """Exact-input catalog registry for multiple configured functions."""
+
+    catalogs: tuple[ReferenceRouteOracleCatalog, ...]
+
+    def __post_init__(self) -> None:
+        catalogs = tuple(self.catalogs)
+        if not catalogs or any(
+            not isinstance(catalog, ReferenceRouteOracleCatalog)
+            for catalog in catalogs
+        ):
+            raise ValueError("reference route registry requires portable catalogs")
+        authority_keys = tuple(
+            (
+                catalog.run.candidate_binary_sha256.lower(),
+                int(catalog.run.function_ea),
+            )
+            for catalog in catalogs
+        )
+        if len(set(authority_keys)) != len(authority_keys):
+            raise ValueError(
+                "reference route registry requires unique input/function authority"
+            )
+        object.__setattr__(self, "catalogs", catalogs)
+
+    @classmethod
+    def from_manifests(
+        cls,
+        manifests: Sequence[Mapping[str, object]],
+    ) -> ReferenceRouteOracleRegistry:
+        """Parse the sole manifest schema for every configured authority."""
+
+        return cls(
+            catalogs=tuple(
+                ReferenceRouteOracleCatalog.from_manifest(manifest)
+                for manifest in manifests
+            )
+        )
+
+    def reference_oracle_for(
+        self,
+        function_ea: int,
+        native_key: NativePreanalysisKey,
+        rewrite_anchor_eas: Sequence[int],
+    ) -> ReferenceRouteOracleSelection | None:
+        """Select one exact input/function catalog, then its requested routes."""
+
+        for catalog in self.catalogs:
+            selection = catalog.reference_oracle_for(
+                function_ea,
+                native_key,
+                rewrite_anchor_eas,
+            )
+            if selection is not None:
+                return selection
+        return None
+
+
 def _require_unique_reference_fields(
     routes: Sequence[ReferenceRouteRewrite],
 ) -> None:
@@ -872,6 +931,7 @@ def compare_route_maturities(
 __all__ = [
     "ReferenceRouteRewrite",
     "ReferenceRouteOracleCatalog",
+    "ReferenceRouteOracleRegistry",
     "ReferenceRouteOracleSelection",
     "RouteCaptureLane",
     "RouteOracleCapture",

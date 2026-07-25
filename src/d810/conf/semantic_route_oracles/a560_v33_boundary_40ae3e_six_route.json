@@ -1,0 +1,456 @@
+{
+  "capture": {
+    "function_end_ea": "0x40C8A2",
+    "maturities": [
+      "MMAT_GENERATED",
+      "MMAT_PREOPTIMIZED",
+      "MMAT_CALLS",
+      "MMAT_GLBOPT1"
+    ]
+  },
+  "routes": [
+    {
+      "corridor": [
+        [
+          "0x40AA44",
+          "0x40AA55"
+        ]
+      ],
+      "direct_target_ea": "0x40C315",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AA44",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb0e691fe4",
+            "ea": 4237892,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xe41f690e",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4237897,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c6b0c0000",
+            "ea": 4237903,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4237909,
+        "corridor_start_ea": 4237892,
+        "flag_writer_eas": [
+          4237897
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4237903,
+            "opcode": "e9",
+            "target_ea": 4244245
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4237892,
+            "mnemonic": "mov",
+            "value": 3827263758,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AA4F",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AA4F",
+      "route_id": "rhad:0x40A560:flow_route:0x40AA4F",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40AB4B",
+          "0x40AB6A"
+        ]
+      ],
+      "direct_target_ea": "0x40AA2C",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AB4B",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb06e8b823",
+            "ea": 4238155,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x23b8e806",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f85c5090000",
+            "ea": 4238160,
+            "mnemonic": "jne",
+            "op_str": "0x40b51b",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8dca090000",
+            "ea": 4238180,
+            "mnemonic": "jge",
+            "op_str": "0x40b534",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238186,
+        "corridor_start_ea": 4238155,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238180,
+            "opcode": "e9",
+            "target_ea": 4237868
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238155,
+            "mnemonic": "mov",
+            "value": 599320582,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AB64",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AB64",
+      "route_id": "rhad:0x40A560:flow_route:0x40AB64",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40AE6F",
+          "0x40AE80"
+        ]
+      ],
+      "direct_target_ea": "0x40AA2C",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AE6F",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb06e8b823",
+            "ea": 4238959,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x23b8e806",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4238964,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c40080000",
+            "ea": 4238970,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238976,
+        "corridor_start_ea": 4238959,
+        "flag_writer_eas": [
+          4238964
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238970,
+            "opcode": "e9",
+            "target_ea": 4237868
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238959,
+            "mnemonic": "mov",
+            "value": 599320582,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AE7A",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AE7A",
+      "route_id": "rhad:0x40A560:flow_route:0x40AE7A",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B51B",
+          "0x40B534"
+        ]
+      ],
+      "direct_target_ea": "0x40AE3E",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B51B",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbb2d3b013",
+            "ea": 4240667,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x13b0d3b2",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240678,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c36f6ffff",
+            "ea": 4240686,
+            "mnemonic": "jl",
+            "op_str": "0x40ab6a",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240692,
+        "corridor_start_ea": 4240667,
+        "flag_writer_eas": [
+          4240678
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240686,
+            "opcode": "e9",
+            "target_ea": 4238910
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240667,
+            "mnemonic": "mov",
+            "value": 330355634,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B52E",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B52E",
+      "route_id": "rhad:0x40A560:flow_route:0x40B52E",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C328",
+          "0x40C347"
+        ]
+      ],
+      "direct_target_ea": "0x40AB31",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C328",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb04bdaa1b",
+            "ea": 4244264,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x1baabd04",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f84b0040000",
+            "ea": 4244271,
+            "mnemonic": "je",
+            "op_str": "0x40c7e5",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8db5040000",
+            "ea": 4244289,
+            "mnemonic": "jge",
+            "op_str": "0x40c7fc",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244295,
+        "corridor_start_ea": 4244264,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244289,
+            "opcode": "e9",
+            "target_ea": 4238129
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244264,
+            "mnemonic": "mov",
+            "value": 464174340,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C341",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C341",
+      "route_id": "rhad:0x40A560:flow_route:0x40C341",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C7E5",
+          "0x40C7FC"
+        ]
+      ],
+      "direct_target_ea": "0x40C898",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C7E5",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb8a21a719",
+            "ea": 4245477,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x19a7218a",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245488,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c4bfbffff",
+            "ea": 4245494,
+            "mnemonic": "jl",
+            "op_str": "0x40c347",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245500,
+        "corridor_start_ea": 4245477,
+        "flag_writer_eas": [
+          4245488
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245494,
+            "opcode": "e9",
+            "target_ea": 4245656
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245477,
+            "mnemonic": "mov",
+            "value": 430383498,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C7F6",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C7F6",
+      "route_id": "rhad:0x40A560:flow_route:0x40C7F6",
+      "true_target_ea": null
+    }
+  ],
+  "run": {
+    "cache_disabled": true,
+    "candidate_binary_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
+    "fixture_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
+    "function_ea": "0x40A560",
+    "metadata": {
+      "reference_ledger_binary_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+    },
+    "reference_binary_sha256": "6358957fe74360725b125bdc41b16df9952d95b338792fd3521249e5030ddd8c",
+    "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+    "run_id": "a560-v33-boundary-40ae3e-six-route-20260725",
+    "runtime_image": "d810-idapro-9.3-test-runtime:py313-v1",
+    "runtime_image_id": "sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a"
+  },
+  "schema_version": 1
+}

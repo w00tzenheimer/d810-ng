@@ -984,6 +984,9 @@
   "additional_configuration": {
     "preanalysis_profile_modules": [
       "d810.backends.hexrays.evidence.ollvm_carrier"
+    ],
+    "semantic_route_oracle_manifests": [
+      "semantic_route_oracles/a560_v33_boundary_40ae3e_six_route.json"
     ]
   }
 }

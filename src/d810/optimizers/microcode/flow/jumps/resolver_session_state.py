@@ -26,6 +26,9 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationPlanCapability,
 )
+from d810.capabilities.semantic_routes import (
+    SemanticRouteReferenceOracleCapability,
+)
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.typing import Sequence
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
@@ -70,6 +73,9 @@ class ResolverSessionState:
     frontend_normalization_plan_provider: FrontendNormalizationPlanCapability | None = (
         None
     )
+    semantic_route_reference_oracle_provider: (
+        SemanticRouteReferenceOracleCapability | None
+    ) = None
     identity_index: MbaBlockIdentityIndex | None = None
     materialization: ResolverMaterializationState | None = None
     materialized: bool = False

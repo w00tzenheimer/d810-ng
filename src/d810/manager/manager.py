@@ -76,6 +76,50 @@ D810_LOG_DIR_NAME = "d810_logs"
 logger = getLogger("D810")
 
 
+def _load_semantic_route_reference_oracle_registry(
+    config,
+    *,
+    config_root: pathlib.Path | None = None,
+):
+    """Load the configured exact-input route manifests through one schema."""
+    from d810.core.semantic_route_oracle import ReferenceRouteOracleRegistry
+
+    raw_paths = config.get("semantic_route_oracle_manifests")
+    if raw_paths is None:
+        return None
+    if (
+        not isinstance(raw_paths, (list, tuple))
+        or not raw_paths
+        or any(not isinstance(item, str) or not item for item in raw_paths)
+    ):
+        raise ValueError(
+            "semantic_route_oracle_manifests must be a non-empty array of paths"
+        )
+    root = (
+        pathlib.Path(__file__).resolve().parents[1] / "conf"
+        if config_root is None
+        else pathlib.Path(config_root)
+    ).resolve()
+    manifests = []
+    for raw_path in raw_paths:
+        relative_path = pathlib.Path(raw_path)
+        manifest_path = (root / relative_path).resolve()
+        if relative_path.is_absolute() or (
+            manifest_path != root and root not in manifest_path.parents
+        ):
+            raise ValueError(
+                "semantic route oracle manifests must stay inside the "
+                "configuration root"
+            )
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(
+                f"semantic route oracle manifest must be an object: {manifest_path}"
+            )
+        manifests.append(payload)
+    return ReferenceRouteOracleRegistry.from_manifests(tuple(manifests))
+
+
 def _build_native_preanalysis_key(*, function_ea, profile_config):
     """Hex-Rays backend port for lifecycle-owned portable identity."""
     from d810.backends.hexrays.native_preanalysis_key import (
@@ -88,7 +132,11 @@ def _build_native_preanalysis_key(*, function_ea, profile_config):
     )
 
 
-def _initialize_resolver_attachment(session):
+def _initialize_resolver_attachment(
+    session,
+    *,
+    semantic_route_reference_oracle_provider=None,
+):
     """Create the optimizer-owned attachment before lower callbacks consume it."""
     from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
         resolver_session_state,
@@ -97,6 +145,9 @@ def _initialize_resolver_attachment(session):
     state = resolver_session_state(session)
     state.frontend_normalization_plan_provider = (
         session.frontend_normalization_plan_authority
+    )
+    state.semantic_route_reference_oracle_provider = (
+        semantic_route_reference_oracle_provider
     )
     return state
 
@@ -365,6 +416,11 @@ class D810Manager:
     ctree_optimizer_rules: list = dataclasses.field(default_factory=list)
     ctree_optimizer_config: dict = dataclasses.field(default_factory=dict)
     config: dict = dataclasses.field(default_factory=dict)
+    _semantic_route_reference_oracle_registry: object | None = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+    )
     event_emitter: EventEmitter = dataclasses.field(default_factory=EventEmitter)
     rule_scope_service: RuleScopeService = dataclasses.field(
         default_factory=RuleScopeService
@@ -606,6 +662,9 @@ class D810Manager:
 
     def configure(self, **kwargs):
         self.config = kwargs
+        self._semantic_route_reference_oracle_registry = (
+            _load_semantic_route_reference_oracle_registry(kwargs)
+        )
         self.rule_scope_runtime.configure(kwargs)
         self._load_function_analysis_priors_from_config(
             kwargs.get("function_analysis_priors", {})
@@ -898,7 +957,14 @@ class D810Manager:
             semantic_native_body_materializer_factory=(
                 _new_semantic_native_body_materializer
             ),
-            resolver_attachment_initializer=_initialize_resolver_attachment,
+            resolver_attachment_initializer=lambda session: (
+                _initialize_resolver_attachment(
+                    session,
+                    semantic_route_reference_oracle_provider=(
+                        self._semantic_route_reference_oracle_registry
+                    ),
+                )
+            ),
         )
 
         # The lifecycle coordinator owns top-level reset, capture, analysis,

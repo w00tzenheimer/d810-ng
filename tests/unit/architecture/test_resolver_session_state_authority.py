@@ -137,6 +137,10 @@ RESOLVER_SESSION_FIELD_INVENTORY = {
         FieldLifetime.LIFECYCLE_BINDING,
         "read-only port to manager-owned receipt-associated PREOPT plan intent",
     ),
+    "semantic_route_reference_oracle_provider": FieldInventory(
+        FieldLifetime.LIFECYCLE_BINDING,
+        "read-only port to manager-owned exact-input reference authority",
+    ),
     "identity_index": FieldInventory(
         FieldLifetime.CALLBACK_LOCAL,
         "current-MBA bindings invalidated on mutation or regeneration",
@@ -172,6 +176,10 @@ RESOLVER_SESSION_FIELD_INVENTORY = {
     "pending_preopt_reimport": FieldInventory(
         FieldLifetime.TRANSIENT_MATERIALIZATION,
         "one-shot import control flag",
+    ),
+    "pending_call_companion_ranges": FieldInventory(
+        FieldLifetime.TRANSIENT_MATERIALIZATION,
+        "one-shot native-range queue consumed by the generated restart",
     ),
     "preopt_union_imported_mbas": FieldInventory(
         FieldLifetime.CALLBACK_LOCAL,

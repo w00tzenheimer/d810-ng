@@ -6,7 +6,10 @@ from copy import deepcopy
 
 import pytest
 
-from d810.core.semantic_route_oracle import ReferenceRouteOracleCatalog
+from d810.core.semantic_route_oracle import (
+    ReferenceRouteOracleCatalog,
+    ReferenceRouteOracleRegistry,
+)
 from tests.native_preanalysis import make_native_key
 
 
@@ -138,3 +141,46 @@ def test_catalog_rejects_unpinned_or_cross_function_authority() -> None:
     route["function_ea"] = "0x40D200"
     with pytest.raises(ValueError, match="function"):
         ReferenceRouteOracleCatalog.from_manifest(cross_function)
+
+
+def test_registry_selects_one_exact_function_catalog() -> None:
+    second = deepcopy(_manifest())
+    second_run = second["run"]
+    second_routes = second["routes"]
+    assert isinstance(second_run, dict)
+    assert isinstance(second_routes, list)
+    second_route = second_routes[0]
+    assert isinstance(second_route, dict)
+    second_run["run_id"] = "d200-v33-boundary"
+    second_run["function_ea"] = "0x40D200"
+    second_route["route_id"] = "test:0x40D200:flow_route:0x40D348"
+    second_route["function_ea"] = "0x40D200"
+    second_route["owner_ea"] = "0x40D340"
+    second_route["rewrite_anchor_ea"] = "0x40D348"
+    second_route["corridor"] = [["0x40D340", "0x40D350"]]
+    second_route["direct_target_ea"] = "0x40EAA7"
+    second_route["reference_ledger_identity"] = "flow_route:0x40D348"
+    registry = ReferenceRouteOracleRegistry.from_manifests((_manifest(), second))
+
+    selection = registry.reference_oracle_for(
+        0x40D200,
+        make_native_key(
+            input_identity=f"sha256:{_FIXTURE_SHA256}",
+            function_rva=0xD200,
+        ),
+        (0x40D348,),
+    )
+
+    assert selection is not None
+    assert selection.run.run_id == "d200-v33-boundary"
+    assert selection.routes[0].rewrite_anchor_ea == 0x40D348
+
+
+def test_registry_rejects_duplicate_input_function_authority() -> None:
+    duplicate = deepcopy(_manifest())
+    duplicate_run = duplicate["run"]
+    assert isinstance(duplicate_run, dict)
+    duplicate_run["run_id"] = "duplicate-a560-boundary"
+
+    with pytest.raises(ValueError, match="input/function"):
+        ReferenceRouteOracleRegistry.from_manifests((_manifest(), duplicate))
