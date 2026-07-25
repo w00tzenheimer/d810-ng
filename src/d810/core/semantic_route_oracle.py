@@ -17,7 +17,7 @@ from d810.core.observability_models import BlockSnapshot, InstructionSnapshot
 from d810.core.typing import Mapping, Sequence
 
 
-_MANIFEST_SCHEMA_VERSION = 1
+_MANIFEST_SCHEMA_VERSION = 2
 
 
 class RouteCaptureLane(str, Enum):
@@ -213,6 +213,7 @@ class ReferenceRouteOracleSelection:
     """Pinned reference authority selected for one fragment plan."""
 
     run: RouteOracleRun
+    publication_root_ea: int
     routes: tuple[ReferenceRouteRewrite, ...]
 
     def __post_init__(self) -> None:
@@ -220,6 +221,9 @@ class ReferenceRouteOracleSelection:
             raise TypeError("reference route selection requires one oracle run")
         if not self.run.cache_disabled:
             raise ValueError("reference route selection requires a cache-disabled run")
+        publication_root_ea = int(self.publication_root_ea)
+        if publication_root_ea < 0:
+            raise ValueError("reference route selection requires a publication root")
         routes = tuple(self.routes)
         if not routes or any(
             not isinstance(route, ReferenceRouteRewrite) for route in routes
@@ -228,6 +232,7 @@ class ReferenceRouteOracleSelection:
         if any(route.function_ea != self.run.function_ea for route in routes):
             raise ValueError("reference route selection has a function mismatch")
         _require_unique_reference_fields(routes)
+        object.__setattr__(self, "publication_root_ea", publication_root_ea)
         object.__setattr__(self, "routes", routes)
 
 
@@ -236,10 +241,20 @@ class ReferenceRouteOracleCatalog:
     """Exact-input manifest authority exposed through a portable capability."""
 
     run: RouteOracleRun
+    publication_root_ea: int
     routes: tuple[ReferenceRouteRewrite, ...]
 
     def __post_init__(self) -> None:
-        selection = ReferenceRouteOracleSelection(run=self.run, routes=self.routes)
+        selection = ReferenceRouteOracleSelection(
+            run=self.run,
+            publication_root_ea=self.publication_root_ea,
+            routes=self.routes,
+        )
+        object.__setattr__(
+            self,
+            "publication_root_ea",
+            selection.publication_root_ea,
+        )
         object.__setattr__(self, "routes", selection.routes)
 
     @classmethod
@@ -264,9 +279,42 @@ class ReferenceRouteOracleCatalog:
         raw_routes = manifest.get("routes")
         if not isinstance(raw_routes, list) or not raw_routes:
             raise ValueError("semantic route oracle manifest has no routes")
+        if "publication_root_ea" not in manifest:
+            raise ValueError(
+                "semantic route oracle manifest lacks required field "
+                "'publication_root_ea'"
+            )
         run = _run_from_manifest(raw_run)
         routes = tuple(_route_from_manifest(raw) for raw in raw_routes)
-        return cls(run=run, routes=routes)
+        return cls(
+            run=run,
+            publication_root_ea=_manifest_int(
+                manifest["publication_root_ea"],
+                field="publication root",
+            ),
+            routes=routes,
+        )
+
+    def reference_oracle_scope_for(
+        self,
+        function_ea: int,
+        native_key: NativePreanalysisKey,
+    ) -> ReferenceRouteOracleSelection | None:
+        """Return the complete configured fragment scope for one exact input."""
+
+        if not isinstance(native_key, NativePreanalysisKey):
+            raise TypeError("reference route selection requires a native key")
+        expected_input_identity = f"sha256:{self.run.candidate_binary_sha256.lower()}"
+        if (
+            int(function_ea) != self.run.function_ea
+            or native_key.input_identity.lower() != expected_input_identity
+        ):
+            return None
+        return ReferenceRouteOracleSelection(
+            run=self.run,
+            publication_root_ea=self.publication_root_ea,
+            routes=self.routes,
+        )
 
     def reference_oracle_for(
         self,
@@ -292,6 +340,7 @@ class ReferenceRouteOracleCatalog:
             return None
         return ReferenceRouteOracleSelection(
             run=self.run,
+            publication_root_ea=self.publication_root_ea,
             routes=tuple(by_anchor[anchor_ea] for anchor_ea in requested),
         )
 
@@ -348,6 +397,22 @@ class ReferenceRouteOracleRegistry:
                 function_ea,
                 native_key,
                 rewrite_anchor_eas,
+            )
+            if selection is not None:
+                return selection
+        return None
+
+    def reference_oracle_scope_for(
+        self,
+        function_ea: int,
+        native_key: NativePreanalysisKey,
+    ) -> ReferenceRouteOracleSelection | None:
+        """Select the complete configured fragment scope for one exact input."""
+
+        for catalog in self.catalogs:
+            selection = catalog.reference_oracle_scope_for(
+                function_ea,
+                native_key,
             )
             if selection is not None:
                 return selection

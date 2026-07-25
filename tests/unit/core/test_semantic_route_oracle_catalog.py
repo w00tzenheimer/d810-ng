@@ -19,7 +19,8 @@ _FIXTURE_SHA256 = "a" * 64
 
 def _manifest() -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "publication_root_ea": "0x40AE3E",
         "run": {
             "run_id": "a560-v33-boundary",
             "function_ea": "0x40A560",
@@ -71,7 +72,16 @@ def test_catalog_selects_only_exact_input_function_and_anchor_set() -> None:
 
     assert selection is not None
     assert selection.run == catalog.run
+    assert selection.publication_root_ea == 0x40AE3E
     assert tuple(route.rewrite_anchor_ea for route in selection.routes) == (0x40B52E,)
+
+    scope = catalog.reference_oracle_scope_for(
+        _FUNCTION_EA,
+        _native_key(),
+    )
+    assert scope is not None
+    assert scope.publication_root_ea == 0x40AE3E
+    assert scope.routes == catalog.routes
 
     assert (
         catalog.reference_oracle_for(
@@ -153,6 +163,7 @@ def test_registry_selects_one_exact_function_catalog() -> None:
     assert isinstance(second_route, dict)
     second_run["run_id"] = "d200-v33-boundary"
     second_run["function_ea"] = "0x40D200"
+    second["publication_root_ea"] = "0x40EAA7"
     second_route["route_id"] = "test:0x40D200:flow_route:0x40D348"
     second_route["function_ea"] = "0x40D200"
     second_route["owner_ea"] = "0x40D340"
@@ -173,7 +184,20 @@ def test_registry_selects_one_exact_function_catalog() -> None:
 
     assert selection is not None
     assert selection.run.run_id == "d200-v33-boundary"
+    assert selection.publication_root_ea == 0x40EAA7
     assert selection.routes[0].rewrite_anchor_ea == 0x40D348
+
+
+def test_catalog_requires_one_portable_publication_root() -> None:
+    missing = _manifest()
+    del missing["publication_root_ea"]
+    with pytest.raises(ValueError, match="publication_root_ea"):
+        ReferenceRouteOracleCatalog.from_manifest(missing)
+
+    malformed = _manifest()
+    malformed["publication_root_ea"] = -1
+    with pytest.raises(ValueError, match="publication root"):
+        ReferenceRouteOracleCatalog.from_manifest(malformed)
 
 
 def test_registry_rejects_duplicate_input_function_authority() -> None:

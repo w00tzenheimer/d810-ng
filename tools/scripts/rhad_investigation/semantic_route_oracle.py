@@ -35,7 +35,7 @@ from d810.core.semantic_route_oracle import (
 )
 
 
-_MANIFEST_SCHEMA_VERSION = 1
+_MANIFEST_SCHEMA_VERSION = 2
 _SIDECAR_SUFFIXES = (".id0", ".id1", ".id2", ".nam", ".til", ".i64")
 _CONDITION_BY_OPCODE = {
     "0f80": "o",
@@ -210,6 +210,7 @@ def build_manifest(
     run_id: str,
     function_ea: int,
     function_end_ea: int,
+    publication_root_ea: int,
     rewrite_owners: dict[int, int],
     fixture_path: Path,
     reference_binary_path: Path,
@@ -228,6 +229,8 @@ def build_manifest(
         )
     if not rewrite_owners:
         raise ValueError("oracle manifest requires at least one selected rewrite")
+    if int(publication_root_ea) < 0:
+        raise ValueError("oracle manifest requires one publication root")
     if not maturities or len(set(maturities)) != len(maturities):
         raise ValueError("oracle manifest maturities must be non-empty and unique")
 
@@ -279,6 +282,7 @@ def build_manifest(
             "function_end_ea": _hex(function_end_ea),
             "maturities": list(maturities),
         },
+        "publication_root_ea": _hex(publication_root_ea),
         "routes": routes,
         "run": {
             "cache_disabled": True,
@@ -588,6 +592,11 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--function-end-ea", type=lambda value: int(value, 0), required=True
     )
+    build.add_argument(
+        "--publication-root-ea",
+        type=lambda value: int(value, 0),
+        required=True,
+    )
     build.add_argument("--rewrite-owner", action="append", required=True)
     build.add_argument("--fixture", type=Path, required=True)
     build.add_argument("--reference-binary", type=Path, required=True)
@@ -628,6 +637,7 @@ def main(argv: list[str] | None = None) -> int:
             run_id=args.run_id,
             function_ea=args.function_ea,
             function_end_ea=args.function_end_ea,
+            publication_root_ea=args.publication_root_ea,
             rewrite_owners=owners,
             fixture_path=args.fixture,
             reference_binary_path=args.reference_binary,

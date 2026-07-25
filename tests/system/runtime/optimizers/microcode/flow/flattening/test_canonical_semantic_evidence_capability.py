@@ -39,6 +39,10 @@ def test_live_unflattener_injects_session_canonical_semantic_evidence(
 
     class _ReferenceOracleProvider:
         @staticmethod
+        def reference_oracle_scope_for(function_ea, key):
+            return None
+
+        @staticmethod
         def reference_oracle_for(function_ea, key, rewrite_anchor_eas):
             return None
 

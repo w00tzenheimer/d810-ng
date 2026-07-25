@@ -40,6 +40,14 @@ class CanonicalSemanticCandidateEvidenceCapability(Protocol):
 class SemanticRouteReferenceOracleCapability(Protocol):
     """Select pinned reference authority for exact fragment rewrite anchors."""
 
+    def reference_oracle_scope_for(
+        self,
+        function_ea: int,
+        native_key: "NativePreanalysisKey",
+    ) -> "ReferenceRouteOracleSelection | None":
+        """Return the complete configured fragment scope for one exact input."""
+        ...
+
     def reference_oracle_for(
         self,
         function_ea: int,
