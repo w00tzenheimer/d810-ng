@@ -4424,3 +4424,51 @@ the portable resolver-cut ownership of exactly that extra CALLS instruction and
 excluding only such proven maturity-derived exits from companion comparison.
 Do not generally tolerate extra CALLS calls or weaken exact matching for the
 genuine PREOPT call inventory.
+
+**2026-07-25T13:12:45Z**
+
+Commit `97c5a96d6` completes the interior resolver-cut CALLS slice. Detached
+CALLS preparation now subtracts only a STOP block's proven terminal instruction
+extent when every outgoing edge is an indirect `resolver_proven_native_cut`
+with a target and the same source-instruction EA. This supports interior cuts
+without tolerating extra CALLS calls or changing pristine PREOPT inventory
+authority. The red interior-cut contract now passes, as do 286/286 focused
+resolver/session tests, 9/9 companion and diagnostic-event contracts, the
+authoritative 286/286 Docker resolver gate, Ruff, ast-grep, all 14 import
+contracts, diff checks, `graphify update .`, and pre-commit gates.
+
+The mandatory cache-disabled A560 canary completed normally in 19.97 seconds
+without a process crash, numeric `INTERR`, or verifier event. Log:
+`.tmp/rhad-a560-v33-interior-companion-cut-v3.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-interior-companion-cut-v3/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-interior-companion-cut-v3/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects one false `while ( 1 )`, so this is not A560
+acceptance.
+
+The DB proves the prior CALLS companion obligation is cleared. All 22 requested
+components capture on the controlled restart. Event 175 records native range
+`[0x40B3FF,0x40B4E2)`, exact PREOPT/CALLS call inventory `0x40B49E`, and the
+two generated CALLS ranges `[0x40B3FF,0x40B4C3)` and
+`[0x40B4C5,0x40B4E2)`, excluding only native resolver cut `0x40B4C3` through
+its decoded end `0x40B4C5`.
+
+Both frontend passes commit their 260-operation transaction, and both canonical
+passes build the same 396-operation plan. The second canonical transaction now
+advances past companion preparation and atomically aborts before staging at the
+next detached proof. There is still no route-oracle comparison or semantic C5
+receipt. Main-path A560 remains at C3; the first failed C4 obligation is
+`detached_split_direct_corridor_mismatch` for
+`route:state_assignment@0x40A72E:0x7C4FB03D`, specifically
+`imported_envelope_owned`.
+
+The canonical operation retains source write `0x40A723`, condition producer
+`0x40A728`, rewrite/normalization start `0x40A72E`, unresolved transfer
+`0x40A73D`, delivery region `[0x40A72E,0x40A73F)`, and proof corridor
+`0x40A723,0x40A728,0x40A72E`, but its relocated-instruction inventory is empty.
+Native disassembly shows the delivery sequence is `mov` at `0x40A72E`, `lea`
+at `0x40A730`, `cmovl` at `0x40A736`, `mov` at `0x40A739`, `add` at
+`0x40A73B`, and `jmp eax` at `0x40A73D`. Continue by proving why this
+non-split normalization retained no relocation inventory and why the detached
+template has zero unique join owners; do not synthesize an envelope, weaken
+exact ownership, or broaden publication.
