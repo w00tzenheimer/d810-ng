@@ -30,6 +30,7 @@ from d810.transforms.fragment_plan import (
     FragmentNativeBody,
     FragmentOperation,
     FragmentStoragePredicateMaterialization,
+    FragmentTerminalReturn,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
@@ -504,11 +505,13 @@ class _NativeBodyPlan:
         self,
         blocks: tuple[FragmentBlock, ...],
         operations: tuple[FragmentOperation, ...] = (),
+        terminal_returns: tuple[FragmentTerminalReturn, ...] = (),
     ) -> None:
         self.plan_id = "native-body-runtime-test"
         self.native_key = NATIVE_KEY
         self._blocks = {block.block_id: block for block in blocks}
         self.operations = tuple(operations)
+        self.terminal_returns = tuple(terminal_returns)
 
     def block(self, block_id: str) -> FragmentBlock:
         return self._blocks[str(block_id)]
@@ -934,6 +937,51 @@ def test_calls_native_body_rejects_returns_before_staging(
     assert context.populated_block_ids == []
     assert destination.qty == 1
     assert destination.chains_dirty == 0
+
+
+def test_calls_native_body_defers_planned_terminal_return_to_fragment_stage(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0xB000
+    terminal_ea = 0x3350
+    destination, native_body, context = _single_block_native_body_runtime(
+        function_ea=function_ea,
+        entry_ea=terminal_ea,
+        opcode=ida_hexrays.m_ret,
+        destination_maturity=ida_hexrays.MMAT_CALLS,
+    )
+    native_body = replace(
+        native_body,
+        terminal_block_ids=("imported-single",),
+    )
+    context.plan = _NativeBodyPlan(
+        (context.plan.block("imported-single"),),
+        terminal_returns=(
+            FragmentTerminalReturn(
+                return_id="planned-return",
+                block_id="imported-single",
+                instruction_ea=terminal_ea,
+                return_width=4,
+            ),
+        ),
+    )
+
+    _prepare_and_stage_native_body(
+        detached_handler_island.CallsSemanticNativeBodyMaterializer(
+            mba=destination,
+            function_ea=function_ea,
+        ),
+        context=context,
+        native_body=native_body,
+    )
+
+    assert context.staged_block_ids == ["imported-single"]
+    assert context.populated_block_ids == ["imported-single"]
+    assert context.blocks["imported-single"].instructions() == ()
+    assert context.instruction_origins == {}
+    assert destination.qty == 2
+    assert destination.chains_dirty == 1
 
 
 def test_calls_native_body_rejects_other_maturity_before_staging(

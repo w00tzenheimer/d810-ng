@@ -69,6 +69,7 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentStoragePredicateMaterialization,
+    FragmentTerminalReturn,
 )
 from d810.ir.block_identity import (
     BlockHandleProvenance,
@@ -2823,6 +2824,105 @@ class CallsSemanticNativeBodyMaterializer(PreoptUnionSemanticNativeBodyMateriali
             )
 
     @classmethod
+    def _without_planned_terminal_returns(
+        cls,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+        rows: Mapping[str, tuple[tuple[int, object], ...]],
+    ) -> dict[str, tuple[tuple[int, object], ...]]:
+        body_block_ids = frozenset(str(block_id) for block_id in native_body.block_ids)
+        planned_returns = tuple(
+            terminal_return
+            for terminal_return in plan.terminal_returns
+            if terminal_return.block_id in body_block_ids
+        )
+        if not planned_returns:
+            return {str(block_id): tuple(block_rows) for block_id, block_rows in rows.items()}
+
+        planned_by_block = {
+            terminal_return.block_id: terminal_return
+            for terminal_return in planned_returns
+        }
+        expected_terminal_block_ids = frozenset(
+            str(block_id) for block_id in native_body.terminal_block_ids
+        )
+
+        def reject(
+            message: str,
+            *,
+            terminal_return: FragmentTerminalReturn | None = None,
+        ) -> None:
+            anchor_ea = (
+                None
+                if terminal_return is None
+                else int(terminal_return.instruction_ea)
+            )
+            raise SemanticFragmentBackendRejected(
+                message,
+                reason_code="calls_terminal_return_projection_mismatch",
+                anchor_ea=anchor_ea,
+                payload={
+                    "native_body_id": native_body.body_id,
+                    "terminal_block_ids": tuple(native_body.terminal_block_ids),
+                    "planned_returns": tuple(
+                        {
+                            "return_id": candidate.return_id,
+                            "block_id": candidate.block_id,
+                            "instruction_ea": hex(int(candidate.instruction_ea)),
+                            "return_width": int(candidate.return_width),
+                        }
+                        for candidate in planned_returns
+                    ),
+                    "instruction_inventory": tuple(
+                        (
+                            str(block_id),
+                            hex(int(native_ea)),
+                            int(instruction.opcode),
+                        )
+                        for block_id, block_rows in rows.items()
+                        for native_ea, instruction in block_rows
+                    ),
+                },
+            )
+
+        if frozenset(planned_by_block) != expected_terminal_block_ids:
+            reject(
+                "CALLS planned terminal returns do not exactly own the native "
+                f"body terminals; body={native_body.body_id!r}"
+            )
+
+        deferred = {
+            str(block_id): tuple(block_rows) for block_id, block_rows in rows.items()
+        }
+        for block_id, terminal_return in planned_by_block.items():
+            block_rows = deferred.get(str(block_id), ())
+            candidates = tuple(
+                index
+                for index, (native_ea, _instruction) in enumerate(block_rows)
+                if int(native_ea) == int(terminal_return.instruction_ea)
+            )
+            if len(candidates) != 1:
+                reject(
+                    "CALLS planned terminal return does not resolve uniquely; "
+                    f"return={terminal_return.return_id!r}",
+                    terminal_return=terminal_return,
+                )
+            return_index = candidates[0]
+            return_instruction = block_rows[return_index][1]
+            if (
+                int(return_instruction.opcode) != int(ida_hexrays.m_ret)
+                or return_index != len(block_rows) - 1
+            ):
+                reject(
+                    "CALLS planned terminal return is not the exact top-level "
+                    f"terminal instruction; return={terminal_return.return_id!r}",
+                    terminal_return=terminal_return,
+                )
+            deferred[str(block_id)] = block_rows[:return_index]
+        return deferred
+
+    @classmethod
     def _raw_calls_by_ea(
         cls,
         matched: Mapping[str, DetachedSnippetBlockTemplate],
@@ -3154,8 +3254,13 @@ class CallsSemanticNativeBodyMaterializer(PreoptUnionSemanticNativeBodyMateriali
             if removed_setup:
                 flags &= ~int(ida_hexrays.MBL_PUSH)
             block_flags[str(block_id)] = flags
-        self._require_analyzed_calls_without_returns(
+        transformed_without_terminal_returns = self._without_planned_terminal_returns(
+            plan=plan,
+            native_body=native_body,
             rows=transformed,
+        )
+        self._require_analyzed_calls_without_returns(
+            rows=transformed_without_terminal_returns,
             expected_call_eas=raw_calls,
         )
         return _PreparedSemanticNativeBody(
@@ -3165,7 +3270,7 @@ class CallsSemanticNativeBodyMaterializer(PreoptUnionSemanticNativeBodyMateriali
                 (
                     block_id,
                     block_flags[block_id],
-                    transformed[block_id],
+                    transformed_without_terminal_returns[block_id],
                 )
                 for block_id in native_body.block_ids
             ),
