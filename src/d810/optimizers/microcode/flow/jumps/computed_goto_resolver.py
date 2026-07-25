@@ -6243,6 +6243,73 @@ def _decode_static_state_route_corridor(
     return ()
 
 
+def _frontend_normalized_state_route_delivery_site(
+    plan: ComputedGotoPatchPlan,
+) -> _NativeStateRouteDeliverySite:
+    """Project one validated normalization plan to its semantic delivery root.
+
+    A direct normalization keeps the original indirect-transfer EA as its
+    source anchor.  A complete conditional normalization introduces a
+    predicate earlier in the owned patch region; later state-route lowering
+    must supersede that predicate root rather than the now-unreachable indirect
+    tail.  The plan itself is portable proof of this intermediate shape, so no
+    native byte mutation is required.
+    """
+    target_eas = tuple(int(target_ea) for target_ea in plan.target_eas)
+    delivery_ea = int(plan.jmp_ea)
+    if (
+        len(target_eas) == 2
+        and plan.condition_code is not None
+        and plan.true_target_ea is not None
+        and plan.false_target_ea is not None
+        and plan.condition_producer_ea is not None
+        and len(plan.insn_heads) >= 2
+        and len(plan.new_block_eas) >= 2
+        and int(plan.true_target_ea) != int(plan.false_target_ea)
+        and {int(plan.true_target_ea), int(plan.false_target_ea)} == set(target_eas)
+        and int(plan.new_block_eas[0]) == int(plan.insn_heads[-2])
+        and int(plan.block_entry)
+        <= int(plan.condition_producer_ea)
+        < int(plan.patch_start)
+    ):
+        delivery_ea = int(plan.new_block_eas[0])
+    return _NativeStateRouteDeliverySite(
+        int(plan.block_entry),
+        delivery_ea,
+        int(plan.patch_start),
+        int(plan.region_end),
+    )
+
+
+def _select_frontend_normalized_state_write_assignment(
+    decoded: Sequence[_DecodedStateRouteInstruction],
+    *,
+    state_var_reg: int,
+    delivery_ea: int,
+) -> tuple[int, int, tuple[int, ...]] | None:
+    """Consume the semantic branch root proved by frontend normalization."""
+    ordered = tuple(decoded)
+    if not ordered or int(ordered[-1].ea) != int(delivery_ea):
+        return None
+    terminal = ordered[-1]
+    normalized = (
+        *ordered[:-1],
+        _DecodedStateRouteInstruction(
+            int(terminal.ea),
+            int(terminal.end_ea),
+            "jmp",
+            None,
+            False,
+            None,
+        ),
+    )
+    return _select_static_state_write_assignment(
+        normalized,
+        state_var_reg=int(state_var_reg),
+        delivery_ea=int(delivery_ea),
+    )
+
+
 def _decode_native_flow_route_inventory(
     function_ea: int,
     envelope_end_ea: int,
@@ -6370,11 +6437,9 @@ def _discover_static_state_write_routes(
         tuple[int, int, int, int], set[PortableStateWriteRouteEvidence]
     ] = {}
     patch_delivery_sites = tuple(
-        _NativeStateRouteDeliverySite(
-            int(plan.block_entry),
-            int(plan.jmp_ea),
-            int(plan.patch_start),
-            int(plan.region_end),
+        (
+            _frontend_normalized_state_route_delivery_site(plan),
+            plan,
         )
         for plan in resolution.patch_plans
     )
@@ -6390,7 +6455,10 @@ def _discover_static_state_write_routes(
                 for ea in (
                     *resolution.reachable_eas,
                     *resolution.block_entries,
-                    *(site.delivery_region_end_ea for site in patch_delivery_sites),
+                    *(
+                        site.delivery_region_end_ea
+                        for site, _plan in patch_delivery_sites
+                    ),
                     *(router_ea for router_ea in dispatcher_router_eas),
                     *(
                         end_ea
@@ -6408,7 +6476,7 @@ def _discover_static_state_write_routes(
         int(envelope_end_ea),
         dispatcher_router_eas=dispatcher_router_eas,
         excluded_delivery_eas=frozenset(
-            int(site.delivery_ea) for site in patch_delivery_sites
+            int(site.delivery_ea) for site, _plan in patch_delivery_sites
         ),
     )
     immediate_routes = _discover_immediate_native_state_routes(
@@ -6469,16 +6537,29 @@ def _discover_static_state_write_routes(
             )
         )
         candidates.setdefault(semantic_key, set()).add(evidence)
-    for site in (*patch_delivery_sites, *direct_delivery_sites):
+    delivery_sites = (
+        *patch_delivery_sites,
+        *((site, None) for site in direct_delivery_sites),
+    )
+    for site, normalization_plan in delivery_sites:
         decoded = _decode_static_state_route_corridor(
             int(site.block_entry_ea),
             int(site.delivery_ea),
         )
         decoded_count += bool(decoded)
-        selected = _select_static_state_write_assignment(
-            decoded,
-            state_var_reg=int(state_var_reg),
-            delivery_ea=int(site.delivery_ea),
+        selected = (
+            _select_static_state_write_assignment(
+                decoded,
+                state_var_reg=int(state_var_reg),
+                delivery_ea=int(site.delivery_ea),
+            )
+            if normalization_plan is None
+            or int(site.delivery_ea) == int(normalization_plan.jmp_ea)
+            else _select_frontend_normalized_state_write_assignment(
+                decoded,
+                state_var_reg=int(state_var_reg),
+                delivery_ea=int(site.delivery_ea),
+            )
         )
         if selected is None:
             continue
@@ -6516,6 +6597,12 @@ def _discover_static_state_write_routes(
                 native_key=state.native_key,
             ),
             target_ea=target_ea,
+            delivery_kind=(
+                StateWriteRouteDeliveryKind.DIRECT_TARGET
+                if normalization_plan is not None
+                and int(site.delivery_ea) != int(normalization_plan.jmp_ea)
+                else StateWriteRouteDeliveryKind.DISPATCHER
+            ),
         )
         semantic_key = (
             int(write_ea),
