@@ -1329,9 +1329,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         rejection_payload = dict(rejection.payload)
         raw_attempts = rejection_payload.pop("composition_attempts", ())
         attempts = (
-            tuple(raw_attempts)
-            if isinstance(raw_attempts, (tuple, list))
-            else ()
+            tuple(raw_attempts) if isinstance(raw_attempts, (tuple, list)) else ()
         )
         maturity = maturity_to_string(int(getattr(mba, "maturity", 0)))
         records: list[FactConsumerRecord] = []
@@ -1372,8 +1370,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     consumer="state_machine_cff_unflattener",
                     strategy="canonical_semantic_composition_attempt",
                     fact_id=(
-                        f"canonical_composition_attempt:{kind}:"
-                        f"{attempt_identity}"
+                        f"canonical_composition_attempt:{kind}:{attempt_identity}"
                     ),
                     maturity=maturity,
                     decision=outcome,

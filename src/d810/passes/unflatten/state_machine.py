@@ -958,9 +958,7 @@ def _rejected_canonical_composition_attempt(
         "outcome": "rejected",
         "reason_code": rejection.reason_code,
         "rejection_anchor_ea": (
-            None
-            if rejection.anchor_ea is None
-            else f"0x{int(rejection.anchor_ea):X}"
+            None if rejection.anchor_ea is None else f"0x{int(rejection.anchor_ea):X}"
         ),
         "detail": str(rejection),
         "rejection_payload": dict(rejection.payload),
@@ -1345,9 +1343,7 @@ def _compose_candidate_semantic_fragment(
         )
         if first_rejected_proof is not None:
             first_rejection_payload["route_proof_id"] = first_rejected_proof.proof_id
-        first_rejection_payload["composition_attempts"] = tuple(
-            composition_attempts
-        )
+        first_rejection_payload["composition_attempts"] = tuple(composition_attempts)
         raise CanonicalSemanticFragmentRejected(
             "canonical composition found no complete route"
             + ("" if first_rejection is None else f": {first_rejection}"),
