@@ -1646,9 +1646,7 @@ def test_canonical_composition_rejection_reports_stable_route_obligation() -> No
     assert record.payload == {
         "anchor_ea": "0x40BECC",
         "description": "delivery",
-        "detail": (
-            "delivery 0x40BECC requires one current-graph owner, observed 0"
-        ),
+        "detail": ("delivery 0x40BECC requires one current-graph owner, observed 0"),
         "owner_count": 0,
     }
 
@@ -1725,9 +1723,7 @@ def test_unresolved_published_boundary_promotes_contextual_plan_and_restarts() -
         run_pipeline=lambda: (_ for _ in ()).throw(rejection),
     )
 
-    assert reported[-1].reason == (
-        "published_imported_boundary_topology_unresolved"
-    )
+    assert reported[-1].reason == ("published_imported_boundary_topology_unresolved")
     assert native.evidence_generation == 2
     assert native.resolver_evidence is not None
     assert native.resolver_evidence.promoted_contextual_patch_plans == (
