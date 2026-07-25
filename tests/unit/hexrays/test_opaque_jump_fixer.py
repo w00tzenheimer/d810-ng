@@ -9,8 +9,10 @@ import pytest
 
 from d810.transforms.opaque_jump_fixer import OpaqueJumpFixerPass
 from d810.transforms.graph_modification import ConvertToGoto
+from d810.transforms.plan import PatchConvertToGoto, projected_source_coordinate
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.passes.pipeline import FlowGraphTransformPipeline
+from tests.typed_patch_authority import mutation_gateway_for
 
 from tests.unit.hexrays.conftest import InMemoryBackend
 
@@ -218,15 +220,20 @@ class TestOpaqueJumpFixerPass:
         pipeline = FlowGraphTransformPipeline(backend, [pass_instance])
 
         # Run pipeline
-        total_mods = pipeline.run(blocks, mutation_gateway=object())
+        total_mods = pipeline.run(
+            blocks,
+            mutation_gateway=mutation_gateway_for(blocks),
+        )
 
         # Verify result
         assert total_mods == 1
-        assert len(backend.applied_modifications) == 1
-        mod = backend.applied_modifications[0]
-        assert isinstance(mod, ConvertToGoto)
-        assert mod.block_serial == 0
-        assert mod.goto_target == 1
+        assert len(backend.applied_steps) == 1
+        mod = backend.applied_steps[0]
+        assert isinstance(mod, PatchConvertToGoto)
+        coordinates = backend.applied_patch_plans[0].source_coordinates
+        assert projected_source_coordinate(coordinates, mod.block_serial) == 0
+        assert projected_source_coordinate(coordinates, mod.goto_target) == 1
+        assert mod.block_serial in dict(coordinates)
 
     def test_multiple_passes_in_pipeline(self):
         """Pass should work correctly when combined with other transform."""
@@ -285,15 +292,26 @@ class TestOpaqueJumpFixerPass:
         pipeline = FlowGraphTransformPipeline(backend, [pass1, pass2])
 
         # Run pipeline
-        total_mods = pipeline.run(blocks, mutation_gateway=object())
+        total_mods = pipeline.run(
+            blocks,
+            mutation_gateway=mutation_gateway_for(blocks),
+        )
 
         # Verify both transform applied
         assert total_mods == 2
-        assert len(backend.applied_modifications) == 2
+        assert len(backend.applied_steps) == 2
 
         # Check both modifications
-        serials = {mod.block_serial for mod in backend.applied_modifications}
-        targets = {mod.goto_target for mod in backend.applied_modifications}
+        executions = zip(backend.applied_patch_plans, backend.applied_steps)
+        resolved = tuple(
+            (
+                projected_source_coordinate(plan.source_coordinates, mod.block_serial),
+                projected_source_coordinate(plan.source_coordinates, mod.goto_target),
+            )
+            for plan, mod in executions
+        )
+        serials = {source for source, _target in resolved}
+        targets = {target for _source, target in resolved}
         assert serials == {0, 1}
         assert targets == {1, 3}
 

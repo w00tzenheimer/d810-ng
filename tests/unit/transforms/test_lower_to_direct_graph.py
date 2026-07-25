@@ -20,18 +20,11 @@ from d810.analyses.control_flow.linearized_state_dag import (
     SemanticEdgeKind,
 )
 from d810.transforms.state_machine_unflatten import (
-    _patch_from_graph_modification,
     _return_redirects_from_dag,
     _spine_redirects_from_dag,
     lower_to_direct_graph,
 )
-from d810.transforms.graph_modification import ConvertToGoto, RedirectGoto
-from d810.transforms.plan import (
-    PatchConvertToGoto,
-    PatchPlan,
-    PatchRedirectBranch,
-    PatchRedirectGoto,
-)
+from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
 
 
 class _Map:
@@ -76,7 +69,7 @@ def test_spine_redirects_one_goto_per_transition_edge():
     graph = _graph({10: (1, (5,)), 20: (1, (5,))})
     steps = _spine_redirects_from_dag(dag, 5, graph)
     assert len(steps) == 2
-    assert all(isinstance(s, PatchRedirectGoto) for s in steps)
+    assert all(isinstance(s, RedirectGoto) for s in steps)
     assert (steps[0].from_serial, steps[0].old_target, steps[0].new_target) == (
         10,
         5,
@@ -98,7 +91,7 @@ def test_conditional_arm_anchor_becomes_branch_redirect():
     )
     graph = _graph({9: (2, (16, 17))})
     steps = _spine_redirects_from_dag(dag, 5, graph)
-    assert len(steps) == 1 and isinstance(steps[0], PatchRedirectBranch)
+    assert len(steps) == 1 and isinstance(steps[0], RedirectBranch)
     assert (steps[0].from_serial, steps[0].old_target, steps[0].new_target) == (
         9,
         17,
@@ -123,7 +116,7 @@ def test_two_way_conditional_transition_anchor_resolves_branch_old_target():
     )
     graph = _graph({15: (2, (16, 17))})
     steps = _spine_redirects_from_dag(dag, 5, graph)
-    assert len(steps) == 1 and isinstance(steps[0], PatchRedirectBranch)
+    assert len(steps) == 1 and isinstance(steps[0], RedirectBranch)
     assert (steps[0].from_serial, steps[0].old_target, steps[0].new_target) == (
         15,
         16,
@@ -179,7 +172,7 @@ def test_return_wiring_emits_goto_for_conditional_return_anchor():
         artifact_return_blocks=set(),
         claimed_sources=set(),
     )
-    assert len(steps) == 1 and isinstance(steps[0], PatchRedirectGoto)
+    assert len(steps) == 1 and isinstance(steps[0], RedirectGoto)
     assert (steps[0].from_serial, steps[0].old_target, steps[0].new_target) == (
         30,
         5,
@@ -240,6 +233,7 @@ def test_postprocess_merge_drops_spine_mods_claimed_by_return_plan(monkeypatch):
         artifact_return_blocks=set(),
         state_var_stkoff=None,
         projected_flow_graph=graph,
+        block_refs_by_serial={},
     )
 
     assert mods == (spine_keep, return_mod)
@@ -247,18 +241,8 @@ def test_postprocess_merge_drops_spine_mods_claimed_by_return_plan(monkeypatch):
     assert postprocess_count == 1
 
 
-def test_convert_to_goto_modification_maps_to_patch_convert_to_goto():
-    # The return planner reaches builder.goto_redirect on a 2-way anchor -> ConvertToGoto, which the
-    # unflatten wrapper must shadow as PatchConvertToGoto (the backend already applies it for #4b).
-    patch = _patch_from_graph_modification(
-        ConvertToGoto(block_serial=15, goto_target=44)
-    )
-    assert isinstance(patch, PatchConvertToGoto)
-    assert (patch.block_serial, patch.goto_target) == (15, 44)
-
-
 def test_null_or_empty_inputs_yield_empty_plan():
-    assert lower_to_direct_graph(None, None) == PatchPlan()
+    assert lower_to_direct_graph(None, None).steps == ()
     # empty transitions -> heavy DAG build is guarded off
     assert (
         lower_to_direct_graph(
@@ -268,7 +252,8 @@ def test_null_or_empty_inputs_yield_empty_plan():
             dispatch_map=_Map(),
             dispatcher_entry_serial=5,
         )
-        == PatchPlan()
+        .steps
+        == ()
     )
     # missing dispatch_map -> empty
     assert (
@@ -281,5 +266,6 @@ def test_null_or_empty_inputs_yield_empty_plan():
             dispatch_map=None,
             dispatcher_entry_serial=5,
         )
-        == PatchPlan()
+        .steps
+        == ()
     )

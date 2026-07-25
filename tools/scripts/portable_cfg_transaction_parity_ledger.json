@@ -165,7 +165,7 @@
       "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::class PlanBlockReservation:",
       "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_plan_block_replay_allocates_new_attempt_local_realization",
       "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::def abort_proxy_transaction(",
-      "current_status": "partial",
+      "current_status": "accepted",
       "required_port": "Discard aborted reservations and provisional receipts, and allocate a fresh handle/version when the same PlanBlockRef is replayed.",
       "diagnostic_proof": {
         "tables": ["cfg_creation_witnesses"],
@@ -182,7 +182,7 @@
       "donor_source": "src/d810/ir/block_identity.py::OBSERVED_EPHEMERAL",
       "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_serial_space_imports_are_observed_not_created",
       "current_production_seam": "src/d810/ir/block_identity.py::class BlockHandleProvenance",
-      "current_status": "partial",
+      "current_status": "accepted",
       "required_port": "Separate anonymously observed SDK blocks from D810-owned created blocks and forbid inferred PlanBlockRef ownership.",
       "diagnostic_proof": {
         "tables": ["cfg_creation_witnesses"],
@@ -199,7 +199,7 @@
       "donor_source": "src/d810/hexrays/mutation/semantic_fragment_preparation.py::class PreparedSemanticFragment:",
       "donor_test": "tests/system/runtime/test_semantic_fragment_backend.py::def test_real_backend_snapshots_while_idle_and_hands_preflight_projection_to_stage",
       "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_backend.py::def snapshot_semantic_fragment_inputs(",
-      "current_status": "partial",
+      "current_status": "accepted",
       "required_port": "Capture immutable full-CFG, semantic, root, data-flow, range, flag, terminal, and prepared-native facts while the gateway is idle.",
       "remaining_gap": "Runtime snapshot authority is executable and proven; transaction phase persistence is intentionally deferred to the poisoning and diagnostics slice.",
       "diagnostic_proof": {
@@ -213,11 +213,11 @@
       }
     },
     {
-    "id": "pure_preflight_zero_write",
+      "id": "pure_preflight_zero_write",
       "donor_source": "src/d810/transforms/fragment_projection.py::def project_fragment(",
       "donor_test": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_every_preflight_obligation_rejects_before_any_mutation",
     "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_publication.py::def execute_patch_transaction(",
-      "current_status": "partial",
+      "current_status": "accepted",
       "required_port": "Run portable fragment and CFG contracts before batch creation so every knowable failure is REJECTED_CLEAN with zero SDK writes.",
       "remaining_gap": "Production preflight rejects known malformed evidence with zero writes; exhaustive obligation coverage and REJECTED_CLEAN diagnostics remain in the diagnostics slice.",
       "diagnostic_proof": {
@@ -235,7 +235,7 @@
       "donor_source": "src/d810/hexrays/mutation/semantic_fragment_preparation.py::class PreparedSemanticFragmentAuthority:",
       "donor_test": "tests/system/runtime/test_semantic_fragment_backend.py::def test_backend_consumes_prepared_authority_exactly_once",
       "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_preparation.py::class PreparedSemanticFragmentAuthority:",
-      "current_status": "partial",
+      "current_status": "accepted",
       "required_port": "Bind prepared authority to exact plan object, snapshot token, root inventory, session, generation, and attempt; consume it once before mutation.",
       "remaining_gap": "Exact object, scope, and single-use runtime authority is proven; rejected-clean phase persistence remains in the diagnostics slice.",
       "diagnostic_proof": {
@@ -253,7 +253,7 @@
       "donor_source": "src/d810/hexrays/mutation/semantic_fragment_preparation.py::class PreparedSemanticFragment:",
       "donor_test": "tests/system/runtime/test_semantic_fragment_backend.py::def test_malformed_native_payload_rejects_before_first_sdk_write",
       "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_preparation.py::class PreparedSemanticFragment:",
-      "current_status": "partial",
+      "current_status": "accepted",
       "required_port": "Separate immutable typed facts from SDK payload and verify payload shape against those facts before realization.",
       "remaining_gap": "Typed facts and SDK payload shape checks reject before writes; typed diagnostic failure persistence remains in the diagnostics slice.",
       "diagnostic_proof": {
@@ -271,7 +271,7 @@
       "donor_source": "src/d810/transforms/fragment_to_patch.py::class FragmentTransactionParticipant:",
       "donor_test": "tests/unit/transforms/test_fragment_to_patch.py::def test_fragment_and_patch_participants_use_one_coordinator_entrypoint",
       "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_publication.py::class SemanticFragmentTransactionParticipant:",
-      "current_status": "partial",
+      "current_status": "accepted",
       "required_port": "Add a production FragmentTransactionParticipant that implements project, preflight, bind, realize, and observe through live backend ports.",
       "remaining_gap": "The live semantic participant implements all five phases; the shared FragmentPlan-to-PatchPlan coordinator and phase diagnostics remain separate later slices.",
       "diagnostic_proof": {
@@ -663,7 +663,7 @@
       "donor_source": "src/d810/transforms/fragment_to_patch.py::class CfgTransactionCoordinator:",
       "donor_test": "tests/unit/transforms/test_fragment_to_patch.py::def test_both_production_paths_use_the_shared_transaction_coordinator",
       "current_production_seam": "src/d810/passes/transaction_engine.py::class CfgTransactionEngine:",
-      "current_status": "missing",
+      "current_status": "accepted",
       "required_port": "Reproduce the donor focused transaction matrix across portable types, projections, identity, gateway, diagnostics, typed patch binding, fragment lowering, and runtime backend.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events", "cfg_creation_witnesses"],

@@ -6,9 +6,8 @@ by multiple test modules without duplication.
 
 from __future__ import annotations
 
-from d810.transforms.graph_modification import GraphModification
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
-from d810.transforms.plan import LoweringInput, PatchPlan, ensure_patch_plan
+from d810.transforms.plan import PatchPlan, PatchStep
 
 
 class InMemoryBackend:
@@ -25,7 +24,7 @@ class InMemoryBackend:
             blocks: Dict mapping serial to BlockSnapshot (default: empty).
         """
         self.blocks = blocks or {}
-        self.applied_modifications: list[GraphModification] = []
+        self.applied_steps: list[PatchStep] = []
         self.applied_patch_plans: list[PatchPlan] = []
         self.lift_count = 0
 
@@ -58,7 +57,7 @@ class InMemoryBackend:
 
     def lower(
         self,
-        lowering_input: LoweringInput,
+        lowering_input: PatchPlan,
         state: dict[int, BlockSnapshot] | None = None,
         *,
         mutation_gateway: object,
@@ -67,16 +66,16 @@ class InMemoryBackend:
 
         Args:
             lowering_input: PatchPlan or modification intents.
-            state: Optional state (ignored, uses self.applied_modifications).
+            state: Optional state (ignored, uses self.applied_steps).
 
         Returns:
             Number of graph modifications represented by the plan.
         """
-        patch_plan = ensure_patch_plan(lowering_input)
-        self.applied_patch_plans.append(patch_plan)
-        modifications = patch_plan.as_graph_modifications()
-        self.applied_modifications.extend(modifications)
-        return len(modifications)
+        if not isinstance(lowering_input, PatchPlan):
+            raise TypeError("InMemoryBackend.lower requires PatchPlan")
+        self.applied_patch_plans.append(lowering_input)
+        self.applied_steps.extend(lowering_input.steps)
+        return len(lowering_input.steps)
 
     def verify(self, state: dict[int, BlockSnapshot] | None = None) -> bool:
         """Always returns True (no validation logic in mock).

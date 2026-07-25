@@ -5,14 +5,36 @@ This module tests the CFG-level fake/opaque jump fixing logic owned by the clean
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
 from d810.transforms.fake_jump_fixer import FakeJumpFixerPass
 from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+from d810.transforms.plan import PatchRedirectBranch, projected_source_coordinate
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.passes.pipeline import FlowGraphTransformPipeline
+from tests.typed_patch_authority import mutation_gateway_for
 
 from tests.unit.hexrays.conftest import InMemoryBackend
+
+
+@dataclass(frozen=True)
+class _BlockRef:
+    block_num: int
+
+
+def _conditional_tail(target: int) -> tuple[InsnSnapshot, ...]:
+    ref = _BlockRef(target)
+    return (
+        InsnSnapshot(
+            opcode=0x70,
+            ea=0x1000 + target,
+            operands=(ref,),
+            operand_slots=(("d", ref),),
+            kind=InsnKind.COND_JUMP,
+        ),
+    )
 
 
 class TestFakeJumpFixerPass:
@@ -230,7 +252,7 @@ class TestFakeJumpFixerPass:
             preds=(),
             flags=0,
             start_ea=0x1000,
-            insn_snapshots=(),
+            insn_snapshots=_conditional_tail(2),
         )
         blk1 = BlockSnapshot(
             serial=1,
@@ -259,16 +281,21 @@ class TestFakeJumpFixerPass:
         pipeline = FlowGraphTransformPipeline(backend, [pass_instance])
 
         # Run pipeline
-        total_mods = pipeline.run(blocks, mutation_gateway=object())
+        total_mods = pipeline.run(
+            blocks,
+            mutation_gateway=mutation_gateway_for(blocks),
+        )
 
         # Verify result
         assert total_mods == 1
-        assert len(backend.applied_modifications) == 1
-        mod = backend.applied_modifications[0]
-        assert isinstance(mod, RedirectBranch)
-        assert mod.from_serial == 0
-        assert mod.old_target == 2
-        assert mod.new_target == 1
+        assert len(backend.applied_steps) == 1
+        mod = backend.applied_steps[0]
+        assert isinstance(mod, PatchRedirectBranch)
+        coordinates = backend.applied_patch_plans[0].source_coordinates
+        assert projected_source_coordinate(coordinates, mod.from_serial) == 0
+        assert projected_source_coordinate(coordinates, mod.old_target) == 2
+        assert projected_source_coordinate(coordinates, mod.new_target) == 1
+        assert mod.from_serial in dict(coordinates)
 
     def test_multiple_passes_in_pipeline(self):
         """Pass should work correctly when combined with other transform."""
@@ -280,7 +307,7 @@ class TestFakeJumpFixerPass:
             preds=(),
             flags=0,
             start_ea=0x1000,
-            insn_snapshots=(),
+            insn_snapshots=_conditional_tail(2),
         )
         blk1 = BlockSnapshot(
             serial=1,
@@ -289,7 +316,7 @@ class TestFakeJumpFixerPass:
             preds=(0,),
             flags=0,
             start_ea=0x2000,
-            insn_snapshots=(),
+            insn_snapshots=_conditional_tail(4),
         )
         blk2 = BlockSnapshot(
             serial=2,
@@ -327,15 +354,26 @@ class TestFakeJumpFixerPass:
         pipeline = FlowGraphTransformPipeline(backend, [pass1, pass2])
 
         # Run pipeline
-        total_mods = pipeline.run(blocks, mutation_gateway=object())
+        total_mods = pipeline.run(
+            blocks,
+            mutation_gateway=mutation_gateway_for(blocks),
+        )
 
         # Verify both transform applied
         assert total_mods == 2
-        assert len(backend.applied_modifications) == 2
+        assert len(backend.applied_steps) == 2
 
         # Check both modifications
-        serials = {mod.from_serial for mod in backend.applied_modifications}
-        new_targets = {mod.new_target for mod in backend.applied_modifications}
+        executions = zip(backend.applied_patch_plans, backend.applied_steps)
+        resolved = tuple(
+            (
+                projected_source_coordinate(plan.source_coordinates, mod.from_serial),
+                projected_source_coordinate(plan.source_coordinates, mod.new_target),
+            )
+            for plan, mod in executions
+        )
+        serials = {source for source, _target in resolved}
+        new_targets = {target for _source, target in resolved}
         assert serials == {0, 1}
         assert new_targets == {1, 3}
 
