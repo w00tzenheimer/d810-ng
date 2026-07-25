@@ -679,12 +679,12 @@
       "id": "creation_witness_c5_canary",
       "donor_source": "src/d810/core/diag/lifecycle.py::INSERT INTO cfg_creation_witnesses",
       "donor_test": "tests/system/e2e/test_rhad_real_fragment_publication.py::def test_real_a560_terminal_fragment_reaches_c5_with_db_evidence",
-      "current_production_seam": "src/d810/core/diag/lifecycle.py::def persist_mutation_receipt(",
-      "current_status": "missing",
+      "current_production_seam": "src/d810/core/diag/lifecycle.py::def persist_cfg_transaction_attempt(",
+      "current_status": "accepted",
       "required_port": "Reproduce the exact A560 C5 terminal-fragment canary with committed replacement/helper creation witnesses and pre/post validation evidence in SQLite.",
       "diagnostic_proof": {
         "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events", "cfg_creation_witnesses", "semantic_fragment_transactions", "semantic_fragment_validation_outcomes"],
-        "events": ["committed"],
+        "events": ["planned", "projected", "preflighted", "bound", "realizing", "observed", "committed"],
         "assertion": "The C5 transaction commits 7/7 operations, 32/32 prechecks, 59/59 postchecks, and three exact creation witnesses."
       },
       "acceptance_test": {

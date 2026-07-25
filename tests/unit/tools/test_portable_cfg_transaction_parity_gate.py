@@ -48,7 +48,5 @@ def test_strict_gate_refuses_to_call_partial_runtime_integration_complete() -> N
     )
 
     assert report.errors == ()
-    assert report.pending_ids
+    assert report.pending_ids == ("protected_family_behavior_preserved",)
     assert report.passed is False
-    assert "production_fragment_participant" in report.pending_ids
-    assert "creation_witness_c5_canary" in report.pending_ids
