@@ -2637,3 +2637,49 @@ the exact probe of that coarse rule expanded to 133 imported blocks and
 aborted on unrelated CALLS companion authority. Continue with the smallest
 reference-equivalent conditional transaction at native `0x40B6C0`, whose
 semantic arms are `0x40B6D6` and `0x40B790`, then re-run the v3.3 C0-C6 loop.
+
+**2026-07-25T02:34:00Z**
+
+Commits `b561f595e` and `3bf79ba7d` finish and separately format the
+contextual-route generated-redo slice. The static resolver retains 117
+contextual conditional plans without globalizing their targets. A typed C3
+rejection at one stable native source promotes only its unique matching plan,
+invalidates the generation-derived PREOPT source and preparation caches,
+advances the evidence generation, and requests one provenance-bearing
+controller restart. Repeated promotion of the same plan is idempotent and
+does not discard the newly rebuilt caches. The focused resolver, lifecycle,
+unflattener, and manager suite is 411/411 green; ast-grep is clean and all 14
+worktree-local import contracts are kept. Ruff formatting is isolated in the
+second commit.
+
+The mandatory cache-disabled A560 canary at committed HEAD `3bf79ba7d`
+returned normally in 31.11 seconds with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-contextual-redo-v4.txt`; primary DB:
+`.tmp/rhad-a560-v33-contextual-redo-v4/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-contextual-redo-v4/test_real_loader_matches_reach0/sub_40A560.c`.
+The output remains semantically red as one `while ( 1 )`; this is not A560
+acceptance.
+
+The DB proves a generation-2 C5 publication. The original generation-1 C3
+rejection promotes native source `0x40B6C0`, generation `1 -> 2`, and the
+controller consumes that restart. Event 276 records a 316-item generation-2
+plan. Items 117-119 are one fragment-atomic contextual conditional at native
+`0x40B6C0`: helper plus taken target `0x40B6D6` plus fallthrough target
+`0x40B790`; the old generic `0x40B6D4 -> 0x40B790` operation is absent. Batch
+`09d127b199214db0817fdb1e549812a2` passes all 773 prepublication outcomes,
+publishes its root once, passes all 1428 postpublication outcomes, and event
+287 records a committed receipt. The partial work item selects 48 obligations
+and leaves 180 explicit obligations, so this is not broad 91-route
+publication.
+
+Highest completed level is C5; C6 remains false-loop output. The next primary
+visibility obligation is diagnostic: the generation-2 canonical rejection is
+reported in memory but is not persisted because the latest-snapshot fact
+consumer handler deduplicates the same consumer/fact tuple across the whole
+function rather than within one snapshot. Event 406 therefore records only
+the idempotent `contextual_patch_plan_promoted` decline, not the new rejection
+payload. Fix snapshot-scoped fact-consumer deduplication, rerun the exact
+canary, and continue from the first generation-2 native-EA-anchored rejection
+stored in the DB. Do not infer it from the false-loop text, broaden the work
+item, or claim C6.
