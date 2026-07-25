@@ -75,6 +75,7 @@ from d810.transforms.fragment_plan import (
     FragmentStoragePredicateMaterialization,
     FragmentTerminalReturn,
 )
+from d810.transforms.prepared_native_body import PreparedNativeBodyFact
 from d810.ir.block_identity import (
     BlockHandleProvenance,
     NativeEaInterval,
@@ -1147,6 +1148,10 @@ class PreoptUnionSemanticNativeBodyMaterializer:
 
     mba: object
     function_ea: int
+    prepared_fact_observer: (
+        Callable[[FragmentPlan, FragmentNativeBody, PreparedNativeBodyFact], None]
+        | None
+    ) = None
 
     @staticmethod
     def _oriented_predicate_producers(
@@ -2954,13 +2959,17 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             plan=plan,
             native_body=native_body,
         )
-        return self._prepared_native_body(
+        preparation = self._prepared_native_body(
             plan=plan,
             native_body=native_body,
             matched=matched,
             prepared=prepared,
             direct_transfer_operation_ids=direct_transfer_operation_ids,
         )
+        observer = self.prepared_fact_observer
+        if observer is not None:
+            observer(plan, native_body, preparation.fact)
+        return preparation
 
     def stage_native_body(
         self,

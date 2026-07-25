@@ -838,9 +838,13 @@ def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
             ),
         ),
     )
+    observed_prepared_facts = []
     materializer = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
         mba=destination,
         function_ea=function_ea,
+        prepared_fact_observer=lambda plan, body, fact: (
+            observed_prepared_facts.append((plan, body, fact))
+        ),
     )
     destination_before = (
         destination.qty,
@@ -886,6 +890,10 @@ def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
     )
 
     assert isinstance(first, PreparedNativeBodyPreparation)
+    assert observed_prepared_facts == [
+        (context.plan, native_body, first.fact),
+        (context.plan, native_body, second.fact),
+    ]
     assert first.fact == second.fact
     assert first.payload.semantic_signature == second.payload.semantic_signature
     assert first.fact.plan_id == context.plan.plan_id
@@ -2016,6 +2024,12 @@ def test_preopt_native_body_lowers_owned_direct_transfer_while_unpublished(
         staged_source.serial,
     )
     assert context.detached_operation_ids == {operation_id}
+    live_root = destination.get_mblock(0)
+    assert tuple(live_root.succset) == ()
+    assert tuple(live_root.predset) == ()
+    assert all(
+        live_root.serial not in tuple(block.predset) for block in context.blocks.values()
+    )
 
 
 def _direct_transfer_preflight_case(

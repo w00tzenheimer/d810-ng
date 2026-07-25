@@ -55,6 +55,9 @@ from d810.manager.manager import (
     _new_current_mba_mutation_gateway,
     _new_semantic_native_body_materializer,
 )
+from d810.capabilities.frontend_normalization import (
+    FrontendNormalizationPreparedBodyCapability,
+)
 from d810.manager.decompilation_lifecycle import DecompilationSessionContext
 from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
@@ -97,6 +100,10 @@ def test_resolver_attachment_reads_manager_owned_normalization_plan_port() -> No
     assert (
         state.frontend_normalization_plan_provider
         is session.frontend_normalization_plan_authority
+    )
+    assert isinstance(
+        state.frontend_normalization_plan_provider,
+        FrontendNormalizationPreparedBodyCapability,
     )
 
 
@@ -415,8 +422,14 @@ def test_manager_constructs_the_semantic_native_body_materializer() -> None:
     )
 
     mba = SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)
+    session = DecompilationSessionContext(
+        function_ea=0x40A560,
+        database_identity="test",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
     materializer = _new_semantic_native_body_materializer(
-        session=SimpleNamespace(function_ea=0x40A560),
+        session=session,
         mba=mba,
     )
 
@@ -426,6 +439,7 @@ def test_manager_constructs_the_semantic_native_body_materializer() -> None:
     )
     assert materializer.mba is mba
     assert materializer.function_ea == 0x40A560
+    assert callable(materializer.prepared_fact_observer)
 
 
 def test_manager_constructs_the_calls_native_body_materializer() -> None:

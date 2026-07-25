@@ -81,6 +81,11 @@ from d810.transforms.canonical_semantic_fragment import (
     compose_canonical_semantic_fragment_plan,
     plan_detached_reference_direct_route,
 )
+from d810.transforms.cfg_transaction import CfgProjection
+from d810.transforms.detached_direct_route_projection import (
+    DetachedDirectRouteProjectionRejected,
+    project_detached_direct_route,
+)
 from d810.transforms.fragment_plan import (
     FragmentPlan,
     FragmentPublicationPurpose,
@@ -88,6 +93,7 @@ from d810.transforms.fragment_plan import (
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
     FrontendNormalizationPlanCapability,
+    FrontendNormalizationPreparedBodyCapability,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.core.semantic_route_oracle import (
@@ -1043,6 +1049,23 @@ def _accepted_detached_direct_route_attempt(
     }
 
 
+def _accepted_detached_direct_route_projection_attempt(
+    projection: CfgProjection,
+) -> dict[str, object]:
+    """Serialize one mutation-free C4 projection under detached authority."""
+    metadata = dict(projection.graph.metadata)
+    return {
+        "kind": "configured_reference_detached_direct_route_projection",
+        "outcome": "accepted",
+        "canary_level": "C4",
+        "plan_id": projection.plan_id,
+        "snapshot_id": projection.snapshot_id,
+        "projected_block_count": len(projection.graph.blocks),
+        "first_failed_obligation": "C5_root_publication",
+        **metadata,
+    }
+
+
 def _with_canonical_composition_attempts(
     rejection: CanonicalSemanticFragmentRejected,
     attempts: tuple[dict[str, object], ...],
@@ -1150,6 +1173,7 @@ def _compose_configured_reference_scope_plan(
     available_evidence: CanonicalSemanticEvidence,
     current_identity_by_serial: dict[int, StableBlockIdentity],
     normalization_authority: NormalizationWorkItemAuthority,
+    prepared_body_provider: FrontendNormalizationPreparedBodyCapability | None,
     prohibited_dispatcher_serials: tuple[int, ...],
     composition_attempts: list[dict[str, object]],
 ) -> FragmentPlan:
@@ -1243,12 +1267,93 @@ def _compose_configured_reference_scope_plan(
                 )
             )
             detached_payload = detached_direct_plan.diagnostic_payload()
+            if prepared_body_provider is None:
+                rejection = CanonicalSemanticFragmentRejected(
+                    "configured reference direct route lacks receipt-associated "
+                    "prepared native-body facts",
+                    reason_code="prepared_native_body_capability_missing",
+                    anchor_ea=int(configured_route.rewrite_anchor_ea),
+                    payload={"detached_direct_route_plan": detached_payload},
+                )
+                raise _with_canonical_composition_attempts(
+                    rejection,
+                    tuple(composition_attempts),
+                )
+            prepared_snapshot = prepared_body_provider.prepared_body_facts_for(
+                int(graph.func_ea),
+                int(detached_direct_plan.evidence_generation),
+                normalization_plan.plan_id,
+            )
+            if prepared_snapshot is None:
+                rejection = CanonicalSemanticFragmentRejected(
+                    "configured reference direct route lacks exact receipt-associated "
+                    "prepared native-body facts",
+                    reason_code="prepared_native_body_snapshot_missing",
+                    anchor_ea=int(configured_route.rewrite_anchor_ea),
+                    payload={"detached_direct_route_plan": detached_payload},
+                )
+                raise _with_canonical_composition_attempts(
+                    rejection,
+                    tuple(composition_attempts),
+                )
+            try:
+                prepared_body = prepared_snapshot.body(
+                    str(detached_direct_plan.source_block.native_body_id)
+                )
+            except KeyError as exc:
+                rejection = CanonicalSemanticFragmentRejected(
+                    "configured reference direct route prepared snapshot lacks "
+                    "its native body",
+                    reason_code="prepared_native_body_fact_missing",
+                    anchor_ea=int(configured_route.rewrite_anchor_ea),
+                    payload={
+                        "detached_direct_route_plan": detached_payload,
+                        "prepared_snapshot_id": prepared_snapshot.snapshot_id,
+                    },
+                )
+                raise _with_canonical_composition_attempts(
+                    rejection,
+                    tuple(composition_attempts),
+                ) from exc
+            try:
+                projection = project_detached_direct_route(
+                    normalization_plan,
+                    detached_direct_plan,
+                    prepared_body,
+                    snapshot_id=prepared_snapshot.snapshot_id,
+                )
+            except DetachedDirectRouteProjectionRejected as exc:
+                rejection = CanonicalSemanticFragmentRejected(
+                    str(exc),
+                    reason_code="canonical_detached_direct_route_projection_rejected",
+                    anchor_ea=int(exc.anchor_ea),
+                    payload={
+                        "detached_direct_route_plan": detached_payload,
+                        "projection_reason_code": exc.reason_code,
+                        "projection_payload": dict(exc.payload),
+                        "live_mutation_started": False,
+                    },
+                )
+                raise _with_canonical_composition_attempts(
+                    rejection,
+                    tuple(composition_attempts),
+                ) from exc
+            composition_attempts.append(
+                _accepted_detached_direct_route_projection_attempt(projection)
+            )
             rejection = CanonicalSemanticFragmentRejected(
-                "configured reference direct route has complete detached C3 "
-                "intent but no off-side microcode projection",
-                reason_code=("canonical_detached_direct_route_projection_missing"),
+                "configured reference direct route reached mutation-free C4 "
+                "projection; root publication is not implemented",
+                reason_code="canonical_detached_direct_route_publication_deferred",
                 anchor_ea=int(configured_route.rewrite_anchor_ea),
-                payload={"detached_direct_route_plan": detached_payload},
+                payload={
+                    "detached_direct_route_plan": detached_payload,
+                    "projection_snapshot_id": projection.snapshot_id,
+                    "highest_canary_level": "C4",
+                    "first_failed_obligation": "C5_root_publication",
+                    "live_mutation_started": False,
+                    "receipt_created": False,
+                },
             )
             raise _with_canonical_composition_attempts(
                 rejection,
@@ -1522,6 +1627,9 @@ def _compose_candidate_semantic_fragment(
                 available_evidence=candidate,
                 current_identity_by_serial=current_identity_by_serial,
                 normalization_authority=normalization_authority,
+                prepared_body_provider=context.capabilities.optional(
+                    FrontendNormalizationPreparedBodyCapability
+                ),
                 prohibited_dispatcher_serials=prohibited_dispatcher_serials,
                 composition_attempts=composition_attempts,
             ),

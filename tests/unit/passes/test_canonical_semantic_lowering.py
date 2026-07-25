@@ -1151,7 +1151,7 @@ def test_configured_reference_scope_drives_live_route_composition_before_boundar
     ]
 
 
-def test_configured_reference_direct_route_records_c3_before_projection(
+def test_configured_reference_direct_route_records_c4_before_publication(
     monkeypatch,
 ) -> None:
     graph, bound = _graph_and_bound_evidence()
@@ -1196,6 +1196,8 @@ def test_configured_reference_direct_route_records_c3_before_projection(
         "direct_target_ea": "0x1200",
     }
     detached_plan = SimpleNamespace(
+        evidence_generation=candidate.generation,
+        source_block=SimpleNamespace(native_body_id="prepared-body"),
         diagnostic_payload=lambda: dict(expected_payload),
     )
     planner_calls = []
@@ -1213,8 +1215,46 @@ def test_configured_reference_direct_route_records_c3_before_projection(
         state_machine_module,
         "compose_canonical_semantic_fragment_plan",
         lambda *_args, **_kwargs: pytest.fail(
-            "detached C3 intent must stop before live route composition"
+            "detached C4 projection must stop before live route composition"
         ),
+    )
+    prepared_body = object()
+    prepared_snapshot = SimpleNamespace(
+        snapshot_id="prepared-native-body:test:g3:r1",
+        body=lambda body_id: (
+            prepared_body
+            if body_id == "prepared-body"
+            else pytest.fail("projection requested another prepared body")
+        ),
+    )
+    provider_calls = []
+    prepared_body_provider = SimpleNamespace(
+        prepared_body_facts_for=lambda *args: (
+            provider_calls.append(args) or prepared_snapshot
+        )
+    )
+    projected_metadata = {
+        "source_owner_ea": 0x1100,
+        "rewrite_anchor_ea": 0x1100,
+        "direct_target_ea": 0x1200,
+        "live_mutation_started": False,
+        "receipt_created": False,
+    }
+    projection = SimpleNamespace(
+        plan_id="detached-direct:test",
+        snapshot_id=prepared_snapshot.snapshot_id,
+        graph=SimpleNamespace(blocks={0: object(), 1: object()}, metadata=projected_metadata),
+    )
+    projection_calls = []
+
+    def project_detached(*args, **kwargs):
+        projection_calls.append((args, kwargs))
+        return projection
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "project_detached_direct_route",
+        project_detached,
     )
     attempts: list[dict[str, object]] = []
     normalization_authority = object()
@@ -1228,16 +1268,27 @@ def test_configured_reference_direct_route_records_c3_before_projection(
             current_identity_by_serial={
                 serial: _identity(block.start_ea)
                 for serial, block in graph.blocks.items()
-            },
-            normalization_authority=normalization_authority,
-            prohibited_dispatcher_serials=(30,),
+                },
+                normalization_authority=normalization_authority,
+                prepared_body_provider=prepared_body_provider,
+                prohibited_dispatcher_serials=(30,),
             composition_attempts=attempts,
         )
 
     rejection = exc_info.value
-    assert rejection.reason_code == "canonical_detached_direct_route_projection_missing"
+    assert (
+        rejection.reason_code
+        == "canonical_detached_direct_route_publication_deferred"
+    )
     assert rejection.anchor_ea == 0x1100
     assert rejection.payload["detached_direct_route_plan"] == expected_payload
+    assert rejection.payload["projection_snapshot_id"] == (
+        "prepared-native-body:test:g3:r1"
+    )
+    assert rejection.payload["highest_canary_level"] == "C4"
+    assert rejection.payload["first_failed_obligation"] == "C5_root_publication"
+    assert rejection.payload["live_mutation_started"] is False
+    assert rejection.payload["receipt_created"] is False
     assert attempts == [
         {
             "kind": "configured_reference_detached_direct_route",
@@ -1245,12 +1296,31 @@ def test_configured_reference_direct_route_records_c3_before_projection(
             "route_proof_ids": (candidate.route_proofs[0].proof_id,),
             "route_source_anchor_eas": ("0x1100",),
             **expected_payload,
-        }
+        },
+        {
+            "kind": "configured_reference_detached_direct_route_projection",
+            "outcome": "accepted",
+            "canary_level": "C4",
+            "plan_id": "detached-direct:test",
+            "snapshot_id": "prepared-native-body:test:g3:r1",
+            "projected_block_count": 2,
+            "first_failed_obligation": "C5_root_publication",
+            **projected_metadata,
+        },
     ]
     assert planner_calls == [
         (
             (plan, candidate, reference_route),
             {"normalization_authority": normalization_authority},
+        )
+    ]
+    assert provider_calls == [
+        (graph.func_ea, candidate.generation, plan.plan_id),
+    ]
+    assert projection_calls == [
+        (
+            (plan, detached_plan, prepared_body),
+            {"snapshot_id": "prepared-native-body:test:g3:r1"},
         )
     ]
 
@@ -1360,6 +1430,7 @@ def test_configured_reference_scope_reuses_proved_temporary_entry_port(
         available_evidence=candidate,
         current_identity_by_serial=current_identity_by_serial,
         normalization_authority=normalization_authority,
+        prepared_body_provider=None,
         prohibited_dispatcher_serials=(30,),
         composition_attempts=composition_attempts,
     )

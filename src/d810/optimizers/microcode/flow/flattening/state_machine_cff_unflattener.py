@@ -124,6 +124,7 @@ from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
     FrontendNormalizationPlanCapability,
+    FrontendNormalizationPreparedBodyCapability,
 )
 from d810.capabilities.resolver import CapabilitySet
 from d810.capabilities.semantic_routes import (
@@ -3585,6 +3586,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 FrontendNormalizationPlanCapability,
             ):
                 cap_instances[FrontendNormalizationPlanCapability] = plan_provider
+            if isinstance(
+                plan_provider,
+                FrontendNormalizationPreparedBodyCapability,
+            ):
+                cap_instances[FrontendNormalizationPreparedBodyCapability] = (
+                    plan_provider
+                )
             reference_oracle_provider = (
                 resolver_state.semantic_route_reference_oracle_provider
             )

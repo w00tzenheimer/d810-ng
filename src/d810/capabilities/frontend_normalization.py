@@ -10,6 +10,7 @@ if TYPE_CHECKING:
         FrontendNormalizationEvidence,
     )
     from d810.transforms.fragment_plan import FragmentPlan
+    from d810.transforms.prepared_native_body import PreparedNativeBodyFactSnapshot
 
 
 @runtime_checkable
@@ -37,7 +38,22 @@ class FrontendNormalizationPlanCapability(Protocol):
         ...
 
 
+@runtime_checkable
+class FrontendNormalizationPreparedBodyCapability(Protocol):
+    """Supply receipt-associated immutable PREOPT native-body facts."""
+
+    def prepared_body_facts_for(
+        self,
+        function_ea: int,
+        evidence_generation: int,
+        plan_id: str,
+    ) -> "PreparedNativeBodyFactSnapshot | None":
+        """Return exact prepared facts only after their plan receipt commits."""
+        ...
+
+
 __all__ = [
     "FrontendNormalizationEvidenceCapability",
     "FrontendNormalizationPlanCapability",
+    "FrontendNormalizationPreparedBodyCapability",
 ]

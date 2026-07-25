@@ -237,9 +237,52 @@ class PreparedNativeBodyFact:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedNativeBodyFactSnapshot:
+    """Receipt-associated immutable body facts for one evidence generation."""
+
+    plan_id: str
+    evidence_generation: int
+    snapshot_id: str
+    bodies: tuple[PreparedNativeBodyFact, ...]
+
+    def __post_init__(self) -> None:
+        plan_id = _identifier(self.plan_id, "prepared snapshot plan id")
+        evidence_generation = _nonnegative_int(
+            self.evidence_generation,
+            "prepared snapshot evidence generation",
+        )
+        snapshot_id = _identifier(
+            self.snapshot_id,
+            "prepared native-body snapshot id",
+        )
+        bodies = tuple(self.bodies)
+        if not bodies or any(
+            not isinstance(body, PreparedNativeBodyFact) for body in bodies
+        ):
+            raise TypeError("prepared snapshot requires typed native-body facts")
+        if any(body.plan_id != plan_id for body in bodies):
+            raise ValueError("prepared snapshot body plan lineage differs")
+        _unique(
+            tuple(body.body_id for body in bodies),
+            "prepared snapshot body ids",
+        )
+        object.__setattr__(self, "plan_id", plan_id)
+        object.__setattr__(self, "evidence_generation", evidence_generation)
+        object.__setattr__(self, "snapshot_id", snapshot_id)
+        object.__setattr__(self, "bodies", bodies)
+
+    def body(self, body_id: str) -> PreparedNativeBodyFact:
+        for body in self.bodies:
+            if body.body_id == str(body_id):
+                return body
+        raise KeyError(body_id)
+
+
 __all__ = [
     "PreparedNativeBlockFact",
     "PreparedNativeBodyFact",
+    "PreparedNativeBodyFactSnapshot",
     "PreparedNativeEdgeFact",
     "PreparedNativeInstructionFact",
 ]
