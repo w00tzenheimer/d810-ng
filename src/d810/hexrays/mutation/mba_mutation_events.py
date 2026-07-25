@@ -40,6 +40,7 @@ from d810.transforms.fragment_plan import (
     FragmentPlan,
     serialize_fragment_plan,
 )
+from d810.transforms.detached_route_oracle import DetachedRouteOracleResult
 from d810.transforms.fragment_validation import FragmentValidationResult
 
 
@@ -163,6 +164,7 @@ class MbaMutationReceipt:
     postpublication_validation: FragmentValidationResult | None = None
     root_publication_confirmed: bool = False
     current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None
+    detached_route_oracle: DetachedRouteOracleResult | None = None
 
     def __post_init__(self) -> None:
         pre_generation = int(self.pre_generation)
@@ -198,6 +200,7 @@ class MbaMutationReceipt:
         fragment_atomic_group_id = str(self.fragment_atomic_group_id)
         root_publication_groups = tuple(self.root_publication_groups)
         current_mba_identity_binding = self.current_mba_identity_binding
+        detached_route_oracle = self.detached_route_oracle
         if any(
             not isinstance(group, MbaMutationRootPublicationGroup)
             for group in root_publication_groups
@@ -244,12 +247,22 @@ class MbaMutationReceipt:
                     raise ValueError("fragment receipt validation scope drifted")
             if not self.root_publication_confirmed:
                 raise ValueError("fragment receipt requires confirmed root publication")
+            if detached_route_oracle is not None and (
+                not isinstance(detached_route_oracle, DetachedRouteOracleResult)
+                or detached_route_oracle.plan_id != fragment_plan_id
+                or detached_route_oracle.atomic_group_id != fragment_atomic_group_id
+                or not detached_route_oracle.passed
+            ):
+                raise ValueError(
+                    "fragment receipt contains invalid detached route authority"
+                )
         elif (
             self.prepublication_validation is not None
             or self.postpublication_validation is not None
             or self.root_publication_confirmed
             or root_publication_groups
             or current_mba_identity_binding is not None
+            or detached_route_oracle is not None
         ):
             raise ValueError("non-fragment receipt cannot carry fragment validation")
         object.__setattr__(self, "fragment_plan_id", fragment_plan_id)
@@ -318,6 +331,62 @@ class MbaMutationPlanned:
     fragment_atomic_group_id: str = ""
     fragment_plan_json: str = ""
     root_publication_groups: tuple[MbaMutationRootPublicationGroup, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MbaSemanticFragmentRouteOracleCompared:
+    """Detached route comparison emitted before any root authority changes."""
+
+    session_id: str
+    function_ea: int
+    maturity: int
+    mba_generation: int
+    evidence_generation: int
+    mutation_batch_id: str
+    run_id: str
+    plan_id: str
+    atomic_group_id: str
+    reference_ledger_identities: tuple[tuple[str, str], ...]
+    result: DetachedRouteOracleResult
+
+    def __post_init__(self) -> None:
+        if not all(
+            str(value)
+            for value in (
+                self.session_id,
+                self.mutation_batch_id,
+                self.run_id,
+                self.plan_id,
+                self.atomic_group_id,
+            )
+        ):
+            raise ValueError("detached route comparison requires complete identity")
+        if (
+            not isinstance(self.result, DetachedRouteOracleResult)
+            or self.result.plan_id != self.plan_id
+            or self.result.atomic_group_id != self.atomic_group_id
+        ):
+            raise ValueError("detached route comparison scope drifted")
+        ledger_identities = tuple(
+            (str(route_id), str(ledger_identity))
+            for route_id, ledger_identity in self.reference_ledger_identities
+        )
+        comparison_route_ids = tuple(
+            comparison.route_id for comparison in self.result.comparisons
+        )
+        if tuple(
+            route_id for route_id, _ledger in ledger_identities
+        ) != comparison_route_ids or any(
+            not ledger_identity for _route, ledger_identity in ledger_identities
+        ):
+            raise ValueError(
+                "detached route comparison requires aligned ledger identities"
+            )
+        object.__setattr__(
+            self,
+            "reference_ledger_identities",
+            ledger_identities,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,6 +509,11 @@ class MbaMutationGateway:
         init=False,
         repr=False,
     )
+    _active_detached_route_oracle: DetachedRouteOracleResult | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.generation = int(self.generation)
@@ -501,6 +575,7 @@ class MbaMutationGateway:
         self._active_current_mba_identity_binding = None
         self._active_current_mba_identity_binding_recorded = False
         self._active_fragment_failures.clear()
+        self._active_detached_route_oracle = None
 
     def new_transaction(self) -> MbaMutationGateway:
         """Return a fresh batch controller over this current-MBA index.
@@ -911,6 +986,61 @@ class MbaMutationGateway:
             self._active_postpublication_validation = validation
         else:
             raise ValueError("fragment validation phase is invalid")
+
+    def _record_fragment_route_oracle(
+        self,
+        plan: FragmentPlan,
+        result: DetachedRouteOracleResult,
+    ) -> None:
+        """Persist one staged comparison in gateway state and emit it immediately."""
+
+        self._require_active_fragment(plan)
+        if self._active_detached_route_oracle is not None:
+            raise RuntimeError("detached route oracle was recorded more than once")
+        run = plan.reference_oracle_run
+        if (
+            not isinstance(result, DetachedRouteOracleResult)
+            or result.plan_id != plan.plan_id
+            or result.atomic_group_id != plan.atomic_group_id
+            or run is None
+        ):
+            raise ValueError("detached route oracle does not match the active plan")
+        routes = tuple(
+            operation.direct_transfer_rewrite.reference_route
+            for operation in plan.operations
+            if operation.direct_transfer_rewrite is not None
+        )
+        if any(route is None for route in routes):
+            raise ValueError("detached route oracle lacks reference route authority")
+        ledger_identities = tuple(
+            (route.route_id, route.reference_ledger_identity)
+            for route in routes
+            if route is not None
+        )
+        if tuple(route_id for route_id, _ledger in ledger_identities) != tuple(
+            comparison.route_id for comparison in result.comparisons
+        ):
+            raise ValueError("detached route oracle comparison order drifted")
+        self._active_detached_route_oracle = result
+        batch_id = str(self._active_batch_id)
+        self._emit_observation(
+            phase="detached_route_oracle",
+            event_type=MbaSemanticFragmentRouteOracleCompared,
+            payload=MbaSemanticFragmentRouteOracleCompared(
+                session_id=self.session_id,
+                function_ea=int(self.function_ea),
+                maturity=int(self.maturity),
+                mba_generation=int(self.identity_index.generation),
+                evidence_generation=int(self.identity_index.evidence_generation),
+                mutation_batch_id=batch_id,
+                run_id=run.run_id,
+                plan_id=plan.plan_id,
+                atomic_group_id=plan.atomic_group_id,
+                reference_ledger_identities=ledger_identities,
+                result=result,
+            ),
+            mutation_batch_id=batch_id,
+        )
 
     def _record_fragment_root_publication_attempted(
         self,
@@ -1529,12 +1659,26 @@ class MbaMutationGateway:
     def commit(self) -> MbaMutationReceipt:
         self._require_active()
         fragment_plan = self._active_fragment_plan
+        requires_detached_route_oracle = bool(
+            fragment_plan is not None
+            and any(
+                operation.direct_transfer_rewrite is not None
+                for operation in fragment_plan.operations
+            )
+        )
         if self._active_kind is StructuralMutationKind.FRAGMENT_PUBLICATION and (
             fragment_plan is None
             or self._active_prepublication_validation is None
             or self._active_postpublication_validation is None
             or not self._active_root_publication_confirmed
             or not self._active_current_mba_identity_binding_recorded
+            or (
+                requires_detached_route_oracle
+                and (
+                    self._active_detached_route_oracle is None
+                    or not self._active_detached_route_oracle.passed
+                )
+            )
         ):
             raise RuntimeError(
                 "fragment publication cannot commit before semantic postvalidation"
@@ -1579,6 +1723,7 @@ class MbaMutationGateway:
             postpublication_validation=self._active_postpublication_validation,
             root_publication_confirmed=self._active_root_publication_confirmed,
             current_mba_identity_binding=self._active_current_mba_identity_binding,
+            detached_route_oracle=self._active_detached_route_oracle,
         )
         self.generation = post_generation
         self._receipts.append(receipt)
@@ -1697,5 +1842,6 @@ __all__ = [
     "MbaMutationPlanned",
     "MbaMutationReceipt",
     "MbaMutationRootPublicationGroup",
+    "MbaSemanticFragmentRouteOracleCompared",
     "StructuralMutationKind",
 ]
