@@ -3328,3 +3328,39 @@ compare the selected fragment's internal routes and normalize the temporary
 external boundary port. This is the evidence-backed exception to the earlier
 blanket predecessor veto; do not erase the obligation, call the port
 reference-equivalent, or broaden to the 91-route publication.
+
+**2026-07-25T05:30:37Z**
+
+Commit `36480da21` introduces a serial-free `FragmentBoundaryPort` with typed
+`temporary_dispatcher_entry` semantics and a stable retirement obligation.
+Canonical plan validation requires the port predecessor to be an external
+block, the target to be a plan root, and the predecessor not to be silently
+classified as an already-eliminated prohibited dispatcher. The pass enables
+the port only after the proved semantic predecessor and its incoming
+normalization source both have zero live owners. The combined canonical,
+resolver, fragment-plan, fragment-validation, and semantic-backend gate is
+445/445 green; Ruff, ast-grep, `graphify update .`, and all 14 import contracts
+pass.
+
+The mandatory cache-disabled A560 canary returned normally in 20.86 seconds
+(19.09 seconds inside pytest) with no process crash or numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-temporary-boundary-port-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-temporary-boundary-port-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-temporary-boundary-port-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The typed port advances the intended route-level fact: canonical composition
+returns to native root `0x40AE3E` and passes the prior predecessor veto. It then
+declines with `published_boundary_semantic_route_missing`, proving that forward
+detached closure selected no semantic rewrite for the root. The highest
+completed semantic level remains C2; there is still no semantic transaction,
+oracle comparison, or semantic receipt.
+
+Continue by recording the detached target block/operation inventory and every
+nested state-route projection decision on this rejection. The next fix must
+explain why proved route `0x40B51B -> 0x40AE3E` is not included in the forward
+fragment; do not remove the requirement that a C3 fragment own at least one
+real reference route, claim the temporary port itself as semantic work, or
+publish before C4.
