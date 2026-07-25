@@ -2718,3 +2718,43 @@ unselected native-body edge, partial conditional, ambiguous owner, or stale
 generation. Prove this red/green in the canonical transform before another
 canary; do not reimport the whole successor closure or broaden toward 91
 routes.
+
+**2026-07-25T02:51:22Z**
+
+Commit `fa0af30ab` implements the narrow receipt-authority rule. A published
+nonterminal imported boundary closes canonical traversal only when the exact
+operation belongs to both the current normalization work-item receipt and its
+native-body proof set, and is either one semantic direct edge or a computed
+two-arm conditional. The canonical transform suite is 28/28 green, including
+a production-shaped receipted conditional and a negative unlowered native-body
+conditional. Commit `0317cb93b` separately preserves the explicitly approved
+repository-wide Ruff pass: 1,468 tracked Python files, with all 1,862 eligible
+files now format-clean. The semantic commit's pre-commit architecture and all
+14 import contracts passed before that style-only commit, and the style commit
+passed them again.
+
+The mandatory cache-disabled A560 diagnostic canary then returned normally in
+38.10 seconds with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-receipted-boundary-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-receipted-boundary-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-receipted-boundary-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The highest completed level remains C5 through generation-2 receipt event 287.
+The receipt-backed contextual boundary at native source `0x40B6C0` now closes
+successfully: there is no generation-2 rejection for that operation. The first
+post-C5 obligation has advanced to snapshot 11 / `MMAT_CALLS` at native anchor
+`0x40A607`. The DB records boundary
+`native[0x40A607-0x40A615;exact=0x40A607]`, unique live owner
+`blk8@0x40A560`, and unlowered operation `native-body-edge@0x40A607` under the
+same bootstrap route proof `state_assignment@0x40A5C8:0xABB95547`. Event 406
+declines contextual promotion because native source `0x40A607` has zero
+contextual patch-plan candidates.
+
+Continue the v3.3 vertical loop from `0x40A607`: determine why the bootstrap
+fragment reaches this sibling boundary, establish its reference/native route
+meaning at C1-C3, and either provide one complete semantic route proof or
+correct an over-broad component traversal. Do not bless the raw native-body
+edge, broaden publication, or reopen the now-proven `0x40B6C0` rule.
