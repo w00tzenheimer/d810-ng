@@ -3154,3 +3154,39 @@ current incoming dispatcher edge as an explicit remaining work-item obligation
 that cannot satisfy final C4/C5 acceptance. Do not remove the predecessor veto
 without such authority, and do not classify `0x40AE3E` as an independently
 publishable C5 root on the current evidence.
+
+**2026-07-25T05:03:20Z**
+
+Commit `befbe470f` tightens one-hop semantic-predecessor selection around an
+exact state-write entry and its complete proof corridor. The focused
+canonical/resolver gate is 278/278 green; Ruff, ast-grep, `graphify update .`,
+and all 14 import contracts pass.
+
+The mandatory cache-disabled A560 canary returned normally in 21.63 seconds
+(19.62 seconds inside pytest) with no process crash or numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-state-write-reroot-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-state-write-reroot-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-state-write-reroot-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The highest completed semantic level remains C2. Snapshot 3 / `MMAT_CALLS`
+still declines canonical composition with
+`published_boundary_predecessor_missing` at native boundary `0x40AE3E`. The DB
+contains no semantic-fragment transaction, validation outcome, route-oracle
+comparison, or semantic receipt. Its only transaction is the legacy
+generation-1 frontend-normalization publication, which committed 260/260
+operations and is not semantic C5 evidence.
+
+The failed re-root is now an exact C3 predicate mismatch, not missing native
+evidence. The DB's state-write-route fact proves source write `0x40B51B`,
+corridor `0x40B51B -> 0x40B526 -> 0x40B52E`, delivery `0x40B52E`, and target
+`0x40AE3E`. Canonical projection deliberately gives the route its delivery
+identity at `0x40B52E` and its state write a separate write identity at
+`0x40B51B`; the current guard still nests the state-write-entry alternative
+under a requirement that the delivery identity own `0x40B51B`. Continue by
+proving the split-identity shape in the narrow test, then accept the source
+block entry only through the exact write identity plus full corridor ending at
+the exact delivery anchor. Do not broaden the delivery identity, admit the
+dispatcher predecessor, or publish before C4.
