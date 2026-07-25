@@ -1261,20 +1261,32 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
     assert boundary_port.retirement_obligation_id == "publish-semantic-entry@0x1200"
 
 
-def test_published_boundary_projects_nested_terminal_route_atomically() -> None:
+@pytest.mark.parametrize("terminal_has_live_owner", (False, True))
+def test_published_boundary_projects_nested_terminal_route_atomically(
+    terminal_has_live_owner: bool,
+) -> None:
     graph, normalization_plan, root_evidence = _live_source_detached_target_case()
+    blocks = {
+        10: _block(10, 0x1000, succs=(90,), preds=()),
+        30: _block(
+            30,
+            0x1200,
+            succs=(90,),
+            preds=(90,),
+            insn_eas=(0x1200, 0x1210, 0x1215, 0x1218),
+        ),
+        90: _block(90, 0x1400, succs=(30,), preds=(10, 30)),
+    }
+    if terminal_has_live_owner:
+        blocks[40] = _block(
+            40,
+            0x1320,
+            succs=(),
+            preds=(),
+            insn_eas=(0x1320, 0x1328),
+        )
     graph = FlowGraph(
-        blocks={
-            10: _block(10, 0x1000, succs=(90,), preds=()),
-            30: _block(
-                30,
-                0x1200,
-                succs=(90,),
-                preds=(90,),
-                insn_eas=(0x1200, 0x1210, 0x1215, 0x1218),
-            ),
-            90: _block(90, 0x1400, succs=(30,), preds=(10, 30)),
-        },
+        blocks=blocks,
         entry_serial=10,
         func_ea=0x1000,
     )
@@ -1462,6 +1474,9 @@ def test_published_boundary_projects_nested_terminal_route_atomically() -> None:
     assert plan.return_carriers[0].block_id == operation.source_block_id
     assert len(plan.terminal_returns) == 1
     assert operation.edges[0].target_block_id == plan.terminal_returns[0].block_id
+    assert (
+        plan.block(plan.terminal_returns[0].block_id).role is FragmentBlockRole.IMPORTED
+    )
     assert len(plan.terminal_routes) == 1
     assert plan.terminal_routes[0].operation_id == operation.operation_id
     assert all(
