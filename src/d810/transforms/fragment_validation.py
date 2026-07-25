@@ -18,6 +18,7 @@ from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.fragment_plan import (
     FragmentBlockRole,
+    FragmentBoundaryPort,
     FragmentDataFlowObligation,
     FragmentFlagCorridor,
     FragmentOperation,
@@ -642,6 +643,46 @@ def _reachability_witness(
     return ()
 
 
+def _boundary_port_root_witness(
+    port: FragmentBoundaryPort,
+    projection: ProjectedFragment,
+    blocks: dict[str, ProjectedFragmentBlock],
+) -> tuple[str, ...]:
+    """Prove one exact temporary predecessor-to-root attachment."""
+    predecessor = blocks.get(port.predecessor_block_id)
+    root = blocks.get(port.root_block_id)
+    if predecessor is None or root is None:
+        return ()
+    if (
+        port.root_block_id in predecessor.successors
+        and port.predecessor_block_id in root.predecessors
+    ):
+        return (port.predecessor_block_id, port.root_block_id)
+    matching_helpers = tuple(
+        helper
+        for helper in projection.root_fallthrough_helpers
+        if helper.source_block_id == port.predecessor_block_id
+        and helper.root_block_id == port.root_block_id
+    )
+    if len(matching_helpers) != 1:
+        return ()
+    (helper,) = matching_helpers
+    helper_block = blocks.get(helper.helper_block_id)
+    if (
+        helper_block is None
+        or helper.helper_block_id not in predecessor.successors
+        or port.predecessor_block_id not in helper_block.predecessors
+        or port.root_block_id not in helper_block.successors
+        or helper.helper_block_id not in root.predecessors
+    ):
+        return ()
+    return (
+        port.predecessor_block_id,
+        helper.helper_block_id,
+        port.root_block_id,
+    )
+
+
 def _site_present(
     site: FragmentValueSite,
     blocks: dict[str, ProjectedFragmentBlock],
@@ -815,6 +856,14 @@ def _validate_reachability(
     include_detached_native_body_roots: bool,
 ) -> None:
     entry_reachable = _reachable(blocks, (projection.entry_block_id,))
+    boundary_port_predecessors = tuple(
+        dict.fromkeys(port.predecessor_block_id for port in plan.boundary_ports)
+    )
+    publication_authority_roots = (
+        projection.entry_block_id,
+        *boundary_port_predecessors,
+    )
+    publication_reachable = _reachable(blocks, publication_authority_roots)
     connectivity_roots = (
         (
             *plan.roots,
@@ -825,30 +874,70 @@ def _validate_reachability(
             ),
         )
         if include_detached_native_body_roots
-        else (projection.entry_block_id,)
+        else publication_authority_roots
     )
     fragment_reachable = _reachable(blocks, connectivity_roots)
     connectivity_authority = (
         "a publication or native-body root"
         if include_detached_native_body_roots
-        else "the projected function entry"
+        else (
+            "the projected function entry or a typed temporary boundary port"
+            if boundary_port_predecessors
+            else "the projected function entry"
+        )
     )
     disconnected_authority = (
         "all publication and native-body roots"
         if include_detached_native_body_roots
-        else "the projected function entry"
+        else (
+            "the projected function entry and typed temporary boundary ports"
+            if boundary_port_predecessors
+            else "the projected function entry"
+        )
     )
     for root in plan.roots:
-        passed = root in entry_reachable
+        reachable_port = next(
+            (
+                (port, witness)
+                for port in plan.boundary_ports
+                if port.root_block_id == root
+                and (
+                    witness := _boundary_port_root_witness(
+                        port,
+                        projection,
+                        blocks,
+                    )
+                )
+            ),
+            None,
+        )
+        entry_reaches_root = root in entry_reachable
+        passed = entry_reaches_root or reachable_port is not None
+        if entry_reaches_root:
+            reason = "publication root is reachable from projected function entry"
+            root_witness = (root,)
+        elif reachable_port is not None:
+            port, root_witness = reachable_port
+            reason = (
+                f"publication root is reachable from typed boundary port "
+                f"{port.port_id}; retirement obligation "
+                f"{port.retirement_obligation_id} remains"
+            )
+        else:
+            reason = (
+                "publication root is unreachable from projected function entry "
+                "and typed boundary ports"
+                if boundary_port_predecessors
+                else "publication root is unreachable from projected function entry"
+            )
+            root_witness = (root,)
         _outcome(
             outcomes,
             FragmentValidationPostcondition.ROOT_REACHABILITY,
             root,
             passed,
-            "publication root is reachable from projected function entry"
-            if passed
-            else "publication root is unreachable from projected function entry",
-            root,
+            reason,
+            *root_witness,
         )
     for block in plan.blocks:
         if block.role not in {
@@ -883,37 +972,44 @@ def _validate_reachability(
             operation.source_block_id,
         )
     for original in plan.owned_originals:
-        passed = original not in entry_reachable
+        passed = original not in publication_reachable
         _outcome(
             outcomes,
             FragmentValidationPostcondition.ORIGINAL_SUPERSESSION,
             original,
             passed,
-            "owned original is unreachable after projected publication"
+            "owned original is unreachable from all publication authority"
             if passed
-            else "owned original remains reachable after projected publication",
+            else "owned original remains reachable from publication authority",
             original,
         )
     for dispatcher in plan.prohibited_dispatcher_blocks:
-        passed = dispatcher not in entry_reachable
-        witness = (
-            ()
-            if passed
-            else _reachability_witness(
-                blocks,
-                projection.entry_block_id,
-                dispatcher,
+        passed = dispatcher not in publication_reachable
+        witness = ()
+        if not passed:
+            witness = next(
+                (
+                    candidate
+                    for authority_root in publication_authority_roots
+                    if (
+                        candidate := _reachability_witness(
+                            blocks,
+                            authority_root,
+                            dispatcher,
+                        )
+                    )
+                ),
+                (),
             )
-        )
         _outcome(
             outcomes,
             FragmentValidationPostcondition.DISPATCHER_ABSENCE,
             dispatcher,
             passed,
-            "prohibited dispatcher router is unreachable"
+            "prohibited dispatcher router is unreachable from publication authority"
             if passed
             else (
-                "reachable route enters a prohibited dispatcher router; "
+                "publication authority enters a prohibited dispatcher router; "
                 f"witness={' -> '.join(witness)}"
             ),
             *(witness or (dispatcher,)),
