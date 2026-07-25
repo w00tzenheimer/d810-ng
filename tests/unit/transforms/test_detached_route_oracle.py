@@ -355,8 +355,9 @@ def test_bind_fragment_reference_oracle_reports_identity_mismatch() -> None:
     assert error.payload == {
         "operation_id": "route:state_assignment@0x40B52E:0x13B0D3B2",
         "source_block_id": "route.replacement",
-        "source_identity": plan.block("route.replacement")
-        .stable_identity.diagnostic_label(),
+        "source_identity": plan.block(
+            "route.replacement"
+        ).stable_identity.diagnostic_label(),
         "reference_owner_ea": "0x40B51A",
         "owner_bound": False,
         "target_block_id": "target",
