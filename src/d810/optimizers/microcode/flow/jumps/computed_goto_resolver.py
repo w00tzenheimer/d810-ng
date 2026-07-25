@@ -243,6 +243,7 @@ def _discover_immediate_native_state_routes(
     for instruction in ordered:
         mnemonic = str(instruction.mnemonic).lower()
         is_jump = mnemonic == "jmp" or mnemonic in _SV_JCC_MNEMS
+        is_direct_jump = is_jump and instruction.direct_target_ea is not None
         is_conditional_jump = mnemonic in _SV_JCC_MNEMS
         is_state_operand = instruction.destination_mreg is not None and int(
             instruction.destination_mreg
@@ -264,6 +265,16 @@ def _discover_immediate_native_state_routes(
             had_state_comparison = False
             proof = []
 
+        if is_jump and not is_direct_jump:
+            current_assignment = None
+            saved_assignment = None
+            branch_assignment = None
+            target = None
+            state_constant = None
+            had_state_comparison = False
+            proof = []
+            continue
+
         if is_conditional_jump:
             saved_assignment = current_assignment
 
@@ -271,7 +282,7 @@ def _discover_immediate_native_state_routes(
             mnemonic == "cmp"
             and is_state_operand
             and instruction.source_immediate is not None
-        ) or is_jump
+        ) or is_direct_jump
         if validates_assignment and current_assignment is not None:
             immediate = current_assignment.source_immediate
             if (
@@ -291,7 +302,7 @@ def _discover_immediate_native_state_routes(
             continue
         if mnemonic == "cmp" and is_state_operand:
             had_state_comparison = True
-        if mnemonic != "jmp" and not (had_state_comparison and is_jump):
+        if mnemonic != "jmp" and not (had_state_comparison and is_direct_jump):
             continue
         proof.append(instruction)
         if branch_assignment is None:

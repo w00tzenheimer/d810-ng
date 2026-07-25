@@ -2103,6 +2103,23 @@ def test_immediate_native_state_routes_accept_branch_target_local_overwrite() ->
     assert route.target_ea == 0x40B9A6
 
 
+def test_immediate_native_state_routes_reject_register_indirect_delivery() -> None:
+    insn = computed_goto_resolver._DecodedNativeFlowInstruction
+    decoded = (
+        insn(0x40C62F, 0x40C634, "mov", 16, True, 0xEC71CA67),
+        insn(0x40C634, 0x40C63A, "cmp", 16, False, 0x0BB2D365),
+        insn(0x40C649, 0x40C64B, "jmp", 0, False, None, None),
+    )
+
+    routes = computed_goto_resolver._discover_immediate_native_state_routes(
+        decoded,
+        state_var_reg=16,
+        state_targets={0xEC71CA67: 0x40B9A6},
+    )
+
+    assert routes == ()
+
+
 def test_static_state_write_routes_publish_before_live_mba(monkeypatch) -> None:
     plan = _PatchPlan(
         jmp_ea=0x40A5C8,
