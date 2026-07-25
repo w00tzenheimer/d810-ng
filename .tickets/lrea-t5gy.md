@@ -4287,3 +4287,56 @@ include only that handler's call corridor and semantic target. The next red
 contract must prove this closure remains bounded and fragment-atomic; do not
 permit imported sources as independent publication roots or broaden to all 90
 route attempts.
+
+**2026-07-25T12:11:55Z**
+
+Commits `1e7b9a473` and `8048d416c` recover and separately format the one
+missing frontend-normalized state-write route. Route discovery now decodes
+only the original prefix through the proven condition producer, requires its
+end to equal the normalization start, and joins that prefix to the detached
+plan's synthetic delivery. It never treats the original superseded select
+tail as semantic instruction heads. The portable evidence is source write
+`0x40ADF2`, condition producer `0x40ADF7`, synthetic delivery `0x40AE09`,
+state `0xF6A636EF`, and target `0x40C4B4`. No A560 address is hard-coded in
+production, no imported source is promoted to an independent publication
+root, and no compatibility path was added.
+
+This checkpoint corrects the final diagnosis recorded in `f22210f33`. The
+diagnostic composition ledger proves the call-backed route
+`state_assignment@0x40B4BA:0xBD9A2C2A` is already projected in the
+entry-connected root component together with native call entry `0x40B3FF`.
+Its rejection as an independent top-level root is expected ownership
+enforcement, not a missing predecessor closure. The actual next missing
+semantic fact was the frontend-normalized route at source write `0x40ADF2`.
+
+The authoritative Docker resolver gate is 284/284 green: 247 resolver tests
+plus 37 session-state tests. The increase from the prior 279 count is exactly
+the five new corridor cases. Repository-wide Ruff formatting is clean and
+was retained in the separate `8048d416c` commit. Both commits pass ast-grep,
+import-cycle analysis, the portable-shape gate, and all 14 import-linter
+contracts.
+
+The mandatory cache-disabled A560 canary completed normally in 13.11 seconds
+without a process crash, numeric `INTERR`, or verifier event. Log:
+`.tmp/rhad-a560-v33-virtual-normalized-route-v1.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-virtual-normalized-route-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-virtual-normalized-route-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects the same false `while ( 1 )`, so this is not
+A560 acceptance.
+
+The DB confirms the route inventory advanced from 90 to 91. Snapshot 1 owns
+`state_write_route:generation=1:revision=1:proof=424e1a1ff8c81f61b757`
+with corridor `0x40ADF2, 0x40ADF7, 0x40AE09`, state `0xF6A636EF`, target
+`0x40C4B4`, and direct-target delivery. Event 147 records
+`canonical_semantic_plan_ready`; event 160 records a 396-item publication
+plan; event 161 records its atomic abort. There are zero semantic route-oracle
+comparisons and no semantic C5 receipt.
+
+Production therefore advances from C2 to C3. The first failed C4 obligation
+is exact detached-template ownership: the canonical native body requires
+exactly one PREOPT union template but observes zero, raising
+`SemanticFragmentBackendRejected` and recording
+`canonical_pipeline_exception`. Continue at that one template-binding
+failure. Do not weaken the exactly-one invariant, publish an unresolved union,
+fall back to live copy-and-swap repair, or add backward compatibility.
