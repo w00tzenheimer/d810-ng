@@ -3075,3 +3075,45 @@ and C5 semantic publication remain unreached. Continue by selecting this
 portable boundary plan in the canonical pass and proving its exact three-route
 reference equivalence before permitting live publication; do not resume the
 70-route bootstrap expansion or treat the legacy receipt as semantic C5.
+
+**2026-07-25T04:43:22Z**
+
+Commit `d48b51b50` wires generic published-boundary selection into the
+canonical pass but keeps it behind an explicit detached-oracle gate. A strict
+root-composition rejection contributes its stable boundary anchor; when no
+ordinary closed plan exists, the pass builds each unique boundary candidate,
+selects deterministically, and rejects with the selected plan and route
+inventory instead of returning it to the live publication backend. The
+focused canonical/resolver gate is 276/276 green; Ruff, ast-grep, graphify,
+and all 14 import contracts pass.
+
+The mandatory cache-disabled A560 diagnostic canary returned normally in
+17.92 seconds with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-boundary-selection-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-boundary-selection-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-boundary-selection-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The canary rejects before the new oracle gate. The canonical fact consumer at
+snapshot 3 / `MMAT_CALLS` records
+`published_boundary_predecessor_missing` for native boundary `0x40AE3E`.
+The same SQLite snapshot binds
+`native[0x40AE3E-0x40AE8B;exact=0x40AE3E]` to `blk48@0x40A560` and shows its
+sole incoming block as `blk47@0x40A560`, whose tail is the synthetic
+`m_jnz@0xF1C00480`; that predecessor is in the planner's prohibited dispatcher
+set and is therefore excluded from boundary attachment. The owner itself
+contains the imported call/state-write body and a synthetic
+`m_goto@0x40A560`.
+
+The highest completed semantic level remains C2. The first failed C3
+obligation is no longer generic closure at `0x40AE3E`; it is proving a valid
+entry attachment for that exact boundary without treating its prohibited
+comparison predecessor as semantic authority. No semantic transaction,
+route-oracle comparison, or semantic receipt exists. Before relaxing the
+predecessor rule, make the rejection record the complete EA-anchored incoming
+inventory and prove whether the bounded fragment can make the dispatcher
+predecessor unreachable under detached root simulation. If it cannot, the
+work item must include a proved semantic predecessor or move the publication
+root; do not simply admit the dispatcher edge or claim C3.
