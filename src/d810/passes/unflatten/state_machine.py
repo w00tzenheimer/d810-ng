@@ -1058,6 +1058,61 @@ def _configured_reference_predecessor_route(
     return incoming[0] if len(incoming) == 1 else None
 
 
+def _configured_reference_root_candidate(
+    selection: ReferenceRouteOracleSelection,
+    evidence: CanonicalSemanticEvidence,
+) -> CanonicalSemanticEvidence | None:
+    """Select the live route rooted at the configured publication anchor."""
+    publication_root_ea = int(selection.publication_root_ea)
+    root_routes = tuple(
+        route
+        for route in selection.routes
+        if int(route.owner_ea) == publication_root_ea
+    )
+    if not root_routes:
+        return None
+    if len(root_routes) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "configured reference scope has multiple routes at its live root",
+            reason_code="canonical_configured_reference_root_route_ambiguous",
+            anchor_ea=publication_root_ea,
+            payload={
+                "reference_route_ids": tuple(route.route_id for route in root_routes),
+                "reference_run_id": selection.run.run_id,
+            },
+        )
+    (root_route,) = root_routes
+    matching_indices = tuple(
+        route_index
+        for route_index, proof in enumerate(evidence.route_proofs)
+        if (
+            proof.state_write is not None
+            and int(proof.state_write.instruction_ea) == publication_root_ea
+            and int(proof.source_anchor_ea) == int(root_route.rewrite_anchor_ea)
+            and len(proof.destinations) == 1
+            and root_route.direct_target_ea is not None
+            and int(proof.destinations[0].target_anchor_ea)
+            == int(root_route.direct_target_ea)
+        )
+    )
+    if len(matching_indices) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "configured reference live root lacks one exact candidate route",
+            reason_code="canonical_configured_reference_root_candidate_mismatch",
+            anchor_ea=publication_root_ea,
+            payload={
+                "candidate_route_proof_ids": tuple(
+                    evidence.route_proofs[index].proof_id
+                    for index in matching_indices
+                ),
+                "reference_route_id": root_route.route_id,
+                "reference_run_id": selection.run.run_id,
+                "rewrite_anchor_ea": f"0x{int(root_route.rewrite_anchor_ea):X}",
+            },
+        )
+    return _connected_route_candidate(evidence, matching_indices[0])
+
+
 def _compose_configured_reference_scope_plan(
     *,
     graph: FlowGraph,
@@ -1111,6 +1166,77 @@ def _compose_configured_reference_scope_plan(
             )
         )
         return plan
+
+    try:
+        route_candidate = _configured_reference_root_candidate(
+            configured_scope,
+            available_evidence,
+        )
+    except CanonicalSemanticFragmentRejected as exc:
+        composition_attempts.append(
+            _rejected_canonical_composition_attempt(
+                kind="configured_reference_live_route",
+                rejection=exc,
+            )
+        )
+        raise _with_canonical_composition_attempts(
+            exc,
+            tuple(composition_attempts),
+        ) from exc
+    if route_candidate is not None:
+        try:
+            configured_plan = compose_canonical_semantic_fragment_plan(
+                graph,
+                normalization_plan,
+                route_candidate,
+                available_evidence=available_evidence,
+                current_identity_by_serial=current_identity_by_serial,
+                normalization_authority=normalization_authority,
+                prohibited_dispatcher_serials=prohibited_dispatcher_serials,
+            )
+        except CanonicalSemanticFragmentRejected as exc:
+            composition_attempts.append(
+                _rejected_canonical_composition_attempt(
+                    kind="configured_reference_live_route",
+                    rejection=exc,
+                    route_candidate=route_candidate,
+                )
+            )
+            raise _with_canonical_composition_attempts(
+                exc,
+                tuple(composition_attempts),
+            ) from exc
+        composition_attempts.append(
+            _accepted_canonical_composition_attempt(
+                kind="configured_reference_live_route",
+                plan=configured_plan,
+                route_candidate=route_candidate,
+            )
+        )
+        try:
+            return bind_fragment_reference_oracle(
+                configured_plan,
+                configured_scope,
+            )
+        except (DetachedRouteOracleRejected, TypeError) as exc:
+            rejection = CanonicalSemanticFragmentRejected(
+                "configured reference-oracle scope does not match its live "
+                "route plan",
+                reason_code="canonical_configured_reference_scope_invalid",
+                anchor_ea=publication_root_ea,
+                payload={
+                    "cause_detail": str(exc),
+                    "plan_id": configured_plan.plan_id,
+                    "reference_run_id": configured_scope.run.run_id,
+                    "reference_route_ids": tuple(
+                        route.route_id for route in configured_scope.routes
+                    ),
+                },
+            )
+            raise _with_canonical_composition_attempts(
+                rejection,
+                tuple(composition_attempts),
+            ) from exc
 
     try:
         configured_plan = compose_boundary(

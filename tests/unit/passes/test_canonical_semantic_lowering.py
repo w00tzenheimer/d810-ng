@@ -874,7 +874,7 @@ def test_bounded_candidate_plan_binds_exact_reference_oracle_capability() -> Non
     assert result == bind_fragment_reference_oracle(plan, selection)
 
 
-def test_configured_reference_scope_drives_bounded_composition_before_root_plan(
+def test_configured_reference_scope_drives_live_route_composition_before_boundary(
     monkeypatch,
 ) -> None:
     graph, bound = _graph_and_bound_evidence()
@@ -1005,23 +1005,23 @@ def test_configured_reference_scope_drives_bounded_composition_before_root_plan(
         "_plan_candidate_normalization",
         lambda *_args, **_kwargs: (plan, normalization_authority),
     )
-    monkeypatch.setattr(
-        state_machine_module,
-        "compose_canonical_semantic_fragment_plan",
-        lambda *_args, **_kwargs: pytest.fail(
-            "configured scope must run before generic root composition"
-        ),
-    )
-    boundary_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    route_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def compose_boundary(*args, **kwargs):
-        boundary_calls.append((args, kwargs))
+    def compose_route(*args, **kwargs):
+        route_calls.append((args, kwargs))
         return plan
 
     monkeypatch.setattr(
         state_machine_module,
+        "compose_canonical_semantic_fragment_plan",
+        compose_route,
+    )
+    monkeypatch.setattr(
+        state_machine_module,
         "compose_canonical_semantic_boundary_fragment_plan",
-        compose_boundary,
+        lambda *_args, **_kwargs: pytest.fail(
+            "a configured live route root must compose before a boundary"
+        ),
     )
 
     result, generation = state_machine_module._compose_candidate_semantic_fragment(
@@ -1031,12 +1031,11 @@ def test_configured_reference_scope_drives_bounded_composition_before_root_plan(
 
     assert generation == candidate.generation
     assert result == bind_fragment_reference_oracle(plan, selection)
-    assert boundary_calls == [
+    assert route_calls == [
         (
-            (graph, plan),
+            (graph, plan, candidate),
             {
                 "available_evidence": candidate,
-                "boundary_anchor_ea": 0x1100,
                 "current_identity_by_serial": current_identity_by_serial,
                 "normalization_authority": normalization_authority,
                 "prohibited_dispatcher_serials": (30,),
