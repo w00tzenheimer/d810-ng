@@ -1102,8 +1102,7 @@ def _configured_reference_root_candidate(
             anchor_ea=publication_root_ea,
             payload={
                 "candidate_route_proof_ids": tuple(
-                    evidence.route_proofs[index].proof_id
-                    for index in matching_indices
+                    evidence.route_proofs[index].proof_id for index in matching_indices
                 ),
                 "reference_route_id": root_route.route_id,
                 "reference_run_id": selection.run.run_id,
@@ -1220,8 +1219,7 @@ def _compose_configured_reference_scope_plan(
             )
         except (DetachedRouteOracleRejected, TypeError) as exc:
             rejection = CanonicalSemanticFragmentRejected(
-                "configured reference-oracle scope does not match its live "
-                "route plan",
+                "configured reference-oracle scope does not match its live route plan",
                 reason_code="canonical_configured_reference_scope_invalid",
                 anchor_ea=publication_root_ea,
                 payload={
