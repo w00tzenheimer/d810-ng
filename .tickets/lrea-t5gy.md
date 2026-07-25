@@ -5163,3 +5163,33 @@ Highest accepted A560 level remains C3, and the first failed C4 obligation is
 transaction/projection foundation; C4 must remain mutation-free with respect
 to the live MBA, and `DetachedDirectRoutePlan` remains publication-ineligible
 C3 authority.
+
+**2026-07-25T18:04:43Z — portable transaction/projection authority**
+
+Commit `c6624c64f` ports and adapts the plan-neutral transaction foundation
+without merging donor history. `PlanBlockRef` and `PlanInsnRef` are nominal,
+plan-scoped identities; `TransactionAttemptId` binds plan, session, evidence
+generation, and attempt; `CfgProjection` contains only a portable `FlowGraph`
+whose integer node IDs are explicitly projection-local; and bound transactions
+reject cross-plan, cross-session, cross-generation, and duplicate authority.
+There is no `SnapshotBlockRef`, live SDK object, callback, or live block serial
+authority in the portable contract. Typed projection failures record
+`live_mutation_started=False`, while generation poison remains legal only after
+a live write.
+
+The same commit adds pure detached fragment projection from immutable snapshot
+evidence. Clone and imported-block projection preserves explicit terminator EA
+and terminator kind, derives root rewrites and fallthrough helpers off-side, and
+normalizes the result into the portable transaction projection without reading
+or mutating a live MBA. Commit `8be06aee4` is the separately requested
+repository-wide Ruff formatting change; all 1,868 files then pass
+`ruff format --check`.
+
+Verification is 169/169 green across the new transaction/projection contracts
+and the existing 105-test lifecycle baseline. `ruff check` passes, ast-grep is
+clean, all 14 worktree-local import contracts are kept, commit-time cycle and
+portable-shape gates pass, and `graphify update .` rebuilt the graph. This phase
+does not change frontend normalization, resolver ownership, maturity behavior,
+or a live MBA, so no new A560 canary was run and the highest accepted level
+remains the v21 C3 checkpoint. The first failed obligation remains mutation-free
+C4 projection of the direct route at stable rewrite anchor `0x40BB63`.
