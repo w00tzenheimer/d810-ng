@@ -139,7 +139,7 @@ class FlowMaturityContext:
             return FlowGateDecision(False, "dispatcher analysis unavailable")
         if analysis.dispatcher_type == DispatcherType.SWITCH_TABLE:
             return FlowGateDecision(True, "switch-table dispatcher")
-        if len(analysis.dispatchers) == 0:
+        if not analysis.dispatchers:
             return FlowGateDecision(False, "no dispatcher candidates")
         strong_dispatchers = self._strong_dispatcher_count(analysis)
         if analysis.dispatcher_type == DispatcherType.CONDITIONAL_CHAIN:
@@ -182,7 +182,7 @@ class FlowMaturityContext:
             DispatcherType.UNKNOWN,
         ):
             return FlowGateDecision(False, f"dispatcher_type={analysis.dispatcher_type.name}")
-        if len(analysis.dispatchers) == 0:
+        if not analysis.dispatchers:
             return FlowGateDecision(False, "no dispatcher candidates")
         strong_dispatchers = self._strong_dispatcher_count(analysis)
         if strong_dispatchers == 0:

@@ -223,7 +223,7 @@ class FixPredecessorOfConditionalJumpBlock(GenericUnflatteningRule):
 
         Returns: (is_always_taken, is_never_taken)
         """
-        if len(pred_comparison_values) == 0:
+        if not pred_comparison_values:
             return False, False
 
         jmp_ins = jmp_blk.tail

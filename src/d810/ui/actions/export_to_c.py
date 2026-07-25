@@ -156,17 +156,16 @@ def _temporary_hexrays_config(
     try:
         yield
     finally:
-        if not applied:
-            return
-        try:
-            idaapi_mod.change_hexrays_config(effective_restore)
-        except Exception as exc:
-            logger.debug(
-                "Could not restore Hex-Rays config '%s' after '%s': %s",
-                effective_restore,
-                set_directive,
-                exc,
-            )
+        if applied:
+            try:
+                idaapi_mod.change_hexrays_config(effective_restore)
+            except Exception as exc:
+                logger.debug(
+                    "Could not restore Hex-Rays config '%s' after '%s': %s",
+                    effective_restore,
+                    set_directive,
+                    exc,
+                )
 
 
 def _get_qt_parent_for_dialog(

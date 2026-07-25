@@ -812,7 +812,7 @@ def create_standalone_block(
 
 def update_block_successors(blk: ida_hexrays.mblock_t, blk_succ_serial_list: list[int]):
     mba = blk.mba
-    if len(blk_succ_serial_list) == 0:
+    if not blk_succ_serial_list:
         blk.type = ida_hexrays.BLT_0WAY
     elif len(blk_succ_serial_list) == 1:
         blk.type = ida_hexrays.BLT_1WAY

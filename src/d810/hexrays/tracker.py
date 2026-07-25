@@ -197,7 +197,7 @@ class MopHistory(object):
         return new_mop_history
 
     def is_resolved(self) -> bool:
-        if len(self.unresolved_mop_list) == 0:
+        if not self.unresolved_mop_list:
             return True
         for x in self.unresolved_mop_list:
             x_value = self._mc_initial_environment.lookup(x, raise_exception=False)
@@ -339,7 +339,7 @@ class MopHistory(object):
         )
         if detailed_info:
             str_mop_list = "['" + "', '".join(formatted_mop_searched_list) + "']"
-            if len(self.block_path) == 0:
+            if not self.block_path:
                 logger.info("MopHistory for {0} => nothing".format(str_mop_list))
                 return
 
@@ -783,13 +783,13 @@ class MopTracker(object):
                 cur_ins = cur_blk.tail
 
         # We want to handle cases where the self.is_resolved() is True without doing anything
-        if len(self.history.block_serial_path) == 0:
+        if not self.history.block_serial_path:
             self.history.insert_block_in_path(cur_blk, 0)
         return None
 
     def is_resolved(self) -> bool:
-        if (len(self._unresolved_mops) == 0) and (
-            len(self._memory_unresolved_mops) == 0
+        if (not self._unresolved_mops) and (
+            not self._memory_unresolved_mops
         ):
             return True
 
@@ -959,7 +959,7 @@ def get_block_with_multiple_predecessors(
 def try_to_duplicate_one_block(var_histories: list[MopHistory]) -> tuple[int, int]:
     nb_duplication = 0
     nb_change = 0
-    if (len(var_histories) == 0) or (len(var_histories[0].block_path) == 0):
+    if (not var_histories) or (not var_histories[0].block_path):
         return nb_duplication, nb_change
     mba = var_histories[0].block_path[0].mba
     block_to_duplicate, pred_dict = get_block_with_multiple_predecessors(var_histories)
@@ -1098,7 +1098,7 @@ def get_segment_register_indexes(mop_list: list[ida_hexrays.mop_t]) -> list[int]
 def remove_segment_registers(mop_list: list[ida_hexrays.mop_t]) -> list[ida_hexrays.mop_t]:
     # TODO: instead of doing that, we should add the segment registers to the (global?) emulation environment
     segment_register_indexes = get_segment_register_indexes(mop_list)
-    if len(segment_register_indexes) == 0:
+    if not segment_register_indexes:
         return mop_list
     new_mop_list = []
     for i, mop in enumerate(mop_list):

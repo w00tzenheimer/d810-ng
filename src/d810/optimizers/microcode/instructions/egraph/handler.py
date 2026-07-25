@@ -451,7 +451,7 @@ class PatternOptimizer2(InstructionOptimizer):  # type: ignore[misc]
         if self.cur_maturity not in self.maturities:
             return None
         # If no rules are configured, skip conversion altogether
-        if len(self.rules) == 0:
+        if not self.rules:
             if optimizer_logger.debug_on:
                 optimizer_logger.debug(
                     "[PatternOptimizer] No canonical rules configured, skipping"

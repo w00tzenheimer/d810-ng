@@ -123,7 +123,7 @@ class ConditionalStateResolver:
         for possible_values, target_serial in zip(mcases.values, mcases.targets):
             if int(target_serial) != int(block_serial):
                 continue
-            if len(possible_values) == 0:
+            if not possible_values:
                 continue
             candidate_values.append(int(possible_values[0]))
 

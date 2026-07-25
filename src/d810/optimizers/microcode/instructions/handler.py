@@ -128,7 +128,7 @@ class GenericPatternRule(InstructionOptimizationRule):
         self, blk: ida_hexrays.mblock_t, instruction: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
         valid_candidates = self.get_valid_candidates(instruction, stop_early=True)
-        if len(valid_candidates) == 0:
+        if not valid_candidates:
             return None
         new_instruction = self.get_replacement(valid_candidates[0])
         return new_instruction
@@ -179,7 +179,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
 
         if optimizer_logger.debug_on:
             optimizer_logger.debug("Adding rule %s", rule)
-        if len(rule.maturities) == 0:
+        if not rule.maturities:
             rule.maturities = self.maturities
         self.rules.add(rule)
         return True

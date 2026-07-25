@@ -228,30 +228,7 @@ if mop.t == ida_hexrays.mop_d and _is_rotate_helper_call(mop.d):
 """
 
 
-# class RotateHelperInlineRule(PeepholeSimplificationRule):
-#     """Replace `__ROL*` / `__ROR*` helper calls by explicit (shl, shr, or) tree.
 
-#     This exposes the rotate to algebraic simplifications and constant
-#     folding, removing the need for special-case handling in the AST
-#     builder.
-#     """
-
-#     DESCRIPTION = "Inline ROL/ROR helper calls into shifts + or"
-#     # maturities = [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS]
-
-#     @_compat.override
-#     def check_and_replace(
-#         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
-#     ) -> ida_hexrays.minsn_t | None:
-#         if logger.debug_on:
-#             logger.debug(
-#                 "[RotateHelperInline] considering ea=%X, opcode=%s. is insn helper? %s  l=%s  r=%s",
-#                 sanitize_ea(ins.ea),
-#                 opcode_to_string(ins.opcode),
-#                 is_rotate_helper_call(ins),
-#                 format_mop_t(ins.l),
-#                 format_mop_t(ins.r),
-#             )
 #         if not is_rotate_helper_call(ins):
 #             return None
 

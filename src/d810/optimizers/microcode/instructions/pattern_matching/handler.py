@@ -411,7 +411,7 @@ class PatternOptimizer(InstructionOptimizer):
         """
         if optimizer_logger.debug_on:
             optimizer_logger.debug("Adding rule %s", rule.name)
-        if len(rule.maturities) == 0:
+        if not rule.maturities:
             rule.maturities = self.maturities
         self.rules.add(rule)
 
@@ -505,7 +505,7 @@ class PatternOptimizer(InstructionOptimizer):
         # Skip this optimizer entirely when no pattern-matching rules are configured.
         # This avoids the (potentially expensive) AST conversion and pattern lookup
         # overhead when the user has not enabled any pattern rules.
-        if len(self.rules) == 0:
+        if not self.rules:
             if optimizer_logger.debug_on:
                 optimizer_logger.debug(
                     "[PatternOptimizer.get_optimized_instruction] No rules configured, skipping"
