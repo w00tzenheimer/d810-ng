@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+from d810.ir.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+)
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.canonical_semantic_fragment import DetachedDirectRoutePlan
 from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
@@ -100,9 +106,10 @@ def _instruction_snapshots(
 ) -> tuple[InsnSnapshot, ...]:
     snapshots = []
     for index, instruction in enumerate(prepared_block.instructions):
-        rewrite = rewrite_anchor_ea is not None and index == len(
-            prepared_block.instructions
-        ) - 1
+        rewrite = (
+            rewrite_anchor_ea is not None
+            and index == len(prepared_block.instructions) - 1
+        )
         snapshots.append(
             InsnSnapshot(
                 opcode=-1 if rewrite else int(instruction.opcode),

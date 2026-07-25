@@ -87,9 +87,7 @@ def _prepared_body_fact(plan) -> PreparedNativeBodyFact:
                 native_ea=int(instruction_ea),
                 opcode=0x100 + index,
                 kind=(
-                    terminator_kind
-                    if instruction_ea == terminator_ea
-                    else InsnKind.MOV
+                    terminator_kind if instruction_ea == terminator_ea else InsnKind.MOV
                 ),
                 operand_shape=(),
                 writes_condition_codes=False,
@@ -237,4 +235,3 @@ def test_detached_direct_route_rejects_partial_prepared_arm_supersession() -> No
     assert rejection.anchor_ea == 0x40BB63
     assert rejection.live_mutation_started is False
     assert rejection.failure_phase == "projection"
-

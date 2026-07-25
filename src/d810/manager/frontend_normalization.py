@@ -50,9 +50,9 @@ class SessionFrontendNormalizationPlanAuthority:
     _plan: FragmentPlan | None = None
     _authority: NormalizationWorkItemAuthority | None = None
     _evidence_generation: int | None = None
-    _pending_prepared_body_facts: dict[
-        tuple[int, str, str], PreparedNativeBodyFact
-    ] = field(default_factory=dict)
+    _pending_prepared_body_facts: dict[tuple[int, str, str], PreparedNativeBodyFact] = (
+        field(default_factory=dict)
+    )
 
     def __post_init__(self) -> None:
         function_ea = int(self.function_ea)
@@ -182,8 +182,7 @@ class SessionFrontendNormalizationPlanAuthority:
             fact.native_ranges != native_body.native_ranges
             or fact.entry_block_ids != native_body.entry_block_ids
             or fact.terminal_block_ids != native_body.terminal_block_ids
-            or tuple(block.block_id for block in fact.blocks)
-            != native_body.block_ids
+            or tuple(block.block_id for block in fact.blocks) != native_body.block_ids
         ):
             raise FrontendNormalizationPublicationError(
                 "prepared body fact changed native-body inventory"
