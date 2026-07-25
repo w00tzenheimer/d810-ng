@@ -5229,3 +5229,65 @@ root or alter frontend-normalization selection, resolver ownership, or maturity
 restart behavior. No new A560 canary was run, so the accepted level remains C3
 and the first failed obligation remains the mutation-free direct-route C4
 projection at stable rewrite anchor `0x40BB63`.
+
+**2026-07-25T19:17:25Z — scoped preparation authority and v23 reclassification**
+
+Commits `b3c1e2ab5`, `064adc779`, and `e5d5fec28` made prepared native-body
+facts portable, added a mutation-free direct-route projection, and connected
+that projection to the configured A560 route. Commit `e4b1717db` contains only
+the requested Ruff formatting. The first integration canary exposed a real
+lineage defect after the PREOPT receipt committed: immutable facts belonged to
+the selected publication plan
+`frontend-normalization:0xA560:g1:root@0x40A5F0`, while the manager attempted to
+authorize the different complete plan `frontend-normalization:0xA560:g1`.
+The fail-open PREOPT dispatcher swallowed that post-receipt exception, so
+CALLS reported `frontend_normalization_plan_intent_missing`.
+
+Commit `a06e0b224` replaces that implicit plan-ID equivalence with typed
+generation authority. It retains the complete plan, the exact committed
+root-scoped work-item plan, its receipt, and only the immutable body facts that
+the work item actually prepared. Lookup is by complete source lineage plus an
+imported stable block ID and rejects absent or multiply owned blocks. The old
+plan-only recording and prepared-body lookup APIs were removed rather than
+kept as compatibility paths. Commit `fdfca0eb5` contains only Ruff formatting.
+The focused manager, pass, transform, adapter, detached-import, and backend
+gate is 351/351 green; Ruff lint and repository-wide formatting pass; both
+commits passed ast-grep, cycle, portable-shape, and all 14 import contracts.
+
+The mandatory fresh cache-disabled v23 A560 canary completed normally in
+21.48 seconds with worker return code zero and no reported segfault or numeric
+INTERR. Log:
+`.tmp/rhad-a560-v33-scoped-authority-v23.txt`; primary DB:
+`.tmp/rhad-a560-v33-scoped-authority-v23/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode is beside the DB. The semantic oracle remains red on one empty
+`while ( 1 )`.
+
+The prior authority regression is fixed. Transaction
+`182b02907b85471d93111add9691b453` commits all 260 planned operations, passes
+639 prepublication and 1180 postpublication validations, publishes its root,
+and records the receipt. Lifecycle event 29 records complete plan intent
+`frontend-normalization:0xA560:g1`, and event 30 binds current-MBA imported
+identity. At CALLS the configured route plan is accepted for stable imported
+source `0x40BB51`, rewrite anchor `0x40BB63`, proof corridor owners
+`0x40BB3A` plus `0x40BB51`, and direct target `0x40ACF3`.
+
+The next decline is typed `prepared_normalization_work_item_missing`. This is
+correct abstention, not an authority regression: the committed work item's
+native body contains 93 imported blocks and does not contain source block
+`0x40BB51`, while the generation-wide complete body contains 478 blocks. The
+code must not claim that an unselected complete body was prepared or weaken
+lookup to body/range coincidence.
+
+The v3.1 canary labels are corrected here. `DetachedDirectRoutePlan` is
+portable per-site intent, not the complete canonical `FragmentPlan` required
+by C3, and a pure `CfgProjection` is not gateway staging plus prepublication
+validation required by C4. Therefore the highest strictly completed v3.1
+A560 level is C2. The first failed obligation is
+`C3_complete_vertical_fragment_plan` at rewrite anchor `0x40BB63`: promote the
+single reference-owned route into one entry-connectable canonical
+`FragmentPlan` whose detached native body owns the predicate/state-write
+corridor, both superseded raw arms, the direct target, and dependencies. The
+gateway must then prepare and stage that exact plan to establish C4, followed
+by one atomic root publication and committed receipt for C5. Do not broaden to
+the 91-route set, reuse the unrelated 93-block PREOPT work item as authority,
+or call mutation-free projection C4.
