@@ -3190,3 +3190,40 @@ proving the split-identity shape in the narrow test, then accept the source
 block entry only through the exact write identity plus full corridor ending at
 the exact delivery anchor. Do not broaden the delivery identity, admit the
 dispatcher predecessor, or publish before C4.
+
+**2026-07-25T05:07:46Z**
+
+Commit `3c32206fe` corrects the split write/delivery identity predicate. A
+semantic predecessor may now be the exact state-write block entry even when
+the canonical route source identity begins at its later delivery instruction,
+but only when the write identity owns the entry and the complete corridor ends
+at an exact route delivery anchor. The focused canonical/resolver gate is
+278/278 green; Ruff, ast-grep, `graphify update .`, and all 14 import contracts
+pass.
+
+The mandatory cache-disabled A560 canary returned normally in 22.23 seconds
+(20.22 seconds inside pytest) with no process crash or numeric `INTERR`. Log:
+`.tmp/rhad-a560-v33-split-identity-reroot-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-split-identity-reroot-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-split-identity-reroot-v1/test_real_loader_matches_reach0/sub_40A560.c`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance.
+
+The split-identity proof advances the selected canonical route from native
+boundary `0x40AE3E` to its reference-equivalent semantic predecessor
+`0x40B51B`. Snapshot 3 / `MMAT_CALLS` now declines with
+`published_boundary_current_owner_count_mismatch` at `0x40B51B`; its payload
+reports zero current owners. This is a narrower C3 failure, but the highest
+completed semantic level remains C2 because no bounded plan was produced. The
+DB still contains no semantic-fragment transaction, validation outcome,
+route-oracle comparison, or semantic receipt; only the legacy 260/260
+frontend-normalization receipt exists.
+
+Continue by making this zero-owner rejection self-contained: record the exact
+normalization-plan boundary identity and every current EA-anchored identity
+that overlaps or contains `0x40B51B`. Determine whether publication coalesced
+the write and delivery into a larger live owner, omitted the write anchor from
+current identity authority, or left the source block unpublished. Do not relax
+identity containment, synthesize a live owner, or advance to C4 without that
+evidence.
