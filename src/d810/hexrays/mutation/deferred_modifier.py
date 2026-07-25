@@ -3319,9 +3319,7 @@ class DeferredGraphModifier:
         proxy = (
             None
             if gateway is None
-            else gateway.identity_index.logical_proxy_for_handle(
-                source_binding.handle
-            )
+            else gateway.identity_index.logical_proxy_for_handle(source_binding.handle)
         )
         source_version = (
             None
@@ -3378,8 +3376,7 @@ class DeferredGraphModifier:
         if (
             not suffix
             or getattr(suffix[-1], "next", None) is not None
-            or int(getattr(suffix[-1], "opcode", -1))
-            != int(ida_hexrays.m_goto)
+            or int(getattr(suffix[-1], "opcode", -1)) != int(ida_hexrays.m_goto)
         ):
             raise SemanticEdgeOperationRejected(
                 "CALLS-built fallthrough source lacks one final stale goto suffix"
