@@ -2955,16 +2955,17 @@ def compose_canonical_semantic_boundary_fragment_plan(
     conditional_sibling_serials: list[int] = []
     for predecessor in incoming_predecessors:
         predecessor_block = graph.blocks.get(predecessor)
-        if (
-            predecessor_block is None
-            or predecessor_block.kind is not BlockKind.TWO_WAY
-        ):
+        if predecessor_block is None or predecessor_block.kind is not BlockKind.TWO_WAY:
             continue
         successors = tuple(int(successor) for successor in predecessor_block.succs)
         sibling_serials = tuple(
             successor for successor in successors if successor != root_serial
         )
-        if len(successors) != 2 or root_serial not in successors or len(sibling_serials) != 1:
+        if (
+            len(successors) != 2
+            or root_serial not in successors
+            or len(sibling_serials) != 1
+        ):
             raise CanonicalSemanticFragmentRejected(
                 "published canonical boundary has an incomplete conditional envelope",
                 reason_code="published_boundary_conditional_envelope_incomplete",
@@ -2978,9 +2979,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
                 },
             )
         conditional_sibling_serials.extend(sibling_serials)
-    conditional_sibling_serials = list(
-        dict.fromkeys(conditional_sibling_serials)
-    )
+    conditional_sibling_serials = list(dict.fromkeys(conditional_sibling_serials))
 
     (
         target_blocks,
