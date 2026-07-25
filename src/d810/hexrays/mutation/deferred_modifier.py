@@ -3875,6 +3875,29 @@ class DeferredGraphModifier:
             raise SemanticFragmentBackendRejected(
                 "staged semantic fragment discard cannot remove entry or stop blocks"
             )
+        tail_fallthrough_restore = None
+        if serials:
+            first_staged_serial = int(serials[0])
+            staged_tail_band = tuple(range(first_staged_serial, original_qty - 1))
+            predecessor = self.mba.get_mblock(first_staged_serial - 1)
+            stop = self.mba.get_mblock(original_qty - 1)
+            predecessor_tail = None if predecessor is None else predecessor.tail
+            predecessor_successors = (
+                ()
+                if predecessor is None
+                else tuple(int(value) for value in predecessor.succset)
+            )
+            if (
+                serials == staged_tail_band
+                and predecessor is not None
+                and stop is not None
+                and int(predecessor.type) == int(ida_hexrays.BLT_1WAY)
+                and predecessor_successors == (first_staged_serial,)
+                and predecessor_tail is not None
+                and int(predecessor_tail.opcode) != int(ida_hexrays.m_goto)
+                and int(stop.type) == int(ida_hexrays.BLT_STOP)
+            ):
+                tail_fallthrough_restore = (predecessor, stop)
         pre_sweep_index = MbaBlockIdentityIndex.from_mba(
             self.mba,
             generation=int(gateway.generation),
@@ -3932,6 +3955,30 @@ class DeferredGraphModifier:
                     f"inventory: expected_qty={expected_qty} "
                     f"observed_qty={int(self.mba.qty)} changed={changed}"
                 )
+            if tail_fallthrough_restore is not None:
+                predecessor, stop = tail_fallthrough_restore
+                expected_stop_serial = expected_qty - 1
+                predecessor_successors = tuple(
+                    int(value) for value in predecessor.succset
+                )
+                if (
+                    int(predecessor.serial) != expected_stop_serial - 1
+                    or predecessor.nextb is not stop
+                    or int(stop.serial) != expected_stop_serial
+                    or predecessor_successors not in {(), (expected_stop_serial,)}
+                ):
+                    raise SemanticFragmentBackendRejected(
+                        "staged semantic fragment sweep cannot restore its exact "
+                        "published tail fallthrough"
+                    )
+                if not predecessor_successors:
+                    predecessor.succset.push_back(expected_stop_serial)
+                if int(predecessor.serial) not in tuple(
+                    int(value) for value in stop.predset
+                ):
+                    stop.predset.push_back(int(predecessor.serial))
+                predecessor.mark_lists_dirty()
+                stop.mark_lists_dirty()
             restore_failures = []
             for original_serial, label in temporary_protections:
                 # Every survivor was protected and every staged block was

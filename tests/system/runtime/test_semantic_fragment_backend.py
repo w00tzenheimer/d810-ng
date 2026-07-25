@@ -2804,6 +2804,90 @@ def test_staged_block_discard_uses_protected_unreachable_sweep(
     assert identity_index_builds == 1
 
 
+def test_staged_block_discard_restores_published_tail_fallthrough_to_stop(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    published_tail = _Block(
+        1,
+        start=0x401010,
+        block_type=ida_hexrays.BLT_1WAY,
+    )
+    staged = _Block(2, start=0xF10000, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(3, start=0x401020, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, published_tail)
+    published_tail.head = _Instruction(ida_hexrays.m_mov, published_tail.start)
+    published_tail.tail = published_tail.head
+    published_tail.succset.push_back(staged.serial)
+    staged.predset.push_back(published_tail.serial)
+    mba = _Mba((entry, published_tail, staged, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    basic_verify = mba.verify
+
+    def verify_successor_arity(always: bool) -> None:
+        basic_verify(always)
+        for serial in range(mba.qty):
+            block = mba.get_mblock(serial)
+            expected = {
+                int(ida_hexrays.BLT_STOP): 0,
+                int(ida_hexrays.BLT_0WAY): 0,
+                int(ida_hexrays.BLT_1WAY): 1,
+            }.get(int(block.type))
+            if expected is not None and int(block.nsucc()) != expected:
+                raise RuntimeError("INTERR: 50856")
+
+    monkeypatch.setattr(mba, "verify", verify_successor_arity)
+
+    modifier._discard_semantic_fragment_blocks((staged,))
+
+    assert mba.qty == 3
+    assert mba.get_mblock(2) is stop
+    assert int(stop.serial) == 2
+    assert tuple(published_tail.succset) == (stop.serial,)
+    assert tuple(stop.predset) == (published_tail.serial,)
+    assert mba.verify_calls == 1
+
+
+def test_staged_block_discard_invalidates_state_after_cleanup_failure(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+    modifier._stage_semantic_fragment(plan)
+    cleanup_calls = 0
+
+    def fail_after_possible_compaction(_versions) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        raise RuntimeError("rollback sweep failed after compaction")
+
+    monkeypatch.setattr(
+        modifier,
+        "_discard_detached_semantic_versions",
+        fail_after_possible_compaction,
+    )
+
+    with pytest.raises(RuntimeError, match="rollback sweep failed after compaction"):
+        modifier._discard_staged_semantic_fragment(plan)
+
+    assert modifier._semantic_fragment_state is None
+    modifier._discard_staged_semantic_fragment(plan)
+    assert cleanup_calls == 1
+    gateway.abort(reason="runtime failed-cleanup state invalidation")
+
+
 def test_gateway_rolls_back_disappeared_terminal_effect_and_receipts_applied_work(
     monkeypatch,
 ) -> None:

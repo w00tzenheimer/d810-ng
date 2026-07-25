@@ -3489,11 +3489,16 @@ def discard_staged_semantic_fragment(
         return
     if state.plan_id != plan.plan_id or state.atomic_group_id != plan.atomic_group_id:
         raise RuntimeError("staged semantic fragment does not match discard request")
-    modifier._discard_detached_semantic_versions(
-        tuple(state.binding(block_id).version for block_id in state.staged_block_ids)
-    )
-    _restore_native_body_address_ranges(modifier, state)
-    modifier._semantic_fragment_state = None
+    try:
+        modifier._discard_detached_semantic_versions(
+            tuple(
+                state.binding(block_id).version
+                for block_id in state.staged_block_ids
+            )
+        )
+        _restore_native_body_address_ranges(modifier, state)
+    finally:
+        modifier._semantic_fragment_state = None
 
 
 __all__ = [
