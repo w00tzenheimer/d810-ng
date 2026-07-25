@@ -1,5 +1,5 @@
 {
-  "publication_root_ea": "0x40A5B2",
+  "publication_root_ea": "0x40BB51",
   "capture": {
     "function_end_ea": "0x40C8A2",
     "maturities": [
@@ -13,63 +13,71 @@
     {
       "corridor": [
         [
-          "0x40A5B2",
-          "0x40A5CA"
+          "0x40BB44",
+          "0x40BB69"
         ]
       ],
-      "direct_target_ea": "0x40BECC",
+      "direct_target_ea": "0x40ACF3",
       "false_target_ea": null,
       "final_transfer_kind": "direct",
       "function_ea": "0x40A560",
-      "original_transfer_kind": "direct",
-      "owner_ea": "0x40A5B2",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40BB51",
       "predicate_kind": null,
       "reference_ledger": {
         "corridor": [
           {
-            "bytes": "bb4755b9ab",
-            "ea": 4236722,
+            "bytes": "bbef95970e",
+            "ea": 4242244,
             "mnemonic": "mov",
-            "op_str": "ebx, 0xabb95547",
+            "op_str": "ebx, 0xe9795ef",
             "size": 5,
             "writes_flags": false
           },
           {
-            "bytes": "eb26",
-            "ea": 4236744,
-            "mnemonic": "jmp",
-            "op_str": "0x40a5f0",
-            "size": 2,
+            "bytes": "0f85890b0000",
+            "ea": 4242251,
+            "mnemonic": "jne",
+            "op_str": "0x40c6da",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d8e0b0000",
+            "ea": 4242275,
+            "mnemonic": "jge",
+            "op_str": "0x40c6f7",
+            "size": 6,
             "writes_flags": false
           }
         ],
-        "corridor_end_ea": 4236746,
-        "corridor_start_ea": 4236722,
+        "corridor_end_ea": 4242281,
+        "corridor_start_ea": 4242244,
         "flag_writer_eas": [],
         "flow_register": "ebx",
         "function_ea": 4236640,
         "phase": "flow_route",
         "planned_branches": [
           {
-            "anchor_ea": 4236744,
+            "anchor_ea": 4242275,
             "opcode": "e9",
-            "target_ea": 4243148
+            "target_ea": 4238579
           }
         ],
         "state_writes": [
           {
-            "ea": 4236722,
+            "ea": 4242244,
             "mnemonic": "mov",
-            "value": 2881049927,
+            "value": 244815343,
             "value_kind": "immediate"
           }
         ],
         "status": "committed"
       },
-      "reference_ledger_identity": "flow_route:0x40A5C8",
+      "reference_ledger_identity": "flow_route:0x40BB63",
       "reference_phase": "flow_route",
-      "rewrite_anchor_ea": "0x40A5C8",
-      "route_id": "rhad:0x40A560:flow_route:0x40A5C8",
+      "rewrite_anchor_ea": "0x40BB63",
+      "route_id": "rhad:0x40A560:flow_route:0x40BB63",
       "true_target_ea": null
     }
   ],
@@ -83,7 +91,7 @@
     },
     "reference_binary_sha256": "6358957fe74360725b125bdc41b16df9952d95b338792fd3521249e5030ddd8c",
     "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-    "run_id": "a560-v33-entry-40a5b2-route-20260725",
+    "run_id": "a560-v33-40bb63-20260724d",
     "runtime_image": "d810-idapro-9.3-test-runtime:py313-v1",
     "runtime_image_id": "sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a"
   },

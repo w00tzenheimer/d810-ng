@@ -193,7 +193,7 @@ def test_manager_loads_only_configured_relative_oracle_manifests(tmp_path) -> No
         )
 
 
-def test_default_ollvm_profile_selects_pinned_entry_route_oracle() -> None:
+def test_default_ollvm_profile_selects_pinned_direct_route_oracle() -> None:
     source_project = ProjectConfiguration.from_file(
         Path(__file__).parents[3]
         / "src"
@@ -218,7 +218,7 @@ def test_default_ollvm_profile_selects_pinned_entry_route_oracle() -> None:
             ),
             function_rva=0xA560,
         ),
-        (0x40A5C8,),
+        (0x40BB63,),
     )
     assert selection is not None
     assert selection.run.reference_commit == (
@@ -227,11 +227,12 @@ def test_default_ollvm_profile_selects_pinned_entry_route_oracle() -> None:
     assert selection.run.runtime_image_id == (
         "sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a"
     )
-    assert selection.publication_root_ea == 0x40A5B2
-    assert tuple(route.rewrite_anchor_ea for route in selection.routes) == (0x40A5C8,)
+    assert selection.publication_root_ea == 0x40BB51
+    assert tuple(route.rewrite_anchor_ea for route in selection.routes) == (0x40BB63,)
     (route,) = selection.routes
-    assert route.owner_ea == 0x40A5B2
-    assert route.direct_target_ea == 0x40BECC
+    assert route.owner_ea == 0x40BB51
+    assert route.corridor == ((0x40BB44, 0x40BB69),)
+    assert route.direct_target_ea == 0x40ACF3
 
 
 def test_current_mba_identity_index_uses_only_current_mba_publication_binding(
