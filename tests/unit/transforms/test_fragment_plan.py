@@ -715,6 +715,35 @@ def test_fragment_block_materialization_is_explicit_and_role_complete() -> None:
         )
 
 
+def test_fragment_block_anchor_rejection_identifies_portable_owner() -> None:
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40C89B, 0x40C8A2),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x40C89B, 0x40C89C, 0x40C89D, 0x40C89E),
+    )
+
+    with pytest.raises(FragmentPlanRejected) as exc_info:
+        FragmentBlock(
+            block_id="native-terminal@0x40C898",
+            role=FragmentBlockRole.IMPORTED,
+            materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+            semantic_anchor_ea=0x40C898,
+            stable_identity=identity,
+            native_body_id="rhad-a560-terminal",
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == ("fragment_block_semantic_anchor_identity_mismatch")
+    assert rejection.anchor_ea == 0x40C898
+    assert rejection.payload == {
+        "block_id": "native-terminal@0x40C898",
+        "block_role": FragmentBlockRole.IMPORTED.value,
+        "block_materialization": FragmentBlockMaterialization.IMPORT_NATIVE.value,
+        "semantic_anchor_ea": "0x40C898",
+        "stable_identity": identity.diagnostic_label(),
+    }
+
+
 def test_fragment_plan_rejects_partial_conditional_operation() -> None:
     with pytest.raises(FragmentPlanRejected, match="both conditional roles"):
         FragmentOperation(
