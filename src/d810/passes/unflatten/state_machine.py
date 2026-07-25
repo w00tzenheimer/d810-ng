@@ -1171,8 +1171,7 @@ def _compose_configured_reference_scope_plan(
                 ) from port_rejection
         else:
             rejection = CanonicalSemanticFragmentRejected(
-                "configured reference publication root has a live semantic "
-                "predecessor",
+                "configured reference publication root has a live semantic predecessor",
                 reason_code="canonical_configured_reference_root_stale",
                 anchor_ea=publication_root_ea,
                 payload={
