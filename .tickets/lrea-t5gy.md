@@ -4560,3 +4560,36 @@ Continue with a red runtime contract for a staged successor edge into a
 calls-built STOP block and make rollback verifier-clean before establishing the
 pinned reference run. Do not skip rollback verification, dirty the STOP block,
 publish without the oracle, or classify this numeric INTERR as a segfault.
+
+**2026-07-25T14:00:01Z**
+
+Commit `f7b017bb2` makes staged-fragment rollback verifier-clean without
+weakening use-def invalidation for ordinary successors. Detaching a staged
+block now removes its predecessor metadata from a published `BLT_STOP` block
+without calling `mark_lists_dirty()` on that stop; all non-stop successors keep
+the prior invalidation behavior. The focused rollback contracts and the full
+semantic-fragment backend suite are 95/95 green, with Ruff, ast-grep, all 14
+import contracts, diff checks, `graphify update .`, and pre-commit gates
+passing.
+
+The mandatory cache-disabled A560 Docker canary completed normally in 28.66
+seconds. Log: `.tmp/rhad-a560-v33-stop-use-def-v6.txt`; primary schema-8 DB:
+`.tmp/rhad-a560-v33-stop-use-def-v6/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode:
+`.tmp/rhad-a560-v33-stop-use-def-v6/test_real_loader_matches_reach0/sub_40A560.c`.
+The semantic oracle still rejects one false `while ( 1 )`, so this is not A560
+acceptance.
+
+The diagnostic DB records the latest canonical transaction as intentionally
+aborted before root publication: the fragment staged, all 1009/1009
+prepublication outcomes passed, 393/396 planned operations applied to the
+detached graph, rollback succeeded, and no verifier failure was recorded. No
+detached route-oracle comparison ran and no root publication was attempted.
+Main-path A560 therefore remains at C3. The first failed C4 obligation remains
+exactly `detached route oracle requires one pinned reference run`.
+
+Continue with the v3.3 vertical loop by establishing one pinned reference run
+for one complete route fragment, proving its detached equivalence, and
+publishing only that fragment through C5 before attempting the broad 91-route
+composition. Do not interpret the clean rollback as semantic acceptance or
+bypass the pinned oracle gate.
