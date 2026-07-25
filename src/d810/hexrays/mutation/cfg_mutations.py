@@ -185,9 +185,7 @@ def insert_goto_instruction(
     # Generic structural helpers use mba.entry_ea so the synthesized address
     # remains inside the decompiled function (preventing INTERR 50863).  An
     # exact semantic rewrite supplies its already-live native anchor instead.
-    safe_ea = (
-        int(blk.mba.entry_ea) if instruction_ea is None else int(instruction_ea)
-    )
+    safe_ea = int(blk.mba.entry_ea) if instruction_ea is None else int(instruction_ea)
     goto_ins = ida_hexrays.minsn_t(safe_ea)
     goto_ins.ea = safe_ea
 
