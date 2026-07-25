@@ -34,6 +34,8 @@ from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentBlockRole,
+    FragmentBoundaryPort,
+    FragmentBoundaryPortKind,
     FragmentConditionalSelectEnvelope,
     FragmentDataFlowObligation,
     FragmentDataFlowRole,
@@ -2160,6 +2162,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
     current_identity_by_serial: Mapping[int, StableBlockIdentity],
     normalization_authority: NormalizationWorkItemAuthority,
     prohibited_dispatcher_serials: Iterable[int] = (),
+    temporary_dispatcher_entry_port_obligation_id: str | None = None,
 ) -> FragmentPlan:
     """Resolve one published imported boundary as a closed canonical root."""
     if not isinstance(graph, FlowGraph):
@@ -2292,6 +2295,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
         for predecessor in incoming_predecessors
         if int(predecessor) not in prohibited_serials
     )
+    temporary_port_predecessors: tuple[int, ...] = ()
     if not outside_predecessors:
         incoming_inventory = tuple(
             {
@@ -2307,18 +2311,27 @@ def compose_canonical_semantic_boundary_fragment_plan(
             }
             for predecessor in incoming_predecessors
         )
-        raise CanonicalSemanticFragmentRejected(
-            "published canonical boundary has no entry-connectable predecessor",
-            reason_code="published_boundary_predecessor_missing",
-            anchor_ea=boundary_anchor_ea,
-            payload={
-                "boundary_block_id": target.block_id,
-                "boundary_identity": target_identity.diagnostic_label(),
-                "current_owner": f"blk{root_serial}@0x{root_anchor_ea:X}",
-                "current_owner_identity": root_identity.diagnostic_label(),
-                "incoming_predecessors": incoming_inventory,
-            },
-        )
+        if (
+            temporary_dispatcher_entry_port_obligation_id is None
+            or len(incoming_predecessors) != 1
+            or not all(
+                predecessor in prohibited_serials
+                for predecessor in incoming_predecessors
+            )
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "published canonical boundary has no entry-connectable predecessor",
+                reason_code="published_boundary_predecessor_missing",
+                anchor_ea=boundary_anchor_ea,
+                payload={
+                    "boundary_block_id": target.block_id,
+                    "boundary_identity": target_identity.diagnostic_label(),
+                    "current_owner": f"blk{root_serial}@0x{root_anchor_ea:X}",
+                    "current_owner_identity": root_identity.diagnostic_label(),
+                    "incoming_predecessors": incoming_inventory,
+                },
+            )
+        temporary_port_predecessors = incoming_predecessors
 
     (
         target_blocks,
@@ -2488,11 +2501,18 @@ def compose_canonical_semantic_boundary_fragment_plan(
 
     for predecessor in outside_predecessors:
         add_current_external(predecessor)
-    prohibited_witness_serials = _portable_dispatcher_scc_witnesses(
-        graph,
-        tuple(int(serial) for serial in prohibited_dispatcher_serials),
-        current_identity_by_serial=current_identity_by_serial,
-        modified_current_serials=frozenset({int(root_serial)}),
+    temporary_predecessor_ids = tuple(
+        add_current_external(predecessor) for predecessor in temporary_port_predecessors
+    )
+    prohibited_witness_serials = (
+        ()
+        if temporary_port_predecessors
+        else _portable_dispatcher_scc_witnesses(
+            graph,
+            tuple(int(serial) for serial in prohibited_dispatcher_serials),
+            current_identity_by_serial=current_identity_by_serial,
+            modified_current_serials=frozenset({int(root_serial)}),
+        )
     )
     prohibited_ids = tuple(
         add_current_external(serial) for serial in prohibited_witness_serials
@@ -2518,6 +2538,16 @@ def compose_canonical_semantic_boundary_fragment_plan(
     route_group_id = "+".join(
         proof.proof_id for proof in nested_state_assignment_proofs
     )
+    boundary_ports = tuple(
+        FragmentBoundaryPort(
+            port_id=f"temporary-dispatcher-entry@0x{boundary_anchor_ea:X}",
+            kind=FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_ENTRY,
+            predecessor_block_id=predecessor_id,
+            root_block_id=replacement_id,
+            retirement_obligation_id=str(temporary_dispatcher_entry_port_obligation_id),
+        )
+        for predecessor_id in temporary_predecessor_ids
+    )
     return FragmentPlan(
         plan_id=(
             f"canonical-boundary-composition:{available_evidence.atomic_group_id}:"
@@ -2536,6 +2566,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
         operations=rewritten_operations,
         normalization_authority=normalization_authority,
         native_bodies=native_bodies,
+        boundary_ports=boundary_ports,
     )
 
 
