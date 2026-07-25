@@ -261,8 +261,7 @@ def _candidate_observation(
         else None
     )
     owner_start_ea = min(
-        int(interval.start_ea)
-        for interval in owner_identity.native_ranges.intervals
+        int(interval.start_ea) for interval in owner_identity.native_ranges.intervals
     )
     return SemanticRouteObservation(
         route_id=route.route_id,
