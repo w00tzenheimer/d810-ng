@@ -3492,8 +3492,7 @@ def discard_staged_semantic_fragment(
     try:
         modifier._discard_detached_semantic_versions(
             tuple(
-                state.binding(block_id).version
-                for block_id in state.staged_block_ids
+                state.binding(block_id).version for block_id in state.staged_block_ids
             )
         )
         _restore_native_body_address_ranges(modifier, state)
