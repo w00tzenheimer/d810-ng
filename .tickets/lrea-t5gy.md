@@ -3117,3 +3117,40 @@ inventory and prove whether the bounded fragment can make the dispatcher
 predecessor unreachable under detached root simulation. If it cannot, the
 work item must include a proved semantic predecessor or move the publication
 root; do not simply admit the dispatcher edge or claim C3.
+
+**2026-07-25T04:50:38Z**
+
+Commit `2dd6e5e39` makes the boundary-attachment failure self-contained in the
+diagnostic DB without changing semantic acceptance. The rejection now records
+the boundary block and identity, the current owner and identity, and every
+incoming block as an EA-anchored label with portable stable identity and
+prohibited classification. The focused canonical/resolver gate is 277/277
+green; Ruff, ast-grep, graphify, and all 14 import contracts pass.
+
+The mandatory cache-disabled A560 canary returned normally in 17.58 seconds
+with no segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-v33-boundary-predecessor-inventory-v1.txt`; primary DB:
+`.tmp/rhad-a560-v33-boundary-predecessor-inventory-v1/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+It remains semantically red with one false `while ( 1 )`; this is not A560
+acceptance. The highest completed semantic level remains C2, with no semantic
+transaction, oracle comparison, or receipt.
+
+The C3 rejection now proves the exact mismatch. Boundary
+`native[0x40AE3E-0x40AE63;exact=0x40AE3E]` is bound to `blk48@0x40A560`, whose
+sole incoming block is `blk47@0x40A560`, portable identity
+`native[0x40AE26-0x40AE3E;exact=0x40AE2E]`, and is classified prohibited. The
+isolated oracle DB `.tmp/rhad-oracle-v33.mcFPat/a560-d.diag.sqlite3` shows that
+the reference-patched `MMAT_GENERATED` block starting at `0x40AE3E` instead
+has one predecessor: the block starting at `0x40B51B`, whose terminator is the
+reference direct rewrite `0x40B52E -> 0x40AE3E`. In the unpatched generated
+lane, the native `0x40AE26-0x40AE3E` block ends in `m_ijmp` and `0x40AE3E` has
+no predecessor.
+
+Therefore admitting the current prohibited predecessor would preserve a
+non-reference incoming edge and cannot satisfy C4 predecessor semantics. The
+first C3 obligation is to select a reference-equivalent publication port:
+either move the root upstream to a proved semantic predecessor or carry the
+current incoming dispatcher edge as an explicit remaining work-item obligation
+that cannot satisfy final C4/C5 acceptance. Do not remove the predecessor veto
+without such authority, and do not classify `0x40AE3E` as an independently
+publishable C5 root on the current evidence.
