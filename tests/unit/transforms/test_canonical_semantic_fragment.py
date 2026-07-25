@@ -544,7 +544,6 @@ def _detached_reference_direct_route_case() -> tuple[
                 proof_ids=(
                     *native_body.proof_ids,
                     proof_operation.operation_id,
-                    raw_operation.operation_id,
                     "rhad:0x40A560:flow_route:0x40BB63",
                 ),
             ),
