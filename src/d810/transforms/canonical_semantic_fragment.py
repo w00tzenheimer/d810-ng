@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from d810.analyses.control_flow.semantic_route_evidence import (
     BoundCanonicalSemanticEvidence,
@@ -69,6 +69,28 @@ class CanonicalSemanticFragmentRejected(ValueError):
         self.reason_code = str(reason_code)
         self.anchor_ea = None if anchor_ea is None else int(anchor_ea)
         self.payload = dict(payload or {})
+
+
+@dataclass(frozen=True, slots=True)
+class _NestedStateAssignmentProjectionDecision:
+    """One portable nested-route projection decision for diagnostics."""
+
+    route_proof_id: str
+    source_anchor_ea: int
+    disposition: str
+    reason: str
+    source_block_ids: tuple[str, ...] = ()
+    corridor_block_ids: tuple[str, ...] = ()
+
+    def diagnostic_payload(self) -> dict[str, object]:
+        return {
+            "route_proof_id": self.route_proof_id,
+            "source_anchor_ea": f"0x{int(self.source_anchor_ea):X}",
+            "disposition": self.disposition,
+            "reason": self.reason,
+            "source_block_ids": self.source_block_ids,
+            "corridor_block_ids": self.corridor_block_ids,
+        }
 
 
 def _identity_contains(
@@ -1029,7 +1051,11 @@ def _with_nested_imported_state_assignments(
     *,
     component_block_ids: frozenset[str],
     excluded_proof_ids: frozenset[str],
-) -> tuple[FragmentPlan, tuple[SemanticRouteProof, ...]]:
+) -> tuple[
+    FragmentPlan,
+    tuple[SemanticRouteProof, ...],
+    tuple[_NestedStateAssignmentProjectionDecision, ...],
+]:
     """Replace reachable imported dispatcher exits with canonical state routes.
 
     Frontend normalization retains the native selector topology so later
@@ -1064,6 +1090,7 @@ def _with_nested_imported_state_assignments(
             FragmentBlock,
         ]
     ] = []
+    decisions: list[_NestedStateAssignmentProjectionDecision] = []
     claimed_source_ids: dict[str, str] = {}
     for proof in available_evidence.route_proofs:
         if (
@@ -1090,6 +1117,14 @@ def _with_nested_imported_state_assignments(
             )
         )
         if not source_matches:
+            decisions.append(
+                _NestedStateAssignmentProjectionDecision(
+                    route_proof_id=proof.proof_id,
+                    source_anchor_ea=int(proof.source_anchor_ea),
+                    disposition="skipped",
+                    reason="source_not_in_component",
+                )
+            )
             continue
         if len(source_matches) != 1:
             raise CanonicalSemanticFragmentRejected(
@@ -1187,9 +1222,19 @@ def _with_nested_imported_state_assignments(
                 destination,
             )
         )
+        decisions.append(
+            _NestedStateAssignmentProjectionDecision(
+                route_proof_id=proof.proof_id,
+                source_anchor_ea=int(proof.source_anchor_ea),
+                disposition="projected",
+                reason="semantic_route_projected",
+                source_block_ids=(source.block_id,),
+                corridor_block_ids=tuple(dict.fromkeys(corridor_owner_ids)),
+            )
+        )
 
     if not replacements:
-        return plan, ()
+        return plan, (), tuple(decisions)
 
     replacement_by_operation_id = {
         raw_operation.operation_id: FragmentOperation(
@@ -1258,6 +1303,7 @@ def _with_nested_imported_state_assignments(
             ),
         ),
         tuple(proof for proof, *_rest in replacements),
+        tuple(decisions),
     )
 
 
@@ -1429,6 +1475,7 @@ def compose_canonical_semantic_fragment_plan(
     (
         effective_normalization_plan,
         nested_state_assignment_proofs,
+        nested_state_assignment_decisions,
     ) = _with_nested_imported_state_assignments(
         effective_normalization_plan,
         available_evidence,
@@ -1437,21 +1484,37 @@ def compose_canonical_semantic_fragment_plan(
         ),
         excluded_proof_ids=frozenset(item.proof_id for item in evidence.route_proofs),
     )
-    target_blocks, target_operations, native_body = _detached_target_component(
-        graph,
-        effective_normalization_plan,
-        target,
-        current_identity_by_serial=current_identity_by_serial,
-        canonical_proof_id="+".join(
-            (
-                *(item.proof_id for item in evidence.route_proofs),
-                *(item.proof_id for item in nested_state_assignment_proofs),
-            )
-        ),
-        normalization_authority=normalization_authority,
-        allow_unresolved_published_boundaries=False,
-        prohibited_dispatcher_serials=prohibited_serial_set,
-    )
+    try:
+        target_blocks, target_operations, native_body = _detached_target_component(
+            graph,
+            effective_normalization_plan,
+            target,
+            current_identity_by_serial=current_identity_by_serial,
+            canonical_proof_id="+".join(
+                (
+                    *(item.proof_id for item in evidence.route_proofs),
+                    *(item.proof_id for item in nested_state_assignment_proofs),
+                )
+            ),
+            normalization_authority=normalization_authority,
+            allow_unresolved_published_boundaries=False,
+            prohibited_dispatcher_serials=prohibited_serial_set,
+        )
+    except CanonicalSemanticFragmentRejected as exc:
+        if not nested_state_assignment_decisions:
+            raise
+        raise CanonicalSemanticFragmentRejected(
+            str(exc),
+            reason_code=exc.reason_code,
+            anchor_ea=exc.anchor_ea,
+            payload={
+                **exc.payload,
+                "nested_state_route_projection": tuple(
+                    decision.diagnostic_payload()
+                    for decision in nested_state_assignment_decisions
+                ),
+            },
+        ) from exc
     nested_rewrite_by_operation_id = {
         f"route:{item.proof_id}": _direct_transfer_rewrite(item)
         for item in nested_state_assignment_proofs
