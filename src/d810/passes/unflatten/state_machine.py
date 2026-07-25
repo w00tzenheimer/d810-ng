@@ -1242,35 +1242,46 @@ def _compose_configured_reference_scope_plan(
                     route_candidate,
                 )
             )
-        try:
-            configured_plan = compose_canonical_semantic_fragment_plan(
-                graph,
-                normalization_plan,
-                route_candidate,
-                available_evidence=available_evidence,
-                current_identity_by_serial=current_identity_by_serial,
-                normalization_authority=normalization_authority,
-                prohibited_dispatcher_serials=prohibited_dispatcher_serials,
-            )
-        except CanonicalSemanticFragmentRejected as exc:
+            try:
+                configured_plan = compose_boundary(
+                    int(detached_direct_plan.source_block.semantic_anchor_ea),
+                    kind="configured_reference_detached_direct_fragment",
+                )
+            except CanonicalSemanticFragmentRejected as exc:
+                raise _with_canonical_composition_attempts(
+                    exc,
+                    tuple(composition_attempts),
+                ) from exc
+        else:
+            try:
+                configured_plan = compose_canonical_semantic_fragment_plan(
+                    graph,
+                    normalization_plan,
+                    route_candidate,
+                    available_evidence=available_evidence,
+                    current_identity_by_serial=current_identity_by_serial,
+                    normalization_authority=normalization_authority,
+                    prohibited_dispatcher_serials=prohibited_dispatcher_serials,
+                )
+            except CanonicalSemanticFragmentRejected as exc:
+                composition_attempts.append(
+                    _rejected_canonical_composition_attempt(
+                        kind="configured_reference_live_route",
+                        rejection=exc,
+                        route_candidate=route_candidate,
+                    )
+                )
+                raise _with_canonical_composition_attempts(
+                    exc,
+                    tuple(composition_attempts),
+                ) from exc
             composition_attempts.append(
-                _rejected_canonical_composition_attempt(
+                _accepted_canonical_composition_attempt(
                     kind="configured_reference_live_route",
-                    rejection=exc,
+                    plan=configured_plan,
                     route_candidate=route_candidate,
                 )
             )
-            raise _with_canonical_composition_attempts(
-                exc,
-                tuple(composition_attempts),
-            ) from exc
-        composition_attempts.append(
-            _accepted_canonical_composition_attempt(
-                kind="configured_reference_live_route",
-                plan=configured_plan,
-                route_candidate=route_candidate,
-            )
-        )
         try:
             return bind_fragment_reference_oracle(
                 configured_plan,

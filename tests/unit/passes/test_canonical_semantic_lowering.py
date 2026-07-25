@@ -1200,6 +1200,7 @@ def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
         source_block=SimpleNamespace(
             block_id="prepared-source",
             native_body_id="prepared-body",
+            semantic_anchor_ea=0x1100,
         ),
         diagnostic_payload=lambda: dict(expected_payload),
     )
@@ -1215,16 +1216,23 @@ def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
         plan_detached,
     )
     vertical_plan = replace(plan, plan_id="canonical-vertical:test")
-    composition_calls = []
+    boundary_calls = []
 
-    def compose_vertical(*args, **kwargs):
-        composition_calls.append((args, kwargs))
+    def compose_vertical_boundary(*args, **kwargs):
+        boundary_calls.append((args, kwargs))
         return vertical_plan
 
     monkeypatch.setattr(
         state_machine_module,
+        "compose_canonical_semantic_boundary_fragment_plan",
+        compose_vertical_boundary,
+    )
+    monkeypatch.setattr(
+        state_machine_module,
         "compose_canonical_semantic_fragment_plan",
-        compose_vertical,
+        lambda *_args, **_kwargs: pytest.fail(
+            "an operation-owned detached route must compose from its boundary"
+        ),
     )
     bound_plan = object()
     bind_calls = []
@@ -1262,7 +1270,7 @@ def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
         "route_source_anchor_eas": ("0x1100",),
         **expected_payload,
     }
-    assert attempts[1]["kind"] == "configured_reference_live_route"
+    assert attempts[1]["kind"] == "configured_reference_detached_direct_fragment"
     assert attempts[1]["outcome"] == "accepted"
     assert attempts[1]["plan_id"] == vertical_plan.plan_id
     assert planner_calls == [
@@ -1271,10 +1279,11 @@ def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
             {"normalization_authority": normalization_authority},
         )
     ]
-    assert composition_calls == [
+    assert boundary_calls == [
         (
-            (graph, plan, candidate),
+            (graph, plan),
             {
+                "boundary_anchor_ea": 0x1100,
                 "available_evidence": candidate,
                 "current_identity_by_serial": {
                     serial: _identity(block.start_ea)
