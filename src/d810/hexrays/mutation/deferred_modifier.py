@@ -3991,17 +3991,21 @@ class DeferredGraphModifier:
                     "staged semantic fragment sweep removed an unexpected "
                     f"inventory: expected_qty={expected_qty} "
                     f"observed_qty={int(self.mba.qty)} changed={changed}"
-                )
+            )
             if tail_fallthrough_restore is not None:
-                predecessor, stop = tail_fallthrough_restore
+                predecessor, _prior_stop = tail_fallthrough_restore
                 expected_stop_serial = expected_qty - 1
+                stop = self.mba.get_mblock(expected_stop_serial)
+                next_block = predecessor.nextb
                 predecessor_successors = tuple(
                     int(value) for value in predecessor.succset
                 )
                 if (
                     int(predecessor.serial) != expected_stop_serial - 1
-                    or predecessor.nextb is not stop
-                    or int(stop.serial) != expected_stop_serial
+                    or next_block is None
+                    or int(next_block.serial) != expected_stop_serial
+                    or stop is None
+                    or int(stop.type) != int(ida_hexrays.BLT_STOP)
                     or predecessor_successors not in {(), (expected_stop_serial,)}
                 ):
                     raise SemanticFragmentBackendRejected(

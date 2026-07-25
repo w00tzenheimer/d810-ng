@@ -2822,6 +2822,12 @@ def test_staged_block_discard_restores_published_tail_fallthrough_to_stop(
     gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
     basic_verify = mba.verify
+    sweep = mba.remove_empty_and_unreachable_blocks
+
+    def sweep_with_fresh_stop_wrapper() -> bool:
+        changed = sweep()
+        published_tail.nextb = type("_BlockAlias", (), {"serial": stop.serial})()
+        return changed
 
     def verify_successor_arity(always: bool) -> None:
         basic_verify(always)
@@ -2835,6 +2841,11 @@ def test_staged_block_discard_restores_published_tail_fallthrough_to_stop(
             if expected is not None and int(block.nsucc()) != expected:
                 raise RuntimeError("INTERR: 50856")
 
+    monkeypatch.setattr(
+        mba,
+        "remove_empty_and_unreachable_blocks",
+        sweep_with_fresh_stop_wrapper,
+    )
     monkeypatch.setattr(mba, "verify", verify_successor_arity)
 
     modifier._discard_semantic_fragment_blocks((staged,))
