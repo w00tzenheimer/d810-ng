@@ -252,11 +252,11 @@ def test_fragment_operation_supports_explicit_call_fallthrough() -> None:
     assert operation.predicate_anchor_ea is None
 
 
-def test_direct_transfer_rewrite_owns_reference_delivery_corridor() -> None:
+def test_direct_transfer_rewrite_separates_proof_origin_from_operation_owner() -> None:
     rewrite = FragmentDirectTransferRewrite(
         route_proof_id="flow_route:0x40BB63",
-        owner_identity=_identity(0x40BB44, 0x40BB64),
-        owner_anchor_ea=0x40BB44,
+        owner_identity=_identity(0x40BB51, 0x40BB69),
+        owner_anchor_ea=0x40BB51,
         rewrite_anchor_ea=0x40BB63,
         delivery_region=NativeEaInterval(0x40BB63, 0x40BB64),
         proof_corridor_instruction_eas=(0x40BB44, 0x40BB4B, 0x40BB63),
@@ -275,6 +275,8 @@ def test_direct_transfer_rewrite_owns_reference_delivery_corridor() -> None:
     )
 
     assert operation.direct_transfer_rewrite is rewrite
+    assert rewrite.owner_anchor_ea == 0x40BB51
+    assert rewrite.proof_corridor_instruction_eas[0] == 0x40BB44
     assert rewrite.rewrite_anchor_ea == 0x40BB63
     assert rewrite.proof_corridor_instruction_eas[-1] == 0x40BB63
     assert rewrite.superseded_instruction_eas == (0x40BB63,)
@@ -301,6 +303,20 @@ def test_direct_transfer_rewrite_rejects_incomplete_or_conditional_ownership() -
             delivery_region=NativeEaInterval(0x40BB63, 0x40BB64),
             proof_corridor_instruction_eas=(0x40BB44, 0x40BB63),
             superseded_instruction_eas=(0x40BB4B, 0x40BB63),
+        )
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="owner must lie between its proof origin and rewrite anchor",
+    ):
+        FragmentDirectTransferRewrite(
+            route_proof_id="flow_route:0x40BB63",
+            owner_identity=_identity(0x40BB40, 0x40BB69),
+            owner_anchor_ea=0x40BB40,
+            rewrite_anchor_ea=0x40BB63,
+            delivery_region=NativeEaInterval(0x40BB63, 0x40BB64),
+            proof_corridor_instruction_eas=(0x40BB44, 0x40BB63),
+            superseded_instruction_eas=(0x40BB63,),
         )
 
     with pytest.raises(FragmentPlanRejected, match="only to one direct edge"):
