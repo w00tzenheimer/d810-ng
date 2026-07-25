@@ -1,0 +1,708 @@
+{
+  "schema_version": 1,
+  "donor": {
+    "commit": "ab769f182942f83191d883151d74b78fecac43cb",
+    "base_commit": "85d567d8c8b969c56839a7bdf251c3a5526f508e",
+    "plan": "docs/superpowers/plans/2026-07-24-portable-cfg-transactions.md"
+  },
+  "integration_base": "2e7b30aa0015cbc5d649f04e3458f30616acc641",
+  "guarantees": [
+    {
+      "id": "nominal_plan_block_identity",
+      "donor_source": "src/d810/transforms/cfg_transaction.py::class PlanBlockRef:",
+      "donor_test": "tests/unit/transforms/test_cfg_transaction.py::def test_plan_local_refs_are_nominal_and_replay_stable",
+      "current_production_seam": "src/d810/transforms/cfg_transaction.py::class PlanBlockRef:",
+      "current_status": "accepted",
+      "required_port": "Retain nominal plan/local identity without EA, hash, BADADDR, or serial derivation.",
+      "diagnostic_proof": {
+        "tables": ["cfg_creation_witnesses"],
+        "events": ["planned", "bound"],
+        "assertion": "Distinct local_block_id values remain distinct even when diagnostic body digests match."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/transforms/test_cfg_transaction.py::def test_plan_local_refs_are_nominal_and_replay_stable",
+        "current": "tests/unit/transforms/test_cfg_transaction.py::def test_plan_local_refs_are_nominal_and_replay_stable"
+      }
+    },
+    {
+      "id": "attempt_authority_scope",
+      "donor_source": "src/d810/transforms/cfg_transaction.py::class TransactionAttemptId:",
+      "donor_test": "tests/unit/transforms/test_cfg_transaction.py::def test_transactions_keep_plan_and_binding_authority_consistent",
+      "current_production_seam": "src/d810/transforms/cfg_transaction.py::class TransactionAttemptId:",
+      "current_status": "accepted",
+      "required_port": "Retain plan, session, generation, and attempt as one immutable realization authority.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts"],
+        "events": ["planned", "committed"],
+        "assertion": "Every attempt row is keyed by the exact plan and attempt and records its MBA generation."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/transforms/test_cfg_transaction.py::def test_transactions_keep_plan_and_binding_authority_consistent",
+        "current": "tests/unit/transforms/test_cfg_transaction.py::def test_transactions_keep_attempt_projection_and_binding_authority_consistent"
+      }
+    },
+    {
+      "id": "participant_protocol_complete",
+      "donor_source": "src/d810/transforms/cfg_transaction.py::class CfgTransactionParticipant(Protocol):",
+      "donor_test": "tests/unit/transforms/test_cfg_transaction.py::def test_transactions_keep_plan_and_binding_authority_consistent",
+      "current_production_seam": "src/d810/transforms/cfg_transaction.py::class CfgTransactionParticipant(Protocol):",
+      "current_status": "accepted",
+      "required_port": "Keep the portable project, preflight, bind, realize, and observe protocol below Hex-Rays.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_phase_events"],
+        "events": ["projected", "preflighted", "bound", "realizing", "observed"],
+        "assertion": "One attempt timeline contains every protocol phase in order."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/transforms/test_cfg_transaction.py::def test_transactions_keep_plan_and_binding_authority_consistent",
+        "current": "tests/unit/transforms/test_cfg_transaction.py::def test_transactions_keep_attempt_projection_and_binding_authority_consistent"
+      }
+    },
+    {
+      "id": "plan_neutral_cfg_projection",
+      "donor_source": "src/d810/transforms/edit_simulator.py::def project_patch_plan(",
+      "donor_test": "tests/unit/transforms/test_cfg_projection.py::def test_contract_module_has_no_patch_plan_binding",
+      "current_production_seam": "src/d810/transforms/contract.py::class CfgContract:",
+      "current_status": "partial",
+      "required_port": "Make CfgContract consume CfgProjection and move PatchPlan-specific simulation and focus collection into edit_simulator.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_phase_events"],
+        "events": ["projected", "preflighted"],
+        "assertion": "The projected phase records portable focus refs and the preflight phase records the projection contract result."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/transforms/test_cfg_projection.py::def test_contract_module_has_no_patch_plan_binding",
+        "current": "tests/unit/transforms/test_cfg_projection.py::def test_contract_module_has_no_patch_plan_binding"
+      }
+    },
+    {
+      "id": "synthetic_focus_full_graph_validation",
+      "donor_source": "src/d810/transforms/contract.py::class CfgContract:",
+      "donor_test": "tests/unit/transforms/test_cfg_projection.py::def test_verify_projection_checks_created_blocks_when_focus_is_mixed",
+      "current_production_seam": "src/d810/transforms/contract.py::class CfgContract:",
+      "current_status": "missing",
+      "required_port": "Widen projected validation to the complete graph whenever focus contains a PlanBlockRef.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_phase_events"],
+        "events": ["preflighted", "rejected_clean"],
+        "assertion": "An invalid synthetic block fails preflight even when snapshot refs are also focused."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/transforms/test_cfg_projection.py::def test_verify_projection_checks_created_blocks_when_focus_is_mixed",
+        "current": "tests/unit/transforms/test_cfg_projection.py::def test_verify_projection_checks_created_blocks_when_focus_is_mixed"
+      }
+    },
+    {
+      "id": "production_cfg_contract_projection",
+      "donor_source": "src/d810/hexrays/contracts/cfg_contract.py::class IDACfgContract:",
+      "donor_test": "tests/system/hexrays/contracts/test_transaction_engine_projection.py::def test_engine_uses_concrete_ida_projection_interface",
+      "current_production_seam": "src/d810/hexrays/contracts/cfg_contract.py::class IDACfgContract:",
+      "current_status": "missing",
+      "required_port": "Implement the projection API in the concrete IDA contract and pass one projection through transaction precheck and validation.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_phase_events"],
+        "events": ["projected", "preflighted"],
+        "assertion": "The production participant records a successful concrete IDA projection check before binding."
+      },
+      "acceptance_test": {
+        "donor": "tests/system/hexrays/contracts/test_transaction_engine_projection.py::def test_engine_uses_concrete_ida_projection_interface",
+        "current": "tests/system/hexrays/contracts/test_transaction_engine_projection.py::def test_engine_uses_concrete_ida_projection_interface"
+      }
+    },
+    {
+      "id": "synthetic_reservation_prewrite",
+      "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::def reserve_plan_block(",
+      "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_reserved_synthetic_proxy_binds_only_when_insertion_is_realized",
+      "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::class MbaBlockIdentityIndex:",
+      "current_status": "missing",
+      "required_port": "Reserve a PlanBlockRef, attempt-local handle, and logical version before the first SDK creation call.",
+      "diagnostic_proof": {
+        "tables": ["cfg_creation_witnesses", "cfg_transaction_phase_events"],
+        "events": ["bound", "realizing"],
+        "assertion": "A reserved witness with no returned serial exists before the realizing phase starts."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_reserved_synthetic_proxy_binds_only_when_insertion_is_realized",
+        "current": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_reserved_synthetic_proxy_binds_only_when_insertion_is_realized"
+      }
+    },
+    {
+      "id": "exact_sdk_return_binding",
+      "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::def bind_reserved_plan_block(",
+      "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_plan_block_receipt_preserves_requested_and_returned_coordinates",
+      "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::class MbaBlockIdentityIndex:",
+      "current_status": "missing",
+      "required_port": "Bind the exact SDK-returned block after creation while shifting transaction coordinates at the requested insertion boundary.",
+      "diagnostic_proof": {
+        "tables": ["cfg_creation_witnesses"],
+        "events": ["realizing", "observed"],
+        "assertion": "Each created witness records distinct requested and returned coordinates when the SDK drifts."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_plan_block_receipt_preserves_requested_and_returned_coordinates",
+        "current": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_plan_block_receipt_preserves_requested_and_returned_coordinates"
+      }
+    },
+    {
+      "id": "creation_receipt_atomicity",
+      "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::class PlanBlockCreationReceipt:",
+      "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_generic_insert_cannot_consume_a_typed_plan_reservation",
+      "current_production_seam": "src/d810/hexrays/mutation/mba_mutation_events.py::class MbaMutationGateway:",
+      "current_status": "missing",
+      "required_port": "Make typed reserve-and-bind the only path that can claim CREATED_SYNTHETIC ownership and produce a creation receipt.",
+      "diagnostic_proof": {
+        "tables": ["cfg_creation_witnesses"],
+        "events": ["bound", "observed"],
+        "assertion": "No created_synthetic witness reaches observed without one exact reservation and binding receipt."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_generic_insert_cannot_consume_a_typed_plan_reservation",
+        "current": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_generic_insert_cannot_consume_a_typed_plan_reservation"
+      }
+    },
+    {
+      "id": "abort_replay_identity",
+      "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::class PlanBlockReservation:",
+      "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_plan_block_replay_allocates_new_attempt_local_realization",
+      "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::class MbaBlockIdentityIndex:",
+      "current_status": "missing",
+      "required_port": "Discard aborted reservations and provisional receipts, and allocate a fresh handle/version when the same PlanBlockRef is replayed.",
+      "diagnostic_proof": {
+        "tables": ["cfg_creation_witnesses"],
+        "events": ["rejected_clean", "planned"],
+        "assertion": "The aborted witness is invalidated and the replayed attempt has a distinct handle and logical version."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_plan_block_replay_allocates_new_attempt_local_realization",
+        "current": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_plan_block_replay_allocates_new_attempt_local_realization"
+      }
+    },
+    {
+      "id": "observed_ephemeral_separation",
+      "donor_source": "src/d810/ir/block_identity.py::OBSERVED_EPHEMERAL",
+      "donor_test": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_serial_space_imports_are_observed_not_created",
+      "current_production_seam": "src/d810/ir/block_identity.py::class BlockHandleProvenance",
+      "current_status": "missing",
+      "required_port": "Separate anonymously observed SDK blocks from D810-owned created blocks and forbid inferred PlanBlockRef ownership.",
+      "diagnostic_proof": {
+        "tables": ["cfg_creation_witnesses"],
+        "events": ["observed"],
+        "assertion": "Anonymous helpers persist observed_ephemeral provenance and no plan-local block identity."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_serial_space_imports_are_observed_not_created",
+        "current": "tests/unit/hexrays/ir/test_mba_identity_index.py::def test_serial_space_imports_are_observed_not_created"
+      }
+    },
+    {
+      "id": "immutable_fragment_snapshot",
+      "donor_source": "src/d810/hexrays/mutation/semantic_fragment_preparation.py::class PreparedSemanticFragment:",
+      "donor_test": "tests/system/runtime/test_semantic_fragment_backend.py::def test_real_backend_snapshots_while_idle_and_hands_preflight_projection_to_stage",
+      "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_backend.py::def _project_fragment(",
+      "current_status": "partial",
+      "required_port": "Capture immutable full-CFG, semantic, root, data-flow, range, flag, terminal, and prepared-native facts while the gateway is idle.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_phase_events", "semantic_fragment_validation_outcomes"],
+        "events": ["projected", "preflighted"],
+        "assertion": "The projection and every preflight obligation precede the realizing phase for one attempt."
+      },
+      "acceptance_test": {
+        "donor": "tests/system/runtime/test_semantic_fragment_backend.py::def test_real_backend_snapshots_while_idle_and_hands_preflight_projection_to_stage",
+        "current": "tests/system/runtime/test_semantic_fragment_backend.py::def test_real_backend_snapshots_while_idle_and_hands_preflight_projection_to_stage"
+      }
+    },
+    {
+      "id": "pure_preflight_zero_write",
+      "donor_source": "src/d810/transforms/fragment_projection.py::def project_fragment(",
+      "donor_test": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_every_preflight_obligation_rejects_before_any_mutation",
+      "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_publication.py::def publish_semantic_fragment(",
+      "current_status": "missing",
+      "required_port": "Run portable fragment and CFG contracts before batch creation so every knowable failure is REJECTED_CLEAN with zero SDK writes.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events"],
+        "events": ["preflighted", "rejected_clean"],
+        "assertion": "A clean rejection records mutation_started=0 and no realizing phase."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_every_preflight_obligation_rejects_before_any_mutation",
+        "current": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_every_preflight_obligation_rejects_before_any_mutation"
+      }
+    },
+    {
+      "id": "exact_single_use_preflight_authority",
+      "donor_source": "src/d810/hexrays/mutation/semantic_fragment_preparation.py::class PreparedSemanticFragmentAuthority:",
+      "donor_test": "tests/system/runtime/test_semantic_fragment_backend.py::def test_backend_consumes_prepared_authority_exactly_once",
+      "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_backend.py::class SemanticFragmentBackendState:",
+      "current_status": "missing",
+      "required_port": "Bind prepared authority to exact plan object, snapshot token, root inventory, session, generation, and attempt; consume it once before mutation.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events"],
+        "events": ["preflighted", "bound", "rejected_clean"],
+        "assertion": "Foreign, stale, swapped, or reused prepared authority rejects before realizing."
+      },
+      "acceptance_test": {
+        "donor": "tests/system/runtime/test_semantic_fragment_backend.py::def test_backend_consumes_prepared_authority_exactly_once",
+        "current": "tests/system/runtime/test_semantic_fragment_backend.py::def test_backend_consumes_prepared_authority_exactly_once"
+      }
+    },
+    {
+      "id": "prepared_payload_shape_authority",
+      "donor_source": "src/d810/hexrays/mutation/semantic_fragment_preparation.py::class PreparedSemanticFragment:",
+      "donor_test": "tests/system/runtime/test_semantic_fragment_backend.py::def test_malformed_native_payload_rejects_before_first_sdk_write",
+      "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_backend.py::def _prepare_native_bodies(",
+      "current_status": "missing",
+      "required_port": "Separate immutable typed facts from SDK payload and verify payload shape against those facts before realization.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "semantic_fragment_validation_outcomes"],
+        "events": ["preflighted", "rejected_clean"],
+        "assertion": "Malformed payload records the typed failed obligation with mutation_started=0."
+      },
+      "acceptance_test": {
+        "donor": "tests/system/runtime/test_semantic_fragment_backend.py::def test_malformed_native_payload_rejects_before_first_sdk_write",
+        "current": "tests/system/runtime/test_semantic_fragment_backend.py::def test_malformed_native_payload_rejects_before_first_sdk_write"
+      }
+    },
+    {
+      "id": "production_fragment_participant",
+      "donor_source": "src/d810/transforms/fragment_to_patch.py::class FragmentTransactionParticipant:",
+      "donor_test": "tests/unit/transforms/test_fragment_to_patch.py::def test_fragment_and_patch_participants_use_one_coordinator_entrypoint",
+      "current_production_seam": "src/d810/backends/hexrays/mutation/backend.py::class HexRaysMutationBackend:",
+      "current_status": "missing",
+      "required_port": "Add a production FragmentTransactionParticipant that implements project, preflight, bind, realize, and observe through live backend ports.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_phase_events"],
+        "events": ["projected", "preflighted", "bound", "realizing", "observed"],
+        "assertion": "A production fragment attempt emits the full participant lifecycle without protocol-test fakes."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/transforms/test_fragment_to_patch.py::def test_fragment_and_patch_participants_use_one_coordinator_entrypoint",
+        "current": "tests/unit/transforms/test_fragment_to_patch.py::def test_fragment_and_patch_participants_use_one_coordinator_entrypoint"
+      }
+    },
+    {
+      "id": "partial_write_poison",
+      "donor_source": "src/d810/hexrays/mutation/mba_mutation_events.py::def _record_fragment_mutation_started(",
+      "donor_test": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_live_divergence_poisons_generation_without_cleanup_and_restarts_once",
+      "current_production_seam": "src/d810/transforms/cfg_transaction.py::class CfgGenerationPoisoned(RuntimeError):",
+      "current_status": "partial",
+      "required_port": "Mark immediately before the first SDK write; any later failure must poison and unwind without cleanup or further live lookup.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events"],
+        "events": ["realizing", "poisoned_restart_required"],
+        "assertion": "The poisoned attempt records mutation_started=1, its failure phase, optional INTERR, and no committed phase."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_live_divergence_poisons_generation_without_cleanup_and_restarts_once",
+        "current": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_live_divergence_poisons_generation_without_cleanup_and_restarts_once"
+      }
+    },
+    {
+      "id": "shared_generation_poison_latch",
+      "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::def generation_poisoned(",
+      "donor_test": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_generation_poison_invalidates_sibling_gateway_over_shared_index",
+      "current_production_seam": "src/d810/hexrays/ir/mba_identity_index.py::class MbaBlockIdentityIndex:",
+      "current_status": "missing",
+      "required_port": "Own the first poison evidence on the exact live-MBA identity index and reject sibling gateways, refreshes, allocations, and resolutions.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts"],
+        "events": ["poisoned_restart_required"],
+        "assertion": "All gateways for one MBA generation expose the same first poison record."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_generation_poison_invalidates_sibling_gateway_over_shared_index",
+        "current": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_generation_poison_invalidates_sibling_gateway_over_shared_index"
+      }
+    },
+    {
+      "id": "lifecycle_poison_restart",
+      "donor_source": "src/d810/manager/fragment_publication_lifecycle.py::def request_poisoned_generation_restart(",
+      "donor_test": "tests/system/runtime/hexrays/test_decompilation_lifecycle.py::def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo",
+      "current_production_seam": "src/d810/manager/fragment_publication_lifecycle.py::class SessionFragmentPublicationLifecycleAuthority:",
+      "current_status": "missing",
+      "required_port": "Propagate typed poison across PREOPT and consume one lifecycle-owned poison restart as exactly one MERR_REDO, separate from ordinary redo.",
+      "diagnostic_proof": {
+        "tables": ["lifecycle_events", "cfg_transaction_attempts"],
+        "events": ["poisoned_restart_required", "poison_restart_consumed"],
+        "assertion": "One poisoned attempt causes exactly one controlled restart and no successful PREOPT claim."
+      },
+      "acceptance_test": {
+        "donor": "tests/system/runtime/hexrays/test_decompilation_lifecycle.py::def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo",
+        "current": "tests/system/runtime/hexrays/test_decompilation_lifecycle.py::def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo"
+      }
+    },
+    {
+      "id": "poison_budget_exhaustion",
+      "donor_source": "src/d810/analyses/control_flow/native_preanalysis_session.py::def request_poisoned_generation_restart(",
+      "donor_test": "tests/system/runtime/test_manager_native_preanalysis.py::def test_decompile_controller_fails_on_distinct_post_recovery_poison",
+      "current_production_seam": "src/d810/manager/decompilation_lifecycle.py::class DecompilationLifecycleCoordinator:",
+      "current_status": "missing",
+      "required_port": "Latch exhausted poison recovery and refuse a poisoned result after the bounded initial, ordinary-redo, and poison-recovery attempts.",
+      "diagnostic_proof": {
+        "tables": ["lifecycle_events", "cfg_transaction_attempts"],
+        "events": ["poison_restart_consumed", "poison_restart_exhausted"],
+        "assertion": "A second same-epoch poison is terminal and cannot be mistaken for clean completion."
+      },
+      "acceptance_test": {
+        "donor": "tests/system/runtime/test_manager_native_preanalysis.py::def test_decompile_controller_fails_on_distinct_post_recovery_poison",
+        "current": "tests/system/runtime/test_manager_native_preanalysis.py::def test_decompile_controller_fails_on_distinct_post_recovery_poison"
+      }
+    },
+    {
+      "id": "changed_facts_new_epoch",
+      "donor_source": "src/d810/analyses/control_flow/native_preanalysis_session.py::has_exhausted_poison_restart",
+      "donor_test": "tests/unit/analyses/control_flow/test_native_preanalysis_session.py::def test_changed_first_pass_facts_open_fresh_epoch_after_poison_exhaustion",
+      "current_production_seam": "src/d810/analyses/control_flow/native_preanalysis_session.py::class NativePreanalysisSessionState:",
+      "current_status": "missing",
+      "required_port": "Allow genuinely changed first-pass portable facts to advance evidence generation and reset retry authority after an exhausted poisoned epoch.",
+      "diagnostic_proof": {
+        "tables": ["evidence_generation_events", "lifecycle_events"],
+        "events": ["poison_restart_exhausted", "evidence_generation_advanced"],
+        "assertion": "Only changed portable facts open a fresh generation after poison exhaustion."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/analyses/control_flow/test_native_preanalysis_session.py::def test_changed_first_pass_facts_open_fresh_epoch_after_poison_exhaustion",
+        "current": "tests/unit/analyses/control_flow/test_native_preanalysis_session.py::def test_changed_first_pass_facts_open_fresh_epoch_after_poison_exhaustion"
+      }
+    },
+    {
+      "id": "transaction_phase_events",
+      "donor_source": "src/d810/core/observability_events.py::class CfgTransactionAttemptObserved:",
+      "donor_test": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart",
+      "current_production_seam": "src/d810/core/observability_events.py::class MutationPlanObserved:",
+      "current_status": "missing",
+      "required_port": "Emit portable planned, projected, preflighted, bound, realizing, observed, committed, rejected-clean, and poisoned observations at actual boundaries.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_phase_events"],
+        "events": ["planned", "projected", "preflighted", "bound", "realizing", "observed", "committed"],
+        "assertion": "Phase indices form one ordered timeline for each exact transaction attempt."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart",
+        "current": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart"
+      }
+    },
+    {
+      "id": "cfg_transaction_attempt_persistence",
+      "donor_source": "src/d810/core/diag/models.py::class CfgTransactionAttemptRecord(BaseModel):",
+      "donor_test": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart",
+      "current_production_seam": "src/d810/core/diag/models.py::class SemanticFragmentTransaction(BaseModel):",
+      "current_status": "missing",
+      "required_port": "Persist one normalized attempt row keyed by plan_id and attempt_id with generation, current phase, mutation-start, poison, and failure authority.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts"],
+        "events": ["planned", "committed", "rejected_clean", "poisoned_restart_required"],
+        "assertion": "The attempt row remains queryable after SQLite close and reopen."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart",
+        "current": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_authority_and_creation_witness_survive_restart"
+      }
+    },
+    {
+      "id": "cfg_creation_witness_persistence",
+      "donor_source": "src/d810/core/diag/models.py::class CfgCreationWitnessRecord(BaseModel):",
+      "donor_test": "tests/unit/core/diag/test_mutation_timeline.py::def test_committed_cfg_creation_mapping_is_queryable_after_database_restart",
+      "current_production_seam": "src/d810/core/diag/models.py::class MutationReceiptIdentity(BaseModel):",
+      "current_status": "missing",
+      "required_port": "Persist cfg_creation_witnesses with provenance, handle, logical version, requested/returned coordinates, quantities, state, and invalidation.",
+      "diagnostic_proof": {
+        "tables": ["cfg_creation_witnesses"],
+        "events": ["planned", "bound", "observed", "committed"],
+        "assertion": "Every PlanBlockRef mapping and exact returned insertion coordinate survives database restart."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/core/diag/test_mutation_timeline.py::def test_committed_cfg_creation_mapping_is_queryable_after_database_restart",
+        "current": "tests/unit/core/diag/test_mutation_timeline.py::def test_committed_cfg_creation_mapping_is_queryable_after_database_restart"
+      }
+    },
+    {
+      "id": "first_failure_monotonicity",
+      "donor_source": "src/d810/core/diag/lifecycle.py::first_failure_obligation=excluded.first_failure_obligation",
+      "donor_test": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_persists_only_the_first_failure",
+      "current_production_seam": "src/d810/core/diag/lifecycle.py::def persist_mutation_receipt(",
+      "current_status": "missing",
+      "required_port": "Persist the first typed obligation/reason once while mutation-start and poison flags advance monotonically.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events"],
+        "events": ["rejected_clean", "poisoned_restart_required"],
+        "assertion": "Later errors cannot overwrite the first failure obligation, phase, reason, or INTERR."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_persists_only_the_first_failure",
+        "current": "tests/unit/core/diag/test_mutation_timeline.py::def test_cfg_transaction_persists_only_the_first_failure"
+      }
+    },
+    {
+      "id": "typed_patch_block_refs",
+      "donor_source": "src/d810/transforms/plan.py::PatchBlockRef: TypeAlias",
+      "donor_test": "tests/unit/cfg/test_patch_plan.py::def test_patch_operations_reject_bare_block_serials",
+      "current_production_seam": "src/d810/transforms/plan.py::class PatchPlan:",
+      "current_status": "missing",
+      "required_port": "Require NativeBlockRef, LogicalBlockRef, or PlanBlockRef in every block-bearing PatchOperation and nested payload; reject raw integers.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "cfg_creation_witnesses"],
+        "events": ["planned", "bound"],
+        "assertion": "All bound block operands resolve through typed authority and every planned creation has a witness."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/cfg/test_patch_plan.py::def test_patch_operations_reject_bare_block_serials",
+        "current": "tests/unit/cfg/test_patch_plan.py::def test_patch_operations_reject_bare_block_serials"
+      }
+    },
+    {
+      "id": "final_boundary_binding",
+      "donor_source": "src/d810/hexrays/mutation/patch_binding.py::def bind_patch_plan(",
+      "donor_test": "tests/system/runtime/hexrays/test_ir_translator.py::class TestTypedPatchBinding:",
+      "current_production_seam": "src/d810/hexrays/mutation/ir_translator.py::class IDAIRTranslator:",
+      "current_status": "missing",
+      "required_port": "Validate snapshot, maturity, generation, and exact source authority, reserve all PlanBlockRefs, then release ephemeral serials only at DeferredGraphModifier queue calls.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_phase_events", "cfg_creation_witnesses"],
+        "events": ["bound", "realizing"],
+        "assertion": "Binding witnesses exist before any queue call or SDK write and contain no predicted permanent serial."
+      },
+      "acceptance_test": {
+        "donor": "tests/system/runtime/hexrays/test_ir_translator.py::class TestTypedPatchBinding:",
+        "current": "tests/system/runtime/hexrays/test_ir_translator.py::class TestTypedPatchBinding:"
+      }
+    },
+    {
+      "id": "prewrite_binding_cleanup",
+      "donor_source": "src/d810/hexrays/mutation/ir_translator.py::def lower(",
+      "donor_test": "tests/system/runtime/hexrays/test_ir_translator.py::def test_queue_exception_aborts_all_prewrite_identity_residue_and_retry_works",
+      "current_production_seam": "src/d810/hexrays/mutation/ir_translator.py::class IDAIRTranslator:",
+      "current_status": "missing",
+      "required_port": "Treat begin, binding, modifier construction, configuration, and queueing as one prewrite boundary whose failure discards every reservation and child transaction.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "cfg_creation_witnesses"],
+        "events": ["bound", "rejected_clean"],
+        "assertion": "A prewrite failure invalidates provisional witnesses, records mutation_started=0, and leaves the next attempt usable."
+      },
+      "acceptance_test": {
+        "donor": "tests/system/runtime/hexrays/test_ir_translator.py::def test_queue_exception_aborts_all_prewrite_identity_residue_and_retry_works",
+        "current": "tests/system/runtime/hexrays/test_ir_translator.py::def test_queue_exception_aborts_all_prewrite_identity_residue_and_retry_works"
+      }
+    },
+    {
+      "id": "no_serial_compatibility_channels",
+      "donor_source": "src/d810/transforms/plan.py::class PatchPlan:",
+      "donor_test": "tests/unit/architecture/test_patch_plan_no_compatibility_channels.py::def test_removed_patch_plan_compatibility_names_are_absent_from_production",
+      "current_production_seam": "src/d810/transforms/plan.py::class LegacyBlockOperation:",
+      "current_status": "missing",
+      "required_port": "Delete LegacyBlockOperation, planner_modifications, as_graph_modifications, raw GraphModification lowering, VirtualBlockId, and predicted-serial aliases; add no fallback.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts"],
+        "events": ["planned", "committed"],
+        "assertion": "Every production mutation attempt enters through a typed PatchPlan and no compatibility attempt kind appears."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/architecture/test_patch_plan_no_compatibility_channels.py::def test_removed_patch_plan_compatibility_names_are_absent_from_production",
+        "current": "tests/unit/architecture/test_patch_plan_no_compatibility_channels.py::def test_removed_patch_plan_compatibility_names_are_absent_from_production"
+      }
+    },
+    {
+      "id": "helper_creation_witnesses",
+      "donor_source": "src/d810/hexrays/mutation/deferred_modifier.py::gateway.bind_reserved_plan_block(",
+      "donor_test": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_every_plan_created_block_requires_a_plan_ref_creation_witness",
+      "current_production_seam": "src/d810/hexrays/mutation/deferred_modifier.py::class DeferredGraphModifier:",
+      "current_status": "missing",
+      "required_port": "Reserve and receipt every fallthrough, root, split, clone, replacement, and empty helper with exact PlanBlockRef lineage.",
+      "diagnostic_proof": {
+        "tables": ["cfg_creation_witnesses"],
+        "events": ["bound", "observed", "committed"],
+        "assertion": "Every SDK-created block in a committed transaction has one non-anonymous creation witness and source operation kind."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_every_plan_created_block_requires_a_plan_ref_creation_witness",
+        "current": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_every_plan_created_block_requires_a_plan_ref_creation_witness"
+      }
+    },
+    {
+      "id": "compiler_snapshot_authority",
+      "donor_source": "src/d810/hexrays/ir/mba_identity_index.py::def plan_refs_by_serial(",
+      "donor_test": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_every_production_patch_plan_compiler_call_names_exact_block_authority",
+      "current_production_seam": "src/d810/transforms/plan.py::def compile_patch_plan(",
+      "current_status": "missing",
+      "required_port": "Require every compiler call to pass the exact current serial-to-typed-ref mapping and reject missing, extra, swapped, stale, or ambiguous source coordinates before reservation.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts"],
+        "events": ["projected", "rejected_clean", "bound"],
+        "assertion": "Compiler authority mismatch rejects before any creation witness or mutation-start marker."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_every_production_patch_plan_compiler_call_names_exact_block_authority",
+        "current": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_every_production_patch_plan_compiler_call_names_exact_block_authority"
+      }
+    },
+    {
+      "id": "fragment_to_patch_lowering",
+      "donor_source": "src/d810/transforms/fragment_to_patch.py::def lower_fragment_plan(",
+      "donor_test": "tests/unit/transforms/test_fragment_to_patch.py::def test_lowering_preserves_plan_refs_and_complete_semantic_contract",
+      "current_production_seam": "src/d810/backends/hexrays/mutation/backend.py::class HexRaysMutationBackend:",
+      "current_status": "missing",
+      "required_port": "Lower only a preflighted FragmentPlan into typed PatchOperations that retain block, operation, terminal, normalization, root, and validation authority.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "mutation_plan_items"],
+        "events": ["preflighted", "planned", "bound"],
+        "assertion": "The typed PatchPlan and semantic fragment share one plan and attempt authority with all atomic obligations preserved."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/transforms/test_fragment_to_patch.py::def test_lowering_preserves_plan_refs_and_complete_semantic_contract",
+        "current": "tests/unit/transforms/test_fragment_to_patch.py::def test_lowering_preserves_plan_refs_and_complete_semantic_contract"
+      }
+    },
+    {
+      "id": "shared_transaction_coordinator",
+      "donor_source": "src/d810/transforms/fragment_to_patch.py::class CfgTransactionCoordinator:",
+      "donor_test": "tests/unit/transforms/test_fragment_to_patch.py::def test_coordinator_owns_complete_lifecycle_for_both_participants",
+      "current_production_seam": "src/d810/passes/transaction_engine.py::class CfgTransactionEngine:",
+      "current_status": "missing",
+      "required_port": "Route FragmentPlan and PatchPlan production participants through one coordinator that owns begin, project, preflight, bind, realize, observe, validate, commit, and fail.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_phase_events"],
+        "events": ["planned", "projected", "preflighted", "bound", "realizing", "observed", "committed"],
+        "assertion": "Both plan families emit the same ordered lifecycle and terminal semantics through one coordinator."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/transforms/test_fragment_to_patch.py::def test_coordinator_owns_complete_lifecycle_for_both_participants",
+        "current": "tests/unit/transforms/test_fragment_to_patch.py::def test_coordinator_owns_complete_lifecycle_for_both_participants"
+      }
+    },
+    {
+      "id": "observed_postroot_contract",
+      "donor_source": "src/d810/hexrays/mutation/deferred_modifier.py::def _observe_published_semantic_fragment_graph(",
+      "donor_test": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_post_root_live_cfg_contract_runs_before_commit",
+      "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_publication.py::def publish_semantic_fragment(",
+      "current_status": "missing",
+      "required_port": "Capture the actual post-root live graph and require full CfgContract plus semantic postvalidation before receipt commit.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_phase_events", "semantic_fragment_validation_outcomes"],
+        "events": ["observed", "committed", "poisoned_restart_required"],
+        "assertion": "Commit follows successful observed post-root CFG validation; failure after roots poisons instead."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_post_root_live_cfg_contract_runs_before_commit",
+        "current": "tests/unit/hexrays/mutation/test_fragment_publication_gateway.py::def test_post_root_live_cfg_contract_runs_before_commit"
+      }
+    },
+    {
+      "id": "sole_mutation_entrypoint",
+      "donor_source": "src/d810/backends/hexrays/mutation/backend.py::def apply(",
+      "donor_test": "tests/unit/transforms/test_fragment_to_patch.py::def test_old_fragment_stage_and_root_executors_are_absent_from_production",
+      "current_production_seam": "src/d810/backends/hexrays/mutation/backend.py::class HexRaysMutationBackend:",
+      "current_status": "missing",
+      "required_port": "Make HexRaysMutationBackend.apply the sole production mutation entry and delete publish_semantic_fragment plus separate stage/root executors.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts"],
+        "events": ["planned", "committed"],
+        "assertion": "Every committed mutation is correlated to the shared coordinator and no displaced executor event exists."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/transforms/test_fragment_to_patch.py::def test_old_fragment_stage_and_root_executors_are_absent_from_production",
+        "current": "tests/unit/transforms/test_fragment_to_patch.py::def test_old_fragment_stage_and_root_executors_are_absent_from_production"
+      }
+    },
+    {
+      "id": "no_snapshot_block_ref",
+      "donor_source": "src/d810/transforms/cfg_transaction.py::CfgBlockRef: TypeAlias = NativeBlockRef | LogicalBlockRef | PlanBlockRef",
+      "donor_test": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_patch_plan_has_no_transitional_or_raw_block_references",
+      "current_production_seam": "src/d810/transforms/cfg_transaction.py::CfgBlockRef: TypeAlias = NativeBlockRef | LogicalBlockRef | PlanBlockRef",
+      "current_status": "partial",
+      "required_port": "Preserve the absence of SnapshotBlockRef and also remove every raw-int, VirtualBlockId, and transitional patch reference without aliases.",
+      "diagnostic_proof": {
+        "tables": ["cfg_creation_witnesses"],
+        "events": ["planned", "bound"],
+        "assertion": "All runtime bindings are native, logical, or plan-local typed refs and no snapshot-local coordinate is persisted as identity."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_patch_plan_has_no_transitional_or_raw_block_references",
+        "current": "tests/unit/architecture/test_structural_mutation_gateway.py::def test_patch_plan_has_no_transitional_or_raw_block_references"
+      }
+    },
+    {
+      "id": "exact_transaction_authority",
+      "donor_source": "src/d810/hexrays/mutation/patch_binding.py::def bind_patch_plan(",
+      "donor_test": "tests/unit/cfg/test_patch_plan.py::def test_compile_patch_plan_rejects_missing_typed_source_authority",
+      "current_production_seam": "src/d810/transforms/plan.py::def compile_patch_plan(",
+      "current_status": "missing",
+      "required_port": "Fail closed before mutation on missing, extra, stale, swapped, or ambiguous compiler/binding authority; never infer from plan intent.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events"],
+        "events": ["projected", "rejected_clean"],
+        "assertion": "Authority mismatch records the first typed failure with mutation_started=0 and no reservation."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/cfg/test_patch_plan.py::def test_compile_patch_plan_rejects_missing_typed_source_authority",
+        "current": "tests/unit/cfg/test_patch_plan.py::def test_compile_patch_plan_rejects_missing_typed_source_authority"
+      }
+    },
+    {
+      "id": "terminal_tail_preflight_parity",
+      "donor_source": "src/d810/hexrays/mutation/semantic_fragment_backend.py::def _terminal_return_can_append_after_opcode(",
+      "donor_test": "tests/system/runtime/test_semantic_fragment_backend.py::def test_conditional_terminal_tail_rejects_in_immutable_preflight_without_writes",
+      "current_production_seam": "src/d810/hexrays/mutation/semantic_fragment_backend.py::def _materialize_terminal_return(",
+      "current_status": "missing",
+      "required_port": "Use one conservative terminal-tail predicate in immutable preflight and live realization; reject conditional and non-goto tails before any SDK write.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "semantic_fragment_validation_outcomes"],
+        "events": ["preflighted", "rejected_clean"],
+        "assertion": "TERMINAL_RETURN_INTEGRITY rejects with zero stage calls, unchanged quantity/generation, and no poison."
+      },
+      "acceptance_test": {
+        "donor": "tests/system/runtime/test_semantic_fragment_backend.py::def test_conditional_terminal_tail_rejects_in_immutable_preflight_without_writes",
+        "current": "tests/system/runtime/test_semantic_fragment_backend.py::def test_conditional_terminal_tail_rejects_in_immutable_preflight_without_writes"
+      }
+    },
+    {
+      "id": "focused_transaction_gate",
+      "donor_source": "src/d810/transforms/fragment_to_patch.py::class CfgTransactionCoordinator:",
+      "donor_test": "tests/unit/transforms/test_fragment_to_patch.py::def test_both_production_paths_use_the_shared_transaction_coordinator",
+      "current_production_seam": "src/d810/passes/transaction_engine.py::class CfgTransactionEngine:",
+      "current_status": "missing",
+      "required_port": "Reproduce the donor focused transaction matrix across portable types, projections, identity, gateway, diagnostics, typed patch binding, fragment lowering, and runtime backend.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events", "cfg_creation_witnesses"],
+        "events": ["planned", "projected", "preflighted", "bound", "realizing", "observed", "committed"],
+        "assertion": "The focused gate passes with one coherent transaction timeline and no compatibility path."
+      },
+      "acceptance_test": {
+        "donor": "tests/unit/transforms/test_fragment_to_patch.py::def test_both_production_paths_use_the_shared_transaction_coordinator",
+        "current": "tests/unit/transforms/test_fragment_to_patch.py::def test_both_production_paths_use_the_shared_transaction_coordinator"
+      }
+    },
+    {
+      "id": "creation_witness_c5_canary",
+      "donor_source": "src/d810/core/diag/lifecycle.py::INSERT INTO cfg_creation_witnesses",
+      "donor_test": "tests/system/e2e/test_rhad_real_fragment_publication.py::def test_real_a560_terminal_fragment_reaches_c5_with_db_evidence",
+      "current_production_seam": "src/d810/core/diag/lifecycle.py::def persist_mutation_receipt(",
+      "current_status": "missing",
+      "required_port": "Reproduce the exact A560 C5 terminal-fragment canary with committed replacement/helper creation witnesses and pre/post validation evidence in SQLite.",
+      "diagnostic_proof": {
+        "tables": ["cfg_transaction_attempts", "cfg_transaction_phase_events", "cfg_creation_witnesses", "semantic_fragment_transactions", "semantic_fragment_validation_outcomes"],
+        "events": ["committed"],
+        "assertion": "The C5 transaction commits 7/7 operations, 32/32 prechecks, 59/59 postchecks, and three exact creation witnesses."
+      },
+      "acceptance_test": {
+        "donor": "tests/system/e2e/test_rhad_real_fragment_publication.py::def test_real_a560_terminal_fragment_reaches_c5_with_db_evidence",
+        "current": "tests/system/e2e/test_rhad_real_fragment_publication.py::def test_real_a560_terminal_fragment_reaches_c5_with_db_evidence"
+      }
+    },
+    {
+      "id": "protected_family_behavior_preserved",
+      "donor_source": "src/d810/backends/hexrays/mutation/backend.py::class HexRaysMutationBackend:",
+      "donor_test": "tests/system/e2e/test_hodur_baselines.py::class TestHodurBaselines:",
+      "current_production_seam": "src/d810/backends/hexrays/mutation/backend.py::class HexRaysMutationBackend:",
+      "current_status": "missing",
+      "required_port": "After the transaction gates and Rhad restoration, run Hodur, Sub7ffd, Tigress, and Approov at one clean SHA and treat any delta as an integration regression.",
+      "diagnostic_proof": {
+        "tables": ["diagnostic_sessions", "lifecycle_events", "cfg_transaction_attempts"],
+        "events": ["decompilation_started", "committed", "decompilation_finished"],
+        "assertion": "Protected-family results match their established semantic oracles and every transaction failure has a typed first obligation."
+      },
+      "acceptance_test": {
+        "donor": "tests/system/e2e/test_hodur_baselines.py::class TestHodurBaselines:",
+        "current": "tests/system/e2e/test_hodur_baselines.py::class TestHodurBaselines:"
+      }
+    }
+  ]
+}
