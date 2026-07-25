@@ -26,6 +26,7 @@ Handler installation is idempotent: calling
 unsubscribes any previously installed handlers first so we never
 double-persist.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -234,9 +235,7 @@ def _handle_lifecycle_event(ev: LifecycleEventObserved) -> None:
         return
     if conn is None:
         return
-    snapshot_id = (
-        None if ev.snapshot is None else _resolve_snapshot_id(ev.snapshot)
-    )
+    snapshot_id = None if ev.snapshot is None else _resolve_snapshot_id(ev.snapshot)
     persist_lifecycle_event(conn, ev, snapshot_id=snapshot_id)
 
 
@@ -340,12 +339,14 @@ def _flush_pending_condition_chain_intervals(
 ) -> None:
     with _condition_chain_interval_lock:
         matching = [
-            ev for ev in _pending_condition_chain_intervals
+            ev
+            for ev in _pending_condition_chain_intervals
             if int(ev.func_ea) == int(func_ea)
         ]
         if matching:
             _pending_condition_chain_intervals[:] = [
-                ev for ev in _pending_condition_chain_intervals
+                ev
+                for ev in _pending_condition_chain_intervals
                 if int(ev.func_ea) != int(func_ea)
             ]
     for ev in matching:
@@ -395,12 +396,14 @@ def _flush_pending_state_dispatcher_rows(
 ) -> None:
     with _state_dispatcher_lock:
         matching = [
-            ev for ev in _pending_state_dispatcher_rows
+            ev
+            for ev in _pending_state_dispatcher_rows
             if int(ev.func_ea) == int(func_ea)
         ]
         if matching:
             _pending_state_dispatcher_rows[:] = [
-                ev for ev in _pending_state_dispatcher_rows
+                ev
+                for ev in _pending_state_dispatcher_rows
                 if int(ev.func_ea) != int(func_ea)
             ]
     for ev in matching:
@@ -436,8 +439,7 @@ def _handle_switch_case_transition_facts(
     if conn is None or snap_id is None:
         return
     rows = tuple(
-        row.to_diag_row() if hasattr(row, "to_diag_row") else row
-        for row in ev.rows
+        row.to_diag_row() if hasattr(row, "to_diag_row") else row for row in ev.rows
     )
     snapshot_switch_case_transition_facts(conn, snap_id, rows)
 
@@ -478,12 +480,14 @@ def _flush_pending_branch_witness_decisions(
 ) -> None:
     with _branch_witness_lock:
         matching = [
-            ev for ev in _pending_branch_witness_decisions
+            ev
+            for ev in _pending_branch_witness_decisions
             if int(ev.func_ea) == int(func_ea)
         ]
         if matching:
             _pending_branch_witness_decisions[:] = [
-                ev for ev in _pending_branch_witness_decisions
+                ev
+                for ev in _pending_branch_witness_decisions
                 if int(ev.func_ea) != int(func_ea)
             ]
     for ev in matching:
@@ -520,12 +524,14 @@ def _flush_pending_exit_path_shortcut_decisions(
 ) -> None:
     with _exit_path_shortcut_lock:
         matching = [
-            ev for ev in _pending_exit_path_shortcut_decisions
+            ev
+            for ev in _pending_exit_path_shortcut_decisions
             if int(ev.func_ea) == int(func_ea)
         ]
         if matching:
             _pending_exit_path_shortcut_decisions[:] = [
-                ev for ev in _pending_exit_path_shortcut_decisions
+                ev
+                for ev in _pending_exit_path_shortcut_decisions
                 if int(ev.func_ea) != int(func_ea)
             ]
     for ev in matching:
@@ -565,7 +571,7 @@ def _handle_fact_consumer(ev: FactConsumersObserved) -> None:
 
 
 def _handle_fact_consumers_latest(ev: FactConsumersForLatestSnapshot) -> None:
-    "Late-binding fact-consumer writer.\n\n    Used by preanalysis-time post-hoc auditing where no specific\n    just-emitted capture exists. The handler finds the latest\n    ``snapshots`` row for ``func_ea`` and writes consumer rows there\n    after deduplicating against existing rows.\n    "
+    "Late-binding fact-consumer writer.\n\n    Used by preanalysis-time post-hoc auditing where no specific\n    just-emitted capture exists. The handler finds the latest\n    ``snapshots`` row for ``func_ea`` and writes consumer rows there\n    after deduplicating against existing rows.\n"
     try:
         conn = get_diag_conn(int(ev.func_ea))
     except Exception:
@@ -599,7 +605,10 @@ def _handle_fact_consumers_latest(ev: FactConsumersForLatestSnapshot) -> None:
                 pending.append(consumer)
     if pending:
         snapshot_fact_consumers(
-            conn, snap_id, int(ev.func_ea), tuple(pending),
+            conn,
+            snap_id,
+            int(ev.func_ea),
+            tuple(pending),
         )
 
 
@@ -734,9 +743,7 @@ def _insert_cfg_provenance_events(
                     ea=getattr(ev, "block_ea", None),
                 )
                 target_serial = (
-                    int(ev.target_serial)
-                    if ev.target_serial is not None
-                    else None
+                    int(ev.target_serial) if ev.target_serial is not None else None
                 )
                 target_diag = _provenance_block_diag(
                     conn,
@@ -745,26 +752,28 @@ def _insert_cfg_provenance_events(
                     label=ev.target_label,
                     ea=getattr(ev, "target_ea", None),
                 )
-                rows.append({
-                    "snapshot": int(snap_id),
-                    "seq": next_seq + seq_idx,
-                    "pass_name": ev.pass_name,
-                    "action": ev.action,
-                    "block_serial": int(ev.block_serial),
-                    "block_label": block_diag["label"],
-                    "block_ea_hex": block_diag["ea_hex"],
-                    "block_ea_i64": block_diag["ea_i64"],
-                    "target_serial": target_serial,
-                    "target_label": target_diag["label"],
-                    "target_ea_hex": target_diag["ea_hex"],
-                    "target_ea_i64": target_diag["ea_i64"],
-                    "reason": ev.reason,
-                    "extra_json": _provenance_extra_json(
-                        ev,
-                        block_label=block_diag["label"],
-                        target_label=target_diag["label"],
-                    ),
-                })
+                rows.append(
+                    {
+                        "snapshot": int(snap_id),
+                        "seq": next_seq + seq_idx,
+                        "pass_name": ev.pass_name,
+                        "action": ev.action,
+                        "block_serial": int(ev.block_serial),
+                        "block_label": block_diag["label"],
+                        "block_ea_hex": block_diag["ea_hex"],
+                        "block_ea_i64": block_diag["ea_i64"],
+                        "target_serial": target_serial,
+                        "target_label": target_diag["label"],
+                        "target_ea_hex": target_diag["ea_hex"],
+                        "target_ea_i64": target_diag["ea_i64"],
+                        "reason": ev.reason,
+                        "extra_json": _provenance_extra_json(
+                            ev,
+                            block_label=block_diag["label"],
+                            target_label=target_diag["label"],
+                        ),
+                    }
+                )
             with db.atomic():
                 CfgProvenance.insert_many(rows).execute()
     except Exception:
@@ -856,7 +865,10 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (MutationPlanObserved, _handle_mutation_plan),
     (MutationReceiptObserved, _handle_mutation_receipt),
     (CaptureMbaSnapshotRequested, _handle_capture_mba),
-    (ConditionChainIntervalDispatcherObserved, _handle_condition_chain_interval_dispatcher),
+    (
+        ConditionChainIntervalDispatcherObserved,
+        _handle_condition_chain_interval_dispatcher,
+    ),
     (StateDispatcherRowsObserved, _handle_state_dispatcher_rows),
     (
         StateTransitionDispatchResolutionsObserved,

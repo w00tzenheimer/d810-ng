@@ -31,7 +31,9 @@ _MATURITY = 5
 _SENTINEL_TARGET = object()
 
 
-def _phase(level: int = _MATURITY, friendly: str | None = None) -> ProviderPhaseSnapshot:
+def _phase(
+    level: int = _MATURITY, friendly: str | None = None
+) -> ProviderPhaseSnapshot:
     return ProviderPhaseSnapshot(
         provider_name="hexrays_microcode",
         provider_level=level,
@@ -81,7 +83,7 @@ def _make_runtime(
     *,
     validated_fact_view_provider=None,
 ) -> tuple[DecompilationAnalysisRuntime, MagicMock, MagicMock, MagicMock]:
-    "Build a runtime with mocked dependencies.\n\n    Returns (runtime, mock_phase, mock_analysis, mock_store).\n    Patches ``get_preanalysis_writer`` so writes execute synchronously on mock_store.\n    "
+    "Build a runtime with mocked dependencies.\n\n    Returns (runtime, mock_phase, mock_analysis, mock_store).\n    Patches ``get_preanalysis_writer`` so writes execute synchronously on mock_store.\n"
     mock_phase = create_autospec(PreanalysisPhase, instance=True)
     mock_analysis = create_autospec(AnalysisPhase, instance=True)
     mock_store = create_autospec(PreanalysisStore, instance=True)
@@ -102,9 +104,7 @@ def _make_runtime(
     return rt, mock_phase, mock_analysis, mock_store
 
 
-def _make_preanalysis_runtime() -> tuple[
-    PreanalysisRuntime, MagicMock, MagicMock
-]:
+def _make_preanalysis_runtime() -> tuple[PreanalysisRuntime, MagicMock, MagicMock]:
     mock_phase = create_autospec(PreanalysisPhase, instance=True)
     mock_store = create_autospec(PreanalysisStore, instance=True)
     mock_store.db_path = Path("/tmp/test_preanalysis.db")
@@ -296,14 +296,19 @@ def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
     # Wire the abstract observability backend to the test conn and bind
     # a SnapshotRef whose key resolves to snap_id=1 in this fixture.
     from d810.core.diag.event_handlers import (
-        _bind_snapshot_id, install_diag_event_handlers,
+        _bind_snapshot_id,
+        install_diag_event_handlers,
         uninstall_diag_event_handlers,
     )
     from d810.core.observability import SnapshotRef
+
     install_diag_event_handlers()
     snap_ref = SnapshotRef(
-        key="test-key", func_ea=_FUNC_EA, label="test",
-        maturity="MMAT_GLBOPT1", phase="pre_d810",
+        key="test-key",
+        func_ea=_FUNC_EA,
+        label="test",
+        maturity="MMAT_GLBOPT1",
+        phase="pre_d810",
     )
     _bind_snapshot_id(snap_ref, 1)
     try:
@@ -323,8 +328,11 @@ def test_fact_lifecycle_capture_persists_to_diag_snapshot() -> None:
 
     assert summary.observation_count == 1
     from d810.core.diag.models import FactObservation as FactObservationModel
+
     row = (
-        FactObservationModel.select(FactObservationModel.kind, FactObservationModel.source_block)
+        FactObservationModel.select(
+            FactObservationModel.kind, FactObservationModel.source_block
+        )
         .where(FactObservationModel.fact_id == "induction:runtime")
         .tuples()
         .first()
@@ -402,12 +410,15 @@ def test_record_fact_consumers_deduplicates_only_within_latest_diag_snapshot() -
     # fact_consumers rows. We install the subscriber and patch the
     # diag conn provider to return our test conn.
     from d810.core.diag.event_handlers import (
-        install_diag_event_handlers, uninstall_diag_event_handlers,
+        install_diag_event_handlers,
+        uninstall_diag_event_handlers,
     )
+
     install_diag_event_handlers()
     try:
         with patch(
-            "d810.core.diag.event_handlers.get_diag_conn", return_value=conn,
+            "d810.core.diag.event_handlers.get_diag_conn",
+            return_value=conn,
         ):
             persisted = rt.record_fact_consumers(_FUNC_EA, (record,))
 
@@ -527,7 +538,10 @@ def test_analyze_overwrites_previous_hints() -> None:
 
     results_v1 = [_make_preanalysis_result()]
     hints_v1 = _make_hints(confidence=0.60)
-    results_v2 = [_make_preanalysis_result(), _make_preanalysis_result("DispatchPatternCollector")]
+    results_v2 = [
+        _make_preanalysis_result(),
+        _make_preanalysis_result("DispatchPatternCollector"),
+    ]
     hints_v2 = _make_hints(confidence=0.95)
 
     # First call
@@ -642,10 +656,13 @@ def test_nested_session_reset_restores_parent_without_mark_finished() -> None:
     inner_ea = 0x402000
 
     assert rt.begin_session(_event(outer_ea)) is True
-    assert rt.begin_session(
-        _event(inner_ea),
-        preserve_active_session=True,
-    ) is True
+    assert (
+        rt.begin_session(
+            _event(inner_ea),
+            preserve_active_session=True,
+        )
+        is True
+    )
     rt.finish_session(_event(inner_ea), resume_event=_event(outer_ea))
 
     assert rt._current_func_ea == outer_ea
