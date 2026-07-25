@@ -705,11 +705,7 @@ class FragmentDirectTransferRewrite:
         delivery_region = self.delivery_region
         if not isinstance(delivery_region, NativeEaInterval):
             raise TypeError("direct transfer rewrite requires a delivery region")
-        if not (
-            delivery_region.start_ea
-            <= rewrite_anchor_ea
-            < delivery_region.end_ea
-        ):
+        if not (delivery_region.start_ea <= rewrite_anchor_ea < delivery_region.end_ea):
             raise FragmentPlanRejected(
                 "direct transfer rewrite anchor is outside its delivery region"
             )
@@ -1649,10 +1645,8 @@ class FragmentPlan:
                     )
                 delivery_region = direct_rewrite.delivery_region
                 source_owns_delivery_region = any(
-                    int(source_interval.start_ea)
-                    <= int(delivery_region.start_ea)
-                    and int(delivery_region.end_ea)
-                    <= int(source_interval.end_ea)
+                    int(source_interval.start_ea) <= int(delivery_region.start_ea)
+                    and int(delivery_region.end_ea) <= int(source_interval.end_ea)
                     for source_interval in source.stable_identity.native_ranges.intervals
                 )
                 if (
