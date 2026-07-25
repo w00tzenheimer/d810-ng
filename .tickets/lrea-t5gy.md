@@ -5516,3 +5516,53 @@ Alternative and serial-shaped execution paths must be deleted with no
 compatibility layer. Rhad remains paused until the remaining non-semantic donor
 rows, the focused transaction gate, and one reconstructible creation-witness C5
 transaction are accepted together at a clean SHA.
+
+**2026-07-25T16:20:00-0700 — shared typed coordinator functional checkpoint**
+
+Rhad composition remains paused at the exact C2/C3 boundary, and no donor
+commit was merged or cherry-picked. Functional commit `e1c11ced2` routes both
+ordinary `PatchPlan` and semantic `FragmentPlan` production work through the
+shared typed coordinator; formatting-only commit `cdcb7a12e` contains the
+separately requested Ruff pass over every tracked Python file. The unrelated
+untracked Rhad microcode-capture test remains untouched.
+
+`HexRaysMutationBackend.apply` is now the sole live mutation entry. A semantic
+fragment is projected and preflighted while the gateway is idle, lowered into
+one typed `PatchPlan`, bound to the exact four-part transaction attempt at the
+final live boundary, realized through `DeferredGraphModifier`, observed from
+the actual post-root graph, validated, and only then committed. The displaced
+public fragment publisher, direct stage executor, untyped root executor,
+serial-shaped plan operands, and parallel fragment backend protocol are
+removed with no compatibility aliases.
+
+Every replacement, imported block, empty block, conditional/call helper, and
+root fallthrough helper now reserves its exact `PlanBlockRef` before the SDK
+write and binds the block returned by that write afterward. Native and imported
+replacement identities retain their semantic provenance; anonymous planned
+creation is not used. Root helpers consume their predeclared creation authority
+instead of falling back to generic insertion recording. The live diagnostic
+canary remains reconstructible from transaction attempts, ordered phase rows,
+mutation receipts, and creation witnesses.
+
+Verification across the functional and post-format checkpoints:
+
+- shared coordinator, gateway, identity, backend, pipeline, frontend, and live
+  semantic-fragment gate: 356 passed;
+- typed PatchPlan, final binding, prewrite cleanup, compatibility-absence, and
+  coordinator architecture gate: 104 passed;
+- post-format combined transaction gate: 418 passed;
+- live semantic-fragment backend alone: 108 passed;
+- executable parity ledger: PASS with zero schema or anchor errors;
+- ast-grep, import cycles, all 14 import-linter contracts, portable shape-lint,
+  compileall, Ruff format check, and diff checks: clean.
+
+The 41-row ledger now has 22 accepted and 19 pending guarantees. This slice
+accepts typed PatchPlan block references, final-boundary binding, prewrite
+cleanup, removal of serial compatibility channels, FragmentPlan-to-PatchPlan
+lowering, the shared coordinator, and the sole mutation entrypoint. The next
+donor-first slice must close the executable full-graph projection contracts,
+planned helper-witness architecture coverage, compiler snapshot/exact
+transaction authority, post-root contract acceptance, and the focused
+transaction gate before attempting the exact creation-witness C5 checksum.
+Rhad must not resume from `0x40BB63` before those non-semantic rows are accepted
+at one clean SHA.
