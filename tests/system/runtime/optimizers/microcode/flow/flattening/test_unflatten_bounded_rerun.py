@@ -1694,6 +1694,7 @@ def test_unresolved_published_boundary_promotes_contextual_plan_and_restarts() -
     assert native._fragment_publication_mark_normalization_validated()
     assert not native._fragment_publication_commit_normalization_work_item(
         work_item_id="frontend-normalization:g1:root@0x40A5F0",
+        published_operation_ids=("native-body-edge@0x40B6C0",),
         selected_obligation_ids=("native-body-edge@0x40B6C0",),
         remaining_obligation_ids=("native-body-edge@0x40C4B4",),
         unreachable_obligation_ids=(),

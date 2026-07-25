@@ -387,6 +387,8 @@ def _omitted_delivery_source_case() -> tuple[
 def _normalization_authority(
     plan: FragmentPlan,
     evidence: CanonicalSemanticEvidence,
+    *,
+    published_operation_ids: tuple[str, ...] | None = None,
 ) -> NormalizationWorkItemAuthority:
     scope = plan.work_item_scope
     assert scope is not None
@@ -396,6 +398,11 @@ def _normalization_authority(
         source_plan_id=plan.plan_id,
         source_atomic_group_id=plan.atomic_group_id,
         work_item_id=scope.work_item_id,
+        published_operation_ids=(
+            scope.selected_obligation_ids
+            if published_operation_ids is None
+            else published_operation_ids
+        ),
         selected_obligation_ids=scope.selected_obligation_ids,
         remaining_obligation_ids=scope.remaining_obligation_ids,
         unreachable_obligation_ids=scope.unreachable_obligation_ids,
@@ -2179,7 +2186,10 @@ def test_detached_component_stops_at_unique_current_imported_successor() -> None
     assert successor.stable_identity == current_identity_by_serial[30]
 
 
-def test_detached_component_rejects_current_imported_successor_with_topology() -> None:
+@pytest.mark.parametrize("topology_receipted", (False, True))
+def test_detached_component_requires_receipted_current_imported_successor_topology(
+    topology_receipted: bool,
+) -> None:
     graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = replace(
         graph,
@@ -2235,7 +2245,7 @@ def test_detached_component_rejects_current_imported_successor_with_topology() -
                 source_block_id=published_successor.block_id,
                 edges=(
                     FragmentEdge(
-                        role=SemanticEdgeRole.DIRECT,
+                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
                         target_block_id=terminal.block_id,
                     ),
                 ),
@@ -2292,6 +2302,40 @@ def test_detached_component_rejects_current_imported_successor_with_topology() -
         route_proofs=(*evidence.route_proofs, nested_proof),
     )
 
+    authority = _normalization_authority(
+        normalization_plan,
+        evidence,
+        published_operation_ids=(
+            (
+                *normalization_plan.work_item_scope.selected_obligation_ids,
+                "successor-normalization",
+            )
+            if topology_receipted
+            else normalization_plan.work_item_scope.selected_obligation_ids
+        ),
+    )
+    if topology_receipted:
+        plan = compose_canonical_semantic_fragment_plan(
+            graph,
+            normalization_plan,
+            evidence,
+            available_evidence=available_evidence,
+            current_identity_by_serial=_current_identity_authority(graph),
+            normalization_authority=authority,
+            prohibited_dispatcher_serials=(90,),
+        )
+        operation = next(
+            operation
+            for operation in plan.operations
+            if operation.operation_id == "detached-normalization"
+        )
+        (edge,) = operation.edges
+        boundary = plan.block(edge.target_block_id)
+        assert boundary.role is FragmentBlockRole.EXTERNAL
+        assert boundary.materialization is FragmentBlockMaterialization.REUSE_PUBLISHED
+        assert boundary.stable_identity == _current_identity_authority(graph)[30]
+        return
+
     with pytest.raises(
         CanonicalSemanticFragmentRejected,
         match="published imported boundary retains unresolved semantic topology",
@@ -2302,10 +2346,7 @@ def test_detached_component_rejects_current_imported_successor_with_topology() -
             evidence,
             available_evidence=available_evidence,
             current_identity_by_serial=_current_identity_authority(graph),
-            normalization_authority=_normalization_authority(
-                normalization_plan,
-                evidence,
-            ),
+            normalization_authority=authority,
             prohibited_dispatcher_serials=(90,),
         )
 
@@ -2507,6 +2548,7 @@ def test_receipt_does_not_close_unlowered_conditional_topology() -> None:
         source_plan_id=normalization_plan.plan_id,
         source_atomic_group_id=normalization_plan.atomic_group_id,
         work_item_id=scope.work_item_id,
+        published_operation_ids=(operation_id,),
         selected_obligation_ids=(operation_id,),
         remaining_obligation_ids=(),
         unreachable_obligation_ids=(),

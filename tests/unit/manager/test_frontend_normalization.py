@@ -177,6 +177,9 @@ class _Backend:
             if self.partial_work_item:
                 self.state._fragment_publication_commit_normalization_work_item(
                     work_item_id="frontend-normalization:g7:root@0x1100",
+                    published_operation_ids=tuple(
+                        operation.operation_id for operation in plan.operations
+                    ),
                     selected_obligation_ids=("direct@0x1100",),
                     remaining_obligation_ids=("direct@0x1400",),
                     unreachable_obligation_ids=(),
@@ -186,6 +189,9 @@ class _Backend:
                 assert scope is not None
                 self.state._fragment_publication_commit_normalization_work_item(
                     work_item_id=scope.work_item_id,
+                    published_operation_ids=tuple(
+                        operation.operation_id for operation in plan.operations
+                    ),
                     selected_obligation_ids=scope.selected_obligation_ids,
                     remaining_obligation_ids=scope.remaining_obligation_ids,
                     unreachable_obligation_ids=scope.unreachable_obligation_ids,
@@ -242,6 +248,7 @@ def test_pipeline_reports_modification_only_after_current_receipt_generation() -
     assert authority.source_plan_id == retained_plan.plan_id
     assert authority.source_atomic_group_id == retained_plan.atomic_group_id
     assert authority.work_item_id == "frontend-normalization:0x1000:g7:root@0x1100"
+    assert authority.published_operation_ids == ("direct@0x1100",)
     assert authority.selected_obligation_ids == ("direct@0x1100",)
     assert authority.remaining_obligation_ids == ()
     assert authority.unreachable_obligation_ids == ()
@@ -304,6 +311,7 @@ def test_pipeline_accepts_receipted_partial_work_item_without_generation_advance
     assert authority.source_plan_id == retained_plan.plan_id
     assert authority.publication_revision == 1
     assert authority.work_item_id == "frontend-normalization:g7:root@0x1100"
+    assert authority.published_operation_ids == ("direct@0x1100",)
     assert authority.selected_obligation_ids == ("direct@0x1100",)
     assert authority.remaining_obligation_ids == ("direct@0x1400",)
     assert authority.unreachable_obligation_ids == ()
@@ -331,6 +339,7 @@ def test_plan_authority_advances_one_receipt_revision_without_changing_intent() 
         first_authority,
         publication_revision=2,
         work_item_id="frontend-normalization:g7:root@0x1400",
+        published_operation_ids=("direct@0x1400",),
         selected_obligation_ids=("direct@0x1400",),
         remaining_obligation_ids=(),
     )

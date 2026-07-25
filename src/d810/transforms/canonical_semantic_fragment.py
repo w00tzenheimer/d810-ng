@@ -615,11 +615,15 @@ def _receipted_semantic_operation_closes_boundary(
 ) -> bool:
     """Return whether one prior publication fully owns a semantic boundary."""
     if (
-        operation.operation_id not in normalization_authority.selected_obligation_ids
-        or operation.operation_id not in native_body.proof_ids
+        operation.source_block_id not in native_body.block_ids
+        or operation.operation_id
+        not in normalization_authority.published_operation_ids
     ):
         return False
-    if operation.roles == frozenset({SemanticEdgeRole.DIRECT}):
+    if operation.roles in {
+        frozenset({SemanticEdgeRole.DIRECT}),
+        frozenset({SemanticEdgeRole.CALL_FALLTHROUGH}),
+    }:
         return True
     return bool(
         operation.roles

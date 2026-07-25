@@ -1175,6 +1175,7 @@ class NativePreanalysisSessionState:
     normalization_published_postvalidated_generation: int | None = None
     normalization_work_item_publication_revision: int = 0
     normalization_last_published_work_item_id: str | None = None
+    normalization_last_published_operation_ids: tuple[str, ...] = ()
     normalization_last_selected_obligation_ids: tuple[str, ...] = ()
     normalization_last_remaining_obligation_ids: tuple[str, ...] = ()
     normalization_last_unreachable_obligation_ids: tuple[str, ...] = ()
@@ -1255,8 +1256,12 @@ class NativePreanalysisSessionState:
         if publication_revision < 0:
             raise ValueError(
                 "normalization work-item publication revision cannot be negative"
-            )
+        )
         work_item_id = self.normalization_last_published_work_item_id
+        published_operation_ids = tuple(
+            str(value).strip()
+            for value in self.normalization_last_published_operation_ids
+        )
         selected_obligation_ids = tuple(
             str(value).strip()
             for value in self.normalization_last_selected_obligation_ids
@@ -1272,6 +1277,7 @@ class NativePreanalysisSessionState:
         if publication_revision == 0:
             if (
                 work_item_id is not None
+                or published_operation_ids
                 or selected_obligation_ids
                 or remaining_obligation_ids
                 or unreachable_obligation_ids
@@ -1282,13 +1288,20 @@ class NativePreanalysisSessionState:
         elif (
             work_item_id is None
             or not str(work_item_id).strip()
+            or not published_operation_ids
             or not selected_obligation_ids
+            or any(not value for value in published_operation_ids)
             or any(not value for value in selected_obligation_ids)
             or any(not value for value in remaining_obligation_ids)
             or any(not value for value in unreachable_obligation_ids)
+            or len(set(published_operation_ids)) != len(published_operation_ids)
             or len(set(selected_obligation_ids)) != len(selected_obligation_ids)
             or len(set(remaining_obligation_ids)) != len(remaining_obligation_ids)
             or len(set(unreachable_obligation_ids)) != len(unreachable_obligation_ids)
+            or not set(selected_obligation_ids).issubset(published_operation_ids)
+            or set(published_operation_ids).intersection(
+                (*remaining_obligation_ids, *unreachable_obligation_ids)
+            )
             or (
                 len(
                     set(
@@ -1311,6 +1324,7 @@ class NativePreanalysisSessionState:
         self.normalization_last_published_work_item_id = (
             None if work_item_id is None else str(work_item_id).strip()
         )
+        self.normalization_last_published_operation_ids = published_operation_ids
         self.normalization_last_selected_obligation_ids = selected_obligation_ids
         self.normalization_last_remaining_obligation_ids = remaining_obligation_ids
         self.normalization_last_unreachable_obligation_ids = unreachable_obligation_ids
@@ -1441,6 +1455,7 @@ class NativePreanalysisSessionState:
         self,
         *,
         work_item_id: str,
+        published_operation_ids: tuple[str, ...],
         selected_obligation_ids: tuple[str, ...],
         remaining_obligation_ids: tuple[str, ...],
         unreachable_obligation_ids: tuple[str, ...],
@@ -1453,26 +1468,35 @@ class NativePreanalysisSessionState:
         ):
             raise RuntimeError(
                 "normalization work-item commit requires current validated staging"
-            )
+        )
         work_item_id = str(work_item_id).strip()
+        published_operations = tuple(
+            str(value).strip() for value in published_operation_ids
+        )
         selected = tuple(str(value).strip() for value in selected_obligation_ids)
         remaining = tuple(str(value).strip() for value in remaining_obligation_ids)
         unreachable = tuple(str(value).strip() for value in unreachable_obligation_ids)
         if (
             not work_item_id
+            or not published_operations
             or not selected
+            or any(not value for value in published_operations)
             or any(not value for value in (*selected, *remaining, *unreachable))
+            or len(set(published_operations)) != len(published_operations)
             or len(set(selected)) != len(selected)
             or len(set(remaining)) != len(remaining)
             or len(set(unreachable)) != len(unreachable)
             or len(set((*selected, *remaining, *unreachable)))
             != len(selected) + len(remaining) + len(unreachable)
+            or not set(selected).issubset(published_operations)
+            or set(published_operations).intersection((*remaining, *unreachable))
         ):
             raise ValueError(
                 "normalization work-item commit requires disjoint obligations"
             )
         self.normalization_work_item_publication_revision += 1
         self.normalization_last_published_work_item_id = work_item_id
+        self.normalization_last_published_operation_ids = published_operations
         self.normalization_last_selected_obligation_ids = selected
         self.normalization_last_remaining_obligation_ids = remaining
         self.normalization_last_unreachable_obligation_ids = unreachable
@@ -1541,6 +1565,8 @@ class NativePreanalysisSessionState:
                 == self.normalization_work_item_publication_revision
                 and authority.work_item_id
                 == self.normalization_last_published_work_item_id
+                and authority.published_operation_ids
+                == self.normalization_last_published_operation_ids
                 and authority.selected_obligation_ids
                 == self.normalization_last_selected_obligation_ids
                 and authority.remaining_obligation_ids

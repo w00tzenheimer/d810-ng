@@ -1025,7 +1025,7 @@ def test_gateway_advances_only_normalization_for_normalization_plan() -> None:
         publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
         work_item_scope=FragmentWorkItemScope(
             work_item_id="gateway-fragment:complete",
-            selected_obligation_ids=("route",),
+            selected_obligation_ids=("direct-route",),
             remaining_obligation_ids=(),
             unreachable_obligation_ids=("dead-route",),
         ),
@@ -1053,7 +1053,7 @@ def test_partial_normalization_receipt_does_not_advance_generation_authority() -
         publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
         work_item_scope=FragmentWorkItemScope(
             work_item_id="gateway-fragment:root@0x401000",
-            selected_obligation_ids=("route@0x401000",),
+            selected_obligation_ids=("direct-route",),
             remaining_obligation_ids=("route@0x402000",),
             unreachable_obligation_ids=("route@0x403000",),
         ),
@@ -1073,11 +1073,12 @@ def test_partial_normalization_receipt_does_not_advance_generation_authority() -
     assert lifecycle.normalization_validated_generation is None
     assert lifecycle.normalization_published_postvalidated_generation is None
     assert lifecycle.normalization_work_item_publication_revision == 1
+    assert lifecycle.normalization_last_published_operation_ids == ("direct-route",)
     assert (
         lifecycle.normalization_last_published_work_item_id
         == "gateway-fragment:root@0x401000"
     )
-    assert lifecycle.normalization_last_selected_obligation_ids == ("route@0x401000",)
+    assert lifecycle.normalization_last_selected_obligation_ids == ("direct-route",)
     assert lifecycle.normalization_last_remaining_obligation_ids == ("route@0x402000",)
     assert lifecycle.normalization_last_unreachable_obligation_ids == (
         "route@0x403000",
@@ -1111,7 +1112,7 @@ def test_postpublication_failure_restores_prior_normalization_authority() -> Non
         publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
         work_item_scope=FragmentWorkItemScope(
             work_item_id="gateway-fragment:complete",
-            selected_obligation_ids=("route",),
+            selected_obligation_ids=("direct-route",),
             remaining_obligation_ids=(),
             unreachable_obligation_ids=(),
         ),
