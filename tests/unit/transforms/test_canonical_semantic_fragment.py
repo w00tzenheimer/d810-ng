@@ -853,6 +853,220 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge() -> No
     assert f"route:{nested_proof.proof_id}" in planned_native_body.proof_ids
 
 
+def test_nested_imported_state_assignments_reach_fixpoint() -> None:
+    graph, normalization_plan, root_evidence = _live_source_detached_target_case()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            30: _block(30, 0x1300, succs=(), preds=()),
+        },
+    )
+    (native_body,) = normalization_plan.native_bodies
+    first_source = FragmentBlock(
+        block_id="nested-route-source-1",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1210,
+        stable_identity=_wide_identity(0x1210, 0x1220),
+        native_body_id=native_body.body_id,
+    )
+    second_source = FragmentBlock(
+        block_id="nested-route-source-2",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1220,
+        stable_identity=_wide_identity(0x1220, 0x1230),
+        native_body_id=native_body.body_id,
+    )
+    route_target = FragmentBlock(
+        block_id="nested-route-target",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=_identity(0x1250),
+        native_body_id=native_body.body_id,
+    )
+    raw_dispatcher = FragmentBlock(
+        block_id="nested-raw-dispatcher",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1300,
+        stable_identity=_identity(0x1300),
+        native_body_id=native_body.body_id,
+    )
+    raw_terminal = FragmentBlock(
+        block_id="nested-raw-terminal",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1310,
+        stable_identity=_identity(0x1310),
+        native_body_id=native_body.body_id,
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *normalization_plan.blocks,
+            first_source,
+            second_source,
+            route_target,
+            raw_dispatcher,
+            raw_terminal,
+        ),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="native-body-edge@0x1200",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=first_source.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="native-body-edge@0x1218",
+                source_block_id=first_source.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=raw_dispatcher.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="native-body-edge@0x1228",
+                source_block_id=second_source.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=raw_dispatcher.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id="native-body-edge@0x1300",
+                source_block_id=raw_dispatcher.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=raw_terminal.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    first_source.block_id,
+                    second_source.block_id,
+                    route_target.block_id,
+                    raw_dispatcher.block_id,
+                    raw_terminal.block_id,
+                ),
+                terminal_block_ids=(route_target.block_id, raw_terminal.block_id),
+                native_ranges=(
+                    NativeEaInterval(0x1200, 0x1201),
+                    NativeEaInterval(0x1210, 0x1220),
+                    NativeEaInterval(0x1220, 0x1230),
+                    NativeEaInterval(0x1250, 0x1251),
+                    NativeEaInterval(0x1300, 0x1301),
+                    NativeEaInterval(0x1310, 0x1311),
+                ),
+                proof_ids=(
+                    *native_body.proof_ids,
+                    "native-body-edge@0x1200",
+                    "native-body-edge@0x1218",
+                    "native-body-edge@0x1228",
+                    "native-body-edge@0x1300",
+                ),
+            ),
+        ),
+    )
+
+    def nested_proof(
+        *,
+        proof_id: str,
+        write_ea: int,
+        delivery_ea: int,
+        target: FragmentBlock,
+        state_constant: int,
+    ) -> SemanticRouteProof:
+        return SemanticRouteProof(
+            proof_id=proof_id,
+            atomic_group_id=root_evidence.atomic_group_id,
+            proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+            shape=SemanticRouteShape.DIRECT,
+            source_identity=_identity(delivery_ea),
+            source_anchor_ea=delivery_ea,
+            destinations=(
+                SemanticRouteDestination(
+                    role=SemanticEdgeRole.DIRECT,
+                    state_constant=state_constant,
+                    target_identity=target.stable_identity,
+                    target_anchor_ea=target.semantic_anchor_ea,
+                ),
+            ),
+            state_write=SemanticStateWriteProof(
+                identity=_identity(write_ea),
+                instruction_ea=write_ea,
+                state_variable=StorageIdentity(
+                    StorageIdentityKind.REGISTER,
+                    20,
+                ),
+                width=4,
+                state_constant=state_constant,
+                corridor_instruction_eas=(write_ea, delivery_ea),
+            ),
+        )
+
+    first_proof = nested_proof(
+        proof_id="state-assignment@0x1218",
+        write_ea=0x1210,
+        delivery_ea=0x1218,
+        target=second_source,
+        state_constant=0x44,
+    )
+    second_proof = nested_proof(
+        proof_id="state-assignment@0x1228",
+        write_ea=0x1220,
+        delivery_ea=0x1228,
+        target=route_target,
+        state_constant=0x55,
+    )
+    available_evidence = replace(
+        root_evidence,
+        route_proofs=(*root_evidence.route_proofs, first_proof, second_proof),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        root_evidence,
+        available_evidence=available_evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            root_evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    operations = {operation.operation_id: operation for operation in plan.operations}
+    assert f"route:{first_proof.proof_id}" in operations
+    assert f"route:{second_proof.proof_id}" in operations
+    assert "native-body-edge@0x1218" not in operations
+    assert "native-body-edge@0x1228" not in operations
+    assert all(
+        plan.block(edge.target_block_id).semantic_anchor_ea != 0x1300
+        for operation in plan.operations
+        for edge in operation.edges
+    )
+
+
 def test_detached_component_rebinds_published_replacement_boundary_as_external() -> (
     None
 ):
@@ -1336,6 +1550,7 @@ def test_detached_component_rejects_current_imported_successor_with_topology() -
                 "source_anchor_ea": "0x1600",
                 "disposition": "skipped",
                 "reason": "source_not_in_component",
+                "projection_round": 1,
                 "source_block_ids": (),
                 "corridor_block_ids": (),
             },

@@ -79,6 +79,7 @@ class _NestedStateAssignmentProjectionDecision:
     source_anchor_ea: int
     disposition: str
     reason: str
+    projection_round: int
     source_block_ids: tuple[str, ...] = ()
     corridor_block_ids: tuple[str, ...] = ()
 
@@ -88,6 +89,7 @@ class _NestedStateAssignmentProjectionDecision:
             "source_anchor_ea": f"0x{int(self.source_anchor_ea):X}",
             "disposition": self.disposition,
             "reason": self.reason,
+            "projection_round": int(self.projection_round),
             "source_block_ids": self.source_block_ids,
             "corridor_block_ids": self.corridor_block_ids,
         }
@@ -1058,6 +1060,9 @@ def _with_nested_imported_state_assignments(
     *,
     component_block_ids: frozenset[str],
     excluded_proof_ids: frozenset[str],
+    projection_round: int,
+    claimed_source_proof_ids: Mapping[str, str],
+    claimed_corridor_proof_ids: Mapping[str, str],
 ) -> tuple[
     FragmentPlan,
     tuple[SemanticRouteProof, ...],
@@ -1098,7 +1103,8 @@ def _with_nested_imported_state_assignments(
         ]
     ] = []
     decisions: list[_NestedStateAssignmentProjectionDecision] = []
-    claimed_source_ids: dict[str, str] = {}
+    claimed_source_ids = dict(claimed_source_proof_ids)
+    claimed_corridor_ids = dict(claimed_corridor_proof_ids)
     for proof in available_evidence.route_proofs:
         if (
             proof.proof_id in excluded_proof_ids
@@ -1130,6 +1136,7 @@ def _with_nested_imported_state_assignments(
                     source_anchor_ea=int(proof.source_anchor_ea),
                     disposition="skipped",
                     reason="source_not_in_component",
+                    projection_round=int(projection_round),
                 )
             )
             continue
@@ -1221,6 +1228,24 @@ def _with_nested_imported_state_assignments(
                     "source_block_id": source.block_id,
                 },
             )
+        for corridor_block_id in dict.fromkeys(corridor_owner_ids):
+            existing_corridor_proof_id = claimed_corridor_ids.setdefault(
+                corridor_block_id,
+                proof.proof_id,
+            )
+            if existing_corridor_proof_id != proof.proof_id:
+                raise CanonicalSemanticFragmentRejected(
+                    "nested canonical state routes overlap one imported corridor",
+                    reason_code="nested_state_route_corridor_conflict",
+                    anchor_ea=int(proof.source_anchor_ea),
+                    payload={
+                        "route_proof_ids": (
+                            existing_corridor_proof_id,
+                            proof.proof_id,
+                        ),
+                        "corridor_block_id": corridor_block_id,
+                    },
+                )
         replacements.append(
             (
                 proof,
@@ -1235,6 +1260,7 @@ def _with_nested_imported_state_assignments(
                 source_anchor_ea=int(proof.source_anchor_ea),
                 disposition="projected",
                 reason="semantic_route_projected",
+                projection_round=int(projection_round),
                 source_block_ids=(source.block_id,),
                 corridor_block_ids=tuple(dict.fromkeys(corridor_owner_ids)),
             )
@@ -1465,31 +1491,106 @@ def compose_canonical_semantic_fragment_plan(
         roles=frozenset({FragmentBlockRole.IMPORTED}),
         description="canonical route target",
     )
-    initial_target_blocks, _initial_target_operations, _initial_native_body = (
-        _detached_target_component(
-            graph,
-            effective_normalization_plan,
-            target,
-            current_identity_by_serial=current_identity_by_serial,
-            canonical_proof_id="+".join(
-                item.proof_id for item in evidence.route_proofs
-            ),
-            normalization_authority=normalization_authority,
-            allow_unresolved_published_boundaries=True,
-            prohibited_dispatcher_serials=prohibited_serial_set,
+    excluded_nested_proof_ids = {item.proof_id for item in evidence.route_proofs}
+    nested_state_assignment_proof_list: list[SemanticRouteProof] = []
+    nested_decision_by_proof_id: dict[
+        str,
+        _NestedStateAssignmentProjectionDecision,
+    ] = {}
+    claimed_nested_source_ids: dict[str, str] = {}
+    claimed_nested_corridor_ids: dict[str, str] = {}
+    projection_round_limit = len(available_evidence.route_proofs) + 1
+    for projection_round in range(1, projection_round_limit + 1):
+        provisional_target_blocks, _operations, _native_body = (
+            _detached_target_component(
+                graph,
+                effective_normalization_plan,
+                target,
+                current_identity_by_serial=current_identity_by_serial,
+                canonical_proof_id="+".join(
+                    (
+                        *(item.proof_id for item in evidence.route_proofs),
+                        *(item.proof_id for item in nested_state_assignment_proof_list),
+                    )
+                ),
+                normalization_authority=normalization_authority,
+                allow_unresolved_published_boundaries=True,
+                prohibited_dispatcher_serials=prohibited_serial_set,
+            )
         )
-    )
-    (
-        effective_normalization_plan,
-        nested_state_assignment_proofs,
-        nested_state_assignment_decisions,
-    ) = _with_nested_imported_state_assignments(
-        effective_normalization_plan,
-        available_evidence,
-        component_block_ids=frozenset(
-            block.block_id for block in initial_target_blocks
-        ),
-        excluded_proof_ids=frozenset(item.proof_id for item in evidence.route_proofs),
+        (
+            projected_plan,
+            projected_proofs,
+            projection_decisions,
+        ) = _with_nested_imported_state_assignments(
+            effective_normalization_plan,
+            available_evidence,
+            component_block_ids=frozenset(
+                block.block_id for block in provisional_target_blocks
+            ),
+            excluded_proof_ids=frozenset(excluded_nested_proof_ids),
+            projection_round=int(projection_round),
+            claimed_source_proof_ids=claimed_nested_source_ids,
+            claimed_corridor_proof_ids=claimed_nested_corridor_ids,
+        )
+        for decision in projection_decisions:
+            nested_decision_by_proof_id[decision.route_proof_id] = decision
+        if not projected_proofs:
+            break
+        projected_proof_ids = tuple(item.proof_id for item in projected_proofs)
+        if (
+            len(set(projected_proof_ids)) != len(projected_proof_ids)
+            or set(projected_proof_ids).intersection(excluded_nested_proof_ids)
+            or projected_plan == effective_normalization_plan
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "nested canonical state-route projection made no monotonic progress",
+                reason_code="nested_state_route_projection_no_progress",
+                anchor_ea=int(target.semantic_anchor_ea),
+                payload={"route_proof_ids": projected_proof_ids},
+            )
+        projected_decision_by_proof_id = {
+            decision.route_proof_id: decision
+            for decision in projection_decisions
+            if decision.disposition == "projected"
+        }
+        if set(projected_decision_by_proof_id) != set(projected_proof_ids):
+            raise CanonicalSemanticFragmentRejected(
+                "nested canonical state-route projection lost its ownership proof",
+                reason_code="nested_state_route_projection_receipt_mismatch",
+                anchor_ea=int(target.semantic_anchor_ea),
+                payload={"route_proof_ids": projected_proof_ids},
+            )
+        for projected_proof in projected_proofs:
+            decision = projected_decision_by_proof_id[projected_proof.proof_id]
+            if len(decision.source_block_ids) != 1 or not decision.corridor_block_ids:
+                raise CanonicalSemanticFragmentRejected(
+                    "nested canonical state-route projection lacks owned topology",
+                    reason_code="nested_state_route_projection_ownership_missing",
+                    anchor_ea=int(projected_proof.source_anchor_ea),
+                    payload={"route_proof_id": projected_proof.proof_id},
+                )
+            claimed_nested_source_ids[decision.source_block_ids[0]] = (
+                projected_proof.proof_id
+            )
+            for corridor_block_id in decision.corridor_block_ids:
+                claimed_nested_corridor_ids[corridor_block_id] = (
+                    projected_proof.proof_id
+                )
+        effective_normalization_plan = projected_plan
+        nested_state_assignment_proof_list.extend(projected_proofs)
+        excluded_nested_proof_ids.update(projected_proof_ids)
+    else:
+        raise CanonicalSemanticFragmentRejected(
+            "nested canonical state-route projection exceeded its proof bound",
+            reason_code="nested_state_route_projection_bound_exceeded",
+            anchor_ea=int(target.semantic_anchor_ea),
+        )
+    nested_state_assignment_proofs = tuple(nested_state_assignment_proof_list)
+    nested_state_assignment_decisions = tuple(
+        nested_decision_by_proof_id[item.proof_id]
+        for item in available_evidence.route_proofs
+        if item.proof_id in nested_decision_by_proof_id
     )
     try:
         target_blocks, target_operations, native_body = _detached_target_component(
