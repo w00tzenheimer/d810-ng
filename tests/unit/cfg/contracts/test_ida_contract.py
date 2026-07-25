@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from d810.transforms import edit_simulator
 from d810.transforms.contract import (
     CfgContract,
     CfgContractViolationError,
 )
 from d810.transforms.report import InvariantViolation
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
-from d810.transforms.plan import PatchPlan
+from d810.transforms.cfg_transaction import CfgProjection
 
 
 def test_verify_returns_empty_tuple_when_no_violations(monkeypatch: pytest.MonkeyPatch):
@@ -39,7 +38,7 @@ def test_verify_raises_with_summarized_violations(monkeypatch: pytest.MonkeyPatc
     assert exc_info.value.summary == "CFG_BAD@blk[7]"
 
 
-def test_verify_projected_returns_empty_on_success(monkeypatch: pytest.MonkeyPatch):
+def test_verify_projection_returns_empty_on_success():
     contract = CfgContract()
     clean_cfg = FlowGraph(
         blocks={
@@ -67,15 +66,17 @@ def test_verify_projected_returns_empty_on_success(monkeypatch: pytest.MonkeyPat
         entry_serial=0,
         func_ea=0,
     )
-    monkeypatch.setattr(
-        edit_simulator, "project_post_state", lambda *_a, **_k: clean_cfg
+    result = contract.verify_projection(
+        CfgProjection(
+            plan_id="plan-1",
+            snapshot_id="snapshot-1",
+            graph=clean_cfg,
+        )
     )
-
-    result = contract.verify_projected(clean_cfg, PatchPlan())
     assert result == ()
 
 
-def test_verify_projected_raises_on_violation(monkeypatch: pytest.MonkeyPatch):
+def test_verify_projection_raises_on_violation():
     contract = CfgContract()
     # Block 0 lists block 1 as successor but block 1 does NOT list block 0 as pred
     broken_cfg = FlowGraph(
@@ -104,12 +105,14 @@ def test_verify_projected_raises_on_violation(monkeypatch: pytest.MonkeyPatch):
         entry_serial=0,
         func_ea=0,
     )
-    monkeypatch.setattr(
-        edit_simulator, "project_post_state", lambda *_a, **_k: broken_cfg
-    )
-
     with pytest.raises(CfgContractViolationError) as exc_info:
-        contract.verify_projected(broken_cfg, PatchPlan())
+        contract.verify_projection(
+            CfgProjection(
+                plan_id="plan-1",
+                snapshot_id="snapshot-1",
+                graph=broken_cfg,
+            )
+        )
 
     assert exc_info.value.phase == "projected"
     assert len(exc_info.value.violations) > 0
@@ -118,7 +121,7 @@ def test_verify_projected_raises_on_violation(monkeypatch: pytest.MonkeyPatch):
     )
 
 
-def test_check_projected_runs_virtual_cfg_invariants(monkeypatch: pytest.MonkeyPatch):
+def test_check_projection_runs_virtual_cfg_invariants():
     contract = CfgContract()
     projected_cfg = FlowGraph(
         blocks={
@@ -147,11 +150,13 @@ def test_check_projected_runs_virtual_cfg_invariants(monkeypatch: pytest.MonkeyP
         func_ea=0,
     )
 
-    monkeypatch.setattr(
-        edit_simulator, "project_post_state", lambda *_a, **_k: projected_cfg
+    violations = contract.check_projection(
+        CfgProjection(
+            plan_id="plan-1",
+            snapshot_id="snapshot-1",
+            graph=projected_cfg,
+        )
     )
-
-    violations = contract.check_projected(projected_cfg, PatchPlan())
 
     assert [violation.code for violation in violations] == [
         "CFG_50858_SUCC_PRED_MISMATCH",

@@ -6895,3 +6895,58 @@ def test_conditional_staging_failure_poisons_with_helper_and_replacement(
     assert tuple(taken.predset)
     assert gateway.active is False
     assert gateway.generation_poisoned
+
+
+def test_conditional_terminal_tail_rejects_in_immutable_preflight_without_writes(
+    monkeypatch,
+) -> None:
+    class _ConditionalTerminalTailMaterializer(_TerminalEffectNativeBodyMaterializer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.stage_calls = 0
+
+        def prepare_native_body(self, *, plan, native_body):
+            return _native_body_preparation(
+                plan,
+                native_body,
+                (
+                    (
+                        "imported-carrier",
+                        0,
+                        ((0x500000, _Instruction(ida_hexrays.m_mov, 0x500000)),),
+                    ),
+                    (
+                        "imported-return",
+                        0,
+                        ((0x500104, _Instruction(ida_hexrays.m_jz, 0x500104)),),
+                    ),
+                ),
+            )
+
+        def stage_native_body(self, **_kwargs) -> None:
+            self.stage_calls += 1
+            raise AssertionError("conditional closing tail must reject before staging")
+
+    materializer = _ConditionalTerminalTailMaterializer()
+    mba, gateway, modifier, plan, entry, original = _terminal_effect_runtime_case(
+        monkeypatch,
+        materializer=materializer,
+    )
+    quantity = mba.qty
+    generation = gateway.generation
+
+    with pytest.raises(SemanticFragmentPublicationRejected) as caught:
+        gateway.execute_patch_transaction(modifier, plan)
+
+    assert any(
+        failure.postcondition
+        is FragmentValidationPostcondition.TERMINAL_RETURN_INTEGRITY
+        for failure in caught.value.validation.failures
+    )
+    assert materializer.stage_calls == 0
+    assert mba.qty == quantity == 5
+    assert gateway.generation == generation
+    assert not gateway.generation_poisoned
+    assert gateway.active is False
+    assert tuple(entry.succset) == (original.serial,)
+    assert modifier._semantic_fragment_state is None

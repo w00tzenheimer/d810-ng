@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from d810.hexrays.mutation import semantic_fragment_publication as publication
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
@@ -1917,3 +1918,28 @@ def test_generic_commit_cannot_bypass_fragment_postvalidation() -> None:
     assert committed == []
     gateway.abort(reason="test cleanup")
     assert len(aborted) == 1
+
+
+def test_post_root_live_cfg_contract_runs_before_commit(monkeypatch) -> None:
+    plan = _plan()
+    gateway, committed, _aborted = _gateway(plan)
+    calls = []
+    original = publication.CfgContract.verify_projection
+
+    def verify_projection(contract, projection, *, scope="full"):
+        calls.append(projection)
+        if len(calls) == 3:
+            raise RuntimeError("post-root observed CFG rejected")
+        return original(contract, projection, scope=scope)
+
+    monkeypatch.setattr(
+        publication.CfgContract,
+        "verify_projection",
+        verify_projection,
+    )
+    with pytest.raises(CfgGenerationPoisoned, match="post-root observed CFG rejected"):
+        gateway.execute_patch_transaction(_FragmentBackend(gateway), plan)
+
+    assert len(calls) == 3
+    assert committed == []
+    assert gateway.transaction_failure.failure_phase == "postpublication_validation"

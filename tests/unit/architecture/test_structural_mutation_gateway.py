@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 from pathlib import Path
+
+from d810.core import typing
 
 
 SRC_ROOT = Path(__file__).parents[3] / "src" / "d810"
@@ -293,4 +296,200 @@ def test_migrated_structural_entrypoints_require_the_gateway_port() -> None:
             violations.append(f"{relative}:{node.lineno}:{node.name}")
         for missing in sorted(names - found):
             violations.append(f"{relative}:missing:{missing}")
+    assert violations == []
+
+
+def test_patch_plan_has_no_transitional_or_raw_block_references() -> None:
+    """The executable IR contains only nominal block references."""
+    from d810.transforms import cfg_transaction
+    from d810.transforms import plan as patch_plan
+
+    assert not hasattr(cfg_transaction, "Snapshot" + "BlockRef")
+
+    block_field_tokens = (
+        "block",
+        "serial",
+        "source",
+        "target",
+        "pred",
+        "succ",
+        "anchor",
+        "entry",
+        "dispatcher",
+    )
+
+    def contains_raw_int(annotation: object) -> bool:
+        if annotation is int:
+            return True
+        return any(contains_raw_int(arg) for arg in typing.get_args(annotation))
+
+    violations: list[str] = []
+    for operation_type in typing.get_args(patch_plan.PatchOperation):
+        if not dataclasses.is_dataclass(operation_type):
+            continue
+        annotations = typing.get_type_hints(operation_type)
+        for field_name, annotation in annotations.items():
+            if (
+                field_name != "pred_arm"
+                and any(token in field_name for token in block_field_tokens)
+                and contains_raw_int(annotation)
+            ):
+                violations.append(f"{operation_type.__name__}.{field_name}")
+    assert violations == []
+
+
+def test_every_plan_created_block_requires_a_plan_ref_creation_witness() -> None:
+    """Creation identity is allocated by the plan, never inferred after SDK work."""
+    from d810.transforms.cfg_transaction import PlanBlockRef
+    from d810.transforms.plan import PatchBlockSpec
+
+    block_id_annotation = typing.get_type_hints(PatchBlockSpec)["block_id"]
+    assert block_id_annotation is PlanBlockRef
+
+    source = (SRC_ROOT / "hexrays/ir/mba_identity_index.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    index_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "MbaBlockIdentityIndex"
+    )
+    reserve = next(
+        node
+        for node in index_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "reserve_plan_block"
+    )
+    reserve_calls = {
+        node.func.attr
+        for node in ast.walk(reserve)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert {"_create_plan_handle", "_reserve_new_proxy"} <= reserve_calls
+    bind = next(
+        node
+        for node in index_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "bind_reserved_plan_block"
+    )
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "PlanBlockCreationReceipt"
+        for node in ast.walk(bind)
+    )
+
+    plan_source = (SRC_ROOT / "transforms/plan.py").read_text(encoding="utf-8")
+    assert "PlanBlockRef lacks a creation specification" in (
+        SRC_ROOT / "hexrays/mutation/patch_binding.py"
+    ).read_text(encoding="utf-8")
+    assert "block_id: PlanBlockRef" in plan_source
+
+
+def test_every_production_patch_plan_compiler_call_names_exact_block_authority() -> (
+    None
+):
+    """Executable compilation cannot degrade when serial authority is absent."""
+    violations: list[str] = []
+    for relative, call in _production_calls():
+        function = call.func
+        if not isinstance(function, ast.Name) or function.id != "compile_patch_plan":
+            continue
+        if relative == "transforms/plan.py":
+            continue
+        if not any(keyword.arg == "block_refs_by_serial" for keyword in call.keywords):
+            violations.append(f"{relative}:{call.lineno}")
+    assert violations == []
+
+
+def test_semantic_sdk_creation_sites_are_exhaustive_and_receipt_backed() -> None:
+    """Every semantic SDK allocation is named and bound to planned authority."""
+    path = SRC_ROOT / "hexrays/mutation/deferred_modifier.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    modifier = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "DeferredGraphModifier"
+    )
+    methods = {
+        node.name: node
+        for node in modifier.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    sdk_names = {"copy_block_keep", "create_standalone_block"}
+    creation_sites: set[tuple[str, str]] = set()
+    for method_name, method in methods.items():
+        if (
+            "semantic" not in method_name
+            and method_name != "_build_fallthrough_goto_helper"
+        ):
+            continue
+        for call in ast.walk(method):
+            if not isinstance(call, ast.Call):
+                continue
+            called = (
+                call.func.id
+                if isinstance(call.func, ast.Name)
+                else call.func.attr
+                if isinstance(call.func, ast.Attribute)
+                else None
+            )
+            if called in sdk_names or called == "insert_block":
+                creation_sites.add((method_name, str(called)))
+    assert creation_sites == {
+        ("_stage_detached_semantic_replacement", "copy_block_keep"),
+        ("_stage_empty_semantic_block", "create_standalone_block"),
+        ("_stage_imported_native_semantic_block", "create_standalone_block"),
+        ("_build_fallthrough_goto_helper", "insert_block"),
+    }
+
+    def called_methods(name: str) -> set[str]:
+        return {
+            call.func.attr
+            for call in ast.walk(methods[name])
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+        }
+
+    for method_name in {
+        "_stage_detached_semantic_replacement",
+        "_stage_empty_semantic_block",
+        "_stage_imported_native_semantic_block",
+    }:
+        assert {"reserve_plan_block", "bind_reserved_plan_block"} <= called_methods(
+            method_name
+        )
+    assert "bind_reserved_plan_block" in called_methods(
+        "_build_fallthrough_goto_helper"
+    )
+    assert "reserve_plan_block" in called_methods(
+        "_stage_semantic_fallthrough_helper"
+    )
+
+
+def test_synthetic_identity_is_nominal_not_derived_from_live_coordinates() -> None:
+    """Synthetic handle constructors receive only external nominal authority."""
+    path = SRC_ROOT / "ir/block_identity.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    handle_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "MbaBlockHandle"
+    )
+    constructors = {
+        node.name: node
+        for node in handle_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"created_synthetic", "observed_ephemeral"}
+    }
+    assert set(constructors) == {"created_synthetic", "observed_ephemeral"}
+    forbidden = {"ea", "badaddr", "hash", "content", "serial"}
+    violations: list[str] = []
+    for name, function in constructors.items():
+        parameter_names = {
+            argument.arg
+            for argument in (*function.args.args, *function.args.kwonlyargs)
+            if argument.arg not in {"cls", "self"}
+        }
+        for parameter in parameter_names:
+            if any(token in parameter.lower() for token in forbidden):
+                violations.append(f"{name}:{parameter}")
     assert violations == []
