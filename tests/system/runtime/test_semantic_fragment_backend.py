@@ -3693,6 +3693,100 @@ def test_cached_preopt_call_materializes_with_gateway_owned_fallthrough(
     gateway.abort(reason="runtime cached PREOPT call cleanup")
 
 
+def test_calls_built_replacement_splits_owned_continuation_after_call(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x40AE26, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x40AE3E, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x40AE63, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x40AE8B, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x40AE90, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+
+    setup = _Instruction(ida_hexrays.m_ldx, 0x40AE5D)
+    analyzed_call = _Instruction(ida_hexrays.m_icall, 0x40AE60)
+    analyzed_call.d.t = int(ida_hexrays.mop_f)
+    analyzed_call.d.f = object()
+    call_owner = _Instruction(ida_hexrays.m_mov, 0x40AE60)
+    call_owner.l.create_from_insn(analyzed_call)
+    continuation = _Instruction(ida_hexrays.m_mov, 0x40AE69)
+    state_write = _Instruction(ida_hexrays.m_mov, 0x40AE6F)
+    stale_goto = _Instruction(ida_hexrays.m_goto, 0x40A560, dispatcher.serial)
+    for instruction in (
+        setup,
+        call_owner,
+        continuation,
+        state_write,
+        stale_goto,
+    ):
+        original.insert_into_block(instruction, original.tail)
+    original.flags |= int(ida_hexrays.MBL_GOTO)
+    original.succset.push_back(dispatcher.serial)
+    dispatcher.predset.push_back(original.serial)
+
+    for instruction in (
+        _Instruction(ida_hexrays.m_mov, 0x40AE69),
+        _Instruction(ida_hexrays.m_mov, 0x40AE6F),
+    ):
+        target.insert_into_block(instruction, target.tail)
+
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    plan = _plan(
+        gateway,
+        entry=entry.serial,
+        original=original.serial,
+        target=target.serial,
+        dispatcher=dispatcher.serial,
+    )
+    plan = replace(
+        plan,
+        plan_id="runtime-calls-built-boundary",
+        operations=(
+            FragmentOperation(
+                operation_id="native-body-edge@0x40AE3E",
+                source_block_id="replacement",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                        target_block_id="target",
+                    ),
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
+    monkeypatch.setattr(dm, "insert_goto_instruction", _insert_fake_goto_instruction)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    root_inventory = modifier._plan_semantic_fragment_root_publication_inventory(plan)
+    gateway._begin_semantic_fragment_batch(modifier, plan, root_inventory)
+
+    projection = modifier._stage_semantic_fragment(plan)
+
+    state = modifier._semantic_fragment_state
+    assert state is not None
+    replacement = sfb._live_block_for_binding(
+        modifier,
+        state.binding("replacement"),
+    )
+    helper = projection.block("fallthrough-helper:native-body-edge@0x40AE3E")
+    assert tuple(
+        (int(instruction.ea), int(instruction.opcode))
+        for instruction in modifier._block_instructions(replacement)
+    ) == (
+        (0x40AE5D, int(ida_hexrays.m_ldx)),
+        (0x40AE60, int(ida_hexrays.m_mov)),
+    )
+    assert tuple(int(value) for value in replacement.succset) == (
+        helper.physical_position,
+    )
+    assert helper.successors == ("target",)
+    assert not int(replacement.flags) & int(ida_hexrays.MBL_GOTO)
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="runtime calls-built boundary cleanup")
+
+
 def test_native_body_rejects_an_unbound_materialized_instruction(
     monkeypatch,
 ) -> None:
