@@ -143,7 +143,9 @@ class ProjectedFragmentBlock:
             not instruction_eas or terminator_ea != instruction_eas[-1]
         ):
             raise ValueError(
-                "projected terminator must be the final projected instruction"
+                "projected terminator must be the final projected instruction: "
+                f"{block_id} terminator=0x{terminator_ea:X} "
+                f"instructions={tuple(hex(ea) for ea in instruction_eas)!r}"
             )
         object.__setattr__(self, "block_id", block_id)
         object.__setattr__(self, "successors", successors)
