@@ -945,6 +945,93 @@ def _bind_boundary_reference_oracle(
         ) from exc
 
 
+def _rejected_canonical_composition_attempt(
+    *,
+    kind: str,
+    rejection: CanonicalSemanticFragmentRejected,
+    route_candidate: CanonicalSemanticEvidence | None = None,
+    boundary_anchor_ea: int | None = None,
+) -> dict[str, object]:
+    """Serialize one rejected composition attempt with stable native anchors."""
+    payload: dict[str, object] = {
+        "kind": str(kind),
+        "outcome": "rejected",
+        "reason_code": rejection.reason_code,
+        "rejection_anchor_ea": (
+            None
+            if rejection.anchor_ea is None
+            else f"0x{int(rejection.anchor_ea):X}"
+        ),
+        "detail": str(rejection),
+        "rejection_payload": dict(rejection.payload),
+    }
+    if route_candidate is not None:
+        payload.update(
+            {
+                "route_proof_ids": tuple(
+                    proof.proof_id for proof in route_candidate.route_proofs
+                ),
+                "route_source_anchor_eas": tuple(
+                    f"0x{int(proof.source_anchor_ea):X}"
+                    for proof in route_candidate.route_proofs
+                ),
+            }
+        )
+    if boundary_anchor_ea is not None:
+        payload["boundary_anchor_ea"] = f"0x{int(boundary_anchor_ea):X}"
+    return payload
+
+
+def _accepted_canonical_composition_attempt(
+    *,
+    kind: str,
+    plan: FragmentPlan,
+    route_candidate: CanonicalSemanticEvidence | None = None,
+    boundary_anchor_ea: int | None = None,
+) -> dict[str, object]:
+    """Serialize one accepted composition attempt before oracle/publication gates."""
+    payload: dict[str, object] = {
+        "kind": str(kind),
+        "outcome": "accepted",
+        "plan_id": plan.plan_id,
+        "atomic_group_id": plan.atomic_group_id,
+        "block_count": len(plan.blocks),
+        "operation_count": len(plan.operations),
+        "native_body_count": len(plan.native_bodies),
+        "root_block_ids": plan.roots,
+    }
+    if route_candidate is not None:
+        payload.update(
+            {
+                "route_proof_ids": tuple(
+                    proof.proof_id for proof in route_candidate.route_proofs
+                ),
+                "route_source_anchor_eas": tuple(
+                    f"0x{int(proof.source_anchor_ea):X}"
+                    for proof in route_candidate.route_proofs
+                ),
+            }
+        )
+    if boundary_anchor_ea is not None:
+        payload["boundary_anchor_ea"] = f"0x{int(boundary_anchor_ea):X}"
+    return payload
+
+
+def _with_canonical_composition_attempts(
+    rejection: CanonicalSemanticFragmentRejected,
+    attempts: tuple[dict[str, object], ...],
+) -> CanonicalSemanticFragmentRejected:
+    """Attach the complete attempt ledger without replacing the final rejection."""
+    payload = dict(rejection.payload)
+    payload["composition_attempts"] = tuple(dict(attempt) for attempt in attempts)
+    return CanonicalSemanticFragmentRejected(
+        str(rejection),
+        reason_code=rejection.reason_code,
+        anchor_ea=rejection.anchor_ea,
+        payload=payload,
+    )
+
+
 def _compose_candidate_semantic_fragment(
     context: FunctionPipelineContext,
     *,
@@ -1031,6 +1118,7 @@ def _compose_candidate_semantic_fragment(
     }
 
     plans: list[FragmentPlan] = []
+    composition_attempts: list[dict[str, object]] = []
     unresolved_boundary_anchors: list[int] = []
     unresolved_boundary_rejection_by_anchor: dict[
         int,
@@ -1057,6 +1145,13 @@ def _compose_candidate_semantic_fragment(
                 prohibited_dispatcher_serials=(prohibited_dispatcher_serials),
             )
         except CanonicalSemanticFragmentRejected as exc:
+            composition_attempts.append(
+                _rejected_canonical_composition_attempt(
+                    kind="route",
+                    rejection=exc,
+                    route_candidate=route_candidate,
+                )
+            )
             if first_rejection is None:
                 first_rejection = exc
                 first_rejected_proof = proof
@@ -1069,6 +1164,13 @@ def _compose_candidate_semantic_fragment(
                     unresolved_boundary_anchors.append(boundary_anchor_ea)
                     unresolved_boundary_rejection_by_anchor[boundary_anchor_ea] = exc
             continue
+        composition_attempts.append(
+            _accepted_canonical_composition_attempt(
+                kind="route",
+                plan=plan,
+                route_candidate=route_candidate,
+            )
+        )
         plans.append(plan)
     boundary_plans: list[tuple[int, FragmentPlan]] = []
     first_boundary_rejection: CanonicalSemanticFragmentRejected | None = None
@@ -1089,10 +1191,24 @@ def _compose_candidate_semantic_fragment(
                     prohibited_dispatcher_serials=prohibited_dispatcher_serials,
                 )
             except CanonicalSemanticFragmentRejected as exc:
+                composition_attempts.append(
+                    _rejected_canonical_composition_attempt(
+                        kind="boundary",
+                        rejection=exc,
+                        boundary_anchor_ea=boundary_anchor_ea,
+                    )
+                )
                 boundary_plan_rejection_by_anchor[boundary_anchor_ea] = exc
                 if first_boundary_rejection is None:
                     first_boundary_rejection = exc
                 continue
+            composition_attempts.append(
+                _accepted_canonical_composition_attempt(
+                    kind="boundary",
+                    plan=boundary_plan,
+                    boundary_anchor_ea=boundary_anchor_ea,
+                )
+            )
             boundary_plans.append((boundary_anchor_ea, boundary_plan))
     if not plans and not boundary_plans:
         attempted_anchors = set(unresolved_boundary_anchors)
@@ -1124,6 +1240,13 @@ def _compose_candidate_semantic_fragment(
                     prohibited_dispatcher_serials=prohibited_dispatcher_serials,
                 )
             except CanonicalSemanticFragmentRejected as exc:
+                composition_attempts.append(
+                    _rejected_canonical_composition_attempt(
+                        kind="semantic_predecessor_boundary",
+                        rejection=exc,
+                        boundary_anchor_ea=source_anchor_ea,
+                    )
+                )
                 if first_upstream_rejection is None:
                     first_upstream_rejection = exc
                 retirement_obligation_id = (
@@ -1149,10 +1272,31 @@ def _compose_candidate_semantic_fragment(
                         ),
                     )
                 except CanonicalSemanticFragmentRejected as port_exc:
+                    composition_attempts.append(
+                        _rejected_canonical_composition_attempt(
+                            kind="temporary_boundary_port",
+                            rejection=port_exc,
+                            boundary_anchor_ea=boundary_anchor_ea,
+                        )
+                    )
                     first_upstream_rejection = port_exc
                     continue
+                composition_attempts.append(
+                    _accepted_canonical_composition_attempt(
+                        kind="temporary_boundary_port",
+                        plan=boundary_plan,
+                        boundary_anchor_ea=boundary_anchor_ea,
+                    )
+                )
                 boundary_plans.append((boundary_anchor_ea, boundary_plan))
                 continue
+            composition_attempts.append(
+                _accepted_canonical_composition_attempt(
+                    kind="semantic_predecessor_boundary",
+                    plan=boundary_plan,
+                    boundary_anchor_ea=source_anchor_ea,
+                )
+            )
             boundary_plans.append((source_anchor_ea, boundary_plan))
         if first_upstream_rejection is not None:
             first_boundary_rejection = first_upstream_rejection
@@ -1166,15 +1310,19 @@ def _compose_candidate_semantic_fragment(
                 item[1].plan_id,
             ),
         )
-        return (
-            _bind_boundary_reference_oracle(
+        try:
+            oracle_bound_plan = _bind_boundary_reference_oracle(
                 context,
                 function_ea=function_ea,
                 boundary_anchor_ea=boundary_anchor_ea,
                 boundary_plan=boundary_plan,
-            ),
-            int(candidate.generation),
-        )
+            )
+        except CanonicalSemanticFragmentRejected as exc:
+            raise _with_canonical_composition_attempts(
+                exc,
+                tuple(composition_attempts),
+            ) from exc
+        return oracle_bound_plan, int(candidate.generation)
     if not plans:
         if first_boundary_rejection is not None:
             first_rejection = first_boundary_rejection
@@ -1197,6 +1345,9 @@ def _compose_candidate_semantic_fragment(
         )
         if first_rejected_proof is not None:
             first_rejection_payload["route_proof_id"] = first_rejected_proof.proof_id
+        first_rejection_payload["composition_attempts"] = tuple(
+            composition_attempts
+        )
         raise CanonicalSemanticFragmentRejected(
             "canonical composition found no complete route"
             + ("" if first_rejection is None else f": {first_rejection}"),

@@ -1651,6 +1651,76 @@ def test_canonical_composition_rejection_reports_stable_route_obligation() -> No
     }
 
 
+def test_canonical_composition_rejection_reports_each_attempt() -> None:
+    reported = []
+    rule = _fresh_rule()
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    mba = SimpleNamespace(entry_ea=_EA, maturity=_MAT2)
+    route_attempt = {
+        "kind": "route",
+        "outcome": "rejected",
+        "route_proof_ids": ("state_assignment@0x40B4BA:0xBD9A2C2A",),
+        "route_source_anchor_eas": ("0x40B4BA",),
+        "reason_code": "published_imported_boundary_topology_unresolved",
+        "rejection_anchor_ea": "0x40B6C0",
+        "detail": "published imported boundary retains unresolved topology",
+        "rejection_payload": {
+            "incoming_source_anchor_ea": "0x40B4A4",
+        },
+    }
+    boundary_attempt = {
+        "kind": "semantic_predecessor_boundary",
+        "outcome": "accepted",
+        "boundary_anchor_ea": "0x40B3FF",
+        "plan_id": "canonical:0x40A560:g2:root@0x40B3FF",
+        "atomic_group_id": "canonical:0x40A560:g2",
+        "block_count": 2,
+        "operation_count": 2,
+        "native_body_count": 1,
+        "root_block_ids": ("native[0x40B3FF-0x40B4A4]",),
+    }
+    rejection = CanonicalSemanticFragmentRejected(
+        "published canonical boundary owns no semantic route",
+        reason_code="published_boundary_semantic_route_missing",
+        anchor_ea=0x40B6C0,
+        payload={
+            "boundary_block_id": "native[0x40B6C0-0x40B6CA]",
+            "composition_attempts": (route_attempt, boundary_attempt),
+        },
+    )
+
+    rule._report_canonical_composition_rejection(mba, rejection)
+
+    assert len(reported) == 3
+    route_record, boundary_record, summary_record = reported
+    assert route_record.strategy == "canonical_semantic_composition_attempt"
+    assert route_record.fact_id == (
+        "canonical_composition_attempt:route:"
+        "state_assignment@0x40B4BA:0xBD9A2C2A"
+    )
+    assert route_record.decision == "rejected"
+    assert route_record.reason == (
+        "published_imported_boundary_topology_unresolved"
+    )
+    assert route_record.payload == {"attempt_index": 0, **route_attempt}
+    assert boundary_record.strategy == "canonical_semantic_composition_attempt"
+    assert boundary_record.fact_id == (
+        "canonical_composition_attempt:semantic_predecessor_boundary:0x40B3FF"
+    )
+    assert boundary_record.decision == "accepted"
+    assert boundary_record.reason == "composition_plan_available"
+    assert boundary_record.payload == {"attempt_index": 1, **boundary_attempt}
+    assert summary_record.strategy == "canonical_semantic_composition"
+    assert summary_record.reason == "published_boundary_semantic_route_missing"
+    assert summary_record.payload == {
+        "anchor_ea": "0x40B6C0",
+        "boundary_block_id": "native[0x40B6C0-0x40B6CA]",
+        "detail": "published canonical boundary owns no semantic route",
+    }
+
+
 def test_unresolved_published_boundary_promotes_contextual_plan_and_restarts() -> None:
     generic_plan = ComputedGotoPatchPlan(
         jmp_ea=0x40B6D4,
