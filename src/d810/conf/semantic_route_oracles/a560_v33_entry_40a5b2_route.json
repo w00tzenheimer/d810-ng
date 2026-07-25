@@ -1,0 +1,91 @@
+{
+  "publication_root_ea": "0x40A5B2",
+  "capture": {
+    "function_end_ea": "0x40C8A2",
+    "maturities": [
+      "MMAT_GENERATED",
+      "MMAT_PREOPTIMIZED",
+      "MMAT_CALLS",
+      "MMAT_GLBOPT1"
+    ]
+  },
+  "routes": [
+    {
+      "corridor": [
+        [
+          "0x40A5B2",
+          "0x40A5CA"
+        ]
+      ],
+      "direct_target_ea": "0x40BECC",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "direct",
+      "owner_ea": "0x40A5B2",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb4755b9ab",
+            "ea": 4236722,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xabb95547",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "eb26",
+            "ea": 4236744,
+            "mnemonic": "jmp",
+            "op_str": "0x40a5f0",
+            "size": 2,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4236746,
+        "corridor_start_ea": 4236722,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4236744,
+            "opcode": "e9",
+            "target_ea": 4243148
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4236722,
+            "mnemonic": "mov",
+            "value": 2881049927,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40A5C8",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40A5C8",
+      "route_id": "rhad:0x40A560:flow_route:0x40A5C8",
+      "true_target_ea": null
+    }
+  ],
+  "run": {
+    "cache_disabled": true,
+    "candidate_binary_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
+    "fixture_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
+    "function_ea": "0x40A560",
+    "metadata": {
+      "reference_ledger_binary_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+    },
+    "reference_binary_sha256": "6358957fe74360725b125bdc41b16df9952d95b338792fd3521249e5030ddd8c",
+    "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+    "run_id": "a560-v33-entry-40a5b2-route-20260725",
+    "runtime_image": "d810-idapro-9.3-test-runtime:py313-v1",
+    "runtime_image_id": "sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a"
+  },
+  "schema_version": 2
+}
