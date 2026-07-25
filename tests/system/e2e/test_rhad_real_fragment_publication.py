@@ -307,6 +307,7 @@ def _run_worker(
         )
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
         from d810.hexrays.mutation.mba_mutation_events import (
+            MbaCfgTransactionAuthorityObserved,
             MbaMutationAborted,
             MbaMutationCommitted,
             MbaMutationGateway,
@@ -628,6 +629,10 @@ def _run_worker(
         )
         emitter.on(MbaMutationCommitted, D810Manager._on_mutation_committed)
         emitter.on(MbaMutationAborted, D810Manager._on_mutation_aborted)
+        emitter.on(
+            MbaCfgTransactionAuthorityObserved,
+            D810Manager._on_cfg_transaction_authority,
+        )
         gateway.event_emitter = emitter
 
         class VerifyingFragmentModifier(DeferredGraphModifier):
@@ -904,6 +909,70 @@ def test_real_a560_terminal_fragment_reaches_c5_with_db_evidence(
             == _TERMINAL_RETURN_EA
         )
         assert len(persisted_plan["terminal_routes"]) == 1
+
+        cfg_attempt = connection.execute(
+            "SELECT plan_id,attempt_id,session_id,current_phase,mba_generation,"
+            "evidence_generation,mutation_started,poisoned "
+            "FROM cfg_transaction_attempts"
+        ).fetchone()
+        assert cfg_attempt is not None
+        assert cfg_attempt[0] == summary["plan_id"]
+        assert cfg_attempt[2:] == (
+            "rhad-real-terminal-fragment-c5",
+            "committed",
+            0,
+            1,
+            1,
+            0,
+        )
+        cfg_phases = connection.execute(
+            "SELECT phase_index,phase FROM cfg_transaction_phase_events "
+            "WHERE plan_id=? AND attempt_id=? ORDER BY phase_index",
+            (cfg_attempt[0], cfg_attempt[1]),
+        ).fetchall()
+        assert cfg_phases == list(
+            enumerate(
+                (
+                    "planned",
+                    "projected",
+                    "preflighted",
+                    "bound",
+                    "realizing",
+                    "observed",
+                    "committed",
+                )
+            )
+        )
+
+        clone_block_ids = {
+            block["block_id"]
+            for block in persisted_plan["blocks"]
+            if block["materialization"] == "clone_published"
+        }
+        assert len(clone_block_ids) == 2
+        creation_witnesses = connection.execute(
+            "SELECT local_block_id,requested_insertion_serial,returned_serial,state "
+            "FROM cfg_creation_witnesses WHERE plan_id=? AND attempt_id=? "
+            "AND requested_insertion_serial IS NOT NULL "
+            "AND returned_serial IS NOT NULL",
+            (cfg_attempt[0], cfg_attempt[1]),
+        ).fetchall()
+        witnesses_by_id = {row[0]: row[1:] for row in creation_witnesses}
+        assert len(witnesses_by_id) == 3
+        for clone_block_id in clone_block_ids:
+            assert witnesses_by_id[clone_block_id][0] is not None
+            assert witnesses_by_id[clone_block_id][1] is not None
+            assert witnesses_by_id[clone_block_id][2] == "committed"
+        helper_witnesses = {
+            local_id: witness
+            for local_id, witness in witnesses_by_id.items()
+            if local_id.startswith("root-fallthrough-helper:")
+        }
+        assert len(helper_witnesses) == 1
+        helper_witness = next(iter(helper_witnesses.values()))
+        assert helper_witness[0] is not None
+        assert helper_witness[1] is not None
+        assert helper_witness[2] == "committed"
 
         oracle = connection.execute(
             "SELECT run_id,plan_id,atomic_group_id,route_id,maturity,"
