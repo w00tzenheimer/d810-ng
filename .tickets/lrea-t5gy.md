@@ -4995,3 +4995,41 @@ owner count, reinterpret `0x40BB51` as live, or extend the broad `0x40A5F0`
 transaction. The next vertical slice must model the reference-owned
 `0x40BB44`-`0x40BB69` corridor as detached normalization input and prove the
 smallest closed component that contains it.
+
+**2026-07-25T16:34:46Z — detached-intent retention and v17 checkpoint**
+
+Commit `65a64679d` carries the exact configured reference route from session
+authority through the live frontend adapter and manager into portable detached
+normalization intent. The planner retains missing reference corridor starts,
+the native owner and rewrite anchors, and direct or conditional targets as
+required import roots. The selected live frontend work item remains unchanged;
+these roots are complete-plan detached intent, not additional live publication
+operations. Focused manager, pass, adapter, and planning tests are 92/92 green,
+both architecture gates pass, and repository-wide formatting changed one test
+assertion only, committed separately as `340e7aab5`.
+
+The mandatory cache-disabled v17 A560 canary completed normally in 27.17
+seconds without a crash, numeric INTERR, rollback, or diagnostic-write failure.
+Output:
+`.tmp/rhad-a560-v33-detached-intent-v17.txt`; primary diagnostic DB:
+`.tmp/rhad-a560-v33-detached-intent-v17/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode is beside the DB. The semantic oracle remains red on one false
+`while ( 1 )`.
+
+The database still records the exact route selected at `MMAT_CALLS`, followed
+by `normalization_plan_owner_count_mismatch` at stable rewrite source
+`0x40BB63`, with zero owners. The unrelated live frontend transaction remains
+exactly 260/260 committed operations rooted at `0x40A5F0`, with all 639
+prepublication and 1,180 postpublication validations passing and no rollback.
+This is expected because the live composer currently accepts only an
+`EXTERNAL` source; it does not yet consume an `IMPORTED` source from complete
+detached intent.
+
+Do not claim that v17 proves the route owner was imported at runtime: schema-8
+diagnostics persist the selected live work item but not the complete detached
+normalization intent. The canary therefore remains C2 and the first failed
+obligation remains C3. This is the first non-advancing runtime slice under the
+v3.3 representation rule. The next slice must either make the complete intent
+and imported route ownership queryable in the DB or produce the one-route
+detached canonical plan from that imported source; another non-advancing slice
+requires reconsidering the representation before further implementation.
