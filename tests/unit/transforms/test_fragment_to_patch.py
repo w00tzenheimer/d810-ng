@@ -291,11 +291,15 @@ def test_both_production_paths_use_the_shared_transaction_coordinator() -> None:
     backend = (
         source_root / "backends" / "hexrays" / "mutation" / "backend.py"
     ).read_text(encoding="utf-8")
+    patch_transaction = (
+        source_root / "hexrays" / "mutation" / "patch_transaction.py"
+    ).read_text(encoding="utf-8")
     publication = (
         source_root / "hexrays" / "mutation" / "semantic_fragment_publication.py"
     ).read_text(encoding="utf-8")
-    assert "CfgTransactionCoordinator(" in backend
-    assert "PatchTransactionParticipant()" in backend
+    assert "execute_patch_transaction(" in backend
+    assert "CfgTransactionCoordinator(" in patch_transaction
+    assert "PatchTransactionParticipant()" in patch_transaction
     assert "from d810.passes.transaction_engine" not in backend
     assert "def publish_fragment(" not in backend
     assert "CfgTransactionCoordinator(" in publication

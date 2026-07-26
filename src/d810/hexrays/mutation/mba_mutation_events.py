@@ -635,6 +635,7 @@ class MbaMutationGateway:
         repr=False,
     )
     _cfg_phase_index: int = field(default=0, init=False, repr=False)
+    _cfg_bound_recorded: bool = field(default=False, init=False, repr=False)
     _cfg_plan_refs: tuple[PlanBlockRef, ...] = field(
         default=(),
         init=False,
@@ -736,6 +737,7 @@ class MbaMutationGateway:
     def _reset_cfg_context(self) -> None:
         self._current_transaction_attempt = None
         self._cfg_phase_index = 0
+        self._cfg_bound_recorded = False
         self._cfg_plan_refs = ()
         self._cfg_plan_bindings.clear()
         self._cfg_reservations.clear()
@@ -748,28 +750,48 @@ class MbaMutationGateway:
     def _require_generation_usable(self) -> None:
         self.identity_index.require_generation_usable()
 
-    def _record_fragment_attempt_planned(
+    def _record_cfg_attempt_planned(
         self,
-        plan: FragmentPlan,
+        *,
+        plan_id: str,
+        plan_refs: Iterable[PlanBlockRef],
         attempt: TransactionAttemptId,
     ) -> None:
         """Install one immutable four-part attempt before projection begins."""
         self._require_generation_usable()
         if self.active:
-            raise RuntimeError("cannot plan a fragment attempt inside an active batch")
-        if attempt.plan_id != plan.plan_id:
-            raise ValueError("fragment attempt belongs to another plan")
+            raise RuntimeError("cannot plan a CFG attempt inside an active batch")
+        plan_id = str(plan_id)
+        plan_refs = tuple(plan_refs)
+        if not plan_id or attempt.plan_id != plan_id:
+            raise ValueError("CFG attempt belongs to another plan")
         if attempt.session_id != self.session_id:
-            raise ValueError("fragment attempt belongs to another session")
+            raise ValueError("CFG attempt belongs to another session")
         if attempt.generation != self.identity_index.generation:
-            raise ValueError("fragment attempt belongs to another generation")
+            raise ValueError("CFG attempt belongs to another generation")
+        if (
+            len(set(plan_refs)) != len(plan_refs)
+            or any(ref.plan_id != plan_id for ref in plan_refs)
+        ):
+            raise ValueError("CFG attempt has invalid plan block authority")
         self._reset_cfg_context()
         self._current_transaction_attempt = attempt
         self._transaction_failure = None
-        self._cfg_plan_refs = tuple(
-            PlanBlockRef(plan.plan_id, block.block_id) for block in plan.blocks
-        )
+        self._cfg_plan_refs = plan_refs
         self._emit_cfg_transaction_phase(CfgTransactionPhase.PLANNED)
+
+    def _record_fragment_attempt_planned(
+        self,
+        plan: FragmentPlan,
+        attempt: TransactionAttemptId,
+    ) -> None:
+        self._record_cfg_attempt_planned(
+            plan_id=plan.plan_id,
+            plan_refs=tuple(
+                PlanBlockRef(plan.plan_id, block.block_id) for block in plan.blocks
+            ),
+            attempt=attempt,
+        )
 
     def _emit_cfg_transaction_phase(
         self,
@@ -818,11 +840,40 @@ class MbaMutationGateway:
         )
         self._cfg_phase_index += 1
 
-    def _record_fragment_projected(self) -> None:
+    def _record_cfg_projected(self) -> None:
         self._emit_cfg_transaction_phase(CfgTransactionPhase.PROJECTED)
 
-    def _record_fragment_preflighted(self) -> None:
+    def _record_cfg_preflighted(self) -> None:
         self._emit_cfg_transaction_phase(CfgTransactionPhase.PREFLIGHTED)
+
+    def _prepare_patch_binding(
+        self,
+        attempt: TransactionAttemptId,
+        *,
+        serial_quantity: int,
+    ) -> None:
+        """Open exact identity binding after immutable preflight, before staging."""
+        self._require_generation_usable()
+        if self.active:
+            raise RuntimeError("patch binding requires an idle mutation gateway")
+        if attempt != self._current_transaction_attempt:
+            raise ValueError("patch binding attempt differs from planned authority")
+        serial_quantity = int(serial_quantity)
+        if serial_quantity < 0:
+            raise ValueError("patch binding quantity must be non-negative")
+        self.identity_index.begin_transaction(attempt, serial_quantity)
+        self._cfg_initial_quantity = serial_quantity
+
+    def _record_cfg_bound(self) -> None:
+        """Record exact binding once, after all prewrite reservations exist."""
+        if self._current_transaction_attempt is None:
+            raise RuntimeError("CFG binding has no transaction attempt")
+        if self._cfg_bound_recorded:
+            raise RuntimeError("CFG binding phase is already recorded")
+        if self._mutation_started:
+            raise RuntimeError("CFG binding cannot follow live mutation")
+        self._cfg_bound_recorded = True
+        self._emit_cfg_transaction_phase(CfgTransactionPhase.BOUND)
 
     def _record_clean_cfg_failure(
         self,
@@ -1051,10 +1102,29 @@ class MbaMutationGateway:
             if transaction_attempt is None
             else transaction_attempt.attempt_id
         )
-        self.identity_index.begin_transaction(
-            transaction_attempt if transaction_attempt is not None else batch_id,
-            serial_quantity,
-        )
+        identity_transaction_prepared = False
+        if transaction_attempt is not None:
+            try:
+                self.identity_index.require_active_attempt(transaction_attempt)
+            except ValueError:
+                pass
+            else:
+                identity_transaction_prepared = True
+                if (
+                    serial_quantity is not None
+                    and self.identity_index.transaction_quantity(
+                        transaction_attempt.attempt_id
+                    )
+                    != serial_quantity
+                ):
+                    raise ValueError(
+                        "prepared patch binding quantity differs from live batch"
+                    )
+        if not identity_transaction_prepared:
+            self.identity_index.begin_transaction(
+                transaction_attempt if transaction_attempt is not None else batch_id,
+                serial_quantity,
+            )
 
         self._reset_fragment_context()
         if transaction_attempt is None:
@@ -1103,15 +1173,18 @@ class MbaMutationGateway:
             ),
             mutation_batch_id=batch_id,
         )
-        if transaction_attempt is not None:
-            self._emit_cfg_transaction_phase(CfgTransactionPhase.BOUND)
+        if transaction_attempt is not None and not self._cfg_bound_recorded:
+            self._record_cfg_bound()
 
     def register_patch_plan_reservations(
         self,
         reservations: Iterable[PlanBlockReservation],
     ) -> None:
         """Record the exact reservations produced during patch-plan binding."""
-        self._require_active()
+        attempt = self._current_transaction_attempt
+        if attempt is None:
+            raise RuntimeError("patch reservations have no transaction attempt")
+        self.identity_index.require_active_attempt(attempt)
         declared = set(self._cfg_plan_refs)
         for reservation in reservations:
             if (
@@ -2457,10 +2530,13 @@ class MbaMutationGateway:
     def abort(self, *, reason: str = "aborted") -> None:
         """Forget an uncommitted batch; callers must rebuild after SDK failure."""
         aborted_batch_id = str(self._active_batch_id)
-        discarded_versions = (
-            self.identity_index.abort_proxy_transaction(str(self._active_batch_id))
-            if self.active
-            else ()
+        identity_transaction_id = (
+            self._current_transaction_attempt.attempt_id
+            if self._current_transaction_attempt is not None
+            else str(self._active_batch_id)
+        )
+        discarded_versions = self.identity_index.abort_proxy_transaction(
+            identity_transaction_id
         )
         if self.active:
             self._emit_observation(

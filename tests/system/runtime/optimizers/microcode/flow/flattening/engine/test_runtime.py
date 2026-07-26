@@ -131,10 +131,8 @@ def test_make_transactional_executor_factory_applies_policy(monkeypatch) -> None
     class _Executor:
         total_changes = 0
 
-        def __init__(
-            self, mba, *, gate, allow_legacy_block_creation, safeguard_profile
-        ):
-            seen.append((mba, gate, allow_legacy_block_creation, safeguard_profile))
+        def __init__(self, mba, *, gate, safeguard_profile):
+            seen.append((mba, gate, safeguard_profile))
 
         def execute_pipeline(self, pipeline, total_handlers):
             return []
@@ -148,7 +146,6 @@ def test_make_transactional_executor_factory_applies_policy(monkeypatch) -> None
     factory = make_transactional_executor_factory(
         ExecutorPolicy(
             gate=gate,
-            allow_legacy_block_creation=False,
             safeguard_profile="hodur",
         )
     )
@@ -156,7 +153,7 @@ def test_make_transactional_executor_factory_applies_policy(monkeypatch) -> None
     executor = factory("mba")
 
     assert isinstance(executor, _Executor)
-    assert seen == [("mba", gate, False, "hodur")]
+    assert seen == [("mba", gate, "hodur")]
 
 
 def test_family_run_state_tracks_pass_and_transitions() -> None:

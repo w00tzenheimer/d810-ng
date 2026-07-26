@@ -5,7 +5,10 @@ from __future__ import annotations
 from d810.core.typing import Protocol, runtime_checkable
 from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.fragment_validation import FragmentValidationResult
-from d810.transforms.cfg_transaction import CfgTransactionFailure
+from d810.transforms.cfg_transaction import (
+    CfgTransactionFailure,
+    TransactionAttemptId,
+)
 
 
 @runtime_checkable
@@ -40,6 +43,12 @@ class FragmentPublicationLifecycleAuthority(Protocol):
     def request_poisoned_generation_restart(
         self,
         plan: FragmentPlan,
+        failure: CfgTransactionFailure,
+    ) -> bool: ...
+
+    def request_cfg_generation_restart(
+        self,
+        attempt: TransactionAttemptId,
         failure: CfgTransactionFailure,
     ) -> bool: ...
 

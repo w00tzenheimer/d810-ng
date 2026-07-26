@@ -372,6 +372,10 @@ class _ReceiptLifecycleAuthority:
         self.events.append(("poisoned", (plan, failure)))
         return True
 
+    def request_cfg_generation_restart(self, attempt, failure) -> bool:
+        self.events.append(("cfg_poisoned", (attempt, failure)))
+        return True
+
 
 def _gateway(
     plan: FragmentPlan,

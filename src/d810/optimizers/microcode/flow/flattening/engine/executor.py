@@ -24,8 +24,9 @@ from collections.abc import Callable
 
 import ida_hexrays
 
-from d810.passes.transaction_engine import CfgTransactionEngine
+from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
 from d810.hexrays.contracts import IDACfgContract
+from d810.passes.transaction_policy import classify_failure
 from d810.ir.block_identity import (
     block_fingerprint,
     block_label,
@@ -66,12 +67,7 @@ from d810.transforms.graph_modification import (
 )
 from d810.transforms.plan import (
     ExecutionPolicy,
-    PatchConvertToGoto,
-    PatchEdgeSplitTrampoline,
     PatchPlan,
-    PatchRedirectBranch,
-    PatchRedirectGoto,
-    PatchReorderBlocks,
     compile_patch_plan,
 )
 from d810.core import logging
@@ -106,9 +102,6 @@ from d810.analyses.control_flow.safeguards import (
     should_apply_bulk_cfg_modifications,
 )
 from d810.analyses.control_flow.terminal_return_audit import build_terminal_return_audit
-from d810.backends.hexrays.evidence.microcode_dump import (
-    mba_to_human_readable,
-)  # compatibility seam for legacy diagnostics/tests
 
 executor_logger = logging.getLogger("D810.unflat.hodur.executor")
 
@@ -659,70 +652,86 @@ class TransactionalExecutor:
                 _details,
             )
 
-        # Wire CfgTransactionEngine for projected -> pre -> lower/apply sequence
+        # Route the finalized plan through the sole live transaction backend.
         contract = self._get_cfg_contract()
         self.translator.contract = (
             contract  # ensure translator has it for post-apply hook
         )
-        engine = CfgTransactionEngine(translator=self.translator, contract=contract)
-
-        tx_result = engine.apply(
-            patch_plan,
-            pre_cfg=pre_cfg,
-            mba=self.mba,
+        backend = HexRaysMutationBackend(
             mutation_gateway=mutation_gateway,
-            cumulative_pre_cfg=cumulative_pre_cfg,
+            translator=self.translator,
         )
+        tx_error: Exception | None = None
+        try:
+            post_cfg = backend.apply(patch_plan, self.mba)
+        except Exception as error:
+            tx_error = error
+            post_cfg = pre_cfg
+        execution = backend.last_patch_execution
+        tx_success = execution is not None and tx_error is None
+        tx_failure_phase = (
+            None
+            if tx_success
+            else (
+                getattr(self.translator, "last_lowering_phase", None)
+                or ("preflight" if backend.last_patch_failure is not None else "backend_apply")
+            )
+        )
+        tx_failure_detail = (
+            None
+            if tx_success
+            else getattr(self.translator, "last_lowering_subphase", None)
+        )
+        tx_error = tx_error or backend.last_patch_failure
+        tx_applied_count = 0 if execution is None else execution.applied_count
 
         gate_accounting = gate_accounting.add(
             GateDecision(
-                gate_name="transaction_engine",
-                verdict=GateVerdict.PASSED if tx_result.success else GateVerdict.FAILED,
+                gate_name="transaction_coordinator",
+                verdict=GateVerdict.PASSED if tx_success else GateVerdict.FAILED,
                 reason=(
-                    f"applied={tx_result.applied_count}"
-                    if tx_result.success
+                    f"applied={tx_applied_count}"
+                    if tx_success
                     else (
-                        f"rejected at {tx_result.failure_phase}"
+                        f"rejected at {tx_failure_phase}"
                         + (
-                            f"/{tx_result.failure_detail}"
-                            if tx_result.failure_detail
+                            f"/{tx_failure_detail}"
+                            if tx_failure_detail
                             else ""
                         )
-                        + f": {tx_result.error}"
+                        + f": {tx_error}"
                     )
                 ),
             )
         )
-        if not tx_result.success:
-            classification = tx_result.classification
+        if not tx_success:
+            classification = classify_failure(
+                tx_failure_phase or "backend_apply",
+                "" if tx_error is None else str(tx_error),
+            )
             executor_logger.warning(
-                "CfgTransactionEngine rejected stage %s at phase %s detail %s: %s",
+                "Transaction coordinator rejected stage %s at phase %s detail %s: %s",
                 fragment.strategy_name,
-                tx_result.failure_phase,
-                tx_result.failure_detail,
-                tx_result.error,
+                tx_failure_phase,
+                tx_failure_detail,
+                tx_error,
             )
             result = StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
-                rollback_needed=(
-                    classification.rollback_needed if classification else False
-                ),
-                quarantine=classification.quarantine if classification else False,
-                error=(
-                    str(tx_result.error) if tx_result.error else tx_result.failure_phase
-                ),
-                failure_phase=tx_result.failure_phase or "lowering",
+                rollback_needed=classification.rollback_needed,
+                quarantine=classification.quarantine,
+                error=str(tx_error) if tx_error else tx_failure_phase,
+                failure_phase=tx_failure_phase or "lowering",
             )
-            result.metadata["failure_detail"] = tx_result.failure_detail
+            result.metadata["failure_detail"] = tx_failure_detail
             result.metadata["gate_accounting"] = gate_accounting
             executor_logger.info("Gate accounting: %s", gate_accounting.summary())
             return result
 
-        changes = tx_result.applied_count
+        changes = tx_applied_count
         self._total_changes += changes
-        post_cfg = self.translator.lift(self.mba)
-        creation_receipts = mutation_gateway.plan_creation_receipts
+        creation_receipts = execution.creation_receipts
         realized_serials = {
             receipt.plan_ref: int(receipt.returned_serial)
             for receipt in creation_receipts
