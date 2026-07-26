@@ -1220,8 +1220,14 @@ class _CallsBuiltImportedNativeBodyMaterializer:
 
 
 class _TerminalEffectNativeBodyMaterializer:
-    def __init__(self, *, conflicting_carrier: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        conflicting_carrier: bool = False,
+        flag_write: bool = False,
+    ) -> None:
         self.conflicting_carrier = bool(conflicting_carrier)
+        self.flag_write = bool(flag_write)
 
     def prepare_native_body(
         self,
@@ -1232,6 +1238,7 @@ class _TerminalEffectNativeBodyMaterializer:
         carrier_instructions = [
             (0x500000, _Instruction(ida_hexrays.m_mov, 0x500000)),
         ]
+        carrier_instructions[0][1].d.writes_cc = self.flag_write
         if self.conflicting_carrier:
             carrier_instructions.append(
                 (0x500004, _Instruction(ida_hexrays.m_add, 0x500004))
@@ -2837,7 +2844,8 @@ def test_production_participant_preflights_before_realization_and_observes_live_
     monkeypatch,
 ) -> None:
     mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
-        monkeypatch
+        monkeypatch,
+        materializer=_TerminalEffectNativeBodyMaterializer(flag_write=True),
     )
     participant = SemanticFragmentTransactionParticipant(gateway, modifier)
     quantity = mba.qty
@@ -2860,6 +2868,8 @@ def test_production_participant_preflights_before_realization_and_observes_live_
     assert expected_carrier.instruction_eas == (0x500000, 0x500004)
     assert expected_carrier.terminator_ea is None
     assert expected_carrier.terminator_kind is InsnKind.GOTO
+    assert plan.flag_corridors == ()
+    assert expected_carrier.flag_write_eas == frozenset()
 
     patch_plan = lower_fragment_plan(plan, prepared.fragment)
     bound = replace(bound, patch_plan=patch_plan)
@@ -2869,6 +2879,7 @@ def test_production_participant_preflights_before_realization_and_observes_live_
     assert realized_carrier.instruction_eas == (0x500000, 0x500004)
     assert realized_carrier.terminator_ea is None
     assert realized_carrier.terminator_kind is InsnKind.GOTO
+    assert realized_carrier.flag_write_eas == frozenset()
     observed = participant.observe(realized, mba)
 
     assert isinstance(realized, ProjectedFragment)
