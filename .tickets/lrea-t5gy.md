@@ -6696,3 +6696,7 @@ The first unmet obligation is architectural mapping, not mutation: map the repla
 **2026-07-26T20:43:55Z**
 
 Compiler slice committed as 2d370a58b. Added an IDA-free RhadConditionalRoute/RhadReferenceLedger compiler into the current FragmentPlan, exact A560 comparison 0x0BB2D365, producer 0x40A5F0, branch 0x40A5F6, terminal 0x40A605, targets 0x40B6C0/0x40A607, nine imported identities, and exits 0x40A61B/0x40A68C/0x40B790. Focused compiler plus FragmentPlan tests: 47 passed. sg scan clean; all 14 import contracts kept; strict 41-row parity gate PASS. Current first unmet obligation: actual-MMAT_GENERATED lifecycle seam, before transaction-profile work.
+
+**2026-07-26T20:51:42Z**
+
+Checkpoint 14917ad00: added manager-owned actual MMAT_GENERATED optinsn seam, once-per-MBA-generation lifecycle guard, graph-free identity indexing at GENERATED, complete injected live ports, recursion suppression, and modified-return propagation. Verification: 76 focused tests pass; sg clean; all 14 import contracts kept; strict 41-row parity gate PASS. Existing untracked capture test remains untouched.
