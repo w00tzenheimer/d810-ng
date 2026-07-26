@@ -46,6 +46,7 @@ from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms import canonical_semantic_fragment as canonical_fragment
 from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
+    DetachedDirectRoutePlan,
     build_canonical_semantic_fragment_plan,
     compose_canonical_carrier_ingress_fragment_plan,
     compose_canonical_semantic_boundary_fragment_plan,
@@ -689,9 +690,13 @@ def test_detached_direct_route_rejects_reference_binding_drift(
     assert exc_info.value.anchor_ea == 0x40BB63
 
 
-def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress() -> (
-    None
-):
+def _carrier_ingress_case() -> tuple[
+    FlowGraph,
+    FragmentPlan,
+    CanonicalSemanticEvidence,
+    DetachedDirectRoutePlan,
+    NormalizationWorkItemAuthority,
+]:
     normalization_plan, route_evidence, _authority, reference_route = (
         _detached_reference_direct_route_case()
     )
@@ -848,6 +853,15 @@ def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress(
     )
     assert detached_route is not None
     graph, _base_plan, _base_evidence = _live_source_detached_target_case()
+    return graph, normalization_plan, available_evidence, detached_route, authority
+
+
+def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress() -> (
+    None
+):
+    graph, normalization_plan, available_evidence, detached_route, authority = (
+        _carrier_ingress_case()
+    )
 
     plan = compose_canonical_carrier_ingress_fragment_plan(
         graph,
@@ -894,6 +908,145 @@ def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress(
         for body in plan.native_bodies
         for block_id in body.block_ids
     }.isdisjoint({0x1600, 0x1700, 0x40C6F7, 0x40BB69})
+
+
+def test_carrier_ingress_keeps_unresolved_published_sibling_as_typed_egress() -> (
+    None
+):
+    graph, normalization_plan, available_evidence, detached_route, _authority = (
+        _carrier_ingress_case()
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            30: _block(
+                30,
+                0x1250,
+                succs=(),
+                preds=(),
+                insn_eas=(0x1250, 0x1251),
+            ),
+        },
+    )
+    (native_body,) = normalization_plan.native_bodies
+    published_sibling = FragmentBlock(
+        block_id="native@0x1250",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=_identity(0x1250),
+        native_body_id=native_body.body_id,
+    )
+    sibling_terminal = FragmentBlock(
+        block_id="native@0x1260",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1260,
+        stable_identity=_identity(0x1260),
+        native_body_id=native_body.body_id,
+    )
+    sibling_operation = FragmentOperation(
+        operation_id="native-body-edge@0x1250",
+        source_block_id=published_sibling.block_id,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=sibling_terminal.block_id,
+            ),
+        ),
+    )
+    proof_operation = normalization_plan.operation("native-body-edge@0x40BB3A")
+    (selected_edge,) = proof_operation.edges
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *normalization_plan.blocks,
+            published_sibling,
+            sibling_terminal,
+        ),
+        operations=(
+            *(
+                replace(
+                    operation,
+                    predicate_anchor_ea=0x40BB49,
+                    edges=(
+                        replace(
+                            selected_edge,
+                            role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        ),
+                        FragmentEdge(
+                            role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                            target_block_id=published_sibling.block_id,
+                        ),
+                    ),
+                )
+                if operation is proof_operation
+                else operation
+                for operation in normalization_plan.operations
+            ),
+            sibling_operation,
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    published_sibling.block_id,
+                    sibling_terminal.block_id,
+                ),
+                terminal_block_ids=(
+                    *native_body.terminal_block_ids,
+                    sibling_terminal.block_id,
+                ),
+                native_ranges=tuple(
+                    sorted(
+                        (
+                            *native_body.native_ranges,
+                            NativeEaInterval(0x1250, 0x1251),
+                            NativeEaInterval(0x1260, 0x1261),
+                        ),
+                        key=lambda interval: interval.start_ea,
+                    )
+                ),
+                proof_ids=(*native_body.proof_ids, sibling_operation.operation_id),
+            ),
+        ),
+    )
+    authority = _normalization_authority(normalization_plan, available_evidence)
+    detached_route = replace(
+        detached_route,
+        normalization_authority=authority,
+    )
+
+    plan = compose_canonical_carrier_ingress_fragment_plan(
+        graph,
+        normalization_plan,
+        available_evidence=available_evidence,
+        detached_route=detached_route,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=authority,
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    egresses_by_target = {
+        plan.block(port.target_block_id).semantic_anchor_ea: port
+        for port in plan.boundary_ports
+    }
+    assert set(egresses_by_target) == {0x1250, 0x1400}
+    sibling_egress = egresses_by_target[0x1250]
+    assert sibling_egress.kind is FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_EGRESS
+    assert plan.block(sibling_egress.source_block_id).semantic_anchor_ea == 0x40BB3A
+    assert plan.block(sibling_egress.target_block_id).role is FragmentBlockRole.EXTERNAL
+    assert (
+        plan.block(sibling_egress.target_block_id).stable_identity
+        == _current_identity_authority(graph)[30]
+    )
+    assert "publish-semantic-boundary@0x1250" in (
+        sibling_egress.retirement_obligation_id
+    )
+    assert "native-body-edge@0x1250" in sibling_egress.retirement_obligation_id
+    assert plan.operation("route:state_assignment@0x40BB63:0xE9795EF")
 
 
 def test_canonical_route_composes_live_source_with_detached_target_body() -> None:

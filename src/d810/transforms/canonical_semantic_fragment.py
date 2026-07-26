@@ -112,6 +112,19 @@ class _CallBackedNestedRouteStaging:
 
 
 @dataclass(frozen=True, slots=True)
+class _UnresolvedPublishedBoundaryEgress:
+    """One selected component edge retained as an explicit migration port."""
+
+    source_block_id: str
+    target_block_id: str
+    incoming_operation_id: str
+    incoming_edge_role: SemanticEdgeRole
+    boundary_operation_id: str
+    source_anchor_ea: int
+    target_anchor_ea: int
+
+
+@dataclass(frozen=True, slots=True)
 class DetachedDirectRoutePlan:
     """One complete per-site direct rewrite before detached MBA mutation."""
 
@@ -781,6 +794,7 @@ def _detached_target_component(
     tuple[FragmentBlock, ...],
     tuple[FragmentOperation, ...],
     FragmentNativeBody,
+    tuple[FragmentBoundaryPort, ...],
 ]:
     native_body_id = target.native_body_id
     native_bodies = tuple(
@@ -813,6 +827,7 @@ def _detached_target_component(
     selected_ids: set[str] = set()
     selected_operation_ids: set[str] = set()
     published_imported_identity_by_id: dict[str, StableBlockIdentity] = {}
+    unresolved_published_egresses: list[_UnresolvedPublishedBoundaryEgress] = []
     pending = [target.block_id]
     while pending:
         block_id = pending.pop()
@@ -929,38 +944,58 @@ def _detached_target_component(
                     if edge_target.block_id in proof_owned_reimport_source_ids:
                         pending.append(edge_target.block_id)
                         continue
-                    if (
+                    boundary_topology_unresolved = (
                         edge_target.block_id not in native_body.terminal_block_ids
                         and not _receipted_semantic_operation_closes_boundary(
                             operation_by_source[edge_target.block_id],
                             native_body,
                             normalization_authority,
                         )
-                        and not allow_unresolved_published_boundaries
-                    ):
+                    )
+                    if boundary_topology_unresolved:
                         unresolved_operation = operation_by_source[edge_target.block_id]
                         incoming_source = plan.block(operation.source_block_id)
                         owner_serial, owner_anchor_ea, _identity = current_owners[0]
-                        raise CanonicalSemanticFragmentRejected(
-                            "published imported boundary retains unresolved "
-                            "semantic topology",
-                            reason_code=(
-                                "published_imported_boundary_topology_unresolved"
-                            ),
-                            anchor_ea=int(edge_target.semantic_anchor_ea),
-                            payload={
-                                "boundary_block_id": edge_target.block_id,
-                                "current_owner": (
-                                    f"blk{owner_serial}@0x{owner_anchor_ea:X}"
+                        if not allow_unresolved_published_boundaries:
+                            raise CanonicalSemanticFragmentRejected(
+                                "published imported boundary retains unresolved "
+                                "semantic topology",
+                                reason_code=(
+                                    "published_imported_boundary_topology_unresolved"
                                 ),
-                                "operation_id": unresolved_operation.operation_id,
-                                "incoming_operation_id": operation.operation_id,
-                                "incoming_source_block_id": operation.source_block_id,
-                                "incoming_source_anchor_ea": (
-                                    f"0x{int(incoming_source.semantic_anchor_ea):X}"
+                                anchor_ea=int(edge_target.semantic_anchor_ea),
+                                payload={
+                                    "boundary_block_id": edge_target.block_id,
+                                    "current_owner": (
+                                        f"blk{owner_serial}@0x{owner_anchor_ea:X}"
+                                    ),
+                                    "operation_id": unresolved_operation.operation_id,
+                                    "incoming_operation_id": operation.operation_id,
+                                    "incoming_source_block_id": (
+                                        operation.source_block_id
+                                    ),
+                                    "incoming_source_anchor_ea": (
+                                        f"0x{int(incoming_source.semantic_anchor_ea):X}"
+                                    ),
+                                    "incoming_edge_role": edge.role.value,
+                                },
+                            )
+                        unresolved_published_egresses.append(
+                            _UnresolvedPublishedBoundaryEgress(
+                                source_block_id=operation.source_block_id,
+                                target_block_id=edge_target.block_id,
+                                incoming_operation_id=operation.operation_id,
+                                incoming_edge_role=edge.role,
+                                boundary_operation_id=(
+                                    unresolved_operation.operation_id
                                 ),
-                                "incoming_edge_role": edge.role.value,
-                            },
+                                source_anchor_ea=int(
+                                    incoming_source.semantic_anchor_ea
+                                ),
+                                target_anchor_ea=int(
+                                    edge_target.semantic_anchor_ea
+                                ),
+                            )
                         )
                     selected_ids.add(edge_target.block_id)
                     published_imported_identity_by_id[edge_target.block_id] = (
@@ -1231,7 +1266,40 @@ def _detached_target_component(
             )
         ),
     )
-    return selected_blocks, selected_operations, selected_native_body
+    boundary_ports = tuple(
+        FragmentBoundaryPort(
+            port_id=(
+                f"temporary-published-egress:{egress.incoming_operation_id}:"
+                f"{egress.incoming_edge_role.value}:0x{egress.target_anchor_ea:X}"
+            ),
+            kind=FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_EGRESS,
+            source_block_id=imported_id_by_source_id.get(
+                egress.source_block_id,
+                egress.source_block_id,
+            ),
+            target_block_id=boundary_id_by_source_id[egress.target_block_id],
+            retirement_obligation_id=(
+                f"retire-temporary-published-egress@0x{egress.source_anchor_ea:X}:"
+                f"publish-semantic-boundary@0x{egress.target_anchor_ea:X}:"
+                f"{egress.boundary_operation_id}"
+            ),
+        )
+        for egress in sorted(
+            unresolved_published_egresses,
+            key=lambda item: (
+                item.source_anchor_ea,
+                item.incoming_operation_id,
+                item.incoming_edge_role.value,
+                item.target_anchor_ea,
+            ),
+        )
+    )
+    return (
+        selected_blocks,
+        selected_operations,
+        selected_native_body,
+        boundary_ports,
+    )
 
 
 def _canonical_composition_proofs(
@@ -2388,10 +2456,12 @@ def _resolved_detached_target_component(
     normalization_authority: NormalizationWorkItemAuthority,
     prohibited_dispatcher_serials: frozenset[int],
     replaced_current_owner_serials: frozenset[int],
+    allow_temporary_published_egress: bool,
 ) -> tuple[
     tuple[FragmentBlock, ...],
     tuple[FragmentOperation, ...],
     FragmentNativeBody,
+    tuple[FragmentBoundaryPort, ...],
     tuple[SemanticRouteProof, ...],
     tuple[_NestedStateRouteProjectionDecision, ...],
     tuple[FragmentReturnCarrier, ...],
@@ -2426,7 +2496,7 @@ def _resolved_detached_target_component(
     claimed_nested_corridor_ids: dict[str, str] = {}
     projection_round_limit = len(available_evidence.route_proofs) + 1
     for projection_round in range(1, projection_round_limit + 1):
-        provisional_target_blocks, _operations, _native_body = (
+        provisional_target_blocks, _operations, _native_body, _boundary_ports = (
             _detached_target_component(
                 graph,
                 effective_normalization_plan,
@@ -2583,7 +2653,12 @@ def _resolved_detached_target_component(
                     destination_block.block_id,
                     set(),
                 ).add(int(carrier.terminal_return_ea))
-        target_blocks, target_operations, native_body = _detached_target_component(
+        (
+            target_blocks,
+            target_operations,
+            native_body,
+            boundary_ports,
+        ) = _detached_target_component(
             graph,
             effective_normalization_plan,
             target,
@@ -2595,7 +2670,9 @@ def _resolved_detached_target_component(
                 )
             ),
             normalization_authority=normalization_authority,
-            allow_unresolved_published_boundaries=False,
+            allow_unresolved_published_boundaries=(
+                allow_temporary_published_egress
+            ),
             prohibited_dispatcher_serials=prohibited_dispatcher_serials,
             replaced_current_owner_serials=replaced_current_owner_serials,
             required_staged_destination_ids=frozenset(required_staged_destination_ids),
@@ -2646,6 +2723,7 @@ def _resolved_detached_target_component(
         target_blocks,
         target_operations,
         native_body,
+        boundary_ports,
         nested_route_proofs,
         nested_route_decisions,
         return_carriers,
@@ -2663,6 +2741,7 @@ def compose_canonical_semantic_fragment_plan(
     current_identity_by_serial: Mapping[int, StableBlockIdentity],
     normalization_authority: NormalizationWorkItemAuthority,
     prohibited_dispatcher_serials: Iterable[int] = (),
+    _allow_temporary_published_egress: bool = False,
 ) -> FragmentPlan:
     """Compose one live canonical route with one unpublished native target body."""
     if not isinstance(graph, FlowGraph):
@@ -2809,6 +2888,7 @@ def compose_canonical_semantic_fragment_plan(
         target_blocks,
         target_operations,
         native_body,
+        nested_boundary_ports,
         _nested_route_proofs,
         _nested_route_decisions,
         nested_return_carriers,
@@ -2825,6 +2905,7 @@ def compose_canonical_semantic_fragment_plan(
         normalization_authority=normalization_authority,
         prohibited_dispatcher_serials=prohibited_serial_set,
         replaced_current_owner_serials=frozenset(),
+        allow_temporary_published_egress=_allow_temporary_published_egress,
     )
     if imported_consumer is not None:
         predicate = imported_consumer.predicate
@@ -3187,6 +3268,7 @@ def compose_canonical_semantic_fragment_plan(
         return_carriers=nested_return_carriers,
         terminal_returns=nested_terminal_returns,
         terminal_routes=nested_terminal_routes,
+        boundary_ports=nested_boundary_ports,
     )
 
 
@@ -3430,6 +3512,7 @@ def compose_canonical_carrier_ingress_fragment_plan(
         current_identity_by_serial=current_identity_by_serial,
         normalization_authority=normalization_authority,
         prohibited_dispatcher_serials=(),
+        _allow_temporary_published_egress=True,
     )
     (root_id,) = plan.roots
     root = plan.block(root_id)
@@ -3499,7 +3582,7 @@ def compose_canonical_carrier_ingress_fragment_plan(
         for destination in state_choice.destinations
         if destination is not selected_destination
     )
-    boundary_ports = tuple(
+    root_boundary_ports = tuple(
         FragmentBoundaryPort(
             port_id=f"temporary-dispatcher-egress:{operation.operation_id}",
             kind=FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_EGRESS,
@@ -3546,7 +3629,7 @@ def compose_canonical_carrier_ingress_fragment_plan(
         blocks=(plan.blocks if existing_dispatchers else (*plan.blocks, dispatcher)),
         operations=operations,
         prohibited_dispatcher_blocks=(),
-        boundary_ports=boundary_ports,
+        boundary_ports=(*plan.boundary_ports, *root_boundary_ports),
         data_flow_obligations=(
             *plan.data_flow_obligations,
             FragmentDataFlowObligation(
@@ -3778,6 +3861,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
         target_blocks,
         target_operations,
         native_body,
+        _nested_boundary_ports,
         nested_route_proofs,
         nested_route_decisions,
         nested_return_carriers,
@@ -3794,6 +3878,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
         normalization_authority=normalization_authority,
         prohibited_dispatcher_serials=prohibited_serials,
         replaced_current_owner_serials=frozenset({int(root_serial)}),
+        allow_temporary_published_egress=False,
     )
     if not nested_route_proofs:
         raise CanonicalSemanticFragmentRejected(
