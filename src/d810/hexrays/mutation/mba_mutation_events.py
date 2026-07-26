@@ -404,6 +404,31 @@ class MbaSemanticFragmentRouteOracleCompared:
         )
 
 
+def _fragment_reference_ledger_identities(
+    plan: FragmentPlan,
+) -> tuple[tuple[str, str], ...]:
+    """Return every bound route in the plan's semantic operation order."""
+    missing_direct_authority = tuple(
+        operation.operation_id
+        for operation in plan.operations
+        if operation.direct_transfer_rewrite is not None
+        and operation.reference_route_authority is None
+    )
+    if missing_direct_authority:
+        raise ValueError(
+            "detached route oracle lacks direct reference authority: "
+            + ", ".join(missing_direct_authority)
+        )
+    return tuple(
+        (
+            authority.reference_route.route_id,
+            authority.reference_route.reference_ledger_identity,
+        )
+        for operation in plan.operations
+        if (authority := operation.reference_route_authority) is not None
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class MbaMutationAborted:
     session_id: str
@@ -1670,24 +1695,18 @@ class MbaMutationGateway:
             or run is None
         ):
             raise ValueError("detached route oracle does not match the active plan")
-        routes = tuple(
-            operation.reference_route_authority.reference_route
-            for operation in plan.operations
-            if operation.direct_transfer_rewrite is not None
-            and operation.reference_route_authority is not None
+        ledger_identities = _fragment_reference_ledger_identities(plan)
+        expected_route_ids = tuple(
+            route_id for route_id, _ledger in ledger_identities
         )
-        if len(routes) != sum(
-            operation.direct_transfer_rewrite is not None
-            for operation in plan.operations
-        ):
-            raise ValueError("detached route oracle lacks reference route authority")
-        ledger_identities = tuple(
-            (route.route_id, route.reference_ledger_identity) for route in routes
-        )
-        if tuple(route_id for route_id, _ledger in ledger_identities) != tuple(
+        observed_route_ids = tuple(
             comparison.route_id for comparison in result.comparisons
-        ):
-            raise ValueError("detached route oracle comparison order drifted")
+        )
+        if expected_route_ids != observed_route_ids:
+            raise ValueError(
+                "detached route oracle comparison order drifted: "
+                f"expected={expected_route_ids!r} observed={observed_route_ids!r}"
+            )
         self._active_detached_route_oracle = result
         batch_id = str(self._active_batch_id)
         self._emit_observation(

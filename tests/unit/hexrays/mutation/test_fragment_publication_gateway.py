@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from d810.hexrays.mutation import mba_mutation_events as mutation_events
 from d810.hexrays.mutation import semantic_fragment_publication as publication
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
@@ -1012,6 +1013,41 @@ def test_gateway_commits_reference_matched_route_before_root_publication() -> No
     assert backend.calls.index("stage") < backend.calls.index("prepare-roots")
     assert len(committed) == 1
     assert aborted == []
+
+
+def test_route_oracle_inventory_preserves_mixed_operation_order() -> None:
+    direct_operation = _plan_with_reference_route().operations[0]
+    conditional_route = ReferenceRouteRewrite(
+        route_id="rhad:0x40A560:flow_route:0x404000",
+        function_ea=0x40A560,
+        owner_ea=0x404000,
+        rewrite_anchor_ea=0x404000,
+        corridor=((0x404000, 0x404010),),
+        reference_phase="flow_route",
+        original_transfer_kind=SemanticTransferKind.INDIRECT,
+        final_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        true_target_ea=0x405000,
+        false_target_ea=0x406000,
+        predicate_kind="z",
+        reference_ledger_identity="flow_route:0x404000",
+        reference_ledger_json='{"status":"committed"}',
+    )
+    conditional_operation = SimpleNamespace(
+        direct_transfer_rewrite=None,
+        reference_route_authority=FragmentReferenceRouteAuthority(
+            reference_route=conditional_route,
+            candidate_rewrite_anchor_ea=0x404000,
+        ),
+    )
+    plan = SimpleNamespace(operations=(direct_operation, conditional_operation))
+
+    assert mutation_events._fragment_reference_ledger_identities(plan) == (
+        (
+            direct_operation.reference_route_authority.reference_route.route_id,
+            direct_operation.reference_route_authority.reference_route.reference_ledger_identity,
+        ),
+        (conditional_route.route_id, conditional_route.reference_ledger_identity),
+    )
 
 
 def test_gateway_route_mismatch_after_staging_poisons_before_root_preparation() -> None:
