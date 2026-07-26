@@ -27,6 +27,10 @@ class PatchTransactionPreflightRejected(RuntimeError):
     """An immutable PatchPlan obligation failed before any SDK write."""
 
 
+class PatchTransactionPostObservationRejected(RuntimeError):
+    """The realized live graph lost a preflighted reachability obligation."""
+
+
 @dataclass(frozen=True, slots=True)
 class PatchTransactionExecution(PatchPlanExecutionResult):
     """Committed ordinary PatchPlan result returned by the shared coordinator."""
@@ -291,6 +295,23 @@ class _PatchTransactionLifecycle:
         self.failure_phase = "post_observation_contract"
         if patch_plan is not self.plan or not isinstance(observed, FlowGraph):
             raise TypeError("patch validation requires its observed FlowGraph")
+        source = self.participant._snapshot
+        if source is None:
+            raise RuntimeError("patch validation lacks immutable source authority")
+        terminal_reachability = check_terminal_reachability_preserved(
+            source,
+            post_cfg=observed,
+        )
+        entry_reachability = check_entry_reachability_not_collapsed(
+            source,
+            post_cfg=observed,
+        )
+        if not terminal_reachability.passed or not entry_reachability.passed:
+            raise PatchTransactionPostObservationRejected(
+                "observed reachability rejected: "
+                f"terminal={terminal_reachability.reason}; "
+                f"entry={entry_reachability.reason}"
+            )
         post_projection = CfgProjection(
             plan_id=self.prepared.projection.plan_id,
             snapshot_id=self.prepared.projection.snapshot_id,
@@ -411,6 +432,7 @@ __all__ = [
     "BoundPatchCfgTransaction",
     "HexRaysPatchTransactionParticipant",
     "PatchTransactionExecution",
+    "PatchTransactionPostObservationRejected",
     "PatchTransactionPreflightRejected",
     "execute_patch_transaction",
 ]

@@ -384,6 +384,64 @@ def test_apply_lowers_plan_when_reachability_is_preserved() -> None:
     assert translator.lift_count == 2
 
 
+def test_backend_poisons_when_observed_graph_collapses_entry_reachability() -> None:
+    pre_cfg = _make_cfg(
+        [(serial, serial + 1) for serial in range(25)],
+        stop_serials=(25,),
+    )
+    post_cfg = _make_cfg(
+        [
+            (0, 1),
+            (1, 2),
+            (2, 1),
+            *((serial, serial + 1) for serial in range(3, 25)),
+        ],
+        stop_serials=(25,),
+    )
+    plan = _ordinary_plan(
+        PatchConvertToGoto,
+        serials=(0, 1),
+        block_serial=0,
+        goto_target=1,
+    )
+    emitter = EventEmitter()
+    phases: list[MbaCfgTransactionAuthorityObserved] = []
+    emitter.on(MbaCfgTransactionAuthorityObserved, phases.append)
+
+    class _CollapsingTranslator(_FakeTranslator):
+        def lift(self, _live_source: object) -> FlowGraph:
+            self.lift_count += 1
+            return post_cfg if self.lower_calls else pre_cfg
+
+    lifecycle_state = NativePreanalysisSessionState(evidence_generation=0)
+    gateway = _ordinary_gateway(
+        pre_cfg,
+        plan,
+        event_emitter=emitter,
+        lifecycle_authority=SessionFragmentPublicationLifecycleAuthority(
+            native_key=NATIVE_KEY,
+            state=lifecycle_state,
+        ),
+    )
+    backend = HexRaysMutationBackend(
+        mutation_gateway=gateway,
+        translator=_CollapsingTranslator(pre_cfg),
+    )
+
+    with pytest.raises(CfgGenerationPoisoned):
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+
+    assert gateway.generation_poisoned
+    assert phases[-1].phase is CfgTransactionPhase.POISONED_RESTART_REQUIRED
+    assert phases[-1].failure is not None
+    assert (
+        phases[-1].failure.first_failed_obligation
+        == "runtime:post_observation_contract"
+    )
+    assert lifecycle_state.has_pending_generated_restart
+    assert backend.last_patch_execution is None
+
+
 def test_backend_commits_the_complete_ordinary_patch_transaction_timeline() -> None:
     cfg = _make_cfg([(0, 1)], stop_serials=(1,))
     plan = _ordinary_plan(
