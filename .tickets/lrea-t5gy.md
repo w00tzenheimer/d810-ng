@@ -5829,3 +5829,34 @@ intent event exists. The session lifecycle has advanced while
 by retaining every immutable receipted work-item revision and selecting the
 current exact authority after redo; do not bypass lifecycle comparison, reset
 the session, reuse a stale receipt, or proceed to another semantic route.
+
+**2026-07-25T22:32:01-0700 — redo receipt authority restored; C4 use-def boundary**
+
+Functional commit `7293326ff` keys each immutable receipted normalization
+work-item snapshot by publication revision and selects the latest revision for
+the uniquely owning work item. It preserves earlier body-owner snapshots and
+continues to reject multiple distinct owners. The focused normalization and
+session-lifecycle gate is 64/64 green. Formatting-only commit `d74ecf6e0` is
+the separate Ruff pass.
+
+The mandatory fresh cache-disabled A560 diagnostic canary at `d74ecf6e0`
+completed normally in 15.66 seconds. Log:
+`.tmp/rhad-a560-receipt-revisions-d74ecf6e0.txt`; primary DB:
+`.tmp/rhad-a560-receipt-revisions-d74ecf6e0/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+There is no crash, numeric INTERR, poisoned generation, rollback, or partial
+write. A560 still fails C6 only because the pseudocode contains one false
+`while ( 1 )`.
+
+The DB proves the redo authority repair. Events 52 and 315 record the same
+normalization work item at publication revisions 1 and 2, and event 521 marks
+the canonical semantic plan ready against revision 2. The second selected
+carrier attempt clears immutable lifecycle preflight, reaches projected C4
+validation, and rejects cleanly with `mutation_started=0`.
+
+The selected route therefore still has C3 strictly complete and now reaches
+C4 prepublication proof. Its monotonic first failed obligation is
+`C4_staged_proof:use_def_integrity:predicate:state-choice@0x40BECC:0xEC71CA67:0xA0716E5B:use-def`.
+The staged projection reports no observed relation for either the planned
+predicate materialized-use or carrier ingress-use. Continue from that exact
+projection/observation mismatch; do not weaken use-def validation, synthesize
+a passing diagnostic, publish the fragment, or broaden beyond this one route.
