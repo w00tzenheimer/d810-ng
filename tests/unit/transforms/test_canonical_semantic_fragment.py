@@ -1402,7 +1402,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge(
         stable_identity=StableBlockIdentity.from_intervals(
             (NativeEaInterval(0x1208, 0x1220),),
             native_key=NATIVE_KEY,
-            exact_instruction_eas=(0x1208, 0x1210, 0x1212, 0x1214, 0x1218),
+            exact_instruction_eas=(0x1208, 0x1212, 0x1214, 0x1218),
         ),
         native_body_id=native_body.body_id,
     )
@@ -1583,9 +1583,10 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge(
     assert nested_operation.direct_transfer_rewrite.route_proof_id == (
         nested_proof.proof_id
     )
-    assert (
-        nested_operation.direct_transfer_rewrite.owner_identity
-        == route_source.stable_identity
+    owner_identity = nested_operation.direct_transfer_rewrite.owner_identity
+    assert owner_identity.native_ranges == route_source.stable_identity.native_ranges
+    assert owner_identity.exact_instruction_eas == (
+        route_source.stable_identity.exact_instruction_eas | {0x1210}
     )
     assert nested_operation.direct_transfer_rewrite.owner_anchor_ea == 0x1210
     assert nested_operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x1218
