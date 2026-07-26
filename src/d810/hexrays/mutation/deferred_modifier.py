@@ -230,6 +230,7 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
 )
 from d810.hexrays.mutation.semantic_fragment_preparation import (
     PreparedSemanticFragment,
+    sdk_owned_call,
 )
 from d810.hexrays.mutation.cfg_verify import capture_failure_artifact
 from d810.hexrays.mutation.cfg_verify import register_resolver_proven_live_predicate
@@ -3318,7 +3319,7 @@ class DeferredGraphModifier:
                 f"tail_opcode={tail_opcode_name}({tail_opcode}) "
                 f"tail_dest_type={tail_dest_type}"
             )
-        owned_call = self._semantic_edge_owned_call(tail)
+        owned_call = sdk_owned_call(tail)
         if owned_call is None:
             owned_call_diagnostic = "owned_call=none"
         else:
@@ -3355,35 +3356,6 @@ class DeferredGraphModifier:
             f"{owned_call_diagnostic} "
             "expected=zero-way block-closing m_call or m_icall owner"
         )
-
-    @staticmethod
-    def _semantic_edge_owned_call(owner: object | None) -> object | None:
-        """Return one top-level or nested call owned by a closing instruction."""
-        if owner is None:
-            return None
-        pending = [owner]
-        visited: set[int] = set()
-        calls: list[object] = []
-        while pending:
-            instruction = pending.pop()
-            identity = id(instruction)
-            if identity in visited:
-                continue
-            visited.add(identity)
-            if int(getattr(instruction, "opcode", -1)) in {
-                int(ida_hexrays.m_call),
-                int(ida_hexrays.m_icall),
-            }:
-                calls.append(instruction)
-            for operand_name in ("l", "r", "d"):
-                operand = getattr(instruction, operand_name, None)
-                if (
-                    operand is not None
-                    and int(getattr(operand, "t", -1)) == int(ida_hexrays.mop_d)
-                    and getattr(operand, "d", None) is not None
-                ):
-                    pending.append(operand.d)
-        return calls[0] if len(calls) == 1 else None
 
     def _semantic_edge_close_owned_call_before_continuation(
         self,
@@ -3424,7 +3396,7 @@ class DeferredGraphModifier:
         call_owners = tuple(
             (index, instruction, owned_call)
             for index, instruction in enumerate(instructions)
-            if (owned_call := self._semantic_edge_owned_call(instruction)) is not None
+            if (owned_call := sdk_owned_call(instruction)) is not None
         )
         if not call_owners:
             return False
@@ -3479,7 +3451,7 @@ class DeferredGraphModifier:
                     int(ida_hexrays.m_icall),
                     int(ida_hexrays.m_ret),
                 }
-                or self._semantic_edge_owned_call(instruction) is not None
+                or sdk_owned_call(instruction) is not None
             ):
                 raise SemanticEdgeOperationRejected(
                     "CALLS-built fallthrough suffix is not wholly owned by its "
@@ -3493,7 +3465,7 @@ class DeferredGraphModifier:
         source.flags &= ~int(ida_hexrays.MBL_GOTO)
         source.mark_lists_dirty()
         self.mba.mark_chains_dirty()
-        return self._semantic_edge_owned_call(source.tail) is not None
+        return sdk_owned_call(source.tail) is not None
 
     def _semantic_edge_live_binding(self, proxy):
         gateway = self._mutation_gateway
@@ -3648,14 +3620,14 @@ class DeferredGraphModifier:
         source_binding, source = self._semantic_edge_live_binding(operation.source)
         target_binding, target = self._semantic_edge_live_binding(edge.target)
         tail = source.tail
-        if int(source.nsucc()) == 0 and self._semantic_edge_owned_call(tail) is None:
+        if int(source.nsucc()) == 0 and sdk_owned_call(tail) is None:
             self._semantic_edge_close_owned_call_before_continuation(
                 source_binding=source_binding,
                 source=source,
                 target_binding=target_binding,
             )
             tail = source.tail
-        if int(source.nsucc()) != 0 or self._semantic_edge_owned_call(tail) is None:
+        if int(source.nsucc()) != 0 or sdk_owned_call(tail) is None:
             raise SemanticEdgeOperationRejected(
                 "call fallthrough requires a zero-way block-closing call; "
                 + self._semantic_edge_call_fallthrough_diagnostic(
@@ -3685,7 +3657,7 @@ class DeferredGraphModifier:
             or int(helper.serial) != int(source.serial) + 1
             or int(source.nextb.serial) != int(helper.serial)
             or int(source.nsucc()) != 0
-            or self._semantic_edge_owned_call(tail) is None
+            or sdk_owned_call(tail) is None
             or tuple(int(value) for value in helper.succset) != (int(target.serial),)
         ):
             raise SemanticEdgeOperationRejected(

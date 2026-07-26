@@ -141,6 +141,37 @@ def sdk_instruction_kind(opcode: int) -> InsnKind:
     return InsnKind.UNKNOWN
 
 
+def sdk_owned_call(owner: object | None) -> object | None:
+    """Return one top-level or nested call owned by an SDK instruction."""
+    import ida_hexrays
+
+    if owner is None:
+        return None
+    pending = [owner]
+    visited: set[int] = set()
+    calls: list[object] = []
+    while pending:
+        instruction = pending.pop()
+        identity = id(instruction)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        if int(getattr(instruction, "opcode", -1)) in {
+            int(ida_hexrays.m_call),
+            int(ida_hexrays.m_icall),
+        }:
+            calls.append(instruction)
+        for operand_name in ("l", "r", "d"):
+            operand = getattr(instruction, operand_name, None)
+            if (
+                operand is not None
+                and int(getattr(operand, "t", -1)) == int(ida_hexrays.mop_d)
+                and getattr(operand, "d", None) is not None
+            ):
+                pending.append(operand.d)
+    return calls[0] if len(calls) == 1 else None
+
+
 def _writes_condition_codes(instruction: object) -> bool | None:
     try:
         return bool(instruction_writes_condition_codes(instruction))
@@ -240,6 +271,7 @@ def _projected_terminator(
     block_id: str,
     operations: tuple[object, ...],
     instructions: tuple[PreparedNativeInstructionFact, ...],
+    instruction_rows: tuple[tuple[int, object], ...],
 ) -> tuple[int | None, InsnKind]:
     if block_id in native_body.terminal_block_ids:
         planned_returns = tuple(
@@ -263,9 +295,16 @@ def _projected_terminator(
     if len(operation.edges) == 2:
         return int(operation.predicate_anchor_ea), InsnKind.COND_JUMP
     if operation.edges[0].role is SemanticEdgeRole.CALL_FALLTHROUGH:
-        if instructions and instructions[-1].kind is InsnKind.CALL:
-            return instructions[-1].native_ea, InsnKind.CALL
-        return None, InsnKind.CALL
+        call_owner_eas = tuple(
+            int(native_ea)
+            for native_ea, instruction in instruction_rows
+            if sdk_owned_call(instruction) is not None
+        )
+        if len(call_owner_eas) != 1:
+            raise ValueError(
+                "prepared call fallthrough requires one exact call owner"
+            )
+        return call_owner_eas[0], InsnKind.CALL
     if instructions and instructions[-1].kind is InsnKind.GOTO:
         return instructions[-1].native_ea, InsnKind.GOTO
     return None, InsnKind.GOTO
@@ -331,6 +370,7 @@ def build_prepared_native_body(
             block_id=block_id,
             operations=operations,
             instructions=instructions,
+            instruction_rows=instruction_rows,
         )
         blocks.append(
             PreparedNativeBlockFact(
@@ -420,6 +460,10 @@ class PreparedNativeBodyPreparation:
         )
         if self.fact.direct_transfer_operation_ids != expected_direct_transfer_ids:
             raise ValueError("native preparation direct-transfer authority drifted")
+        instruction_rows_by_block_id = {
+            block_id: tuple(instruction_rows)
+            for block_id, _block_flags, instruction_rows in self.payload.rows
+        }
         for block_fact in self.fact.blocks:
             plan_block = plan.block(block_fact.block_id)
             operations = operations_by_source.get(block_fact.block_id, ())
@@ -439,6 +483,7 @@ class PreparedNativeBodyPreparation:
                 block_id=block_fact.block_id,
                 operations=operations,
                 instructions=block_fact.instructions,
+                instruction_rows=instruction_rows_by_block_id[block_fact.block_id],
             )
             if (
                 block_fact.semantic_anchor_ea != plan_block.semantic_anchor_ea
