@@ -6535,3 +6535,57 @@ obligation is reference-body effect coverage, beginning with the first omitted
 command-line decoding subgraph after `CommandLineToArgvW`. Determine its exact
 native anchors and why a 93/93 route-equivalent published fragment still loses
 that reachable body before changing the oracle or adding more routes.
+
+**2026-07-26T06:44:00-0700 — semantic ownership is enforced before displaced cleanup**
+
+Commit `1a213ed9c` added the post-observation entry-reachability backstop. Its
+83-second exact canary rejected the hypothesis that post-observation collapse
+was the current C6 defect: canonical publication still reached C5, while the
+remaining output defect was downstream. Functional commit `15cb59236` then
+persisted receipt-backed, serial-free semantic operation ownership in the B1
+session state; Ruff-only commit `0f2e40ded` formatted that slice. The ownership
+is installed only after postvalidation and a committed receipt, is shared by
+independent authority instances, and expires on evidence-generation advance.
+
+The first exact canary at `0f2e40ded` hit the worker's 600-second timeout. A
+bounded mounted-DB probe proved this was not Hex-Rays slowness, poison, or an
+INTERR: canonical C5 committed, then ordinary cleanup opened 371 distinct
+zero-write transactions that all rejected cleanly for overlap with committed
+operation `route:state_assignment@0x40C685:0xAE5A330B` at native envelope
+`0x40C665-0x40C696`. The caller classified the backend's `preflight` phase with
+a vocabulary that accepts only `semantic_preflight`; the resulting `ValueError`
+escaped before the cleanup pass counter advanced and recreated the plan on the
+next block callback.
+
+Functional commit `651d181f0` introduces one shared typed overlap proof, keeps
+the participant's zero-write preflight backstop, and consumes that proof in the
+executor before transaction construction. It also maps the latent backend
+fallback to `semantic_preflight`. The focused architecture gate is 187/187
+green; Ruff is clean apart from the pre-existing intentional E402 observability
+import in `executor.py`, and all commit-time architecture gates pass.
+
+The mandatory pinned A560 canary at `651d181f0` now terminates in 78.67 seconds.
+Primary DB:
+`.tmp/rhad-a560-owner-gate-651d181f0/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+The DB contains only four CFG attempts: three committed attempts across two
+plans and one clean zero-write CALLS-companion request. No displaced-cleanup
+transaction is opened, no generation is poisoned, canonical publication
+commits 406/406 operations, all 93 detached routes match, and the two fragment
+plans retain 672 non-invalidated creation witnesses. Exact C5 therefore remains
+proven.
+
+C6 fails with `INTERR: 50409`. The SDK verifier documents 50409 as an `m_nop`
+surviving to ctree because a microcode callback changed the MBA but returned
+zero. The diagnostic snapshots themselves contain no `m_nop`; the contradiction
+occurs after the committed C5 callback. Production code confirms the seam:
+`StateMachineCffUnflattener.run_state_machine_unflatten()` unconditionally
+returns zero under its legacy convergence contract even after the backend has
+committed a receipt-backed FragmentPlan. The DB cannot currently record the
+later verifier code, so its highest level is C5 and its last clean transient
+failure is the resolved return-carrier companion request. The first current
+failed obligation is
+`hexrays_callback_change_accounting:committed_fragment_publication`: report one
+logical callback change iff this invocation committed at least one fragment,
+while preserving the legacy zero-return cadence when no fragment committed.
+Record that decision in the diagnostic lifecycle and rerun the exact canary
+before any further semantic-route work.
