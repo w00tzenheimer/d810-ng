@@ -164,10 +164,22 @@ def _build_current_mba_identity_index(*, session, mba):
     if state.preopt_union_import_active and state.identity_index is not None:
         return state.identity_index
 
-    build_graph = getattr(mba, "build_graph", None)
-    if not callable(build_graph):
-        raise TypeError("current MBA identity index requires a live graph")
-    build_graph()
+    maturity_stage = HexRaysMaturity.from_id(
+        int(getattr(mba, "maturity", 0) or 0)
+    )
+    if maturity_stage is None:
+        raise ValueError("current MBA identity index requires a known maturity")
+    if maturity_stage.value < HexRaysMaturity.MMAT_LOCOPT.value:
+        reference_oracle = state.semantic_route_reference_oracle_provider
+        if reference_oracle is None or reference_oracle.reference_oracle_scope_for(
+            int(session.function_ea),
+            session.native_key,
+        ) is None:
+            return None
+        build_graph = getattr(mba, "build_graph", None)
+        if not callable(build_graph):
+            raise TypeError("current MBA identity index requires a live graph")
+        build_graph()
 
     current_mba_identity_binding = state.current_mba_identity_binding_for(
         stable_mba_identity(mba)

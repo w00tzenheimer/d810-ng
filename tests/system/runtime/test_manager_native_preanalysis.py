@@ -255,9 +255,12 @@ def test_current_mba_identity_index_uses_only_current_mba_publication_binding(
         function_ea=0x40A560,
     )
     state = resolver_session_state(session)
+    state.semantic_route_reference_oracle_provider = SimpleNamespace(
+        reference_oracle_scope_for=lambda *_args: object()
+    )
     events: list[str] = []
     mba = SimpleNamespace(
-        maturity=0,
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
         this=0x1234,
         build_graph=lambda: events.append("build_graph"),
     )
@@ -298,6 +301,9 @@ def test_current_mba_identity_index_rejects_previous_mba_binding(monkeypatch) ->
         function_ea=0x40A560,
     )
     state = resolver_session_state(session)
+    state.semantic_route_reference_oracle_provider = SimpleNamespace(
+        reference_oracle_scope_for=lambda *_args: object()
+    )
     assert state.bind_current_imported_publication(
         0x1234,
         _current_mba_identity_binding(),
@@ -314,7 +320,7 @@ def test_current_mba_identity_index_rejects_previous_mba_binding(monkeypatch) ->
     _build_current_mba_identity_index(
         session=session,
         mba=SimpleNamespace(
-            maturity=0,
+            maturity=ida_hexrays.MMAT_PREOPTIMIZED,
             this=0x5678,
             build_graph=lambda: None,
         ),
@@ -337,6 +343,10 @@ def test_current_mba_identity_index_reports_ambiguous_candidate_owners(
         identity_key="test-session",
         function_ea=0x40A560,
     )
+    state = resolver_session_state(session)
+    state.semantic_route_reference_oracle_provider = SimpleNamespace(
+        reference_oracle_scope_for=lambda *_args: object()
+    )
 
     class Insn:
         ea = 0x40D348
@@ -352,7 +362,7 @@ def test_current_mba_identity_index_reports_ambiguous_candidate_owners(
     )
     mba = SimpleNamespace(
         qty=len(blocks),
-        maturity=0,
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
         this=0x1234,
         build_graph=lambda: None,
         get_mblock=lambda serial: blocks[int(serial)],
@@ -380,6 +390,69 @@ def test_current_mba_identity_index_reports_ambiguous_candidate_owners(
     assert all(
         candidate["stable_identity"] == identity.to_dict() for candidate in candidates
     )
+
+
+def test_current_mba_identity_index_abstains_before_locopt_without_route_authority(
+    monkeypatch,
+) -> None:
+    native_preanalysis = NativePreanalysisSessionState()
+    session = SimpleNamespace(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        identity_key="protected-session",
+        function_ea=0x18000C090,
+    )
+    state = resolver_session_state(session)
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+        this=0x1234,
+        build_graph=lambda: pytest.fail(
+            "protected PREOPT must not build the live graph"
+        ),
+    )
+    monkeypatch.setattr(
+        MbaBlockIdentityIndex,
+        "from_mba",
+        staticmethod(
+            lambda *_args, **_kwargs: pytest.fail(
+                "protected PREOPT must not capture a live identity index"
+            )
+        ),
+    )
+
+    assert _build_current_mba_identity_index(session=session, mba=mba) is None
+    assert state.identity_index is None
+
+
+def test_current_mba_identity_index_never_rebuilds_graph_after_locopt(
+    monkeypatch,
+) -> None:
+    native_preanalysis = NativePreanalysisSessionState()
+    session = SimpleNamespace(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        identity_key="post-locopt-session",
+        function_ea=0x18000C090,
+    )
+    state = resolver_session_state(session)
+    index = SimpleNamespace(evidence_generation=0, generation=0)
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_GLBOPT2,
+        this=0x1234,
+        build_graph=lambda: pytest.fail(
+            "Hex-Rays permits mba.build_graph() only once before LOCOPT"
+        ),
+    )
+    monkeypatch.setattr(
+        MbaBlockIdentityIndex,
+        "from_mba",
+        staticmethod(lambda *_args, **_kwargs: index),
+    )
+
+    assert _build_current_mba_identity_index(session=session, mba=mba) is index
+    assert state.identity_index is index
 
 
 def test_current_mba_mutation_gateway_uses_session_lifecycle_authority() -> None:
