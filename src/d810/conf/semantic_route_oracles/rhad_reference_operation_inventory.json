@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+  "function_eas": [
+    "0x40A560",
+    "0x40C8B0",
+    "0x40CDA0",
+    "0x40D200"
+  ],
+  "phase_order": [
+    "indirect_jump_reconstruction",
+    "constant_materialization",
+    "dispatcher_elimination"
+  ],
+  "operations": [
+    {
+      "phase": "indirect_jump_reconstruction",
+      "category": "DirectRoute",
+      "variant": "simple_indirect_jump",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_jumps.JumpInliner._fixup_jmp_and_possible_jcc",
+      "portable_contract": "FragmentDirectTransferRewrite",
+      "backend_contract": "semantic fragment direct route lowering",
+      "admission": "portable_only",
+      "first_missing_obligation": "generated_vertical_proof"
+    },
+    {
+      "phase": "indirect_jump_reconstruction",
+      "category": "ConditionalRoute",
+      "variant": "existing_conditional_plus_indirect",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_jumps.JumpInliner._fixup_jmp_and_possible_jcc",
+      "portable_contract": "FragmentComputedBranchNormalization",
+      "backend_contract": "semantic fragment conditional route lowering",
+      "admission": "portable_only",
+      "first_missing_obligation": "generated_vertical_proof"
+    },
+    {
+      "phase": "indirect_jump_reconstruction",
+      "category": "ConditionalRoute",
+      "variant": "cmov_selected_indirect",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "one_checksum_route",
+      "reference_symbol": "deob_jumps.JumpInliner._fixup_cmov",
+      "portable_contract": "RhadConditionalRoute -> FragmentComputedBranchNormalization",
+      "backend_contract": "semantic fragment conditional-select lowering",
+      "admission": "portable_compiler_only",
+      "first_missing_obligation": "generated_transaction_profile"
+    },
+    {
+      "phase": "indirect_jump_reconstruction",
+      "category": "ConditionalRoute",
+      "variant": "setcc_indexed_table",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_jumps.JumpInliner.fixup",
+      "portable_contract": "FragmentComputedBranchNormalization",
+      "backend_contract": "semantic fragment computed-branch lowering",
+      "admission": "portable_only",
+      "first_missing_obligation": "setcc_table_vertical_proof"
+    },
+    {
+      "phase": "indirect_jump_reconstruction",
+      "category": "OrderedSideEffectCorridor",
+      "variant": "safe_flag_interference_reorder",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_jumps.JumpInliner._fix_interference",
+      "portable_contract": "missing ordered side-effect corridor",
+      "backend_contract": "missing deferred instruction reorder",
+      "admission": "deferred",
+      "first_missing_obligation": "portable_order_and_side_effect_proof"
+    },
+    {
+      "phase": "constant_materialization",
+      "category": "ConstantMaterialization",
+      "variant": "mov_absolute",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_consts.ConstantInliner.transform_mov_mem_to_imm",
+      "portable_contract": "missing constant operand materialization",
+      "backend_contract": "missing deferred constant operand replacement",
+      "admission": "deferred",
+      "first_missing_obligation": "portable_width_and_operand_path"
+    },
+    {
+      "phase": "constant_materialization",
+      "category": "ConstantMaterialization",
+      "variant": "movzx_absolute",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_consts.ConstantInliner.transform_mov_mem_to_imm",
+      "portable_contract": "missing constant operand materialization",
+      "backend_contract": "missing deferred zero-extending replacement",
+      "admission": "deferred",
+      "first_missing_obligation": "portable_zero_extension_proof"
+    },
+    {
+      "phase": "constant_materialization",
+      "category": "ConstantMaterialization",
+      "variant": "add_absolute",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_consts.ConstantInliner.transform_arith_mem_to_imm",
+      "portable_contract": "missing constant operand materialization",
+      "backend_contract": "missing deferred flag-preserving add replacement",
+      "admission": "deferred",
+      "first_missing_obligation": "arithmetic_flag_equivalence_proof"
+    },
+    {
+      "phase": "constant_materialization",
+      "category": "ConstantMaterialization",
+      "variant": "sbb_absolute",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_consts.ConstantInliner.transform_arith_mem_to_imm",
+      "portable_contract": "missing constant operand materialization",
+      "backend_contract": "missing deferred carry-preserving sbb replacement",
+      "admission": "deferred",
+      "first_missing_obligation": "carry_input_and_flag_equivalence_proof"
+    },
+    {
+      "phase": "constant_materialization",
+      "category": "ConstantMaterialization",
+      "variant": "sub_absolute",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_consts.ConstantInliner.transform_arith_mem_to_imm",
+      "portable_contract": "missing constant operand materialization",
+      "backend_contract": "missing deferred flag-preserving sub replacement",
+      "admission": "deferred",
+      "first_missing_obligation": "arithmetic_flag_equivalence_proof"
+    },
+    {
+      "phase": "constant_materialization",
+      "category": "ConstantMaterialization",
+      "variant": "xor_absolute",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_consts.ConstantInliner.transform_arith_mem_to_imm",
+      "portable_contract": "missing constant operand materialization",
+      "backend_contract": "missing deferred flag-preserving xor replacement",
+      "admission": "deferred",
+      "first_missing_obligation": "arithmetic_flag_equivalence_proof"
+    },
+    {
+      "phase": "dispatcher_elimination",
+      "category": "DirectRoute",
+      "variant": "immediate_flow_state",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_cflow.CflowUnflattener._rewrite_simple",
+      "portable_contract": "FragmentDirectTransferRewrite",
+      "backend_contract": "semantic fragment direct route lowering",
+      "admission": "portable_only",
+      "first_missing_obligation": "generated_vertical_proof"
+    },
+    {
+      "phase": "dispatcher_elimination",
+      "category": "ConditionalRoute",
+      "variant": "cmov_selected_flow_state",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_cflow.CflowUnflattener._rewrite_cmov",
+      "portable_contract": "FragmentComputedBranchNormalization",
+      "backend_contract": "semantic fragment conditional route lowering",
+      "admission": "portable_only",
+      "first_missing_obligation": "generated_vertical_proof"
+    },
+    {
+      "phase": "dispatcher_elimination",
+      "category": "ConditionalRoute",
+      "variant": "earlier_conditional_plus_later_assignment",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_cflow.CflowUnflattener._rewrite_branch",
+      "portable_contract": "FragmentOperation with both conditional roles",
+      "backend_contract": "semantic fragment conditional route lowering",
+      "admission": "portable_only",
+      "first_missing_obligation": "branch_assignment_vertical_proof"
+    },
+    {
+      "phase": "dispatcher_elimination",
+      "category": "MaterializedPredicate",
+      "variant": "memory_derived_flow_state",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_cflow.CflowUnflattener._rewrite_mem_ref",
+      "portable_contract": "FragmentStoragePredicateMaterialization is stack-EQ only",
+      "backend_contract": "semantic fragment storage predicate lowering is partial",
+      "admission": "portable_only",
+      "first_missing_obligation": "generalized_memory_predicate_contract"
+    },
+    {
+      "phase": "dispatcher_elimination",
+      "category": "ConditionalRoute",
+      "variant": "unrepairable_flag_interference",
+      "function_eas": ["0x40A560", "0x40C8B0", "0x40CDA0", "0x40D200"],
+      "known_count": "unknown",
+      "reference_symbol": "deob_cflow.CflowUnflattener._has_interference",
+      "portable_contract": "FragmentFlagCorridor rejection",
+      "backend_contract": "prepublication flag-corridor validation",
+      "admission": "portable_only",
+      "first_missing_obligation": "four_function_rejection_ledger"
+    }
+  ]
+}

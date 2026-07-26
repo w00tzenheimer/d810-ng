@@ -2612,7 +2612,10 @@ class FragmentPlan:
             )
             if (
                 self.publication_purpose
-                is not FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+                not in {
+                    FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+                    FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING,
+                }
                 or self.native_key.input_identity.lower() != expected_input_identity
                 or int(reference_oracle_run.function_ea)
                 < int(self.native_key.function_rva)
