@@ -47,6 +47,7 @@ from d810.transforms import canonical_semantic_fragment as canonical_fragment
 from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
     build_canonical_semantic_fragment_plan,
+    compose_canonical_carrier_ingress_fragment_plan,
     compose_canonical_semantic_boundary_fragment_plan,
     compose_canonical_semantic_fragment_plan,
     plan_detached_reference_direct_route,
@@ -686,6 +687,199 @@ def test_detached_direct_route_rejects_reference_binding_drift(
 
     assert exc_info.value.reason_code == reason_code
     assert exc_info.value.anchor_ea == 0x40BB63
+
+
+def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress() -> (
+    None
+):
+    normalization_plan, route_evidence, _authority, reference_route = (
+        _detached_reference_direct_route_case()
+    )
+    (native_body,) = normalization_plan.native_bodies
+    entry_path = FragmentOperation(
+        operation_id="native-body-edge@0x1200",
+        source_block_id="detached-target",
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="native@0x40BB3A",
+            ),
+        ),
+    )
+    imported_consumer = FragmentBlock(
+        block_id="native@0x1600",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1600,
+        stable_identity=_identity(0x1600),
+        native_body_id=native_body.body_id,
+    )
+    unselected_target = FragmentBlock(
+        block_id="native@0x1700",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1700,
+        stable_identity=_identity(0x1700),
+        native_body_id=native_body.body_id,
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *normalization_plan.blocks,
+            imported_consumer,
+            unselected_target,
+        ),
+        operations=(
+            *normalization_plan.operations,
+            entry_path,
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    imported_consumer.block_id,
+                    unselected_target.block_id,
+                ),
+                terminal_block_ids=(
+                    *(
+                        block_id
+                        for block_id in native_body.terminal_block_ids
+                        if block_id != "detached-target"
+                    ),
+                    imported_consumer.block_id,
+                    unselected_target.block_id,
+                ),
+                native_ranges=tuple(
+                    sorted(
+                        (
+                            *native_body.native_ranges,
+                            NativeEaInterval(0x1600, 0x1601),
+                            NativeEaInterval(0x1700, 0x1701),
+                        ),
+                        key=lambda interval: interval.start_ea,
+                    )
+                ),
+                proof_ids=(
+                    *native_body.proof_ids,
+                    entry_path.operation_id,
+                ),
+            ),
+        ),
+    )
+    (route_proof,) = route_evidence.route_proofs
+    state_choice = SemanticRouteProof(
+        proof_id="state-choice@0x1600",
+        atomic_group_id=route_evidence.atomic_group_id,
+        proof_kind=SemanticRouteProofKind.STATE_CHOICE,
+        shape=SemanticRouteShape.CONDITIONAL,
+        source_identity=imported_consumer.stable_identity,
+        source_anchor_ea=0x1600,
+        source_owner_identity=imported_consumer.stable_identity,
+        source_owner_anchor_ea=0x1600,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                state_constant=0x22,
+                target_identity=_identity(0x1200),
+                target_anchor_ea=0x1200,
+            ),
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                state_constant=0x33,
+                target_identity=unselected_target.stable_identity,
+                target_anchor_ea=0x1700,
+            ),
+        ),
+        predicate=SemanticPredicateProof(
+            kind=SemanticPredicateKind.STORAGE_EQUALS,
+            origin=SemanticCorridorPoint(_identity(0x1000), 0x1000),
+            consumer=SemanticCorridorPoint(imported_consumer.stable_identity, 0x1600),
+            corridor=(
+                SemanticCorridorPoint(_identity(0x1000), 0x1000),
+                SemanticCorridorPoint(_identity(0x1100), 0x1100),
+                SemanticCorridorPoint(imported_consumer.stable_identity, 0x1600),
+            ),
+            storage_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+            width=4,
+            compare_constant=0,
+        ),
+        carriers=(
+            SemanticCarrierProof(
+                carrier_id="entry-state@0x1100",
+                definition=SemanticCorridorPoint(_identity(0x1100), 0x1100),
+                consumers=(
+                    SemanticCorridorPoint(imported_consumer.stable_identity, 0x1600),
+                ),
+                corridor=(
+                    SemanticCorridorPoint(_identity(0x1100), 0x1100),
+                    SemanticCorridorPoint(imported_consumer.stable_identity, 0x1600),
+                ),
+                storage_identity=StorageIdentity(StorageIdentityKind.STACK, 0x44),
+                width=4,
+                state_values=(0x22, 0x33),
+                permitted_write_eas=frozenset({0x1100}),
+            ),
+        ),
+    )
+    available_evidence = replace(
+        route_evidence,
+        route_proofs=(route_proof, state_choice),
+    )
+    authority = _normalization_authority(normalization_plan, available_evidence)
+    detached_route = plan_detached_reference_direct_route(
+        normalization_plan,
+        route_evidence,
+        reference_route,
+        normalization_authority=authority,
+    )
+    assert detached_route is not None
+    graph, _base_plan, _base_evidence = _live_source_detached_target_case()
+
+    plan = compose_canonical_carrier_ingress_fragment_plan(
+        graph,
+        normalization_plan,
+        available_evidence=available_evidence,
+        detached_route=detached_route,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=authority,
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    (root_id,) = plan.roots
+    assert plan.block(root_id).semantic_anchor_ea == 0x1100
+    ingress = plan.operation("route:state-choice@0x1600:carrier-ingress")
+    assert ingress.source_block_id == root_id
+    assert ingress.storage_predicate_materialization == (
+        FragmentStoragePredicateMaterialization(
+            predicate_kind=PredicateKind.EQ,
+            storage_identity=StorageIdentity(StorageIdentityKind.STACK, 0x44),
+            width=4,
+            compare_constant=0x22,
+            cut_after_ea=0x1100,
+        )
+    )
+    assert tuple(
+        (edge.role, plan.block(edge.target_block_id).semantic_anchor_ea)
+        for edge in ingress.edges
+    ) == (
+        (SemanticEdgeRole.CONDITIONAL_TAKEN, 0x1200),
+        (SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, 0x1400),
+    )
+    (egress,) = plan.boundary_ports
+    assert egress.kind is FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_EGRESS
+    assert egress.source_block_id == root_id
+    assert plan.block(egress.target_block_id).semantic_anchor_ea == 0x1400
+    assert "publish-semantic-state@0x1700" in egress.retirement_obligation_id
+    assert {obligation.role for obligation in plan.data_flow_obligations} == {
+        FragmentDataFlowRole.CONDITION,
+        FragmentDataFlowRole.CARRIER,
+    }
+    assert {
+        plan.block(block_id).semantic_anchor_ea
+        for body in plan.native_bodies
+        for block_id in body.block_ids
+    }.isdisjoint({0x1600, 0x1700, 0x40C6F7, 0x40BB69})
 
 
 def test_canonical_route_composes_live_source_with_detached_target_body() -> None:
