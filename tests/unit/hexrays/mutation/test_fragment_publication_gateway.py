@@ -1277,9 +1277,10 @@ def test_gateway_advances_semantic_lifecycle_only_after_receipt_commit() -> None
     assert tuple(owner.operation_id for owner in publications[0].owners) == (
         "direct-route",
     )
-    assert publications[0].owners[0].stable_identity == plan.block(
-        "replacement"
-    ).stable_identity
+    assert (
+        publications[0].owners[0].stable_identity
+        == plan.block("replacement").stable_identity
+    )
 
 
 def test_gateway_records_canonical_plan_ready_before_semantic_staging() -> None:
