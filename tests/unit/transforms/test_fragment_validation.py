@@ -166,6 +166,85 @@ def test_project_fragment_derives_replacement_and_root_rewrite_from_snapshots() 
     assert validate_fragment_projection(plan, projection).passed
 
 
+def test_project_fragment_includes_required_future_data_flow_relations() -> None:
+    plan = _plan()
+    staged = _projection(plan)
+    replacement = staged.block("replacement")
+    plan_block_ids = {block.block_id for block in plan.blocks}
+    snapshot = FragmentProjectionInput(
+        snapshot_id="snapshot:future-data-flow",
+        entry_block_id="entry",
+        blocks=tuple(
+            FragmentProjectionBlockInput(
+                block_id=block.block_id,
+                kind=block.kind,
+                successors=("original",)
+                if block.block_id == "entry"
+                else block.successors,
+                predecessors=("entry",)
+                if block.block_id == "original"
+                else block.predecessors,
+                physical_position=block.physical_position,
+                adjacent_fallthrough_target_id=(
+                    block.adjacent_fallthrough_target_id
+                ),
+                terminator_ea=(
+                    replacement.terminator_ea
+                    if block.block_id == "original"
+                    else block.terminator_ea
+                ),
+                terminator_kind=(
+                    replacement.terminator_kind
+                    if block.block_id == "original"
+                    else block.terminator_kind
+                ),
+                instruction_eas=(
+                    replacement.instruction_eas
+                    if block.block_id == "original"
+                    else block.instruction_eas
+                ),
+                flag_write_eas=(
+                    replacement.flag_write_eas
+                    if block.block_id == "original"
+                    else block.flag_write_eas
+                ),
+            )
+            for block in staged.blocks
+            if block.block_id in plan_block_ids and block.block_id != "replacement"
+        ),
+        identity_bindings=tuple(
+            binding
+            for binding in staged.identity_bindings
+            if binding.block_id in plan_block_ids
+            and binding.block_id != "replacement"
+        ),
+        data_flow_relations=(),
+        value_ranges=staged.value_ranges,
+    )
+    inventory = SimpleNamespace(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        items=(
+            SimpleNamespace(
+                root_block_id="replacement",
+                original_block_id="original",
+                predecessor_block_id="entry",
+                role=SemanticEdgeRole.DIRECT,
+                requires_helper=False,
+            ),
+        ),
+    )
+
+    projection = project_fragment(plan, snapshot, inventory)
+
+    relation_directions = {
+        (relation.use_def_observed, relation.def_use_observed)
+        for relation in projection.data_flow_relations
+    }
+    assert relation_directions == {(True, False), (False, True)}
+    assert validate_fragment_projection(plan, projection).passed
+
+
 def _identity(start_ea: int) -> StableBlockIdentity:
     return StableBlockIdentity.from_intervals(
         (NativeEaInterval(start_ea, start_ea + 0x10),),
