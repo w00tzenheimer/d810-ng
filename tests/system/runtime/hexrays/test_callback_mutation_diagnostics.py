@@ -137,6 +137,7 @@ def test_callback_nop_delta_records_unreported_live_write_with_ea_anchor() -> No
         "callback_result": 0,
         "instruction_ea": "0x40c115",
         "instruction_ordinal": 0,
+        "instruction_path": "top[0]",
     }
 
 
@@ -205,6 +206,40 @@ def test_callback_nop_delta_ignores_preexisting_nop() -> None:
         )
         == ()
     )
+
+
+def test_callback_nop_delta_captures_nested_mop_d_instruction() -> None:
+    nested = _Instruction(ida_hexrays.m_mov, 0x401014)
+    outer = _Instruction(ida_hexrays.m_add, 0x401010)
+    outer.l = SimpleNamespace(t=ida_hexrays.mop_d, d=nested)
+    outer.r = SimpleNamespace(t=ida_hexrays.mop_z)
+    outer.d = SimpleNamespace(t=ida_hexrays.mop_z)
+    mba = _Mba(
+        (
+            _Block(
+                serial=3,
+                start=0x401000,
+                end=0x401020,
+                head=outer,
+            ),
+        )
+    )
+    before = capture_live_nop_sites(mba)
+
+    nested.opcode = ida_hexrays.m_nop
+    after = capture_live_nop_sites(mba)
+    records = build_callback_nop_delta_records(
+        before=before,
+        after=after,
+        callback_kind="optinsn_callback",
+        callback_name="PeepholeOptimizer",
+        callback_result=0,
+        maturity="MMAT_GLBOPT2",
+    )
+
+    assert len(records) == 1
+    assert records[0].payload["instruction_path"] == "top[0].l.d"
+    assert records[0].payload["instruction_ea"] == "0x401014"
 
 
 def test_block_optimizer_reports_a_rule_nop_write_that_returns_zero() -> None:
