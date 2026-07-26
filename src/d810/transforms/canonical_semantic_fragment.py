@@ -2204,7 +2204,7 @@ def _call_backed_nested_route_staging_requirements(
                         block.block_id for block in source_matches
                     ),
                 },
-        )
+            )
         (source,) = source_matches
         source_operations = tuple(operation_by_source.get(source.block_id, ()))
         normalization = (
@@ -2332,8 +2332,7 @@ def _call_backed_nested_route_staging_requirements(
                         target_block_id=source.block_id,
                     ),
                 )
-                or predecessor_operation.source_block_id
-                != predecessor_block.block_id
+                or predecessor_operation.source_block_id != predecessor_block.block_id
             ):
                 raise CanonicalSemanticFragmentRejected(
                     "call-backed nested route predecessor does not preserve "
