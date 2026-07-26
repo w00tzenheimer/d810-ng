@@ -52,7 +52,6 @@ class DecompilationSessionContext:
     current_mba_generation: int = 0
     current_mba_identity_index: object | None = None
     preopt_ready_emitted_for_current_mba: bool = False
-    preopt_refresh_consumers_for_current_mba: set[str] = field(default_factory=set)
     resolver_attachment: ResolverEvidenceAttachment | None = None
     frontend_normalization_plan_authority: SessionFrontendNormalizationPlanAuthority = (
         field(init=False)
@@ -482,7 +481,6 @@ class DecompilationLifecycleCoordinator:
         session.current_mba_generation += 1
         session.current_mba_identity_index = None
         session.preopt_ready_emitted_for_current_mba = False
-        session.preopt_refresh_consumers_for_current_mba.clear()
 
     def current_mba_generation(self, *, function_ea: int) -> int:
         """Return the active flowchart generation without exposing its session."""
@@ -503,9 +501,8 @@ class DecompilationLifecycleCoordinator:
         *,
         function_ea: int,
         microcode_modified: bool = False,
-        callback_pointer_refresh_required: bool = True,
     ) -> None:
-        """Record that the supported PREOPT hook emitted for this MBA."""
+        """Record that the PREOPT optimizer callback emitted for this MBA."""
         session = self.current_session(int(function_ea))
         if session is not None:
             session.preopt_ready_emitted_for_current_mba = True
@@ -514,51 +511,13 @@ class DecompilationLifecycleCoordinator:
                 attachment = session.resolver_attachment
                 if attachment is not None:
                     attachment.invalidate_current_mba_binding()
-            consumers = session.preopt_refresh_consumers_for_current_mba
-            consumers.clear()
-            if microcode_modified and callback_pointer_refresh_required:
-                consumers.update(("block", "instruction"))
 
     def preopt_ready_was_emitted(self, *, function_ea: int) -> bool:
-        """Return whether an optinsn fallback would duplicate this MBA hook."""
+        """Return whether PREOPT publication already ran for this MBA."""
         session = self.current_session(int(function_ea))
         return bool(
             session is not None and session.preopt_ready_emitted_for_current_mba
         )
-
-    def consume_preopt_microcode_modified(
-        self,
-        *,
-        function_ea: int,
-        consumer: str,
-    ) -> bool:
-        """Consume the one-shot stale-operand guard after PREOPT mutation."""
-        session = self.current_session(int(function_ea))
-        return self._consume_preopt_microcode_modified(session, consumer)
-
-    def consume_current_preopt_microcode_modified(self, *, consumer: str) -> bool:
-        """Consume the guard for the innermost active callback session.
-
-        Optimizer callbacks can expose an internal MBA entry EA rather than
-        the containing function's session identity, so the adapter must not
-        derive ownership from ``mba.entry_ea``.
-        """
-        session = self._active_sessions[-1].session if self._active_sessions else None
-        return self._consume_preopt_microcode_modified(session, consumer)
-
-    @staticmethod
-    def _consume_preopt_microcode_modified(
-        session: DecompilationSessionContext | None,
-        consumer: str,
-    ) -> bool:
-        if session is None:
-            return False
-        consumer = str(consumer)
-        consumers = session.preopt_refresh_consumers_for_current_mba
-        if consumer not in consumers:
-            return False
-        consumers.remove(consumer)
-        return True
 
     def build_current_mba_identity_index(
         self,

@@ -527,11 +527,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     def _emit_top_level_preopt_ready(self, mba: ida_hexrays.mbl_array_t) -> bool:
         """Emit the live PREOPT seam once the top-level MBA is populated.
 
-        ``hxe_preoptimized`` is reliable for explicit-range snippet generation
-        but is not emitted for every top-level decompile.  The instruction
-        optimizer's first PREOPT callback is the portable runtime boundary: it
-        owns a complete MBA and can inject the same identity index and mutation
-        gateway without retaining either beyond the active session.
+        ``hxe_preoptimized`` has no documented successful-modification return
+        contract. The instruction optimizer's first PREOPT callback is the
+        portable runtime boundary: it owns a complete MBA, can return the
+        optimizer's modified signal, and does not retain live bindings beyond
+        the active session.
         """
         lifecycle = getattr(self, "_decompilation_lifecycle", None)
         emitter = self.event_emitter
@@ -619,10 +619,6 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             mark_emitted(
                 function_ea=function_ea,
                 microcode_modified=bool(decision.get("microcode_modified")),
-                # This adapter owns the structural callback and immediately
-                # returns its modified decision, so no queued adapter pointer
-                # predates the mutation.
-                callback_pointer_refresh_required=False,
             )
         optimizer_logger.debug(
             "instruction PREOPT seam emitted: func=0x%x modified=%s "
@@ -652,19 +648,6 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     ) -> bool:
         mba: ida_hexrays.mbl_array_t = blk.mba
         preopt_modified = False
-
-        lifecycle = getattr(self, "_decompilation_lifecycle", None)
-        consume_modified = getattr(
-            lifecycle,
-            "consume_current_preopt_microcode_modified",
-            None,
-        )
-        if callable(consume_modified) and consume_modified(consumer="instruction"):
-            # ``hxe_preoptimized`` may have replaced blocks or instructions
-            # after Hex-Rays captured this callback's operand.  Do not run
-            # even maturity-change analysis before Hex-Rays revisits the MBA
-            # with pointers from the updated graph.
-            return True
 
         if (mba is not None) and (mba.maturity != self.current_maturity):
             new_maturity = mba.maturity

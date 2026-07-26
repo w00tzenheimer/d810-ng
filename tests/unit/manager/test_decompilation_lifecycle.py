@@ -658,9 +658,7 @@ def test_lifecycle_releases_current_mba_identity_index_when_session_finishes() -
     assert session.current_mba_identity_index is None
 
 
-def test_flowchart_generation_resets_and_preopt_marks_duplicate_fallback_guard() -> (
-    None
-):
+def test_flowchart_generation_resets_and_preopt_marks_publication_guard() -> None:
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
     session, _created = coordinator.ensure_hexrays_session(
@@ -678,26 +676,9 @@ def test_flowchart_generation_resets_and_preopt_marks_duplicate_fallback_guard()
 
     assert session.current_mba_identity_index is None
     assert coordinator.preopt_ready_was_emitted(function_ea=0x401000)
-    assert coordinator.consume_preopt_microcode_modified(
-        function_ea=0x401000,
-        consumer="instruction",
-    )
-    assert not coordinator.consume_preopt_microcode_modified(
-        function_ea=0x401000,
-        consumer="instruction",
-    )
-    assert coordinator.consume_preopt_microcode_modified(
-        function_ea=0x401000,
-        consumer="block",
-    )
     coordinator.mark_preopt_ready_emitted(
         function_ea=0x401000,
         microcode_modified=True,
-    )
-    assert coordinator.consume_current_preopt_microcode_modified(consumer="instruction")
-    assert coordinator.consume_current_preopt_microcode_modified(consumer="block")
-    assert not coordinator.consume_current_preopt_microcode_modified(
-        consumer="instruction"
     )
 
     coordinator.begin_current_mba_generation(function_ea=0x401000)
@@ -712,14 +693,6 @@ def test_flowchart_generation_resets_and_preopt_marks_duplicate_fallback_guard()
     )
 
     assert coordinator.preopt_ready_was_emitted(function_ea=0x401000)
-    assert not coordinator.consume_preopt_microcode_modified(
-        function_ea=0x401000,
-        consumer="instruction",
-    )
-    assert not coordinator.consume_preopt_microcode_modified(
-        function_ea=0x401000,
-        consumer="block",
-    )
 
     coordinator.begin_current_mba_generation(function_ea=0x401000)
 

@@ -118,14 +118,12 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
             *,
             function_ea: int,
             microcode_modified: bool,
-            callback_pointer_refresh_required: bool = True,
         ) -> None:
             calls.append(
                 (
                     "mark-emitted",
                     function_ea,
                     microcode_modified,
-                    callback_pointer_refresh_required,
                 )
             )
             self.preopt_emitted = True
@@ -183,7 +181,7 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
                 },
             },
         ),
-        ("mark-emitted", 0x40D200, True, False),
+        ("mark-emitted", 0x40D200, True),
     ]
     assert not manager._emit_top_level_preopt_ready(mba)
     assert calls[-2:] == [
@@ -206,7 +204,7 @@ def test_instruction_adapter_emits_preopt_for_new_mba_at_same_maturity() -> None
     assert emitted == [mba]
 
 
-def test_instruction_adapter_skips_fallback_after_hook_emitted_preopt() -> None:
+def test_instruction_adapter_skips_duplicate_preopt_publication() -> None:
     calls: list[object] = []
     session = SimpleNamespace(native_preanalysis_depth=0)
 
@@ -235,32 +233,6 @@ def test_instruction_adapter_skips_fallback_after_hook_emitted_preopt() -> None:
         ("session", 0x40D200),
         ("already-emitted", 0x40D200),
     ]
-
-
-def test_instruction_adapter_discards_first_operand_after_preopt_mutation() -> None:
-    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
-    manager.current_maturity = ida_hexrays.MMAT_GENERATED
-    consumed: list[str] = []
-    manager._decompilation_lifecycle = SimpleNamespace(
-        consume_current_preopt_microcode_modified=lambda *, consumer: (
-            consumed.append(consumer) or True
-        )
-    )
-    manager.analyzer = SimpleNamespace(
-        set_maturity=lambda maturity: (_ for _ in ()).throw(
-            AssertionError("maturity analysis touched a stale optimizer operand")
-        )
-    )
-    manager._emit_top_level_preopt_ready = lambda mba: (_ for _ in ()).throw(
-        AssertionError("stale optimizer operand reached PREOPT fallback")
-    )
-    mba = SimpleNamespace(
-        entry_ea=0x40D201,
-        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
-    )
-
-    assert manager.log_info_on_input(SimpleNamespace(mba=mba, serial=0), _make_ins())
-    assert consumed == ["instruction"]
 
 
 def test_block_adapter_rebuilds_flow_context_for_new_evidence_generation() -> None:
@@ -414,23 +386,6 @@ def test_block_adapter_rebuilds_flow_context_for_new_mba_address() -> None:
         "state",
         "gateway",
     ]
-
-
-def test_block_adapter_discards_first_block_after_preopt_mutation() -> None:
-    manager = BlockOptimizerManager.__new__(BlockOptimizerManager)
-    consumed: list[str] = []
-    manager._decompilation_lifecycle = SimpleNamespace(
-        consume_current_preopt_microcode_modified=lambda *, consumer: (
-            consumed.append(consumer) or True
-        )
-    )
-    manager.optimize = lambda blk: (_ for _ in ()).throw(
-        AssertionError("stale optimizer block reached rule execution")
-    )
-    blk = SimpleNamespace(mba=SimpleNamespace())
-
-    assert BlockOptimizerManager.func(manager, blk) == 1
-    assert consumed == ["block"]
 
 
 class _MockOptimizer:

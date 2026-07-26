@@ -1371,34 +1371,20 @@ def test_locopt_hook_continues_after_preanalysis_modifies_microcode() -> None:
     assert events == [DecompilationEvent.HEXRAYS_LOCOPT_READY]
 
 
-def test_preoptimized_hook_dispatches_live_mba_before_locopt() -> None:
-    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+def test_preoptimized_hook_does_not_own_structural_publication() -> None:
+    """hxe_preoptimized cannot acknowledge a successful structural write."""
+
+    assert "preoptimized" not in HexraysDecompilationHook.__dict__
+
+
+def test_instruction_preopt_callback_owns_structural_publication_signal() -> None:
     from d810.core.decompilation_session import DecompilationEvent
+    from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 
-    mba = SimpleNamespace(entry_ea=0x40A560)
-    events: list[object] = []
-
-    def callback(event: object, **kwargs: object) -> None:
-        assert event is DecompilationEvent.HEXRAYS_PREOPT_READY
-        assert kwargs["function_ea"] == 0x40A560
-        assert kwargs["mba"] is mba
-        decision = kwargs["decision"]
-        assert decision == {"request_redo": False}
-        decision["microcode_modified"] = True
-        decision["details"] = {"terminal_return_carriers": 1}
-        events.append(event)
-
-    hook = SimpleNamespace(callback=callback)
-
-    assert HexraysDecompilationHook.preoptimized(hook, mba) == ida_hexrays.MERR_LOOP
-    assert events == [DecompilationEvent.HEXRAYS_PREOPT_READY]
-
-
-def test_preoptimized_hook_owns_top_level_structural_mutation() -> None:
-    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
-    from d810.core.decompilation_session import DecompilationEvent
-
-    mba = SimpleNamespace(entry_ea=0x40A560, maturity=1)
+    mba = SimpleNamespace(
+        entry_ea=0x40A560,
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
     session = SimpleNamespace(native_preanalysis_depth=0)
     identity_index = object()
     mutation_gateway = object()
@@ -1417,22 +1403,20 @@ def test_preoptimized_hook_owns_top_level_structural_mutation() -> None:
                 "mark",
                 int(kwargs["function_ea"]),
                 bool(kwargs["microcode_modified"]),
-                bool(kwargs["callback_pointer_refresh_required"]),
             )
         ),
     )
 
-    def callback(event: object, **kwargs: object) -> None:
+    def emit(event: object, **kwargs: object) -> None:
         events.append((event, kwargs))
         kwargs["decision"]["microcode_modified"] = True
 
-    hook = SimpleNamespace(
-        callback=callback,
+    manager = SimpleNamespace(
+        event_emitter=SimpleNamespace(emit=emit),
         _decompilation_lifecycle=lifecycle,
-        _database_identity="sample.i64",
     )
 
-    assert HexraysDecompilationHook.preoptimized(hook, mba) == ida_hexrays.MERR_LOOP
+    assert InstructionOptimizerManager._emit_top_level_preopt_ready(manager, mba)
     assert events == [
         (
             DecompilationEvent.HEXRAYS_PREOPT_READY,
@@ -1450,13 +1434,16 @@ def test_preoptimized_hook_owns_top_level_structural_mutation() -> None:
             },
         )
     ]
-    assert lifecycle_calls == [("mark", 0x40A560, True, False)]
+    assert lifecycle_calls == [("mark", 0x40A560, True)]
 
 
-def test_preoptimized_hook_suppresses_manager_native_preanalysis_snippet() -> None:
-    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+def test_instruction_preopt_callback_suppresses_native_preanalysis_snippet() -> None:
+    from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 
-    mba = SimpleNamespace(entry_ea=0x40D48E, maturity=1)
+    mba = SimpleNamespace(
+        entry_ea=0x40D48E,
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
     session = SimpleNamespace(
         native_preanalysis_depth=1,
         native_preanalysis=NativePreanalysisSessionState(),
@@ -1468,64 +1455,25 @@ def test_preoptimized_hook_suppresses_manager_native_preanalysis_snippet() -> No
     lifecycle = SimpleNamespace(
         ensure_hexrays_session=lambda **kwargs: (session, False),
         current_session=lambda function_ea: session,
-        build_current_mba_identity_index=lambda **kwargs: object(),
-        new_current_mba_mutation_gateway=lambda **kwargs: object(),
-        preopt_ready_was_emitted=lambda **kwargs: False,
-        mark_preopt_ready_emitted=lambda **kwargs: (_ for _ in ()).throw(
+        build_current_mba_identity_index=lambda **_kwargs: object(),
+        new_current_mba_mutation_gateway=lambda **_kwargs: object(),
+        preopt_ready_was_emitted=lambda **_kwargs: False,
+        mark_preopt_ready_emitted=lambda **_kwargs: (_ for _ in ()).throw(
             AssertionError("internal snippet marked the public PREOPT generation")
         ),
     )
-    hook = SimpleNamespace(
-        callback=lambda *args, **kwargs: events.append((args, kwargs)),
+    manager = SimpleNamespace(
+        event_emitter=SimpleNamespace(
+            emit=lambda *args, **kwargs: events.append((args, kwargs))
+        ),
         _decompilation_lifecycle=lifecycle,
-        _database_identity="sample.i64",
     )
 
-    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
+    assert not InstructionOptimizerManager._emit_top_level_preopt_ready(manager, mba)
     assert events == []
 
 
-def test_preoptimized_hook_returns_success_when_microcode_is_unchanged() -> None:
-    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
-
-    mba = SimpleNamespace(entry_ea=0x40A560)
-    hook = SimpleNamespace(callback=lambda event, **kwargs: None)
-
-    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
-
-
-def test_preoptimized_hook_reports_one_bounded_loop_after_structural_write() -> None:
-    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
-
-    mba = SimpleNamespace(entry_ea=0x40A560)
-    emitted = False
-    callback_count = 0
-
-    def mark_emitted(**_kwargs: object) -> None:
-        nonlocal emitted
-        emitted = True
-
-    def callback(_event: object, **kwargs: object) -> None:
-        nonlocal callback_count
-        callback_count += 1
-        kwargs["decision"]["microcode_modified"] = True
-
-    lifecycle = SimpleNamespace(
-        preopt_ready_was_emitted=lambda **_kwargs: emitted,
-        mark_preopt_ready_emitted=mark_emitted,
-    )
-    hook = SimpleNamespace(
-        callback=callback,
-        _decompilation_lifecycle=lifecycle,
-    )
-
-    assert HexraysDecompilationHook.preoptimized(hook, mba) == ida_hexrays.MERR_LOOP
-    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
-    assert callback_count == 1
-
-
-def test_hexrays_hooks_own_the_preopt_generation_guard() -> None:
-    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+def test_flowchart_hook_begins_the_preopt_generation() -> None:
     from d810.core.decompilation_session import DecompilationEvent
 
     mba = SimpleNamespace(entry_ea=0x40A560)
@@ -1534,25 +1482,10 @@ def test_hexrays_hooks_own_the_preopt_generation_guard() -> None:
         begin_current_mba_generation=lambda *, function_ea: lifecycle_calls.append(
             ("begin", function_ea)
         ),
-        mark_preopt_ready_emitted=(
-            lambda *, function_ea, microcode_modified, callback_pointer_refresh_required: (
-                lifecycle_calls.append(
-                    (
-                        "preopt",
-                        function_ea,
-                        microcode_modified,
-                        callback_pointer_refresh_required,
-                    )
-                )
-            )
-        ),
     )
 
     def callback(event: object, **kwargs: object) -> None:
-        assert event in {
-            DecompilationEvent.HEXRAYS_FLOWCHART_READY,
-            DecompilationEvent.HEXRAYS_PREOPT_READY,
-        }
+        assert event is DecompilationEvent.HEXRAYS_FLOWCHART_READY
 
     hook = SimpleNamespace(
         callback=callback,
@@ -1560,11 +1493,7 @@ def test_hexrays_hooks_own_the_preopt_generation_guard() -> None:
     )
 
     assert HexraysDecompilationHook.flowchart(hook, object(), mba, object(), 0) == 0
-    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
-    assert lifecycle_calls == [
-        ("begin", 0x40A560),
-        ("preopt", 0x40A560, False, False),
-    ]
+    assert lifecycle_calls == [("begin", 0x40A560)]
 
 
 def test_flowchart_hook_scopes_active_lifecycle_session_into_decision() -> None:
