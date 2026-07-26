@@ -6636,3 +6636,45 @@ vertical step is an explicit live NOP inventory at `hxe_glbopt` entry and exit,
 including an absence record, so the DB can distinguish a pre-existing NOP from
 one created internally after the final callback. Do not resume Rhad semantic
 composition or weaken the 50409 oracle until that boundary is proven.
+
+**2026-07-26T08:13:12-0700 — JumpFixer folds enter the typed coordinator; 50409 persists**
+
+Functional commit `db5772985` removes JumpFixer's direct
+`DeferredGraphModifier.apply()` execution path. A proved constant fold now
+emits one portable `ConvertToGoto`, compiles it with the exact current identity
+mapping, and executes it through `HexRaysMutationBackend.apply` and the shared
+project/preflight/bind/realize/observe coordinator. A rejected transaction
+returns zero instead of claiming a callback mutation. Ruff-only commit
+`c43b2e133` formats the tests. The focused runtime and architecture gate is
+30/30 green; the strict 41-row donor parity gate, ast-grep scan, and all 14
+import contracts remain green.
+
+The mandatory pinned, cache-disabled A560 canary at clean code SHA
+`c43b2e133` completed in 146.68 seconds and still failed at ctree generation
+with `INTERR 50409`. Primary DB:
+`.tmp/rhad-a560-typed-jump-fixer-c43b2e133/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+This is not C6 or final A560 acceptance.
+
+The DB proves C5 remains intact. Frontend normalization commits 260/260 on
+both generated attempts; canonical composition commits 406/406; all 93 donor
+routes match; and no generation is poisoned. The former two direct JumpFixer
+writes at `blk247@0x40C115` and `blk254@0x40C217` now appear as four ordinary
+typed attempts across the generated restart. Every attempt reaches immutable
+projection and rejects cleanly in preflight with `mutation_started=0` because
+its source overlaps the committed canonical semantic operation. No JumpFixer
+mutation receipt is emitted, so the previous 1-planned/0-applied committed
+receipts are gone.
+
+Both final `hxe_glbopt` boundaries remain explicit DB evidence rather than a
+log inference: snapshots 7 and 16 record entry and exit
+`hexrays_callback_nop_inventory` rows with `inventory_count=0`. Therefore no
+literal `m_nop` is live when D810 enters or leaves the final GLBOPT2 callback,
+even after the direct JumpFixer path is removed. The typed JumpFixer receipt
+hypothesis is rejected.
+
+The verifier boundary remains the first failed obligation:
+`C5_postpublication_callback_integrity:ctree_nop_absence`. Continue with a
+debugger breakpoint at the 50409 verifier arm to capture the exact live
+`minsn_t`, owning block, and creation interval after the final callback. Do not
+restore direct cleanup writes, weaken semantic ownership, or infer an
+acceptable C6 result from the clean C5 receipts.
