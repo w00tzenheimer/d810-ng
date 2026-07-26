@@ -87,34 +87,6 @@ class PatchTransactionLifecycle(Protocol):
 
 
 @dataclass(frozen=True)
-class ApplyPatchLifecycle:
-    """Minimal lifecycle adapter for an ordinary PatchPlan backend apply."""
-
-    apply_patch: object
-
-    def begin(self, patch_plan: PatchPlan) -> object:
-        return patch_plan
-
-    def realize(self, patch_plan: PatchPlan, begun: object) -> object:
-        apply_patch = self.apply_patch
-        if not callable(apply_patch):
-            raise TypeError("patch lifecycle requires a callable backend apply")
-        return apply_patch(patch_plan)
-
-    def observe(self, patch_plan: PatchPlan, realized: object) -> object:
-        return realized
-
-    def validate(self, patch_plan: PatchPlan, observed: object) -> object:
-        return observed
-
-    def commit(self, patch_plan: PatchPlan, validated: object) -> object:
-        return validated
-
-    def fail(self, patch_plan: PatchPlan, error: Exception, phase: str) -> None:
-        return None
-
-
-@dataclass(frozen=True)
 class PatchTransactionParticipant:
     """Participant for plans already expressed in the shared execution IR."""
 
@@ -325,7 +297,6 @@ def lower_fragment_plan(
 
 __all__ = [
     "CfgTransactionCoordinator",
-    "ApplyPatchLifecycle",
     "FragmentContractBundle",
     "FragmentTransactionParticipant",
     "PatchFragmentBlockMaterialization",
