@@ -837,7 +837,17 @@ class FragmentDirectTransferRewrite:
         ):
             raise FragmentPlanRejected(
                 "direct transfer operation owner must lie between its proof "
-                "origin and rewrite anchor"
+                "origin and rewrite anchor",
+                reason_code="direct_transfer_owner_outside_corridor",
+                anchor_ea=rewrite_anchor_ea,
+                payload={
+                    "route_proof_id": route_proof_id,
+                    "owner_anchor_ea": f"0x{owner_anchor_ea:X}",
+                    "proof_origin_ea": (
+                        f"0x{proof_corridor_instruction_eas[0]:X}"
+                    ),
+                    "rewrite_anchor_ea": f"0x{rewrite_anchor_ea:X}",
+                },
             )
         superseded_instruction_eas = tuple(
             _require_native_ea(ea, "superseded direct transfer instruction")

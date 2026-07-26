@@ -329,7 +329,7 @@ def test_direct_transfer_rewrite_rejects_incomplete_or_conditional_ownership() -
     with pytest.raises(
         FragmentPlanRejected,
         match="owner must lie between its proof origin and rewrite anchor",
-    ):
+    ) as exc_info:
         FragmentDirectTransferRewrite(
             route_proof_id="flow_route:0x40BB63",
             owner_identity=_identity(0x40BB40, 0x40BB69),
@@ -339,6 +339,14 @@ def test_direct_transfer_rewrite_rejects_incomplete_or_conditional_ownership() -
             proof_corridor_instruction_eas=(0x40BB44, 0x40BB63),
             superseded_instruction_eas=(0x40BB63,),
         )
+    assert exc_info.value.reason_code == "direct_transfer_owner_outside_corridor"
+    assert exc_info.value.anchor_ea == 0x40BB63
+    assert exc_info.value.payload == {
+        "route_proof_id": "flow_route:0x40BB63",
+        "owner_anchor_ea": "0x40BB40",
+        "proof_origin_ea": "0x40BB44",
+        "rewrite_anchor_ea": "0x40BB63",
+    }
 
     with pytest.raises(FragmentPlanRejected, match="only to one direct edge"):
         FragmentOperation(
