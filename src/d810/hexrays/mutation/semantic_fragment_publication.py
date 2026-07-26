@@ -745,7 +745,12 @@ class _SemanticPatchLifecycle:
                 raise DetachedRouteOracleRejected(
                     "detached route oracle rejected "
                     f"{failure.route_id}: {failure.failed_invariant}: "
-                    f"{failure.reason}"
+                    f"{failure.reason}",
+                    reason_code="detached_route_oracle_comparison_failed",
+                    payload={
+                        "failed_invariant": failure.failed_invariant,
+                        "route_id": failure.route_id,
+                    },
                 )
         _mark_lifecycle_validated(
             self.lifecycle_authority,

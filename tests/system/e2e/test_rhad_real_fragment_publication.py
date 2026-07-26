@@ -514,7 +514,8 @@ def _run_worker(
         assert plan.reference_oracle_run == selection.run
         assert (
             plan.operations[0].direct_transfer_rewrite is not None
-            and plan.operations[0].direct_transfer_rewrite.reference_route
+            and plan.operations[0].reference_route_authority is not None
+            and plan.operations[0].reference_route_authority.reference_route
             == selection.routes[0]
         )
         assert len(plan.roots) == 1

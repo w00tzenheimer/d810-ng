@@ -137,8 +137,9 @@ def project_detached_direct_route(
 
     rewrite = detached_plan.operation.direct_transfer_rewrite
     assert rewrite is not None
-    reference_route = rewrite.reference_route
-    assert reference_route is not None
+    reference_authority = detached_plan.operation.reference_route_authority
+    assert reference_authority is not None
+    reference_route = reference_authority.reference_route
     rewrite_anchor_ea = int(rewrite.rewrite_anchor_ea)
     if (
         normalization_plan.publication_purpose

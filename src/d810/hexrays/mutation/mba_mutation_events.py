@@ -1671,16 +1671,19 @@ class MbaMutationGateway:
         ):
             raise ValueError("detached route oracle does not match the active plan")
         routes = tuple(
-            operation.direct_transfer_rewrite.reference_route
+            operation.reference_route_authority.reference_route
             for operation in plan.operations
             if operation.direct_transfer_rewrite is not None
+            and operation.reference_route_authority is not None
         )
-        if any(route is None for route in routes):
+        if len(routes) != sum(
+            operation.direct_transfer_rewrite is not None
+            for operation in plan.operations
+        ):
             raise ValueError("detached route oracle lacks reference route authority")
         ledger_identities = tuple(
             (route.route_id, route.reference_ledger_identity)
             for route in routes
-            if route is not None
         )
         if tuple(route_id for route_id, _ledger in ledger_identities) != tuple(
             comparison.route_id for comparison in result.comparisons

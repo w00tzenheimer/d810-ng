@@ -32,6 +32,7 @@ from d810.transforms.fragment_plan import (
     FragmentPlan,
     FragmentPlanRejected,
     FragmentPublicationPurpose,
+    FragmentReferenceRouteAuthority,
 )
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
@@ -174,7 +175,10 @@ def _plan() -> FragmentPlan:
                         _REWRITE_ANCHOR_EA,
                     ),
                     superseded_instruction_eas=(_REWRITE_ANCHOR_EA,),
+                ),
+                reference_route_authority=FragmentReferenceRouteAuthority(
                     reference_route=_reference_route(),
+                    candidate_rewrite_anchor_ea=_REWRITE_ANCHOR_EA,
                 ),
                 edges=(
                     FragmentEdge(
@@ -358,14 +362,12 @@ def _projection_behind_temporary_port(
 def _unbound_plan() -> FragmentPlan:
     plan = _plan()
     operation = plan.operations[0]
-    rewrite = operation.direct_transfer_rewrite
-    assert rewrite is not None
     return replace(
         plan,
         operations=(
             replace(
                 operation,
-                direct_transfer_rewrite=replace(rewrite, reference_route=None),
+                reference_route_authority=None,
             ),
         ),
         reference_oracle_run=None,
@@ -383,9 +385,36 @@ def test_bind_fragment_reference_oracle_attaches_exact_authority() -> None:
     bound = bind_fragment_reference_oracle(plan, selection)
 
     assert bound.reference_oracle_run == selection.run
-    rewrite = bound.operations[0].direct_transfer_rewrite
-    assert rewrite is not None
-    assert rewrite.reference_route == selection.routes[0]
+    authority = bound.operations[0].reference_route_authority
+    assert authority is not None
+    assert authority.reference_route == selection.routes[0]
+    assert authority.candidate_rewrite_anchor_ea == _REWRITE_ANCHOR_EA
+
+
+def test_bind_fragment_reference_oracle_rebinds_unique_donor_patch_coordinate() -> (
+    None
+):
+    plan = _unbound_plan()
+    route = replace(
+        _reference_route(),
+        rewrite_anchor_ea=_REWRITE_ANCHOR_EA + 1,
+    )
+    selection = ReferenceRouteOracleSelection(
+        run=_reference_run(),
+        publication_root_ea=_OWNER_EA,
+        routes=(route,),
+    )
+
+    bound = bind_fragment_reference_oracle(plan, selection)
+
+    authority = bound.operations[0].reference_route_authority
+    assert authority is not None
+    assert authority.reference_route == route
+    assert authority.candidate_rewrite_anchor_ea == _REWRITE_ANCHOR_EA
+
+    result = compare_detached_route_oracle(bound, _projection(bound))
+    assert result.passed
+    assert result.comparisons[0].rewrite_anchor_ea == _REWRITE_ANCHOR_EA
 
 
 def test_bind_fragment_reference_oracle_rejects_partial_authority() -> None:
@@ -413,6 +442,7 @@ def test_bind_fragment_reference_oracle_rejects_partial_authority() -> None:
     error = exc_info.value
     assert error.reason_code == "fragment_reference_rewrite_anchor_set_mismatch"
     assert error.payload == {
+        "coordinate_rebindings": (),
         "missing_rewrite_anchors": ("0x40B52F",),
         "planned_rewrite_anchors": ("0x40B52E",),
         "selected_rewrite_anchors": ("0x40B52F",),
@@ -441,6 +471,8 @@ def test_bind_fragment_reference_oracle_reports_identity_mismatch() -> None:
     assert error.anchor_ea == _REWRITE_ANCHOR_EA
     assert error.payload == {
         "operation_id": "route:state_assignment@0x40B52E:0x13B0D3B2",
+        "candidate_rewrite_anchor_ea": "0x40B52E",
+        "reference_patch_anchor_ea": "0x40B52E",
         "operation_owner_anchor_ea": "0x40B51B",
         "operation_owner_identity": plan.block(
             "route.replacement"
@@ -451,10 +483,17 @@ def test_bind_fragment_reference_oracle_reports_identity_mismatch() -> None:
         ).stable_identity.diagnostic_label(),
         "reference_owner_ea": "0x40B51A",
         "owner_bound": False,
-        "target_block_id": "target",
-        "target_identity": plan.block("target").stable_identity.diagnostic_label(),
-        "reference_target_ea": "0x40AE3E",
-        "target_bound": True,
+        "targets": (
+            {
+                "role": "direct",
+                "target_block_id": "target",
+                "target_identity": plan.block(
+                    "target"
+                ).stable_identity.diagnostic_label(),
+                "reference_target_ea": "0x40AE3E",
+                "target_bound": True,
+            },
+        ),
     }
 
 

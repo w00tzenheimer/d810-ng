@@ -10,7 +10,7 @@ realizing the whole plan in one unpublished transaction.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
 import json
 
@@ -721,6 +721,49 @@ class FragmentStoragePredicateMaterialization:
 
 
 @dataclass(frozen=True, slots=True)
+class FragmentReferenceRouteAuthority:
+    """One donor semantic route rebound to an exact candidate-plan coordinate."""
+
+    reference_route: ReferenceRouteRewrite
+    candidate_rewrite_anchor_ea: int
+
+    def __post_init__(self) -> None:
+        route = self.reference_route
+        if not isinstance(route, ReferenceRouteRewrite):
+            raise TypeError("fragment reference authority requires a reference route")
+        candidate_anchor_ea = _require_native_ea(
+            self.candidate_rewrite_anchor_ea,
+            "fragment reference candidate rewrite anchor",
+        )
+        if not any(
+            start_ea <= candidate_anchor_ea < end_ea
+            for start_ea, end_ea in route.corridor
+        ):
+            raise FragmentPlanRejected(
+                "fragment reference candidate anchor lies outside the donor corridor",
+                reason_code="fragment_reference_candidate_anchor_outside_corridor",
+                anchor_ea=candidate_anchor_ea,
+                payload={
+                    "reference_route_id": route.route_id,
+                    "reference_patch_anchor_ea": f"0x{route.rewrite_anchor_ea:X}",
+                },
+            )
+        object.__setattr__(
+            self,
+            "candidate_rewrite_anchor_ea",
+            candidate_anchor_ea,
+        )
+
+    @property
+    def semantic_route(self) -> ReferenceRouteRewrite:
+        """Return reference semantics expressed at the bound candidate coordinate."""
+        return replace(
+            self.reference_route,
+            rewrite_anchor_ea=self.candidate_rewrite_anchor_ea,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class FragmentDirectTransferRewrite:
     """Proof-owned native envelope for one detached direct-route rewrite.
 
@@ -741,7 +784,6 @@ class FragmentDirectTransferRewrite:
         None
     )
     source_predicate_anchor_ea: int | None = None
-    reference_route: ReferenceRouteRewrite | None = None
 
     def __post_init__(self) -> None:
         route_proof_id = _require_identifier(
@@ -871,25 +913,6 @@ class FragmentDirectTransferRewrite:
             "source_predicate_anchor_ea",
             source_predicate_anchor_ea,
         )
-        reference_route = self.reference_route
-        if reference_route is not None:
-            if not isinstance(reference_route, ReferenceRouteRewrite):
-                raise TypeError("direct transfer reference route has the wrong type")
-            if (
-                reference_route.final_transfer_kind is not SemanticTransferKind.DIRECT
-                or int(reference_route.rewrite_anchor_ea) != rewrite_anchor_ea
-                or any(
-                    not any(
-                        start_ea <= ea < end_ea
-                        for start_ea, end_ea in reference_route.corridor
-                    )
-                    for ea in proof_corridor_instruction_eas
-                )
-            ):
-                raise FragmentPlanRejected(
-                    "direct transfer rewrite does not match its reference route"
-                )
-        object.__setattr__(self, "reference_route", reference_route)
 
 
 @dataclass(frozen=True, slots=True)
@@ -909,6 +932,7 @@ class FragmentOperation:
     storage_predicate_materialization: (
         FragmentStoragePredicateMaterialization | None
     ) = None
+    reference_route_authority: FragmentReferenceRouteAuthority | None = None
 
     def __post_init__(self) -> None:
         operation_id = _require_identifier(
@@ -944,6 +968,7 @@ class FragmentOperation:
         superseded_normalization = self.superseded_computed_branch_normalization
         superseded_predicate_anchor_ea = self.superseded_predicate_anchor_ea
         storage_predicate_materialization = self.storage_predicate_materialization
+        reference_route_authority = self.reference_route_authority
         if computed_branch_normalization is not None and not isinstance(
             computed_branch_normalization,
             FragmentComputedBranchNormalization,
@@ -974,6 +999,11 @@ class FragmentOperation:
             raise TypeError(
                 "fragment operation storage predicate materialization is invalid"
             )
+        if reference_route_authority is not None and not isinstance(
+            reference_route_authority,
+            FragmentReferenceRouteAuthority,
+        ):
+            raise TypeError("fragment operation reference authority is invalid")
         if (
             computed_branch_normalization is not None
             and storage_predicate_materialization is not None
@@ -1021,6 +1051,17 @@ class FragmentOperation:
                 raise FragmentPlanRejected(
                     "direct transfer rewrite belongs only to one direct edge"
                 )
+            if reference_route_authority is not None and (
+                direct_transfer_rewrite is None
+                or reference_route_authority.reference_route.final_transfer_kind
+                is not SemanticTransferKind.DIRECT
+                or reference_route_authority.candidate_rewrite_anchor_ea
+                != direct_transfer_rewrite.rewrite_anchor_ea
+            ):
+                raise FragmentPlanRejected(
+                    "direct fragment reference authority does not match its "
+                    "candidate rewrite"
+                )
         else:
             if frozenset(roles) != conditional_roles:
                 raise FragmentPlanRejected(
@@ -1046,6 +1087,16 @@ class FragmentOperation:
                 predicate_anchor_ea,
                 "fragment predicate anchor",
             )
+            if reference_route_authority is not None and (
+                reference_route_authority.reference_route.final_transfer_kind
+                is not SemanticTransferKind.CONDITIONAL
+                or reference_route_authority.candidate_rewrite_anchor_ea
+                != predicate_anchor_ea
+            ):
+                raise FragmentPlanRejected(
+                    "conditional fragment reference authority does not match its "
+                    "candidate predicate"
+                )
 
         object.__setattr__(self, "operation_id", operation_id)
         object.__setattr__(self, "source_block_id", source_block_id)
@@ -1060,6 +1111,11 @@ class FragmentOperation:
             self,
             "superseded_computed_branch_normalization",
             superseded_normalization,
+        )
+        object.__setattr__(
+            self,
+            "reference_route_authority",
+            reference_route_authority,
         )
         object.__setattr__(
             self,
@@ -1763,7 +1819,7 @@ class FragmentPlan:
             "fragment operation source",
         )
         semantic_envelope_owner_by_ea: dict[int, str] = {}
-        reference_routes: list[ReferenceRouteRewrite] = []
+        reference_authorities: list[FragmentReferenceRouteAuthority] = []
         for operation in operations:
             source = block_by_id.get(operation.source_block_id)
             if source is None:
@@ -1832,62 +1888,115 @@ class FragmentPlan:
                         f"fragment operation {operation.operation_id!r} direct "
                         "transfer owner belongs to another native input"
                     )
-                reference_route = direct_rewrite.reference_route
-                if reference_route is not None:
-                    target = block_by_id[operation.edges[0].target_block_id]
-                    source_identity = source.stable_identity
-                    target_identity = target.stable_identity
-                    reference_target_ea = reference_route.direct_target_ea
-                    owner_bound = (
-                        direct_rewrite.owner_anchor_ea == reference_route.owner_ea
-                        and direct_rewrite.owner_identity.native_ranges.contains(
-                            reference_route.owner_ea
-                        )
+            reference_authority = operation.reference_route_authority
+            if reference_authority is not None:
+                reference_route = reference_authority.reference_route
+                source_identity = source.stable_identity
+                operation_owner_identity = (
+                    direct_rewrite.owner_identity
+                    if direct_rewrite is not None
+                    else source_identity
+                )
+                operation_owner_anchor_ea = (
+                    direct_rewrite.owner_anchor_ea
+                    if direct_rewrite is not None
+                    else int(source.semantic_anchor_ea)
+                )
+                owner_bound = bool(
+                    operation_owner_identity is not None
+                    and int(operation_owner_anchor_ea)
+                    == int(reference_route.owner_ea)
+                    and operation_owner_identity.native_ranges.contains(
+                        reference_route.owner_ea
                     )
-                    target_bound = (
+                )
+                target_rows: list[dict[str, object]] = []
+                expected_targets = (
+                    (
+                        (SemanticEdgeRole.DIRECT, reference_route.direct_target_ea),
+                    )
+                    if reference_route.final_transfer_kind
+                    is SemanticTransferKind.DIRECT
+                    else (
+                        (
+                            SemanticEdgeRole.CONDITIONAL_TAKEN,
+                            reference_route.true_target_ea,
+                        ),
+                        (
+                            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                            reference_route.false_target_ea,
+                        ),
+                    )
+                )
+                edge_by_role = {edge.role: edge for edge in operation.edges}
+                for role, target_ea in expected_targets:
+                    edge = edge_by_role.get(role)
+                    target = (
+                        None
+                        if edge is None
+                        else block_by_id.get(edge.target_block_id)
+                    )
+                    target_identity = None if target is None else target.stable_identity
+                    target_bound = bool(
                         target_identity is not None
-                        and reference_target_ea is not None
-                        and target_identity.native_ranges.contains(reference_target_ea)
+                        and target_ea is not None
+                        and target_identity.native_ranges.contains(target_ea)
                     )
-                    if not owner_bound or not target_bound:
-                        raise FragmentPlanRejected(
-                            f"fragment operation {operation.operation_id!r} does not "
-                            "bind its reference route owner and target",
-                            reason_code=("fragment_reference_route_identity_mismatch"),
-                            anchor_ea=direct_rewrite.rewrite_anchor_ea,
-                            payload={
-                                "operation_id": operation.operation_id,
-                                "operation_owner_anchor_ea": (
-                                    f"0x{direct_rewrite.owner_anchor_ea:X}"
-                                ),
-                                "operation_owner_identity": (
-                                    direct_rewrite.owner_identity.diagnostic_label()
-                                ),
-                                "delivery_source_block_id": source.block_id,
-                                "delivery_source_identity": (
-                                    None
-                                    if source_identity is None
-                                    else source_identity.diagnostic_label()
-                                ),
-                                "reference_owner_ea": (
-                                    f"0x{reference_route.owner_ea:X}"
-                                ),
-                                "owner_bound": owner_bound,
-                                "target_block_id": target.block_id,
-                                "target_identity": (
-                                    None
-                                    if target_identity is None
-                                    else target_identity.diagnostic_label()
-                                ),
-                                "reference_target_ea": (
-                                    None
-                                    if reference_target_ea is None
-                                    else f"0x{reference_target_ea:X}"
-                                ),
-                                "target_bound": target_bound,
-                            },
-                        )
-                    reference_routes.append(reference_route)
+                    target_rows.append(
+                        {
+                            "role": role.value,
+                            "target_block_id": (
+                                None if target is None else target.block_id
+                            ),
+                            "target_identity": (
+                                None
+                                if target_identity is None
+                                else target_identity.diagnostic_label()
+                            ),
+                            "reference_target_ea": (
+                                None if target_ea is None else f"0x{target_ea:X}"
+                            ),
+                            "target_bound": target_bound,
+                        }
+                    )
+                if not owner_bound or not all(
+                    bool(row["target_bound"]) for row in target_rows
+                ):
+                    raise FragmentPlanRejected(
+                        f"fragment operation {operation.operation_id!r} does not "
+                        "bind its reference route owner and targets",
+                        reason_code="fragment_reference_route_identity_mismatch",
+                        anchor_ea=(
+                            reference_authority.candidate_rewrite_anchor_ea
+                        ),
+                        payload={
+                            "operation_id": operation.operation_id,
+                            "candidate_rewrite_anchor_ea": (
+                                f"0x{reference_authority.candidate_rewrite_anchor_ea:X}"
+                            ),
+                            "reference_patch_anchor_ea": (
+                                f"0x{reference_route.rewrite_anchor_ea:X}"
+                            ),
+                            "operation_owner_anchor_ea": (
+                                f"0x{int(operation_owner_anchor_ea):X}"
+                            ),
+                            "operation_owner_identity": (
+                                None
+                                if operation_owner_identity is None
+                                else operation_owner_identity.diagnostic_label()
+                            ),
+                            "delivery_source_block_id": source.block_id,
+                            "delivery_source_identity": (
+                                None
+                                if source_identity is None
+                                else source_identity.diagnostic_label()
+                            ),
+                            "reference_owner_ea": f"0x{reference_route.owner_ea:X}",
+                            "owner_bound": owner_bound,
+                            "targets": tuple(target_rows),
+                        },
+                    )
+                reference_authorities.append(reference_authority)
 
             semantic_envelope_eas = (
                 direct_rewrite.superseded_instruction_eas
@@ -2489,11 +2598,8 @@ class FragmentPlan:
                 )
 
         reference_oracle_run = self.reference_oracle_run
-        direct_rewrite_count = sum(
-            operation.direct_transfer_rewrite is not None for operation in operations
-        )
         if reference_oracle_run is None:
-            if reference_routes:
+            if reference_authorities:
                 raise FragmentPlanRejected(
                     "reference-owned fragment routes require one oracle run"
                 )
@@ -2509,15 +2615,30 @@ class FragmentPlan:
                 or self.native_key.input_identity.lower() != expected_input_identity
                 or int(reference_oracle_run.function_ea)
                 < int(self.native_key.function_rva)
-                or len(reference_routes) != direct_rewrite_count
                 or any(
-                    int(route.function_ea) != int(reference_oracle_run.function_ea)
-                    for route in reference_routes
+                    operation.direct_transfer_rewrite is not None
+                    and operation.reference_route_authority is None
+                    for operation in operations
                 )
-                or len({route.route_id for route in reference_routes})
-                != len(reference_routes)
-                or len({route.reference_ledger_identity for route in reference_routes})
-                != len(reference_routes)
+                or any(
+                    int(authority.reference_route.function_ea)
+                    != int(reference_oracle_run.function_ea)
+                    for authority in reference_authorities
+                )
+                or len(
+                    {
+                        authority.reference_route.route_id
+                        for authority in reference_authorities
+                    }
+                )
+                != len(reference_authorities)
+                or len(
+                    {
+                        authority.reference_route.reference_ledger_identity
+                        for authority in reference_authorities
+                    }
+                )
+                != len(reference_authorities)
             ):
                 raise FragmentPlanRejected(
                     "fragment reference oracle authority is incomplete or mismatched"
@@ -2686,6 +2807,7 @@ __all__ = [
     "FragmentPublicationPurpose",
     "FragmentRangeAssumption",
     "FragmentRangeObservation",
+    "FragmentReferenceRouteAuthority",
     "FragmentReturnCarrier",
     "FragmentReturnSource",
     "FragmentReturnSourceKind",
