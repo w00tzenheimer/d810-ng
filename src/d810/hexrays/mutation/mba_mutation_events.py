@@ -1871,6 +1871,7 @@ class MbaMutationGateway:
         """Lower, bind, realize, observe, and commit one semantic PatchPlan."""
         self._require_generation_usable()
         from d810.hexrays.mutation.semantic_fragment_publication import (
+            _failure_message,
             _first_failed_obligation,
             execute_patch_transaction,
         )
@@ -1887,7 +1888,7 @@ class MbaMutationGateway:
             ):
                 failure_phase = str(getattr(exc, "phase", "preflight"))
                 self._record_clean_cfg_failure(
-                    reason=str(exc) or type(exc).__name__,
+                    reason=_failure_message(exc),
                     failure_phase=failure_phase,
                     first_failed_obligation=_first_failed_obligation(
                         exc,
