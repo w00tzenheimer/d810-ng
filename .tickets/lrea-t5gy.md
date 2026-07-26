@@ -6270,3 +6270,45 @@ realized instruction coordinates and terminator kind/EA, then encode only the
 typed direct-transfer behavior actually owned by its prepared block. Do not
 restore broad semantic publication or treat the 23 later imported stubs as the
 first obligation.
+
+**2026-07-26T03:09:06-0700 — conditional-select projection parity complete**
+
+Functional commit `9e4850244` makes immutable projection describe the same
+typed contraction that the live backend performs for a clone-owned
+`FragmentConditionalSelectEnvelope`: retain the instruction prefix through
+the exact predicate anchor, make that anchor the portable conditional
+terminator, and reject missing or ambiguous anchors before mutation. Imported
+conditional-select envelopes remain untouched. Ruff-only commit `fc908996d`
+formats all tracked Python sources; one production file changed. Both live
+conditional-select runtime cases are green, strict immutable-versus-realized
+comparison is exercised directly, and the transaction/projection gate remains
+106/106 green. Commit-time ast-grep, import-cycle, portable-core shape, and all
+14 import-linter contracts pass.
+
+The mandatory cache-disabled A560 canary at clean code SHA `fc908996d` failed
+safely in 20.03 seconds after the bounded poisoned-generation restart. Log:
+`.tmp/rhad-a560-select-projection-fc908996d.txt`; primary DB:
+`.tmp/rhad-a560-select-projection-fc908996d/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+There was no process segfault or numeric INTERR. The clone-published root and
+all planned fallthrough-helper instruction/terminator divergences from the
+preceding canaries are absent.
+
+The DB's chronological first failed transaction is attempt
+`9699a07508cf466e89ec3483d046207b`, plan
+`frontend-normalization:0xA560:g1:root@0x40A5F0`. It records `planned`,
+`projected`, `preflighted`, and `bound` with `mutation_started=0`, then
+`realizing` and a poisoned `runtime:stage` failure before root publication.
+The first subject is generic imported direct stub
+`native[0x40A69A-0x40A6A0;exact=0x40A69A]:imported`, whose realized
+instruction sequence and terminator differ from immutable projection. The
+same two fields diverge on 23 imported stubs; there are zero former-root and
+zero helper subjects. The attempt records 139 creation witnesses, with 131
+invalidated by the poisoned generation, and the DB contains no numeric INTERR.
+
+This canary reaches C4 prepublication authority for the frontend fragment; the
+earlier one-fragment C5 milestone remains the branch-wide high-water mark. The
+next vertical obligation is the first generic imported direct stub at stable
+anchor `0x40A69A`: determine its immutable prepared transfer and exact live
+contraction, then encode only that typed structural ownership. Do not assign a
+proved rewrite coordinate that the operation does not own, suppress strict
+instruction/terminator comparison, or widen to broad Rhad publication.
