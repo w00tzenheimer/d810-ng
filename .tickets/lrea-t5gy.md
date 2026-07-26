@@ -5649,3 +5649,49 @@ therefore complete. Rhad may resume only through the v3.1 vertical loop from
 the recorded first semantic obligation `C3_complete_vertical_fragment_plan`
 at native rewrite anchor `0x40BB63`; broad 91-route publication remains
 prohibited until that one fragment reaches live C5.
+
+**2026-07-26T02:57:37Z — post-donor A560 projection parity and C3 boundary**
+
+Commit `fb8de12a4` repairs the first fresh post-donor A560 transaction failure
+without weakening immutable observation. Portable projection had recorded the
+synthetic fallthrough helper as the `adjacent_fallthrough_target_id` of every
+fallthrough source. The live projection correctly records that adjacency
+witness only for a `BLT_2WAY` conditional source; one-way call sources prove
+their helper through the separately validated physical source/helper topology.
+The new regression first failed exactly as `block:imported-call` and then
+proved immutable/live parity. The complete semantic-fragment backend is
+109/109 green, the focused call/conditional/projection set is 47/47 green, and
+all commit-time architecture gates pass. Ruff examined all 1,880 tracked
+Python files and produced no formatting delta.
+
+The mandatory fresh cache-disabled A560 diagnostic canary ran against
+`fb8de12a4`. Log:
+`.tmp/rhad-a560-call-projection-fb8de12a4.txt`; primary database:
+`.tmp/rhad-a560-call-projection-fb8de12a4/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+The worker returned normally in 16.95 seconds with no crash, numeric INTERR,
+transaction failure, generation poison, rollback, or diagnostic-write failure.
+Frontend transaction `ee07d1ea0621429fb9dc584874f5027c` records the complete
+`planned -> projected -> preflighted -> bound -> realizing -> observed ->
+committed` sequence, a 260/260 committed receipt, 639 passing prepublication
+outcomes, and 1,180 passing postpublication outcomes. This broad
+frontend-normalization receipt remains architecture evidence only; it is not
+the selected route's C5 and does not authorize broad route publication.
+
+The DB now exposes the next vertical obligation precisely. The configured
+detached direct-route attempt is accepted for imported source `0x40BB51`,
+rewrite anchor `0x40BB63`, corridor owners `0x40BB3A` plus `0x40BB51`, direct
+target `0x40ACF3`, and reference route
+`rhad:0x40A560:flow_route:0x40BB63`. Canonical fragment composition then
+rejects with `published_boundary_current_owner_count_mismatch` at stable
+boundary `0x40BB51`: its current-MBA identity inventory is empty, and the
+incoming imported owner `0x40BB3A` also has no current owner. The output remains
+the initial `memset` followed by one false empty loop.
+
+The highest strictly completed v3.1 level therefore remains C2. The monotonic
+first failed obligation is
+`C3_complete_vertical_fragment_plan:published_boundary_current_owner_count_mismatch@0x40BB51`.
+The next vertical slice must derive an entry-connectable detached publication
+boundary from the receipt-backed current-MBA inventory while retaining
+`0x40BB51` as the imported semantic source; it must not reinterpret the absent
+imported source as live, weaken exact identity ownership, count the unrelated
+broad receipt as route C5, or add another semantic route.
