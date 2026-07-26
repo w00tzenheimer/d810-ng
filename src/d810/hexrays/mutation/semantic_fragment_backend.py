@@ -2546,12 +2546,6 @@ def _project_data_flow_relations(
     *,
     defer_materialized_predicate_uses: bool = False,
 ) -> tuple[ProjectedDataFlowRelation, ...]:
-    definitions = tuple(
-        obligation.definition for obligation in plan.data_flow_obligations
-    )
-    uses = tuple(
-        use for obligation in plan.data_flow_obligations for use in obligation.uses
-    )
     relations: set[ProjectedDataFlowRelation] = set()
     for obligation in plan.data_flow_obligations:
         definition = obligation.definition
@@ -2585,7 +2579,7 @@ def _project_data_flow_relations(
                 modifier,
                 state,
                 observed_use,
-                uses,
+                obligation.uses,
                 ids_by_serial,
                 storage=storage,
                 width=definition.width,
@@ -2639,7 +2633,7 @@ def _project_data_flow_relations(
                     modifier,
                     state,
                     observed_definition,
-                    definitions,
+                    (definition,),
                     ids_by_serial,
                     storage=storage,
                     width=use.width,

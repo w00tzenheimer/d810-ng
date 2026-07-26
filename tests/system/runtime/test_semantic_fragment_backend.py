@@ -2951,6 +2951,28 @@ def _clone_storage_predicate_runtime_case(
                     ),
                 ),
             ),
+            FragmentDataFlowObligation(
+                obligation_id="clone-storage-carrier-flow",
+                role=FragmentDataFlowRole.CARRIER,
+                definition=FragmentValueSite(
+                    site_id="clone-storage-carrier.def",
+                    block_id="replacement",
+                    value_id="clone-storage-carrier",
+                    instruction_ea=0x401010,
+                    storage_identity=storage,
+                    width=4,
+                ),
+                uses=(
+                    FragmentValueSite(
+                        site_id="clone-storage-carrier.use",
+                        block_id="replacement",
+                        value_id="clone-storage-carrier",
+                        instruction_ea=0x401010,
+                        storage_identity=storage,
+                        width=4,
+                    ),
+                ),
+            ),
         ),
     )
     return mba, gateway, modifier, plan, operation, original
