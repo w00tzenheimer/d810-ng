@@ -6077,3 +6077,35 @@ whether that is a native-to-microcode coordinate error or an incorrectly
 selected semantic envelope before addressing the two absent direct routes and
 typed conditional authority. Do not weaken exact-anchor equality or describe
 this as a two-route composition failure.
+
+**2026-07-26T01:13:00-0700 — donor patch coordinate rebound to semantic authority**
+
+Functional commit `8e017136c` removes reference authority from the direct-only
+rewrite payload and binds it at the complete `FragmentOperation` instead. A
+typed authority now preserves both the donor patch coordinate and the exact
+candidate semantic coordinate. Non-equal coordinates bind only through one
+unique owner, corridor, direct target, and operation match; exact-coordinate
+routes still undergo the same owner and target identity validation. Detached
+comparison normalizes the reference semantics to the bound candidate
+coordinate while retaining the donor coordinate in the serialized authority.
+Ruff-only commit `3ed2b8379` formats the slice. The focused route, fragment,
+gateway, manager, lifecycle, and backend gate is 421/421 green with the known
+random-identity `PatchPlan()` assertion deselected.
+
+The mandatory cache-disabled A560 canary at `3ed2b8379` completed normally in
+19.16 seconds without a segfault, numeric INTERR, generation poison, rollback,
+or partial receipt. Log:
+`.tmp/rhad-a560-semantic-anchor-3ed2b8379.txt`; primary DB:
+`.tmp/rhad-a560-semantic-anchor-3ed2b8379/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode is beside the DB. A560 still emits the same six-line false infinite
+loop and therefore remains below C6.
+
+The DB proves one unique coordinate binding:
+`rhad:0x40A560:flow_route:0x40AE0B` maps donor patch `0x40AE0B` to candidate
+semantic rewrite `0x40AE09`. The planned inventory remains 89 operations, but
+the unexpected set is now empty and the missing selection drops to
+`0x40AE7A`, `0x40B36B`, `0x40BED0`, and `0x40C4D2`. The first failed C3
+obligation is now the absent direct route at `0x40AE7A`; diagnose its evidence,
+component ownership, and raw operation disposition before addressing
+`0x40B36B` or either conditional route. Do not encode a function-specific
+coordinate alias or treat donor byte placement as candidate IR identity.
