@@ -2834,6 +2834,17 @@ def _project_fragment(
     fallthrough_helper_ids = {
         helper.helper_block_id for helper in state.fallthrough_helpers
     }
+    structural_direct_targets = {
+        operation.source_block_id: operation.edges[0].target_block_id
+        for operation in plan.operations
+        if (
+            len(operation.edges) == 1
+            and operation.edges[0].role is SemanticEdgeRole.DIRECT
+            and operation.direct_transfer_rewrite is None
+            and plan.block(operation.source_block_id).materialization
+            is FragmentBlockMaterialization.IMPORT_NATIVE
+        )
+    }
     projection_bindings = dict(state.bindings)
     live_by_id = {}
     for block_id, binding in projection_bindings.items():
@@ -2962,17 +2973,15 @@ def _project_fragment(
                 _unowned_endpoint(modifier, int(next_block.serial)),
             )
         )
-        instruction_eas[block_id] = _instruction_eas(
-            block,
-            state.instruction_origins_by_block_id.get(block_id),
+        instruction_origins = state.instruction_origins_by_block_id.get(
+            block_id,
+            {},
         )
+        instruction_eas[block_id] = _instruction_eas(block, instruction_origins)
         (
             terminator_eas[block_id],
             terminator_kinds[block_id],
-        ) = _projected_terminator(
-            block,
-            state.instruction_origins_by_block_id.get(block_id),
-        )
+        ) = _projected_terminator(block, instruction_origins)
         if block_id in fallthrough_helper_ids:
             helper_instructions = tuple(_iter_block_instructions(block))
             if (
@@ -2989,6 +2998,47 @@ def _project_fragment(
             instruction_eas[block_id] = ()
             terminator_eas[block_id] = None
             terminator_kinds[block_id] = InsnKind.GOTO
+        structural_target_id = structural_direct_targets.get(block_id)
+        if structural_target_id is not None:
+            direct_instructions = tuple(_iter_block_instructions(block))
+            direct_tail = None if not direct_instructions else direct_instructions[-1]
+            live_tail_ea = (
+                None
+                if direct_tail is None
+                else int(getattr(direct_tail, "ea", -1) or -1)
+            )
+            if live_tail_ea is not None and live_tail_ea not in instruction_origins:
+                target = live_by_id.get(structural_target_id)
+                expected = state.preflight_projection.block(block_id)
+                prefix_live_eas = tuple(
+                    int(getattr(instruction, "ea", -1) or -1)
+                    for instruction in direct_instructions[:-1]
+                )
+                if (
+                    target is None
+                    or block_kind is not BlockKind.ONE_WAY
+                    or tuple(raw_successors) != (int(target.serial),)
+                    or direct_tail is None
+                    or int(direct_tail.opcode) != int(ida_hexrays.m_goto)
+                    or int(getattr(direct_tail.l, "t", -1))
+                    != int(ida_hexrays.mop_b)
+                    or int(getattr(direct_tail.l, "b", -1)) != int(target.serial)
+                    or not int(block.flags) & int(ida_hexrays.MBL_GOTO)
+                    or any(ea not in instruction_origins for ea in prefix_live_eas)
+                    or expected.terminator_ea is not None
+                    or expected.terminator_kind is not InsnKind.GOTO
+                ):
+                    raise SemanticFragmentBackendRejected(
+                        f"planned structural direct transfer {block_id!r} lost "
+                        "its exact synthetic goto shape"
+                    )
+                instruction_eas[block_id] = tuple(
+                    dict.fromkeys(
+                        int(instruction_origins[ea]) for ea in prefix_live_eas
+                    )
+                )
+                terminator_eas[block_id] = None
+                terminator_kinds[block_id] = InsnKind.GOTO
     flag_write_eas = _project_flag_writes(state, plan, live_by_id)
 
     if simulate_root_publication:

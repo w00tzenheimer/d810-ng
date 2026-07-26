@@ -767,6 +767,7 @@ def _change_fake_zero_way_successor_preserving_instructions(
         )
         block.insert_into_block(goto, block.tail)
     block.type = int(ida_hexrays.BLT_1WAY)
+    block.flags |= int(ida_hexrays.MBL_GOTO)
     block.succset.push_back(target_serial)
     target = block.mba.get_mblock(target_serial)
     if target is not None:
@@ -2855,11 +2856,21 @@ def test_production_participant_preflights_before_realization_and_observes_live_
     assert gateway.active is False
     assert gateway.generation == generation
     assert mba.qty == quantity
+    expected_carrier = prepared.fragment.authority.projection.block(
+        "imported-carrier"
+    )
+    assert expected_carrier.instruction_eas == (0x500000, 0x500004)
+    assert expected_carrier.terminator_ea is None
+    assert expected_carrier.terminator_kind is InsnKind.GOTO
 
     patch_plan = lower_fragment_plan(plan, prepared.fragment)
     bound = replace(bound, patch_plan=patch_plan)
     realized = participant.realize(bound, gateway)
     assert gateway._active_prepared_semantic_fragment is prepared.fragment
+    realized_carrier = realized.block("imported-carrier")
+    assert realized_carrier.instruction_eas == (0x500000, 0x500004)
+    assert realized_carrier.terminator_ea is None
+    assert realized_carrier.terminator_kind is InsnKind.GOTO
     observed = participant.observe(realized, mba)
 
     assert isinstance(realized, ProjectedFragment)
