@@ -2557,7 +2557,21 @@ def _project_data_flow_relations(
         definition_block = live_by_id.get(definition.block_id)
         if definition_block is None:
             raise SemanticFragmentBackendRejected(
-                f"data-flow definition {definition.site_id!r} has no live block"
+                f"data-flow definition {definition.site_id!r} has no live block "
+                f"(obligation_id={obligation.obligation_id!r}, "
+                f"block_id={definition.block_id!r}, "
+                f"instruction_ea=0x{int(definition.instruction_ea):X}, "
+                f"value_id={definition.value_id!r})",
+                reason_code="data_flow_definition_block_missing",
+                anchor_ea=definition.instruction_ea,
+                payload={
+                    "obligation_id": obligation.obligation_id,
+                    "site_id": definition.site_id,
+                    "site_role": "definition",
+                    "block_id": definition.block_id,
+                    "instruction_ea": definition.instruction_ea,
+                    "value_id": definition.value_id,
+                },
             )
         reached_uses = tuple(
             _query_reached_uses(
@@ -2611,7 +2625,21 @@ def _project_data_flow_relations(
             use_block = live_by_id.get(use.block_id)
             if use_block is None:
                 raise SemanticFragmentBackendRejected(
-                    f"data-flow use {use.site_id!r} has no live block"
+                    f"data-flow use {use.site_id!r} has no live block "
+                    f"(obligation_id={obligation.obligation_id!r}, "
+                    f"block_id={use.block_id!r}, "
+                    f"instruction_ea=0x{int(use.instruction_ea):X}, "
+                    f"value_id={use.value_id!r})",
+                    reason_code="data_flow_use_block_missing",
+                    anchor_ea=use.instruction_ea,
+                    payload={
+                        "obligation_id": obligation.obligation_id,
+                        "site_id": use.site_id,
+                        "site_role": "use",
+                        "block_id": use.block_id,
+                        "instruction_ea": use.instruction_ea,
+                        "value_id": use.value_id,
+                    },
                 )
             reaching_definitions = tuple(
                 _query_reaching_definitions(
@@ -3639,10 +3667,13 @@ def snapshot_semantic_fragment_inputs(
             defer_materialized_predicate_uses=True,
         )
     except SemanticFragmentBackendRejected as exc:
-        subject_id = (
-            plan.data_flow_obligations[0].obligation_id
-            if plan.data_flow_obligations
-            else "data-flow-evidence"
+        subject_id = str(
+            exc.payload.get("obligation_id")
+            or (
+                plan.data_flow_obligations[0].obligation_id
+                if plan.data_flow_obligations
+                else "data-flow-evidence"
+            )
         )
         raise FragmentProjectionFailure(
             FragmentValidationPostcondition.USE_DEF_INTEGRITY,
