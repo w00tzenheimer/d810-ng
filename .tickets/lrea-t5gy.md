@@ -6183,3 +6183,53 @@ plan remains at C3. The first failed obligation is still conditional authority
 binding for owner `0x40BECC` / donor patch `0x40BED0`: bind and compare the
 typed conditional operation by owner, semantic predicate, both edge roles,
 both targets, corridor, and reachability before any 93-route staging.
+
+**2026-07-26T02:53:12-0700 — strict staged semantics expose helper parity**
+
+Commits `71a1ff166` and `095f15da1` persist complete staged route coordinates
+and distinguish a missing rewrite anchor from a wrong staged terminator. The
+mandatory canary at `095f15da1` reached broad C4 with 1057/1057
+prepublication checks and 93 oracle comparisons, then rejected three staged
+divergences before publication. Its first comparison proved that the folded
+delivery route `rhad:0x40A560:flow_route:0x40A5C8` had been realized as a
+`GOTO` at the function entry `0x40A560`, not its proved rewrite anchor
+`0x40A5C8`.
+
+Commits `5b2bcbcd1` and `2b727a4f6` make immutable projection and staged
+observation compare instruction order, terminator EA and kind, and flag-write
+coordinates. Functional commit `c119a970b` then threads an explicit
+instruction EA through zero-way `GOTO` creation and limits that authority to a
+`FragmentDirectTransferRewrite`; generic direct edges do not inherit the
+source block's semantic anchor. The focused proved-anchor gate is 3/3 green,
+and the transaction/projection gate is 106/106 green. Repository formatting
+already matched Ruff, so this slice produced no formatting-only commit. Four
+Ruff lint findings in untouched portions of `cfg_mutations.py` remain baseline
+debt outside this slice.
+
+The mandatory cache-disabled A560 canary at clean code SHA `c119a970b` failed
+safely in 19.29 seconds after the bounded poisoned-generation restart. Log:
+`.tmp/rhad-a560-folded-direct-anchor-c119a970b.txt`; primary DB:
+`.tmp/rhad-a560-folded-direct-anchor-c119a970b/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+There was no process segfault or numeric INTERR. The strict comparison now
+rejects an earlier frontend-normalization divergence before the broad Rhad
+composition is reached, so this run must not be described as broad C5 or C6.
+
+The DB's chronological first failed transaction is attempt
+`a553079b53d94276b0b6e53cfe5312bf`, plan
+`frontend-normalization:0xA560:g1:root@0x40A5F0`. It completes immutable
+preflight and live realization, then poisons at `runtime:stage` before root
+publication because staged observation differs from preflight. The first
+subjects are `fallthrough-helper:native-body-edge@0x40A607:instruction-eas`
+and the same helper's terminator; the discrepancy repeats across generic
+imported direct edges and their planned fallthrough helpers. The later
+`runtime:post_observation_contract` failure
+`CFG_50860_SUCC_MISMATCH@blk[1]` is downstream and is not the first obligation.
+
+The highest level in this canary is C4 prepublication authority for the
+frontend fragment; the previously committed one-fragment C5 milestone remains
+the branch-wide high-water mark. Continue from helper creation parity: project
+the helper's exact structural transfer semantics and realize the identical
+immutable authority, using its planned `PlanBlockRef` and creation witness.
+Do not suppress instruction/terminator comparison, assign a native rewrite EA
+to a structural helper, or resume broad Rhad publication until this first
+frontend obligation passes.
