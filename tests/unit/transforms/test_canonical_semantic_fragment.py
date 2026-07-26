@@ -1603,8 +1603,8 @@ def test_published_boundary_reimports_owned_split_and_closes_route() -> None:
     )
     (boundary_port,) = plan.boundary_ports
     assert boundary_port.kind is FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_ENTRY
-    assert boundary_port.root_block_id == root_id
-    assert plan.block(boundary_port.predecessor_block_id).semantic_anchor_ea == 0x1400
+    assert boundary_port.target_block_id == root_id
+    assert plan.block(boundary_port.source_block_id).semantic_anchor_ea == 0x1400
     assert boundary_port.retirement_obligation_id == "publish-semantic-entry@0x1200"
 
 

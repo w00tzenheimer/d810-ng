@@ -78,6 +78,7 @@ class FragmentBoundaryPortKind(str, Enum):
     """Explicit temporary attachment retained by a partial semantic fragment."""
 
     TEMPORARY_DISPATCHER_ENTRY = "temporary_dispatcher_entry"
+    TEMPORARY_DISPATCHER_EGRESS = "temporary_dispatcher_egress"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,8 +87,8 @@ class FragmentBoundaryPort:
 
     port_id: str
     kind: FragmentBoundaryPortKind
-    predecessor_block_id: str
-    root_block_id: str
+    source_block_id: str
+    target_block_id: str
     retirement_obligation_id: str
 
     def __post_init__(self) -> None:
@@ -98,20 +99,20 @@ class FragmentBoundaryPort:
         )
         if not isinstance(self.kind, FragmentBoundaryPortKind):
             raise TypeError("fragment boundary port requires a typed kind")
-        predecessor_block_id = _require_identifier(
-            self.predecessor_block_id,
-            "fragment boundary port predecessor",
+        source_block_id = _require_identifier(
+            self.source_block_id,
+            "fragment boundary port source",
         )
-        root_block_id = _require_identifier(
-            self.root_block_id,
-            "fragment boundary port root",
+        target_block_id = _require_identifier(
+            self.target_block_id,
+            "fragment boundary port target",
         )
-        if predecessor_block_id == root_block_id:
+        if source_block_id == target_block_id:
             raise FragmentPlanRejected(
-                "fragment boundary port predecessor and root must differ"
+                "fragment boundary port source and target must differ"
             )
-        object.__setattr__(self, "predecessor_block_id", predecessor_block_id)
-        object.__setattr__(self, "root_block_id", root_block_id)
+        object.__setattr__(self, "source_block_id", source_block_id)
+        object.__setattr__(self, "target_block_id", target_block_id)
         object.__setattr__(
             self,
             "retirement_obligation_id",
@@ -1632,25 +1633,38 @@ class FragmentPlan:
                 "temporary boundary ports belong only to canonical semantic plans"
             )
         for port in boundary_ports:
-            predecessor = block_by_id.get(port.predecessor_block_id)
-            root = block_by_id.get(port.root_block_id)
-            if (
-                predecessor is None
-                or predecessor.role is not FragmentBlockRole.EXTERNAL
-            ):
+            source = block_by_id.get(port.source_block_id)
+            target = block_by_id.get(port.target_block_id)
+            if source is None or target is None:
                 raise FragmentPlanRejected(
-                    f"fragment boundary port {port.port_id!r} requires an external "
-                    "predecessor"
+                    f"fragment boundary port {port.port_id!r} requires known endpoints"
                 )
-            if root is None or port.root_block_id not in roots:
-                raise FragmentPlanRejected(
-                    f"fragment boundary port {port.port_id!r} requires a plan root"
-                )
-            if port.predecessor_block_id in prohibited_dispatcher_blocks:
-                raise FragmentPlanRejected(
-                    f"fragment boundary port {port.port_id!r} predecessor cannot "
-                    "also be prohibited"
-                )
+            if port.kind is FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_ENTRY:
+                if source.role is not FragmentBlockRole.EXTERNAL:
+                    raise FragmentPlanRejected(
+                        f"fragment boundary port {port.port_id!r} requires an "
+                        "external entry source"
+                    )
+                if port.target_block_id not in roots:
+                    raise FragmentPlanRejected(
+                        f"fragment boundary port {port.port_id!r} requires a plan "
+                        "root target"
+                    )
+                if port.source_block_id in prohibited_dispatcher_blocks:
+                    raise FragmentPlanRejected(
+                        f"fragment boundary port {port.port_id!r} entry source "
+                        "cannot also be prohibited"
+                    )
+            elif port.kind is FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_EGRESS:
+                if source.role not in {
+                    FragmentBlockRole.REPLACEMENT,
+                    FragmentBlockRole.SYNTHETIC,
+                    FragmentBlockRole.IMPORTED,
+                } or target.role is not FragmentBlockRole.EXTERNAL:
+                    raise FragmentPlanRejected(
+                        f"fragment boundary port {port.port_id!r} requires a staged "
+                        "source and external egress target"
+                    )
 
         for block in blocks:
             if block.role is not FragmentBlockRole.REPLACEMENT:
@@ -2150,6 +2164,21 @@ class FragmentPlan:
                         f"fragment operation {operation.operation_id!r} has unknown "
                         f"target block {edge.target_block_id!r}"
                     )
+        for port in boundary_ports:
+            if port.kind is not FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_EGRESS:
+                continue
+            matching_edges = tuple(
+                (operation.operation_id, edge.role)
+                for operation in operations
+                if operation.source_block_id == port.source_block_id
+                for edge in operation.edges
+                if edge.target_block_id == port.target_block_id
+            )
+            if len(matching_edges) != 1:
+                raise FragmentPlanRejected(
+                    f"fragment boundary port {port.port_id!r} requires one exact "
+                    "staged operation edge"
+                )
         operation_source_ids = {operation.source_block_id for operation in operations}
         for native_body in native_bodies:
             terminal_ids = set(native_body.terminal_block_ids)

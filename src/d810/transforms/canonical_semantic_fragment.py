@@ -3652,8 +3652,8 @@ def compose_canonical_semantic_boundary_fragment_plan(
         FragmentBoundaryPort(
             port_id=f"temporary-dispatcher-entry@0x{boundary_anchor_ea:X}",
             kind=FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_ENTRY,
-            predecessor_block_id=predecessor_id,
-            root_block_id=replacement_id,
+            source_block_id=predecessor_id,
+            target_block_id=replacement_id,
             retirement_obligation_id=str(temporary_dispatcher_entry_port_obligation_id),
         )
         for predecessor_id in temporary_predecessor_ids

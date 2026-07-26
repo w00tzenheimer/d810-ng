@@ -308,8 +308,8 @@ def _projection_behind_temporary_port(
             FragmentBoundaryPort(
                 port_id="temporary-dispatcher-entry@0x40B51B",
                 kind=FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_ENTRY,
-                predecessor_block_id=predecessor.block_id,
-                root_block_id="route.replacement",
+                source_block_id=predecessor.block_id,
+                target_block_id="route.replacement",
                 retirement_obligation_id=(
                     "retire-temporary-dispatcher-entry@0x40B51B:"
                     "publish-semantic-predecessor@0x40A570"
