@@ -176,9 +176,9 @@ def test_only_nonstructural_probes_construct_gatewayless_modifiers() -> None:
 
 
 def test_jump_fixer_uses_the_shared_typed_transaction_port() -> None:
-    source = (
-        SRC_ROOT / "optimizers/microcode/flow/jumps/handler.py"
-    ).read_text(encoding="utf-8")
+    source = (SRC_ROOT / "optimizers/microcode/flow/jumps/handler.py").read_text(
+        encoding="utf-8"
+    )
     tree = ast.parse(source)
     jump_fixer = next(
         node
