@@ -42,7 +42,11 @@ from d810.core.semantic_route_oracle import (
     RouteOracleRun,
     SemanticTransferKind,
 )
-from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.block_identity import (
+    NativeEaInterval,
+    RebindStatus,
+    StableBlockIdentity,
+)
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
@@ -83,6 +87,30 @@ def _identity(ea: int) -> StableBlockIdentity:
         (NativeEaInterval(ea, ea + 1),),
         native_key=NATIVE_KEY,
         exact_instruction_eas=(ea,),
+    )
+
+
+def _cross_maturity_identity_index(
+    identity_by_graph_serial: dict[int, StableBlockIdentity],
+):
+    def rebind_identity(identity: StableBlockIdentity):
+        matches = tuple(
+            int(serial)
+            for serial, candidate in identity_by_graph_serial.items()
+            if candidate == identity
+        )
+        if not matches:
+            return SimpleNamespace(status=RebindStatus.MISSING, block=None)
+        if len(matches) != 1:
+            return SimpleNamespace(status=RebindStatus.AMBIGUOUS, block=None)
+        return SimpleNamespace(
+            status=RebindStatus.BOUND,
+            block=SimpleNamespace(serial=matches[0] + 700),
+        )
+
+    return SimpleNamespace(
+        native_key=NATIVE_KEY,
+        rebind_identity=rebind_identity,
     )
 
 
@@ -156,6 +184,45 @@ def _graph_and_bound_evidence():
     bound = bind_canonical_semantic_evidence(graph, evidence)
     assert bound is not None
     return graph, bound
+
+
+def test_current_graph_identity_authority_rebinds_snapshot_derived_identities(
+    monkeypatch,
+) -> None:
+    graph, _bound = _graph_and_bound_evidence()
+    rebound_identities: list[StableBlockIdentity] = []
+
+    class _CrossMaturityIdentityIndex:
+        def identity_for_serial(self, _serial: int):
+            pytest.fail("current graph authority must not reuse index-local serials")
+
+        def rebind_identity(self, identity: StableBlockIdentity):
+            rebound_identities.append(identity)
+            anchor_ea = min(identity.exact_instruction_eas)
+            if anchor_ea == 0x1400:
+                return SimpleNamespace(status=RebindStatus.MISSING, block=None)
+            return SimpleNamespace(
+                status=RebindStatus.BOUND,
+                block=SimpleNamespace(serial=int(anchor_ea) + 700),
+            )
+
+    authority = state_machine_module._current_graph_identity_authority(
+        graph,
+        native_key=NATIVE_KEY,
+        current_identity_index=_CrossMaturityIdentityIndex(),
+    )
+
+    assert authority == {
+        10: _identity(0x1000),
+        20: _identity(0x1100),
+        40: _identity(0x1200),
+    }
+    assert rebound_identities == [
+        _identity(0x1000),
+        _identity(0x1100),
+        _identity(0x1400),
+        _identity(0x1200),
+    ]
 
 
 def test_canonical_semantic_lowering_returns_only_a_fragment_plan() -> None:
@@ -391,9 +458,7 @@ def test_canonical_lowering_composes_candidate_with_unpublished_normalization(
     }
     analyses.put_analysis(
         "current_block_identity_index",
-        SimpleNamespace(
-            identity_for_serial=current_identity_by_serial.get,
-        ),
+        _cross_maturity_identity_index(current_identity_by_serial),
     )
     capabilities = (
         CapabilitySet()
@@ -686,7 +751,7 @@ def test_candidate_composition_reroots_to_semantic_predecessor_and_requires_orac
     analyses = AnalysisManager(graph)
     analyses.put_analysis(
         "current_block_identity_index",
-        SimpleNamespace(identity_for_serial=current_identity_by_serial.get),
+        _cross_maturity_identity_index(current_identity_by_serial),
     )
     capabilities = (
         CapabilitySet()
@@ -1078,7 +1143,7 @@ def test_configured_reference_scope_drives_live_route_composition_before_boundar
     analyses = AnalysisManager(graph)
     analyses.put_analysis(
         "current_block_identity_index",
-        SimpleNamespace(identity_for_serial=current_identity_by_serial.get),
+        _cross_maturity_identity_index(current_identity_by_serial),
     )
     context = FunctionPipelineContext(
         source=None,
@@ -1295,6 +1360,187 @@ def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
         )
     ]
     assert bind_calls == [(vertical_plan, selection)]
+
+
+def test_configured_detached_route_uses_only_a_closed_carrier_ingress_component(
+    monkeypatch,
+) -> None:
+    graph, bound = _graph_and_bound_evidence()
+    candidate = bound.evidence
+    plan = build_canonical_semantic_fragment_plan(
+        graph,
+        bound,
+        prohibited_dispatcher_serials=(30,),
+    )
+    reference_route = ReferenceRouteRewrite(
+        route_id="test:0x1000:flow_route:0x1100",
+        function_ea=graph.func_ea,
+        owner_ea=0x1100,
+        rewrite_anchor_ea=0x1100,
+        corridor=((0x1100, 0x1101),),
+        reference_phase="flow_route",
+        original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        final_transfer_kind=SemanticTransferKind.DIRECT,
+        direct_target_ea=0x1200,
+        reference_ledger_identity="flow_route:0x1100",
+    )
+    selection = ReferenceRouteOracleSelection(
+        run=RouteOracleRun(
+            run_id="test-configured-carrier-ingress",
+            function_ea=graph.func_ea,
+            fixture_sha256="a" * 64,
+            reference_binary_sha256="b" * 64,
+            candidate_binary_sha256="a" * 64,
+            reference_commit="deadbeef",
+            runtime_image="test-image",
+            runtime_image_id="sha256:" + "c" * 64,
+            cache_disabled=True,
+        ),
+        publication_root_ea=0x1100,
+        routes=(reference_route,),
+    )
+    detached_plan = SimpleNamespace(
+        evidence_generation=candidate.generation,
+        source_block=SimpleNamespace(
+            block_id="prepared-source",
+            native_body_id="prepared-body",
+            semantic_anchor_ea=0x1100,
+        ),
+        diagnostic_payload=lambda: {
+            "plan_id": "detached-direct:test",
+            "route_proof_id": candidate.route_proofs[0].proof_id,
+            "owner_anchor_ea": "0x1100",
+            "rewrite_anchor_ea": "0x1100",
+            "direct_target_ea": "0x1200",
+        },
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "plan_detached_reference_direct_route",
+        lambda *_args, **_kwargs: detached_plan,
+    )
+
+    def reject_detached_boundary(*_args, **_kwargs):
+        raise CanonicalSemanticFragmentRejected(
+            "detached source has no current owner",
+            reason_code="published_boundary_current_owner_count_mismatch",
+            anchor_ea=0x1100,
+        )
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "compose_canonical_semantic_boundary_fragment_plan",
+        reject_detached_boundary,
+    )
+    carrier_plan = replace(plan, plan_id="canonical-carrier-ingress:test")
+    carrier_calls = []
+
+    def compose_carrier(*args, **kwargs):
+        carrier_calls.append((args, kwargs))
+        return carrier_plan
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "compose_canonical_carrier_ingress_fragment_plan",
+        compose_carrier,
+        raising=False,
+    )
+    bound_plan = object()
+    bind_calls = []
+
+    def bind_carrier(plan_arg, selection_arg):
+        bind_calls.append((plan_arg, selection_arg))
+        return bound_plan
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "bind_fragment_reference_oracle",
+        bind_carrier,
+    )
+    current_identity_by_serial = {
+        serial: _identity(block.start_ea) for serial, block in graph.blocks.items()
+    }
+    normalization_authority = object()
+    attempts: list[dict[str, object]] = []
+
+    result = state_machine_module._compose_configured_reference_scope_plan(
+        graph=graph,
+        normalization_plan=plan,
+        configured_scope=selection,
+        available_evidence=candidate,
+        current_identity_by_serial=current_identity_by_serial,
+        normalization_authority=normalization_authority,
+        prohibited_dispatcher_serials=(30,),
+        composition_attempts=attempts,
+    )
+
+    assert result is bound_plan
+    assert [attempt["kind"] for attempt in attempts] == [
+        "configured_reference_detached_direct_route",
+        "configured_reference_detached_direct_fragment",
+        "configured_reference_carrier_ingress",
+    ]
+    assert [attempt["outcome"] for attempt in attempts] == [
+        "accepted",
+        "rejected",
+        "accepted",
+    ]
+    assert carrier_calls == [
+        (
+            (graph, plan),
+            {
+                "available_evidence": candidate,
+                "detached_route": detached_plan,
+                "current_identity_by_serial": current_identity_by_serial,
+                "normalization_authority": normalization_authority,
+                "prohibited_dispatcher_serials": (30,),
+            },
+        )
+    ]
+    assert bind_calls == [(carrier_plan, selection)]
+
+    def reject_open_carrier_component(*_args, **_kwargs):
+        raise CanonicalSemanticFragmentRejected(
+            "published imported boundary retains unresolved semantic topology",
+            reason_code="published_imported_boundary_topology_unresolved",
+            anchor_ea=0x1300,
+            payload={
+                "boundary_block_id": "native@0x1300",
+                "operation_id": "native-body-edge@0x1300",
+            },
+        )
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "compose_canonical_carrier_ingress_fragment_plan",
+        reject_open_carrier_component,
+    )
+    rejected_attempts: list[dict[str, object]] = []
+
+    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
+        state_machine_module._compose_configured_reference_scope_plan(
+            graph=graph,
+            normalization_plan=plan,
+            configured_scope=selection,
+            available_evidence=candidate,
+            current_identity_by_serial=current_identity_by_serial,
+            normalization_authority=normalization_authority,
+            prohibited_dispatcher_serials=(30,),
+            composition_attempts=rejected_attempts,
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == "carrier_ingress_target_component_not_closed"
+    assert rejection.anchor_ea == 0x1300
+    assert rejection.payload["unresolved_reason_code"] == (
+        "published_imported_boundary_topology_unresolved"
+    )
+    assert rejection.payload["contextual_restart_permitted"] is False
+    assert [attempt["outcome"] for attempt in rejected_attempts] == [
+        "accepted",
+        "rejected",
+        "rejected",
+    ]
 
 
 def test_configured_reference_scope_reuses_proved_temporary_entry_port(

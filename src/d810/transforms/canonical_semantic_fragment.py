@@ -3293,13 +3293,48 @@ def compose_canonical_carrier_ingress_fragment_plan(
         )
     state_choice, carrier, selected_destination, selected_target = candidates[0]
     carrier_definition = carrier.definition
+    carrier_sources = tuple(
+        block
+        for block in normalization_plan.blocks
+        if block.role is FragmentBlockRole.EXTERNAL
+        and block.stable_identity is not None
+        and int(carrier_definition.anchor_ea)
+        in block.stable_identity.exact_instruction_eas
+        and stable_block_identities_refine_at_anchor(
+            block.stable_identity,
+            carrier_definition.identity,
+            int(carrier_definition.anchor_ea),
+        )
+    )
+    if len(carrier_sources) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "carrier ingress requires one normalized external definition owner",
+            reason_code="carrier_ingress_normalized_owner_count_mismatch",
+            anchor_ea=int(carrier_definition.anchor_ea),
+            payload={
+                "owner_block_ids": tuple(block.block_id for block in carrier_sources)
+            },
+        )
+    (carrier_source,) = carrier_sources
+    retained_carrier_identity = carrier_source.stable_identity
+    assert retained_carrier_identity is not None
     current_identity_by_serial = {
         int(serial): identity for serial, identity in current_identity_by_serial.items()
     }
-    current_owners = _current_owners_containing_identity(
-        graph,
-        carrier_definition.identity,
-        current_identity_by_serial=current_identity_by_serial,
+    current_owners = tuple(
+        (
+            int(block.serial),
+            int(block.start_ea),
+            current_identity,
+        )
+        for serial, block in graph.blocks.items()
+        if (current_identity := current_identity_by_serial.get(int(serial)))
+        is not None
+        and stable_block_identities_refine_at_anchor(
+            current_identity,
+            retained_carrier_identity,
+            int(carrier_definition.anchor_ea),
+        )
     )
     if len(current_owners) != 1:
         raise CanonicalSemanticFragmentRejected(
@@ -3349,7 +3384,7 @@ def compose_canonical_carrier_ingress_fragment_plan(
         atomic_group_id=scoped_atomic_group_id,
         proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
         shape=SemanticRouteShape.DIRECT,
-        source_identity=carrier_definition.identity,
+        source_identity=source_identity,
         source_anchor_ea=int(carrier_definition.anchor_ea),
         delivery_region=NativeEaInterval(
             int(carrier_definition.anchor_ea),
@@ -3362,7 +3397,7 @@ def compose_canonical_carrier_ingress_fragment_plan(
             ),
         ),
         state_write=SemanticStateWriteProof(
-            identity=carrier_definition.identity,
+            identity=source_identity,
             instruction_ea=int(carrier_definition.anchor_ea),
             state_variable=carrier.storage_identity,
             width=int(carrier.width),

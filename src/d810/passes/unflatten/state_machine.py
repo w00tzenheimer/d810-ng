@@ -77,6 +77,7 @@ from d810.transforms.canonical_semantic_fragment import (
     CanonicalSemanticFragmentRejected,
     DetachedDirectRoutePlan,
     build_canonical_semantic_fragment_plan,
+    compose_canonical_carrier_ingress_fragment_plan,
     compose_canonical_semantic_boundary_fragment_plan,
     compose_canonical_semantic_fragment_plan,
     plan_detached_reference_direct_route,
@@ -94,7 +95,11 @@ from d810.core.semantic_route_oracle import (
     ReferenceRouteOracleSelection,
     ReferenceRouteRewrite,
 )
-from d810.ir.block_identity import StableBlockIdentity
+from d810.ir.block_identity import (
+    RebindStatus,
+    StableBlockIdentity,
+    stable_block_identity_from_snapshot,
+)
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.maturity import MaturityEnvelope
 from d810.capabilities.branch_witness import BranchWitnessCapability
@@ -119,6 +124,35 @@ logger = logging.getLogger("D810.passes.unflatten.state_machine")
 LOWER_STATE_MACHINE_PLAN_METADATA = "lower_state_machine_plan_metadata"
 CANONICAL_SEMANTIC_EVIDENCE = "canonical_semantic_evidence"
 BOUND_CANONICAL_SEMANTIC_EVIDENCE = "bound_canonical_semantic_evidence"
+
+
+def _current_graph_identity_authority(
+    graph: FlowGraph,
+    *,
+    native_key,
+    current_identity_index,
+) -> dict[int, StableBlockIdentity]:
+    """Confirm current graph identities without sharing snapshot-local serials."""
+    rebind_identity = getattr(current_identity_index, "rebind_identity", None)
+    if not callable(rebind_identity):
+        raise CanonicalSemanticFragmentRejected(
+            "canonical composition requires current identity authority",
+            reason_code="current_identity_authority_missing",
+            anchor_ea=int(graph.func_ea),
+        )
+
+    authority: dict[int, StableBlockIdentity] = {}
+    for serial, block in graph.blocks.items():
+        identity = stable_block_identity_from_snapshot(
+            block,
+            native_key=native_key,
+        )
+        if identity is None:
+            continue
+        rebound = rebind_identity(identity)
+        if rebound.status is RebindStatus.BOUND and rebound.block is not None:
+            authority[int(serial)] = identity
+    return authority
 
 
 def _count_valrange_confirmable(valrange, dispatch_map, state_var_stkoff) -> int:
@@ -1214,6 +1248,7 @@ def _compose_configured_reference_scope_plan(
             tuple(composition_attempts),
         ) from exc
     if route_candidate is not None:
+        oracle_scope = configured_scope
         detached_direct_plan = None
         if len(configured_scope.routes) == 1:
             (configured_route,) = configured_scope.routes
@@ -1249,10 +1284,80 @@ def _compose_configured_reference_scope_plan(
                     kind="configured_reference_detached_direct_fragment",
                 )
             except CanonicalSemanticFragmentRejected as exc:
-                raise _with_canonical_composition_attempts(
-                    exc,
-                    tuple(composition_attempts),
-                ) from exc
+                if (
+                    exc.reason_code
+                    != "published_boundary_current_owner_count_mismatch"
+                ):
+                    raise _with_canonical_composition_attempts(
+                        exc,
+                        tuple(composition_attempts),
+                    ) from exc
+                try:
+                    configured_plan = compose_canonical_carrier_ingress_fragment_plan(
+                        graph,
+                        normalization_plan,
+                        available_evidence=available_evidence,
+                        detached_route=detached_direct_plan,
+                        current_identity_by_serial=current_identity_by_serial,
+                        normalization_authority=normalization_authority,
+                        prohibited_dispatcher_serials=prohibited_dispatcher_serials,
+                    )
+                except CanonicalSemanticFragmentRejected as carrier_exc:
+                    if (
+                        carrier_exc.reason_code
+                        == "published_imported_boundary_topology_unresolved"
+                    ):
+                        carrier_exc = CanonicalSemanticFragmentRejected(
+                            "carrier ingress target component is not closed",
+                            reason_code=(
+                                "carrier_ingress_target_component_not_closed"
+                            ),
+                            anchor_ea=carrier_exc.anchor_ea,
+                            payload={
+                                **carrier_exc.payload,
+                                "unresolved_reason_code": (
+                                    "published_imported_boundary_topology_unresolved"
+                                ),
+                                "contextual_restart_permitted": False,
+                            },
+                        )
+                    composition_attempts.append(
+                        _rejected_canonical_composition_attempt(
+                            kind="configured_reference_carrier_ingress",
+                            rejection=carrier_exc,
+                            route_candidate=route_candidate,
+                        )
+                    )
+                    raise _with_canonical_composition_attempts(
+                        carrier_exc,
+                        tuple(composition_attempts),
+                    ) from carrier_exc
+                composition_attempts.append(
+                    _accepted_canonical_composition_attempt(
+                        kind="configured_reference_carrier_ingress",
+                        plan=configured_plan,
+                        route_candidate=route_candidate,
+                    )
+                )
+                root_anchors = tuple(
+                    int(configured_plan.block(root_id).semantic_anchor_ea)
+                    for root_id in configured_plan.roots
+                )
+                if len(root_anchors) != 1:
+                    rejection = CanonicalSemanticFragmentRejected(
+                        "carrier ingress requires one publication root",
+                        reason_code="carrier_ingress_publication_root_count_mismatch",
+                        anchor_ea=publication_root_ea,
+                        payload={"root_anchors": root_anchors},
+                    )
+                    raise _with_canonical_composition_attempts(
+                        rejection,
+                        tuple(composition_attempts),
+                    )
+                oracle_scope = replace(
+                    configured_scope,
+                    publication_root_ea=root_anchors[0],
+                )
         else:
             try:
                 configured_plan = compose_canonical_semantic_fragment_plan(
@@ -1286,7 +1391,7 @@ def _compose_configured_reference_scope_plan(
         try:
             return bind_fragment_reference_oracle(
                 configured_plan,
-                configured_scope,
+                oracle_scope,
             )
         except (DetachedRouteOracleRejected, TypeError) as exc:
             rejection = CanonicalSemanticFragmentRejected(
@@ -1479,22 +1584,11 @@ def _compose_candidate_semantic_fragment(
         context,
         "current_block_identity_index",
     )
-    identity_for_serial = getattr(
-        current_identity_index,
-        "identity_for_serial",
-        None,
+    current_identity_by_serial = _current_graph_identity_authority(
+        context.graph,
+        native_key=candidate.native_key,
+        current_identity_index=current_identity_index,
     )
-    if not callable(identity_for_serial):
-        raise CanonicalSemanticFragmentRejected(
-            "canonical composition requires current identity authority",
-            reason_code="current_identity_authority_missing",
-            anchor_ea=function_ea,
-        )
-    current_identity_by_serial = {
-        int(serial): identity
-        for serial in context.graph.blocks
-        if (identity := identity_for_serial(int(serial))) is not None
-    }
 
     plans: list[FragmentPlan] = []
     composition_attempts: list[dict[str, object]] = []

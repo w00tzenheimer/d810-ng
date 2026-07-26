@@ -722,10 +722,23 @@ def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress(
         stable_identity=_identity(0x1700),
         native_body_id=native_body.body_id,
     )
+    native_carrier_identity = StableBlockIdentity.from_intervals(
+        (
+            NativeEaInterval(0x1100, 0x1101),
+            NativeEaInterval(0x1102, 0x1103),
+        ),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1100, 0x1102),
+    )
     normalization_plan = replace(
         normalization_plan,
         blocks=(
-            *normalization_plan.blocks,
+            *(
+                replace(block, stable_identity=native_carrier_identity)
+                if block.block_id == "live-route-source"
+                else block
+                for block in normalization_plan.blocks
+            ),
             imported_consumer,
             unselected_target,
         ),
@@ -797,7 +810,7 @@ def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress(
             consumer=SemanticCorridorPoint(imported_consumer.stable_identity, 0x1600),
             corridor=(
                 SemanticCorridorPoint(_identity(0x1000), 0x1000),
-                SemanticCorridorPoint(_identity(0x1100), 0x1100),
+                SemanticCorridorPoint(native_carrier_identity, 0x1100),
                 SemanticCorridorPoint(imported_consumer.stable_identity, 0x1600),
             ),
             storage_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
@@ -807,12 +820,12 @@ def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress(
         carriers=(
             SemanticCarrierProof(
                 carrier_id="entry-state@0x1100",
-                definition=SemanticCorridorPoint(_identity(0x1100), 0x1100),
+                definition=SemanticCorridorPoint(native_carrier_identity, 0x1100),
                 consumers=(
                     SemanticCorridorPoint(imported_consumer.stable_identity, 0x1600),
                 ),
                 corridor=(
-                    SemanticCorridorPoint(_identity(0x1100), 0x1100),
+                    SemanticCorridorPoint(native_carrier_identity, 0x1100),
                     SemanticCorridorPoint(imported_consumer.stable_identity, 0x1600),
                 ),
                 storage_identity=StorageIdentity(StorageIdentityKind.STACK, 0x44),
@@ -848,6 +861,7 @@ def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress(
 
     (root_id,) = plan.roots
     assert plan.block(root_id).semantic_anchor_ea == 0x1100
+    assert plan.block(root_id).stable_identity == _identity(0x1100)
     ingress = plan.operation("route:state-choice@0x1600:carrier-ingress")
     assert ingress.source_block_id == root_id
     assert ingress.storage_predicate_materialization == (
