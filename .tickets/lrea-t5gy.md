@@ -5973,3 +5973,43 @@ then reject cleanly with `prepared patch binding quantity differs from live
 batch`; no further mutation starts. Continue by tracing why those plans retain
 the pre-publication MBA quantity after the committed 49-operation fragment.
 Do not broaden to the 91-route batch or treat C5 as final A560 acceptance.
+
+**2026-07-25T23:45:55-0700 — live identity refresh; C5 preserved**
+
+Commits `a4b9ebcb0` and `476b6e99b` make the prepared/live PatchPlan
+quantity mismatch reconstructible without weakening its zero-write rejection.
+The first fresh canary records the exact split as `prepared=50, live=42` at
+`MMAT_GLBOPT2`, proving that the flow-context identity snapshot survived
+Hex-Rays compaction across optimizer callbacks. It was not a partial C5 write,
+post-publication poison, or asynchronous resize inside the participant.
+
+Commits `1696b6cf9` and `4ba0ec195` rebuild current-MBA identity authority
+immediately before every flow-context transaction gateway is issued. The
+context retains the lifecycle factory, not a stale binding; the plan compiler,
+preflight, binder, and realization therefore share one freshly lifted live
+authority. The quantity equality check remains mandatory. The affected
+adapter, transaction, projection, and semantic-backend gate is 238/238 green,
+and the second commit is the separately requested Ruff-only delta.
+
+The mandatory cache-disabled A560 canary at `4ba0ec195` completed normally in
+28.61 seconds. Log: `.tmp/rhad-a560-live-rebind-4ba0ec195.txt`; primary DB:
+`.tmp/rhad-a560-live-rebind-4ba0ec195/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode is beside the DB. There is no segfault, numeric INTERR, poisoned
+generation, rollback, post-C5 transaction rejection, or partial receipt. The
+DB contains three committed seven-phase transactions and only the expected
+pre-C5 CALLS-companion rejection. The selected carrier attempt retains its
+complete matched detached oracle, committed creation witnesses, postvalidation,
+and 49/49 receipt.
+
+The strict highest level therefore remains C5. The output is 31 lines and
+reaches the initial allocation before ending in one false empty `while ( 1 )`,
+so A560 is not C6 accepted. The former
+`C6_semantic_acceptance:runtime:realization` quantity failure is closed. The
+first remaining obligation is now `C6_semantic_acceptance:false_infinite_loop`:
+expand from the proven entry-connected carrier fragment using reference-ledger
+routes and require the same detached proof, publication receipt, and liveness
+budget. The diagnostic schema does not yet persist the C6 pseudocode-oracle
+result itself; until that observability gap is closed, the exact E2E assertion
+and copied pseudocode are the output authority. The v3.1 one-fragment gate now
+permits a bounded broad-route attempt, but no C6 claim is allowed until the
+full semantic oracle passes.
