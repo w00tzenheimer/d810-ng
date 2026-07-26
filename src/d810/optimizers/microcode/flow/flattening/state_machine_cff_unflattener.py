@@ -1538,9 +1538,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         consumer="state_machine_cff_unflattener",
                         strategy="hexrays_callback_change_accounting",
                         fact_id=f"fragment_publication_callback:0x{function_ea:X}",
-                        maturity=maturity_to_string(
-                            int(getattr(mba, "maturity", 0))
-                        ),
+                        maturity=maturity_to_string(int(getattr(mba, "maturity", 0))),
                         decision="applied",
                         reason="committed_fragment_reported_to_hexrays",
                         payload={
