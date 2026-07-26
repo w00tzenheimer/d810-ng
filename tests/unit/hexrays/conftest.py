@@ -7,13 +7,14 @@ by multiple test modules without duplication.
 from __future__ import annotations
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+from d810.transforms.cfg_transaction import PatchPlanExecutionResult
 from d810.transforms.plan import PatchPlan, PatchStep
 
 
 class InMemoryBackend:
     """Mock backend operating on synthetic FlowGraph.
 
-    Implements CFGBackend protocol without IDA dependency.
+    Implements the PatchPlan runtime port without an IDA dependency.
     Used for testing FlowGraphTransform instances and PassPipeline in isolation.
     """
 
@@ -65,7 +66,7 @@ class InMemoryBackend:
         """Record modifications and return count.
 
         Args:
-            lowering_input: PatchPlan or modification intents.
+            lowering_input: Finalized PatchPlan authority.
             state: Optional state (ignored, uses self.applied_steps).
 
         Returns:
@@ -87,6 +88,23 @@ class InMemoryBackend:
             True (always valid).
         """
         return True
+
+    def execute_patch_plan(
+        self,
+        plan: PatchPlan,
+        state: dict[int, BlockSnapshot] | None = None,
+        *,
+        mutation_gateway: object,
+        pre_cfg: FlowGraph,
+    ) -> PatchPlanExecutionResult:
+        """Test runtime mirroring commit-or-zero pipeline semantics."""
+        count = self.lower(plan, state, mutation_gateway=mutation_gateway)
+        if count <= 0 or not self.verify(state):
+            return PatchPlanExecutionResult(applied_count=0, graph=pre_cfg)
+        return PatchPlanExecutionResult(
+            applied_count=count,
+            graph=self.lift(state),
+        )
 
 
 __all__ = ["InMemoryBackend"]

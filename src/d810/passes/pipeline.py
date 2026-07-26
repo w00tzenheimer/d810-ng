@@ -1,8 +1,8 @@
 """PassPipeline orchestrator for running FlowGraphTransform transforms through a CFGBackend.
 
 The pipeline lifts backend state to FlowGraph, runs each pass's transform,
-compiles the resulting modifications to PatchPlan, lowers that plan, verifies,
-and re-lifts if changes occurred.
+compiles the resulting modifications to PatchPlan, and delegates the complete
+transaction to one runtime port.
 """
 
 from __future__ import annotations
@@ -10,10 +10,10 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import Any
 
+from d810.transforms.cfg_transaction import PatchPlanExecutionResult
 from d810.transforms.plan import compile_patch_plan
 from d810.transforms._base import FlowGraphTransform
-from d810.transforms.protocol import IRTranslator
-from d810.ir.flowgraph import FlowGraph
+from d810.transforms.protocol import PatchPlanRuntime
 
 logger = getLogger(__name__, default_level=0)  # NOTSET: inherit from parent
 
@@ -29,7 +29,13 @@ class FlowGraphTransformPipeline:
         )
     """
 
-    def __init__(self, backend: IRTranslator, passes: list[FlowGraphTransform]) -> None:
+    def __init__(
+        self,
+        backend: PatchPlanRuntime,
+        passes: list[FlowGraphTransform],
+    ) -> None:
+        if not isinstance(backend, PatchPlanRuntime):
+            raise TypeError("FlowGraphTransformPipeline requires PatchPlanRuntime")
         self.backend = backend
         self.passes = list(passes)  # defensive copy
 
@@ -63,25 +69,22 @@ class FlowGraphTransformPipeline:
                 source_generation=identity_index.generation,
                 block_refs_by_serial=identity_index.plan_refs_by_serial(),
             )
-            count = self.backend.lower(
+            execution = self.backend.execute_patch_plan(
                 patch_plan,
                 backend_state,
                 mutation_gateway=mutation_gateway,
+                pre_cfg=cfg,
             )
+            if not isinstance(execution, PatchPlanExecutionResult):
+                raise TypeError("PatchPlan runtime returned invalid execution authority")
+            count = execution.applied_count
             if count <= 0:
                 logger.debug(
-                    "Pass %s: lower returned %d, skipping verify", pass_.name, count
+                    "Pass %s: transaction committed no operations", pass_.name
                 )
                 continue
 
-            if not self.backend.verify(backend_state):
-                logger.warning(
-                    "Pass %s failed verification, aborting pipeline", pass_.name
-                )
-                break  # Stop all further transform - MBA may be corrupted
-
-            # Re-lift only when changes were applied successfully
-            cfg = self.backend.lift(backend_state)
+            cfg = execution.graph
             total += count
             logger.debug(
                 "Pass %s applied %d modifications (total: %d)", pass_.name, count, total

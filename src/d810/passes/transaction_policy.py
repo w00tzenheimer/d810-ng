@@ -22,7 +22,7 @@ Phase Ordering
 ::
 
     semantic_preflight      executor: virtual-CFG plan shaping, cycle filter, sink proof
-    projected_contract      contract: verify_projected() on projected FlowGraph
+    projected_contract      contract: verify_projection() on CfgProjection
     live_pre_check          contract: check_pre() before live mutation
     lowering                translator: PatchPlan -> DeferredGraphModifier queue
     backend_apply           deferred_modifier: live MBA mutation

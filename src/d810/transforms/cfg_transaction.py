@@ -205,6 +205,19 @@ class BoundCfgTransaction:
             raise ValueError("bindings must not contain duplicate references")
 
 
+@dataclass(frozen=True, slots=True)
+class PatchPlanExecutionResult:
+    """Portable result returned only after a PatchPlan runtime finishes."""
+
+    applied_count: int
+    graph: FlowGraph
+
+    def __post_init__(self) -> None:
+        _require_nonnegative_int(self.applied_count, "applied_count")
+        if not isinstance(self.graph, FlowGraph):
+            raise TypeError("patch execution result requires a FlowGraph")
+
+
 class CfgTransactionPhase(str, Enum):
     """Portable transaction lifecycle, including terminal failure states."""
 
@@ -310,6 +323,7 @@ __all__ = [
     "CfgTransactionPhase",
     "LogicalBlockRef",
     "NativeBlockRef",
+    "PatchPlanExecutionResult",
     "PlanBlockRef",
     "PlanInsnRef",
     "PreparedCfgTransaction",

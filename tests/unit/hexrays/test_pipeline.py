@@ -21,11 +21,12 @@ from d810.transforms.graph_modification import (
 )
 from d810.passes.pipeline import FlowGraphTransformPipeline
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
-from d810.transforms.plan import LoweringInput
+from d810.transforms.plan import LoweringInput, PatchConvertToGoto
+from tests.typed_patch_authority import mutation_gateway_for
 from tests.unit.hexrays.conftest import InMemoryBackend
 
 
-MUTATION_GATEWAY = object()
+MUTATION_GATEWAY = mutation_gateway_for(*range(1024))
 
 
 # ============================================================================
@@ -178,7 +179,7 @@ class TestPassPipeline:
         total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert total == 0
-        assert len(backend.applied_modifications) == 0
+        assert len(backend.applied_steps) == 0
 
     def test_single_pass_no_modifications(self):
         """Pass that returns empty list should result in 0 total."""
@@ -188,7 +189,7 @@ class TestPassPipeline:
         total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert total == 0
-        assert len(backend.applied_modifications) == 0
+        assert len(backend.applied_steps) == 0
 
     def test_single_pass_with_modifications(self):
         """Pass with modifications should return correct count."""
@@ -198,10 +199,10 @@ class TestPassPipeline:
         total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert total == 1
-        assert len(backend.applied_modifications) == 1
+        assert len(backend.applied_steps) == 1
         assert len(backend.applied_patch_plans) == 1
         assert not backend.applied_patch_plans[0].contains_block_creation
-        assert isinstance(backend.applied_modifications[0], ConvertToGoto)
+        assert isinstance(backend.applied_steps[0], PatchConvertToGoto)
 
     def test_multiple_passes_accumulate(self):
         """Multiple transform should accumulate modification counts."""
@@ -213,7 +214,7 @@ class TestPassPipeline:
         total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert total == 3  # 1 from SingleModPass + 2 from DoubleModPass
-        assert len(backend.applied_modifications) == 3
+        assert len(backend.applied_steps) == 3
 
     def test_pass_not_applicable_skipped(self):
         """Pass with is_applicable=False should be skipped."""
@@ -245,7 +246,7 @@ class TestPassPipeline:
 
         # ConditionalPass requires >2 blocks, so should be skipped
         assert total == 0
-        assert len(backend.applied_modifications) == 0
+        assert len(backend.applied_steps) == 0
 
     def test_pass_applicable_runs(self):
         """Pass with is_applicable=True should run."""
@@ -286,7 +287,7 @@ class TestPassPipeline:
 
         # ConditionalPass requires >2 blocks, so should run
         assert total == 1
-        assert len(backend.applied_modifications) == 1
+        assert len(backend.applied_steps) == 1
 
     def test_pass_with_mods_but_lower_returns_zero(self):
         """Pass with mods but lower returning 0 should not count or verify."""
@@ -298,7 +299,7 @@ class TestPassPipeline:
         # Lower returned 0, so verify should not be called and total should be 0
         assert total == 0
         # Backend still recorded the modifications (lower was called)
-        assert len(backend.applied_modifications) == 1
+        assert len(backend.applied_steps) == 1
 
     def test_verify_failure_skips_count(self):
         """Verify failure should skip counting modifications."""
@@ -310,7 +311,7 @@ class TestPassPipeline:
         # Verify failed, so modifications should not be counted
         assert total == 0
         # But backend still recorded the modifications (lower was called)
-        assert len(backend.applied_modifications) == 1
+        assert len(backend.applied_steps) == 1
 
     def test_relift_after_modifications(self):
         """CFG should be re-lifted after successful modifications."""
@@ -424,7 +425,7 @@ class TestPassPipeline:
 
         # Only SingleModPass should contribute
         assert total == 1
-        assert len(backend.applied_modifications) == 1
+        assert len(backend.applied_steps) == 1
 
 
 class TestPassPipelineLogging:
@@ -452,15 +453,17 @@ class TestPassPipelineLogging:
             "produced no modifications" in record.message for record in caplog.records
         )
 
-    def test_logs_verify_failure(self, caplog):
-        """Should log warning when verification fails."""
+    def test_logs_transaction_without_commit(self, caplog):
+        """Should report when the runtime does not commit any operations."""
         backend = FailingVerificationBackend()
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
-        with caplog.at_level("WARNING"):
+        with caplog.at_level("DEBUG"):
             pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
-        assert any("failed verification" in record.message for record in caplog.records)
+        assert any(
+            "committed no operations" in record.message for record in caplog.records
+        )
 
     def test_logs_successful_application(self, caplog):
         """Should log when modifications are successfully applied."""

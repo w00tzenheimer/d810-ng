@@ -280,6 +280,9 @@ def test_both_production_paths_use_the_shared_transaction_coordinator() -> None:
     publication = (
         source_root / "hexrays" / "mutation" / "semantic_fragment_publication.py"
     ).read_text(encoding="utf-8")
+    portable_pipeline = (source_root / "passes" / "pipeline.py").read_text(
+        encoding="utf-8"
+    )
     assert "execute_patch_transaction(" in backend
     assert "CfgTransactionCoordinator(" in patch_transaction
     assert "PatchTransactionParticipant()" in patch_transaction
@@ -290,3 +293,5 @@ def test_both_production_paths_use_the_shared_transaction_coordinator() -> None:
     assert "lambda lowered: lowered" not in publication
     assert "from d810.passes.transaction_engine" not in publication
     assert not (source_root / "passes" / "transaction_engine.py").exists()
+    assert "execute_patch_plan(" in portable_pipeline
+    assert ".lower(" not in portable_pipeline

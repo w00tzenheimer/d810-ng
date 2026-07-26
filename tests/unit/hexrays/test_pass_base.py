@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import pytest
 
-from d810.transforms.protocol import IRTranslator
+from d810.transforms.protocol import PatchPlanRuntime
 from d810.transforms._base import FlowGraphTransform
 from d810.transforms.graph_modification import ConvertToGoto, GraphModification
 from d810.ir.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+from tests.typed_patch_authority import compile_patch_plan, mutation_gateway_for
 from tests.unit.hexrays.conftest import InMemoryBackend
 
 
@@ -82,7 +83,7 @@ class TestInMemoryBackend:
     def test_conforms_to_protocol(self):
         """InMemoryBackend should satisfy CFGBackend protocol."""
         backend = InMemoryBackend()
-        assert isinstance(backend, IRTranslator)
+        assert isinstance(backend, PatchPlanRuntime)
 
     def test_name_property(self):
         """Backend should have 'name' property."""
@@ -129,20 +130,27 @@ class TestInMemoryBackend:
         assert 0 in cfg.blocks
         assert 1 in cfg.blocks
 
-    def test_lower_records_modifications(self):
-        """Lower should record modifications and return count."""
+    def test_runtime_records_typed_patch_steps(self):
+        """The test runtime should record typed steps and commit a result."""
         backend = InMemoryBackend()
         mods = [
             ConvertToGoto(block_serial=1, goto_target=2),
             ConvertToGoto(block_serial=3, goto_target=4),
         ]
 
-        count = backend.lower(mods, mutation_gateway=object())
+        pre_cfg = backend.lift()
+        plan = compile_patch_plan(mods)
+        execution = backend.execute_patch_plan(
+            plan,
+            mutation_gateway=mutation_gateway_for(1, 2, 3, 4),
+            pre_cfg=pre_cfg,
+        )
 
-        assert count == 2
-        assert len(backend.applied_modifications) == 2
-        assert backend.applied_modifications[0].block_serial == 1
-        assert backend.applied_modifications[1].block_serial == 3
+        assert execution.applied_count == 2
+        assert len(backend.applied_steps) == 2
+        coordinates = dict(plan.source_coordinates)
+        assert coordinates[backend.applied_steps[0].block_serial] == 1
+        assert coordinates[backend.applied_steps[1].block_serial] == 3
 
     def test_verify_always_true(self):
         """Verify should always return True (mock has no validation)."""
@@ -338,10 +346,14 @@ class TestIntegration:
         modifications = pass_instance.transform(cfg)
         assert len(modifications) == 2  # 2 terminal blocks
 
-        # Lower modifications
-        count = backend.lower(modifications, mutation_gateway=object())
-        assert count == 2
+        plan = compile_patch_plan(modifications, cfg)
+        execution = backend.execute_patch_plan(
+            plan,
+            mutation_gateway=mutation_gateway_for(cfg),
+            pre_cfg=cfg,
+        )
+        assert execution.applied_count == 2
 
         # Verify
         assert backend.verify() is True
-        assert len(backend.applied_modifications) == 2
+        assert len(backend.applied_steps) == 2

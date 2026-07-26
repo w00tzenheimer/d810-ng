@@ -106,7 +106,7 @@
       },
       "acceptance_test": {
         "donor": "tests/system/hexrays/contracts/test_transaction_engine_projection.py::def test_engine_uses_concrete_ida_projection_interface",
-        "current": "tests/system/hexrays/contracts/test_transaction_engine_projection.py::def test_engine_uses_concrete_ida_projection_interface"
+        "current": "tests/system/hexrays/contracts/test_cfg_contract_projection.py::def test_patch_participant_uses_concrete_ida_projection_interface"
       }
     },
     {
@@ -662,7 +662,7 @@
       "id": "focused_transaction_gate",
       "donor_source": "src/d810/transforms/fragment_to_patch.py::class CfgTransactionCoordinator:",
       "donor_test": "tests/unit/transforms/test_fragment_to_patch.py::def test_both_production_paths_use_the_shared_transaction_coordinator",
-      "current_production_seam": "src/d810/passes/transaction_engine.py::class CfgTransactionEngine:",
+      "current_production_seam": "src/d810/hexrays/mutation/patch_transaction.py::def execute_patch_transaction(",
       "current_status": "accepted",
       "required_port": "Reproduce the donor focused transaction matrix across portable types, projections, identity, gateway, diagnostics, typed patch binding, fragment lowering, and runtime backend.",
       "diagnostic_proof": {

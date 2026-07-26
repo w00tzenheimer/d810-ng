@@ -41,10 +41,10 @@ def build_hexrays_flowgraph_pipeline(
     fact_view_provider: Callable | None = None,
 ):
     """Lower a portable pass spec to the current Hex-Rays FlowGraph pipeline."""
-    from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+    from d810.backends.hexrays.mutation.backend import HexRaysPatchPlanRuntime
     from d810.passes.pipeline import FlowGraphTransformPipeline
 
     passes = [
         _build_transform(pass_id, fact_view_provider) for pass_id in spec.pass_ids
     ]
-    return FlowGraphTransformPipeline(IDAIRTranslator(), passes)
+    return FlowGraphTransformPipeline(HexRaysPatchPlanRuntime(), passes)
