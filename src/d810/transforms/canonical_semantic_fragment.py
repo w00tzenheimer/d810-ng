@@ -15,6 +15,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteProof,
     SemanticRouteProofKind,
     SemanticRouteShape,
+    SemanticStateWriteProof,
     semantic_route_proof_reaches_consumer,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
@@ -3189,6 +3190,349 @@ def compose_canonical_semantic_fragment_plan(
     )
 
 
+def _normalization_block_reaches(
+    plan: FragmentPlan,
+    source_block_id: str,
+    target_block_id: str,
+) -> bool:
+    operation_by_source = {
+        operation.source_block_id: operation for operation in plan.operations
+    }
+    pending = [str(source_block_id)]
+    visited: set[str] = set()
+    while pending:
+        block_id = pending.pop()
+        if block_id == target_block_id:
+            return True
+        if block_id in visited:
+            continue
+        visited.add(block_id)
+        operation = operation_by_source.get(block_id)
+        if operation is not None:
+            pending.extend(edge.target_block_id for edge in operation.edges)
+    return False
+
+
+def compose_canonical_carrier_ingress_fragment_plan(
+    graph: FlowGraph,
+    normalization_plan: FragmentPlan,
+    *,
+    available_evidence: CanonicalSemanticEvidence,
+    detached_route: DetachedDirectRoutePlan,
+    current_identity_by_serial: Mapping[int, StableBlockIdentity],
+    normalization_authority: NormalizationWorkItemAuthority,
+    prohibited_dispatcher_serials: Iterable[int],
+) -> FragmentPlan:
+    """Root one detached semantic route at its live carried-state definition."""
+    if not isinstance(detached_route, DetachedDirectRoutePlan):
+        raise TypeError("carrier ingress requires a detached direct route")
+    if detached_route.normalization_authority != normalization_authority:
+        raise CanonicalSemanticFragmentRejected(
+            "carrier ingress detached-route authority drifted",
+            reason_code="carrier_ingress_normalization_authority_drift",
+        )
+    rewrite = detached_route.operation.direct_transfer_rewrite
+    if rewrite is None:
+        raise CanonicalSemanticFragmentRejected(
+            "carrier ingress detached route lacks direct rewrite authority"
+        )
+    nested_proofs = tuple(
+        proof
+        for proof in available_evidence.route_proofs
+        if proof.proof_id == rewrite.route_proof_id
+    )
+    if len(nested_proofs) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "carrier ingress requires one detached route proof",
+            reason_code="carrier_ingress_detached_route_proof_mismatch",
+            anchor_ea=int(rewrite.rewrite_anchor_ea),
+        )
+    (nested_proof,) = nested_proofs
+
+    candidates: list[
+        tuple[
+            SemanticRouteProof,
+            object,
+            object,
+            FragmentBlock,
+        ]
+    ] = []
+    for proof in available_evidence.route_proofs:
+        if (
+            proof.proof_kind is not SemanticRouteProofKind.STATE_CHOICE
+            or proof.shape is not SemanticRouteShape.CONDITIONAL
+            or proof.predicate is None
+            or proof.predicate.kind is not SemanticPredicateKind.STORAGE_EQUALS
+            or len(proof.carriers) != 1
+        ):
+            continue
+        (carrier,) = proof.carriers
+        for destination in proof.destinations:
+            try:
+                target = _unique_plan_block(
+                    normalization_plan,
+                    destination.target_identity,
+                    destination.target_anchor_ea,
+                    roles=frozenset({FragmentBlockRole.IMPORTED}),
+                    description="carrier ingress selected target",
+                )
+            except CanonicalSemanticFragmentRejected:
+                continue
+            if _normalization_block_reaches(
+                normalization_plan,
+                target.block_id,
+                detached_route.source_block.block_id,
+            ):
+                candidates.append((proof, carrier, destination, target))
+    if len(candidates) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "carrier ingress requires one state choice leading to its detached route",
+            reason_code="carrier_ingress_state_choice_count_mismatch",
+            anchor_ea=int(rewrite.rewrite_anchor_ea),
+            payload={"candidate_count": len(candidates)},
+        )
+    state_choice, carrier, selected_destination, selected_target = candidates[0]
+    carrier_definition = carrier.definition
+    current_identity_by_serial = {
+        int(serial): identity for serial, identity in current_identity_by_serial.items()
+    }
+    current_owners = _current_owners_containing_identity(
+        graph,
+        carrier_definition.identity,
+        current_identity_by_serial=current_identity_by_serial,
+    )
+    if len(current_owners) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "carrier ingress definition requires one current owner",
+            reason_code="carrier_ingress_current_owner_count_mismatch",
+            anchor_ea=int(carrier_definition.anchor_ea),
+            payload={
+                "owner_labels": tuple(
+                    f"blk{serial}@0x{anchor_ea:X}"
+                    for serial, anchor_ea, _identity in current_owners
+                )
+            },
+        )
+    source_serial, _source_anchor_ea, source_identity = current_owners[0]
+    dispatcher_serials = frozenset(int(value) for value in prohibited_dispatcher_serials)
+    dispatcher_successors = tuple(
+        int(successor)
+        for successor in graph.successors(source_serial)
+        if int(successor) in dispatcher_serials
+    )
+    if len(dispatcher_successors) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "carrier ingress requires one current dispatcher successor",
+            reason_code="carrier_ingress_dispatcher_successor_count_mismatch",
+            anchor_ea=int(carrier_definition.anchor_ea),
+            payload={"dispatcher_successors": dispatcher_successors},
+        )
+    (dispatcher_serial,) = dispatcher_successors
+    dispatcher_identity = current_identity_by_serial.get(dispatcher_serial)
+    if dispatcher_identity is None:
+        dispatcher_block = graph.blocks[dispatcher_serial]
+        raise CanonicalSemanticFragmentRejected(
+            "carrier ingress dispatcher lacks current identity authority",
+            reason_code="carrier_ingress_dispatcher_identity_missing",
+            anchor_ea=int(dispatcher_block.start_ea),
+        )
+
+    scoped_atomic_group_id = (
+        f"{available_evidence.atomic_group_id}:carrier-ingress:"
+        f"{state_choice.proof_id}:{nested_proof.proof_id}"
+    )
+    root_proof_id = f"{state_choice.proof_id}:carrier-ingress"
+    root_proof = SemanticRouteProof(
+        proof_id=root_proof_id,
+        atomic_group_id=scoped_atomic_group_id,
+        proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=carrier_definition.identity,
+        source_anchor_ea=int(carrier_definition.anchor_ea),
+        delivery_region=NativeEaInterval(
+            int(carrier_definition.anchor_ea),
+            int(carrier_definition.anchor_ea) + 1,
+        ),
+        destinations=(
+            replace(
+                selected_destination,
+                role=SemanticEdgeRole.DIRECT,
+            ),
+        ),
+        state_write=SemanticStateWriteProof(
+            identity=carrier_definition.identity,
+            instruction_ea=int(carrier_definition.anchor_ea),
+            state_variable=carrier.storage_identity,
+            width=int(carrier.width),
+            state_constant=int(selected_destination.state_constant),
+            corridor_instruction_eas=(int(carrier_definition.anchor_ea),),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+        ),
+    )
+    scoped_nested_proof = replace(
+        nested_proof,
+        atomic_group_id=scoped_atomic_group_id,
+    )
+    root_evidence = CanonicalSemanticEvidence(
+        native_key=available_evidence.native_key,
+        generation=available_evidence.generation,
+        atomic_group_id=scoped_atomic_group_id,
+        route_proofs=(root_proof,),
+    )
+    scoped_available_evidence = CanonicalSemanticEvidence(
+        native_key=available_evidence.native_key,
+        generation=available_evidence.generation,
+        atomic_group_id=scoped_atomic_group_id,
+        route_proofs=(root_proof, scoped_nested_proof),
+    )
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        root_evidence,
+        available_evidence=scoped_available_evidence,
+        current_identity_by_serial=current_identity_by_serial,
+        normalization_authority=normalization_authority,
+        prohibited_dispatcher_serials=(),
+    )
+    (root_id,) = plan.roots
+    root = plan.block(root_id)
+    if root.stable_identity != source_identity:
+        raise CanonicalSemanticFragmentRejected(
+            "carrier ingress root identity drifted from current authority",
+            reason_code="carrier_ingress_root_identity_drift",
+            anchor_ea=int(carrier_definition.anchor_ea),
+        )
+    root_operation = plan.operation(f"route:{root_proof_id}")
+    (selected_edge,) = root_operation.edges
+
+    dispatcher_block_id = f"native[{stable_block_identity_token(dispatcher_identity)}]"
+    existing_dispatchers = tuple(
+        block
+        for block in plan.blocks
+        if block.stable_identity == dispatcher_identity
+    )
+    if len(existing_dispatchers) > 1 or (
+        existing_dispatchers
+        and existing_dispatchers[0].role is not FragmentBlockRole.EXTERNAL
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "carrier ingress dispatcher identity conflicts with staged ownership",
+            reason_code="carrier_ingress_dispatcher_identity_conflict",
+            anchor_ea=stable_block_identity_semantic_anchor(dispatcher_identity),
+        )
+    dispatcher = (
+        existing_dispatchers[0]
+        if existing_dispatchers
+        else FragmentBlock(
+            block_id=dispatcher_block_id,
+            role=FragmentBlockRole.EXTERNAL,
+            materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+            semantic_anchor_ea=stable_block_identity_semantic_anchor(dispatcher_identity),
+            stable_identity=dispatcher_identity,
+        )
+    )
+    ingress_operation = FragmentOperation(
+        operation_id=f"route:{root_proof_id}",
+        source_block_id=root_id,
+        predicate_anchor_ea=int(carrier_definition.anchor_ea),
+        storage_predicate_materialization=FragmentStoragePredicateMaterialization(
+            predicate_kind=PredicateKind.EQ,
+            storage_identity=carrier.storage_identity,
+            width=int(carrier.width),
+            compare_constant=int(selected_destination.state_constant),
+            cut_after_ea=int(carrier_definition.anchor_ea),
+        ),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                target_block_id=selected_edge.target_block_id,
+            ),
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                target_block_id=dispatcher.block_id,
+            ),
+        ),
+    )
+    operations = tuple(
+        ingress_operation if operation is root_operation else operation
+        for operation in plan.operations
+    )
+    unselected_destination = next(
+        destination
+        for destination in state_choice.destinations
+        if destination is not selected_destination
+    )
+    boundary_ports = tuple(
+        FragmentBoundaryPort(
+            port_id=f"temporary-dispatcher-egress:{operation.operation_id}",
+            kind=FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_EGRESS,
+            source_block_id=operation.source_block_id,
+            target_block_id=dispatcher.block_id,
+            retirement_obligation_id=(
+                f"retire-temporary-dispatcher-egress@0x"
+                f"{int(plan.block(operation.source_block_id).semantic_anchor_ea):X}:"
+                f"publish-semantic-state@0x"
+                f"{int(unselected_destination.target_anchor_ea):X}"
+            ),
+        )
+        for operation in operations
+        if any(edge.target_block_id == dispatcher.block_id for edge in operation.edges)
+    )
+    predicate_site = FragmentValueSite(
+        site_id=f"predicate:{state_choice.proof_id}:carrier-definition",
+        block_id=root_id,
+        value_id=f"predicate:{state_choice.proof_id}",
+        instruction_ea=int(carrier_definition.anchor_ea),
+        storage_identity=carrier.storage_identity,
+        width=int(carrier.width),
+    )
+    predicate_use = replace(
+        predicate_site,
+        site_id=f"predicate:{state_choice.proof_id}:materialized-use",
+    )
+    carrier_site = FragmentValueSite(
+        site_id=f"carrier:{state_choice.proof_id}:definition",
+        block_id=root_id,
+        value_id=f"carrier:{state_choice.proof_id}",
+        instruction_ea=int(carrier_definition.anchor_ea),
+        storage_identity=carrier.storage_identity,
+        width=int(carrier.width),
+    )
+    carrier_use = replace(
+        carrier_site,
+        site_id=f"carrier:{state_choice.proof_id}:ingress-use",
+    )
+    return replace(
+        plan,
+        plan_id=f"canonical-carrier-ingress:{state_choice.proof_id}",
+        atomic_group_id=scoped_atomic_group_id,
+        blocks=(
+            plan.blocks
+            if existing_dispatchers
+            else (*plan.blocks, dispatcher)
+        ),
+        operations=operations,
+        prohibited_dispatcher_blocks=(),
+        boundary_ports=boundary_ports,
+        data_flow_obligations=(
+            *plan.data_flow_obligations,
+            FragmentDataFlowObligation(
+                obligation_id=f"predicate:{state_choice.proof_id}:use-def",
+                role=FragmentDataFlowRole.CONDITION,
+                definition=predicate_site,
+                uses=(predicate_use,),
+            ),
+            FragmentDataFlowObligation(
+                obligation_id=f"carrier:{state_choice.proof_id}:use-def",
+                role=FragmentDataFlowRole.CARRIER,
+                definition=carrier_site,
+                uses=(carrier_use,),
+            ),
+        ),
+    )
+
+
 def compose_canonical_semantic_boundary_fragment_plan(
     graph: FlowGraph,
     normalization_plan: FragmentPlan,
@@ -4119,6 +4463,7 @@ __all__ = [
     "CanonicalSemanticFragmentRejected",
     "DetachedDirectRoutePlan",
     "build_canonical_semantic_fragment_plan",
+    "compose_canonical_carrier_ingress_fragment_plan",
     "compose_canonical_semantic_boundary_fragment_plan",
     "compose_canonical_semantic_fragment_plan",
     "plan_detached_reference_direct_route",
