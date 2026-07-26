@@ -6494,3 +6494,44 @@ planned fallthrough-helper ownership at `0x40BECC`, making the helper an owned,
 reconstructible route endpoint in detached oracle observation. Do not hide the
 helper, relax the oracle, assign a raw serial, or resume broad publication
 before both unowned-helper divergences are eliminated.
+
+**2026-07-26T05:30:05-0700 — canonical A560 publication reaches exact C5**
+
+Functional commit `debc6f198` teaches the detached oracle to retain and prove
+planned fallthrough helpers as physical route witnesses. A helper is accepted
+only when its deterministic ID and descriptor match the operation, it has a
+same-generation staged identity binding with no native identity, it is the
+adjacent one-way empty synthetic block, and its only edge reaches the declared
+semantic target. Only after that proof is the physical helper hop normalized
+to the donor route target. A negative test rejects a published or otherwise
+unowned helper. Ruff-only commit `9f803be6a` formats the slice. The detached
+oracle unit file is 13/13 green, the manager translation test and gateway
+reference-route tests are green, and both commit-time architecture gates pass.
+
+The mandatory pinned, cache-disabled A560 canary at clean code SHA
+`9f803be6a` ran for 78.49 seconds without a process crash, numeric INTERR, or
+poisoned generation. Log: `.tmp/rhad-a560-route-helper-9f803be6a.txt`; primary
+DB: `.tmp/rhad-a560-route-helper-9f803be6a/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+
+The DB records all 93 detached donor-route comparisons as matched. Canonical
+attempt `2b6c9c5686284369ad9c92760a8944b1` commits 406/406 operations, passes
+1057 prepublication and 1961 postpublication outcomes, publishes its root, and
+records 229 creation witnesses with zero invalidations. Frontend normalization
+also remains exact C5 at 260/260 operations with 139 non-invalidated witnesses.
+This is the first complete broad canonical C5 publication on the integration
+branch.
+
+The E2E test still fails at C6. The first textual assertion is stale only in
+its local name (`Param[1]` versus the equivalent `v50[1]`), but comparison with
+`samples/oracle/sub_40A560_reference.c` proves the output is not semantically
+complete: the command-line argument decoding loop and both `sub_40C8B0` calls
+are absent, WNDCLASS initialization is incomplete, the keyed `sub_4069C0`
+branch is absent, one cleanup slot and its callback are absent, and the terminal
+return is absent. Do not relax the E2E oracle to accept the current output.
+
+The highest current level is therefore C5 for both frontend normalization and
+canonical composition, not C6 and not final A560 acceptance. The next vertical
+obligation is reference-body effect coverage, beginning with the first omitted
+command-line decoding subgraph after `CommandLineToArgvW`. Determine its exact
+native anchors and why a 93/93 route-equivalent published fragment still loses
+that reachable body before changing the oracle or adding more routes.
