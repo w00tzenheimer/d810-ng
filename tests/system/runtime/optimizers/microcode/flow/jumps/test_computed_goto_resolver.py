@@ -3596,14 +3596,14 @@ def test_build_callinfo_does_not_replay_route_template_into_source_mba(
 def test_native_stack_capacity_witness_is_preflighted_atomic_and_restored(
     monkeypatch,
 ) -> None:
-    import ida_bytes
     import ida_frame
     import ida_funcs
 
     function_ea = 0x40A560
     deepest_call_ea = 0x40A91C
     shallow_call_ea = 0x40AA20
-    witness_end_ea = deepest_call_ea + 5
+    capacity_start_ea = 0x40A574
+    capacity_end_ea = 0x40A57A
     resolution = ComputedGotoResolution(
         function_ea=function_ea,
         jmp_targets={},
@@ -3631,24 +3631,10 @@ def test_native_stack_capacity_witness_is_preflighted_atomic_and_restored(
     )
     chunks = [(function_ea, 0x40A607)]
 
-    def get_func(ea):
-        native_ea = int(ea)
-        return (
-            function if any(start <= native_ea < end for start, end in chunks) else None
-        )
-
     monkeypatch.setattr(
         ida_funcs,
         "get_func",
-        get_func,
-    )
-    monkeypatch.setattr(
-        ida_funcs,
-        "func_contains",
-        lambda candidate, ea: (
-            candidate is function
-            and any(start <= int(ea) < end for start, end in chunks)
-        ),
+        lambda ea: function if int(ea) == function_ea else None,
     )
     monkeypatch.setattr(
         ida_funcs,
@@ -3660,71 +3646,64 @@ def test_native_stack_capacity_witness_is_preflighted_atomic_and_restored(
         ),
     )
     monkeypatch.setattr(
-        ida_bytes,
-        "get_item_end",
-        lambda ea: witness_end_ea if int(ea) == deepest_call_ea else int(ea) + 2,
+        computed_goto_resolver,
+        "_select_native_stack_capacity_corridor",
+        lambda candidate, canonical_spd: SimpleNamespace(
+            start_ea=capacity_start_ea,
+            end_ea=capacity_end_ea,
+            original_start_spd=canonical_spd,
+            original_start_delta=0,
+            original_end_spd=canonical_spd,
+            original_end_delta=0,
+            original_chunks=tuple(chunks),
+        )
+        if candidate is function
+        else None,
     )
     canonical_spd = -1168
-    original_spds = {
-        deepest_call_ea: canonical_spd,
-        shallow_call_ea: canonical_spd,
-    }
-    overlays: dict[int, int] = {}
+    stack_deltas: dict[int, int] = {}
     preflighted: list[tuple[str, int]] = []
     writes: list[tuple[str, int, int | None]] = []
+
+    def cumulative_spd(native_ea: int) -> int:
+        return canonical_spd + sum(
+            delta for ea, delta in stack_deltas.items() if ea <= native_ea
+        )
 
     def get_spd(candidate, ea):
         assert candidate is function
         native_ea = int(ea)
         preflighted.append(("spd", native_ea))
-        return overlays.get(native_ea, original_spds[native_ea])
+        return cumulative_spd(native_ea)
 
     def get_sp_delta(candidate, ea):
         assert candidate is function
         native_ea = int(ea)
         preflighted.append(("delta", native_ea))
-        return overlays.get(native_ea, canonical_spd) - canonical_spd
-
-    def append_func_tail(candidate, start, end):
-        assert candidate is function
-        assert {native_ea for kind, native_ea in preflighted if kind == "delta"} == {
-            deepest_call_ea,
-            shallow_call_ea,
-        }
-        writes.append(("append", int(start), int(end)))
-        chunks.append((int(start), int(end)))
-        chunks.sort()
-        return True
+        return stack_deltas.get(native_ea, 0)
 
     def set_auto_spd(candidate, ea, spd):
         assert candidate is function
+        assert {native_ea for kind, native_ea in preflighted if kind == "delta"}.issuperset(
+            {deepest_call_ea, shallow_call_ea}
+        )
         native_ea = int(ea)
-        assert get_func(native_ea) is function
         projected_spd = int(spd)
         writes.append(("set", native_ea, projected_spd))
-        overlays[native_ea] = projected_spd
+        stack_deltas[native_ea] = projected_spd - cumulative_spd(native_ea)
         return True
 
     def del_stkpnt(candidate, ea):
         assert candidate is function
         native_ea = int(ea)
         writes.append(("del", native_ea, None))
-        overlays.pop(native_ea)
-        return True
-
-    def remove_func_tail(candidate, ea):
-        assert candidate is function
-        native_ea = int(ea)
-        writes.append(("remove", native_ea, None))
-        chunks.remove((native_ea, witness_end_ea))
+        stack_deltas.pop(native_ea)
         return True
 
     monkeypatch.setattr(ida_frame, "get_spd", get_spd)
     monkeypatch.setattr(ida_frame, "get_sp_delta", get_sp_delta)
     monkeypatch.setattr(ida_frame, "set_auto_spd", set_auto_spd)
     monkeypatch.setattr(ida_frame, "del_stkpnt", del_stkpnt)
-    monkeypatch.setattr(ida_funcs, "append_func_tail", append_func_tail)
-    monkeypatch.setattr(ida_funcs, "remove_func_tail", remove_func_tail)
     observed: list[object] = []
     monkeypatch.setattr(computed_goto_resolver, "emit_diagnostic", observed.append)
 
@@ -3732,35 +3711,33 @@ def test_native_stack_capacity_witness_is_preflighted_atomic_and_restored(
 
     assert lease is not None
     assert (
-        lease.record.native_ea,
-        lease.record.tail_end_ea,
+        lease.record.capacity_start_ea,
+        lease.record.capacity_end_ea,
         lease.record.original_chunks,
-        lease.record.original_spd,
         lease.record.projected_spd,
         lease.record.portable_point_count,
     ) == (
-        deepest_call_ea,
-        witness_end_ea,
+        capacity_start_ea,
+        capacity_end_ea,
         ((function_ea, 0x40A607),),
-        canonical_spd,
         canonical_spd - 16,
         2,
     )
     assert writes == [
-        ("append", deepest_call_ea, witness_end_ea),
-        ("set", deepest_call_ea, canonical_spd - 16),
+        ("set", capacity_start_ea, canonical_spd - 16),
+        ("set", capacity_end_ea, canonical_spd),
     ]
-    assert chunks == [(function_ea, 0x40A607), (deepest_call_ea, witness_end_ea)]
-    assert overlays == {deepest_call_ea: canonical_spd - 16}
+    assert chunks == [(function_ea, 0x40A607)]
+    assert stack_deltas == {capacity_start_ea: -16, capacity_end_ea: 16}
 
     lease.release()
     lease.release()
 
     assert writes[-2:] == [
-        ("del", deepest_call_ea, None),
-        ("remove", deepest_call_ea, None),
+        ("del", capacity_end_ea, None),
+        ("del", capacity_start_ea, None),
     ]
-    assert overlays == {}
+    assert stack_deltas == {}
     assert chunks == [(function_ea, 0x40A607)]
     assert [event.event_kind for event in observed] == [
         "native_stack_capacity_witness",
@@ -3768,7 +3745,7 @@ def test_native_stack_capacity_witness_is_preflighted_atomic_and_restored(
         "native_stack_capacity_witness",
     ]
     assert [event.phase for event in observed] == [
-        "tail_created",
+        "capacity_entered",
         "installed",
         "released",
     ]
@@ -3787,7 +3764,6 @@ def test_native_stack_capacity_witness_conflict_writes_nothing(
     native_delta: int,
     expected_reason: str,
 ) -> None:
-    import ida_bytes
     import ida_frame
     import ida_funcs
 
@@ -3820,15 +3796,6 @@ def test_native_stack_capacity_witness_conflict_writes_nothing(
         "get_func",
         lambda ea: function if int(ea) == function_ea else None,
     )
-    monkeypatch.setattr(ida_funcs, "func_contains", lambda _function, _ea: False)
-    monkeypatch.setattr(
-        ida_funcs,
-        "func_tail_iterator_t",
-        lambda _function: iter(
-            (SimpleNamespace(start_ea=function_ea, end_ea=0x40A607),)
-        ),
-    )
-    monkeypatch.setattr(ida_bytes, "get_item_end", lambda ea: int(ea) + 5)
     monkeypatch.setattr(ida_frame, "get_spd", lambda _function, _ea: native_spd)
     monkeypatch.setattr(
         ida_frame,
@@ -3844,16 +3811,6 @@ def test_native_stack_capacity_witness_conflict_writes_nothing(
     monkeypatch.setattr(
         ida_frame,
         "del_stkpnt",
-        lambda *args: writes.append(args) or True,
-    )
-    monkeypatch.setattr(
-        ida_funcs,
-        "append_func_tail",
-        lambda *args: writes.append(args) or True,
-    )
-    monkeypatch.setattr(
-        ida_funcs,
-        "remove_func_tail",
         lambda *args: writes.append(args) or True,
     )
     observed: list[object] = []
@@ -3872,13 +3829,13 @@ def test_native_stack_capacity_witness_conflict_writes_nothing(
 def test_native_stack_capacity_witness_rolls_back_partial_install(
     monkeypatch,
 ) -> None:
-    import ida_bytes
     import ida_frame
     import ida_funcs
 
     function_ea = 0x40A560
     call_ea = 0x40A91C
-    witness_end_ea = call_ea + 5
+    capacity_start_ea = 0x40A574
+    capacity_end_ea = 0x40A57A
     resolution = ComputedGotoResolution(
         function_ea=function_ea,
         jmp_targets={},
@@ -3903,20 +3860,10 @@ def test_native_stack_capacity_witness_rolls_back_partial_install(
     )
     chunks = [(function_ea, 0x40A607)]
 
-    def get_func(ea):
-        native_ea = int(ea)
-        return (
-            function if any(start <= native_ea < end for start, end in chunks) else None
-        )
-
-    monkeypatch.setattr(ida_funcs, "get_func", get_func)
     monkeypatch.setattr(
         ida_funcs,
-        "func_contains",
-        lambda candidate, ea: (
-            candidate is function
-            and any(start <= int(ea) < end for start, end in chunks)
-        ),
+        "get_func",
+        lambda ea: function if int(ea) == function_ea else None,
     )
     monkeypatch.setattr(
         ida_funcs,
@@ -3925,42 +3872,51 @@ def test_native_stack_capacity_witness_rolls_back_partial_install(
             SimpleNamespace(start_ea=start, end_ea=end) for start, end in tuple(chunks)
         ),
     )
-    monkeypatch.setattr(ida_bytes, "get_item_end", lambda _ea: witness_end_ea)
-    overlays: dict[int, int] = {}
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "_select_native_stack_capacity_corridor",
+        lambda candidate, canonical_spd: SimpleNamespace(
+            start_ea=capacity_start_ea,
+            end_ea=capacity_end_ea,
+            original_start_spd=canonical_spd,
+            original_start_delta=0,
+            original_end_spd=canonical_spd,
+            original_end_delta=0,
+            original_chunks=tuple(chunks),
+        )
+        if candidate is function
+        else None,
+    )
+    stack_deltas: dict[int, int] = {}
+    writes: list[tuple[str, int]] = []
+
+    def cumulative_spd(native_ea: int) -> int:
+        return -1168 + sum(
+            delta for ea, delta in stack_deltas.items() if ea <= native_ea
+        )
+
     monkeypatch.setattr(
         ida_frame,
         "get_spd",
-        lambda _function, ea: overlays.get(int(ea), -1168),
+        lambda _function, ea: cumulative_spd(int(ea)),
     )
-    monkeypatch.setattr(ida_frame, "get_sp_delta", lambda _function, _ea: 0)
-    writes: list[tuple[str, int]] = []
-
-    def append_func_tail(_function, start, end):
-        writes.append(("append", int(start)))
-        chunks.append((int(start), int(end)))
-        chunks.sort()
-        return True
+    monkeypatch.setattr(
+        ida_frame,
+        "get_sp_delta",
+        lambda _function, ea: stack_deltas.get(int(ea), 0),
+    )
 
     def set_auto_spd(_function, ea, spd):
         native_ea = int(ea)
         writes.append(("set", native_ea))
-        overlays[native_ea] = int(spd)
-        return False
+        stack_deltas[native_ea] = int(spd) - cumulative_spd(native_ea)
+        return native_ea != capacity_end_ea
 
     def del_stkpnt(_function, ea):
         native_ea = int(ea)
         writes.append(("del", native_ea))
-        overlays.pop(native_ea)
+        stack_deltas.pop(native_ea)
         return True
-
-    def remove_func_tail(_function, ea):
-        native_ea = int(ea)
-        writes.append(("remove", native_ea))
-        chunks.remove((native_ea, witness_end_ea))
-        return True
-
-    monkeypatch.setattr(ida_funcs, "append_func_tail", append_func_tail)
-    monkeypatch.setattr(ida_funcs, "remove_func_tail", remove_func_tail)
     monkeypatch.setattr(ida_frame, "set_auto_spd", set_auto_spd)
     monkeypatch.setattr(ida_frame, "del_stkpnt", del_stkpnt)
     monkeypatch.setattr(computed_goto_resolver, "emit_diagnostic", lambda _event: None)
@@ -3969,28 +3925,25 @@ def test_native_stack_capacity_witness_rolls_back_partial_install(
         computed_goto_resolver.acquire_detached_call_stack_capacity_witness(session)
 
     assert writes == [
-        ("append", call_ea),
-        ("set", call_ea),
-        ("del", call_ea),
-        ("remove", call_ea),
+        ("set", capacity_start_ea),
+        ("set", capacity_end_ea),
+        ("del", capacity_end_ea),
+        ("del", capacity_start_ea),
     ]
-    assert overlays == {}
+    assert stack_deltas == {}
     assert chunks == [(function_ea, 0x40A607)]
 
 
 @pytest.mark.parametrize(
-    ("native_call_spd", "expected_outcome", "expected_observed"),
-    ((-1168, "missing", 0), (-1172, "observed", 1)),
+    ("destination_top", "expected_outcome", "expected_observed"),
+    ((2, "missing", 0), (4, "observed", 1)),
 )
 def test_stkpnts_observes_one_stack_capacity_witness_without_mutating(
     monkeypatch,
-    native_call_spd: int,
+    destination_top: int,
     expected_outcome: str,
     expected_observed: int,
 ) -> None:
-    import ida_frame
-    import ida_funcs
-
     function_ea = 0x1000
     shallow_call_ea = 0x2020
     native_call_ea = 0x2030
@@ -4015,21 +3968,6 @@ def test_stkpnts_observes_one_stack_capacity_witness_without_mutating(
         ),
         raising=False,
     )
-    function = SimpleNamespace(frsize=1164, frregs=4)
-    monkeypatch.setattr(
-        ida_funcs,
-        "get_func",
-        lambda ea: function if int(ea) == function_ea else None,
-    )
-    monkeypatch.setattr(
-        ida_frame,
-        "get_spd",
-        lambda candidate, ea: (
-            native_call_spd
-            if candidate is function and int(ea) == native_call_ea
-            else 0
-        ),
-    )
     observed = []
     monkeypatch.setattr(
         computed_goto_resolver,
@@ -4041,7 +3979,13 @@ def test_stkpnts_observes_one_stack_capacity_witness_without_mutating(
 
     computed_goto_resolver._on_stkpnts(
         function_ea=function_ea,
-        mba=SimpleNamespace(entry_ea=function_ea, frsize=0, frregs=0),
+        mba=SimpleNamespace(
+            entry_ea=function_ea,
+            frsize=0,
+            frregs=0,
+            tmpstk_size=destination_top,
+            stkoff_ida2vd=lambda _ida_offset: destination_top,
+        ),
         stack_points=stack_points,
         decision=decision,
     )
@@ -4063,10 +4007,9 @@ def test_stkpnts_observes_one_stack_capacity_witness_without_mutating(
             {"native_ea": "0x2030", "route_call_delta": -4},
         ],
         "witness": {
-            "canonical_spd": -1168,
-            "expected_spd": -1172,
+            "observed_stack_zero_vd": destination_top,
+            "required_stack_capacity": 4,
             "native_ea": "0x2030",
-            "observed_spd": native_call_spd,
             "outcome": expected_outcome,
             "reason": (
                 "capacity_witness_present"
