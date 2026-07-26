@@ -96,6 +96,7 @@ from d810.core.semantic_route_oracle import (
 )
 from d810.ir.block_identity import StableBlockIdentity
 from d810.ir.flowgraph import FlowGraph
+from d810.ir.maturity import MaturityEnvelope
 from d810.capabilities.branch_witness import BranchWitnessCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
@@ -2179,6 +2180,30 @@ class LowerStateMachine(PipelinePass):
             plan = emit_minimal_unflatten(
                 context.graph,
                 dispatcher,
+                block_refs_by_serial=(
+                    {}
+                    if current_block_identity_index is None
+                    else current_block_identity_index.plan_refs_by_serial()
+                ),
+                snapshot_id=(
+                    None
+                    if current_block_identity_index is None
+                    else current_block_identity_index.snapshot_id
+                ),
+                source_generation=(
+                    None
+                    if current_block_identity_index is None
+                    else current_block_identity_index.generation
+                ),
+                source_maturity=(
+                    None
+                    if current_block_identity_index is None
+                    else MaturityEnvelope(
+                        ir=context.maturity,
+                        provider="hexrays",
+                        provider_id=int(current_block_identity_index.maturity),
+                    )
+                ),
                 state_var_stkoff=(
                     int(state_var_stkoff) if state_var_stkoff is not None else None
                 ),

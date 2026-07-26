@@ -96,9 +96,9 @@ from d810.transforms.minimal_unflatten_emit import (
     _rebind_materialized_state_route_sources,
     build_source_keyed_handler_redirects,
     build_state_write_redirects,
-    emit_minimal_unflatten,
 )
 from tests.native_preanalysis import make_native_key
+from tests.typed_patch_authority import emit_minimal_unflatten, graph_modifications
 
 NATIVE_KEY = make_native_key()
 
@@ -632,7 +632,7 @@ def test_emitter_uses_materialized_transfer_only_for_default_router_miss(_seam) 
 
     gotos = {
         (mod.from_serial, mod.old_target, mod.new_target)
-        for mod in plan.as_graph_modifications()
+        for mod in graph_modifications(plan)
         if isinstance(mod, RedirectGoto)
     }
     assert (10, 2, 20) in gotos
@@ -666,7 +666,7 @@ def test_emitter_uses_exact_materialized_state_route_for_default_router_miss(
 
     gotos = {
         (mod.from_serial, mod.old_target, mod.new_target)
-        for mod in plan.as_graph_modifications()
+        for mod in graph_modifications(plan)
         if isinstance(mod, RedirectGoto)
     }
     assert (10, 2, 20) in gotos
@@ -718,7 +718,7 @@ def test_emitter_scans_imported_materialized_handler_root(_seam) -> None:
             old_target=31,
             new_target=40,
         )
-        in plan.as_graph_modifications()
+        in graph_modifications(plan)
     )
 
 
@@ -756,7 +756,7 @@ def test_emitter_abstains_atomically_on_incomplete_materialized_handler_map(
         missing_materialized_handler_targets=((0x20, 0x402000),),
     )
 
-    assert plan.as_graph_modifications() == []
+    assert graph_modifications(plan) == []
 
 
 @pytest.mark.parametrize(
@@ -888,7 +888,7 @@ def test_emitter_routes_materialized_midtree_entry_to_known_handler(_seam) -> No
 
     gotos = {
         (mod.from_serial, mod.old_target, mod.new_target)
-        for mod in plan.as_graph_modifications()
+        for mod in graph_modifications(plan)
         if isinstance(mod, RedirectGoto)
     }
     assert (10, 2, 30) in gotos
@@ -1236,7 +1236,7 @@ def test_emit_prefers_entry_reaching_initial_state_over_range_hint(_seam) -> Non
 
     edges = {
         (modification.from_serial, modification.old_target, modification.new_target)
-        for modification in plan.as_graph_modifications()
+        for modification in graph_modifications(plan)
         if isinstance(modification, (RedirectGoto, RedirectBranch))
     }
     assert (2, 3, 10) in edges
@@ -1263,7 +1263,7 @@ def test_emit_bails_when_no_entry_bridge(_seam) -> None:
     plan = emit_minimal_unflatten(
         fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=2
     )
-    assert len(plan.as_graph_modifications()) == 0
+    assert len(graph_modifications(plan)) == 0
 
 
 def test_resolves_state_var_alias_through_header_copy(_seam) -> None:
@@ -1364,7 +1364,7 @@ def test_carrier_return_arm_flows_through_shared_block(_seam) -> None:
     plan = emit_minimal_unflatten(
         fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=3, initial_state=0x10
     )
-    mods = plan.as_graph_modifications()
+    mods = graph_modifications(plan)
     gotos = {
         (m.from_serial, m.old_target, m.new_target)
         for m in mods
@@ -1553,7 +1553,7 @@ def test_pure_glue_via_block_still_bypassed(_seam) -> None:
     plan = emit_minimal_unflatten(
         fg, disp, state_var_stkoff=_STATE, dispatcher_entry_serial=3, initial_state=0x10
     )
-    mods = plan.as_graph_modifications()
+    mods = graph_modifications(plan)
     gotos = {(m.from_serial, m.new_target) for m in mods if isinstance(m, RedirectGoto)}
     # Pure glue: blk8 bypasses to route(0x20)=blk20, blk9 bypasses to the exit
     # (blk99); the shared block is never kept on the path.
@@ -1648,7 +1648,7 @@ def test_witness_entry_bridge_shortcuts_safe_exit_path(_seam) -> None:
     )
     gotos = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, RedirectGoto)
     }
     assert (0, 2, 10) in gotos
@@ -1689,12 +1689,12 @@ def test_witness_entry_bridge_preserves_live_stack_exit_path(_seam) -> None:
     )
     gotos = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, RedirectGoto)
     }
     branches = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, RedirectBranch)
     }
     # Entry bridge must NOT shortcut because blk2 defines live 0x70.
@@ -1736,12 +1736,12 @@ def test_witness_entry_bridge_preserves_nested_register_use(_seam) -> None:
     )
     gotos = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, RedirectGoto)
     }
     branches = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, RedirectBranch)
     }
     assert (0, 2, 10) not in gotos
@@ -1774,7 +1774,7 @@ def test_entry_bridge_requires_witness_shortcuts_live_safe_without_provider(
     )
     gotos = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, RedirectGoto)
     }
     assert (0, 2, 10) in gotos
@@ -1814,7 +1814,7 @@ def test_entry_bridge_requires_witness_preserves_live_no_provider_exit_path(
     )
     gotos = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, RedirectGoto)
     }
     assert (0, 2, 10) not in gotos
@@ -1849,7 +1849,7 @@ def test_computed_goto_entry_bridge_ignores_router_only_scratch_liveness(_seam) 
     )
     gotos = {
         (modification.from_serial, modification.old_target, modification.new_target)
-        for modification in plan.as_graph_modifications()
+        for modification in graph_modifications(plan)
         if isinstance(modification, RedirectGoto)
     }
     assert (0, 2, 10) in gotos
@@ -1884,7 +1884,7 @@ def test_entry_bridge_requires_witness_preserves_live_no_provider_stack_exit_pat
     )
     gotos = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, RedirectGoto)
     }
     assert (0, 2, 10) not in gotos
@@ -1913,7 +1913,7 @@ def test_conditional_entry_bridge_without_policy_uses_legacy_shortcut(_seam) -> 
     )
     gotos = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, RedirectGoto)
     }
     assert (0, 2, 10) in gotos
@@ -1951,7 +1951,7 @@ def test_witness_entry_bridge_shortcuts_dead_non_state_exit_path(_seam) -> None:
     )
     gotos = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, RedirectGoto)
     }
     assert (0, 2, 10) in gotos
@@ -1988,7 +1988,7 @@ def test_witness_entry_bridge_shortcuts_state_only_exit_path(_seam) -> None:
     )
     gotos = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, RedirectGoto)
     }
     assert (0, 2, 10) in gotos
@@ -3665,7 +3665,7 @@ def test_dynamic_entry_bridge_suppresses_materialized_scalar_route(_seam) -> Non
         isinstance(modification, (RedirectGoto, RedirectBranch))
         and int(modification.from_serial) == 1
         and int(modification.old_target) == 2
-        for modification in plan.as_graph_modifications()
+        for modification in graph_modifications(plan)
     )
 
 
@@ -4438,7 +4438,7 @@ def test_emit_accepts_exact_materialized_conditional_entry_without_scalar_state(
         and modification.source_serial == 1
         and modification.false_target_serial == 10
         and modification.true_target_serial == 20
-        for modification in plan.as_graph_modifications()
+        for modification in graph_modifications(plan)
     )
     redirects = {
         (
@@ -4446,7 +4446,7 @@ def test_emit_accepts_exact_materialized_conditional_entry_without_scalar_state(
             modification.old_target,
             modification.new_target,
         )
-        for modification in plan.as_graph_modifications()
+        for modification in graph_modifications(plan)
         if isinstance(modification, RedirectGoto)
     }
     assert (10, 2, 20) in redirects
@@ -4537,7 +4537,7 @@ def test_materialized_computed_goto_profile_recovers_multi_entry_state_writer(
             modification.old_target,
             modification.new_target,
         )
-        for modification in plan.as_graph_modifications()
+        for modification in graph_modifications(plan)
         if isinstance(modification, RedirectGoto)
     }
     assert (10, 11, 20) in redirects
@@ -4726,7 +4726,7 @@ def test_emit_accepts_applied_preopt_conditional_port_when_one_router_row_was_pr
             modification.old_target,
             modification.new_target,
         )
-        for modification in plan.as_graph_modifications()
+        for modification in graph_modifications(plan)
         if isinstance(modification, RedirectGoto)
     }
     assert (20, 3, 10) in redirects
@@ -5531,7 +5531,7 @@ def test_emit_does_not_accept_handler_local_conditional_as_entry_bridge(
         condition_chain_handlers=frozenset({10, 20, 30}),
     )
 
-    assert not plan.as_graph_modifications()
+    assert not graph_modifications(plan)
 
 
 def test_live_predicate_keeps_exact_arm_when_state_route_precedes_it(

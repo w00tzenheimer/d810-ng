@@ -66,9 +66,9 @@ from d810.transforms.minimal_unflatten_emit import (
     build_conditional_arm_redirects,
     build_folded_loop_guard_transitions,
     build_state_write_redirects,
-    emit_minimal_unflatten,
     lower_conditional_transition_candidates,
 )
+from tests.typed_patch_authority import emit_minimal_unflatten, graph_modifications
 
 from d810.analyses.control_flow.minimal_state_recovery import (
     StateWriteTransition,
@@ -188,6 +188,17 @@ def _mov_state_from_stack(ea, stkoff):
         l=MopSnapshot(t=_T_STK, size=4, stkoff=stkoff, kind=OperandKind.STACK),
         d=MopSnapshot(t=_T_STK, size=4, stkoff=_STATE, kind=OperandKind.STACK),
         kind=InsnKind.MOV,
+    )
+
+
+def _conditional_jump(ea, target):
+    return InsnSnapshot(
+        opcode=55,
+        ea=ea,
+        operands=(),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
+        kind=InsnKind.COND_JUMP,
+        is_conditional_jump=True,
     )
 
 
@@ -359,7 +370,7 @@ def test_conditional_arm_redirects_emit_both_arms(_seam) -> None:
         pre_header_serial=1,
         initial_state=0x10,
     )
-    mods = plan.as_graph_modifications()
+    mods = graph_modifications(plan)
     edges = {
         (m.from_serial, m.new_target)
         for m in mods
@@ -388,7 +399,7 @@ def test_arm_redirects_preserve_reachability(_seam) -> None:
         pre_header_serial=1,
         initial_state=0x10,
     )
-    mods = plan.as_graph_modifications()
+    mods = graph_modifications(plan)
 
     # Apply redirects to a mutable succ map, then BFS from entry with disp removed.
     rewired = {int(s): [int(x) for x in fg.get_block(s).succs] for s in fg.blocks}
@@ -590,7 +601,7 @@ def test_shared_write_block_conditional_arms_wired_to_routed_handlers(_seam) -> 
         pre_header_serial=1,
         initial_state=0x10,
     )
-    mods = plan.as_graph_modifications()
+    mods = graph_modifications(plan)
     edge_set = {
         (m.from_serial, m.old_target, m.new_target)
         for m in mods
@@ -618,7 +629,7 @@ def test_shared_write_block_reachability_no_self_loop(_seam) -> None:
         pre_header_serial=1,
         initial_state=0x10,
     )
-    mods = plan.as_graph_modifications()
+    mods = graph_modifications(plan)
     rewired = {int(s): [int(x) for x in fg.get_block(s).succs] for s in fg.blocks}
     for m in mods:
         if not isinstance(m, (RedirectGoto, RedirectBranch)):
@@ -661,7 +672,10 @@ def _branch_pred_stack_temp_shared_write_fg() -> FlowGraph:
                 40,
                 (41, 42),
                 (2,),
-                (_mov_stack_const(0x4000, _TEMP, 0xAA),),
+                (
+                    _mov_stack_const(0x4000, _TEMP, 0xAA),
+                    _conditional_jump(0x4001, 42),
+                ),
             ),
             41: _b(
                 41,
@@ -721,7 +735,7 @@ def test_stack_temp_shared_write_emits_only_write_anchor_routes(_seam) -> None:
     )
     edge_set = {
         (m.from_serial, m.old_target, m.new_target)
-        for m in plan.as_graph_modifications()
+        for m in graph_modifications(plan)
         if isinstance(m, (RedirectGoto, RedirectBranch))
     }
 
