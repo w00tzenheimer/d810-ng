@@ -157,7 +157,7 @@ def test_flow_context_records_and_drains_run_later_request():
     assert context.drain_run_later_requests() == ()
 
 
-def test_block_optimizer_injects_the_session_mutation_gateway_port() -> None:
+def test_block_optimizer_refreshes_live_identity_before_each_gateway() -> None:
     manager = BlockOptimizerManager(
         OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
     )
@@ -179,7 +179,20 @@ def test_block_optimizer_injects_the_session_mutation_gateway_port() -> None:
 
     assert lifecycle.build_calls == [(0x401000, block.mba)]
     assert rule.flow_context.new_mba_mutation_gateway() is gateway
-    assert lifecycle.gateway_calls == [(0x401000, ida_hexrays.MMAT_GLBOPT1)]
+    assert lifecycle.build_calls == [
+        (0x401000, block.mba),
+        (0x401000, block.mba),
+    ]
+    assert rule.flow_context.new_mba_mutation_gateway() is gateway
+    assert lifecycle.build_calls == [
+        (0x401000, block.mba),
+        (0x401000, block.mba),
+        (0x401000, block.mba),
+    ]
+    assert lifecycle.gateway_calls == [
+        (0x401000, ida_hexrays.MMAT_GLBOPT1),
+        (0x401000, ida_hexrays.MMAT_GLBOPT1),
+    ]
     assert rule.flow_context.semantic_native_body_materializer() is materializer
     assert lifecycle.materializer_calls == [(0x401000, block.mba)]
 
