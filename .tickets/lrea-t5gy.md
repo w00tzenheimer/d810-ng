@@ -5860,3 +5860,40 @@ The staged projection reports no observed relation for either the planned
 predicate materialized-use or carrier ingress-use. Continue from that exact
 projection/observation mismatch; do not weaken use-def validation, synthesize
 a passing diagnostic, publish the fragment, or broaden beyond this one route.
+
+**2026-07-25T22:47:13-0700 — expected data-flow authority; typed predicate stage boundary**
+
+Functional commit `45ffadc35` makes the pure fragment projector include every
+plan-required UD and DU direction that realization must later observe, while
+retaining snapshot-observed extra definitions and uses so preflight remains
+fail-closed. A production participant test proves zero SDK writes through
+preflight and proves the independently observed staged relation exactly equals
+the immutable expected authority after realization. The complete portable
+validation plus semantic-backend gate is 158/158 green. Formatting-only commit
+`69995d139` is the repository-wide tracked-file Ruff pass.
+
+The mandatory fresh cache-disabled A560 diagnostic canary at `69995d139`
+finished in 17.77 seconds without a segfault or numeric INTERR. Log:
+`.tmp/rhad-a560-projected-dataflow-69995d139.txt`; primary DB:
+`.tmp/rhad-a560-projected-dataflow-69995d139/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+It did not return poisoned output: both permitted attempts poisoned during live
+staging, and the lifecycle then exhausted the bounded distinct-incident
+restart with an explicit runtime failure.
+
+The selected carrier transaction now records `planned -> projected ->
+preflighted -> bound -> realizing`, so the prior prewrite data-flow rejection
+is gone. Each live attempt plans 49 items, applies 16, creates 15 witnessed
+blocks, invalidates all 15 witnesses, aborts, and records
+`poisoned_restart_required`. The first attempt requests and consumes the one
+allowed poison restart; the second records exhaustion.
+
+The selected route still has C3 strictly complete and now reaches C4 live
+realization. Its monotonic first failed obligation is
+`C4_staged_proof:runtime:stage`, with exact DB reason
+`'route:state-choice@0x40BECC:0xEC71CA67:0xA0716E5B:carrier-ingress'`.
+The failure occurs immediately after the planned fallthrough helper and before
+the conditional-taken step, where realization requests the operation's typed
+live predicate binding. Continue by proving and binding the clone-owned
+storage-predicate materialization before semantic-edge realization; do not
+catch the missing key, synthesize a binding, increase restart budget, or
+broaden beyond this route.
