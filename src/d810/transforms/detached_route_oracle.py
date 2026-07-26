@@ -14,7 +14,7 @@ from d810.core.semantic_route_oracle import (
     SemanticTransferKind,
     compare_route_maturities,
 )
-from d810.ir.flowgraph import InsnKind
+from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
 from d810.transforms.fragment_plan import (
@@ -23,6 +23,7 @@ from d810.transforms.fragment_plan import (
     FragmentReferenceRouteAuthority,
 )
 from d810.transforms.fragment_validation import (
+    FragmentBindingState,
     ProjectedFragment,
     ProjectedFragmentBlock,
     projected_publication_authority_roots,
@@ -59,6 +60,16 @@ class DetachedRouteOracleRejected(ValueError):
         super().__init__(str(message))
         self.reason_code = str(reason_code)
         self.payload = {} if payload is None else dict(payload)
+
+
+class _ProjectedRouteOwnershipError(ValueError):
+    """A staged physical route lacks reconstructible plan ownership."""
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnedProjectedRouteSuccessors:
+    semantic_block_ids: tuple[str, ...]
+    conditional_fallthrough_block_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,6 +551,97 @@ def _candidate_terminator_failure(
     )
 
 
+def _owned_projected_route_successors(
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+    operation: FragmentOperation,
+    source: ProjectedFragmentBlock,
+) -> _OwnedProjectedRouteSuccessors:
+    operation_helpers = tuple(
+        helper
+        for helper in projection.fallthrough_helpers
+        if helper.operation_id == operation.operation_id
+    )
+    if len(operation_helpers) > 1:
+        raise _ProjectedRouteOwnershipError(
+            f"route operation {operation.operation_id!r} has multiple staged helpers"
+        )
+    helper = None if not operation_helpers else operation_helpers[0]
+    expected_helper_id = f"fallthrough-helper:{operation.operation_id}"
+    fallthrough_edges = tuple(
+        edge
+        for edge in operation.edges
+        if edge.role
+        in {
+            SemanticEdgeRole.CALL_FALLTHROUGH,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }
+    )
+    if helper is not None:
+        if (
+            helper.helper_block_id != expected_helper_id
+            or helper.source_block_id != operation.source_block_id
+            or len(fallthrough_edges) != 1
+            or helper.semantic_target_block_id
+            != fallthrough_edges[0].target_block_id
+        ):
+            raise _ProjectedRouteOwnershipError(
+                f"route operation {operation.operation_id!r} has a drifted "
+                "fallthrough helper descriptor"
+            )
+        try:
+            helper_block = projection.block(helper.helper_block_id)
+            helper_binding = projection.binding(helper.helper_block_id)
+            source_binding = projection.binding(operation.source_block_id)
+            semantic_target = plan.block(helper.semantic_target_block_id)
+        except KeyError as exc:
+            raise _ProjectedRouteOwnershipError(
+                f"route operation {operation.operation_id!r} has an incomplete "
+                "fallthrough helper witness"
+            ) from exc
+        if (
+            helper.helper_block_id not in source.successors
+            or helper_block.kind is not BlockKind.ONE_WAY
+            or helper_block.successors != (semantic_target.block_id,)
+            or helper_block.predecessors != (source.block_id,)
+            or helper_block.physical_position != source.physical_position + 1
+            or helper_block.adjacent_fallthrough_target_id is not None
+            or helper_block.instruction_eas
+            or helper_block.terminator_ea is not None
+            or helper_block.terminator_kind is not InsnKind.GOTO
+            or helper_binding.state is not FragmentBindingState.STAGED
+            or helper_binding.stable_identity is not None
+            or helper_binding.generation != source_binding.generation
+        ):
+            raise _ProjectedRouteOwnershipError(
+                f"route operation {operation.operation_id!r} has a malformed "
+                "fallthrough helper witness"
+            )
+
+    semantic_block_ids: list[str] = []
+    for block_id in source.successors:
+        if helper is not None and block_id == helper.helper_block_id:
+            semantic_block_ids.append(helper.semantic_target_block_id)
+            continue
+        try:
+            semantic_block_ids.append(plan.block(block_id).block_id)
+        except KeyError as exc:
+            raise _ProjectedRouteOwnershipError(
+                f"route operation {operation.operation_id!r} has an unowned "
+                f"staged successor {block_id!r}"
+            ) from exc
+    return _OwnedProjectedRouteSuccessors(
+        semantic_block_ids=tuple(semantic_block_ids),
+        conditional_fallthrough_block_id=(
+            None
+            if helper is None
+            or fallthrough_edges[0].role
+            is not SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+            else helper.helper_block_id
+        ),
+    )
+
+
 def _candidate_observation(
     plan: FragmentPlan,
     projection: ProjectedFragment,
@@ -592,17 +694,24 @@ def _candidate_observation(
         or route.rewrite_anchor_ea not in source.instruction_eas
     ):
         return _candidate_terminator_failure(route, source)
-    successor_blocks = []
-    for block_id in source.successors:
-        try:
-            successor_blocks.append(plan.block(block_id))
-        except KeyError:
-            return _candidate_failure(
-                route,
-                f"route {route.route_id} has an unowned staged successor {block_id!r}",
-            )
+    try:
+        owned_successors = _owned_projected_route_successors(
+            plan,
+            projection,
+            operation,
+            source,
+        )
+    except _ProjectedRouteOwnershipError as exc:
+        return _candidate_failure(
+            route,
+            f"route {route.route_id} {exc}",
+            failed_invariant="staged_helper_ownership",
+        )
+    successor_blocks = tuple(
+        plan.block(block_id) for block_id in owned_successors.semantic_block_ids
+    )
     operation_target_ids = frozenset(edge.target_block_id for edge in operation.edges)
-    if frozenset(source.successors) != operation_target_ids:
+    if frozenset(owned_successors.semantic_block_ids) != operation_target_ids:
         return _candidate_failure(
             route,
             f"route {route.route_id} staged successors drifted from its operation",
@@ -626,7 +735,11 @@ def _candidate_observation(
         if (
             true_edge is None
             or false_edge is None
-            or source.adjacent_fallthrough_target_id != false_edge.target_block_id
+            or source.adjacent_fallthrough_target_id
+            != (
+                owned_successors.conditional_fallthrough_block_id
+                or false_edge.target_block_id
+            )
         ):
             return _candidate_failure(
                 route,
