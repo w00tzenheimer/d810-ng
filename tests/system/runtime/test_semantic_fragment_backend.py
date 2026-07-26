@@ -2856,9 +2856,7 @@ def test_production_participant_preflights_before_realization_and_observes_live_
     assert gateway.active is False
     assert gateway.generation == generation
     assert mba.qty == quantity
-    expected_carrier = prepared.fragment.authority.projection.block(
-        "imported-carrier"
-    )
+    expected_carrier = prepared.fragment.authority.projection.block("imported-carrier")
     assert expected_carrier.instruction_eas == (0x500000, 0x500004)
     assert expected_carrier.terminator_ea is None
     assert expected_carrier.terminator_kind is InsnKind.GOTO
