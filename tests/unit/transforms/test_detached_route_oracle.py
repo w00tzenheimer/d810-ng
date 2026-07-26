@@ -636,10 +636,7 @@ def test_bind_fragment_reference_oracle_rebinds_complete_conditional_route() -> 
     )
     unowned_result = compare_detached_route_oracle(bound, unowned_helper_projection)
     assert not unowned_result.passed
-    assert (
-        unowned_result.comparisons[0].failed_invariant
-        == "staged_helper_ownership"
-    )
+    assert unowned_result.comparisons[0].failed_invariant == "staged_helper_ownership"
 
 
 def test_bind_fragment_reference_oracle_rejects_partial_authority() -> None:
