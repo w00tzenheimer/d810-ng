@@ -16,6 +16,11 @@ from d810.core import getLogger, typing
 from d810.core.decompilation_session import DecompilationEvent
 from d810.core.rule_scope import PIPELINE_FLOW
 from d810.errors import D810Exception
+from d810.hexrays.hooks.callback_mutation_diagnostics import (
+    LiveNopSite,
+    build_callback_nop_delta_records,
+    capture_live_nop_sites,
+)
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
 from d810.hexrays.mutation.return_carrier_corruption import (
@@ -962,6 +967,59 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         if callable(set_project_config):
             set_project_config(self._project_config)
 
+    def _capture_callback_nop_sites(
+        self,
+        mba: object,
+    ) -> tuple[LiveNopSite, ...] | None:
+        """Capture NOP sites only when the diagnostic consumer is installed."""
+        if self._fact_consumer_callback is None:
+            return None
+        try:
+            return capture_live_nop_sites(mba)
+        except Exception:
+            optimizer_logger.debug(
+                "failed to capture pre-callback NOP sites",
+                exc_info=True,
+            )
+            return None
+
+    def _report_callback_nop_delta(
+        self,
+        mba: object,
+        *,
+        before: tuple[LiveNopSite, ...] | None,
+        callback_kind: str,
+        callback_name: str,
+        callback_result: int | None,
+        exception_name: str | None = None,
+    ) -> None:
+        """Persist newly created NOPs without affecting callback behavior."""
+        if before is None or self._fact_consumer_callback is None:
+            return
+        try:
+            maturity_value = getattr(mba, "maturity", self.current_maturity)
+            records = build_callback_nop_delta_records(
+                before=before,
+                after=capture_live_nop_sites(mba),
+                callback_kind=callback_kind,
+                callback_name=callback_name,
+                callback_result=(
+                    None if callback_result is None else int(callback_result)
+                ),
+                maturity=maturity_to_string(maturity_value),
+                exception_name=exception_name,
+            )
+            if records:
+                self._fact_consumer_callback(
+                    int(getattr(mba, "entry_ea", 0) or 0),
+                    records,
+                )
+        except Exception:
+            optimizer_logger.debug(
+                "failed to persist callback NOP delta",
+                exc_info=True,
+            )
+
     @staticmethod
     def _extract_project_config(kwargs: dict[str, typing.Any]) -> dict[str, typing.Any]:
         return {
@@ -1054,9 +1112,24 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         )
                         if callable(set_current_rule_name):
                             set_current_rule_name(rule_name)
+                    callback_nop_sites = self._capture_callback_nop_sites(blk.mba)
+                    callback_result: int | None = None
+                    callback_exception_name: str | None = None
                     try:
-                        nb_patch = cfg_rule.optimize(blk)
+                        callback_result = cfg_rule.optimize(blk)
+                        nb_patch = callback_result
+                    except Exception as error:
+                        callback_exception_name = type(error).__name__
+                        raise
                     finally:
+                        self._report_callback_nop_delta(
+                            blk.mba,
+                            before=callback_nop_sites,
+                            callback_kind="optblock_rule",
+                            callback_name=rule_name,
+                            callback_result=callback_result,
+                            exception_name=callback_exception_name,
+                        )
                         self._record_run_later_requests(
                             flow_context,
                             rule_name=rule_name,

@@ -457,9 +457,47 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             if self._block_optimizer is not None
             else frozenset()
         )
-        if apply_return_const_corruption_cleanup(mba, prefold_def_eas=prefold_def_eas):
-            return ida_hexrays.MERR_LOOP
-        return 0
+        capture_nop_sites = getattr(
+            self._block_optimizer,
+            "_capture_callback_nop_sites",
+            None,
+        )
+        report_nop_delta = getattr(
+            self._block_optimizer,
+            "_report_callback_nop_delta",
+            None,
+        )
+        callback_nop_sites = (
+            capture_nop_sites(mba) if callable(capture_nop_sites) else None
+        )
+        callback_result: int | None = None
+        callback_exception_name: str | None = None
+        try:
+            applied = apply_return_const_corruption_cleanup(
+                mba,
+                prefold_def_eas=prefold_def_eas,
+            )
+            callback_result = ida_hexrays.MERR_LOOP if applied else 0
+            return callback_result
+        except Exception as error:
+            callback_exception_name = type(error).__name__
+            raise
+        finally:
+            if callable(report_nop_delta):
+                try:
+                    report_nop_delta(
+                        mba,
+                        before=callback_nop_sites,
+                        callback_kind="glbopt_hook",
+                        callback_name="return_const_corruption_cleanup",
+                        callback_result=callback_result,
+                        exception_name=callback_exception_name,
+                    )
+                except Exception:
+                    main_logger.debug(
+                        "failed to persist glbopt callback NOP delta",
+                        exc_info=True,
+                    )
 
     def structural(self, ct: ida_hexrays.control_graph_t) -> int:  # type: ignore
         """Structural analysis has been finished.
