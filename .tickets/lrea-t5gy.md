@@ -6678,3 +6678,17 @@ debugger breakpoint at the 50409 verifier arm to capture the exact live
 `minsn_t`, owning block, and creation interval after the final callback. Do not
 restore direct cleanup writes, weaken semantic ownership, or infer an
 acceptable C6 result from the clean C5 receipts.
+
+**2026-07-26T20:19:32Z**
+
+2026-07-26 GENERATED reference-semantic publication pivot, amending this active ticket without restarting completed work.
+
+Authoritative target state is HEAD b7d65b11ced6b815b21aa9897a0cb8eec9f669cb on diff/lrea-portable-cfg-integration. The worktree has one pre-existing untracked evidence test, tests/system/e2e/test_rhad_generated_microcode_capture.py; preserve it as user-owned work. The strict portable CFG transaction parity gate passes all 41 guarantees under pyenv Python 3.13.5.
+
+Latest A560 DB inspected before implementation: .tmp/rhad-a560-gdb-late-attach-b7d65b11c/sub_40A560.diag.sqlite3. It records the existing broad PREOPT foundation: two committed 260/260 frontend-normalization receipts, one committed 406/406 canonical receipt, 93 matched detached route comparisons, and snapshots through MMAT_GLBOPT2. It does not contain a reference-compiler plan or a route-specific GENERATED publication receipt. The preceding exact cache-disabled canary at c43b2e133 remains C5 and fails at ctree with INTERR 50409; that is historical PREOPT evidence, not acceptance of the new checksum.
+
+Reorient the immediate milestone from broad PREOPT publication to one bounded reference-semantic GENERATED checksum. Preserve the current FragmentPlan -> PatchPlan -> final binding -> shared coordinator authority, immutable preflight, creation witnesses, receipts, poisoning and restart, semantic ownership, and diagnostic events. Treat .worktrees/lrea-generated-publication-replay as behavior authority for reference-operation compilation and GENERATED lifecycle only, and .worktrees/rhad-generated-publication-experiment as historical evidence. Do not merge or cherry-pick either donor wholesale, add a compatibility layer, call DeferredGraphModifier directly, or create a second mutation gateway.
+
+Compile the reference cmovl-selected operation over 0x40A5F0-0x40A605, preserving comparison 0x0BB2D365, true target 0x40B6C0, false target 0x40A607, exact imported closure, and exits 0x40A61B, 0x40A68C, and 0x40B790. Publish the predicate, both arms, terminal rewrite, closure, and boundary bindings as one transaction at GENERATED, then prove survival through PREOPT, the first authoritative CFG maturity, CALLS, and ctree without redo, poison, numeric INTERR, or mutation outside the shared coordinator.
+
+The first unmet obligation is architectural mapping, not mutation: map the replay compiler, GENERATED producer, publication lifecycle, receipt, and maturity validation onto current production seams; enumerate and adapt or reject every replay dependency that bypasses current transaction authority. Then implement in separate compiler, GENERATED lifecycle, checksum semantics, diagnostic proof, and regression-repair commits. Do not resume broad 93-route PREOPT publication during this checksum and do not claim full A560 restoration from checksum success.
