@@ -5735,3 +5735,49 @@ compile checks pass, and both commits passed ast-grep plus all 14 import
 contracts. Continue from this exact closed-component obligation; do not raise
 the restart budget, recursively import the path to `0x40BB63`, count the nested
 route projection as a complete C3 plan, or broaden to the 91-route set.
+
+**2026-07-25T21:46:29-0700 — typed published egress and rebound identity boundary**
+
+Functional commit `1e86ee81b` retains each carrier-owned crossing into a
+published block with unresolved semantic topology as one exact
+`TEMPORARY_DISPATCHER_EGRESS` port. Every port names its staged source edge,
+external target, and deterministic retirement obligation; ordinary canonical
+composition remains fail-closed. Formatting-only commit `90eac1f6d` is the
+separate repository-wide Ruff pass. Functional commit `95880cf6c` then removes
+shared verifier-safe live start coordinates from portable current-graph
+authority by publishing the exact stable identity of the uniquely rebound
+handle while retaining graph serials only for callback-local topology. Ruff
+examined all 1,880 tracked Python files after that fix and produced no delta.
+
+The first mandatory A560 canary at `90eac1f6d` proved that the prior
+`carrier_ingress_target_component_not_closed@0x40B6C0` rejection was gone, but
+then exposed a false boundary alias at `0x40A68C`. The graph-derived probe for
+`blk15@0x40A560` included the shared fake coordinate `0x40A560`, whereas the
+identity index's uniquely rebound imported handle owned native `0x40A68C` and
+`0x40A698`. Treating the probe as portable authority therefore also captured
+`blk0@0x40A560` and produced
+`projected_boundary_current_owner_ambiguous@0x40A68C`.
+
+The fresh cache-disabled A560 canary at `95880cf6c` completed normally in 23.37
+seconds with no crash, numeric INTERR, generation poison, rollback, or pending
+restart. Log: `.tmp/rhad-a560-rebound-current-identity-95880cf6c.txt`; primary
+DB:
+`.tmp/rhad-a560-rebound-current-identity-95880cf6c/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+The generation-1 frontend-normalization transaction again records the complete
+seven-phase timeline, a 260/260 committed receipt, 639 passing prepublication
+outcomes, and 1,180 passing postpublication outcomes. That broad receipt is C2
+architecture evidence only.
+
+Carrier composition now reaches reference-oracle binding, but the selected
+route is not yet a valid C3 plan. `fact_consumers` snapshot 3 records
+`fragment_reference_route_identity_mismatch` at rewrite anchor `0x40BB63`:
+target `0x40ACF3` binds, while the nested operation claims owner identity
+`0x40BB44` and fails to bind reference owner `0x40BB51`. No canonical semantic
+transaction, validation outcome, root publication, or semantic receipt exists.
+The highest strictly completed level therefore remains C2, and the monotonic
+first failed obligation is
+`C3_complete_vertical_fragment_plan:fragment_reference_route_identity_mismatch@0x40BB63`.
+Continue by preserving the already verified detached-route owner authority
+through nested carrier projection; do not relax reference binding, reinterpret
+the state-write origin as the rewritten operation owner, or broaden beyond this
+one vertical fragment.
