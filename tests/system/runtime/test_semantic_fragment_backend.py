@@ -2986,9 +2986,9 @@ def test_participant_materializes_clone_owned_storage_predicate(monkeypatch) -> 
     assert int(branch.l.t) == int(ida_hexrays.mop_S)
     assert int(branch.l.s.off) == 0x20
     assert int(branch.r.nnn.value) == 7
-    assert modifier._semantic_fragment_state.live_operation_predicate_ea(operation) == int(
-        branch.ea
-    )
+    assert modifier._semantic_fragment_state.live_operation_predicate_ea(
+        operation
+    ) == int(branch.ea)
     assert validate_fragment_projection(plan, observed).passed
 
     modifier._discard_staged_semantic_fragment(plan)
@@ -3017,7 +3017,10 @@ def test_participant_rejects_unsafe_clone_storage_predicate_suffix_before_write(
     ) as failure:
         participant.project(plan, None)
 
-    assert failure.value.postcondition is FragmentValidationPostcondition.OPERATION_TOPOLOGY
+    assert (
+        failure.value.postcondition
+        is FragmentValidationPostcondition.OPERATION_TOPOLOGY
+    )
     assert mba.qty == quantity
     assert gateway.generation == generation
     assert gateway.active is False
