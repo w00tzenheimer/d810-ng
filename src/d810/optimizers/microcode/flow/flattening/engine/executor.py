@@ -674,7 +674,11 @@ class TransactionalExecutor:
             if tx_success
             else (
                 getattr(self.translator, "last_lowering_phase", None)
-                or ("preflight" if backend.last_patch_failure is not None else "backend_apply")
+                or (
+                    "preflight"
+                    if backend.last_patch_failure is not None
+                    else "backend_apply"
+                )
             )
         )
         tx_failure_detail = (
@@ -694,11 +698,7 @@ class TransactionalExecutor:
                     if tx_success
                     else (
                         f"rejected at {tx_failure_phase}"
-                        + (
-                            f"/{tx_failure_detail}"
-                            if tx_failure_detail
-                            else ""
-                        )
+                        + (f"/{tx_failure_detail}" if tx_failure_detail else "")
                         + f": {tx_error}"
                     )
                 ),

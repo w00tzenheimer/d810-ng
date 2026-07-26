@@ -708,11 +708,17 @@ def _lower_bound(
             bound_transaction=bound,
         )
     except Exception:
-        if child.current_transaction_attempt is not None and not child.generation_poisoned:
+        if (
+            child.current_transaction_attempt is not None
+            and not child.generation_poisoned
+        ):
             child.abort(reason="translator test boundary rejected")
         raise
     if result <= 0:
-        if child.current_transaction_attempt is not None and not child.generation_poisoned:
+        if (
+            child.current_transaction_attempt is not None
+            and not child.generation_poisoned
+        ):
             if child.transaction_failure is None:
                 child._record_clean_cfg_failure(
                     reason="translator returned no applied operations",
