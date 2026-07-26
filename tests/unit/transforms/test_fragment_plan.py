@@ -30,6 +30,7 @@ from d810.transforms.fragment_plan import (
     FragmentPublicationPurpose,
     FragmentRangeAssumption,
     FragmentRangeObservation,
+    FragmentStoragePredicateMaterialization,
     FragmentValueSite,
     FragmentWorkItemScope,
 )
@@ -194,6 +195,26 @@ def test_fragment_plan_requires_typed_publication_purpose() -> None:
                 for field in fields(FragmentPlan)
             }
         )
+
+
+def test_replacement_root_may_own_exact_storage_predicate_materialization() -> None:
+    plan = _valid_plan()
+    operation = replace(
+        plan.operations[0],
+        predicate_anchor_ea=0x40BECC,
+        storage_predicate_materialization=FragmentStoragePredicateMaterialization(
+            predicate_kind=PredicateKind.EQ,
+            storage_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+            width=4,
+            compare_constant=0xEC71CA67,
+            cut_after_ea=0x40BECC,
+        ),
+    )
+
+    plan = replace(plan, operations=(operation,))
+
+    assert plan.operations == (operation,)
+    assert plan.block(operation.source_block_id).role is FragmentBlockRole.REPLACEMENT
 
 
 def test_fragment_plan_is_serial_free_and_groups_complete_conditional() -> None:

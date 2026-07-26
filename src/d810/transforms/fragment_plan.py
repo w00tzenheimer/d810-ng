@@ -1913,20 +1913,32 @@ class FragmentPlan:
             if storage_materialization is not None:
                 identity = source.stable_identity
                 native_body = native_body_by_id.get(str(source.native_body_id))
+                canonical_imported_materialization = bool(
+                    source.role is FragmentBlockRole.IMPORTED
+                    and source.materialization
+                    is FragmentBlockMaterialization.IMPORT_NATIVE
+                    and native_body is not None
+                    and operation.operation_id in native_body.proof_ids
+                )
+                canonical_replacement_materialization = bool(
+                    source.role is FragmentBlockRole.REPLACEMENT
+                    and source.materialization
+                    is FragmentBlockMaterialization.CLONE_PUBLISHED
+                    and source.block_id in roots
+                )
                 if (
                     self.publication_purpose
                     is not FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
-                    or source.role is not FragmentBlockRole.IMPORTED
-                    or source.materialization
-                    is not FragmentBlockMaterialization.IMPORT_NATIVE
                     or identity is None
-                    or native_body is None
-                    or operation.operation_id not in native_body.proof_ids
+                    or not (
+                        canonical_imported_materialization
+                        or canonical_replacement_materialization
+                    )
                 ):
                     raise FragmentPlanRejected(
                         f"fragment operation {operation.operation_id!r} "
                         "storage predicate materialization requires owned "
-                        "canonical imported-body proof"
+                        "canonical imported-body or replacement-root proof"
                     )
                 anchors = (
                     operation.predicate_anchor_ea,
