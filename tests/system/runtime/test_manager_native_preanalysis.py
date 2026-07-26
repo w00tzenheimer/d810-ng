@@ -304,6 +304,39 @@ def test_current_mba_identity_index_uses_only_current_mba_publication_binding(
     assert events == ["build_graph", "index"]
 
 
+def test_current_mba_identity_index_is_graph_free_at_actual_generated(
+    monkeypatch,
+) -> None:
+    native_preanalysis = NativePreanalysisSessionState()
+    session = SimpleNamespace(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        identity_key="generated-session",
+        function_ea=0x40A560,
+    )
+    state = resolver_session_state(session)
+    state.semantic_route_reference_oracle_provider = SimpleNamespace(
+        reference_oracle_scope_for=lambda *_args: object()
+    )
+    index = SimpleNamespace(evidence_generation=0, generation=0)
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_GENERATED,
+        this=0x1234,
+        build_graph=lambda: pytest.fail(
+            "actual GENERATED identity indexing must not build a graph"
+        ),
+    )
+    monkeypatch.setattr(
+        MbaBlockIdentityIndex,
+        "from_mba",
+        staticmethod(lambda *_args, **_kwargs: index),
+    )
+
+    assert _build_current_mba_identity_index(session=session, mba=mba) is index
+    assert state.identity_index is index
+
+
 def test_current_mba_identity_index_rejects_previous_mba_binding(monkeypatch) -> None:
     native_preanalysis = NativePreanalysisSessionState()
     session = SimpleNamespace(

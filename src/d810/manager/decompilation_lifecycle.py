@@ -51,6 +51,7 @@ class DecompilationSessionContext:
     native_preanalysis_depth: int = 0
     current_mba_generation: int = 0
     current_mba_identity_index: object | None = None
+    generated_ready_emitted_for_current_mba: bool = False
     preopt_ready_emitted_for_current_mba: bool = False
     resolver_attachment: ResolverEvidenceAttachment | None = None
     frontend_normalization_plan_authority: SessionFrontendNormalizationPlanAuthority = (
@@ -480,6 +481,7 @@ class DecompilationLifecycleCoordinator:
             return
         session.current_mba_generation += 1
         session.current_mba_identity_index = None
+        session.generated_ready_emitted_for_current_mba = False
         session.preopt_ready_emitted_for_current_mba = False
 
     def current_mba_generation(self, *, function_ea: int) -> int:
@@ -511,6 +513,29 @@ class DecompilationLifecycleCoordinator:
                 attachment = session.resolver_attachment
                 if attachment is not None:
                     attachment.invalidate_current_mba_binding()
+
+    def mark_generated_ready_emitted(
+        self,
+        *,
+        function_ea: int,
+        microcode_modified: bool = False,
+    ) -> None:
+        """Record that the GENERATED optimizer callback emitted for this MBA."""
+        session = self.current_session(int(function_ea))
+        if session is not None:
+            session.generated_ready_emitted_for_current_mba = True
+            if microcode_modified:
+                session.current_mba_identity_index = None
+                attachment = session.resolver_attachment
+                if attachment is not None:
+                    attachment.invalidate_current_mba_binding()
+
+    def generated_ready_was_emitted(self, *, function_ea: int) -> bool:
+        """Return whether GENERATED publication already ran for this MBA."""
+        session = self.current_session(int(function_ea))
+        return bool(
+            session is not None and session.generated_ready_emitted_for_current_mba
+        )
 
     def preopt_ready_was_emitted(self, *, function_ea: int) -> bool:
         """Return whether PREOPT publication already ran for this MBA."""
