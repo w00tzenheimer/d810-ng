@@ -495,6 +495,7 @@ class NativeStackCapacityWitnessRecord:
         """Return the complete portable inventory represented by this witness."""
         return len(self.portable_points)
 
+
 def _function_chunk_inventory(function: object) -> tuple[tuple[int, int], ...]:
     """Snapshot every function chunk as immutable address intervals."""
     import ida_funcs  # type: ignore[import-untyped]
@@ -558,9 +559,7 @@ def _select_native_stack_capacity_corridor(
         if end_ea >= main_end_ea:
             break
         original_start_spd = int(ida_frame.get_spd(function, int(current_ea)))
-        original_start_delta = int(
-            ida_frame.get_sp_delta(function, int(current_ea))
-        )
+        original_start_delta = int(ida_frame.get_sp_delta(function, int(current_ea)))
         original_end_spd = int(ida_frame.get_spd(function, end_ea))
         original_end_delta = int(ida_frame.get_sp_delta(function, end_ea))
         if (
@@ -967,9 +966,7 @@ def acquire_detached_call_stack_capacity_witness(
         expected_start_delta = int(record.projected_spd) - int(
             record.original_start_spd
         )
-        expected_end_delta = int(record.original_end_spd) - int(
-            record.projected_spd
-        )
+        expected_end_delta = int(record.original_end_spd) - int(record.projected_spd)
         if (
             observed_start_spd != int(record.projected_spd)
             or observed_start_delta != expected_start_delta
@@ -12410,8 +12407,7 @@ def _on_stkpnts(
         destination_top = int(mba.stkoff_ida2vd(0))
     except Exception:
         logger.debug(
-            "computed-goto stack-capacity witness observation failed: "
-            "func=0x%X",
+            "computed-goto stack-capacity witness observation failed: func=0x%X",
             key,
             exc_info=True,
         )
