@@ -1398,11 +1398,11 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge(
         block_id="nested-route-source",
         role=FragmentBlockRole.IMPORTED,
         materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
-        semantic_anchor_ea=0x1210,
+        semantic_anchor_ea=0x1208,
         stable_identity=StableBlockIdentity.from_intervals(
-            (NativeEaInterval(0x1210, 0x1220),),
+            (NativeEaInterval(0x1208, 0x1220),),
             native_key=NATIVE_KEY,
-            exact_instruction_eas=(0x1210, 0x1212, 0x1214, 0x1218),
+            exact_instruction_eas=(0x1208, 0x1210, 0x1212, 0x1214, 0x1218),
         ),
         native_body_id=native_body.body_id,
     )
@@ -1504,7 +1504,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge(
                 ),
                 native_ranges=(
                     NativeEaInterval(0x1200, 0x1201),
-                    NativeEaInterval(0x1210, 0x1220),
+                    NativeEaInterval(0x1208, 0x1220),
                     NativeEaInterval(0x1250, 0x1251),
                     NativeEaInterval(0x1300, 0x1301),
                     NativeEaInterval(0x1310, 0x1311),
@@ -1587,9 +1587,7 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge(
         nested_operation.direct_transfer_rewrite.owner_identity
         == route_source.stable_identity
     )
-    assert nested_operation.direct_transfer_rewrite.owner_anchor_ea == (
-        route_source.semantic_anchor_ea
-    )
+    assert nested_operation.direct_transfer_rewrite.owner_anchor_ea == 0x1210
     assert nested_operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x1218
     assert nested_operation.direct_transfer_rewrite.proof_corridor_instruction_eas == (
         0x1210,

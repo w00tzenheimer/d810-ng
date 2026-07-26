@@ -2076,10 +2076,18 @@ def _with_nested_imported_state_routes(
             source_identity = source.stable_identity
             assert source_identity is not None
             if proof.source_owner_identity is None:
+                owner_anchor_ea = int(source.semantic_anchor_ea)
+                state_write = proof.state_write
+                if state_write is not None and stable_block_identities_refine_at_anchor(
+                    source_identity,
+                    state_write.identity,
+                    int(state_write.instruction_ea),
+                ):
+                    owner_anchor_ea = int(state_write.instruction_ea)
                 projected_proof = replace(
                     proof,
                     source_owner_identity=source_identity,
-                    source_owner_anchor_ea=int(source.semantic_anchor_ea),
+                    source_owner_anchor_ea=owner_anchor_ea,
                 )
             else:
                 owner_anchor_ea = proof.source_owner_anchor_ea
