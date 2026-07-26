@@ -6233,3 +6233,40 @@ immutable authority, using its planned `PlanBlockRef` and creation witness.
 Do not suppress instruction/terminator comparison, assign a native rewrite EA
 to a structural helper, or resume broad Rhad publication until this first
 frontend obligation passes.
+
+**2026-07-26T02:59:00-0700 — planned helper transfer parity complete**
+
+Functional commit `5a61e42f4` gives every planned semantic fallthrough helper
+one portable structural `GOTO` with no counterfeit native instruction
+coordinate. Immutable projection records `terminator_kind=GOTO`,
+`terminator_ea=None`, and an empty semantic instruction sequence. Live
+observation verifies that the PlanBlockRef-owned SDK block is one-way, has one
+successor, contains exactly one `m_goto`, and carries `MBL_GOTO` before
+normalizing that synthetic instruction to the same portable representation.
+Ruff-only commit `c6b15539a` formats the runtime proof. The focused helper gate
+is 18/18 green and the transaction/projection gate remains 106/106 green.
+
+The mandatory cache-disabled A560 canary at clean SHA `c6b15539a` again
+failed safely in 19.13 seconds after the bounded poisoned-generation restart.
+Log: `.tmp/rhad-a560-helper-transfer-c6b15539a.txt`; primary DB:
+`.tmp/rhad-a560-helper-transfer-c6b15539a/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+There was no process segfault or numeric INTERR. All fallthrough-helper
+instruction and terminator divergences from the preceding canary are gone.
+
+The chronological first failed transaction is now attempt
+`a85cc1d0076f4f9fab77f021b5d529bc`, plan
+`frontend-normalization:0xA560:g1:root@0x40A5F0`, at `runtime:stage` after
+immutable preflight and live realization but before publication. The first
+subject is the clone-published root
+`native[0x40A5F0-0x40A5F1,0x40A5F6-0x40A5F7,0x40A5F8-0x40A5F9,0x40A5FE-0x40A5FF;exact=0x40A5F0,0x40A5F6,0x40A5F8,0x40A5FE]:replacement`,
+whose realized instruction sequence and terminator differ from immutable
+projection. The same two fields diverge on 23 generic imported direct stubs;
+there are zero remaining helper divergences.
+
+This run again reaches C4 prepublication authority for the frontend fragment,
+while the earlier one-fragment C5 milestone remains the branch-wide high-water
+mark. Continue with the root replacement first: compare its immutable and
+realized instruction coordinates and terminator kind/EA, then encode only the
+typed direct-transfer behavior actually owned by its prepared block. Do not
+restore broad semantic publication or treat the 23 later imported stubs as the
+first obligation.
