@@ -712,14 +712,11 @@ def test_emitter_scans_imported_materialized_handler_root(_seam) -> None:
         condition_chain_handlers=frozenset({10, 40}),
     )
 
-    assert (
-        RedirectGoto(
-            from_serial=30,
-            old_target=31,
-            new_target=40,
-        )
-        in graph_modifications(plan)
-    )
+    assert RedirectGoto(
+        from_serial=30,
+        old_target=31,
+        new_target=40,
+    ) in graph_modifications(plan)
 
 
 def test_emitter_abstains_atomically_on_incomplete_materialized_handler_map(
