@@ -17,6 +17,11 @@ import pytest
 
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
+from d810.core.events import EventEmitter
+from d810.hexrays.mutation.mba_mutation_events import (
+    MbaCfgTransactionAuthorityObserved,
+    MbaMutationCommitted,
+)
 from d810.ir.flowgraph import (
     PredicateKind,
     BlockKind,
@@ -53,7 +58,11 @@ from d810.transforms.plan import (
     PatchRedirectGoto,
     compile_patch_plan,
 )
-from d810.transforms.cfg_transaction import LogicalBlockRef, PlanBlockRef
+from d810.transforms.cfg_transaction import (
+    CfgTransactionPhase,
+    LogicalBlockRef,
+    PlanBlockRef,
+)
 from d810.transforms.materialization_payload import (
     CapturedBlockBody,
     CapturedBlockBodySummary,
@@ -708,10 +717,26 @@ class _FakeDeferredGraphModifier:
         self.mba = mba
         self.calls: list[tuple] = []
         self.verify_failed = False
+        self.transaction_complete = False
         self.bound_plan = None
+        self.mutation_gateway = None
 
-    def configure_patch_bindings(self, bound_plan: object) -> None:
+    def configure_patch_bindings(
+        self,
+        bound_plan: object,
+        *,
+        mutation_gateway: object,
+    ) -> None:
         self.bound_plan = bound_plan
+        self.mutation_gateway = mutation_gateway
+
+    def observe_live_graph(self) -> FlowGraph:
+        quantity = max(int(getattr(self.mba, "qty", 0) or 0), 1)
+        return FlowGraph(
+            blocks={serial: _block(serial, (), ()) for serial in range(quantity)},
+            entry_serial=0,
+            func_ea=int(getattr(self.mba, "entry_ea", 0) or 0),
+        )
 
     def queue_goto_change(self, src: int, new: int, description: str = "") -> None:
         self.calls.append(("goto", src, new, description))
@@ -929,10 +954,100 @@ class _FakeDeferredGraphModifier:
 
     def apply(self, **kwargs) -> int:  # noqa: ANN003
         self.calls.append(("apply", kwargs))
+        assert self.bound_plan is not None
+        assert self.mutation_gateway is not None
+        self.mutation_gateway.begin_patch_realization(
+            self.bound_plan.attempt_id,
+            plan_refs=tuple(
+                reservation.plan_ref for reservation in self.bound_plan.reservations
+            ),
+        )
+        for reservation in self.bound_plan.reservations:
+            returned_serial = int(self.bound_plan.serial_for(reservation.plan_ref))
+            self.mutation_gateway.bind_reserved_plan_block(
+                self.bound_plan.attempt_id,
+                reservation.plan_ref,
+                insertion_serial=returned_serial,
+                returned_serial=returned_serial,
+            )
+        if self.bound_plan.reservations:
+            try:
+                self.mba.qty = int(self.mba.qty) + len(self.bound_plan.reservations)
+            except Exception:
+                pass
+        self.transaction_complete = True
         return sum(1 for call in self.calls if call[0] != "apply")
 
 
 class TestTypedPatchBinding:
+    def test_lower_closes_typed_attempt_with_truthful_runtime_receipt(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mba = SimpleNamespace(qty=1, maturity=4)
+        gateway = make_mutation_gateway(mba, generation=7)
+        block_ref = gateway.identity_index.plan_ref_for_serial(0)
+        plan = PatchPlan(
+            plan_id="typed-runtime-receipt",
+            snapshot_id=gateway.identity_index.snapshot_id,
+            source_maturity=_TEST_MATURITY,
+            source_generation=7,
+            steps=(PatchNopInstructions(block_ref, (0x401000,)),),
+            source_coordinates=((block_ref, 0),),
+        )
+        child_gateways: list[object] = []
+        emitter = EventEmitter()
+        phases: list[MbaCfgTransactionAuthorityObserved] = []
+        committed: list[MbaMutationCommitted] = []
+        emitter.on(MbaCfgTransactionAuthorityObserved, phases.append)
+        emitter.on(MbaMutationCommitted, committed.append)
+        gateway.event_emitter = emitter
+
+        def _factory(mba: object, **kwargs) -> _FakeDeferredGraphModifier:
+            child = kwargs["mutation_gateway"]
+            child_gateways.append(child)
+            modifier = _FakeDeferredGraphModifier(mba)
+            apply = modifier.apply
+
+            def _apply(**apply_kwargs) -> int:
+                child.begin_patch_realization(
+                    child.current_transaction_attempt,
+                    plan_refs=(),
+                )
+                return apply(**apply_kwargs)
+
+            modifier.apply = _apply  # type: ignore[method-assign]
+            return modifier
+
+        graph = FlowGraph(
+            blocks={0: _block(0, (), ())},
+            entry_serial=0,
+            func_ea=0x401000,
+        )
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        translator_module = importlib.import_module(
+            "d810.hexrays.mutation.ir_translator"
+        )
+        monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
+        monkeypatch.setattr(translator_module, "lift", lambda _mba: graph)
+
+        assert IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway) == 1
+
+        child = child_gateways[0]
+        assert child.active is False
+        assert [event.phase for event in phases] == [
+            CfgTransactionPhase.PLANNED,
+            CfgTransactionPhase.BOUND,
+            CfgTransactionPhase.REALIZING,
+            CfgTransactionPhase.OBSERVED,
+            CfgTransactionPhase.COMMITTED,
+        ]
+        assert child.receipts[-1].planned_operation_count == 1
+        assert child.receipts[-1].operation_count == 1
+        assert committed[-1].receipt is child.receipts[-1]
+
     def test_lower_binds_snapshot_ref_only_at_modifier_queue_boundary(
         self,
         monkeypatch: pytest.MonkeyPatch,

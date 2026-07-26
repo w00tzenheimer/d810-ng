@@ -75,7 +75,7 @@ from d810.hexrays.mutation.patch_binding import (
     PatchBindingRejected,
     bind_patch_plan,
 )
-from d810.transforms.cfg_transaction import TransactionAttemptId
+from d810.transforms.cfg_transaction import CfgGenerationPoisoned, TransactionAttemptId
 
 if TYPE_CHECKING:
     import ida_hexrays
@@ -1023,7 +1023,7 @@ class IDAIRTranslator:
                 len(patch_plan.new_blocks),
             )
 
-        modifier = self._bind_and_queue_patch_plan(
+        modifier, patch_gateway = self._bind_and_queue_patch_plan(
             patch_plan,
             mba,
             mutation_gateway=mutation_gateway,
@@ -1075,9 +1075,14 @@ class IDAIRTranslator:
                 transactional=use_transactional,
                 staged_atomic=use_staged_atomic,
             )
-        except Exception:
+        except Exception as exc:
             self._last_lowering_phase = modifier.last_apply_phase or "backend_apply"
             self._last_lowering_subphase = modifier.last_apply_subphase
+            self._fail_patch_attempt(
+                patch_gateway,
+                exc,
+                failure_phase=self._last_lowering_phase,
+            )
             raise
 
         # If verify failed (even after rollback attempt), signal the pipeline
@@ -1099,13 +1104,79 @@ class IDAIRTranslator:
                     "DeferredGraphModifier.verify_failed is set after apply; "
                     "returning 0 to prevent pipeline from treating changes as successful"
                 )
+                self._fail_patch_attempt(
+                    patch_gateway,
+                    RuntimeError("post-apply native verification failed"),
+                    failure_phase=(
+                        self._last_lowering_phase or "native_verify"
+                    ),
+                )
                 return 0
 
         if result_count == 0 and self._last_lowering_phase is None:
             self._last_lowering_phase = modifier.last_apply_phase
             self._last_lowering_subphase = modifier.last_apply_subphase
 
+        if result_count <= 0:
+            self._fail_patch_attempt(
+                patch_gateway,
+                RuntimeError("PatchPlan applied no operations"),
+                failure_phase=(self._last_lowering_phase or "backend_apply"),
+            )
+            return 0
+
+        if not modifier.transaction_complete:
+            self._fail_patch_attempt(
+                patch_gateway,
+                RuntimeError(
+                    "PatchPlan live realization did not apply its complete inventory"
+                ),
+                failure_phase="realization",
+            )
+            return 0
+
+        if not patch_gateway.mutation_started:
+            self._fail_patch_attempt(
+                patch_gateway,
+                RuntimeError("PatchPlan reported writes before realization started"),
+                failure_phase="realization",
+            )
+            raise RuntimeError(
+                "PatchPlan reported writes before realization started"
+            )
+        post_graph = modifier.observe_live_graph()
+        patch_gateway.observe_patch_realization(
+            post_graph,
+            applied_operation_count=len(patch_plan.steps),
+        )
+        patch_gateway.commit()
+
         return result_count
+
+    @staticmethod
+    def _fail_patch_attempt(
+        patch_gateway: MbaMutationGateway,
+        error: Exception,
+        *,
+        failure_phase: str,
+    ) -> None:
+        if not patch_gateway.active:
+            return
+        reason = str(error) or type(error).__name__
+        obligation = f"runtime:{failure_phase}"
+        if patch_gateway.mutation_started:
+            failure = patch_gateway._poison_cfg_generation(
+                reason=reason,
+                failure_phase=failure_phase,
+                first_failed_obligation=obligation,
+            )
+            raise CfgGenerationPoisoned(failure) from error
+        patch_gateway._record_clean_cfg_failure(
+            reason=reason,
+            failure_phase=failure_phase,
+            first_failed_obligation=obligation,
+        )
+        patch_gateway.abort(reason=reason)
 
     def _bind_and_queue_patch_plan(
         self,
@@ -1114,7 +1185,7 @@ class IDAIRTranslator:
         *,
         mutation_gateway: MbaMutationGateway,
         deferred_modifier_module: object,
-    ) -> "DeferredGraphModifierType":
+    ) -> tuple["DeferredGraphModifierType", MbaMutationGateway]:
         """Prepare a plan without leaving identity residue on prewrite failure."""
         patch_gateway = mutation_gateway.new_transaction()
         transaction_attempt = TransactionAttemptId.new(
@@ -1144,22 +1215,31 @@ class IDAIRTranslator:
                 mba,
                 mutation_gateway=patch_gateway,
             )
-            modifier.configure_patch_bindings(bound_patch_plan)
+            modifier.configure_patch_bindings(
+                bound_patch_plan,
+                mutation_gateway=patch_gateway,
+            )
             bound_modifier = BoundModifier(modifier, bound_patch_plan)
             for step in patch_plan.steps:
                 self._queue_patch_step(bound_modifier, step)
-            return modifier
+            return modifier, patch_gateway
         except Exception as exc:
+            failure_phase = (
+                "binding" if isinstance(exc, PatchBindingRejected) else "queueing"
+            )
             if patch_gateway.active:
+                patch_gateway._record_clean_cfg_failure(
+                    reason=str(exc) or type(exc).__name__,
+                    failure_phase=failure_phase,
+                    first_failed_obligation=f"runtime:{failure_phase}",
+                )
                 patch_gateway.abort(
                     reason=(
                         "PatchPlan prewrite preparation failed: "
                         f"{type(exc).__name__}: {exc}"
                     )
                 )
-            self._last_lowering_phase = (
-                "binding" if isinstance(exc, PatchBindingRejected) else "queueing"
-            )
+            self._last_lowering_phase = failure_phase
             raise
 
     def _unsupported_patch_plan_reasons(self, patch_plan: PatchPlan) -> list[str]:

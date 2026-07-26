@@ -42,6 +42,7 @@ from d810.ir.block_identity import (
     StableBlockIdentity,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.flowgraph import FlowGraph
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentPlan,
@@ -823,7 +824,7 @@ class MbaMutationGateway:
     def _record_fragment_preflighted(self) -> None:
         self._emit_cfg_transaction_phase(CfgTransactionPhase.PREFLIGHTED)
 
-    def _record_clean_fragment_failure(
+    def _record_clean_cfg_failure(
         self,
         *,
         reason: str,
@@ -875,16 +876,19 @@ class MbaMutationGateway:
         self._require_active_fragment(plan)
         self._record_cfg_mutation_started()
 
-    def _poison_fragment_generation(
+    def _poison_cfg_generation(
         self,
-        plan: FragmentPlan,
         *,
         reason: str,
         failure_phase: str,
         first_failed_obligation: str,
         interr_code: int | None = None,
+        plan: FragmentPlan | None = None,
     ) -> CfgTransactionFailure:
-        self._require_active_fragment(plan)
+        if plan is None:
+            self._require_active()
+        else:
+            self._require_active_fragment(plan)
         if not self._mutation_started:
             raise RuntimeError("cannot poison a generation before live mutation")
         attempt = self._current_transaction_attempt
@@ -1128,11 +1132,49 @@ class MbaMutationGateway:
         if attempt != self._current_transaction_attempt:
             raise ValueError("patch realization attempt is not the active batch")
         requested = tuple(plan_refs)
-        if not requested:
-            raise ValueError("patch realization requires planned block ownership")
+        if len(set(requested)) != len(requested):
+            raise ValueError("patch realization references duplicate planned blocks")
+        if set(requested) != set(self._cfg_plan_refs):
+            raise ValueError("patch realization block ownership differs from its plan")
         if any(plan_ref not in self._cfg_reservations for plan_ref in requested):
             raise ValueError("patch realization references an unreserved plan block")
         self._record_cfg_mutation_started()
+
+    def observe_patch_realization(
+        self,
+        live_graph: FlowGraph,
+        *,
+        applied_operation_count: int,
+    ) -> None:
+        """Record the complete live result of one ordinary typed PatchPlan."""
+        self._require_active()
+        if self._current_transaction_attempt is None:
+            raise RuntimeError("patch observation has no transaction attempt")
+        if self._active_fragment_plan is not None:
+            raise RuntimeError("ordinary patch observation cannot own a fragment")
+        if not self._mutation_started:
+            raise RuntimeError("patch observation requires a started live mutation")
+        if not isinstance(live_graph, FlowGraph):
+            raise TypeError("patch observation requires a portable live graph")
+        applied = int(applied_operation_count)
+        if applied != self._planned_operation_count:
+            raise RuntimeError(
+                "patch realization operation inventory mismatch: "
+                f"planned={self._planned_operation_count} applied={applied}"
+            )
+        if set(self._cfg_creation_receipts) != set(self._cfg_plan_refs):
+            raise RuntimeError("patch observation lacks complete creation receipts")
+        for plan_ref, receipt in self._cfg_creation_receipts.items():
+            self._cfg_plan_bindings[plan_ref] = MbaCfgPlanBlockBindingObserved(
+                plan_ref=plan_ref,
+                logical_version=receipt.logical_version,
+                returned_serial=int(receipt.returned_serial),
+            )
+        attempt = self._current_transaction_attempt
+        self.identity_index.refresh_from_flow_graph(live_graph)
+        self.identity_index.begin_transaction(attempt, live_graph.num_blocks)
+        self._operation_count = applied
+        self._emit_cfg_transaction_phase(CfgTransactionPhase.OBSERVED)
 
     def _emit_observation(
         self,
@@ -1772,7 +1814,7 @@ class MbaMutationGateway:
                 and self._transaction_failure is None
             ):
                 failure_phase = str(getattr(exc, "phase", "preflight"))
-                self._record_clean_fragment_failure(
+                self._record_clean_cfg_failure(
                     reason=str(exc) or type(exc).__name__,
                     failure_phase=failure_phase,
                     first_failed_obligation=_first_failed_obligation(
@@ -2336,6 +2378,16 @@ class MbaMutationGateway:
         ):
             raise RuntimeError(
                 "fragment publication operation inventory mismatch: "
+                f"planned={self._planned_operation_count} "
+                f"applied={self._operation_count}"
+            )
+        if (
+            self._current_transaction_attempt is not None
+            and self._active_kind is not StructuralMutationKind.FRAGMENT_PUBLICATION
+            and self._operation_count != self._planned_operation_count
+        ):
+            raise RuntimeError(
+                "patch realization operation inventory mismatch: "
                 f"planned={self._planned_operation_count} "
                 f"applied={self._operation_count}"
             )

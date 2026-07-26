@@ -1135,6 +1135,7 @@ class DeferredGraphModifier:
     modifications: list[QueuedModification] = field(default_factory=list)
     _applied: bool = False
     verify_failed: bool = False
+    transaction_complete: bool = False
     last_apply_phase: str | None = None
     last_apply_subphase: str | None = None
     last_stale_serial_scan: dict | None = None
@@ -1219,12 +1220,14 @@ class DeferredGraphModifier:
         self._pass_id = pass_id
         self._session_id = uuid.uuid4().hex
 
-    def configure_patch_bindings(self, bound_plan) -> None:
+    def configure_patch_bindings(self, bound_plan, *, mutation_gateway=None) -> None:
         """Install attempt-local creation ownership before queueing writes."""
         attempt = bound_plan.attempt_id
-        gateway = self._mutation_gateway
+        gateway = mutation_gateway or self._mutation_gateway
         if gateway is None or not gateway.active:
             raise RuntimeError("patch binding requires an active mutation gateway")
+        if gateway is not self._mutation_gateway:
+            raise ValueError("patch binding gateway differs from modifier authority")
         if gateway.current_transaction_attempt != attempt:
             raise ValueError("patch binding attempt is not the active gateway attempt")
         self._patch_plan_ref_by_bound_serial = {
@@ -1232,6 +1235,10 @@ class DeferredGraphModifier:
             for spec in bound_plan.plan.new_blocks
         }
         self._realized_patch_serial_by_bound_serial.clear()
+
+    def observe_live_graph(self):
+        """Lift the post-apply MBA for transaction observation and commit."""
+        return lift(self.mba)
 
     def _emit(self, event: DeferredEvent, payload: dict) -> None:
         """Emit *event* with *payload* if an emitter is configured.
@@ -7444,6 +7451,8 @@ class DeferredGraphModifier:
         gateway = self._mutation_gateway
         if gateway is None or not gateway.active:
             return
+        if gateway.current_transaction_attempt is not None:
+            return
         try:
             gateway.abort(reason=str(reason))
         except Exception:
@@ -7550,6 +7559,7 @@ class DeferredGraphModifier:
             ``samples/restructuring_lab/specs/2026-06-06-insert-unflatten-phase1.md``
             and ``tests/system/runtime/hexrays/test_insert_unflatten_mini.py``.
         """
+        self.transaction_complete = False
         if self._applied:
             logger.warning("DeferredGraphModifier.apply() called twice")
             return 0
@@ -7584,6 +7594,7 @@ class DeferredGraphModifier:
                 self.verify_failed = True
                 return 0
 
+        self._begin_patch_plan_realization()
         self._set_apply_phase("backend_apply", "pre_apply_verify")
         self.last_stale_serial_scan = None
 
@@ -8038,6 +8049,11 @@ class DeferredGraphModifier:
                 enable_snapshot_rollback=enable_snapshot_rollback,
                 post_apply_hook=post_apply_hook,
             )
+            self.transaction_complete = (
+                result > 0
+                and staged_failed == 0
+                and staged_successful == len(sorted_mods)
+            )
             self._finish_mutation_batch(result)
             return result
 
@@ -8338,6 +8354,7 @@ class DeferredGraphModifier:
             failed,
             rolled_back,
         )
+        self.transaction_complete = failed == 0 and successful == len(sorted_mods)
 
         if successful > 0:
             # Publish the structural receipt before diagnostic capture,
@@ -10207,10 +10224,25 @@ class DeferredGraphModifier:
         gateway = self._mutation_gateway
         if gateway is None or not gateway.active:
             return
+        if gateway.current_transaction_attempt is not None:
+            return
         if int(applied) > 0:
             gateway.commit()
         else:
             gateway.abort()
+
+    def _begin_patch_plan_realization(self) -> None:
+        """Cross the typed write boundary before any apply-time SDK activity."""
+        gateway = self._mutation_gateway
+        if gateway is None or not gateway.active:
+            return
+        attempt = gateway.current_transaction_attempt
+        if attempt is None or gateway.mutation_started:
+            return
+        gateway.begin_patch_realization(
+            attempt,
+            plan_refs=tuple(self._patch_plan_ref_by_bound_serial.values()),
+        )
 
     def _record_serial_insertion(
         self,

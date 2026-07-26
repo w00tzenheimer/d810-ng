@@ -824,8 +824,7 @@ class _SemanticPatchLifecycle:
                 error=original_error,
             )
         if self.gateway.mutation_started:
-            failure = self.gateway._poison_fragment_generation(
-                self.plan,
+            failure = self.gateway._poison_cfg_generation(
                 reason=_failure_message(primary_error),
                 failure_phase=self.failure_phase,
                 first_failed_obligation=_first_failed_obligation(
@@ -833,6 +832,7 @@ class _SemanticPatchLifecycle:
                     failure_phase=self.failure_phase,
                 ),
                 interr_code=_interr_code(primary_error),
+                plan=self.plan,
             )
             self.lifecycle_authority.request_poisoned_generation_restart(
                 self.plan,
@@ -841,7 +841,7 @@ class _SemanticPatchLifecycle:
             raise CfgGenerationPoisoned(failure) from original_error
 
         if self.gateway.transaction_failure is None:
-            self.gateway._record_clean_fragment_failure(
+            self.gateway._record_clean_cfg_failure(
                 reason=_failure_message(primary_error),
                 failure_phase=self.failure_phase,
                 first_failed_obligation=_first_failed_obligation(
