@@ -1109,15 +1109,16 @@ class MbaMutationGateway:
                 pass
             else:
                 identity_transaction_prepared = True
+                prepared_quantity = self.identity_index.transaction_quantity(
+                    transaction_attempt.attempt_id
+                )
                 if (
                     serial_quantity is not None
-                    and self.identity_index.transaction_quantity(
-                        transaction_attempt.attempt_id
-                    )
-                    != serial_quantity
+                    and prepared_quantity != serial_quantity
                 ):
                     raise ValueError(
-                        "prepared patch binding quantity differs from live batch"
+                        "prepared patch binding quantity differs from live batch: "
+                        f"prepared={prepared_quantity}, live={serial_quantity}"
                     )
         if not identity_transaction_prepared:
             self.identity_index.begin_transaction(

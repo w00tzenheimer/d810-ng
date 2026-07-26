@@ -994,6 +994,51 @@ def test_patch_attempt_observes_exact_applied_count_before_commit() -> None:
     assert committed[-1].receipt is receipt
 
 
+def test_prepared_patch_quantity_mismatch_reports_both_authorities() -> None:
+    first = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401000, 0x401010),), native_key=NATIVE_KEY
+    )
+    alias = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x402000, 0x402010),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=((first, 0), (alias, 0)),
+        native_key=NATIVE_KEY,
+    )
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+    attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="attempt-quantity-mismatch",
+    )
+    gateway._record_cfg_attempt_planned(
+        plan_id=attempt.plan_id,
+        plan_refs=(),
+        attempt=attempt,
+    )
+    gateway._prepare_patch_binding(attempt, serial_quantity=1)
+    gateway._record_cfg_bound()
+
+    with pytest.raises(
+        ValueError,
+        match=r"prepared=2, live=1",
+    ):
+        gateway.begin_batch(
+            StructuralMutationKind.BLOCK_REPLACE,
+            serial_quantity=1,
+            transaction_attempt=attempt,
+            patch_plan_id=attempt.plan_id,
+        )
+
+
 def test_patch_attempt_cannot_commit_without_complete_observation() -> None:
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="mutation-session",
