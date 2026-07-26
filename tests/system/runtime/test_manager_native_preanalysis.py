@@ -237,9 +237,7 @@ def test_default_ollvm_profile_selects_complete_a560_flow_route_oracle() -> None
     assert len(selection.routes) == 93
     assert len({route.route_id for route in selection.routes}) == 93
     assert len({route.owner_ea for route in selection.routes}) == 93
-    routes_by_anchor = {
-        route.rewrite_anchor_ea: route for route in selection.routes
-    }
+    routes_by_anchor = {route.rewrite_anchor_ea: route for route in selection.routes}
     assert set(routes_by_anchor) >= {0x40A5C8, 0x40BB63, 0x40BED0, 0x40C4D2}
     entry_route = routes_by_anchor[0x40A5C8]
     assert entry_route.owner_ea == 0x40A5B2
