@@ -22,6 +22,7 @@ from d810.ir.block_identity import (
 )
 from d810.transforms.report import InvariantViolation
 from d810.ir.flowgraph import InsnSnapshot
+from d810.transforms.cfg_transaction import TransactionAttemptId
 from d810.hexrays.mutation import deferred_modifier as dm
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
 from tests.native_preanalysis import make_native_key
@@ -1518,6 +1519,65 @@ def test_conditional_helper_inserts_empty_block_without_copying_imported_body(
     assert helper.head is None
     assert tuple(helper.succset) == (21,)
     assert int(mba.get_mblock(21).start) == 0x40C898
+
+
+def test_conditional_helper_accepts_ordinary_transaction_authority(
+    monkeypatch,
+) -> None:
+    mba = _FakeMBA()
+    source = _FakeBlock(10, start=0x1800144E4)
+    source.mba = mba
+    source.head = None
+    source.tail = SimpleNamespace(ea=0x1800144F4, next=None)
+    target = _FakeBlock(20, start=0x18001452B)
+    target.mba = mba
+    mba.blocks = {
+        int(source.serial): source,
+        int(target.serial): target,
+    }
+    mba.qty = 30
+    mba.map_fict_ea = lambda ea: ea  # type: ignore[attr-defined]
+    inserted: list[int] = []
+
+    def _insert_block(insertion_serial: int):
+        insertion_serial = int(insertion_serial)
+        inserted.append(insertion_serial)
+        for block in tuple(mba.blocks.values()):
+            if int(block.serial) >= insertion_serial:
+                block.serial += 1
+        helper = _FakeBlock(insertion_serial, start=mba.entry_ea)
+        helper.mba = mba
+        helper.head = None
+        helper.tail = None
+        helper.type = int(ida_hexrays.BLT_0WAY)
+        helper.nsucc = lambda: 0  # type: ignore[method-assign]
+        helper.npred = lambda: 0  # type: ignore[method-assign]
+        mba.blocks = {int(block.serial): block for block in mba.blocks.values()}
+        mba.blocks[insertion_serial] = helper
+        mba.qty += 1
+        return helper
+
+    mba.insert_block = _insert_block  # type: ignore[attr-defined]
+    monkeypatch.setattr(dm, "insert_goto_instruction", lambda *_args, **_kwargs: None)
+
+    gateway = make_mutation_gateway(mba)
+    attempt = TransactionAttemptId.new(
+        "tigress-conditional-lowering",
+        gateway.session_id,
+        gateway.generation,
+    )
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_REPLACE,
+        serial_quantity=mba.qty,
+        planned_operation_count=1,
+        transaction_attempt=attempt,
+        patch_plan_id=attempt.plan_id,
+    )
+    gateway.begin_patch_realization(attempt, plan_refs=())
+
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    assert modifier._build_fallthrough_goto_helper(source, target) == 11
+    assert inserted == [11]
 
 
 def test_conditional_helper_rebinds_target_when_proxy_serial_stays_stale(

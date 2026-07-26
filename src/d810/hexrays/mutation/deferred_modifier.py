@@ -12358,7 +12358,7 @@ class DeferredGraphModifier:
         )
         old_qty = int(mba.qty)
         if gateway.current_transaction_attempt is not None:
-            gateway._record_fragment_mutation_started()
+            gateway._record_cfg_mutation_started()
         nop_block = mba.insert_block(int(blk.serial) + 1)
         if nop_block is None:
             return None
