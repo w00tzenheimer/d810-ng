@@ -1390,7 +1390,7 @@ def test_preoptimized_hook_dispatches_live_mba_before_locopt() -> None:
 
     hook = SimpleNamespace(callback=callback)
 
-    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
+    assert HexraysDecompilationHook.preoptimized(hook, mba) == ida_hexrays.MERR_LOOP
     assert events == [DecompilationEvent.HEXRAYS_PREOPT_READY]
 
 
@@ -1432,7 +1432,7 @@ def test_preoptimized_hook_owns_top_level_structural_mutation() -> None:
         _database_identity="sample.i64",
     )
 
-    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
+    assert HexraysDecompilationHook.preoptimized(hook, mba) == ida_hexrays.MERR_LOOP
     assert events == [
         (
             DecompilationEvent.HEXRAYS_PREOPT_READY,
@@ -1492,6 +1492,36 @@ def test_preoptimized_hook_returns_success_when_microcode_is_unchanged() -> None
     hook = SimpleNamespace(callback=lambda event, **kwargs: None)
 
     assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
+
+
+def test_preoptimized_hook_reports_one_bounded_loop_after_structural_write() -> None:
+    from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+
+    mba = SimpleNamespace(entry_ea=0x40A560)
+    emitted = False
+    callback_count = 0
+
+    def mark_emitted(**_kwargs: object) -> None:
+        nonlocal emitted
+        emitted = True
+
+    def callback(_event: object, **kwargs: object) -> None:
+        nonlocal callback_count
+        callback_count += 1
+        kwargs["decision"]["microcode_modified"] = True
+
+    lifecycle = SimpleNamespace(
+        preopt_ready_was_emitted=lambda **_kwargs: emitted,
+        mark_preopt_ready_emitted=mark_emitted,
+    )
+    hook = SimpleNamespace(
+        callback=callback,
+        _decompilation_lifecycle=lifecycle,
+    )
+
+    assert HexraysDecompilationHook.preoptimized(hook, mba) == ida_hexrays.MERR_LOOP
+    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
+    assert callback_count == 1
 
 
 def test_hexrays_hooks_own_the_preopt_generation_guard() -> None:

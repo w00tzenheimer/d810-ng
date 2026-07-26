@@ -383,12 +383,19 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                 function_ea,
                 decision.get("reason", "unspecified"),
             )
-        elif bool(decision.get("microcode_modified")):
+        if bool(decision.get("microcode_modified")):
             main_logger.info(
                 "Hex-Rays PREOPT preanalysis modified microcode for 0x%X: %s",
                 function_ea,
                 decision.get("details", {}),
             )
+            # hxe_preoptimized has an MERR_* return contract.  A committed
+            # structural publication must restart the just-finished
+            # preoptimization loop; returning zero lets stale m_nop work
+            # markers survive until ctree generation (INTERR 50409).  The
+            # lifecycle's preopt_ready_was_emitted guard makes the repeated
+            # callback observational only and prevents re-publication.
+            return ida_hexrays.MERR_LOOP
         return 0
 
     def prolog(
