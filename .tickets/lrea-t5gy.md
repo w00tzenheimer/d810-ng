@@ -5935,3 +5935,41 @@ instruction facts that violated the proof. Continue by making that portable
 evidence reconstructible in the diagnostic failure, then repair only the
 first unsafe or misclassified suffix instruction; do not weaken atomic suffix
 validation, write live state, or broaden to another route.
+
+**2026-07-25T23:35:00-0700 — first complete carrier-ingress C5 transaction**
+
+Commit `d01e6397f` persists a canonical JSON rendering of immutable clone-source
+suffix facts in the monotonic transaction failure reason. Its canary proved the
+carrier root at `0x40A5AE` had two register-only dispatcher writes and an
+implicit one-way edge, rather than an explicit transfer instruction. Commit
+`8dc7f61e5` accepts that narrow shape only when the suffix contains `NOP` or
+register-destination `MOV` instructions and the source's sole live successor
+exactly equals the typed conditional-fallthrough target. Wrong successors and
+side-effecting suffix writes reject before mutation. Commit `8bc922226` scopes
+physical data-flow site matching to each typed obligation, allowing predicate
+and carrier semantic aliases to share one proved physical access without
+weakening duplicate-site rejection inside an obligation. The focused gate is
+169/169 green. Repository-wide tracked-file Ruff format produced no delta for
+these slices.
+
+The mandatory cache-disabled A560 canary at `8bc922226` completed without a
+segfault or numeric INTERR and produced the first reconstructible selected-route
+C5 transaction. Log: `.tmp/rhad-a560-obligation-alias-8bc922226.txt`; primary
+DB:
+`.tmp/rhad-a560-obligation-alias-8bc922226/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+Attempt `8bcafee1067f4e34aef7cdd7626922b7` records the complete `planned ->
+projected -> preflighted -> bound -> realizing -> observed -> committed`
+timeline, the detached route oracle passes, and receipt event 556 commits all
+49/49 operations. Its creation-witness checksum contains 11 committed synthetic
+blocks, 14 committed imported-native blocks, one committed native block, six
+non-creating planned references, and zero invalidations.
+
+The required one-fragment C5 architecture milestone is therefore satisfied for
+`route:state-choice@0x40BECC:0xEC71CA67:0xA0716E5B:carrier-ingress`. A560 is not
+C6 accepted: its output still contains one false `while ( 1 )`. The first
+post-C5 failure is `C6_semantic_acceptance:runtime:realization` at
+`MMAT_GLBOPT2`. Subsequent prepared non-fragment PatchPlans reach `bound` and
+then reject cleanly with `prepared patch binding quantity differs from live
+batch`; no further mutation starts. Continue by tracing why those plans retain
+the pre-publication MBA quantity after the committed 49-operation fragment.
+Do not broaden to the 91-route batch or treat C5 as final A560 acceptance.
