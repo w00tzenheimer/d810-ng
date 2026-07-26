@@ -302,9 +302,7 @@ def test_migrated_structural_entrypoints_require_the_gateway_port() -> None:
                         "mutation_gateway" in keyword_defaults
                         and keyword_defaults["mutation_gateway"] is None
                     ):
-                        violations.append(
-                            f"{relative}:{node.lineno}:{qualified_name}"
-                        )
+                        violations.append(f"{relative}:{node.lineno}:{qualified_name}")
                 self.generic_visit(node)
 
             visit_AsyncFunctionDef = visit_FunctionDef
