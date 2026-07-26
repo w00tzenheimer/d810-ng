@@ -390,9 +390,22 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             "_report_callback_nop_delta",
             None,
         )
+        report_nop_inventory = getattr(
+            self._block_optimizer,
+            "_report_callback_nop_inventory",
+            None,
+        )
         callback_nop_sites = (
             capture_nop_sites(mba) if callable(capture_nop_sites) else None
         )
+        if callable(report_nop_inventory):
+            report_nop_inventory(
+                mba,
+                sites=callback_nop_sites,
+                callback_kind="glbopt_hook",
+                callback_name="hxe_glbopt_boundary",
+                stage="entry",
+            )
         callback_result: int | None = None
         callback_exception_name: str | None = None
         try:
@@ -419,6 +432,25 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                 except Exception:
                     main_logger.debug(
                         "failed to persist glbopt callback NOP delta",
+                        exc_info=True,
+                    )
+            if callable(report_nop_inventory):
+                try:
+                    exit_nop_sites = (
+                        capture_nop_sites(mba)
+                        if callable(capture_nop_sites)
+                        else None
+                    )
+                    report_nop_inventory(
+                        mba,
+                        sites=exit_nop_sites,
+                        callback_kind="glbopt_hook",
+                        callback_name="hxe_glbopt_boundary",
+                        stage="exit",
+                    )
+                except Exception:
+                    main_logger.debug(
+                        "failed to persist glbopt callback NOP inventory",
                         exc_info=True,
                     )
 
