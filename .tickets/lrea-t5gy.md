@@ -5695,3 +5695,43 @@ boundary from the receipt-backed current-MBA inventory while retaining
 `0x40BB51` as the imported semantic source; it must not reinterpret the absent
 imported source as live, weaken exact identity ownership, count the unrelated
 broad receipt as route C5, or add another semantic route.
+
+**2026-07-25T21:23:57-0700 — carrier ingress identity and closed-component boundary**
+
+Functional commit `e1c87c228` wires the configured detached route through one
+bounded carrier-ingress attempt when its imported source has no current owner.
+Formatting-only commit `2b37f5ff2` is the separately requested Ruff pass. The
+current graph identity inventory is now derived from each `FlowGraph` block's
+native snapshot and confirmed through `MbaBlockIdentityIndex.rebind_identity()`;
+it never indexes another maturity by the current graph's serial. The regression
+uses deliberately shifted serial namespaces and makes `identity_for_serial()` a
+hard failure.
+
+The mandatory fresh cache-disabled A560 canary completed normally in 16.87
+seconds with no crash, numeric INTERR, generation poison, rollback, or pending
+restart. Log: `.tmp/rhad-a560-carrier-ingress-closed-gate.txt`; primary DB:
+`.tmp/rhad-a560-carrier-ingress-closed-gate/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+The DB records one committed generation-1 frontend-normalization transaction.
+Identity decision event 172 confirms the graph-derived current owner as
+`blk3@0x40A5AE`; the prior
+`carrier_ingress_current_owner_count_mismatch@0x40A5AE` is gone.
+
+The configured carrier attempt now gets far enough to project the selected
+`0x40BB63 -> 0x40ACF3` route and its `0x40BB3A` plus `0x40BB51` corridor, but it
+does not produce a complete publishable fragment. `fact_consumers` snapshot 3,
+consumer 5 records the first failed obligation at stable boundary `0x40B6C0`:
+operation `native-body-edge@0x40B6C0` is a published imported boundary with
+unresolved semantic topology, entered from native source `0x40AD18` by
+`native-indirect-transfer@0x40AD1C`. The production gate reports this as
+`carrier_ingress_target_component_not_closed` and sets
+`contextual_restart_permitted=false`; it therefore cannot broaden the fragment
+one normalization generation at a time or exhaust the bounded restart budget.
+
+The highest strictly completed v3.1 level remains C2. The new monotonic first
+failed obligation is
+`C3_complete_vertical_fragment_plan:carrier_ingress_target_component_not_closed@0x40B6C0`.
+Focused carrier composition/lowering verification is 58/58 green, Ruff lint and
+compile checks pass, and both commits passed ast-grep plus all 14 import
+contracts. Continue from this exact closed-component obligation; do not raise
+the restart budget, recursively import the path to `0x40BB63`, count the nested
+route projection as a complete C3 plan, or broaden to the 91-route set.
