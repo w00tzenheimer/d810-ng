@@ -3525,7 +3525,20 @@ def compose_canonical_carrier_ingress_fragment_plan(
 
     dispatcher_block_id = f"native[{stable_block_identity_token(dispatcher_identity)}]"
     existing_dispatchers = tuple(
-        block for block in plan.blocks if block.stable_identity == dispatcher_identity
+        block
+        for block in plan.blocks
+        if block.stable_identity is not None
+        and tuple(
+            owner_serial
+            for owner_serial, _owner_anchor_ea in (
+                _current_owners_contained_by_identity(
+                    graph,
+                    block.stable_identity,
+                    current_identity_by_serial=current_identity_by_serial,
+                )
+            )
+        )
+        == (dispatcher_serial,)
     )
     if len(existing_dispatchers) > 1 or (
         existing_dispatchers
