@@ -6445,3 +6445,52 @@ authority at imported block `0x40A903`: compare the immutable prepared
 terminator with the realized SDK terminator and encode the typed contraction
 owned by that operation. Do not weaken strict comparison, reclassify partial
 writes as C5, or resume broad 91-route publication.
+
+**2026-07-26T05:18:23-0700 — analyzed CALL owners align immutable and live terminators**
+
+Functional commit `729009178` makes one shared SDK call-owner recognizer the
+authority for immutable native-body preparation, CALLS continuation splitting,
+and live terminator observation. A CALL_FALLTHROUGH block now requires exactly
+one top-level or nested analyzed call owner before any SDK write; its immutable
+instruction inventory ends at that owner, and the realized `m_mov(m_call(...))`
+tail projects as a typed CALL terminator. The duplicate deferred-modifier
+recognizer is deleted. Ruff-only commit `95bdcddcd` formats the slice.
+
+The strengthened CALLS-built imported-call regression is green. The full
+semantic-fragment backend file improves from the clean `0a4e087f7` baseline of
+113 passed / 5 failed to 114 passed / 4 failed; the four remaining failures are
+the same pre-existing strict-authority failures. Eight focused detached-import
+preparation and analyzed-call tests pass. Ruff check passes, and both commits'
+ast-grep, cycle, import-linter, and portable-shape hooks pass.
+
+The mandatory pinned, cache-disabled A560 canary at clean code SHA
+`95bdcddcd` completes without a process crash or numeric INTERR. Log:
+`.tmp/rhad-a560-call-owner-95bdcddcd.txt`; primary DB:
+`.tmp/rhad-a560-call-owner-95bdcddcd/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+The worker refuses poisoned output after the bounded restart, so this is not C6
+or final A560 acceptance.
+
+The DB proves the former 18 imported terminator divergences are gone. Frontend
+normalization remains exact C5: each committed attempt applies 260/260
+operations, passes 639 prepublication and 1180 postpublication outcomes, and
+records 139 creation witnesses with zero invalidations. After one clean CALLS
+companion request, canonical attempts apply 403/406 staged operations and pass
+all 1057 prepublication validation outcomes before the detached route oracle
+rejects publication.
+
+The first unresolved attempt is `2af186abedba44e4846034008bf61fca`.
+Its monotonic first failure is `runtime:detached_route_oracle` at route
+`rhad:0x40A560:flow_route:0x40BED0` (`blk@0x40BECC`): candidate observation
+finds the unowned staged successor
+`fallthrough-helper:route:state-choice@0x40BECC:0xEC71CA67:0xA0716E5B`.
+Route `rhad:0x40A560:flow_route:0x40C4D2` independently exposes the same defect
+through `fallthrough-helper:native-state-choice@0x40C4C3`. The failed attempt's
+229 creation witnesses are invalidated only after the poison latch fires.
+
+The highest current level remains C5 for exact frontend normalization and C4
+for canonical composition: the complete staged projection passes strict
+prepublication validation but root publication is not attempted. Continue from
+planned fallthrough-helper ownership at `0x40BECC`, making the helper an owned,
+reconstructible route endpoint in detached oracle observation. Do not hide the
+helper, relax the oracle, assign a raw serial, or resume broad publication
+before both unowned-helper divergences are eliminated.
