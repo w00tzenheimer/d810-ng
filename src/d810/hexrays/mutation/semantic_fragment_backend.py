@@ -51,6 +51,7 @@ from d810.hexrays.mutation.semantic_fragment_preparation import (
     SemanticFragmentRealizationPayload,
     SemanticFragmentSnapshotAuthority,
     SemanticFragmentSnapshotPreparation,
+    sdk_instruction_kind,
     sdk_instruction_operand_shape,
 )
 from d810.ir.block_identity import (
@@ -246,6 +247,10 @@ class SemanticFragmentBackendState:
     original_mba_had_outlines: bool | None = None
     projection: ProjectedFragment | None = None
     preflight_projection: ProjectedFragment | None = None
+    clone_source_instructions_by_block_id: dict[
+        str,
+        FragmentCloneSourceInstructions,
+    ] = field(default_factory=dict)
     return_carrier_constructions: dict[
         str,
         PreparedReturnCarrierConstruction,
@@ -1173,13 +1178,128 @@ def _normalize_conditional_select_replacement(
     )
 
 
-def _normalize_replacement_computed_branches(
+def _clone_source_instruction_evidence(
+    *,
+    block_id: str,
+    source_block_id: str,
+    instructions,
+) -> FragmentCloneSourceInstructions:
+    return FragmentCloneSourceInstructions(
+        block_id=str(block_id),
+        source_block_id=str(source_block_id),
+        instructions=tuple(
+            FragmentCloneSourceInstruction(
+                native_ea=int(getattr(instruction, "ea", -1)),
+                opcode=int(getattr(instruction, "opcode", -1)),
+                kind=sdk_instruction_kind(int(getattr(instruction, "opcode", -1))),
+                destination_is_discardable=(
+                    int(getattr(getattr(instruction, "d", None), "t", -1))
+                    in {
+                        int(ida_hexrays.mop_z),
+                        int(ida_hexrays.mop_r),
+                    }
+                ),
+                operand_shape=sdk_instruction_operand_shape(instruction),
+            )
+            for instruction in instructions
+        ),
+    )
+
+
+def _normalize_storage_predicate_replacement(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    operation: FragmentOperation,
+) -> None:
+    predicate = operation.storage_predicate_materialization
+    if predicate is None:
+        return
+    source_plan_block = plan.block(operation.source_block_id)
+    if (
+        source_plan_block.materialization
+        is not FragmentBlockMaterialization.CLONE_PUBLISHED
+        or source_plan_block.replaces_block_id is None
+    ):
+        raise SemanticFragmentBackendRejected(
+            "replacement storage predicate lacks clone-owned source authority"
+        )
+    original_block_id = str(source_plan_block.replaces_block_id)
+    expected = state.clone_source_instructions_by_block_id.get(
+        operation.source_block_id
+    )
+    if expected is None or expected.source_block_id != original_block_id:
+        raise SemanticFragmentBackendRejected(
+            "replacement storage predicate lacks immutable clone-source evidence"
+        )
+    original = _live_block_for_binding(
+        modifier,
+        state.binding(original_block_id),
+    )
+    replacement = _live_block_for_binding(
+        modifier,
+        state.binding(operation.source_block_id),
+    )
+    for candidate in (original, replacement):
+        observed = _clone_source_instruction_evidence(
+            block_id=operation.source_block_id,
+            source_block_id=original_block_id,
+            instructions=tuple(_iter_block_instructions(candidate)),
+        )
+        if observed != expected:
+            raise SemanticFragmentBackendRejected(
+                "replacement storage predicate clone source changed after preflight"
+            )
+
+    live_ea = int(modifier.mba.alloc_fict_ea(int(operation.predicate_anchor_ea)))
+    branch = ida_hexrays.minsn_t(live_ea)
+    branch.opcode = int(ida_hexrays.m_jz)
+    branch.l.assign(
+        _storage_operand(
+            modifier.mba,
+            predicate.storage_identity,
+            width=predicate.width,
+        )
+    )
+    branch.r.make_number(
+        int(predicate.compare_constant),
+        int(predicate.width),
+        int(operation.predicate_anchor_ea),
+    )
+    branch.d.erase()
+    modifier.replace_instruction_tail_after_anchor_now(
+        replacement,
+        retained_ea=int(predicate.cut_after_ea),
+        replacement=branch,
+    )
+    _bind_synthesized_instruction_origin(
+        state,
+        block_id=operation.source_block_id,
+        live_ea=live_ea,
+        native_ea=int(operation.predicate_anchor_ea),
+    )
+    if operation.operation_id in state.predicate_live_eas_by_operation_id:
+        raise SemanticFragmentBackendRejected(
+            "replacement storage predicate was materialized more than once"
+        )
+    state.predicate_live_eas_by_operation_id[operation.operation_id] = live_ea
+
+
+def _normalize_replacement_operations(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
     state: SemanticFragmentBackendState,
     operations: tuple[FragmentOperation, ...],
 ) -> None:
     for operation in operations:
+        if operation.storage_predicate_materialization is not None:
+            _normalize_storage_predicate_replacement(
+                modifier,
+                plan,
+                state,
+                operation,
+            )
+            continue
         normalization = operation.computed_branch_normalization
         if normalization is None or normalization.conditional_select_envelope is None:
             continue
@@ -2251,7 +2371,14 @@ def _live_data_flow_site_binding(
         ).items()
         if int(candidate_native_ea) == native_ea
     )
-    candidate_eas = origin_matches or (native_ea,)
+    physical_native_matches = tuple(
+        native_ea
+        for instruction in _iter_block_instructions(live_block)
+        if int(getattr(instruction, "ea", -1)) == native_ea
+    )
+    candidate_eas = tuple(
+        dict.fromkeys((*origin_matches, *physical_native_matches))
+    )
     if len(candidate_eas) == 1:
         return (int(candidate_eas[0]), int(identifier), storage.kind)
     matches = find_exact_storage_access_eas(
@@ -2418,6 +2545,8 @@ def _project_data_flow_relations(
     ids_by_serial: dict[int, str],
     predecessor_serials_by_block: Mapping[int, tuple[int, ...]],
     successor_serials_by_block: Mapping[int, tuple[int, ...]],
+    *,
+    defer_materialized_predicate_uses: bool = False,
 ) -> tuple[ProjectedDataFlowRelation, ...]:
     definitions = tuple(
         obligation.definition for obligation in plan.data_flow_obligations
@@ -2475,6 +2604,18 @@ def _project_data_flow_relations(
             )
 
         for use in obligation.uses:
+            if defer_materialized_predicate_uses and any(
+                operation.source_block_id == use.block_id
+                and operation.predicate_anchor_ea == use.instruction_ea
+                and operation.storage_predicate_materialization is not None
+                and operation.storage_predicate_materialization.storage_identity
+                == use.storage_identity
+                and operation.storage_predicate_materialization.width == use.width
+                and plan.block(operation.source_block_id).materialization
+                is FragmentBlockMaterialization.CLONE_PUBLISHED
+                for operation in plan.operations
+            ):
+                continue
             use_block = live_by_id.get(use.block_id)
             if use_block is None:
                 raise SemanticFragmentBackendRejected(
@@ -3435,6 +3576,17 @@ def snapshot_semantic_fragment_inputs(
                     FragmentCloneSourceInstruction(
                         native_ea=native_ea,
                         opcode=int(getattr(instruction, "opcode", -1)),
+                        kind=sdk_instruction_kind(
+                            int(getattr(instruction, "opcode", -1))
+                        ),
+                        destination_is_discardable=(
+                            int(getattr(getattr(instruction, "d", None), "t", -1))
+                            in {
+                                int(ida_hexrays.mop_z),
+                                int(ida_hexrays.mop_r),
+                            }
+                        ),
+                        operand_shape=sdk_instruction_operand_shape(instruction),
                     )
                     for native_ea, instruction in source_rows
                 ),
@@ -3492,6 +3644,7 @@ def snapshot_semantic_fragment_inputs(
             analysis_ids_by_serial,
             predecessor_serials,
             successor_serials,
+            defer_materialized_predicate_uses=True,
         )
     except SemanticFragmentBackendRejected as exc:
         subject_id = (
@@ -4266,6 +4419,10 @@ def realize_semantic_patch_plan(
         plan_id=plan.plan_id,
         atomic_group_id=plan.atomic_group_id,
         preflight_projection=authority.projection,
+        clone_source_instructions_by_block_id={
+            evidence.block_id: evidence
+            for evidence in authority.snapshot.projection_input.clone_source_instructions
+        },
         return_carrier_constructions=construction_by_id,
         return_carrier_operands=operand_by_id,
     )
@@ -4337,7 +4494,7 @@ def realize_semantic_patch_plan(
                     raise SemanticFragmentBackendRejected(
                         "semantic PatchPlan duplicated operation normalization"
                     )
-                _normalize_replacement_computed_branches(
+                _normalize_replacement_operations(
                     modifier,
                     plan,
                     state,

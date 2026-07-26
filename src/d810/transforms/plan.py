@@ -343,7 +343,7 @@ class PatchFragmentOperation(_PatchRefValidated):
 
 @dataclass(frozen=True)
 class PatchFragmentOperationNormalization:
-    """Pre-operation rewrite of proven computed-branch envelopes."""
+    """Pre-operation rewrite of one explicitly proven predicate envelope."""
 
     operations: tuple[FragmentOperation, ...]
 
@@ -353,7 +353,10 @@ class PatchFragmentOperationNormalization:
             or not self.operations
             or any(
                 not isinstance(operation, FragmentOperation)
-                or operation.computed_branch_normalization is None
+                or (
+                    operation.computed_branch_normalization is None
+                    and operation.storage_predicate_materialization is None
+                )
                 for operation in self.operations
             )
         ):
@@ -1080,6 +1083,11 @@ def _validate_fragment_contract_steps(
         operation
         for operation in fragment.operations
         if operation.computed_branch_normalization is not None
+        or (
+            operation.storage_predicate_materialization is not None
+            and fragment.block(operation.source_block_id).materialization
+            is FragmentBlockMaterialization.CLONE_PUBLISHED
+        )
     )
     if tuple(
         operation for step in normalizations for operation in step.operations
