@@ -178,10 +178,9 @@ def test_jump_fixer_executes_goto_fold_through_typed_transaction(monkeypatch):
     monkeypatch.setattr(
         fixer,
         "execute_graph_modifications",
-        lambda live_mba, modifications: observed.append(
-            (live_mba, tuple(modifications))
-        )
-        or 1,
+        lambda live_mba, modifications: (
+            observed.append((live_mba, tuple(modifications))) or 1
+        ),
     )
 
     assert fixer.optimize(block) is True
