@@ -500,6 +500,7 @@ def test_semantic_sdk_creation_sites_are_exhaustive_and_receipt_backed() -> None
         ("_stage_detached_semantic_replacement", "copy_block_keep"),
         ("_stage_empty_semantic_block", "create_standalone_block"),
         ("_stage_imported_native_semantic_block", "create_standalone_block"),
+        ("_stage_imported_native_semantic_block", "insert_block"),
         ("_build_fallthrough_goto_helper", "insert_block"),
     }
 

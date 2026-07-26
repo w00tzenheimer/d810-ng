@@ -16,6 +16,9 @@ from d810.core.logging import getLogger
 from d810.core.typing import Callable, TYPE_CHECKING
 from d810.ir.block_identity import CurrentMbaIdentityBindingSnapshot
 from d810.ir.flowgraph import FlowGraph
+from d810.hexrays.mutation.semantic_fragment_profile import (
+    SemanticFragmentPublicationProfile,
+)
 from d810.transforms.cfg_transaction import PatchPlanExecutionResult
 from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.plan import PatchPlan
@@ -39,7 +42,10 @@ class HexRaysMutationBackend:
         *,
         mutation_gateway: "MbaMutationGateway",
         translator: "IDAIRTranslator | None" = None,
-        fragment_backend_factory: Callable[[object, object], object] | None = None,
+        fragment_backend_factory: (
+            Callable[[object, object, SemanticFragmentPublicationProfile], object]
+            | None
+        ) = None,
         semantic_native_body_materializer: (
             "SemanticNativeBodyMaterializer | None"
         ) = None,
@@ -89,13 +95,19 @@ class HexRaysMutationBackend:
         """Return receipt-proven fragment operations committed this callback."""
         return self._committed_fragment_operation_count
 
-    def _new_fragment_backend(self, live_source: object, gateway: object) -> object:
+    def _new_fragment_backend(
+        self,
+        live_source: object,
+        gateway: object,
+        publication_profile: SemanticFragmentPublicationProfile,
+    ) -> object:
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 
         return DeferredGraphModifier(
             live_source,
             mutation_gateway=gateway,
             semantic_native_body_materializer=(self._semantic_native_body_materializer),
+            semantic_fragment_publication_profile=publication_profile,
         )
 
     def capabilities(self) -> frozenset[str]:
@@ -112,10 +124,25 @@ class HexRaysMutationBackend:
         safety_policy: object = None,
         *,
         pre_cfg: FlowGraph | None = None,
-    ) -> FlowGraph:
+        publication_profile: SemanticFragmentPublicationProfile = (
+            SemanticFragmentPublicationProfile.CFG_READY
+        ),
+    ) -> FlowGraph | object:
         """The sole live transaction entry point for PatchPlan and FragmentPlan."""
         if isinstance(rewrite_plan, FragmentPlan):
-            return self._apply_fragment(rewrite_plan, live_source, safety_policy)
+            if not isinstance(
+                publication_profile,
+                SemanticFragmentPublicationProfile,
+            ):
+                raise TypeError(
+                    "fragment publication requires a typed publication profile"
+                )
+            return self._apply_fragment(
+                rewrite_plan,
+                live_source,
+                safety_policy,
+                publication_profile=publication_profile,
+            )
         if not isinstance(rewrite_plan, PatchPlan):
             raise TypeError("HexRaysMutationBackend.apply requires a typed plan")
         return self._apply_patch_plan(
@@ -182,15 +209,22 @@ class HexRaysMutationBackend:
         fragment_plan: FragmentPlan,
         live_source: object,
         safety_policy: object = None,
-    ) -> FlowGraph:
+        *,
+        publication_profile: SemanticFragmentPublicationProfile,
+    ) -> FlowGraph | object:
         """Prepare and execute a fragment through the shared ``apply`` entry."""
         del safety_policy
         self._committed_fragment_receipt = None
         gateway = self._mutation_gateway.new_transaction()
-        fragment_backend = self._fragment_backend_factory(live_source, gateway)
+        fragment_backend = self._fragment_backend_factory(
+            live_source,
+            gateway,
+            publication_profile,
+        )
         receipt = gateway.execute_patch_transaction(
             fragment_backend,
             fragment_plan,
+            publication_profile,
         )
         operation_count = getattr(receipt, "operation_count", None)
         if isinstance(operation_count, bool) or not isinstance(operation_count, int):
@@ -199,6 +233,8 @@ class HexRaysMutationBackend:
             raise ValueError("committed fragment receipt requires applied operations")
         self._committed_fragment_receipt = receipt
         self._committed_fragment_operation_count += operation_count
+        if publication_profile.graph_free:
+            return live_source
         return self._translator.lift(live_source)
 
 

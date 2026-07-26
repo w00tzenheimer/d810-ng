@@ -225,6 +225,9 @@ from d810.hexrays.mutation.semantic_fragment_backend import (
     snapshot_semantic_fragment_inputs,
     realize_semantic_patch_plan,
 )
+from d810.hexrays.mutation.semantic_fragment_profile import (
+    SemanticFragmentPublicationProfile,
+)
 from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventory,
 )
@@ -1148,6 +1151,9 @@ class DeferredGraphModifier:
     mutation_gateway: MbaMutationGateway | None = None
     # Backend-owned body importer used only inside semantic-fragment staging.
     semantic_native_body_materializer: SemanticNativeBodyMaterializer | None = None
+    semantic_fragment_publication_profile: SemanticFragmentPublicationProfile = (
+        SemanticFragmentPublicationProfile.CFG_READY
+    )
     # Metadata injected by callers so payloads carry rich context.
     _optimizer_name: str = field(default="", init=False)
     _pass_id: int = field(default=0, init=False)
@@ -1187,6 +1193,13 @@ class DeferredGraphModifier:
     )
 
     def __post_init__(self) -> None:
+        if not isinstance(
+            self.semantic_fragment_publication_profile,
+            SemanticFragmentPublicationProfile,
+        ):
+            raise TypeError(
+                "DeferredGraphModifier requires a typed fragment publication profile"
+            )
         self._mutation_gateway = self.mutation_gateway
         self._semantic_native_body_materializer = self.semantic_native_body_materializer
 
@@ -3007,6 +3020,56 @@ class DeferredGraphModifier:
             block.make_nop(instruction)
             block.remove_from_block(instruction)
 
+    def replace_all_instructions_now(
+        self,
+        block: ida_hexrays.mblock_t,
+        instructions: tuple[ida_hexrays.minsn_t, ...],
+        *,
+        mark_dirty: bool = True,
+    ) -> None:
+        """Replace one block body through the central mutation backend."""
+        self.remove_all_instructions_now(block)
+        for instruction in instructions:
+            block.insert_into_block(instruction, block.tail)
+        if mark_dirty:
+            block.mark_lists_dirty()
+            self.mba.mark_chains_dirty()
+
+    def replace_instruction_suffix_from_index_now(
+        self,
+        block: ida_hexrays.mblock_t,
+        *,
+        cut_index: int,
+        expected_ea: int,
+        expected_opcode: int,
+        replacement: ida_hexrays.minsn_t,
+        mark_dirty: bool = True,
+    ) -> None:
+        """Replace an exactly indexed suffix after semantic preflight."""
+        instructions = self._block_instructions(block)
+        cut_index = int(cut_index)
+        if not 0 <= cut_index < len(instructions):
+            raise ValueError("instruction suffix index is outside the live block")
+        cut = instructions[cut_index]
+        if (
+            int(cut.ea) != int(expected_ea)
+            or int(cut.opcode) != int(expected_opcode)
+        ):
+            raise ValueError(
+                "instruction suffix index changed after semantic preflight; "
+                f"blk{int(block.serial)}@0x{int(block.start):X} "
+                f"index={cut_index} expected=(0x{int(expected_ea):X},"
+                f"{int(expected_opcode)}) actual=(0x{int(cut.ea):X},"
+                f"{int(cut.opcode)})"
+            )
+        for instruction in instructions[cut_index:]:
+            block.make_nop(instruction)
+            block.remove_from_block(instruction)
+        block.insert_into_block(replacement, block.tail)
+        if mark_dirty:
+            block.mark_lists_dirty()
+            self.mba.mark_chains_dirty()
+
     def remove_nops_now(self, block: ida_hexrays.mblock_t) -> None:
         """Remove all explicit NOP instructions from a block."""
         for instruction in self._block_instructions(block):
@@ -3997,6 +4060,29 @@ class DeferredGraphModifier:
         """Backend-only immutable preflight snapshot port."""
         return snapshot_semantic_fragment_inputs(self, plan)
 
+    def _generated_semantic_fragment_plan_handle(
+        self,
+        plan: FragmentPlan,
+        block_id: str,
+    ):
+        """Return one graph-free plan handle without exposing SDK coordinates."""
+        from d810.hexrays.mutation.semantic_fragment_backend import (
+            generated_plan_live_bindings,
+        )
+
+        live = generated_plan_live_bindings(self, plan).get(str(block_id))
+        gateway = self._mutation_gateway
+        if live is None or gateway is None:
+            raise SemanticFragmentBackendRejected(
+                f"GENERATED plan block {block_id!r} has no live binding"
+            )
+        handle = gateway.identity_index.handle_for_serial(int(live.serial))
+        if handle is None:
+            raise SemanticFragmentBackendRejected(
+                f"GENERATED plan block {block_id!r} has no identity handle"
+            )
+        return handle
+
     def _realize_semantic_patch_plan(
         self,
         patch_plan,
@@ -4416,12 +4502,22 @@ class DeferredGraphModifier:
             handle=created_handle,
         )
         gateway._record_fragment_mutation_started()
-        created = create_standalone_block(
-            ref_blk=reference,
-            blk_ins=[],
-            is_0_way=True,
-            verify=False,
-        )
+        if self.semantic_fragment_publication_profile.graph_free:
+            created = self.mba.insert_block(int(self.mba.qty) - 1)
+            if created is not None:
+                created.start = int(self.mba.entry_ea)
+                created.end = int(self.mba.entry_ea) + 1
+                created.type = int(ida_hexrays.BLT_NONE)
+                created.flags |= int(ida_hexrays.MBL_KEEP) | int(
+                    ida_hexrays.MBL_FAKE
+                )
+        else:
+            created = create_standalone_block(
+                ref_blk=reference,
+                blk_ins=[],
+                is_0_way=True,
+                verify=False,
+            )
         if created is None:
             raise SemanticFragmentBackendRejected(
                 "Hex-Rays could not create an imported native-body block"
@@ -4458,7 +4554,8 @@ class DeferredGraphModifier:
                 raise SemanticFragmentBackendRejected(
                     "imported native-body block has no staged version"
                 )
-            self._detach_semantic_fragment_block(created)
+            if not self.semantic_fragment_publication_profile.graph_free:
+                self._detach_semantic_fragment_block(created)
             return staged
         except Exception:
             if not gateway.mutation_started:
@@ -4508,14 +4605,24 @@ class DeferredGraphModifier:
 
         self.configure_block_now(
             block,
-            block_type=int(ida_hexrays.BLT_0WAY),
+            block_type=int(
+                ida_hexrays.BLT_NONE
+                if self.semantic_fragment_publication_profile.graph_free
+                else ida_hexrays.BLT_0WAY
+            ),
             flags=(int(block_flags) & int(ida_hexrays.MBL_PUSH))
             | int(ida_hexrays.MBL_KEEP)
-            | int(ida_hexrays.MBL_FAKE),
+            | int(ida_hexrays.MBL_FAKE)
+            | (
+                int(ida_hexrays.MBL_PROP)
+                if self.semantic_fragment_publication_profile.graph_free
+                else 0
+            ),
             start_ea=int(self.mba.entry_ea),
             end_ea=int(self.mba.entry_ea) + 1,
         )
-        self.mark_blocks_dirty_now(block)
+        if not self.semantic_fragment_publication_profile.graph_free:
+            self.mark_blocks_dirty_now(block)
         return tuple(origin_bindings)
 
     def _bind_prepared_imported_direct_transfer(
@@ -5623,6 +5730,40 @@ class DeferredGraphModifier:
         """Return one post-root live projection plus derived semantics."""
         return observe_published_semantic_fragment_graph(self, plan)
 
+    def _verify_generated_semantic_fragment(self, plan: FragmentPlan) -> None:
+        """Run the sole native verifier for a graph-free publication."""
+        if not self.semantic_fragment_publication_profile.graph_free:
+            raise SemanticFragmentBackendRejected(
+                "generated verification requires the graph-free profile"
+            )
+        state = self._semantic_fragment_state
+        if state is None or state.plan_id != plan.plan_id:
+            raise SemanticFragmentBackendRejected(
+                "generated verification lacks matching staged authority"
+            )
+        try:
+            self.mba.verify(True)
+        except RuntimeError:
+            for serial in range(int(self.mba.qty)):
+                block = self.mba.get_mblock(serial)
+                if block is None:
+                    continue
+                logger.error(
+                    "GENERATED verification block: blk%d@0x%X flags=0x%X "
+                    "type=%d head=%s tail=%s",
+                    int(block.serial),
+                    int(block.start),
+                    int(block.flags),
+                    int(block.type),
+                    None
+                    if block.head is None
+                    else (hex(int(block.head.ea)), int(block.head.opcode)),
+                    None
+                    if block.tail is None
+                    else (hex(int(block.tail.ea)), int(block.tail.opcode)),
+                )
+            raise
+
     def _rollback_semantic_fragment_roots(
         self,
         plan: FragmentPlan,
@@ -5685,6 +5826,20 @@ class DeferredGraphModifier:
         ):
             raise SemanticFragmentBackendRejected(
                 "semantic fragment completion has no matching staged state"
+            )
+        if self.semantic_fragment_publication_profile.graph_free:
+            from d810.hexrays.mutation.semantic_fragment_origins import (
+                publish_semantic_fragment_instruction_origins,
+            )
+
+            publish_semantic_fragment_instruction_origins(
+                self.mba,
+                function_ea=int(self.mba.entry_ea),
+                origins={
+                    int(live_ea): int(native_ea)
+                    for block_origins in state.instruction_origins_by_block_id.values()
+                    for live_ea, native_ea in block_origins.items()
+                },
             )
         self._semantic_fragment_state = None
 

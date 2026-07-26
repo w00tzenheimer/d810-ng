@@ -586,7 +586,7 @@ def project_fragment(
                     block_id=helper_id,
                     logical_owner_id=f"plan:{plan.plan_id}:{helper_id}",
                     version=0,
-                    generation=0,
+                    generation=bindings[operation.source_block_id].generation,
                     state=FragmentBindingState.STAGED,
                     stable_identity=None,
                 )

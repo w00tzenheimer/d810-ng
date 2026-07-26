@@ -123,7 +123,11 @@ def _conditional_candidate_anchor(operation: FragmentOperation) -> int | None:
     return int(operation.predicate_anchor_ea)
 
 
-def _conditional_reference_predicate(operation: FragmentOperation) -> str | None:
+def _conditional_reference_predicate(
+    operation: FragmentOperation,
+    *,
+    reference_spelling: str | None = None,
+) -> str | None:
     materialization = operation.storage_predicate_materialization
     normalization = operation.computed_branch_normalization
     portable_predicate = (
@@ -133,11 +137,11 @@ def _conditional_reference_predicate(operation: FragmentOperation) -> str | None
         if normalization is not None
         else None
     )
-    return (
-        None
-        if portable_predicate is None
-        else _REFERENCE_PREDICATE_BY_PORTABLE.get(portable_predicate)
-    )
+    if portable_predicate is None:
+        return None
+    if reference_spelling == portable_predicate.value:
+        return portable_predicate.value
+    return _REFERENCE_PREDICATE_BY_PORTABLE.get(portable_predicate)
 
 
 def _conditional_operation_semantically_matches(
@@ -152,7 +156,11 @@ def _conditional_operation_semantically_matches(
         or route.true_target_ea is None
         or route.false_target_ea is None
         or candidate_anchor_ea != int(route.owner_ea)
-        or _conditional_reference_predicate(operation) != route.predicate_kind
+        or _conditional_reference_predicate(
+            operation,
+            reference_spelling=route.predicate_kind,
+        )
+        != route.predicate_kind
         or not any(
             int(start_ea) <= candidate_anchor_ea < int(end_ea)
             for start_ea, end_ea in route.corridor
@@ -614,7 +622,21 @@ def _owned_projected_route_successors(
         ):
             raise _ProjectedRouteOwnershipError(
                 f"route operation {operation.operation_id!r} has a malformed "
-                "fallthrough helper witness"
+                "fallthrough helper witness; "
+                f"source_successors={source.successors!r} "
+                f"helper_kind={helper_block.kind.value!r} "
+                f"helper_successors={helper_block.successors!r} "
+                f"helper_predecessors={helper_block.predecessors!r} "
+                f"positions=({source.physical_position!r},"
+                f"{helper_block.physical_position!r}) "
+                f"adjacent={helper_block.adjacent_fallthrough_target_id!r} "
+                f"instruction_eas={helper_block.instruction_eas!r} "
+                f"terminator=({helper_block.terminator_ea!r},"
+                f"{helper_block.terminator_kind.value!r}) "
+                f"binding=({helper_binding.state.value!r},"
+                f"{helper_binding.stable_identity!r},"
+                f"{helper_binding.generation!r}) "
+                f"source_generation={source_binding.generation!r}"
             )
 
     semantic_block_ids: list[str] = []
@@ -674,7 +696,10 @@ def _candidate_observation(
                 f"route {route.route_id} has no staged conditional authority",
             )
         owner_anchor_ea = candidate_anchor_ea
-        predicate_kind = _conditional_reference_predicate(operation)
+        predicate_kind = _conditional_reference_predicate(
+            operation,
+            reference_spelling=route.predicate_kind,
+        )
     else:
         return _candidate_failure(
             route,

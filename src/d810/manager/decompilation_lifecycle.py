@@ -52,6 +52,11 @@ class DecompilationSessionContext:
     current_mba_generation: int = 0
     current_mba_identity_index: object | None = None
     generated_ready_emitted_for_current_mba: bool = False
+    rhad_generated_checksum_attempted_for_current_mba: bool = False
+    rhad_generated_checksum_committed_for_current_mba: bool = False
+    rhad_generated_checksum_observed_maturities: set[str] = field(
+        default_factory=set
+    )
     preopt_ready_emitted_for_current_mba: bool = False
     resolver_attachment: ResolverEvidenceAttachment | None = None
     frontend_normalization_plan_authority: SessionFrontendNormalizationPlanAuthority = (
@@ -482,6 +487,7 @@ class DecompilationLifecycleCoordinator:
         session.current_mba_generation += 1
         session.current_mba_identity_index = None
         session.generated_ready_emitted_for_current_mba = False
+        session.rhad_generated_checksum_attempted_for_current_mba = False
         session.preopt_ready_emitted_for_current_mba = False
 
     def current_mba_generation(self, *, function_ea: int) -> int:
@@ -879,6 +885,29 @@ class DecompilationLifecycleCoordinator:
                 func_ea=int(func_ea),
                 provider_phase=provider_phase,
             )
+            session = self.current_session(int(func_ea))
+            if session is not None:
+                from d810.core.observability_events import LifecycleEventObserved
+
+                emit_diagnostic(
+                    LifecycleEventObserved(
+                        session_id=session.identity_key,
+                        func_ea=int(func_ea),
+                        event_kind="ctree_captured",
+                        provider=str(provider_phase.provider_name),
+                        maturity=str(provider_phase.friendly_provider_level),
+                        phase="ctree",
+                        evidence_generation=int(
+                            session.native_preanalysis.evidence_generation
+                        ),
+                        mba_generation_before=int(session.current_mba_generation),
+                        mba_generation_after=int(session.current_mba_generation),
+                        summary="captured live ctree evidence",
+                        payload={
+                            "provider_level": int(provider_phase.provider_level),
+                        },
+                    )
+                )
         except Exception:
             logger.exception(
                 "preanalysis ctree collection failed for func=0x%x maturity=%s",

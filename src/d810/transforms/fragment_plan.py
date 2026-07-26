@@ -419,6 +419,7 @@ class FragmentNativeBody:
     terminal_block_ids: tuple[str, ...]
     native_ranges: tuple[NativeEaInterval, ...]
     proof_ids: tuple[str, ...]
+    preserved_native_transfer_block_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         body_id = _require_identifier(self.body_id, "fragment native body id")
@@ -440,6 +441,10 @@ class FragmentNativeBody:
             "terminal block id",
         )
         proof_ids = identifiers(self.proof_ids, "proof id")
+        preserved_native_transfer_block_ids = identifiers(
+            self.preserved_native_transfer_block_ids,
+            "preserved native transfer block id",
+        )
         if not block_ids or not entry_block_ids or not proof_ids:
             raise FragmentPlanRejected(
                 "fragment native body requires blocks, entries, and proofs"
@@ -451,6 +456,14 @@ class FragmentNativeBody:
         if not set(terminal_block_ids).issubset(block_ids):
             raise FragmentPlanRejected(
                 "fragment native body terminals must belong to the body"
+            )
+        if not set(preserved_native_transfer_block_ids).issubset(block_ids):
+            raise FragmentPlanRejected(
+                "fragment native body preserved transfers must belong to the body"
+            )
+        if set(preserved_native_transfer_block_ids) & set(terminal_block_ids):
+            raise FragmentPlanRejected(
+                "fragment native body preserved transfers cannot be terminals"
             )
         native_ranges = tuple(self.native_ranges)
         if not native_ranges or any(
@@ -483,6 +496,11 @@ class FragmentNativeBody:
         object.__setattr__(self, "terminal_block_ids", terminal_block_ids)
         object.__setattr__(self, "native_ranges", native_ranges)
         object.__setattr__(self, "proof_ids", proof_ids)
+        object.__setattr__(
+            self,
+            "preserved_native_transfer_block_ids",
+            preserved_native_transfer_block_ids,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2308,13 +2326,24 @@ class FragmentPlan:
         operation_source_ids = {operation.source_block_id for operation in operations}
         for native_body in native_bodies:
             terminal_ids = set(native_body.terminal_block_ids)
+            preserved_native_transfer_ids = set(
+                native_body.preserved_native_transfer_block_ids
+            )
             if terminal_ids & operation_source_ids:
                 raise FragmentPlanRejected(
                     f"native body {native_body.body_id!r} terminal block "
                     "cannot also own an operation"
                 )
+            if preserved_native_transfer_ids & operation_source_ids:
+                raise FragmentPlanRejected(
+                    f"native body {native_body.body_id!r} preserved native "
+                    "transfer cannot also own an operation"
+                )
             missing_topology = (
-                set(native_body.block_ids) - terminal_ids - operation_source_ids
+                set(native_body.block_ids)
+                - terminal_ids
+                - operation_source_ids
+                - preserved_native_transfer_ids
             )
             if missing_topology:
                 raise FragmentPlanRejected(

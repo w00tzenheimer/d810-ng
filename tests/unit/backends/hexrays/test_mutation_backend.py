@@ -30,6 +30,9 @@ from d810.hexrays.mutation.semantic_ownership import (
     find_patch_plan_semantic_ownership_overlap,
     format_patch_plan_semantic_ownership_overlap,
 )
+from d810.hexrays.mutation.semantic_fragment_profile import (
+    SemanticFragmentPublicationProfile,
+)
 from d810.ir.block_identity import (
     CurrentMbaBlockIdentityBinding,
     CurrentMbaIdentityBindingSnapshot,
@@ -861,7 +864,12 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
         def new_transaction(self):
             return _Gateway("fragment")
 
-        def execute_patch_transaction(self, fragment_backend, fragment_plan):
+        def execute_patch_transaction(
+            self,
+            fragment_backend,
+            fragment_plan,
+            _publication_profile,
+        ):
             published.append((self.name, fragment_backend, fragment_plan))
             return SimpleNamespace(
                 current_mba_identity_binding=snapshot,
@@ -872,7 +880,7 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
     backend = HexRaysMutationBackend(
         mutation_gateway=_Gateway("root"),
         translator=translator,
-        fragment_backend_factory=lambda live_source, gateway: (
+        fragment_backend_factory=lambda live_source, gateway, _profile: (
             fragment_backend
             if live_source == "LIVE" and gateway.name == "fragment"
             else None
@@ -888,6 +896,64 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
     assert backend.committed_fragment_operation_count == 260
 
 
+def test_publish_generated_fragment_never_lifts_graph_free_mba() -> None:
+    cfg = _make_cfg([(0, 1)], stop_serials=(1,))
+    translator = _FakeTranslator(cfg)
+    plan = _fragment_plan()
+    published = []
+    constructed = []
+    live = object()
+
+    class _Gateway:
+        def new_transaction(self):
+            return self
+
+        def execute_patch_transaction(
+            self,
+            fragment_backend,
+            fragment_plan,
+            publication_profile,
+        ):
+            published.append(
+                (fragment_backend, fragment_plan, publication_profile)
+            )
+            return SimpleNamespace(
+                current_mba_identity_binding=_current_mba_identity_binding(),
+                operation_count=13,
+            )
+
+    fragment_backend = object()
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_Gateway(),
+        translator=translator,
+        fragment_backend_factory=lambda live_source, _gateway, profile: (
+            constructed.append((live_source, profile)) or fragment_backend
+        ),
+    )
+
+    result = backend.apply(
+        plan,
+        live_source=live,
+        publication_profile=(
+            SemanticFragmentPublicationProfile.GENERATED_GRAPH_FREE
+        ),
+    )
+
+    assert result is live
+    assert translator.lift_count == 0
+    assert constructed == [
+        (live, SemanticFragmentPublicationProfile.GENERATED_GRAPH_FREE)
+    ]
+    assert published == [
+        (
+            fragment_backend,
+            plan,
+            SemanticFragmentPublicationProfile.GENERATED_GRAPH_FREE,
+        )
+    ]
+    assert backend.committed_fragment_operation_count == 13
+
+
 def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
     cfg = _make_cfg([(0, 1)], stop_serials=(1,))
     translator = _FakeTranslator(cfg)
@@ -899,7 +965,12 @@ def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
         def new_transaction(self):
             return self
 
-        def execute_patch_transaction(self, _fragment_backend, _fragment_plan):
+        def execute_patch_transaction(
+            self,
+            _fragment_backend,
+            _fragment_plan,
+            _publication_profile,
+        ):
             if self.fail:
                 raise RuntimeError("publication aborted")
             return SimpleNamespace(
@@ -911,7 +982,7 @@ def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
     backend = HexRaysMutationBackend(
         mutation_gateway=gateway,
         translator=translator,
-        fragment_backend_factory=lambda _live_source, _transaction: object(),
+        fragment_backend_factory=lambda _live_source, _transaction, _profile: object(),
     )
     plan = _fragment_plan()
     backend.apply(plan, live_source=object())
@@ -940,12 +1011,14 @@ def test_default_fragment_backend_receives_native_body_materializer(
             *,
             mutation_gateway,
             semantic_native_body_materializer,
+            semantic_fragment_publication_profile,
         ) -> None:
             constructed.append(
                 (
                     live_source,
                     mutation_gateway,
                     semantic_native_body_materializer,
+                    semantic_fragment_publication_profile,
                 )
             )
 
@@ -962,7 +1035,18 @@ def test_default_fragment_backend_receives_native_body_materializer(
         semantic_native_body_materializer=materializer,
     )
 
-    fragment_backend = backend._new_fragment_backend("LIVE", MUTATION_GATEWAY)
+    fragment_backend = backend._new_fragment_backend(
+        "LIVE",
+        MUTATION_GATEWAY,
+        SemanticFragmentPublicationProfile.CFG_READY,
+    )
 
     assert isinstance(fragment_backend, _Modifier)
-    assert constructed == [("LIVE", MUTATION_GATEWAY, materializer)]
+    assert constructed == [
+        (
+            "LIVE",
+            MUTATION_GATEWAY,
+            materializer,
+            SemanticFragmentPublicationProfile.CFG_READY,
+        )
+    ]

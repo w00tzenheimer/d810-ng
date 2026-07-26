@@ -45,6 +45,7 @@ from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
+    FragmentConditionalSelectEnvelope,
     FragmentPlan,
     serialize_fragment_plan,
 )
@@ -1304,7 +1305,19 @@ class MbaMutationGateway:
         self,
         plan: FragmentPlan,
         root_inventory: SemanticFragmentRootInventory,
+        publication_profile=None,
     ) -> tuple[MbaMutationPlanItem, ...]:
+        from d810.hexrays.mutation.semantic_fragment_profile import (
+            SemanticFragmentPublicationProfile,
+        )
+
+        if publication_profile is None:
+            publication_profile = SemanticFragmentPublicationProfile.CFG_READY
+        if not isinstance(
+            publication_profile,
+            SemanticFragmentPublicationProfile,
+        ):
+            raise TypeError("fragment plan inventory requires a typed profile")
         if (
             root_inventory.plan_id != plan.plan_id
             or root_inventory.atomic_group_id != plan.atomic_group_id
@@ -1376,6 +1389,18 @@ class MbaMutationGateway:
                     SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
                 }
             ):
+                helper_target = None
+                normalization = operation.computed_branch_normalization
+                envelope = (
+                    None
+                    if normalization is None
+                    else normalization.conditional_select_envelope
+                )
+                if publication_profile.graph_free and isinstance(
+                    envelope,
+                    FragmentConditionalSelectEnvelope,
+                ):
+                    helper_target = plan.block(envelope.selected_value_block_id)
                 items.append(
                     MbaMutationPlanItem(
                         item_index=len(items),
@@ -1384,6 +1409,16 @@ class MbaMutationGateway:
                         ),
                         source_anchor_ea=int(source.semantic_anchor_ea),
                         source_identity=source.stable_identity,
+                        target_anchor_ea=(
+                            None
+                            if helper_target is None
+                            else int(helper_target.semantic_anchor_ea)
+                        ),
+                        target_identity=(
+                            None
+                            if helper_target is None
+                            else helper_target.stable_identity
+                        ),
                         reason=f"operation:{operation.operation_id}",
                     )
                 )
@@ -1400,36 +1435,39 @@ class MbaMutationGateway:
                         reason=f"operation:{operation.operation_id}",
                     )
                 )
-        for root_edge in root_inventory.items:
-            if not root_edge.requires_helper:
-                continue
-            predecessor = plan.block(root_edge.predecessor_block_id)
-            replacement = plan.block(root_edge.root_block_id)
-            items.append(
-                MbaMutationPlanItem(
-                    item_index=len(items),
-                    mutation_kind="semantic_fragment_root_fallthrough_helper",
-                    source_anchor_ea=int(predecessor.semantic_anchor_ea),
-                    source_identity=predecessor.stable_identity,
-                    target_anchor_ea=int(replacement.semantic_anchor_ea),
-                    target_identity=replacement.stable_identity,
-                    reason=f"root-edge:{root_edge.edge_id}",
+        if not publication_profile.graph_free:
+            for root_edge in root_inventory.items:
+                if not root_edge.requires_helper:
+                    continue
+                predecessor = plan.block(root_edge.predecessor_block_id)
+                replacement = plan.block(root_edge.root_block_id)
+                items.append(
+                    MbaMutationPlanItem(
+                        item_index=len(items),
+                        mutation_kind="semantic_fragment_root_fallthrough_helper",
+                        source_anchor_ea=int(predecessor.semantic_anchor_ea),
+                        source_identity=predecessor.stable_identity,
+                        target_anchor_ea=int(replacement.semantic_anchor_ea),
+                        target_identity=replacement.stable_identity,
+                        reason=f"root-edge:{root_edge.edge_id}",
+                    )
                 )
-            )
-        for root_edge in root_inventory.items:
-            predecessor = plan.block(root_edge.predecessor_block_id)
-            replacement = plan.block(root_edge.root_block_id)
-            items.append(
-                MbaMutationPlanItem(
-                    item_index=len(items),
-                    mutation_kind=(f"semantic_fragment_root_{root_edge.role.value}"),
-                    source_anchor_ea=int(predecessor.semantic_anchor_ea),
-                    source_identity=predecessor.stable_identity,
-                    target_anchor_ea=int(replacement.semantic_anchor_ea),
-                    target_identity=replacement.stable_identity,
-                    reason=f"root-edge:{root_edge.edge_id}",
+            for root_edge in root_inventory.items:
+                predecessor = plan.block(root_edge.predecessor_block_id)
+                replacement = plan.block(root_edge.root_block_id)
+                items.append(
+                    MbaMutationPlanItem(
+                        item_index=len(items),
+                        mutation_kind=(
+                            f"semantic_fragment_root_{root_edge.role.value}"
+                        ),
+                        source_anchor_ea=int(predecessor.semantic_anchor_ea),
+                        source_identity=predecessor.stable_identity,
+                        target_anchor_ea=int(replacement.semantic_anchor_ea),
+                        target_identity=replacement.stable_identity,
+                        reason=f"root-edge:{root_edge.edge_id}",
+                    )
                 )
-            )
         return tuple(items)
 
     @staticmethod
@@ -1472,6 +1510,7 @@ class MbaMutationGateway:
         snapshot_id: str,
         prepared_fragment: PreparedSemanticFragment,
         patch_plan: object,
+        publication_profile=None,
     ) -> None:
         mba = getattr(backend, "mba", None)
         if mba is None:
@@ -1500,6 +1539,12 @@ class MbaMutationGateway:
             or patch_plan.semantic_contract.fragment_plan is not plan
         ):
             raise ValueError("lowered fragment PatchPlan authority differs")
+        from d810.hexrays.mutation.semantic_fragment_profile import (
+            SemanticFragmentPublicationProfile,
+        )
+
+        if publication_profile is None:
+            publication_profile = SemanticFragmentPublicationProfile.CFG_READY
         helper_refs = tuple(
             step.fallthrough_helper_ref
             for step in patch_plan.steps
@@ -1508,6 +1553,7 @@ class MbaMutationGateway:
                 (PatchFragmentOperation, PatchFragmentRootPublication),
             )
             and step.fallthrough_helper_ref is not None
+            and not publication_profile.graph_free
         )
         self._cfg_plan_refs = tuple(
             dict.fromkeys(
@@ -1520,7 +1566,11 @@ class MbaMutationGateway:
                 )
             )
         )
-        items = self._fragment_plan_items(plan, root_inventory)
+        items = self._fragment_plan_items(
+            plan,
+            root_inventory,
+            publication_profile,
+        )
         root_publication_groups = self._fragment_root_publication_groups(
             plan,
             root_inventory,
@@ -1557,12 +1607,33 @@ class MbaMutationGateway:
             "semantic_fragment_return_carrier_materialization",
             "semantic_fragment_terminal_return_materialization",
         }
+        if publication_profile.graph_free:
+            effect_kinds.add("semantic_fragment_operation_fallthrough_helper")
         requirements = {
             (item.mutation_kind, item.reason): item
             for item in items
             if item.mutation_kind in effect_kinds
         }
-        if len(requirements) != len(plan.return_carriers) + len(plan.terminal_returns):
+        expected_effect_requirement_count = (
+            len(plan.return_carriers)
+            + len(plan.terminal_returns)
+            + (
+                sum(
+                    bool(
+                        operation.roles.intersection(
+                            {
+                                SemanticEdgeRole.CALL_FALLTHROUGH,
+                                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                            }
+                        )
+                    )
+                    for operation in plan.operations
+                )
+                if publication_profile.graph_free
+                else 0
+            )
+        )
+        if len(requirements) != expected_effect_requirement_count:
             raise ValueError("semantic-fragment effect inventory is ambiguous")
         self._active_fragment_effect_requirements.update(requirements)
 
@@ -1884,6 +1955,7 @@ class MbaMutationGateway:
         self,
         backend: object,
         plan: FragmentPlan,
+        publication_profile=None,
     ) -> MbaMutationReceipt:
         """Lower, bind, realize, observe, and commit one semantic PatchPlan."""
         self._require_generation_usable()
@@ -1892,9 +1964,27 @@ class MbaMutationGateway:
             _first_failed_obligation,
             execute_patch_transaction,
         )
+        from d810.hexrays.mutation.semantic_fragment_profile import (
+            SemanticFragmentPublicationProfile,
+        )
+
+        if publication_profile is None:
+            publication_profile = SemanticFragmentPublicationProfile.CFG_READY
+        if not isinstance(
+            publication_profile,
+            SemanticFragmentPublicationProfile,
+        ):
+            raise TypeError(
+                "semantic fragment transaction requires a typed publication profile"
+            )
 
         try:
-            return execute_patch_transaction(self, backend, plan)
+            return execute_patch_transaction(
+                self,
+                backend,
+                plan,
+                publication_profile,
+            )
         except CfgGenerationPoisoned:
             raise
         except Exception as exc:
@@ -2301,10 +2391,31 @@ class MbaMutationGateway:
             for candidate in (item.source_identity, item.target_identity)
             if candidate is not None
         }
-        if identity is None or identity not in expected_identities:
+        generated_helper_anchor_matches = (
+            mutation_kind == "semantic_fragment_operation_fallthrough_helper"
+            and identity is not None
+            and item.target_identity is not None
+            and item.target_anchor_ea is not None
+            and identity.native_key == item.target_identity.native_key
+            and int(item.target_anchor_ea) in identity.exact_instruction_eas
+            and identity.native_ranges.contains(int(item.target_anchor_ea))
+            and item.target_identity.native_ranges.contains(
+                int(item.target_anchor_ea)
+            )
+        )
+        if (
+            identity is None
+            or (
+                identity not in expected_identities
+                and not generated_helper_anchor_matches
+            )
+        ):
             raise ValueError(
                 "semantic-fragment effect block identity does not match its "
-                "EA-anchored plan item"
+                "EA-anchored plan item; "
+                f"key={key!r} actual="
+                f"{None if identity is None else identity.to_dict()!r} "
+                f"expected={tuple(candidate.to_dict() for candidate in expected_identities)!r}"
             )
         self._applied_fragment_effects.add(key)
         self._record_handle(block)
@@ -2333,6 +2444,19 @@ class MbaMutationGateway:
         self._record_semantic_fragment_effect(
             mutation_kind="semantic_fragment_terminal_return_materialization",
             reason=f"terminal-return:{return_id}",
+            block=block,
+        )
+
+    def record_generated_existing_fallthrough_helper(
+        self,
+        *,
+        operation_id: str,
+        block: MbaBlockHandle,
+    ) -> None:
+        """Acknowledge a GENERATED helper realized by an existing live block."""
+        self._record_semantic_fragment_effect(
+            mutation_kind="semantic_fragment_operation_fallthrough_helper",
+            reason=f"operation:{str(operation_id)}",
             block=block,
         )
 

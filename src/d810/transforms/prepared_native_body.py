@@ -172,6 +172,7 @@ class PreparedNativeBodyFact:
     terminal_block_ids: tuple[str, ...]
     blocks: tuple[PreparedNativeBlockFact, ...]
     direct_transfer_operation_ids: tuple[str, ...] = ()
+    preserved_native_transfer_block_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "plan_id", _identifier(self.plan_id, "plan id"))
@@ -204,6 +205,18 @@ class PreparedNativeBodyFact:
             direct_transfer_operation_ids,
             "prepared direct-transfer operation ids",
         )
+        preserved_native_transfer_block_ids = tuple(
+            _identifier(value, "prepared preserved native transfer block")
+            for value in self.preserved_native_transfer_block_ids
+        )
+        _unique(
+            preserved_native_transfer_block_ids,
+            "prepared preserved native transfer block ids",
+        )
+        if not set(preserved_native_transfer_block_ids) <= set(block_ids):
+            raise ValueError(
+                "prepared preserved native transfers must belong to the body"
+            )
         object.__setattr__(self, "native_ranges", native_ranges)
         object.__setattr__(self, "entry_block_ids", entry_block_ids)
         object.__setattr__(self, "terminal_block_ids", terminal_block_ids)
@@ -212,6 +225,11 @@ class PreparedNativeBodyFact:
             self,
             "direct_transfer_operation_ids",
             direct_transfer_operation_ids,
+        )
+        object.__setattr__(
+            self,
+            "preserved_native_transfer_block_ids",
+            preserved_native_transfer_block_ids,
         )
 
     def block(self, block_id: str) -> PreparedNativeBlockFact:
