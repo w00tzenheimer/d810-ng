@@ -53,7 +53,10 @@ from d810.hexrays.mutation.semantic_fragment_preparation import (
     SemanticFragmentSnapshotPreparation,
     sdk_instruction_operand_shape,
 )
-from d810.ir.block_identity import BlockHandleProvenance
+from d810.ir.block_identity import (
+    BlockHandleProvenance,
+    stable_block_identity_covers,
+)
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockKind, InsnKind, InsnSnapshot
 from d810.ir.predicate_expressions import exact_branch_predicate_kind
@@ -2796,22 +2799,44 @@ def _project_fragment(
         )
         for block_id in successors
     )
-    projected_bindings = tuple(
-        ProjectedIdentityBinding(
-            block_id=binding.block_id,
-            logical_owner_id=binding.proxy.proxy_token,
-            version=binding.version.version_id.version,
-            generation=binding.version.generation,
-            state=binding.state,
-            stable_identity=binding.version.handle.stable_identity,
-            previous_version=(
-                None
-                if binding.version.predecessor_version_id is None
-                else binding.version.predecessor_version_id.version
-            ),
+    plan_blocks_by_id = {block.block_id: block for block in plan.blocks}
+    projected_bindings: list[ProjectedIdentityBinding] = []
+    for binding in projection_bindings.values():
+        physical_identity = binding.version.handle.stable_identity
+        planned = plan_blocks_by_id.get(binding.block_id)
+        projected_identity = physical_identity
+        if planned is not None:
+            planned_identity = planned.stable_identity
+            if (planned_identity is None and physical_identity is not None) or (
+                planned_identity is not None
+                and (
+                    physical_identity is None
+                    or not stable_block_identity_covers(
+                        physical_identity,
+                        planned_identity,
+                    )
+                )
+            ):
+                raise SemanticFragmentBackendRejected(
+                    f"physical identity for {binding.block_id!r} does not cover "
+                    "plan identity"
+                )
+            projected_identity = planned_identity
+        projected_bindings.append(
+            ProjectedIdentityBinding(
+                block_id=binding.block_id,
+                logical_owner_id=binding.proxy.proxy_token,
+                version=binding.version.version_id.version,
+                generation=binding.version.generation,
+                state=binding.state,
+                stable_identity=projected_identity,
+                previous_version=(
+                    None
+                    if binding.version.predecessor_version_id is None
+                    else binding.version.predecessor_version_id.version
+                ),
+            )
         )
-        for binding in projection_bindings.values()
-    )
     (
         predecessor_serials_by_block,
         successor_serials_by_block,
@@ -2847,7 +2872,7 @@ def _project_fragment(
     return ProjectedFragment(
         entry_block_id=entry_ids[0],
         blocks=projected_blocks,
-        identity_bindings=projected_bindings,
+        identity_bindings=tuple(projected_bindings),
         fallthrough_helpers=tuple(state.fallthrough_helpers),
         root_fallthrough_helpers=tuple(state.root_fallthrough_helpers),
         return_carriers=return_carriers,
@@ -3185,6 +3210,21 @@ def snapshot_semantic_fragment_inputs(
                 FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
                 planned.block_id,
                 f"snapshot block {planned.block_id!r} lacks published authority",
+            )
+        physical_identity = version.handle.stable_identity
+        if (
+            planned.stable_identity is None
+            or physical_identity is None
+            or not stable_block_identity_covers(
+                physical_identity,
+                planned.stable_identity,
+            )
+        ):
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+                planned.block_id,
+                f"physical identity for {planned.block_id!r} does not cover "
+                "plan identity",
             )
         live_by_id[planned.block_id] = live
         ids_by_serial[serial] = planned.block_id

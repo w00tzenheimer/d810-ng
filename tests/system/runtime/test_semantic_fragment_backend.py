@@ -2867,6 +2867,84 @@ def test_production_participant_preflights_before_realization_and_observes_live_
     gateway.abort(reason="production participant test cleanup")
 
 
+def _refined_published_identity_runtime_case(*, plan_end_ea: int):
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    target.insert_into_block(_Instruction(ida_hexrays.m_nop, 0x401021), None)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
+    refined_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x401021, int(plan_end_ea)),),
+        native_key=gateway.native_key,
+        exact_instruction_eas=(0x401021,),
+    )
+    plan = replace(
+        plan,
+        blocks=tuple(
+            replace(
+                block,
+                semantic_anchor_ea=0x401021,
+                stable_identity=refined_identity,
+            )
+            if block.block_id == "target"
+            else block
+            for block in plan.blocks
+        ),
+    )
+    return mba, gateway, modifier, plan, refined_identity
+
+
+def test_production_participant_observes_plan_owned_identity_refinement() -> None:
+    mba, gateway, modifier, plan, refined_identity = (
+        _refined_published_identity_runtime_case(plan_end_ea=0x401022)
+    )
+    physical_identity = gateway.identity_index.handle_for_serial(2).stable_identity
+    assert physical_identity != refined_identity
+
+    participant = SemanticFragmentTransactionParticipant(gateway, modifier)
+    projected = participant.project(plan, None)
+    prepared = participant.preflight(projected)
+    bound = participant.bind(prepared, gateway.identity_index)
+    patch_plan = lower_fragment_plan(plan, prepared.fragment)
+    realized = participant.realize(replace(bound, patch_plan=patch_plan), gateway)
+    observed = participant.observe(realized, mba)
+
+    assert prepared.fragment.authority.projection.binding(
+        "target"
+    ).stable_identity == refined_identity
+    assert realized.binding("target").stable_identity == refined_identity
+    assert observed.binding("target").stable_identity == refined_identity
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="refined published identity cleanup")
+
+
+def test_production_participant_rejects_uncovered_plan_identity_before_write() -> None:
+    mba, gateway, _modifier, plan, _refined_identity = (
+        _refined_published_identity_runtime_case(plan_end_ea=0x401023)
+    )
+    participant = SemanticFragmentTransactionParticipant(gateway, _modifier)
+    quantity = mba.qty
+
+    with pytest.raises(
+        FragmentProjectionFailure,
+        match="does not cover plan identity",
+    ):
+        participant.project(plan, None)
+
+    assert mba.qty == quantity
+    assert not gateway.active
+    assert not gateway.mutation_started
+    assert not gateway.generation_poisoned
+
+
 def _direct_prepared_runtime_case():
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)

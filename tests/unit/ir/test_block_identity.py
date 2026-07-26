@@ -24,6 +24,7 @@ def test_exposes_the_portable_block_identity_contract() -> None:
         "BoundBlock",
         "RebindResult",
         "refine_stable_block_identity_for_graph_block",
+        "stable_block_identity_covers",
         "stable_block_identity_semantic_anchor",
         "stable_block_identities_refine_at_anchor",
         "stable_block_identity_token",
@@ -148,6 +149,38 @@ def test_exact_anchor_refinement_matches_split_and_portable_identities() -> None
         live_split,
         0x40A5AC,
     )
+
+
+def test_stable_identity_coverage_is_directional_and_exact() -> None:
+    native_key = make_native_key()
+    physical = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40A560, 0x40A58A),),
+        native_key=native_key,
+        exact_instruction_eas=(0x40A570, 0x40A580),
+    )
+    refined_plan = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40A570, 0x40A581),),
+        native_key=native_key,
+        exact_instruction_eas=(0x40A570, 0x40A580),
+    )
+    missing_exact_anchor = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40A570, 0x40A581),),
+        native_key=native_key,
+        exact_instruction_eas=(0x40A570, 0x40A579),
+    )
+    wider_plan = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40A570, 0x40A590),),
+        native_key=native_key,
+        exact_instruction_eas=(0x40A570, 0x40A580),
+    )
+
+    assert block_identity.stable_block_identity_covers(physical, refined_plan)
+    assert not block_identity.stable_block_identity_covers(refined_plan, physical)
+    assert not block_identity.stable_block_identity_covers(
+        physical,
+        missing_exact_anchor,
+    )
+    assert not block_identity.stable_block_identity_covers(physical, wider_plan)
 
 
 def test_identity_contract_exposes_explicit_construction_and_rebind_results() -> None:

@@ -243,6 +243,23 @@ def _stable_identity_ranges_contain(
     )
 
 
+def stable_block_identity_covers(
+    owner: StableBlockIdentity,
+    candidate: StableBlockIdentity,
+) -> bool:
+    """Return whether one physical identity fully realizes portable authority."""
+    if not isinstance(owner, StableBlockIdentity) or not isinstance(
+        candidate,
+        StableBlockIdentity,
+    ):
+        raise TypeError("identity coverage requires stable block identities")
+    return bool(
+        owner.native_key == candidate.native_key
+        and candidate.exact_instruction_eas.issubset(owner.exact_instruction_eas)
+        and _stable_identity_ranges_contain(owner, candidate)
+    )
+
+
 def stable_block_identities_refine_at_anchor(
     first: StableBlockIdentity,
     second: StableBlockIdentity,
@@ -884,6 +901,7 @@ __all__ = [
     "maturity_label",
     "refine_stable_block_identity_for_graph_block",
     "stable_block_identities_refine_at_anchor",
+    "stable_block_identity_covers",
     "stable_block_identity_semantic_anchor",
     "stable_block_identity_from_snapshot",
     "stable_block_identity_token",
