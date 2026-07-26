@@ -383,12 +383,19 @@ def project_fragment(
                     )
                 )
             projected_targets.append(helper_id)
-            adjacency[operation.source_block_id] = helper_id
         if fallthrough_edges:
             helper_id = f"fallthrough-helper:{operation.operation_id}"
             projected_targets = [helper_id] + [
                 target for target in projected_targets if target != helper_id
             ]
+            adjacency[operation.source_block_id] = (
+                helper_id
+                if any(
+                    edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+                    for edge in fallthrough_edges
+                )
+                else None
+            )
         else:
             adjacency[operation.source_block_id] = None
         successors[operation.source_block_id] = projected_targets
