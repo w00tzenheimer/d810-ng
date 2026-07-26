@@ -64,6 +64,81 @@ def _ledger() -> dict[str, object]:
     }
 
 
+def _conditional_ledger() -> dict[str, object]:
+    ledger = _ledger()
+    ledger["transactions"] = [
+        {
+            "corridor": [
+                {
+                    "bytes": "8b5c2440",
+                    "ea": 0x40BECC,
+                    "mnemonic": "mov",
+                    "op_str": "ebx, dword ptr [esp + 0x40]",
+                    "size": 4,
+                    "writes_flags": False,
+                },
+                {
+                    "bytes": "81fb65d3b20b",
+                    "ea": 0x40BED0,
+                    "mnemonic": "cmp",
+                    "op_str": "ebx, 0xbb2d365",
+                    "size": 6,
+                    "writes_flags": True,
+                },
+                {
+                    "bytes": "0f8ce4f7ffff",
+                    "ea": 0x40BED6,
+                    "mnemonic": "jl",
+                    "op_str": "0x40b6c0",
+                    "size": 6,
+                    "writes_flags": False,
+                },
+                {
+                    "bytes": "e926e7ffff",
+                    "ea": 0x40BEDC,
+                    "mnemonic": "jmp",
+                    "op_str": "0x40a607",
+                    "size": 5,
+                    "writes_flags": False,
+                },
+            ],
+            "corridor_end_ea": 0x40BEE1,
+            "corridor_start_ea": 0x40BECC,
+            "flag_writer_eas": [0x40BED0],
+            "flow_register": "ebx",
+            "function_ea": 0x40A560,
+            "phase": "flow_route",
+            "planned_branches": [
+                {
+                    "anchor_ea": 0x40BED0,
+                    "opcode": "837d0c00",
+                    "target_ea": None,
+                },
+                {
+                    "anchor_ea": 0x40BED6,
+                    "opcode": "0f84",
+                    "target_ea": 0x40B9A6,
+                },
+                {
+                    "anchor_ea": 0x40BEDC,
+                    "opcode": "e9",
+                    "target_ea": 0x40C26D,
+                },
+            ],
+            "state_writes": [
+                {
+                    "ea": 0x40BECC,
+                    "mnemonic": "mov",
+                    "value": None,
+                    "value_kind": "non_immediate",
+                }
+            ],
+            "status": "committed",
+        }
+    ]
+    return ledger
+
+
 def test_manifest_is_derived_from_exact_reference_transaction(tmp_path) -> None:
     fixture = tmp_path / "fixture.bin"
     reference = tmp_path / "reference.bin"
@@ -150,6 +225,38 @@ def test_manifest_rejects_missing_or_ambiguous_reference_anchor(tmp_path) -> Non
             rewrite_owners={0x40BB63: 0x40BB51},
             **{**kwargs, "ledger": duplicated},
         )
+
+
+def test_manifest_compiles_conditional_rewrite_with_predicate_setup(tmp_path) -> None:
+    fixture = tmp_path / "fixture.bin"
+    reference = tmp_path / "reference.bin"
+    fixture.write_bytes(b"candidate")
+    reference.write_bytes(b"reference")
+
+    manifest = build_manifest(
+        ledger=_conditional_ledger(),
+        run_id="a560-v33-conditional",
+        function_ea=0x40A560,
+        function_end_ea=0x40C8A2,
+        publication_root_ea=0x40BECC,
+        rewrite_owners={0x40BED0: 0x40BECC},
+        fixture_path=fixture,
+        reference_binary_path=reference,
+        reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+        runtime_image="d810-idapro-9.3-test-runtime:py313-v1",
+        runtime_image_id="sha256:360f91d9d4ac",
+        maturities=("MMAT_PREOPTIMIZED",),
+    )
+
+    (route,) = routes_from_manifest(manifest)
+    assert route.route_id == "rhad:0x40A560:flow_route:0x40BED0"
+    assert route.owner_ea == 0x40BECC
+    assert route.rewrite_anchor_ea == 0x40BED0
+    assert route.original_transfer_kind is SemanticTransferKind.UNKNOWN
+    assert route.final_transfer_kind is SemanticTransferKind.CONDITIONAL
+    assert route.predicate_kind == "z"
+    assert route.true_target_ea == 0x40B9A6
+    assert route.false_target_ea == 0x40C26D
 
 
 def test_manifest_parser_rejects_unknown_schema() -> None:
