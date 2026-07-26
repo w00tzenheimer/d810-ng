@@ -1900,7 +1900,7 @@ class FragmentPlan:
                 operation_owner_anchor_ea = (
                     direct_rewrite.owner_anchor_ea
                     if direct_rewrite is not None
-                    else int(source.semantic_anchor_ea)
+                    else int(operation.predicate_anchor_ea)
                 )
                 owner_bound = bool(
                     operation_owner_identity is not None
