@@ -620,10 +620,9 @@ def _restore_native_stack_capacity_witness(
         try:
             observed_spd = int(ida_frame.get_spd(function, native_ea))
             observed_delta = int(ida_frame.get_sp_delta(function, native_ea))
-            point_changed = (
-                observed_spd != int(record.original_spd)
-                or observed_delta != int(record.original_delta)
-            )
+            point_changed = observed_spd != int(
+                record.original_spd
+            ) or observed_delta != int(record.original_delta)
             if (installed or point_changed) and not ida_frame.del_stkpnt(
                 function, native_ea
             ):
@@ -633,9 +632,8 @@ def _restore_native_stack_capacity_witness(
         try:
             restored_spd = int(ida_frame.get_spd(function, native_ea))
             restored_delta = int(ida_frame.get_sp_delta(function, native_ea))
-            if (
-                restored_spd != int(record.original_spd)
-                or restored_delta != int(record.original_delta)
+            if restored_spd != int(record.original_spd) or restored_delta != int(
+                record.original_delta
             ):
                 failures.append(
                     f"verify_point@0x{native_ea:X}:"
@@ -647,8 +645,9 @@ def _restore_native_stack_capacity_witness(
     if tail_write_attempted:
         try:
             observed_chunks = _function_chunk_inventory(function)
-            if observed_chunks != record.original_chunks and not ida_funcs.remove_func_tail(
-                function, native_ea
+            if (
+                observed_chunks != record.original_chunks
+                and not ida_funcs.remove_func_tail(function, native_ea)
             ):
                 failures.append(f"remove_tail@0x{native_ea:X}")
         except Exception as error:
@@ -719,9 +718,7 @@ class NativeStackCapacityWitnessLease:
                 outcome="restored",
                 reason="lease_released",
             ),
-            portable_points=_portable_stack_points_payload(
-                self.record.portable_points
-            ),
+            portable_points=_portable_stack_points_payload(self.record.portable_points),
         )
 
 
@@ -821,8 +818,10 @@ def acquire_detached_call_stack_capacity_witness(
     owner = ida_funcs.get_func(native_ea)
     end_owner = ida_funcs.get_func(tail_end_ea - 1) if tail_end_ea > native_ea else None
     reason: str | None = None
-    if owner is not None or end_owner is not None or ida_funcs.func_contains(
-        function, native_ea
+    if (
+        owner is not None
+        or end_owner is not None
+        or ida_funcs.func_contains(function, native_ea)
     ):
         reason = "capacity_witness_not_detached"
     elif tail_end_ea <= native_ea or tail_end_ea == int(getattr(idaapi, "BADADDR", -1)):
@@ -870,9 +869,7 @@ def acquire_detached_call_stack_capacity_witness(
             not ida_funcs.func_contains(function, native_ea)
             or _function_chunk_inventory(function) != record.expected_chunks
         ):
-            raise RuntimeError(
-                f"temporary tail verification failed at 0x{native_ea:X}"
-            )
+            raise RuntimeError(f"temporary tail verification failed at 0x{native_ea:X}")
         _observe_native_stack_capacity_witness(
             session,
             state,
@@ -12391,9 +12388,7 @@ def _on_stkpnts(
                 ),
                 payload={
                     "capture_active": False,
-                    "portable_points": _portable_stack_points_payload(
-                        portable_points
-                    ),
+                    "portable_points": _portable_stack_points_payload(portable_points),
                     "witness": witness,
                 },
             )
@@ -12404,10 +12399,7 @@ def _on_stkpnts(
         key,
         hex(int(native_ea)),
         outcome,
-        [
-            (hex(int(call_ea)), int(spd))
-            for call_ea, spd in portable_points
-        ],
+        [(hex(int(call_ea)), int(spd)) for call_ea, spd in portable_points],
     )
 
 
