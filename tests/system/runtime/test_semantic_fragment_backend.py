@@ -4184,9 +4184,7 @@ def test_native_body_origin_binding_translates_operations_and_projection(
         "target",
         "fallthrough-helper:imported-conditional-route",
     }
-    helper = projection.block(
-        "fallthrough-helper:imported-conditional-route"
-    )
+    helper = projection.block("fallthrough-helper:imported-conditional-route")
     assert helper.instruction_eas == ()
     assert helper.terminator_ea is None
     assert helper.terminator_kind is InsnKind.GOTO
