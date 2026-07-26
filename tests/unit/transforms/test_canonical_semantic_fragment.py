@@ -1052,6 +1052,80 @@ def test_carrier_ingress_keeps_unresolved_published_sibling_as_typed_egress() ->
     assert plan.operation("route:state_assignment@0x40BB63:0xE9795EF")
 
 
+def test_carrier_ingress_reuses_projected_external_dispatcher_owner() -> None:
+    graph, normalization_plan, available_evidence, detached_route, _authority = (
+        _carrier_ingress_case()
+    )
+    (native_body,) = normalization_plan.native_bodies
+    projected_dispatcher = FragmentBlock(
+        block_id="normalized-dispatcher-boundary",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x1400,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (
+                NativeEaInterval(0x1400, 0x1401),
+                NativeEaInterval(0x1800, 0x1801),
+            ),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(0x1400,),
+        ),
+    )
+    target_egress = FragmentOperation(
+        operation_id="route-target-egress",
+        source_block_id="native@0x40ACF3",
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=projected_dispatcher.block_id,
+            ),
+        ),
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(*normalization_plan.blocks, projected_dispatcher),
+        operations=(*normalization_plan.operations, target_egress),
+        native_bodies=(
+            replace(
+                native_body,
+                terminal_block_ids=tuple(
+                    block_id
+                    for block_id in native_body.terminal_block_ids
+                    if block_id != target_egress.source_block_id
+                ),
+                proof_ids=(*native_body.proof_ids, target_egress.operation_id),
+            ),
+        ),
+    )
+    authority = _normalization_authority(normalization_plan, available_evidence)
+    detached_route = replace(detached_route, normalization_authority=authority)
+
+    plan = compose_canonical_carrier_ingress_fragment_plan(
+        graph,
+        normalization_plan,
+        available_evidence=available_evidence,
+        detached_route=detached_route,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=authority,
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    ingress = plan.operation("route:state-choice@0x1600:carrier-ingress")
+    target_operation = plan.operation(target_egress.operation_id)
+    dispatcher_targets = {
+        edge.target_block_id
+        for operation in (ingress, target_operation)
+        for edge in operation.edges
+        if plan.block(edge.target_block_id).stable_identity is not None
+        and plan.block(edge.target_block_id).stable_identity.native_ranges.contains(
+            0x1400
+        )
+    }
+    assert len(dispatcher_targets) == 1
+    (dispatcher_target_id,) = dispatcher_targets
+    assert plan.block(dispatcher_target_id).role is FragmentBlockRole.EXTERNAL
+
+
 def test_canonical_route_composes_live_source_with_detached_target_body() -> None:
     graph, normalization_plan, evidence = _live_source_detached_target_case()
 
