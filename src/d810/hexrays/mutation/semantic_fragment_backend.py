@@ -3719,10 +3719,14 @@ def snapshot_semantic_fragment_inputs(
                 terminator_ea=fact.terminator_ea,
                 terminator_kind=fact.terminator_kind,
                 instruction_eas=instruction_eas,
-                flag_write_eas=frozenset(
-                    instruction.native_ea
-                    for instruction in fact.instructions
-                    if instruction.writes_condition_codes is True
+                flag_write_eas=(
+                    frozenset(
+                        instruction.native_ea
+                        for instruction in fact.instructions
+                        if instruction.writes_condition_codes is True
+                    )
+                    if plan.flag_corridors
+                    else frozenset()
                 ),
             )
         )
