@@ -59,7 +59,7 @@ class SessionFrontendNormalizationPlanAuthority:
         field(default_factory=dict)
     )
     _receipted_prepared_work_items: dict[
-        tuple[int, str, str],
+        tuple[int, str, str, int],
         PreparedNormalizationWorkItemSnapshot,
     ] = field(default_factory=dict)
 
@@ -222,7 +222,12 @@ class SessionFrontendNormalizationPlanAuthority:
                 authority=authority,
                 prepared_bodies=prepared_bodies,
             )
-            work_item_key = (generation, plan.plan_id, work_item_plan.plan_id)
+            work_item_key = (
+                generation,
+                plan.plan_id,
+                work_item_plan.plan_id,
+                int(authority.publication_revision),
+            )
             previous_work_item = self._receipted_prepared_work_items.get(work_item_key)
             if (
                 previous_work_item is not None
@@ -331,6 +336,7 @@ class SessionFrontendNormalizationPlanAuthority:
                 generation,
                 retained_source_plan_id,
                 _work_item_id,
+                _publication_revision,
             ), snapshot in self._receipted_prepared_work_items.items()
             if generation == int(evidence_generation)
             and retained_source_plan_id == str(source_plan_id)
@@ -342,11 +348,17 @@ class SessionFrontendNormalizationPlanAuthority:
         )
         if not matches:
             return None
-        if len(matches) != 1:
+        work_item_ids = {
+            snapshot.work_item_plan.plan_id for snapshot in matches
+        }
+        if len(work_item_ids) != 1:
             raise FrontendNormalizationPublicationError(
                 "prepared normalization block has multiple receipt owners"
             )
-        return matches[0]
+        return max(
+            matches,
+            key=lambda snapshot: int(snapshot.authority.publication_revision),
+        )
 
     def plan_for(
         self,
