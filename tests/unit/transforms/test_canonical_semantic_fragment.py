@@ -1583,6 +1583,13 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge(
     assert nested_operation.direct_transfer_rewrite.route_proof_id == (
         nested_proof.proof_id
     )
+    assert (
+        nested_operation.direct_transfer_rewrite.owner_identity
+        == route_source.stable_identity
+    )
+    assert nested_operation.direct_transfer_rewrite.owner_anchor_ea == (
+        route_source.semantic_anchor_ea
+    )
     assert nested_operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x1218
     assert nested_operation.direct_transfer_rewrite.proof_corridor_instruction_eas == (
         0x1210,
