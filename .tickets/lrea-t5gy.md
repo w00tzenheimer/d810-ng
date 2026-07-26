@@ -5897,3 +5897,41 @@ live predicate binding. Continue by proving and binding the clone-owned
 storage-predicate materialization before semantic-edge realization; do not
 catch the missing key, synthesize a binding, increase restart budget, or
 broaden beyond this route.
+
+**2026-07-25T23:21:00-0700 — clone-owned predicate staging; C4 suffix-proof boundary**
+
+Functional commit `f03d196a1` lowers a clone-owned stack predicate as an
+explicit typed PatchPlan normalization, snapshots immutable clone-source
+instruction facts, validates the retained anchor and discardable suffix before
+opening the gateway, rechecks the original and clone against that authority,
+and binds the synthesized predicate EA before semantic-edge realization. It
+also distinguishes the physical state-write definition from the synthesized
+predicate use when both share one portable EA. The focused projection,
+lowering, and production-backend gate is 167/167 green, including an unsafe
+suffix rejection with zero writes. Formatting-only commit `204acc76f` is the
+separate repository-wide tracked-file Ruff pass.
+
+The mandatory fresh cache-disabled A560 diagnostic canary at `204acc76f`
+finished in 15.46 seconds without a segfault, numeric INTERR, generation
+poison, rollback, or partial receipt. Log:
+`.tmp/rhad-a560-clone-predicate-204acc76f.txt`; primary DB:
+`.tmp/rhad-a560-clone-predicate-204acc76f/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+A560 still fails C6 because the pseudocode contains one false `while ( 1 )`.
+
+The DB records two independent 260/260 frontend-normalization receipts with
+complete `planned -> projected -> preflighted -> bound -> realizing ->
+observed -> committed` timelines. That path reaches C5 but is not the selected
+semantic-route proof. The first carrier attempt rejects cleanly to request the
+CALLS companion range. After redo, the selected carrier plan again reaches C3
+and enters C4 projection, then rejects with `mutation_started=0` and
+`poisoned=0`.
+
+The selected route therefore has C3 strictly complete. Its first failed
+obligation is
+`C4_staged_proof:operation_topology:route:state-choice@0x40BECC:0xEC71CA67:0xA0716E5B:carrier-ingress`,
+with DB reason `clone-owned storage predicate suffix is not atomically
+discardable`. The current failure row does not identify the immutable suffix
+instruction facts that violated the proof. Continue by making that portable
+evidence reconstructible in the diagnostic failure, then repair only the
+first unsafe or misclassified suffix instruction; do not weaken atomic suffix
+validation, write live state, or broaden to another route.
