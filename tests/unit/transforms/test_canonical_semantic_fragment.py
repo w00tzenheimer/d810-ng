@@ -910,9 +910,7 @@ def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress(
     }.isdisjoint({0x1600, 0x1700, 0x40C6F7, 0x40BB69})
 
 
-def test_carrier_ingress_keeps_unresolved_published_sibling_as_typed_egress() -> (
-    None
-):
+def test_carrier_ingress_keeps_unresolved_published_sibling_as_typed_egress() -> None:
     graph, normalization_plan, available_evidence, detached_route, _authority = (
         _carrier_ingress_case()
     )
