@@ -6398,3 +6398,50 @@ Continue from the stable call anchor `0x40A91C` by comparing the captured CALLS
 stack-window authority with the current canonical terminal-carrier binding.
 Do not weaken return-carrier preflight, infer a block from a stale serial, or
 resume broad route publication before this zero-write obligation is satisfied.
+
+**2026-07-26T04:58:28-0700 — reachable stack-capacity corridor advances canonical staging**
+
+Functional commit `d817135ec` replaces the detached-tail experiment with a
+manager-owned native stack-capacity corridor over the already-reachable,
+stack-neutral instruction at `0x40A574-0x40A57A`. The corridor installs and
+releases both auto-SPD boundaries transactionally, records the portable call
+inventory and original stack facts, and leaves no helper tail or compatibility
+path. Ruff-only commit `c475422bf` formats that slice. The focused resolver and
+manager-native-preanalysis gate is 276/276 green.
+
+The first exact canary at `c475422bf` exposed a real SIGSEGV, not a verifier
+INTERR: the hxe_stkpnts observer called `mba.stkoff_ida2vd(0)` before Hex-Rays
+had initialized the coordinate machinery. Functional commit `1b3613898`
+removes that unsafe phase crossing. The callback now observes only the raw
+`tmpstk_size` scalar, and its regression test fails if coordinate conversion is
+attempted during hxe_stkpnts. No compatibility diagnostic field remains.
+
+The mandatory cache-disabled A560 canary at clean SHA `1b3613898` was
+reproduced in pinned image `d810-idapro-9.3-test-runtime:py313-v1`. Log:
+`.tmp/rhad-a560-stack-safe-pinned-1b3613898.txt`; primary DB:
+`.tmp/rhad-a560-stack-safe-pinned-1b3613898/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+There is no process crash or numeric INTERR. The worker refuses poisoned output
+after the bounded restart, so this is not C6 or final A560 acceptance.
+
+The DB records raw `tmpstk_size=0` during all three hxe_stkpnts observations;
+that phase-local scalar is diagnostic only. The operative proof is that the
+old zero-write `call=0x40A91C top=12 span=16` rejection is gone. After one clean
+CALLS-companion request, canonical attempts reach immutable projection,
+preflight, final binding, and live realization. Frontend normalization remains
+exact C5 with committed 260/260 receipts and 139 non-invalidated creation
+witnesses per attempt.
+
+Canonical attempt `2f8474b699414675b88cf60bf920cf03` then poisons at
+`runtime:stage` after 403/406 operations, before root publication. Strict
+comparison reports 18 imported-block terminator divergences and no former
+flag-write blocker. The first stable subject is
+`native[0x40A903-0x40A922;exact=0x40A903]:imported:terminator`; the same ordered
+failure repeats after the lifecycle restart. Each failed attempt records 229
+creation witnesses, 219 invalidated with the poisoned generation.
+
+The highest current level is C5 for exact frontend normalization and C4 plus
+partial live staging for canonical composition. Continue from terminator
+authority at imported block `0x40A903`: compare the immutable prepared
+terminator with the realized SDK terminator and encode the typed contraction
+owned by that operation. Do not weaken strict comparison, reclassify partial
+writes as C5, or resume broad 91-route publication.
