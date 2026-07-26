@@ -6,7 +6,6 @@ from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.hexrays.ir.cfg_queries import is_conditional_jump
-from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.mutation.cfg_verify import is_resolver_proven_live_predicate
 from d810.hexrays.utils.hexrays_formatters import (
     format_minsn_t,
@@ -20,6 +19,7 @@ from d810.optimizers.microcode.flow.handler import (
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     ast_generator,
 )
+from d810.transforms.graph_modification import ConvertToGoto
 from d810.core import Registrant
 
 logger = getLogger("D810.branch_fixer")
@@ -443,17 +443,18 @@ class JumpFixer(FlowOptimizationRule):
                     )
                     optimizer_logger.info("  new : {0}".format(format_minsn_t(new_ins)))
                     if new_ins.opcode == ida_hexrays.m_goto:
-                        modifier = self.new_deferred_modifier(blk.mba)
-                        modifier.queue_convert_to_goto(
-                            int(blk.serial),
-                            int(new_ins.d.b),
-                            description="jump rule converted conditional block to goto",
+                        return (
+                            self.execute_graph_modifications(
+                                blk.mba,
+                                (
+                                    ConvertToGoto(
+                                        block_serial=int(blk.serial),
+                                        goto_target=int(new_ins.d.b),
+                                    ),
+                                ),
+                            )
+                            > 0
                         )
-                        modifier.apply(
-                            verify_each_mod=True,
-                            defer_post_apply_maintenance=True,
-                        )
-                        return True
                     else:
                         # In-place modification: safer than make_nop + insert_into_block
                         # because it avoids CFG consistency issues at certain maturities.
