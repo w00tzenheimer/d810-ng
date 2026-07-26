@@ -6047,3 +6047,33 @@ the selected reference scope into one closed plan whose rewrite-anchor set is
 exactly the selected 93-route set before binding or publication. Do not weaken
 the exact-anchor oracle, bind a subset under full-scope authority, or publish
 multiple independently live route fragments.
+
+**2026-07-26T00:39:00-0700 — typed anchor inventory corrects broad C3 diagnosis**
+
+Functional commit `31b076b11` makes detached-oracle authority failures carry
+typed reason codes and exact planned, selected, missing, and unexpected stable
+EA sets through the canonical rejection into the diagnostic DB. Ruff-only
+commit `b6ba25da9` formats that slice. The focused canonical, oracle, manager,
+and backend gate is 163/163 green with the unrelated random-identity
+`PatchPlan()` assertion explicitly deselected.
+
+The mandatory cache-disabled A560 canary at `b6ba25da9` completed normally in
+19.39 seconds without a segfault, numeric INTERR, generation poison, rollback,
+or partial receipt. Log:
+`.tmp/rhad-a560-anchor-mismatch-b6ba25da9.txt`; primary DB:
+`.tmp/rhad-a560-anchor-mismatch-b6ba25da9/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode is beside the DB. The C6 result remains the same six-line false
+infinite loop.
+
+This DB evidence corrects the preceding checkpoint's interpretation. The two
+`route_proof_ids` on the accepted configured-root attempt describe its root
+work-item evidence, not the complete staged plan's rewrite inventory. The
+actual plan has 89 unique rewrite anchors against 93 selected anchors. It is
+missing `0x40AE0B`, `0x40AE7A`, `0x40B36B`, `0x40BED0`, and `0x40C4D2`, and
+has the unexpected anchor `0x40AE09`. The first three selected routes are
+direct; the last two are the conditional routes. Continue from the earliest
+stable-EA mismatch, selected `0x40AE0B` versus planned `0x40AE09`, and prove
+whether that is a native-to-microcode coordinate error or an incorrectly
+selected semantic envelope before addressing the two absent direct routes and
+typed conditional authority. Do not weaken exact-anchor equality or describe
+this as a two-route composition failure.
