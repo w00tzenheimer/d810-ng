@@ -3593,15 +3593,17 @@ def test_build_callinfo_does_not_replay_route_template_into_source_mba(
     assert replayed == []
 
 
-def test_native_stack_point_overlay_is_preflighted_atomic_and_restored(
+def test_native_stack_capacity_witness_is_preflighted_atomic_and_restored(
     monkeypatch,
 ) -> None:
+    import ida_bytes
     import ida_frame
     import ida_funcs
 
     function_ea = 0x40A560
-    first_call_ea = 0x40A91C
-    second_call_ea = 0x40AA20
+    deepest_call_ea = 0x40A91C
+    shallow_call_ea = 0x40AA20
+    witness_end_ea = deepest_call_ea + 5
     resolution = ComputedGotoResolution(
         function_ea=function_ea,
         jmp_targets={},
@@ -3611,27 +3613,61 @@ def test_native_stack_point_overlay_is_preflighted_atomic_and_restored(
         seeds_run=0,
     )
     session, _state = _resolver_session(resolution)
-    session.identity_key = "overlay-session"
+    session.identity_key = "capacity-witness-session"
     session.function_ea = function_ea
     session.current_mba_generation = 7
     monkeypatch.setattr(
         computed_goto_resolver,
         "detached_preopt_call_stack_points",
         lambda _function_ea: (
-            (first_call_ea, -16),
-            (second_call_ea, -8),
+            (shallow_call_ea, -8),
+            (deepest_call_ea, -16),
         ),
     )
-    function = SimpleNamespace(frsize=1164, frregs=4)
+    function = SimpleNamespace(
+        start_ea=function_ea,
+        frsize=1164,
+        frregs=4,
+    )
+    chunks = [(function_ea, 0x40A607)]
+
+    def get_func(ea):
+        native_ea = int(ea)
+        return (
+            function
+            if any(start <= native_ea < end for start, end in chunks)
+            else None
+        )
+
     monkeypatch.setattr(
         ida_funcs,
         "get_func",
-        lambda ea: function if int(ea) == function_ea else None,
+        get_func,
+    )
+    monkeypatch.setattr(
+        ida_funcs,
+        "func_contains",
+        lambda candidate, ea: candidate is function
+        and any(start <= int(ea) < end for start, end in chunks),
+    )
+    monkeypatch.setattr(
+        ida_funcs,
+        "func_tail_iterator_t",
+        lambda candidate: (
+            SimpleNamespace(start_ea=start, end_ea=end)
+            for start, end in tuple(chunks)
+            if candidate is function
+        ),
+    )
+    monkeypatch.setattr(
+        ida_bytes,
+        "get_item_end",
+        lambda ea: witness_end_ea if int(ea) == deepest_call_ea else int(ea) + 2,
     )
     canonical_spd = -1168
     original_spds = {
-        first_call_ea: canonical_spd,
-        second_call_ea: canonical_spd,
+        deepest_call_ea: canonical_spd,
+        shallow_call_ea: canonical_spd,
     }
     overlays: dict[int, int] = {}
     preflighted: list[tuple[str, int]] = []
@@ -3647,15 +3683,23 @@ def test_native_stack_point_overlay_is_preflighted_atomic_and_restored(
         assert candidate is function
         native_ea = int(ea)
         preflighted.append(("delta", native_ea))
-        return 0
+        return overlays.get(native_ea, canonical_spd) - canonical_spd
+
+    def append_func_tail(candidate, start, end):
+        assert candidate is function
+        assert {native_ea for kind, native_ea in preflighted if kind == "delta"} == {
+            deepest_call_ea,
+            shallow_call_ea,
+        }
+        writes.append(("append", int(start), int(end)))
+        chunks.append((int(start), int(end)))
+        chunks.sort()
+        return True
 
     def set_auto_spd(candidate, ea, spd):
         assert candidate is function
-        assert {native_ea for kind, native_ea in preflighted if kind == "delta"} == {
-            first_call_ea,
-            second_call_ea,
-        }
         native_ea = int(ea)
+        assert get_func(native_ea) is function
         projected_spd = int(spd)
         writes.append(("set", native_ea, projected_spd))
         overlays[native_ea] = projected_spd
@@ -3668,45 +3712,68 @@ def test_native_stack_point_overlay_is_preflighted_atomic_and_restored(
         overlays.pop(native_ea)
         return True
 
+    def remove_func_tail(candidate, ea):
+        assert candidate is function
+        native_ea = int(ea)
+        writes.append(("remove", native_ea, None))
+        chunks.remove((native_ea, witness_end_ea))
+        return True
+
     monkeypatch.setattr(ida_frame, "get_spd", get_spd)
     monkeypatch.setattr(ida_frame, "get_sp_delta", get_sp_delta)
     monkeypatch.setattr(ida_frame, "set_auto_spd", set_auto_spd)
     monkeypatch.setattr(ida_frame, "del_stkpnt", del_stkpnt)
+    monkeypatch.setattr(ida_funcs, "append_func_tail", append_func_tail)
+    monkeypatch.setattr(ida_funcs, "remove_func_tail", remove_func_tail)
     observed: list[object] = []
     monkeypatch.setattr(computed_goto_resolver, "emit_diagnostic", observed.append)
 
-    lease = computed_goto_resolver.acquire_detached_call_stack_point_overlay(session)
+    lease = computed_goto_resolver.acquire_detached_call_stack_capacity_witness(
+        session
+    )
 
     assert lease is not None
-    assert tuple(
-        (record.native_ea, record.original_spd, record.projected_spd)
-        for record in lease.records
+    assert (
+        lease.record.native_ea,
+        lease.record.tail_end_ea,
+        lease.record.original_chunks,
+        lease.record.original_spd,
+        lease.record.projected_spd,
+        lease.record.portable_point_count,
     ) == (
-        (first_call_ea, canonical_spd, canonical_spd - 16),
-        (second_call_ea, canonical_spd, canonical_spd - 8),
+        deepest_call_ea,
+        witness_end_ea,
+        ((function_ea, 0x40A607),),
+        canonical_spd,
+        canonical_spd - 16,
+        2,
     )
     assert writes == [
-        ("set", first_call_ea, canonical_spd - 16),
-        ("set", second_call_ea, canonical_spd - 8),
+        ("append", deepest_call_ea, witness_end_ea),
+        ("set", deepest_call_ea, canonical_spd - 16),
     ]
-    assert overlays == {
-        first_call_ea: canonical_spd - 16,
-        second_call_ea: canonical_spd - 8,
-    }
+    assert chunks == [(function_ea, 0x40A607), (deepest_call_ea, witness_end_ea)]
+    assert overlays == {deepest_call_ea: canonical_spd - 16}
 
     lease.release()
     lease.release()
 
     assert writes[-2:] == [
-        ("del", second_call_ea, None),
-        ("del", first_call_ea, None),
+        ("del", deepest_call_ea, None),
+        ("remove", deepest_call_ea, None),
     ]
     assert overlays == {}
+    assert chunks == [(function_ea, 0x40A607)]
     assert [event.event_kind for event in observed] == [
-        "native_stack_point_overlay",
-        "native_stack_point_overlay",
+        "native_stack_capacity_witness",
+        "native_stack_capacity_witness",
+        "native_stack_capacity_witness",
     ]
-    assert [event.phase for event in observed] == ["installed", "released"]
+    assert [event.phase for event in observed] == [
+        "tail_created",
+        "installed",
+        "released",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -3716,12 +3783,13 @@ def test_native_stack_point_overlay_is_preflighted_atomic_and_restored(
         (-1168, -4, "existing_stack_change_point"),
     ),
 )
-def test_native_stack_point_overlay_conflict_writes_nothing(
+def test_native_stack_capacity_witness_conflict_writes_nothing(
     monkeypatch,
     native_spd: int,
     native_delta: int,
     expected_reason: str,
 ) -> None:
+    import ida_bytes
     import ida_frame
     import ida_funcs
 
@@ -3736,7 +3804,7 @@ def test_native_stack_point_overlay_conflict_writes_nothing(
         seeds_run=0,
     )
     session, _state = _resolver_session(resolution)
-    session.identity_key = "overlay-conflict"
+    session.identity_key = "capacity-witness-conflict"
     session.function_ea = function_ea
     session.current_mba_generation = 2
     monkeypatch.setattr(
@@ -3744,8 +3812,23 @@ def test_native_stack_point_overlay_conflict_writes_nothing(
         "detached_preopt_call_stack_points",
         lambda _function_ea: ((call_ea, -16),),
     )
-    function = SimpleNamespace(frsize=1164, frregs=4)
-    monkeypatch.setattr(ida_funcs, "get_func", lambda _ea: function)
+    function = SimpleNamespace(
+        start_ea=function_ea,
+        frsize=1164,
+        frregs=4,
+    )
+    monkeypatch.setattr(
+        ida_funcs,
+        "get_func",
+        lambda ea: function if int(ea) == function_ea else None,
+    )
+    monkeypatch.setattr(ida_funcs, "func_contains", lambda _function, _ea: False)
+    monkeypatch.setattr(
+        ida_funcs,
+        "func_tail_iterator_t",
+        lambda _function: iter((SimpleNamespace(start_ea=function_ea, end_ea=0x40A607),)),
+    )
+    monkeypatch.setattr(ida_bytes, "get_item_end", lambda ea: int(ea) + 5)
     monkeypatch.setattr(ida_frame, "get_spd", lambda _function, _ea: native_spd)
     monkeypatch.setattr(
         ida_frame,
@@ -3763,26 +3846,39 @@ def test_native_stack_point_overlay_conflict_writes_nothing(
         "del_stkpnt",
         lambda *args: writes.append(args) or True,
     )
+    monkeypatch.setattr(
+        ida_funcs,
+        "append_func_tail",
+        lambda *args: writes.append(args) or True,
+    )
+    monkeypatch.setattr(
+        ida_funcs,
+        "remove_func_tail",
+        lambda *args: writes.append(args) or True,
+    )
     observed: list[object] = []
     monkeypatch.setattr(computed_goto_resolver, "emit_diagnostic", observed.append)
 
     assert (
-        computed_goto_resolver.acquire_detached_call_stack_point_overlay(session)
+        computed_goto_resolver.acquire_detached_call_stack_capacity_witness(session)
         is None
     )
     assert writes == []
     assert len(observed) == 1
     assert observed[0].phase == "preflight_rejected"
-    assert observed[0].payload["points"][0]["reason"] == expected_reason
+    assert observed[0].payload["witness"]["reason"] == expected_reason
 
 
-def test_native_stack_point_overlay_rolls_back_partial_install(monkeypatch) -> None:
+def test_native_stack_capacity_witness_rolls_back_partial_install(
+    monkeypatch,
+) -> None:
+    import ida_bytes
     import ida_frame
     import ida_funcs
 
     function_ea = 0x40A560
-    first_call_ea = 0x40A91C
-    second_call_ea = 0x40AA20
+    call_ea = 0x40A91C
+    witness_end_ea = call_ea + 5
     resolution = ComputedGotoResolution(
         function_ea=function_ea,
         jmp_targets={},
@@ -3792,19 +3888,45 @@ def test_native_stack_point_overlay_rolls_back_partial_install(monkeypatch) -> N
         seeds_run=0,
     )
     session, _state = _resolver_session(resolution)
-    session.identity_key = "overlay-rollback"
+    session.identity_key = "capacity-witness-rollback"
     session.function_ea = function_ea
     session.current_mba_generation = 3
     monkeypatch.setattr(
         computed_goto_resolver,
         "detached_preopt_call_stack_points",
-        lambda _function_ea: (
-            (first_call_ea, -16),
-            (second_call_ea, -8),
+        lambda _function_ea: ((call_ea, -16),),
+    )
+    function = SimpleNamespace(
+        start_ea=function_ea,
+        frsize=1164,
+        frregs=4,
+    )
+    chunks = [(function_ea, 0x40A607)]
+
+    def get_func(ea):
+        native_ea = int(ea)
+        return (
+            function
+            if any(start <= native_ea < end for start, end in chunks)
+            else None
+        )
+
+    monkeypatch.setattr(ida_funcs, "get_func", get_func)
+    monkeypatch.setattr(
+        ida_funcs,
+        "func_contains",
+        lambda candidate, ea: candidate is function
+        and any(start <= int(ea) < end for start, end in chunks),
+    )
+    monkeypatch.setattr(
+        ida_funcs,
+        "func_tail_iterator_t",
+        lambda _function: (
+            SimpleNamespace(start_ea=start, end_ea=end)
+            for start, end in tuple(chunks)
         ),
     )
-    function = SimpleNamespace(frsize=1164, frregs=4)
-    monkeypatch.setattr(ida_funcs, "get_func", lambda _ea: function)
+    monkeypatch.setattr(ida_bytes, "get_item_end", lambda _ea: witness_end_ea)
     overlays: dict[int, int] = {}
     monkeypatch.setattr(
         ida_frame,
@@ -3814,13 +3936,17 @@ def test_native_stack_point_overlay_rolls_back_partial_install(monkeypatch) -> N
     monkeypatch.setattr(ida_frame, "get_sp_delta", lambda _function, _ea: 0)
     writes: list[tuple[str, int]] = []
 
+    def append_func_tail(_function, start, end):
+        writes.append(("append", int(start)))
+        chunks.append((int(start), int(end)))
+        chunks.sort()
+        return True
+
     def set_auto_spd(_function, ea, spd):
         native_ea = int(ea)
         writes.append(("set", native_ea))
-        if native_ea == second_call_ea:
-            return False
         overlays[native_ea] = int(spd)
-        return True
+        return False
 
     def del_stkpnt(_function, ea):
         native_ea = int(ea)
@@ -3828,26 +3954,36 @@ def test_native_stack_point_overlay_rolls_back_partial_install(monkeypatch) -> N
         overlays.pop(native_ea)
         return True
 
+    def remove_func_tail(_function, ea):
+        native_ea = int(ea)
+        writes.append(("remove", native_ea))
+        chunks.remove((native_ea, witness_end_ea))
+        return True
+
+    monkeypatch.setattr(ida_funcs, "append_func_tail", append_func_tail)
+    monkeypatch.setattr(ida_funcs, "remove_func_tail", remove_func_tail)
     monkeypatch.setattr(ida_frame, "set_auto_spd", set_auto_spd)
     monkeypatch.setattr(ida_frame, "del_stkpnt", del_stkpnt)
     monkeypatch.setattr(computed_goto_resolver, "emit_diagnostic", lambda _event: None)
 
     with pytest.raises(RuntimeError, match="transactional installation failed"):
-        computed_goto_resolver.acquire_detached_call_stack_point_overlay(session)
+        computed_goto_resolver.acquire_detached_call_stack_capacity_witness(session)
 
     assert writes == [
-        ("set", first_call_ea),
-        ("set", second_call_ea),
-        ("del", first_call_ea),
+        ("append", call_ea),
+        ("set", call_ea),
+        ("del", call_ea),
+        ("remove", call_ea),
     ]
     assert overlays == {}
+    assert chunks == [(function_ea, 0x40A607)]
 
 
 @pytest.mark.parametrize(
     ("native_call_spd", "expected_outcome", "expected_observed"),
     ((-1168, "missing", 0), (-1172, "observed", 1)),
 )
-def test_stkpnts_observes_native_overlay_without_mutating_callback_points(
+def test_stkpnts_observes_one_stack_capacity_witness_without_mutating(
     monkeypatch,
     native_call_spd: int,
     expected_outcome: str,
@@ -3857,6 +3993,7 @@ def test_stkpnts_observes_native_overlay_without_mutating_callback_points(
     import ida_funcs
 
     function_ea = 0x1000
+    shallow_call_ea = 0x2020
     native_call_ea = 0x2030
     resolution = ComputedGotoResolution(
         function_ea=function_ea,
@@ -3873,7 +4010,10 @@ def test_stkpnts_observes_native_overlay_without_mutating_callback_points(
     monkeypatch.setattr(
         computed_goto_resolver,
         "detached_preopt_call_stack_points",
-        lambda _function_ea: ((native_call_ea, -4),),
+        lambda _function_ea: (
+            (shallow_call_ea, -2),
+            (native_call_ea, -4),
+        ),
         raising=False,
     )
     function = SimpleNamespace(frsize=1164, frregs=4)
@@ -3909,31 +4049,33 @@ def test_stkpnts_observes_native_overlay_without_mutating_callback_points(
 
     assert decision == {
         "session": session,
-        "stack_points_observed": expected_observed,
+        "stack_capacity_witness_observed": expected_observed,
     }
     assert len(observed) == 1
     event = observed[0]
-    assert event.event_kind == "stack_point_projection"
+    assert event.event_kind == "stack_capacity_witness_projection"
     assert event.session_id == "diag-session"
     assert event.evidence_generation == 0
     assert event.mba_generation_before == 7
     assert event.payload == {
         "capture_active": False,
-        "points": [
-            {
-                "canonical_spd": -1168,
-                "expected_spd": -1172,
-                "native_ea": "0x2030",
-                "observed_spd": native_call_spd,
-                "outcome": expected_outcome,
-                "reason": (
-                    "overlay_present"
-                    if expected_outcome == "observed"
-                    else "overlay_not_installed"
-                ),
-                "route_call_delta": -4,
-            },
+        "portable_points": [
+            {"native_ea": "0x2020", "route_call_delta": -2},
+            {"native_ea": "0x2030", "route_call_delta": -4},
         ],
+        "witness": {
+            "canonical_spd": -1168,
+            "expected_spd": -1172,
+            "native_ea": "0x2030",
+            "observed_spd": native_call_spd,
+            "outcome": expected_outcome,
+            "reason": (
+                "capacity_witness_present"
+                if expected_outcome == "observed"
+                else "capacity_witness_missing"
+            ),
+            "route_call_delta": -4,
+        },
     }
 
 

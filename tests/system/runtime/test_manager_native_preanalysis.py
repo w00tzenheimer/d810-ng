@@ -984,7 +984,7 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
     ]
 
 
-def test_decompile_controller_releases_stack_overlay_when_decompile_raises(
+def test_decompile_controller_releases_stack_capacity_witness_when_decompile_raises(
     monkeypatch,
 ) -> None:
     calls: list[tuple[str, object]] = []
@@ -1010,7 +1010,7 @@ def test_decompile_controller_releases_stack_overlay_when_decompile_raises(
     )
     monkeypatch.setattr(
         computed_goto_resolver,
-        "acquire_detached_call_stack_point_overlay",
+        "acquire_detached_call_stack_capacity_witness",
         lambda current_session: calls.append(("acquire", current_session)) or _Lease(),
         raising=False,
     )
