@@ -100,6 +100,7 @@ from d810.ir.block_identity import (
     block_label,
 )
 from d810.ir.flowgraph import BlockKind, InsnKind, OperandKind
+from d810.ir.maturity import MaturityEnvelope
 from d810.ir.semantics import PredicateKind
 from d810.transforms.exit_path_liveness_policy import (
     exit_path_blocks_live_violations,
@@ -7304,6 +7305,9 @@ def emit_minimal_unflatten(
     dispatcher,
     *,
     block_refs_by_serial: Mapping[int, NativeBlockRef | LogicalBlockRef],
+    snapshot_id: str | None = None,
+    source_generation: int | None = None,
+    source_maturity: MaturityEnvelope | None = None,
     state_var_stkoff: int | None,
     dispatcher_entry_serial: int | None,
     pre_header_serial: int | None = None,
@@ -7368,10 +7372,19 @@ def emit_minimal_unflatten(
     Gated by ``D810_USE_DEF_VETO`` (default OFF -> byte-identical); the state variable
     itself is intentionally severed (that is the unflattening) and never vetoed.
     """
-    if dispatcher_entry_serial is None:
+
+    def compile_modifications(modifications) -> PatchPlan:
         return compile_patch_plan(
-            [], flow_graph, block_refs_by_serial=block_refs_by_serial
+            modifications,
+            flow_graph,
+            snapshot_id=snapshot_id,
+            source_generation=source_generation,
+            source_maturity=source_maturity,
+            block_refs_by_serial=block_refs_by_serial,
         )
+
+    if dispatcher_entry_serial is None:
+        return compile_modifications([])
     if materialized_computed_goto_profile and missing_materialized_handler_targets:
         if logger.info_on:
             logger.info(
@@ -7382,9 +7395,7 @@ def emit_minimal_unflatten(
                     for state, target_ea in missing_materialized_handler_targets
                 ),
             )
-        return compile_patch_plan(
-            [], flow_graph, block_refs_by_serial=block_refs_by_serial
-        )
+        return compile_modifications([])
     # A register-resident state variable (``state_var_reg`` set and
     # ``state_var_stkoff`` None) carries no stack
     # offset. ``_soff`` is the None-safe int form threaded into the stkoff-keyed
@@ -7903,9 +7914,7 @@ def emit_minimal_unflatten(
                         "initial_state=%s) -- leaving function intact",
                         initial_state,
                     )
-                return compile_patch_plan(
-                    [], flow_graph, block_refs_by_serial=block_refs_by_serial
-                )
+                return compile_modifications([])
     mods = build_state_write_redirects(
         flow_graph,
         dispatcher,
@@ -8339,9 +8348,7 @@ def emit_minimal_unflatten(
                         "engine-equivalent)",
                         severed,
                     )
-                return compile_patch_plan(
-                    [], flow_graph, block_refs_by_serial=block_refs_by_serial
-                )
+                return compile_modifications([])
         mods = filter_use_def_severing_redirects(
             mods,
             use_def_safety=use_def_safety,
@@ -8469,9 +8476,7 @@ def emit_minimal_unflatten(
         terminal_state_route_mods,
     )
     mods = _normalize_degenerate_branch_redirects(flow_graph, list(mods))
-    plan = compile_patch_plan(
-        list(mods), flow_graph, block_refs_by_serial=block_refs_by_serial
-    )
+    plan = compile_modifications(list(mods))
     if terminal_carrier_convergence:
         plan = plan.with_metadata(
             **{

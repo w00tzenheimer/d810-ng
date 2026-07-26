@@ -2249,8 +2249,9 @@ class TestUnflattenBoundedRerunGate:
 
         assert rule._lower_plan_requested_terminal_convergence(facts) is True
 
+    @pytest.mark.parametrize("materializer", (None, object()))
     def test_live_pipeline_receives_ir_maturity_and_input_facts(
-        self, monkeypatch
+        self, monkeypatch, materializer
     ) -> None:
         """The live optimizer adapter must route through FunctionPassManager."""
         from d810.hexrays.preanalysis import indirect_jump_labels
@@ -2316,8 +2317,6 @@ class TestUnflattenBoundedRerunGate:
         scheduler = object()
         family = _Family()
         fact_view = SimpleNamespace(active_observations=("state",))
-        materializer = object()
-
         monkeypatch.setattr(
             indirect_jump_labels,
             "is_materialized_indirect_dispatcher",

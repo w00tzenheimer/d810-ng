@@ -1900,14 +1900,6 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if flow_context is None
             else flow_context.semantic_native_body_materializer()
         )
-        if semantic_native_body_materializer is None:
-            logger.info(
-                "unflat: deferring structural mutation without a "
-                "manager-owned native-body materializer for func=0x%x at %s",
-                int(mba.entry_ea),
-                maturity_to_string(int(mba.maturity)),
-            )
-            return 0
         backend = HexRaysMutationBackend(
             mutation_gateway=mutation_gateway,
             semantic_native_body_materializer=(semantic_native_body_materializer),

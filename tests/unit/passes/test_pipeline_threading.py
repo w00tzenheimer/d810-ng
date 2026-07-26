@@ -38,7 +38,6 @@ from d810.passes.pass_pipeline import FunctionPipelineContext
 from d810.passes.driver import PassContractError, run_pipeline
 from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
 from d810.ir.maturity import IRMaturity
-from d810.transforms.plan import PatchPlan
 from d810.passes.unflatten.state_machine import (
     CleanupResidualDispatcher,
     LowerStateMachine,
@@ -50,6 +49,7 @@ from d810.passes.unflatten.state_machine import (
 from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
 from d810.passes.unflatten import state_machine as state_machine_module
 from tests.native_preanalysis import make_native_key
+from tests.typed_patch_authority import block_refs_by_serial
 
 C1 = 0x10000001
 STATE_OFF = 0x3C
@@ -172,6 +172,20 @@ def _ctx(graph, facts, capabilities=None):
         project_config=None,
         facts=facts,
         capabilities=capabilities or CapabilitySet(),
+    )
+
+
+def _install_current_identity_index(analyses: AnalysisManager) -> None:
+    source_refs = block_refs_by_serial(*analyses.graph.blocks)
+    analyses.put_analysis(
+        "current_block_identity_index",
+        SimpleNamespace(
+            native_key=make_native_key(function_rva=0x1000),
+            snapshot_id="pipeline-threading-snapshot",
+            generation=0,
+            maturity=4,
+            plan_refs_by_serial=lambda: source_refs,
+        ),
     )
 
 
@@ -304,6 +318,7 @@ def test_recover_state_transitions_publishes_dispatcher_predicate_evidence():
 
 def test_full_five_pass_chain_threads_and_completes():
     am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
+    _install_current_identity_index(am)
     ctx = _ctx(am.graph, am.view())
     passes = [
         RecoverDispatcher(),
@@ -318,8 +333,8 @@ def test_full_five_pass_chain_threads_and_completes():
     assert am.get_analysis("transition_result") is not None
     assert am.get_analysis("plan_semantic_regions") is not None
     # synthetic obs carries no next-state write -> empty transitions -> heavy DAG/lower guarded off
-    assert results[3].rewrite_plan == PatchPlan()  # lower_state_machine
-    assert results[4].rewrite_plan == PatchPlan()  # cleanup_residual_dispatcher
+    assert results[3].rewrite_plan.steps == ()  # lower_state_machine
+    assert results[4].rewrite_plan.steps == ()  # cleanup_residual_dispatcher
 
 
 def test_run_pipeline_publishes_state_machine_contract_facts():
@@ -327,6 +342,7 @@ def test_run_pipeline_publishes_state_machine_contract_facts():
         _chain_graph(),
         input_facts=_input_facts(),
     )
+    _install_current_identity_index(am)
 
     run_pipeline(
         source=_Src(),

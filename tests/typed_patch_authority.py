@@ -48,6 +48,56 @@ def compile_patch_plan(*args, **kwargs):
     return _compile_patch_plan(*args, **kwargs)
 
 
+def emit_minimal_unflatten(flow_graph, dispatcher, **kwargs):
+    """Emit with explicit test-session authority for every fixture block."""
+    from d810.transforms.minimal_unflatten_emit import (
+        emit_minimal_unflatten as _emit_minimal_unflatten,
+    )
+
+    kwargs.setdefault(
+        "block_refs_by_serial",
+        block_refs_by_serial(*flow_graph.blocks),
+    )
+    return _emit_minimal_unflatten(flow_graph, dispatcher, **kwargs)
+
+
+def graph_modifications(patch_plan) -> list[object]:
+    """Project simple typed patch steps back into planner values for assertions."""
+    from d810.transforms import graph_modification as graph_modification_module
+    from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef
+
+    coordinates = dict(patch_plan.source_coordinates)
+
+    def project(value):
+        if isinstance(value, (NativeBlockRef, LogicalBlockRef)):
+            return coordinates[value]
+        if isinstance(value, PlanBlockRef):
+            raise TypeError("test projection cannot assign a serial to a planned block")
+        if isinstance(value, tuple):
+            return tuple(project(item) for item in value)
+        return value
+
+    projected = []
+    for step in patch_plan.steps:
+        modification_type = getattr(
+            graph_modification_module,
+            type(step).__name__.removeprefix("Patch"),
+            None,
+        )
+        if modification_type is None:
+            raise TypeError(f"test projection does not support {type(step).__name__}")
+        projected.append(
+            modification_type(
+                **{
+                    item.name: project(getattr(step, item.name))
+                    for item in fields(modification_type)
+                    if not item.name.startswith("_") and hasattr(step, item.name)
+                }
+            )
+        )
+    return projected
+
+
 def block_refs_by_serial(*values: object) -> dict[int, LogicalBlockRef]:
     """Return explicit observed-source witnesses for test fixture coordinates."""
     return {

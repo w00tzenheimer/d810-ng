@@ -399,6 +399,29 @@ def test_every_production_patch_plan_compiler_call_names_exact_block_authority()
     assert violations == []
 
 
+def test_every_production_minimal_unflatten_emit_names_complete_source_authority() -> (
+    None
+):
+    """Minimal unflattening must preserve complete source authority."""
+    required = {
+        "block_refs_by_serial",
+        "snapshot_id",
+        "source_generation",
+        "source_maturity",
+    }
+    violations: list[str] = []
+    for relative, call in _production_calls():
+        function = call.func
+        if not isinstance(function, ast.Name) or function.id != "emit_minimal_unflatten":
+            continue
+        if relative == "transforms/minimal_unflatten_emit.py":
+            continue
+        named = {keyword.arg for keyword in call.keywords}
+        if missing := sorted(required - named):
+            violations.append(f"{relative}:{call.lineno}:{','.join(missing)}")
+    assert violations == []
+
+
 def test_semantic_sdk_creation_sites_are_exhaustive_and_receipt_backed() -> None:
     """Every semantic SDK allocation is named and bound to planned authority."""
     path = SRC_ROOT / "hexrays/mutation/deferred_modifier.py"
