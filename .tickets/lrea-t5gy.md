@@ -6589,3 +6589,50 @@ logical callback change iff this invocation committed at least one fragment,
 while preserving the legacy zero-return cadence when no fragment committed.
 Record that decision in the diagnostic lifecycle and rerun the exact canary
 before any further semantic-route work.
+
+**2026-07-26T07:47:00-0700 — PREOPT publication has one accountable owner; 50409 remains**
+
+Commit `1779545a5` made fragment callback accounting receipt-backed, and the
+subsequent callback diagnostics at `8aa4cfee0`, `673d95a0c`, and `d314182ec`
+proved that D810's block, instruction, and GLBOPT callbacks do not introduce an
+unreported top-level or nested `m_nop`. Across those exact canaries, the only
+observed NOP deltas were two EA-anchored JumpFixer writes at MMAT_CALLS; both
+callbacks returned `1`, and both NOPs were absent from the later snapshots.
+
+The attempted `hxe_preoptimized` repair at `2108d7e06` was falsified by the
+exact canary: returning `MERR_LOOP` escaped immediately as `INTERR 50443`.
+The SDK header makes the reason explicit: the requirement to return
+`MERR_LOOP` after mutation belongs to `hxe_glbopt`; `MERR_LOOP` is an internal
+code that must never be reported. It is not a valid successful-modification
+signal for `hxe_preoptimized`.
+
+Functional commit `3501ae4e2` therefore removes structural publication from
+`hxe_preoptimized` and deletes its displaced callback-refresh channel. The
+first PREOPT instruction-optimizer callback is now the sole production owner:
+it publishes once, returns the optimizer's nonzero modified result, and
+propagates generation poison. Ruff-only commit `89d6a291e` formats the slice.
+The affected lifecycle and optimizer runtime gate is 58/58 green, the focused
+ownership gate is 11/11 green, and all commit-time architecture gates pass.
+
+The mandatory pinned, cache-disabled A560 canary at clean SHA `89d6a291e` ran
+for 132.05 seconds. Log:
+`.tmp/rhad-a560-optinsn-owner-89d6a291e.txt`; primary DB:
+`.tmp/rhad-a560-optinsn-owner-89d6a291e/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+The immediate 50443 is gone, but ctree generation still fails with
+`INTERR 50409`; this is not C6 or final A560 acceptance.
+
+The DB proves exact C5 remains intact. Frontend normalization commits two
+260/260 transactions across the generated restart, canonical composition
+commits 406/406 operations, all 93 detached route comparisons pass, and no
+generation is poisoned. The only callback NOP deltas are the same two
+MMAT_CALLS JumpFixer sites, each reported with callback result `1`. Every
+persisted snapshot through `MMAT_GLBOPT2 pre_d810` contains zero top-level or
+nested NOPs. Hex-Rays reaches `hxe_glbopt`, structural analysis, and session
+finish before the ctree verifier reports 50409.
+
+The highest level remains C5. The first failed obligation is
+`C5_postpublication_callback_integrity:ctree_nop_absence`. The next diagnostic
+vertical step is an explicit live NOP inventory at `hxe_glbopt` entry and exit,
+including an absence record, so the DB can distinguish a pre-existing NOP from
+one created internally after the final callback. Do not resume Rhad semantic
+composition or weaken the 50409 oracle until that boundary is proven.
