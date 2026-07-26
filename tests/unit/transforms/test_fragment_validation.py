@@ -1024,9 +1024,7 @@ def test_temporary_dispatcher_egress_requires_exact_staged_operation_edge() -> N
     ):
         replace(
             plan,
-            boundary_ports=(
-                replace(port, target_block_id="dispatcher"),
-            ),
+            boundary_ports=(replace(port, target_block_id="dispatcher"),),
         )
 
 
