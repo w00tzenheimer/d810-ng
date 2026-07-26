@@ -151,7 +151,18 @@ def _current_graph_identity_authority(
             continue
         rebound = rebind_identity(identity)
         if rebound.status is RebindStatus.BOUND and rebound.block is not None:
-            authority[int(serial)] = identity
+            rebound_identity = rebound.block.handle.stable_identity
+            if (
+                not isinstance(rebound_identity, StableBlockIdentity)
+                or rebound_identity.native_key != native_key
+            ):
+                raise CanonicalSemanticFragmentRejected(
+                    "current graph identity rebound without portable authority",
+                    reason_code="current_identity_rebound_authority_missing",
+                    anchor_ea=int(block.start_ea),
+                    payload={"block": f"blk{int(serial)}@0x{int(block.start_ea):X}"},
+                )
+            authority[int(serial)] = rebound_identity
     return authority
 
 
