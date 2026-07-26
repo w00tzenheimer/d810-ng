@@ -3648,17 +3648,19 @@ def test_native_stack_capacity_witness_is_preflighted_atomic_and_restored(
     monkeypatch.setattr(
         computed_goto_resolver,
         "_select_native_stack_capacity_corridor",
-        lambda candidate, canonical_spd: SimpleNamespace(
-            start_ea=capacity_start_ea,
-            end_ea=capacity_end_ea,
-            original_start_spd=canonical_spd,
-            original_start_delta=0,
-            original_end_spd=canonical_spd,
-            original_end_delta=0,
-            original_chunks=tuple(chunks),
-        )
-        if candidate is function
-        else None,
+        lambda candidate, canonical_spd: (
+            SimpleNamespace(
+                start_ea=capacity_start_ea,
+                end_ea=capacity_end_ea,
+                original_start_spd=canonical_spd,
+                original_start_delta=0,
+                original_end_spd=canonical_spd,
+                original_end_delta=0,
+                original_chunks=tuple(chunks),
+            )
+            if candidate is function
+            else None
+        ),
     )
     canonical_spd = -1168
     stack_deltas: dict[int, int] = {}
@@ -3684,9 +3686,9 @@ def test_native_stack_capacity_witness_is_preflighted_atomic_and_restored(
 
     def set_auto_spd(candidate, ea, spd):
         assert candidate is function
-        assert {native_ea for kind, native_ea in preflighted if kind == "delta"}.issuperset(
-            {deepest_call_ea, shallow_call_ea}
-        )
+        assert {
+            native_ea for kind, native_ea in preflighted if kind == "delta"
+        }.issuperset({deepest_call_ea, shallow_call_ea})
         native_ea = int(ea)
         projected_spd = int(spd)
         writes.append(("set", native_ea, projected_spd))
@@ -3875,17 +3877,19 @@ def test_native_stack_capacity_witness_rolls_back_partial_install(
     monkeypatch.setattr(
         computed_goto_resolver,
         "_select_native_stack_capacity_corridor",
-        lambda candidate, canonical_spd: SimpleNamespace(
-            start_ea=capacity_start_ea,
-            end_ea=capacity_end_ea,
-            original_start_spd=canonical_spd,
-            original_start_delta=0,
-            original_end_spd=canonical_spd,
-            original_end_delta=0,
-            original_chunks=tuple(chunks),
-        )
-        if candidate is function
-        else None,
+        lambda candidate, canonical_spd: (
+            SimpleNamespace(
+                start_ea=capacity_start_ea,
+                end_ea=capacity_end_ea,
+                original_start_spd=canonical_spd,
+                original_start_delta=0,
+                original_end_spd=canonical_spd,
+                original_end_delta=0,
+                original_chunks=tuple(chunks),
+            )
+            if candidate is function
+            else None
+        ),
     )
     stack_deltas: dict[int, int] = {}
     writes: list[tuple[str, int]] = []
@@ -3917,6 +3921,7 @@ def test_native_stack_capacity_witness_rolls_back_partial_install(
         writes.append(("del", native_ea))
         stack_deltas.pop(native_ea)
         return True
+
     monkeypatch.setattr(ida_frame, "set_auto_spd", set_auto_spd)
     monkeypatch.setattr(ida_frame, "del_stkpnt", del_stkpnt)
     monkeypatch.setattr(computed_goto_resolver, "emit_diagnostic", lambda _event: None)
