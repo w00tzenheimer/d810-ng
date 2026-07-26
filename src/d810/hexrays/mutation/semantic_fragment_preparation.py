@@ -301,9 +301,7 @@ def _projected_terminator(
             if sdk_owned_call(instruction) is not None
         )
         if len(call_owner_eas) != 1:
-            raise ValueError(
-                "prepared call fallthrough requires one exact call owner"
-            )
+            raise ValueError("prepared call fallthrough requires one exact call owner")
         return call_owner_eas[0], InsnKind.CALL
     if instructions and instructions[-1].kind is InsnKind.GOTO:
         return instructions[-1].native_ea, InsnKind.GOTO
