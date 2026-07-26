@@ -1,0 +1,6692 @@
+{
+  "capture": {
+    "function_end_ea": "0x40C8A2",
+    "maturities": [
+      "MMAT_GENERATED",
+      "MMAT_PREOPTIMIZED",
+      "MMAT_CALLS",
+      "MMAT_GLBOPT1"
+    ]
+  },
+  "publication_root_ea": "0x40A5B2",
+  "routes": [
+    {
+      "corridor": [
+        [
+          "0x40A5B2",
+          "0x40A5CA"
+        ]
+      ],
+      "direct_target_ea": "0x40BECC",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "direct",
+      "owner_ea": "0x40A5B2",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb4755b9ab",
+            "ea": 4236722,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xabb95547",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "eb26",
+            "ea": 4236744,
+            "mnemonic": "jmp",
+            "op_str": "0x40a5f0",
+            "size": 2,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4236746,
+        "corridor_start_ea": 4236722,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4236744,
+            "opcode": "e9",
+            "target_ea": 4243148
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4236722,
+            "mnemonic": "mov",
+            "value": 2881049927,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40A5C8",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40A5C8",
+      "route_id": "rhad:0x40A560:flow_route:0x40A5C8",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40A723",
+          "0x40A734"
+        ]
+      ],
+      "direct_target_ea": "0x40ADF2",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40A723",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb3db04f7c",
+            "ea": 4237091,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x7c4fb03d",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4237096,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c8c0f0000",
+            "ea": 4237102,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4237108,
+        "corridor_start_ea": 4237091,
+        "flag_writer_eas": [
+          4237096
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4237102,
+            "opcode": "e9",
+            "target_ea": 4238834
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4237091,
+            "mnemonic": "mov",
+            "value": 2085597245,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40A72E",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40A72E",
+      "route_id": "rhad:0x40A560:flow_route:0x40A72E",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40A7C2",
+          "0x40A7E5"
+        ]
+      ],
+      "direct_target_ea": "0x40BCAF",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40A7CD",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbdfe24cb3",
+            "ea": 4237250,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xb34ce2df",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f85f80c0000",
+            "ea": 4237255,
+            "mnemonic": "jne",
+            "op_str": "0x40b4c5",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8dfd0c0000",
+            "ea": 4237279,
+            "mnemonic": "jge",
+            "op_str": "0x40b4e2",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4237285,
+        "corridor_start_ea": 4237250,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4237279,
+            "opcode": "e9",
+            "target_ea": 4242607
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4237250,
+            "mnemonic": "mov",
+            "value": 3008160479,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40A7DF",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40A7DF",
+      "route_id": "rhad:0x40A560:flow_route:0x40A7DF",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40A88D",
+          "0x40A89E"
+        ]
+      ],
+      "direct_target_ea": "0x40B163",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40A88D",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb3cfabf1e",
+            "ea": 4237453,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x1ebffa3c",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4237458,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c220e0000",
+            "ea": 4237464,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4237470,
+        "corridor_start_ea": 4237453,
+        "flag_writer_eas": [
+          4237458
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4237464,
+            "opcode": "e9",
+            "target_ea": 4239715
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4237453,
+            "mnemonic": "mov",
+            "value": 515897916,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40A898",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40A898",
+      "route_id": "rhad:0x40A560:flow_route:0x40A898",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40A92F",
+          "0x40A954"
+        ]
+      ],
+      "direct_target_ea": "0x40C665",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40A93C",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb0c69fe09",
+            "ea": 4237615,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x9fe690c",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f85b40b0000",
+            "ea": 4237622,
+            "mnemonic": "jne",
+            "op_str": "0x40b4f0",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8db90b0000",
+            "ea": 4237646,
+            "mnemonic": "jge",
+            "op_str": "0x40b50d",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4237652,
+        "corridor_start_ea": 4237615,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4237646,
+            "opcode": "e9",
+            "target_ea": 4245093
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4237615,
+            "mnemonic": "mov",
+            "value": 167667980,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40A94E",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40A94E",
+      "route_id": "rhad:0x40A560:flow_route:0x40A94E",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40A9C2",
+          "0x40A9D3"
+        ]
+      ],
+      "direct_target_ea": "0x40B163",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40A9C2",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb3cfabf1e",
+            "ea": 4237762,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x1ebffa3c",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4237767,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8ced0c0000",
+            "ea": 4237773,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4237779,
+        "corridor_start_ea": 4237762,
+        "flag_writer_eas": [
+          4237767
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4237773,
+            "opcode": "e9",
+            "target_ea": 4239715
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4237762,
+            "mnemonic": "mov",
+            "value": 515897916,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40A9CD",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40A9CD",
+      "route_id": "rhad:0x40A560:flow_route:0x40A9CD",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40AA44",
+          "0x40AA55"
+        ]
+      ],
+      "direct_target_ea": "0x40C315",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AA44",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb0e691fe4",
+            "ea": 4237892,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xe41f690e",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4237897,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c6b0c0000",
+            "ea": 4237903,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4237909,
+        "corridor_start_ea": 4237892,
+        "flag_writer_eas": [
+          4237897
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4237903,
+            "opcode": "e9",
+            "target_ea": 4244245
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4237892,
+            "mnemonic": "mov",
+            "value": 3827263758,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AA4F",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AA4F",
+      "route_id": "rhad:0x40A560:flow_route:0x40AA4F",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40AAD5",
+          "0x40AAE6"
+        ]
+      ],
+      "direct_target_ea": "0x40B03E",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AAD5",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbc990df0c",
+            "ea": 4238037,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xcdf90c9",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4238042,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cda0b0000",
+            "ea": 4238048,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238054,
+        "corridor_start_ea": 4238037,
+        "flag_writer_eas": [
+          4238042
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238048,
+            "opcode": "e9",
+            "target_ea": 4239422
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238037,
+            "mnemonic": "mov",
+            "value": 215978185,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AAE0",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AAE0",
+      "route_id": "rhad:0x40A560:flow_route:0x40AAE0",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40AB4B",
+          "0x40AB6A"
+        ]
+      ],
+      "direct_target_ea": "0x40AA2C",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AB56",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb06e8b823",
+            "ea": 4238155,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x23b8e806",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f85c5090000",
+            "ea": 4238160,
+            "mnemonic": "jne",
+            "op_str": "0x40b51b",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8dca090000",
+            "ea": 4238180,
+            "mnemonic": "jge",
+            "op_str": "0x40b534",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238186,
+        "corridor_start_ea": 4238155,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238180,
+            "opcode": "e9",
+            "target_ea": 4237868
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238155,
+            "mnemonic": "mov",
+            "value": 599320582,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AB64",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AB64",
+      "route_id": "rhad:0x40A560:flow_route:0x40AB64",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40ABAA",
+          "0x40ABBB"
+        ]
+      ],
+      "direct_target_ea": "0x40B3B0",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40ABAA",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb09fa467e",
+            "ea": 4238250,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x7e46fa09",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4238255,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c050b0000",
+            "ea": 4238261,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238267,
+        "corridor_start_ea": 4238250,
+        "flag_writer_eas": [
+          4238255
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238261,
+            "opcode": "e9",
+            "target_ea": 4240304
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238250,
+            "mnemonic": "mov",
+            "value": 2118580745,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40ABB5",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40ABB5",
+      "route_id": "rhad:0x40A560:flow_route:0x40ABB5",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40AC0C",
+          "0x40AC31"
+        ]
+      ],
+      "direct_target_ea": "0x40AD52",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AC19",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbe8616963",
+            "ea": 4238348,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x636961e8",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8529090000",
+            "ea": 4238355,
+            "mnemonic": "jne",
+            "op_str": "0x40b542",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d2e090000",
+            "ea": 4238379,
+            "mnemonic": "jge",
+            "op_str": "0x40b55f",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238385,
+        "corridor_start_ea": 4238348,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238379,
+            "opcode": "e9",
+            "target_ea": 4238674
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238348,
+            "mnemonic": "mov",
+            "value": 1667850728,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AC2B",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AC2B",
+      "route_id": "rhad:0x40A560:flow_route:0x40AC2B",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40AC8E",
+          "0x40ACB3"
+        ]
+      ],
+      "direct_target_ea": "0x40C10A",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AC9B",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb9fca6c88",
+            "ea": 4238478,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x886cca9f",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f85d2080000",
+            "ea": 4238485,
+            "mnemonic": "jne",
+            "op_str": "0x40b56d",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8dd7080000",
+            "ea": 4238509,
+            "mnemonic": "jge",
+            "op_str": "0x40b58a",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238515,
+        "corridor_start_ea": 4238478,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238509,
+            "opcode": "e9",
+            "target_ea": 4243722
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238478,
+            "mnemonic": "mov",
+            "value": 2288831135,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40ACAD",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40ACAD",
+      "route_id": "rhad:0x40A560:flow_route:0x40ACAD",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40ACFB",
+          "0x40AD18"
+        ]
+      ],
+      "direct_target_ea": "0x40AFF9",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AD06",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbf3ab5968",
+            "ea": 4238587,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x6859abf3",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8592080000",
+            "ea": 4238592,
+            "mnemonic": "jne",
+            "op_str": "0x40b598",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d97080000",
+            "ea": 4238610,
+            "mnemonic": "jge",
+            "op_str": "0x40b5af",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238616,
+        "corridor_start_ea": 4238587,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238610,
+            "opcode": "e9",
+            "target_ea": 4239353
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238587,
+            "mnemonic": "mov",
+            "value": 1750707187,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AD12",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AD12",
+      "route_id": "rhad:0x40A560:flow_route:0x40AD12",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40AD52",
+          "0x40AD63"
+        ]
+      ],
+      "direct_target_ea": "0x40B2F5",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AD52",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb0d828764",
+            "ea": 4238674,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x6487820d",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4238679,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c5d090000",
+            "ea": 4238685,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238691,
+        "corridor_start_ea": 4238674,
+        "flag_writer_eas": [
+          4238679
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238685,
+            "opcode": "e9",
+            "target_ea": 4240117
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238674,
+            "mnemonic": "mov",
+            "value": 1686602253,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AD5D",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AD5D",
+      "route_id": "rhad:0x40A560:flow_route:0x40AD5D",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40ADA2",
+          "0x40ADB3"
+        ]
+      ],
+      "direct_target_ea": "0x40BFBE",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40ADA2",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbfaf1dba0",
+            "ea": 4238754,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xa0dbf1fa",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4238759,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c0d090000",
+            "ea": 4238765,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238771,
+        "corridor_start_ea": 4238754,
+        "flag_writer_eas": [
+          4238759
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238765,
+            "opcode": "e9",
+            "target_ea": 4243390
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238754,
+            "mnemonic": "mov",
+            "value": 2698768890,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40ADAD",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40ADAD",
+      "route_id": "rhad:0x40A560:flow_route:0x40ADAD",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40ADF2",
+          "0x40AE11"
+        ]
+      ],
+      "direct_target_ea": "0x40C4B4",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40ADF2",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbef36a6f6",
+            "ea": 4238834,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xf6a636ef",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4238839,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8caf080000",
+            "ea": 4238859,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238865,
+        "corridor_start_ea": 4238834,
+        "flag_writer_eas": [
+          4238839
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238859,
+            "opcode": "e9",
+            "target_ea": 4244660
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238834,
+            "mnemonic": "mov",
+            "value": 4138088175,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AE0B",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AE0B",
+      "route_id": "rhad:0x40A560:flow_route:0x40AE0B",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40AE6F",
+          "0x40AE80"
+        ]
+      ],
+      "direct_target_ea": "0x40AA2C",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AE6F",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb06e8b823",
+            "ea": 4238959,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x23b8e806",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4238964,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c40080000",
+            "ea": 4238970,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4238976,
+        "corridor_start_ea": 4238959,
+        "flag_writer_eas": [
+          4238964
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4238970,
+            "opcode": "e9",
+            "target_ea": 4237868
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4238959,
+            "mnemonic": "mov",
+            "value": 599320582,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AE7A",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AE7A",
+      "route_id": "rhad:0x40A560:flow_route:0x40AE7A",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40AEB9",
+          "0x40AEDA"
+        ]
+      ],
+      "direct_target_ea": "0x40B810",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AEC6",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb18861fcb",
+            "ea": 4239033,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xcb1f8618",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8ef1060000",
+            "ea": 4239040,
+            "mnemonic": "jle",
+            "op_str": "0x40b5b7",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8df6060000",
+            "ea": 4239060,
+            "mnemonic": "jge",
+            "op_str": "0x40b5d0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4239066,
+        "corridor_start_ea": 4239033,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4239060,
+            "opcode": "e9",
+            "target_ea": 4241424
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4239033,
+            "mnemonic": "mov",
+            "value": 3407840792,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AED4",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AED4",
+      "route_id": "rhad:0x40A560:flow_route:0x40AED4",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40AFAC",
+          "0x40AFD3"
+        ]
+      ],
+      "direct_target_ea": "0x40ABFA",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40AFBB",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb962d6422",
+            "ea": 4239276,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x22642d96",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8523060000",
+            "ea": 4239285,
+            "mnemonic": "jne",
+            "op_str": "0x40b5de",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d28060000",
+            "ea": 4239309,
+            "mnemonic": "jge",
+            "op_str": "0x40b5fb",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4239315,
+        "corridor_start_ea": 4239276,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4239309,
+            "opcode": "e9",
+            "target_ea": 4238330
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4239276,
+            "mnemonic": "mov",
+            "value": 576990614,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40AFCD",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40AFCD",
+      "route_id": "rhad:0x40A560:flow_route:0x40AFCD",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B001",
+          "0x40B01E"
+        ]
+      ],
+      "direct_target_ea": "0x40C367",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B00C",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb1e8fd9b5",
+            "ea": 4239361,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xb5d98f1e",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f85fd050000",
+            "ea": 4239366,
+            "mnemonic": "jne",
+            "op_str": "0x40b609",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d02060000",
+            "ea": 4239384,
+            "mnemonic": "jge",
+            "op_str": "0x40b620",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4239390,
+        "corridor_start_ea": 4239361,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4239384,
+            "opcode": "e9",
+            "target_ea": 4244327
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4239361,
+            "mnemonic": "mov",
+            "value": 3050934046,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B018",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B018",
+      "route_id": "rhad:0x40A560:flow_route:0x40B018",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B04A",
+          "0x40B06B"
+        ]
+      ],
+      "direct_target_ea": "0x40BF1B",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B059",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb3a2d2bf3",
+            "ea": 4239434,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xf32b2d3a",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8dcf050000",
+            "ea": 4239443,
+            "mnemonic": "jge",
+            "op_str": "0x40b628",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8dd4050000",
+            "ea": 4239461,
+            "mnemonic": "jge",
+            "op_str": "0x40b63f",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4239467,
+        "corridor_start_ea": 4239434,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4239461,
+            "opcode": "e9",
+            "target_ea": 4243227
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4239434,
+            "mnemonic": "mov",
+            "value": 4079693114,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B065",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B065",
+      "route_id": "rhad:0x40A560:flow_route:0x40B065",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B0A0",
+          "0x40B0B1"
+        ]
+      ],
+      "direct_target_ea": "0x40C448",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B0A0",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb430c4fd4",
+            "ea": 4239520,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xd44f0c43",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4239525,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c0f060000",
+            "ea": 4239531,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4239537,
+        "corridor_start_ea": 4239520,
+        "flag_writer_eas": [
+          4239525
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4239531,
+            "opcode": "e9",
+            "target_ea": 4244552
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4239520,
+            "mnemonic": "mov",
+            "value": 3561950275,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B0AB",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B0AB",
+      "route_id": "rhad:0x40A560:flow_route:0x40B0AB",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B0D6",
+          "0x40B0E7"
+        ]
+      ],
+      "direct_target_ea": "0x40ABAA",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B0D6",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb60b4d540",
+            "ea": 4239574,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x40d5b460",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4239579,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cd9050000",
+            "ea": 4239585,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4239591,
+        "corridor_start_ea": 4239574,
+        "flag_writer_eas": [
+          4239579
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4239585,
+            "opcode": "e9",
+            "target_ea": 4238250
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4239574,
+            "mnemonic": "mov",
+            "value": 1087747168,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B0E1",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B0E1",
+      "route_id": "rhad:0x40A560:flow_route:0x40B0E1",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B12D",
+          "0x40B13E"
+        ]
+      ],
+      "direct_target_ea": "0x40C592",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B12D",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb2a2c9abd",
+            "ea": 4239661,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xbd9a2c2a",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4239666,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c82050000",
+            "ea": 4239672,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4239678,
+        "corridor_start_ea": 4239661,
+        "flag_writer_eas": [
+          4239666
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4239672,
+            "opcode": "e9",
+            "target_ea": 4244882
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4239661,
+            "mnemonic": "mov",
+            "value": 3180997674,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B138",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B138",
+      "route_id": "rhad:0x40A560:flow_route:0x40B138",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B163",
+          "0x40B174"
+        ]
+      ],
+      "direct_target_ea": "0x40C16A",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B163",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbe05deccc",
+            "ea": 4239715,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xccec5de0",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4239720,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c4c050000",
+            "ea": 4239726,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4239732,
+        "corridor_start_ea": 4239715,
+        "flag_writer_eas": [
+          4239720
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4239726,
+            "opcode": "e9",
+            "target_ea": 4243818
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4239715,
+            "mnemonic": "mov",
+            "value": 3438042592,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B16E",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B16E",
+      "route_id": "rhad:0x40A560:flow_route:0x40B16E",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B1A7",
+          "0x40B1CA"
+        ]
+      ],
+      "direct_target_ea": "0x40A9AE",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B1B6",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb06c9ff4d",
+            "ea": 4239783,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x4dffc906",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8591040000",
+            "ea": 4239792,
+            "mnemonic": "jne",
+            "op_str": "0x40b647",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d96040000",
+            "ea": 4239812,
+            "mnemonic": "jge",
+            "op_str": "0x40b660",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4239818,
+        "corridor_start_ea": 4239783,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4239812,
+            "opcode": "e9",
+            "target_ea": 4237742
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4239783,
+            "mnemonic": "mov",
+            "value": 1308608774,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B1C4",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B1C4",
+      "route_id": "rhad:0x40A560:flow_route:0x40B1C4",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B200",
+          "0x40B211"
+        ]
+      ],
+      "direct_target_ea": "0x40BC2D",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B200",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbe6b7f4de",
+            "ea": 4239872,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xdef4b7e6",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4239877,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8caf040000",
+            "ea": 4239883,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4239889,
+        "corridor_start_ea": 4239872,
+        "flag_writer_eas": [
+          4239877
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4239883,
+            "opcode": "e9",
+            "target_ea": 4242477
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4239872,
+            "mnemonic": "mov",
+            "value": 3740579814,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B20B",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B20B",
+      "route_id": "rhad:0x40A560:flow_route:0x40B20B",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B251",
+          "0x40B262"
+        ]
+      ],
+      "direct_target_ea": "0x40AFF9",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B251",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbf3ab5968",
+            "ea": 4239953,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x6859abf3",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4239958,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c5e040000",
+            "ea": 4239964,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4239970,
+        "corridor_start_ea": 4239953,
+        "flag_writer_eas": [
+          4239958
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4239964,
+            "opcode": "e9",
+            "target_ea": 4239353
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4239953,
+            "mnemonic": "mov",
+            "value": 1750707187,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B25C",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B25C",
+      "route_id": "rhad:0x40A560:flow_route:0x40B25C",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B2A6",
+          "0x40B2CF"
+        ]
+      ],
+      "direct_target_ea": "0x40BC2D",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B2B7",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbe6b7f4de",
+            "ea": 4240038,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xdef4b7e6",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f85b1030000",
+            "ea": 4240049,
+            "mnemonic": "jne",
+            "op_str": "0x40b668",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8db6030000",
+            "ea": 4240073,
+            "mnemonic": "jge",
+            "op_str": "0x40b685",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240079,
+        "corridor_start_ea": 4240038,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240073,
+            "opcode": "e9",
+            "target_ea": 4242477
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240038,
+            "mnemonic": "mov",
+            "value": 3740579814,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B2C9",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B2C9",
+      "route_id": "rhad:0x40A560:flow_route:0x40B2C9",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B303",
+          "0x40B326"
+        ]
+      ],
+      "direct_target_ea": "0x40C0D4",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B312",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbc0fad7fe",
+            "ea": 4240131,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xfed7fac0",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8581030000",
+            "ea": 4240140,
+            "mnemonic": "jne",
+            "op_str": "0x40b693",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d86030000",
+            "ea": 4240160,
+            "mnemonic": "jge",
+            "op_str": "0x40b6ac",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240166,
+        "corridor_start_ea": 4240131,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240160,
+            "opcode": "e9",
+            "target_ea": 4243668
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240131,
+            "mnemonic": "mov",
+            "value": 4275567296,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B320",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B320",
+      "route_id": "rhad:0x40A560:flow_route:0x40B320",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B360",
+          "0x40B371"
+        ]
+      ],
+      "direct_target_ea": "0x40B8E6",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B360",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb864ba9a5",
+            "ea": 4240224,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xa5a94b86",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240229,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c4f030000",
+            "ea": 4240235,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240241,
+        "corridor_start_ea": 4240224,
+        "flag_writer_eas": [
+          4240229
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240235,
+            "opcode": "e9",
+            "target_ea": 4241638
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240224,
+            "mnemonic": "mov",
+            "value": 2779335558,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B36B",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B36B",
+      "route_id": "rhad:0x40A560:flow_route:0x40B36B",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B3C9",
+          "0x40B3DA"
+        ]
+      ],
+      "direct_target_ea": "0x40C075",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B3C9",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbfb2edebc",
+            "ea": 4240329,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xbcde2efb",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240334,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8ce6020000",
+            "ea": 4240340,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240346,
+        "corridor_start_ea": 4240329,
+        "flag_writer_eas": [
+          4240334
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240340,
+            "opcode": "e9",
+            "target_ea": 4243573
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240329,
+            "mnemonic": "mov",
+            "value": 3168677627,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B3D4",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B3D4",
+      "route_id": "rhad:0x40A560:flow_route:0x40B3D4",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B469",
+          "0x40B4C0"
+        ]
+      ],
+      "direct_target_ea": "0x40C592",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B4A4",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb2a2c9abd",
+            "ea": 4240489,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xbd9a2c2a",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240564,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c00020000",
+            "ea": 4240570,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240576,
+        "corridor_start_ea": 4240489,
+        "flag_writer_eas": [
+          4240564
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240570,
+            "opcode": "e9",
+            "target_ea": 4244882
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240489,
+            "mnemonic": "mov",
+            "value": 3180997674,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B4BA",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B4BA",
+      "route_id": "rhad:0x40A560:flow_route:0x40B4BA",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B4C5",
+          "0x40B4E2"
+        ]
+      ],
+      "direct_target_ea": "0x40B758",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B4C5",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb9d89f182",
+            "ea": 4240581,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x82f1899d",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240592,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c03f3ffff",
+            "ea": 4240604,
+            "mnemonic": "jl",
+            "op_str": "0x40a7e5",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240610,
+        "corridor_start_ea": 4240581,
+        "flag_writer_eas": [
+          4240592
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240604,
+            "opcode": "e9",
+            "target_ea": 4241240
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240581,
+            "mnemonic": "mov",
+            "value": 2196867485,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B4DC",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B4DC",
+      "route_id": "rhad:0x40A560:flow_route:0x40B4DC",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B4F0",
+          "0x40B50D"
+        ]
+      ],
+      "direct_target_ea": "0x40C47E",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B4F0",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb0b335aae",
+            "ea": 4240624,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xae5a330b",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240635,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c47f4ffff",
+            "ea": 4240647,
+            "mnemonic": "jl",
+            "op_str": "0x40a954",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240653,
+        "corridor_start_ea": 4240624,
+        "flag_writer_eas": [
+          4240635
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240647,
+            "opcode": "e9",
+            "target_ea": 4244606
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240624,
+            "mnemonic": "mov",
+            "value": 2925146891,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B507",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B507",
+      "route_id": "rhad:0x40A560:flow_route:0x40B507",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B51B",
+          "0x40B534"
+        ]
+      ],
+      "direct_target_ea": "0x40AE3E",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B51B",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbb2d3b013",
+            "ea": 4240667,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x13b0d3b2",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240678,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c36f6ffff",
+            "ea": 4240686,
+            "mnemonic": "jl",
+            "op_str": "0x40ab6a",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240692,
+        "corridor_start_ea": 4240667,
+        "flag_writer_eas": [
+          4240678
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240686,
+            "opcode": "e9",
+            "target_ea": 4238910
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240667,
+            "mnemonic": "mov",
+            "value": 330355634,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B52E",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B52E",
+      "route_id": "rhad:0x40A560:flow_route:0x40B52E",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B542",
+          "0x40B55F"
+        ]
+      ],
+      "direct_target_ea": "0x40A903",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B542",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb65d3b20b",
+            "ea": 4240706,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240717,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cd2f6ffff",
+            "ea": 4240729,
+            "mnemonic": "jl",
+            "op_str": "0x40ac31",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240735,
+        "corridor_start_ea": 4240706,
+        "flag_writer_eas": [
+          4240717
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240729,
+            "opcode": "e9",
+            "target_ea": 4237571
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240706,
+            "mnemonic": "mov",
+            "value": 196268901,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B559",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B559",
+      "route_id": "rhad:0x40A560:flow_route:0x40B559",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B56D",
+          "0x40B58A"
+        ]
+      ],
+      "direct_target_ea": "0x40B0D6",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B56D",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb857c9429",
+            "ea": 4240749,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x29947c85",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240760,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c29f7ffff",
+            "ea": 4240772,
+            "mnemonic": "jl",
+            "op_str": "0x40acb3",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240778,
+        "corridor_start_ea": 4240749,
+        "flag_writer_eas": [
+          4240760
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240772,
+            "opcode": "e9",
+            "target_ea": 4239574
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240749,
+            "mnemonic": "mov",
+            "value": 697597061,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B584",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B584",
+      "route_id": "rhad:0x40A560:flow_route:0x40B584",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B598",
+          "0x40B5AF"
+        ]
+      ],
+      "direct_target_ea": "0x40B236",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B598",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb7fab7872",
+            "ea": 4240792,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x7278ab7f",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240803,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c69f7ffff",
+            "ea": 4240809,
+            "mnemonic": "jl",
+            "op_str": "0x40ad18",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240815,
+        "corridor_start_ea": 4240792,
+        "flag_writer_eas": [
+          4240803
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240809,
+            "opcode": "e9",
+            "target_ea": 4239926
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240792,
+            "mnemonic": "mov",
+            "value": 1920510847,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B5A9",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B5A9",
+      "route_id": "rhad:0x40A560:flow_route:0x40B5A9",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B5B7",
+          "0x40B5D0"
+        ]
+      ],
+      "direct_target_ea": "0x40A70E",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B5B7",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb1e357a35",
+            "ea": 4240823,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x357a351e",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240834,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c0af9ffff",
+            "ea": 4240842,
+            "mnemonic": "jl",
+            "op_str": "0x40aeda",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240848,
+        "corridor_start_ea": 4240823,
+        "flag_writer_eas": [
+          4240834
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240842,
+            "opcode": "e9",
+            "target_ea": 4237070
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240823,
+            "mnemonic": "mov",
+            "value": 897201438,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B5CA",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B5CA",
+      "route_id": "rhad:0x40A560:flow_route:0x40B5CA",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B5DE",
+          "0x40B5FB"
+        ]
+      ],
+      "direct_target_ea": "0x40BD84",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B5DE",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb83601c92",
+            "ea": 4240862,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x921c6083",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240873,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cd8f9ffff",
+            "ea": 4240885,
+            "mnemonic": "jl",
+            "op_str": "0x40afd3",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240891,
+        "corridor_start_ea": 4240862,
+        "flag_writer_eas": [
+          4240873
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240885,
+            "opcode": "e9",
+            "target_ea": 4242820
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240862,
+            "mnemonic": "mov",
+            "value": 2451333251,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B5F5",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B5F5",
+      "route_id": "rhad:0x40A560:flow_route:0x40B5F5",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B609",
+          "0x40B620"
+        ]
+      ],
+      "direct_target_ea": "0x40C541",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B609",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbcc4a05ec",
+            "ea": 4240905,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xec054acc",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240916,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cfef9ffff",
+            "ea": 4240922,
+            "mnemonic": "jl",
+            "op_str": "0x40b01e",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240928,
+        "corridor_start_ea": 4240905,
+        "flag_writer_eas": [
+          4240916
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240922,
+            "opcode": "e9",
+            "target_ea": 4244801
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240905,
+            "mnemonic": "mov",
+            "value": 3959769804,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B61A",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B61A",
+      "route_id": "rhad:0x40A560:flow_route:0x40B61A",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B628",
+          "0x40B63F"
+        ]
+      ],
+      "direct_target_ea": "0x40B199",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B628",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb74426a45",
+            "ea": 4240936,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x456a4274",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240947,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c2cfaffff",
+            "ea": 4240953,
+            "mnemonic": "jl",
+            "op_str": "0x40b06b",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240959,
+        "corridor_start_ea": 4240936,
+        "flag_writer_eas": [
+          4240947
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240953,
+            "opcode": "e9",
+            "target_ea": 4239769
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240936,
+            "mnemonic": "mov",
+            "value": 1164591732,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B639",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B639",
+      "route_id": "rhad:0x40A560:flow_route:0x40B639",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B647",
+          "0x40B660"
+        ]
+      ],
+      "direct_target_ea": "0x40A868",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B647",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb553d2065",
+            "ea": 4240967,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x65203d55",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4240978,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c6afbffff",
+            "ea": 4240986,
+            "mnemonic": "jl",
+            "op_str": "0x40b1ca",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4240992,
+        "corridor_start_ea": 4240967,
+        "flag_writer_eas": [
+          4240978
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4240986,
+            "opcode": "e9",
+            "target_ea": 4237416
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4240967,
+            "mnemonic": "mov",
+            "value": 1696611669,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B65A",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B65A",
+      "route_id": "rhad:0x40A560:flow_route:0x40B65A",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B668",
+          "0x40B685"
+        ]
+      ],
+      "direct_target_ea": "0x40C4F6",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B668",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb950554a5",
+            "ea": 4241000,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xa5540595",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4241011,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c4afcffff",
+            "ea": 4241023,
+            "mnemonic": "jl",
+            "op_str": "0x40b2cf",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4241029,
+        "corridor_start_ea": 4241000,
+        "flag_writer_eas": [
+          4241011
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4241023,
+            "opcode": "e9",
+            "target_ea": 4244726
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4241000,
+            "mnemonic": "mov",
+            "value": 2773747093,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B67F",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B67F",
+      "route_id": "rhad:0x40A560:flow_route:0x40B67F",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B693",
+          "0x40B6AC"
+        ]
+      ],
+      "direct_target_ea": "0x40C3F3",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B693",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbe5d1b096",
+            "ea": 4241043,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x96b0d1e5",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4241054,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c7afcffff",
+            "ea": 4241062,
+            "mnemonic": "jl",
+            "op_str": "0x40b326",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4241068,
+        "corridor_start_ea": 4241043,
+        "flag_writer_eas": [
+          4241054
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4241062,
+            "opcode": "e9",
+            "target_ea": 4244467
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4241043,
+            "mnemonic": "mov",
+            "value": 2528170469,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B6A6",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B6A6",
+      "route_id": "rhad:0x40A560:flow_route:0x40B6A6",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B760",
+          "0x40B77D"
+        ]
+      ],
+      "direct_target_ea": "0x40BCAF",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B76B",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbdfe24cb3",
+            "ea": 4241248,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xb34ce2df",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f852b0f0000",
+            "ea": 4241253,
+            "mnemonic": "jne",
+            "op_str": "0x40c696",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d300f0000",
+            "ea": 4241271,
+            "mnemonic": "jge",
+            "op_str": "0x40c6ad",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4241277,
+        "corridor_start_ea": 4241248,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4241271,
+            "opcode": "e9",
+            "target_ea": 4242607
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4241248,
+            "mnemonic": "mov",
+            "value": 3008160479,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B777",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B777",
+      "route_id": "rhad:0x40A560:flow_route:0x40B777",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B85F",
+          "0x40B870"
+        ]
+      ],
+      "direct_target_ea": "0x40ADF2",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B85F",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb3db04f7c",
+            "ea": 4241503,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x7c4fb03d",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4241508,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c50feffff",
+            "ea": 4241514,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4241520,
+        "corridor_start_ea": 4241503,
+        "flag_writer_eas": [
+          4241508
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4241514,
+            "opcode": "e9",
+            "target_ea": 4238834
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4241503,
+            "mnemonic": "mov",
+            "value": 2085597245,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B86A",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B86A",
+      "route_id": "rhad:0x40A560:flow_route:0x40B86A",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40B908",
+          "0x40B927"
+        ]
+      ],
+      "direct_target_ea": "0x40C1A0",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40B915",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bba03e93a7",
+            "ea": 4241672,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xa7933ea0",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f85a00d0000",
+            "ea": 4241679,
+            "mnemonic": "jne",
+            "op_str": "0x40c6b5",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8da50d0000",
+            "ea": 4241697,
+            "mnemonic": "jge",
+            "op_str": "0x40c6cc",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4241703,
+        "corridor_start_ea": 4241672,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4241697,
+            "opcode": "e9",
+            "target_ea": 4243872
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4241672,
+            "mnemonic": "mov",
+            "value": 2811444896,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40B921",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40B921",
+      "route_id": "rhad:0x40A560:flow_route:0x40B921",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40BB44",
+          "0x40BB69"
+        ]
+      ],
+      "direct_target_ea": "0x40ACF3",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40BB51",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbef95970e",
+            "ea": 4242244,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xe9795ef",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f85890b0000",
+            "ea": 4242251,
+            "mnemonic": "jne",
+            "op_str": "0x40c6da",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d8e0b0000",
+            "ea": 4242275,
+            "mnemonic": "jge",
+            "op_str": "0x40c6f7",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4242281,
+        "corridor_start_ea": 4242244,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4242275,
+            "opcode": "e9",
+            "target_ea": 4238579
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4242244,
+            "mnemonic": "mov",
+            "value": 244815343,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40BB63",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40BB63",
+      "route_id": "rhad:0x40A560:flow_route:0x40BB63",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40BBC3",
+          "0x40BBD4"
+        ]
+      ],
+      "direct_target_ea": "0x40C315",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40BBC3",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb0e691fe4",
+            "ea": 4242371,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xe41f690e",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4242376,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cecfaffff",
+            "ea": 4242382,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4242388,
+        "corridor_start_ea": 4242371,
+        "flag_writer_eas": [
+          4242376
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4242382,
+            "opcode": "e9",
+            "target_ea": 4244245
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4242371,
+            "mnemonic": "mov",
+            "value": 3827263758,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40BBCE",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40BBCE",
+      "route_id": "rhad:0x40A560:flow_route:0x40BBCE",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40BC45",
+          "0x40BC56"
+        ]
+      ],
+      "direct_target_ea": "0x40C62F",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40BC45",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbf1bf7208",
+            "ea": 4242501,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x872bff1",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4242506,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c6afaffff",
+            "ea": 4242512,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4242518,
+        "corridor_start_ea": 4242501,
+        "flag_writer_eas": [
+          4242506
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4242512,
+            "opcode": "e9",
+            "target_ea": 4245039
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4242501,
+            "mnemonic": "mov",
+            "value": 141737969,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40BC50",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40BC50",
+      "route_id": "rhad:0x40A560:flow_route:0x40BC50",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40BCAF",
+          "0x40BCC0"
+        ]
+      ],
+      "direct_target_ea": "0x40C0D4",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40BCAF",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbc0fad7fe",
+            "ea": 4242607,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xfed7fac0",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4242612,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c00faffff",
+            "ea": 4242618,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4242624,
+        "corridor_start_ea": 4242607,
+        "flag_writer_eas": [
+          4242612
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4242618,
+            "opcode": "e9",
+            "target_ea": 4243668
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4242607,
+            "mnemonic": "mov",
+            "value": 4275567296,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40BCBA",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40BCBA",
+      "route_id": "rhad:0x40A560:flow_route:0x40BCBA",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40BD34",
+          "0x40BD45"
+        ]
+      ],
+      "direct_target_ea": "0x40BBC3",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40BD34",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb2a7e609a",
+            "ea": 4242740,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x9a607e2a",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4242745,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c7bf9ffff",
+            "ea": 4242751,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4242757,
+        "corridor_start_ea": 4242740,
+        "flag_writer_eas": [
+          4242745
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4242751,
+            "opcode": "e9",
+            "target_ea": 4242371
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4242740,
+            "mnemonic": "mov",
+            "value": 2590015018,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40BD3F",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40BD3F",
+      "route_id": "rhad:0x40A560:flow_route:0x40BD3F",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40BE19",
+          "0x40BE2A"
+        ]
+      ],
+      "direct_target_ea": "0x40B2F5",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40BE19",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb0d828764",
+            "ea": 4242969,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x6487820d",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4242974,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c96f8ffff",
+            "ea": 4242980,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4242986,
+        "corridor_start_ea": 4242969,
+        "flag_writer_eas": [
+          4242974
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4242980,
+            "opcode": "e9",
+            "target_ea": 4240117
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4242969,
+            "mnemonic": "mov",
+            "value": 1686602253,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40BE24",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40BE24",
+      "route_id": "rhad:0x40A560:flow_route:0x40BE24",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40BE7C",
+          "0x40BE8D"
+        ]
+      ],
+      "direct_target_ea": "0x40B03E",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40BE7C",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbc990df0c",
+            "ea": 4243068,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xcdf90c9",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4243073,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c33f8ffff",
+            "ea": 4243079,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4243085,
+        "corridor_start_ea": 4243068,
+        "flag_writer_eas": [
+          4243073
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4243079,
+            "opcode": "e9",
+            "target_ea": 4239422
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4243068,
+            "mnemonic": "mov",
+            "value": 215978185,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40BE87",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40BE87",
+      "route_id": "rhad:0x40A560:flow_route:0x40BE87",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40BECC",
+          "0x40BEE1"
+        ]
+      ],
+      "direct_target_ea": null,
+      "false_target_ea": "0x40C26D",
+      "final_transfer_kind": "conditional",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "unknown",
+      "owner_ea": "0x40BECC",
+      "predicate_kind": "z",
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "8b5c2440",
+            "ea": 4243148,
+            "mnemonic": "mov",
+            "op_str": "ebx, dword ptr [esp + 0x40]",
+            "size": 4,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4243152,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8ce4f7ffff",
+            "ea": 4243158,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "e926e7ffff",
+            "ea": 4243164,
+            "mnemonic": "jmp",
+            "op_str": "0x40a607",
+            "size": 5,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4243169,
+        "corridor_start_ea": 4243148,
+        "flag_writer_eas": [
+          4243152
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4243152,
+            "opcode": "837d0c00",
+            "target_ea": null
+          },
+          {
+            "anchor_ea": 4243158,
+            "opcode": "0f84",
+            "target_ea": 4241830
+          },
+          {
+            "anchor_ea": 4243164,
+            "opcode": "e9",
+            "target_ea": 4244077
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4243148,
+            "mnemonic": "mov",
+            "value": null,
+            "value_kind": "non_immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40BED0",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40BED0",
+      "route_id": "rhad:0x40A560:flow_route:0x40BED0",
+      "true_target_ea": "0x40B9A6"
+    },
+    {
+      "corridor": [
+        [
+          "0x40BF5B",
+          "0x40BF80"
+        ]
+      ],
+      "direct_target_ea": "0x40AEA5",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40BF68",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb71f8ab40",
+            "ea": 4243291,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x40abf871",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8e9d070000",
+            "ea": 4243298,
+            "mnemonic": "jle",
+            "op_str": "0x40c705",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8da2070000",
+            "ea": 4243322,
+            "mnemonic": "jge",
+            "op_str": "0x40c722",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4243328,
+        "corridor_start_ea": 4243291,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4243322,
+            "opcode": "e9",
+            "target_ea": 4239013
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4243291,
+            "mnemonic": "mov",
+            "value": 1085012081,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40BF7A",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40BF7A",
+      "route_id": "rhad:0x40A560:flow_route:0x40BF7A",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40BFBE",
+          "0x40BFCF"
+        ]
+      ],
+      "direct_target_ea": "0x40BE63",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40BFBE",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb2364a3ce",
+            "ea": 4243390,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xcea36423",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4243395,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cf1f6ffff",
+            "ea": 4243401,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4243407,
+        "corridor_start_ea": 4243390,
+        "flag_writer_eas": [
+          4243395
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4243401,
+            "opcode": "e9",
+            "target_ea": 4243043
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4243390,
+            "mnemonic": "mov",
+            "value": 3466814499,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40BFC9",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40BFC9",
+      "route_id": "rhad:0x40A560:flow_route:0x40BFC9",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C01C",
+          "0x40C03B"
+        ]
+      ],
+      "direct_target_ea": "0x40ABAA",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C027",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb60b4d540",
+            "ea": 4243484,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x40d5b460",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8509070000",
+            "ea": 4243489,
+            "mnemonic": "jne",
+            "op_str": "0x40c730",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d0e070000",
+            "ea": 4243509,
+            "mnemonic": "jge",
+            "op_str": "0x40c749",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4243515,
+        "corridor_start_ea": 4243484,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4243509,
+            "opcode": "e9",
+            "target_ea": 4238250
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4243484,
+            "mnemonic": "mov",
+            "value": 1087747168,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C035",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C035",
+      "route_id": "rhad:0x40A560:flow_route:0x40C035",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C075",
+          "0x40C09A"
+        ]
+      ],
+      "direct_target_ea": "0x40C00E",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C088",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bba3adb7e6",
+            "ea": 4243573,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xe6b7ada3",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8dc9060000",
+            "ea": 4243586,
+            "mnemonic": "jge",
+            "op_str": "0x40c751",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8dce060000",
+            "ea": 4243604,
+            "mnemonic": "jge",
+            "op_str": "0x40c768",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4243610,
+        "corridor_start_ea": 4243573,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4243604,
+            "opcode": "e9",
+            "target_ea": 4243470
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4243573,
+            "mnemonic": "mov",
+            "value": 3870797219,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C094",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C094",
+      "route_id": "rhad:0x40A560:flow_route:0x40C094",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C0D4",
+          "0x40C0E5"
+        ]
+      ],
+      "direct_target_ea": "0x40ACF3",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C0D4",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbef95970e",
+            "ea": 4243668,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xe9795ef",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4243673,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cdbf5ffff",
+            "ea": 4243679,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4243685,
+        "corridor_start_ea": 4243668,
+        "flag_writer_eas": [
+          4243673
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4243679,
+            "opcode": "e9",
+            "target_ea": 4238579
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4243668,
+            "mnemonic": "mov",
+            "value": 244815343,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C0DF",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C0DF",
+      "route_id": "rhad:0x40A560:flow_route:0x40C0DF",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C125",
+          "0x40C144"
+        ]
+      ],
+      "direct_target_ea": "0x40C20C",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C132",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb1164b5f0",
+            "ea": 4243749,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xf0b56411",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f853e060000",
+            "ea": 4243756,
+            "mnemonic": "jne",
+            "op_str": "0x40c770",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d43060000",
+            "ea": 4243774,
+            "mnemonic": "jge",
+            "op_str": "0x40c787",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4243780,
+        "corridor_start_ea": 4243749,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4243774,
+            "opcode": "e9",
+            "target_ea": 4243980
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4243749,
+            "mnemonic": "mov",
+            "value": 4038419473,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C13E",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C13E",
+      "route_id": "rhad:0x40A560:flow_route:0x40C13E",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C16A",
+          "0x40C17B"
+        ]
+      ],
+      "direct_target_ea": "0x40B0D6",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C16A",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb857c9429",
+            "ea": 4243818,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x29947c85",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4243823,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c45f5ffff",
+            "ea": 4243829,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4243835,
+        "corridor_start_ea": 4243818,
+        "flag_writer_eas": [
+          4243823
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4243829,
+            "opcode": "e9",
+            "target_ea": 4239574
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4243818,
+            "mnemonic": "mov",
+            "value": 697597061,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C175",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C175",
+      "route_id": "rhad:0x40A560:flow_route:0x40C175",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C1D6",
+          "0x40C1E7"
+        ]
+      ],
+      "direct_target_ea": "0x40B3FF",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C1D6",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb12649d7f",
+            "ea": 4243926,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x7f9d6412",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4243931,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cd9f4ffff",
+            "ea": 4243937,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4243943,
+        "corridor_start_ea": 4243926,
+        "flag_writer_eas": [
+          4243931
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4243937,
+            "opcode": "e9",
+            "target_ea": 4240383
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4243926,
+            "mnemonic": "mov",
+            "value": 2141021202,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C1E1",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C1E1",
+      "route_id": "rhad:0x40A560:flow_route:0x40C1E1",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C228",
+          "0x40C247"
+        ]
+      ],
+      "direct_target_ea": "0x40AAAE",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C235",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb2a372f74",
+            "ea": 4244008,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x742f372a",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8560050000",
+            "ea": 4244015,
+            "mnemonic": "jne",
+            "op_str": "0x40c795",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d65050000",
+            "ea": 4244033,
+            "mnemonic": "jge",
+            "op_str": "0x40c7ac",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244039,
+        "corridor_start_ea": 4244008,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244033,
+            "opcode": "e9",
+            "target_ea": 4237998
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244008,
+            "mnemonic": "mov",
+            "value": 1949251370,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C241",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C241",
+      "route_id": "rhad:0x40A560:flow_route:0x40C241",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C2C6",
+          "0x40C2EF"
+        ]
+      ],
+      "direct_target_ea": "0x40C62F",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C2D7",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbf1bf7208",
+            "ea": 4244166,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x872bff1",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f85e3040000",
+            "ea": 4244177,
+            "mnemonic": "jne",
+            "op_str": "0x40c7ba",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8de8040000",
+            "ea": 4244201,
+            "mnemonic": "jge",
+            "op_str": "0x40c7d7",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244207,
+        "corridor_start_ea": 4244166,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244201,
+            "opcode": "e9",
+            "target_ea": 4245039
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244166,
+            "mnemonic": "mov",
+            "value": 141737969,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C2E9",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C2E9",
+      "route_id": "rhad:0x40A560:flow_route:0x40C2E9",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C328",
+          "0x40C347"
+        ]
+      ],
+      "direct_target_ea": "0x40AB31",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C335",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb04bdaa1b",
+            "ea": 4244264,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x1baabd04",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f84b0040000",
+            "ea": 4244271,
+            "mnemonic": "je",
+            "op_str": "0x40c7e5",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8db5040000",
+            "ea": 4244289,
+            "mnemonic": "jge",
+            "op_str": "0x40c7fc",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244295,
+        "corridor_start_ea": 4244264,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244289,
+            "opcode": "e9",
+            "target_ea": 4238129
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244264,
+            "mnemonic": "mov",
+            "value": 464174340,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C341",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C341",
+      "route_id": "rhad:0x40A560:flow_route:0x40C341",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C36F",
+          "0x40C38C"
+        ]
+      ],
+      "direct_target_ea": "0x40BBC3",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C37A",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb2a7e609a",
+            "ea": 4244335,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x9a607e2a",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f858a040000",
+            "ea": 4244340,
+            "mnemonic": "jne",
+            "op_str": "0x40c804",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d8f040000",
+            "ea": 4244358,
+            "mnemonic": "jge",
+            "op_str": "0x40c81b",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244364,
+        "corridor_start_ea": 4244335,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244358,
+            "opcode": "e9",
+            "target_ea": 4242371
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244335,
+            "mnemonic": "mov",
+            "value": 2590015018,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C386",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C386",
+      "route_id": "rhad:0x40A560:flow_route:0x40C386",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C3B0",
+          "0x40C3D3"
+        ]
+      ],
+      "direct_target_ea": "0x40C448",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C3C1",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb430c4fd4",
+            "ea": 4244400,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xd44f0c43",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8562040000",
+            "ea": 4244411,
+            "mnemonic": "jne",
+            "op_str": "0x40c823",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d67040000",
+            "ea": 4244429,
+            "mnemonic": "jge",
+            "op_str": "0x40c83a",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244435,
+        "corridor_start_ea": 4244400,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244429,
+            "opcode": "e9",
+            "target_ea": 4244552
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244400,
+            "mnemonic": "mov",
+            "value": 3561950275,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C3CD",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C3CD",
+      "route_id": "rhad:0x40A560:flow_route:0x40C3CD",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C3F9",
+          "0x40C422"
+        ]
+      ],
+      "direct_target_ea": "0x40B8E6",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C40A",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb864ba9a5",
+            "ea": 4244473,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xa5a94b86",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8538040000",
+            "ea": 4244484,
+            "mnemonic": "jne",
+            "op_str": "0x40c842",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d3d040000",
+            "ea": 4244508,
+            "mnemonic": "jge",
+            "op_str": "0x40c85f",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244514,
+        "corridor_start_ea": 4244473,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244508,
+            "opcode": "e9",
+            "target_ea": 4241638
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244473,
+            "mnemonic": "mov",
+            "value": 2779335558,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C41C",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C41C",
+      "route_id": "rhad:0x40A560:flow_route:0x40C41C",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C448",
+          "0x40C459"
+        ]
+      ],
+      "direct_target_ea": "0x40BCAF",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C448",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbdfe24cb3",
+            "ea": 4244552,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xb34ce2df",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4244557,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c67f2ffff",
+            "ea": 4244563,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244569,
+        "corridor_start_ea": 4244552,
+        "flag_writer_eas": [
+          4244557
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244563,
+            "opcode": "e9",
+            "target_ea": 4242607
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244552,
+            "mnemonic": "mov",
+            "value": 3008160479,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C453",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C453",
+      "route_id": "rhad:0x40A560:flow_route:0x40C453",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C47E",
+          "0x40C48F"
+        ]
+      ],
+      "direct_target_ea": "0x40AD52",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C47E",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbe8616963",
+            "ea": 4244606,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x636961e8",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4244611,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c31f2ffff",
+            "ea": 4244617,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244623,
+        "corridor_start_ea": 4244606,
+        "flag_writer_eas": [
+          4244611
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244617,
+            "opcode": "e9",
+            "target_ea": 4238674
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244606,
+            "mnemonic": "mov",
+            "value": 1667850728,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C489",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C489",
+      "route_id": "rhad:0x40A560:flow_route:0x40C489",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C4C3",
+          "0x40C4D7"
+        ]
+      ],
+      "direct_target_ea": null,
+      "false_target_ea": "0x40ADA2",
+      "final_transfer_kind": "conditional",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "direct",
+      "owner_ea": "0x40C4C3",
+      "predicate_kind": "z",
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "0f44d8",
+            "ea": 4244675,
+            "mnemonic": "cmove",
+            "op_str": "ebx, eax",
+            "size": 3,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4244678,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8ceef1ffff",
+            "ea": 4244684,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "e930e1ffff",
+            "ea": 4244690,
+            "mnemonic": "jmp",
+            "op_str": "0x40a607",
+            "size": 5,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244695,
+        "corridor_start_ea": 4244675,
+        "flag_writer_eas": [
+          4244678
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244690,
+            "opcode": "0f84",
+            "target_ea": 4239769
+          },
+          {
+            "anchor_ea": 4244690,
+            "opcode": "e9",
+            "target_ea": 4238754
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244675,
+            "mnemonic": "cmove",
+            "value": null,
+            "value_kind": "non_immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C4D2",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C4D2",
+      "route_id": "rhad:0x40A560:flow_route:0x40C4D2",
+      "true_target_ea": "0x40B199"
+    },
+    {
+      "corridor": [
+        [
+          "0x40C50B",
+          "0x40C51C"
+        ]
+      ],
+      "direct_target_ea": "0x40C075",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C50B",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbfb2edebc",
+            "ea": 4244747,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xbcde2efb",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4244752,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8ca4f1ffff",
+            "ea": 4244758,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244764,
+        "corridor_start_ea": 4244747,
+        "flag_writer_eas": [
+          4244752
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244758,
+            "opcode": "e9",
+            "target_ea": 4243573
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244747,
+            "mnemonic": "mov",
+            "value": 3168677627,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C516",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C516",
+      "route_id": "rhad:0x40A560:flow_route:0x40C516",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C55C",
+          "0x40C56D"
+        ]
+      ],
+      "direct_target_ea": "0x40C367",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C55C",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb1e8fd9b5",
+            "ea": 4244828,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xb5d98f1e",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4244833,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c53f1ffff",
+            "ea": 4244839,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244845,
+        "corridor_start_ea": 4244828,
+        "flag_writer_eas": [
+          4244833
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244839,
+            "opcode": "e9",
+            "target_ea": 4244327
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244828,
+            "mnemonic": "mov",
+            "value": 3050934046,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C567",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C567",
+      "route_id": "rhad:0x40A560:flow_route:0x40C567",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C5CA",
+          "0x40C5EF"
+        ]
+      ],
+      "direct_target_ea": "0x40A7AE",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C5D7",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb87760b1f",
+            "ea": 4244938,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x1f0b7687",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8596020000",
+            "ea": 4244945,
+            "mnemonic": "jne",
+            "op_str": "0x40c86d",
+            "size": 6,
+            "writes_flags": false
+          },
+          {
+            "bytes": "0f8d9b020000",
+            "ea": 4244969,
+            "mnemonic": "jge",
+            "op_str": "0x40c88a",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4244975,
+        "corridor_start_ea": 4244938,
+        "flag_writer_eas": [],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4244969,
+            "opcode": "e9",
+            "target_ea": 4237230
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4244938,
+            "mnemonic": "mov",
+            "value": 520844935,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C5E9",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C5E9",
+      "route_id": "rhad:0x40A560:flow_route:0x40C5E9",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C62F",
+          "0x40C640"
+        ]
+      ],
+      "direct_target_ea": "0x40B9A6",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C62F",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb67ca71ec",
+            "ea": 4245039,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xec71ca67",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245044,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c80f0ffff",
+            "ea": 4245050,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245056,
+        "corridor_start_ea": 4245039,
+        "flag_writer_eas": [
+          4245044
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245050,
+            "opcode": "e9",
+            "target_ea": 4241830
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245039,
+            "mnemonic": "mov",
+            "value": 3966880359,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C63A",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C63A",
+      "route_id": "rhad:0x40A560:flow_route:0x40C63A",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C67A",
+          "0x40C68B"
+        ]
+      ],
+      "direct_target_ea": "0x40C47E",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C67A",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb0b335aae",
+            "ea": 4245114,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xae5a330b",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245119,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c35f0ffff",
+            "ea": 4245125,
+            "mnemonic": "jl",
+            "op_str": "0x40b6c0",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245131,
+        "corridor_start_ea": 4245114,
+        "flag_writer_eas": [
+          4245119
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245125,
+            "opcode": "e9",
+            "target_ea": 4244606
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245114,
+            "mnemonic": "mov",
+            "value": 2925146891,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C685",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C685",
+      "route_id": "rhad:0x40A560:flow_route:0x40C685",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C696",
+          "0x40C6AD"
+        ]
+      ],
+      "direct_target_ea": "0x40C3AC",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C696",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb5af872fa",
+            "ea": 4245142,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xfa72f85a",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245153,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cd0f0ffff",
+            "ea": 4245159,
+            "mnemonic": "jl",
+            "op_str": "0x40b77d",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245165,
+        "corridor_start_ea": 4245142,
+        "flag_writer_eas": [
+          4245153
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245159,
+            "opcode": "e9",
+            "target_ea": 4244396
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245142,
+            "mnemonic": "mov",
+            "value": 4201838682,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C6A7",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C6A7",
+      "route_id": "rhad:0x40A560:flow_route:0x40C6A7",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C6B5",
+          "0x40C6CC"
+        ]
+      ],
+      "direct_target_ea": "0x40B3FF",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C6B5",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb12649d7f",
+            "ea": 4245173,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x7f9d6412",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245184,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c5bf2ffff",
+            "ea": 4245190,
+            "mnemonic": "jl",
+            "op_str": "0x40b927",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245196,
+        "corridor_start_ea": 4245173,
+        "flag_writer_eas": [
+          4245184
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245190,
+            "opcode": "e9",
+            "target_ea": 4240383
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245173,
+            "mnemonic": "mov",
+            "value": 2141021202,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C6C6",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C6C6",
+      "route_id": "rhad:0x40A560:flow_route:0x40C6C6",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C6DA",
+          "0x40C6F7"
+        ]
+      ],
+      "direct_target_ea": "0x40AF00",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C6DA",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbddaf0021",
+            "ea": 4245210,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x2100afdd",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245221,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c72f4ffff",
+            "ea": 4245233,
+            "mnemonic": "jl",
+            "op_str": "0x40bb69",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245239,
+        "corridor_start_ea": 4245210,
+        "flag_writer_eas": [
+          4245221
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245233,
+            "opcode": "e9",
+            "target_ea": 4239104
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245210,
+            "mnemonic": "mov",
+            "value": 553693149,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C6F1",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C6F1",
+      "route_id": "rhad:0x40A560:flow_route:0x40C6F1",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C705",
+          "0x40C722"
+        ]
+      ],
+      "direct_target_ea": "0x40A70E",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C705",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb1e357a35",
+            "ea": 4245253,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x357a351e",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245264,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c5ef8ffff",
+            "ea": 4245276,
+            "mnemonic": "jl",
+            "op_str": "0x40bf80",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245282,
+        "corridor_start_ea": 4245253,
+        "flag_writer_eas": [
+          4245264
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245276,
+            "opcode": "e9",
+            "target_ea": 4237070
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245253,
+            "mnemonic": "mov",
+            "value": 897201438,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C71C",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C71C",
+      "route_id": "rhad:0x40A560:flow_route:0x40C71C",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C730",
+          "0x40C749"
+        ]
+      ],
+      "direct_target_ea": "0x40AC70",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C730",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbd2e4566d",
+            "ea": 4245296,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x6d56e4d2",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245307,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cf2f8ffff",
+            "ea": 4245315,
+            "mnemonic": "jl",
+            "op_str": "0x40c03b",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245321,
+        "corridor_start_ea": 4245296,
+        "flag_writer_eas": [
+          4245307
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245315,
+            "opcode": "e9",
+            "target_ea": 4238448
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245296,
+            "mnemonic": "mov",
+            "value": 1834411218,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C743",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C743",
+      "route_id": "rhad:0x40A560:flow_route:0x40C743",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C751",
+          "0x40C768"
+        ]
+      ],
+      "direct_target_ea": "0x40B1EA",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C751",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb5528c022",
+            "ea": 4245329,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x22c02855",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245340,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c32f9ffff",
+            "ea": 4245346,
+            "mnemonic": "jl",
+            "op_str": "0x40c09a",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245352,
+        "corridor_start_ea": 4245329,
+        "flag_writer_eas": [
+          4245340
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245346,
+            "opcode": "e9",
+            "target_ea": 4239850
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245329,
+            "mnemonic": "mov",
+            "value": 583018581,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C762",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C762",
+      "route_id": "rhad:0x40A560:flow_route:0x40C762",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C770",
+          "0x40C787"
+        ]
+      ],
+      "direct_target_ea": "0x40C16A",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C770",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbe05deccc",
+            "ea": 4245360,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xccec5de0",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245371,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cbdf9ffff",
+            "ea": 4245377,
+            "mnemonic": "jl",
+            "op_str": "0x40c144",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245383,
+        "corridor_start_ea": 4245360,
+        "flag_writer_eas": [
+          4245371
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245377,
+            "opcode": "e9",
+            "target_ea": 4243818
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245360,
+            "mnemonic": "mov",
+            "value": 3438042592,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C781",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C781",
+      "route_id": "rhad:0x40A560:flow_route:0x40C781",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C795",
+          "0x40C7AC"
+        ]
+      ],
+      "direct_target_ea": "0x40C16A",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C795",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bbe05deccc",
+            "ea": 4245397,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xccec5de0",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245408,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c9bfaffff",
+            "ea": 4245414,
+            "mnemonic": "jl",
+            "op_str": "0x40c247",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245420,
+        "corridor_start_ea": 4245397,
+        "flag_writer_eas": [
+          4245408
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245414,
+            "opcode": "e9",
+            "target_ea": 4243818
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245397,
+            "mnemonic": "mov",
+            "value": 3438042592,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C7A6",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C7A6",
+      "route_id": "rhad:0x40A560:flow_route:0x40C7A6",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C7BA",
+          "0x40C7D7"
+        ]
+      ],
+      "direct_target_ea": "0x40B287",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C7BA",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb0e1e9213",
+            "ea": 4245434,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x13921e0e",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245445,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c18fbffff",
+            "ea": 4245457,
+            "mnemonic": "jl",
+            "op_str": "0x40c2ef",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245463,
+        "corridor_start_ea": 4245434,
+        "flag_writer_eas": [
+          4245445
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245457,
+            "opcode": "e9",
+            "target_ea": 4240007
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245434,
+            "mnemonic": "mov",
+            "value": 328343054,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C7D1",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C7D1",
+      "route_id": "rhad:0x40A560:flow_route:0x40C7D1",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C7E5",
+          "0x40C7FC"
+        ]
+      ],
+      "direct_target_ea": "0x40C898",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C7E5",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb8a21a719",
+            "ea": 4245477,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x19a7218a",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245488,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c4bfbffff",
+            "ea": 4245494,
+            "mnemonic": "jl",
+            "op_str": "0x40c347",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245500,
+        "corridor_start_ea": 4245477,
+        "flag_writer_eas": [
+          4245488
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245494,
+            "opcode": "e9",
+            "target_ea": 4245656
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245477,
+            "mnemonic": "mov",
+            "value": 430383498,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C7F6",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C7F6",
+      "route_id": "rhad:0x40A560:flow_route:0x40C7F6",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C804",
+          "0x40C81B"
+        ]
+      ],
+      "direct_target_ea": "0x40BD19",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C804",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb598108f7",
+            "ea": 4245508,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0xf7088159",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245519,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c71fbffff",
+            "ea": 4245525,
+            "mnemonic": "jl",
+            "op_str": "0x40c38c",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245531,
+        "corridor_start_ea": 4245508,
+        "flag_writer_eas": [
+          4245519
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245525,
+            "opcode": "e9",
+            "target_ea": 4242713
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245508,
+            "mnemonic": "mov",
+            "value": 4144529753,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C815",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C815",
+      "route_id": "rhad:0x40A560:flow_route:0x40C815",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C823",
+          "0x40C83A"
+        ]
+      ],
+      "direct_target_ea": "0x40B08B",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C823",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb29ba075e",
+            "ea": 4245539,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x5e07ba29",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245550,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c99fbffff",
+            "ea": 4245556,
+            "mnemonic": "jl",
+            "op_str": "0x40c3d3",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245562,
+        "corridor_start_ea": 4245539,
+        "flag_writer_eas": [
+          4245550
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245556,
+            "opcode": "e9",
+            "target_ea": 4239499
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245539,
+            "mnemonic": "mov",
+            "value": 1577564713,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C834",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C834",
+      "route_id": "rhad:0x40A560:flow_route:0x40C834",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C842",
+          "0x40C85F"
+        ]
+      ],
+      "direct_target_ea": "0x40B342",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C842",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb94864e30",
+            "ea": 4245570,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x304e8694",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245581,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8cc3fbffff",
+            "ea": 4245593,
+            "mnemonic": "jl",
+            "op_str": "0x40c422",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245599,
+        "corridor_start_ea": 4245570,
+        "flag_writer_eas": [
+          4245581
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245593,
+            "opcode": "e9",
+            "target_ea": 4240194
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245570,
+            "mnemonic": "mov",
+            "value": 810452628,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C859",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C859",
+      "route_id": "rhad:0x40A560:flow_route:0x40C859",
+      "true_target_ea": null
+    },
+    {
+      "corridor": [
+        [
+          "0x40C86D",
+          "0x40C88A"
+        ]
+      ],
+      "direct_target_ea": "0x40B10C",
+      "false_target_ea": null,
+      "final_transfer_kind": "direct",
+      "function_ea": "0x40A560",
+      "original_transfer_kind": "conditional",
+      "owner_ea": "0x40C86D",
+      "predicate_kind": null,
+      "reference_ledger": {
+        "corridor": [
+          {
+            "bytes": "bb4bc3ba78",
+            "ea": 4245613,
+            "mnemonic": "mov",
+            "op_str": "ebx, 0x78bac34b",
+            "size": 5,
+            "writes_flags": false
+          },
+          {
+            "bytes": "81fb65d3b20b",
+            "ea": 4245624,
+            "mnemonic": "cmp",
+            "op_str": "ebx, 0xbb2d365",
+            "size": 6,
+            "writes_flags": true
+          },
+          {
+            "bytes": "0f8c65fdffff",
+            "ea": 4245636,
+            "mnemonic": "jl",
+            "op_str": "0x40c5ef",
+            "size": 6,
+            "writes_flags": false
+          }
+        ],
+        "corridor_end_ea": 4245642,
+        "corridor_start_ea": 4245613,
+        "flag_writer_eas": [
+          4245624
+        ],
+        "flow_register": "ebx",
+        "function_ea": 4236640,
+        "phase": "flow_route",
+        "planned_branches": [
+          {
+            "anchor_ea": 4245636,
+            "opcode": "e9",
+            "target_ea": 4239628
+          }
+        ],
+        "state_writes": [
+          {
+            "ea": 4245613,
+            "mnemonic": "mov",
+            "value": 2025505611,
+            "value_kind": "immediate"
+          }
+        ],
+        "status": "committed"
+      },
+      "reference_ledger_identity": "flow_route:0x40C884",
+      "reference_phase": "flow_route",
+      "rewrite_anchor_ea": "0x40C884",
+      "route_id": "rhad:0x40A560:flow_route:0x40C884",
+      "true_target_ea": null
+    }
+  ],
+  "run": {
+    "cache_disabled": true,
+    "candidate_binary_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
+    "fixture_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
+    "function_ea": "0x40A560",
+    "metadata": {
+      "reference_ledger_binary_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+    },
+    "reference_binary_sha256": "6358957fe74360725b125bdc41b16df9952d95b338792fd3521249e5030ddd8c",
+    "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+    "run_id": "a560-v33-full-flow-routes-20260726",
+    "runtime_image": "d810-idapro-9.3-test-runtime:py313-v1",
+    "runtime_image_id": "sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a"
+  },
+  "schema_version": 2
+}

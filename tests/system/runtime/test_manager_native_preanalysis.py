@@ -200,7 +200,7 @@ def test_manager_loads_only_configured_relative_oracle_manifests(tmp_path) -> No
         )
 
 
-def test_default_ollvm_profile_selects_pinned_direct_route_oracle() -> None:
+def test_default_ollvm_profile_selects_complete_a560_flow_route_oracle() -> None:
     source_project = ProjectConfiguration.from_file(
         Path(__file__).parents[3]
         / "src"
@@ -216,7 +216,7 @@ def test_default_ollvm_profile_selects_pinned_direct_route_oracle() -> None:
     )
 
     assert registry is not None
-    selection = registry.reference_oracle_for(
+    selection = registry.reference_oracle_scope_for(
         0x40A560,
         make_native_key(
             input_identity=(
@@ -225,7 +225,6 @@ def test_default_ollvm_profile_selects_pinned_direct_route_oracle() -> None:
             ),
             function_rva=0xA560,
         ),
-        (0x40BB63,),
     )
     assert selection is not None
     assert selection.run.reference_commit == (
@@ -234,12 +233,28 @@ def test_default_ollvm_profile_selects_pinned_direct_route_oracle() -> None:
     assert selection.run.runtime_image_id == (
         "sha256:360f91d9d4ace70d89e03893f1d895d94383fa0fe426ddba9d3898a7922b650a"
     )
-    assert selection.publication_root_ea == 0x40BB51
-    assert tuple(route.rewrite_anchor_ea for route in selection.routes) == (0x40BB63,)
-    (route,) = selection.routes
-    assert route.owner_ea == 0x40BB51
-    assert route.corridor == ((0x40BB44, 0x40BB69),)
-    assert route.direct_target_ea == 0x40ACF3
+    assert selection.publication_root_ea == 0x40A5B2
+    assert len(selection.routes) == 93
+    assert len({route.route_id for route in selection.routes}) == 93
+    assert len({route.owner_ea for route in selection.routes}) == 93
+    routes_by_anchor = {
+        route.rewrite_anchor_ea: route for route in selection.routes
+    }
+    assert set(routes_by_anchor) >= {0x40A5C8, 0x40BB63, 0x40BED0, 0x40C4D2}
+    entry_route = routes_by_anchor[0x40A5C8]
+    assert entry_route.owner_ea == 0x40A5B2
+    assert entry_route.direct_target_ea == 0x40BECC
+    carrier_route = routes_by_anchor[0x40BB63]
+    assert carrier_route.owner_ea == 0x40BB51
+    assert carrier_route.direct_target_ea == 0x40ACF3
+    first_conditional = routes_by_anchor[0x40BED0]
+    assert first_conditional.predicate_kind == "z"
+    assert first_conditional.true_target_ea == 0x40B9A6
+    assert first_conditional.false_target_ea == 0x40C26D
+    second_conditional = routes_by_anchor[0x40C4D2]
+    assert second_conditional.predicate_kind == "z"
+    assert second_conditional.true_target_ea == 0x40B199
+    assert second_conditional.false_target_ea == 0x40ADA2
 
 
 def test_current_mba_identity_index_uses_only_current_mba_publication_binding(
