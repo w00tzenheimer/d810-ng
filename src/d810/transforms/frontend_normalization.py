@@ -25,6 +25,7 @@ from d810.analyses.control_flow.native_semantic_closure import (
 from d810.ir.block_identity import (
     NativeEaInterval,
     StableBlockIdentity,
+    refine_stable_block_identity_for_graph_block,
     stable_block_identity_semantic_anchor,
     stable_block_identity_from_snapshot,
     stable_block_identity_token,
@@ -559,6 +560,12 @@ def _graph_identities(
             block,
             native_key=evidence.native_key,
         )
+        if identity is not None:
+            identity = refine_stable_block_identity_for_graph_block(
+                graph,
+                block,
+                identity,
+            )
         if identity is None:
             return None
         identities[int(block.serial)] = identity
