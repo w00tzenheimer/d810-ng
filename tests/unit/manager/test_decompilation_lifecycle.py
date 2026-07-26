@@ -673,6 +673,12 @@ def test_flowchart_generation_resets_generated_and_preopt_publication_guards() -
         function_ea=0x401000,
         microcode_modified=False,
     )
+
+    # A graph-free GENERATED identity index is maturity-local even when no
+    # listener writes.  It must not become final-binding authority for a later
+    # PREOPT/LOCOPT transaction.
+    assert session.current_mba_identity_index is None
+
     coordinator.mark_preopt_ready_emitted(
         function_ea=0x401000,
         microcode_modified=True,

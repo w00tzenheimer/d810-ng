@@ -527,14 +527,18 @@ class DecompilationLifecycleCoordinator:
         microcode_modified: bool = False,
     ) -> None:
         """Record that the GENERATED optimizer callback emitted for this MBA."""
+        del microcode_modified
         session = self.current_session(int(function_ea))
         if session is not None:
             session.generated_ready_emitted_for_current_mba = True
-            if microcode_modified:
-                session.current_mba_identity_index = None
-                attachment = session.resolver_attachment
-                if attachment is not None:
-                    attachment.invalidate_current_mba_binding()
+            # The GENERATED index is intentionally graph-free and therefore
+            # authoritative only for this callback.  Even an abstaining
+            # listener must not leave it cached for PREOPT/LOCOPT final
+            # binding, whose source-maturity authority is different.
+            session.current_mba_identity_index = None
+            attachment = session.resolver_attachment
+            if attachment is not None:
+                attachment.invalidate_current_mba_binding()
 
     def generated_ready_was_emitted(self, *, function_ea: int) -> bool:
         """Return whether GENERATED publication already ran for this MBA."""
