@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
+import pytest
+
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockKind, InsnKind
@@ -23,6 +25,7 @@ from d810.transforms.fragment_plan import (
     FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
+    FragmentPlanRejected,
     FragmentPublicationPurpose,
     FragmentRangeAssumption,
     FragmentRangeObservation,
@@ -918,8 +921,8 @@ def test_temporary_boundary_port_is_explicit_reachability_authority() -> None:
             FragmentBoundaryPort(
                 port_id="temporary-dispatcher-entry@0x1000",
                 kind=FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_ENTRY,
-                predecessor_block_id=port_predecessor.block_id,
-                root_block_id="replacement",
+                source_block_id=port_predecessor.block_id,
+                target_block_id="replacement",
                 retirement_obligation_id=retirement_obligation_id,
             ),
         ),
@@ -980,6 +983,50 @@ def test_temporary_boundary_port_is_explicit_reachability_authority() -> None:
         assert root_outcome.block_ids == (
             port_predecessor.block_id,
             "replacement",
+        )
+
+
+def test_temporary_dispatcher_egress_requires_exact_staged_operation_edge() -> None:
+    plan = _plan()
+    retirement_obligation_id = (
+        "retire-temporary-dispatcher-egress@0x1004:publish-semantic-target@0x3000"
+    )
+    port = FragmentBoundaryPort(
+        port_id="temporary-dispatcher-egress@0x1004",
+        kind=FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_EGRESS,
+        source_block_id="replacement",
+        target_block_id="false",
+        retirement_obligation_id=retirement_obligation_id,
+    )
+
+    plan = replace(plan, boundary_ports=(port,))
+    result = validate_fragment_projection(plan, _projection(plan))
+
+    assert result.passed
+    egress_outcome = next(
+        outcome
+        for outcome in result.outcomes
+        if outcome.postcondition
+        is FragmentValidationPostcondition.TEMPORARY_BOUNDARY_PORT
+        and outcome.subject_id == port.port_id
+    )
+    assert egress_outcome.passed
+    assert retirement_obligation_id in egress_outcome.reason
+    assert egress_outcome.block_ids == (
+        "replacement",
+        "condition.fallthrough",
+        "false",
+    )
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="requires one exact staged operation edge",
+    ):
+        replace(
+            plan,
+            boundary_ports=(
+                replace(port, target_block_id="dispatcher"),
+            ),
         )
 
 

@@ -19,6 +19,7 @@ from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.fragment_plan import (
     FragmentBlockRole,
     FragmentBoundaryPort,
+    FragmentBoundaryPortKind,
     FragmentDataFlowObligation,
     FragmentFlagCorridor,
     FragmentOperation,
@@ -62,6 +63,7 @@ class FragmentValidationPostcondition(str, Enum):
     ROOT_REACHABILITY = "root_reachability"
     INTERNAL_CONNECTIVITY = "internal_connectivity"
     OPERATION_REACHABILITY = "operation_reachability"
+    TEMPORARY_BOUNDARY_PORT = "temporary_boundary_port"
     ORIGINAL_SUPERSESSION = "original_supersession"
     DISPATCHER_ABSENCE = "dispatcher_absence"
     PRED_SUCC_SYMMETRY = "pred_succ_symmetry"
@@ -659,26 +661,28 @@ def _reachability_witness(
     return ()
 
 
-def _boundary_port_root_witness(
+def _boundary_port_entry_witness(
     port: FragmentBoundaryPort,
     projection: ProjectedFragment,
     blocks: dict[str, ProjectedFragmentBlock],
 ) -> tuple[str, ...]:
     """Prove one exact temporary predecessor-to-root attachment."""
-    predecessor = blocks.get(port.predecessor_block_id)
-    root = blocks.get(port.root_block_id)
+    if port.kind is not FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_ENTRY:
+        return ()
+    predecessor = blocks.get(port.source_block_id)
+    root = blocks.get(port.target_block_id)
     if predecessor is None or root is None:
         return ()
     if (
-        port.root_block_id in predecessor.successors
-        and port.predecessor_block_id in root.predecessors
+        port.target_block_id in predecessor.successors
+        and port.source_block_id in root.predecessors
     ):
-        return (port.predecessor_block_id, port.root_block_id)
+        return (port.source_block_id, port.target_block_id)
     matching_helpers = tuple(
         helper
         for helper in projection.root_fallthrough_helpers
-        if helper.source_block_id == port.predecessor_block_id
-        and helper.root_block_id == port.root_block_id
+        if helper.source_block_id == port.source_block_id
+        and helper.root_block_id == port.target_block_id
     )
     if len(matching_helpers) != 1:
         return ()
@@ -687,16 +691,101 @@ def _boundary_port_root_witness(
     if (
         helper_block is None
         or helper.helper_block_id not in predecessor.successors
-        or port.predecessor_block_id not in helper_block.predecessors
-        or port.root_block_id not in helper_block.successors
+        or port.source_block_id not in helper_block.predecessors
+        or port.target_block_id not in helper_block.successors
         or helper.helper_block_id not in root.predecessors
     ):
         return ()
     return (
-        port.predecessor_block_id,
+        port.source_block_id,
         helper.helper_block_id,
-        port.root_block_id,
+        port.target_block_id,
     )
+
+
+def _boundary_port_egress_witness(
+    port: FragmentBoundaryPort,
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+    blocks: dict[str, ProjectedFragmentBlock],
+) -> tuple[str, ...]:
+    """Prove one exact staged-operation-to-published-target egress."""
+    if port.kind is not FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_EGRESS:
+        return ()
+    source = blocks.get(port.source_block_id)
+    target = blocks.get(port.target_block_id)
+    if source is None or target is None:
+        return ()
+    operation = next(
+        (
+            operation
+            for operation in plan.operations
+            if operation.source_block_id == port.source_block_id
+            and any(
+                edge.target_block_id == port.target_block_id
+                for edge in operation.edges
+            )
+        ),
+        None,
+    )
+    if operation is None:
+        return ()
+    if (
+        port.target_block_id in source.successors
+        and port.source_block_id in target.predecessors
+    ):
+        return (port.source_block_id, port.target_block_id)
+    matching_helpers = tuple(
+        helper
+        for helper in projection.fallthrough_helpers
+        if helper.operation_id == operation.operation_id
+        and helper.source_block_id == port.source_block_id
+        and helper.semantic_target_block_id == port.target_block_id
+    )
+    if len(matching_helpers) != 1:
+        return ()
+    (helper,) = matching_helpers
+    helper_block = blocks.get(helper.helper_block_id)
+    if (
+        helper_block is None
+        or helper.helper_block_id not in source.successors
+        or port.source_block_id not in helper_block.predecessors
+        or port.target_block_id not in helper_block.successors
+        or helper.helper_block_id not in target.predecessors
+    ):
+        return ()
+    return (
+        port.source_block_id,
+        helper.helper_block_id,
+        port.target_block_id,
+    )
+
+
+def _validate_boundary_ports(
+    plan: FragmentPlan,
+    projection: ProjectedFragment,
+    blocks: dict[str, ProjectedFragmentBlock],
+    outcomes: list[FragmentValidationOutcome],
+) -> None:
+    for port in plan.boundary_ports:
+        witness = (
+            _boundary_port_entry_witness(port, projection, blocks)
+            if port.kind is FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_ENTRY
+            else _boundary_port_egress_witness(port, plan, projection, blocks)
+        )
+        _outcome(
+            outcomes,
+            FragmentValidationPostcondition.TEMPORARY_BOUNDARY_PORT,
+            port.port_id,
+            bool(witness),
+            (
+                f"typed {port.kind.value} has exact projected topology; "
+                f"retirement obligation {port.retirement_obligation_id} remains"
+                if witness
+                else f"typed {port.kind.value} lacks its exact projected topology"
+            ),
+            *(witness or (port.source_block_id, port.target_block_id)),
+        )
 
 
 def _projected_publication_authority_roots(
@@ -710,9 +799,9 @@ def _projected_publication_authority_roots(
             (
                 projection.entry_block_id,
                 *(
-                    port.predecessor_block_id
+                    port.source_block_id
                     for port in plan.boundary_ports
-                    if _boundary_port_root_witness(port, projection, blocks)
+                    if _boundary_port_entry_witness(port, projection, blocks)
                 ),
             )
         )
@@ -948,9 +1037,9 @@ def _validate_reachability(
             (
                 (port, witness)
                 for port in plan.boundary_ports
-                if port.root_block_id == root
+                if port.target_block_id == root
                 and (
-                    witness := _boundary_port_root_witness(
+                    witness := _boundary_port_entry_witness(
                         port,
                         projection,
                         blocks,
@@ -1800,6 +1889,7 @@ def _validate_fragment_projection(
             projection.fallthrough_helpers,
             outcomes,
         )
+    _validate_boundary_ports(plan, projection, blocks, outcomes)
     _validate_terminal_effects(plan, projection, blocks, outcomes)
     _validate_root_fallthrough_helpers(plan, projection, blocks, outcomes)
     for obligation in plan.data_flow_obligations:
@@ -1935,6 +2025,10 @@ def _required_postpublication_outcomes(
     required.extend(
         (FragmentValidationPostcondition.DISPATCHER_ABSENCE, block_id)
         for block_id in plan.prohibited_dispatcher_blocks
+    )
+    required.extend(
+        (FragmentValidationPostcondition.TEMPORARY_BOUNDARY_PORT, port.port_id)
+        for port in plan.boundary_ports
     )
     for operation in plan.operations:
         required.append(

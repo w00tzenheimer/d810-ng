@@ -890,9 +890,9 @@ def _boundary_reference_oracle_rejection(
                 {
                     "kind": port.kind.value,
                     "port_id": port.port_id,
-                    "predecessor_block_id": port.predecessor_block_id,
+                    "source_block_id": port.source_block_id,
                     "retirement_obligation_id": port.retirement_obligation_id,
-                    "root_block_id": port.root_block_id,
+                    "target_block_id": port.target_block_id,
                 }
                 for port in boundary_plan.boundary_ports
             ),
