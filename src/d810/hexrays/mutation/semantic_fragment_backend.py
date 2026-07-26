@@ -2545,7 +2545,46 @@ def _project_data_flow_relations(
     successor_serials_by_block: Mapping[int, tuple[int, ...]],
     *,
     defer_materialized_predicate_uses: bool = False,
+    prepared_instruction_eas_by_block_id: (
+        Mapping[str, tuple[int, ...]] | None
+    ) = None,
 ) -> tuple[ProjectedDataFlowRelation, ...]:
+    prepared_instruction_eas_by_block_id = (
+        {}
+        if prepared_instruction_eas_by_block_id is None
+        else prepared_instruction_eas_by_block_id
+    )
+
+    def prepared_site_is_exact(obligation, site, *, role: str) -> bool:
+        instruction_eas = prepared_instruction_eas_by_block_id.get(site.block_id)
+        if instruction_eas is None:
+            return False
+        match_count = sum(
+            int(instruction_ea) == int(site.instruction_ea)
+            for instruction_ea in instruction_eas
+        )
+        if match_count != 1:
+            raise SemanticFragmentBackendRejected(
+                f"prepared data-flow {role} {site.site_id!r} has "
+                f"{match_count} exact instruction anchors "
+                f"(obligation_id={obligation.obligation_id!r}, "
+                f"block_id={site.block_id!r}, "
+                f"instruction_ea=0x{int(site.instruction_ea):X}, "
+                f"value_id={site.value_id!r})",
+                reason_code=f"prepared_data_flow_{role}_anchor_mismatch",
+                anchor_ea=site.instruction_ea,
+                payload={
+                    "obligation_id": obligation.obligation_id,
+                    "site_id": site.site_id,
+                    "site_role": role,
+                    "block_id": site.block_id,
+                    "instruction_ea": site.instruction_ea,
+                    "value_id": site.value_id,
+                    "match_count": match_count,
+                },
+            )
+        return True
+
     relations: set[ProjectedDataFlowRelation] = set()
     for obligation in plan.data_flow_obligations:
         definition = obligation.definition
@@ -2555,7 +2594,15 @@ def _project_data_flow_relations(
                 f"data-flow definition {definition.site_id!r} is unbound"
             )
         definition_block = live_by_id.get(definition.block_id)
-        if definition_block is None:
+        definition_is_prepared = bool(
+            definition_block is None
+            and prepared_site_is_exact(
+                obligation,
+                definition,
+                role="definition",
+            )
+        )
+        if definition_block is None and not definition_is_prepared:
             raise SemanticFragmentBackendRejected(
                 f"data-flow definition {definition.site_id!r} has no live block "
                 f"(obligation_id={obligation.obligation_id!r}, "
@@ -2573,13 +2620,17 @@ def _project_data_flow_relations(
                     "value_id": definition.value_id,
                 },
             )
-        reached_uses = tuple(
-            _query_reached_uses(
-                modifier,
-                state,
-                definition,
-                definition_block,
-                successor_serials_by_block,
+        reached_uses = (
+            ()
+            if definition_is_prepared
+            else tuple(
+                _query_reached_uses(
+                    modifier,
+                    state,
+                    definition,
+                    definition_block,
+                    successor_serials_by_block,
+                )
             )
         )
         _require_unambiguous_observed_anchors(
@@ -2623,6 +2674,12 @@ def _project_data_flow_relations(
             ):
                 continue
             use_block = live_by_id.get(use.block_id)
+            if use_block is None and prepared_site_is_exact(
+                obligation,
+                use,
+                role="use",
+            ):
+                continue
             if use_block is None:
                 raise SemanticFragmentBackendRejected(
                     f"data-flow use {use.site_id!r} has no live block "
@@ -3665,6 +3722,16 @@ def snapshot_semantic_fragment_inputs(
             predecessor_serials,
             successor_serials,
             defer_materialized_predicate_uses=True,
+            prepared_instruction_eas_by_block_id={
+                block_id: tuple(
+                    int(native_ea) for native_ea, _instruction in instruction_rows
+                )
+                for block_id, instruction_rows in (
+                    prepared_instruction_rows_by_block.items()
+                )
+                if plan.block(block_id).materialization
+                is FragmentBlockMaterialization.IMPORT_NATIVE
+            },
         )
     except SemanticFragmentBackendRejected as exc:
         subject_id = str(
