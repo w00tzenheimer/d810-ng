@@ -208,13 +208,9 @@ def test_project_fragment_materializes_folded_direct_rewrite_anchor() -> None:
             FragmentProjectionBlockInput(
                 block_id=block.block_id,
                 kind=(
-                    BlockKind.ZERO_WAY
-                    if block.block_id == "original"
-                    else block.kind
+                    BlockKind.ZERO_WAY if block.block_id == "original" else block.kind
                 ),
-                successors=("original",)
-                if block.block_id == "entry"
-                else (),
+                successors=("original",) if block.block_id == "entry" else (),
                 predecessors=("entry",)
                 if block.block_id == "original"
                 else block.predecessors,
