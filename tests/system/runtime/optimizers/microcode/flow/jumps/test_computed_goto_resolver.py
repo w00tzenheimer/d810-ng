@@ -3982,6 +3982,9 @@ def test_stkpnts_observes_one_stack_capacity_witness_without_mutating(
     stack_points = object()
     decision: dict[str, object] = {"session": session}
 
+    def unsafe_coordinate_conversion(_ida_offset: int) -> int:
+        pytest.fail("hxe_stkpnts must not convert stack coordinates")
+
     computed_goto_resolver._on_stkpnts(
         function_ea=function_ea,
         mba=SimpleNamespace(
@@ -3989,7 +3992,7 @@ def test_stkpnts_observes_one_stack_capacity_witness_without_mutating(
             frsize=0,
             frregs=0,
             tmpstk_size=destination_top,
-            stkoff_ida2vd=lambda _ida_offset: destination_top,
+            stkoff_ida2vd=unsafe_coordinate_conversion,
         ),
         stack_points=stack_points,
         decision=decision,
@@ -4012,7 +4015,7 @@ def test_stkpnts_observes_one_stack_capacity_witness_without_mutating(
             {"native_ea": "0x2030", "route_call_delta": -4},
         ],
         "witness": {
-            "observed_stack_zero_vd": destination_top,
+            "observed_tmpstk_size": destination_top,
             "required_stack_capacity": 4,
             "native_ea": "0x2030",
             "outcome": expected_outcome,

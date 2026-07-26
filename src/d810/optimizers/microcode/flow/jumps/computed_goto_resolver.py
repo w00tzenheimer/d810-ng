@@ -12404,8 +12404,8 @@ def _on_stkpnts(
         key=lambda point: (int(point[1]), int(point[0])),
     )
     try:
-        destination_top = int(mba.stkoff_ida2vd(0))
-    except Exception:
+        observed_tmpstk_size = int(getattr(mba, "tmpstk_size"))
+    except (AttributeError, TypeError, ValueError):
         logger.debug(
             "computed-goto stack-capacity witness observation failed: func=0x%X",
             key,
@@ -12413,7 +12413,7 @@ def _on_stkpnts(
         )
         return
     required_capacity = max(0, -int(route_call_delta))
-    if destination_top >= required_capacity:
+    if observed_tmpstk_size >= required_capacity:
         outcome = "observed"
         reason = "capacity_witness_present"
         observed = 1
@@ -12423,7 +12423,7 @@ def _on_stkpnts(
         observed = 0
     witness = {
         "native_ea": hex(int(native_ea)),
-        "observed_stack_zero_vd": destination_top,
+        "observed_tmpstk_size": observed_tmpstk_size,
         "required_stack_capacity": required_capacity,
         "route_call_delta": int(route_call_delta),
         "outcome": outcome,
@@ -12466,7 +12466,7 @@ def _on_stkpnts(
         "witness=%s capacity=%d/%d outcome=%s route_call_spds=%s",
         key,
         hex(int(native_ea)),
-        destination_top,
+        observed_tmpstk_size,
         required_capacity,
         outcome,
         [(hex(int(call_ea)), int(spd)) for call_ea, spd in portable_points],
