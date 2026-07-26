@@ -908,6 +908,11 @@ def test_carrier_ingress_roots_one_reference_route_with_typed_dispatcher_egress(
         for body in plan.native_bodies
         for block_id in body.block_ids
     }.isdisjoint({0x1600, 0x1700, 0x40C6F7, 0x40BB69})
+    nested_route = plan.operation("route:state_assignment@0x40BB63:0xE9795EF")
+    nested_rewrite = nested_route.direct_transfer_rewrite
+    assert nested_rewrite is not None
+    assert nested_rewrite.owner_identity == detached_route.source_block.stable_identity
+    assert nested_rewrite.owner_anchor_ea == 0x40BB51
 
 
 def test_carrier_ingress_keeps_unresolved_published_sibling_as_typed_egress() -> None:
