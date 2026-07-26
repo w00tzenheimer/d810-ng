@@ -39,6 +39,7 @@ from d810.transforms.fragment_plan import (
 )
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
+    ProjectedFallthroughHelper,
     ProjectedFragment,
     ProjectedFragmentBlock,
     ProjectedIdentityBinding,
@@ -486,6 +487,8 @@ def test_bind_fragment_reference_oracle_rebinds_complete_conditional_route() -> 
     assert authority is not None
     assert authority.reference_route == route
     assert authority.candidate_rewrite_anchor_ea == _OWNER_EA
+    operation = bound.operations[0]
+    helper_id = f"fallthrough-helper:{operation.operation_id}"
     projection = ProjectedFragment(
         entry_block_id="entry",
         blocks=(
@@ -503,20 +506,31 @@ def test_bind_fragment_reference_oracle_rebinds_complete_conditional_route() -> 
             ProjectedFragmentBlock(
                 block_id=source.block_id,
                 kind=BlockKind.TWO_WAY,
-                successors=("target", false_target.block_id),
+                successors=(helper_id, "target"),
                 predecessors=("entry",),
                 physical_position=1,
-                adjacent_fallthrough_target_id=false_target.block_id,
+                adjacent_fallthrough_target_id=helper_id,
                 instruction_eas=(_OWNER_EA,),
                 terminator_ea=_OWNER_EA,
                 terminator_kind=InsnKind.EQUALITY_JUMP,
             ),
             ProjectedFragmentBlock(
+                block_id=helper_id,
+                kind=BlockKind.ONE_WAY,
+                successors=(false_target.block_id,),
+                predecessors=(source.block_id,),
+                physical_position=2,
+                adjacent_fallthrough_target_id=None,
+                instruction_eas=(),
+                terminator_ea=None,
+                terminator_kind=InsnKind.GOTO,
+            ),
+            ProjectedFragmentBlock(
                 block_id=false_target.block_id,
                 kind=BlockKind.ZERO_WAY,
                 successors=(),
-                predecessors=(source.block_id,),
-                physical_position=2,
+                predecessors=(helper_id,),
+                physical_position=3,
                 adjacent_fallthrough_target_id=None,
                 instruction_eas=(false_target_ea,),
                 terminator_ea=None,
@@ -527,7 +541,7 @@ def test_bind_fragment_reference_oracle_rebinds_complete_conditional_route() -> 
                 kind=BlockKind.ZERO_WAY,
                 successors=(),
                 predecessors=(source.block_id,),
-                physical_position=3,
+                physical_position=4,
                 adjacent_fallthrough_target_id=None,
                 instruction_eas=(_TARGET_EA,),
                 terminator_ea=None,
@@ -538,7 +552,7 @@ def test_bind_fragment_reference_oracle_rebinds_complete_conditional_route() -> 
                 kind=BlockKind.ZERO_WAY,
                 successors=(),
                 predecessors=(),
-                physical_position=4,
+                physical_position=5,
                 adjacent_fallthrough_target_id=None,
                 instruction_eas=(_OWNER_EA,),
                 terminator_ea=None,
@@ -568,6 +582,14 @@ def test_bind_fragment_reference_oracle_rebinds_complete_conditional_route() -> 
                 state=FragmentBindingState.STAGED,
                 previous_version=1,
             ),
+            ProjectedIdentityBinding(
+                block_id=helper_id,
+                logical_owner_id=f"plan:{bound.plan_id}:{helper_id}",
+                version=0,
+                generation=1,
+                state=FragmentBindingState.STAGED,
+                stable_identity=None,
+            ),
             _binding(
                 bound,
                 "target",
@@ -583,6 +605,14 @@ def test_bind_fragment_reference_oracle_rebinds_complete_conditional_route() -> 
                 state=FragmentBindingState.PUBLISHED,
             ),
         ),
+        fallthrough_helpers=(
+            ProjectedFallthroughHelper(
+                helper_block_id=helper_id,
+                operation_id=operation.operation_id,
+                source_block_id=operation.source_block_id,
+                semantic_target_block_id=false_target.block_id,
+            ),
+        ),
     )
 
     result = compare_detached_route_oracle(bound, projection)
@@ -594,6 +624,22 @@ def test_bind_fragment_reference_oracle_rebinds_complete_conditional_route() -> 
     assert comparison.candidate_shape.true_target_ea == _TARGET_EA
     assert comparison.candidate_shape.false_target_ea == false_target_ea
     assert comparison.candidate_shape.physical_fallthrough_ea == false_target_ea
+
+    unowned_helper_projection = replace(
+        projection,
+        identity_bindings=tuple(
+            replace(binding, state=FragmentBindingState.PUBLISHED)
+            if binding.block_id == helper_id
+            else binding
+            for binding in projection.identity_bindings
+        ),
+    )
+    unowned_result = compare_detached_route_oracle(bound, unowned_helper_projection)
+    assert not unowned_result.passed
+    assert (
+        unowned_result.comparisons[0].failed_invariant
+        == "staged_helper_ownership"
+    )
 
 
 def test_bind_fragment_reference_oracle_rejects_partial_authority() -> None:
