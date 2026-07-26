@@ -437,9 +437,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             if callable(report_nop_inventory):
                 try:
                     exit_nop_sites = (
-                        capture_nop_sites(mba)
-                        if callable(capture_nop_sites)
-                        else None
+                        capture_nop_sites(mba) if callable(capture_nop_sites) else None
                     )
                     report_nop_inventory(
                         mba,
