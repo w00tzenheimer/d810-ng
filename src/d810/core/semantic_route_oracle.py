@@ -918,9 +918,7 @@ def _compare_one(
         return RouteOracleComparison(
             **base,
             outcome="diverged",
-            failed_invariant=(
-                candidate.failed_invariant or "candidate_observation"
-            ),
+            failed_invariant=(candidate.failed_invariant or "candidate_observation"),
             reason=candidate.reason,
         )
 

@@ -518,9 +518,7 @@ def _candidate_terminator_failure(
     source_block_id = source.block_id
     instruction_eas = tuple(int(ea) for ea in source.instruction_eas)
     terminator_ea_value = source.terminator_ea
-    terminator_ea = (
-        None if terminator_ea_value is None else int(terminator_ea_value)
-    )
+    terminator_ea = None if terminator_ea_value is None else int(terminator_ea_value)
     terminator_kind = source.terminator_kind
     expected_rewrite_anchor_ea = int(route.rewrite_anchor_ea)
     failed_invariant = (
@@ -528,9 +526,7 @@ def _candidate_terminator_failure(
         if expected_rewrite_anchor_ea not in instruction_eas
         else "staged_rewrite_terminator_mismatch"
     )
-    staged_terminator = (
-        "none" if terminator_ea is None else f"0x{terminator_ea:X}"
-    )
+    staged_terminator = "none" if terminator_ea is None else f"0x{terminator_ea:X}"
     staged_instruction_eas = ",".join(f"0x{ea:X}" for ea in instruction_eas)
     return _candidate_failure(
         route,
