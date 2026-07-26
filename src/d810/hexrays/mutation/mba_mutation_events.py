@@ -1682,8 +1682,7 @@ class MbaMutationGateway:
         ):
             raise ValueError("detached route oracle lacks reference route authority")
         ledger_identities = tuple(
-            (route.route_id, route.reference_ledger_identity)
-            for route in routes
+            (route.route_id, route.reference_ledger_identity) for route in routes
         )
         if tuple(route_id for route_id, _ledger in ledger_identities) != tuple(
             comparison.route_id for comparison in result.comparisons
