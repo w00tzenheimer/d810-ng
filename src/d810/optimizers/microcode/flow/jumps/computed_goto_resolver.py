@@ -520,9 +520,7 @@ def _observe_native_stack_point_overlay(
                 mba_generation_before=int(
                     getattr(session, "current_mba_generation", 0)
                 ),
-                mba_generation_after=int(
-                    getattr(session, "current_mba_generation", 0)
-                ),
+                mba_generation_after=int(getattr(session, "current_mba_generation", 0)),
                 summary=str(summary),
                 payload={"points": [dict(point) for point in points]},
             )
@@ -556,9 +554,7 @@ class NativeStackPointOverlayLease:
             if not ida_frame.del_stkpnt(self.function, int(record.native_ea)):
                 failures.append(f"delete@0x{int(record.native_ea):X}")
         for record in self.records:
-            restored_spd = int(
-                ida_frame.get_spd(self.function, int(record.native_ea))
-            )
+            restored_spd = int(ida_frame.get_spd(self.function, int(record.native_ea)))
             if restored_spd != int(record.original_spd):
                 failures.append(
                     f"verify@0x{int(record.native_ea):X}:"
@@ -566,8 +562,7 @@ class NativeStackPointOverlayLease:
                 )
         if failures:
             raise RuntimeError(
-                "native stack-point overlay restoration failed: "
-                + ", ".join(failures)
+                "native stack-point overlay restoration failed: " + ", ".join(failures)
             )
 
     def release(self) -> None:
@@ -12129,8 +12124,7 @@ def _on_stkpnts(
             )
         except Exception:
             logger.debug(
-                "computed-goto stack-point observation failed: "
-                "func=0x%X native=0x%X",
+                "computed-goto stack-point observation failed: func=0x%X native=0x%X",
                 key,
                 native_ea,
                 exc_info=True,

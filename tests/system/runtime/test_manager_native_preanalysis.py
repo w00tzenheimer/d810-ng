@@ -1011,9 +1011,7 @@ def test_decompile_controller_releases_stack_overlay_when_decompile_raises(
     monkeypatch.setattr(
         computed_goto_resolver,
         "acquire_detached_call_stack_point_overlay",
-        lambda current_session: (
-            calls.append(("acquire", current_session)) or _Lease()
-        ),
+        lambda current_session: calls.append(("acquire", current_session)) or _Lease(),
         raising=False,
     )
 
