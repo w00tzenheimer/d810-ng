@@ -6312,3 +6312,52 @@ anchor `0x40A69A`: determine its immutable prepared transfer and exact live
 contraction, then encode only that typed structural ownership. Do not assign a
 proved rewrite coordinate that the operation does not own, suppress strict
 instruction/terminator comparison, or widen to broad Rhad publication.
+
+**2026-07-26T03:19:55-0700 — structural direct projection reaches live C5**
+
+Functional commit `814a761fb` distinguishes plan-owned structural direct
+transfers from native semantic rewrites. For an imported direct operation with
+no `FragmentDirectTransferRewrite`, live observation now accepts a synthesized
+`m_goto` only after proving its one-way topology, exact target operand,
+`MBL_GOTO` shape, lack of native origin, payload-origin completeness, and
+matching immutable structural terminator. The synthetic safe EA is then
+removed from portable semantics; native payload coordinates and proved rewrite
+anchors remain visible. Ruff-only commit `d23a15003` formats all tracked Python
+sources; two files changed. The production participant, terminal publication,
+prepared native direct-rewrite, and transaction/projection gates are green at
+4/4 and 106/106. Commit-time architecture gates pass.
+
+The mandatory cache-disabled A560 canary at clean code SHA `d23a15003` ran for
+47.63 seconds and failed only after advancing into later decompilation and
+GLBOPT. Log: `.tmp/rhad-a560-structural-direct-d23a15003.txt`; primary DB:
+`.tmp/rhad-a560-structural-direct-d23a15003/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+There was no process segfault or numeric INTERR. All former frontend root,
+helper, generic-direct instruction, and generic-direct terminator divergences
+are absent.
+
+The DB records frontend-normalization attempt
+`800bacd95fa5464a89b5eccbb97019b3` as fully committed: staged fragment, root
+publication, and post-observation receipt all succeed, with 139 creation
+witnesses and no invalidations. Later frontend retries also commit. This is a
+fresh exact A560 C5 transaction, though it is not final A560 acceptance or C6.
+
+The first chronological canonical-composition rejection, attempt
+`cc53c1662c6f4e38bc348c033fd8d84f`, is a clean, zero-write
+`return_carrier_integrity` request for CALLS companion preparation. The
+lifecycle satisfies that request and retries, so it is not the remaining
+blocker. The first unresolved transaction is attempt
+`296ecd12b3014bf380268145b9668779`: immutable projection, preflight, and final
+binding pass with no writes; live realization starts and then poisons at
+`runtime:stage` before root publication. Strict comparison reports 135
+flag-write divergences and 18 terminator divergences, with no instruction-row
+or block-set divergence. The first subject is imported block
+`native[0x40A70E-0x40A73F;exact=0x40A70E,0x40A728,0x40A72E]:imported:flag-writes`.
+The failed canonical attempt has 229 creation witnesses, 219 invalidated by
+the poisoned generation.
+
+The highest current level is therefore C5 for the exact frontend transaction;
+canonical composition reaches C4 and fails its strict staged proof. Continue
+from flag-write authority at imported block `0x40A70E`: compare immutable
+prepared writes with SDK-observed writes and preserve only typed native-origin
+semantics. Do not hide the 18 later terminator mismatches, weaken staged
+comparison, or claim C6.
