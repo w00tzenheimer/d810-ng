@@ -76,12 +76,12 @@ class FlowGraphTransformPipeline:
                 pre_cfg=cfg,
             )
             if not isinstance(execution, PatchPlanExecutionResult):
-                raise TypeError("PatchPlan runtime returned invalid execution authority")
+                raise TypeError(
+                    "PatchPlan runtime returned invalid execution authority"
+                )
             count = execution.applied_count
             if count <= 0:
-                logger.debug(
-                    "Pass %s: transaction committed no operations", pass_.name
-                )
+                logger.debug("Pass %s: transaction committed no operations", pass_.name)
                 continue
 
             cfg = execution.graph
