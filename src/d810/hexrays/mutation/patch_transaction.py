@@ -13,6 +13,7 @@ from d810.transforms.cfg_transaction import (
     BoundCfgTransaction,
     CfgGenerationPoisoned,
     CfgProjection,
+    PatchPlanExecutionResult,
     PreparedCfgTransaction,
     TransactionAttemptId,
 )
@@ -27,7 +28,7 @@ class PatchTransactionPreflightRejected(RuntimeError):
 
 
 @dataclass(frozen=True, slots=True)
-class PatchTransactionExecution:
+class PatchTransactionExecution(PatchPlanExecutionResult):
     """Committed ordinary PatchPlan result returned by the shared coordinator."""
 
     applied_count: int
@@ -36,10 +37,9 @@ class PatchTransactionExecution:
     creation_receipts: tuple[object, ...] = ()
 
     def __post_init__(self) -> None:
+        PatchPlanExecutionResult.__post_init__(self)
         if self.applied_count <= 0:
             raise ValueError("patch execution requires a positive applied count")
-        if not isinstance(self.graph, FlowGraph):
-            raise TypeError("patch execution requires a portable observed graph")
 
 
 @dataclass(frozen=True, slots=True)

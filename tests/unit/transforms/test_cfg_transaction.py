@@ -15,6 +15,7 @@ from d810.transforms.cfg_transaction import (
     CfgTransactionPhase,
     LogicalBlockRef,
     NativeBlockRef,
+    PatchPlanExecutionResult,
     PlanBlockRef,
     PlanInsnRef,
     PreparedCfgTransaction,
@@ -48,6 +49,16 @@ def _projection(
         graph=FlowGraph(blocks={}, entry_serial=0, func_ea=0),
         focus_refs=focus_refs,
     )
+
+
+def test_patch_execution_result_is_portable_commit_authority() -> None:
+    graph = FlowGraph(blocks={}, entry_serial=0, func_ea=0)
+
+    assert PatchPlanExecutionResult(0, graph).graph is graph
+    with pytest.raises(ValueError, match="not be negative"):
+        PatchPlanExecutionResult(-1, graph)
+    with pytest.raises(TypeError, match="FlowGraph"):
+        PatchPlanExecutionResult(0, object())  # type: ignore[arg-type]
 
 
 def test_plan_local_refs_are_nominal_and_replay_stable() -> None:

@@ -48,7 +48,9 @@ GATEWAY_REQUIRED_ENTRYPOINTS = {
     ),
     "hexrays/mutation/ir_translator.py": frozenset({"lower"}),
     "passes/pipeline.py": frozenset({"run"}),
-    "backends/hexrays/mutation/backend.py": frozenset({"__init__"}),
+    "backends/hexrays/mutation/backend.py": frozenset(
+        {"HexRaysMutationBackend.__init__"}
+    ),
     "hexrays/mutation/detached_handler_island.py": frozenset(
         {
             "_apply_boundary_port_batch",
@@ -274,25 +276,40 @@ def test_migrated_structural_entrypoints_require_the_gateway_port() -> None:
         path = SRC_ROOT / relative
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         found = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if node.name not in names:
-                continue
-            found.add(node.name)
-            keyword_defaults = dict(
-                zip(
-                    (argument.arg for argument in node.args.kwonlyargs),
-                    node.args.kw_defaults,
-                    strict=True,
-                )
-            )
-            if (
-                "mutation_gateway" in keyword_defaults
-                and keyword_defaults["mutation_gateway"] is None
-            ):
-                continue
-            violations.append(f"{relative}:{node.lineno}:{node.name}")
+
+        class EntrypointVisitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.class_names: list[str] = []
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                self.class_names.append(node.name)
+                self.generic_visit(node)
+                self.class_names.pop()
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                qualified_name = ".".join((*self.class_names, node.name))
+                matched_name = qualified_name if qualified_name in names else node.name
+                if matched_name in names:
+                    found.add(matched_name)
+                    keyword_defaults = dict(
+                        zip(
+                            (argument.arg for argument in node.args.kwonlyargs),
+                            node.args.kw_defaults,
+                            strict=True,
+                        )
+                    )
+                    if not (
+                        "mutation_gateway" in keyword_defaults
+                        and keyword_defaults["mutation_gateway"] is None
+                    ):
+                        violations.append(
+                            f"{relative}:{node.lineno}:{qualified_name}"
+                        )
+                self.generic_visit(node)
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+
+        EntrypointVisitor().visit(tree)
         for missing in sorted(names - found):
             violations.append(f"{relative}:missing:{missing}")
     assert violations == []

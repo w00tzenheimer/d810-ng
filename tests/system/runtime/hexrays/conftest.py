@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from d810.transforms.graph_modification import GraphModification
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+from d810.transforms.cfg_transaction import PatchPlanExecutionResult
 from d810.transforms.plan import LoweringInput, PatchPlan, ensure_patch_plan
+from tests.typed_patch_authority import graph_modifications
 
 
 class InMemoryBackend:
@@ -48,12 +50,28 @@ class InMemoryBackend:
     ) -> int:
         patch_plan = ensure_patch_plan(lowering_input)
         self.applied_patch_plans.append(patch_plan)
-        modifications = patch_plan.as_graph_modifications()
+        modifications = graph_modifications(patch_plan)
         self.applied_modifications.extend(modifications)
         return len(modifications)
 
     def verify(self, state: dict[int, BlockSnapshot] | None = None) -> bool:
         return True
+
+    def execute_patch_plan(
+        self,
+        plan: PatchPlan,
+        state: dict[int, BlockSnapshot] | None = None,
+        *,
+        mutation_gateway: object,
+        pre_cfg: FlowGraph,
+    ) -> PatchPlanExecutionResult:
+        count = self.lower(plan, state, mutation_gateway=mutation_gateway)
+        if count <= 0 or not self.verify(state):
+            return PatchPlanExecutionResult(applied_count=0, graph=pre_cfg)
+        return PatchPlanExecutionResult(
+            applied_count=count,
+            graph=self.lift(state),
+        )
 
 
 __all__ = ["InMemoryBackend"]

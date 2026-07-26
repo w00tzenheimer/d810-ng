@@ -22,10 +22,11 @@ import pytest
 from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.passes.pipeline import FlowGraphTransformPipeline
-from d810.ir.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockSnapshot, InsnKind, InsnSnapshot, FlowGraph
 from d810.hexrays.mutation.transform.goto_chain_removal import GotoChainRemovalPass
 
 from tests.system.runtime.hexrays.conftest import InMemoryBackend
+from tests.typed_patch_authority import mutation_gateway_for
 
 # Microcode constants
 _M_GOTO_OPCODE = ida_hexrays.m_goto
@@ -36,6 +37,17 @@ def _make_goto_insn(ea: int, dest_serial: int) -> InsnSnapshot:
     """Helper: build an m_goto InsnSnapshot with a valid mop_b operand."""
     dest_mop = MopSnapshot(t=_MOP_B_TYPE, size=4, block_num=dest_serial)
     return InsnSnapshot(opcode=_M_GOTO_OPCODE, ea=ea, operands=(dest_mop,))
+
+
+def _make_conditional_insn(ea: int, dest_serial: int) -> InsnSnapshot:
+    """Build the explicit branch arm required by typed plan compilation."""
+    dest_mop = MopSnapshot(t=_MOP_B_TYPE, size=4, block_num=dest_serial)
+    return InsnSnapshot(
+        opcode=ida_hexrays.m_jnz,
+        ea=ea,
+        operands=(dest_mop,),
+        kind=InsnKind.COND_JUMP,
+    )
 
 
 class TestGotoChainRemovalPass:
@@ -909,7 +921,10 @@ class TestGotoChainRemovalPassIntegration:
         backend = InMemoryBackend(blocks)
 
         pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
-        total_mods = pipeline.run(blocks, mutation_gateway=object())
+        total_mods = pipeline.run(
+            blocks,
+            mutation_gateway=mutation_gateway_for(blocks),
+        )
 
         assert total_mods == 1
         assert len(backend.applied_modifications) == 1
@@ -946,7 +961,10 @@ class TestGotoChainRemovalPassIntegration:
         backend = InMemoryBackend(blocks)
 
         pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
-        total_mods = pipeline.run(blocks, mutation_gateway=object())
+        total_mods = pipeline.run(
+            blocks,
+            mutation_gateway=mutation_gateway_for(blocks),
+        )
 
         assert total_mods == 0
         assert len(backend.applied_modifications) == 0
@@ -960,7 +978,7 @@ class TestGotoChainRemovalPassIntegration:
             preds=(),
             flags=0,
             start_ea=0x1000,
-            insn_snapshots=(),
+            insn_snapshots=(_make_conditional_insn(0x1000, 10),),
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
@@ -994,7 +1012,10 @@ class TestGotoChainRemovalPassIntegration:
         backend = InMemoryBackend(blocks)
 
         pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
-        total_mods = pipeline.run(blocks, mutation_gateway=object())
+        total_mods = pipeline.run(
+            blocks,
+            mutation_gateway=mutation_gateway_for(blocks),
+        )
 
         assert total_mods == 1
         assert len(backend.applied_modifications) == 1
@@ -1016,7 +1037,7 @@ class TestGotoChainRemovalPassIntegration:
             preds=(),
             flags=0,
             start_ea=0x1000,
-            insn_snapshots=(),
+            insn_snapshots=(_make_conditional_insn(0x1000, 10),),
         )
         insn5a = InsnSnapshot(opcode=0x01, ea=0x1050, operands=())
         insn5b = InsnSnapshot(opcode=0x02, ea=0x1054, operands=())
@@ -1052,7 +1073,10 @@ class TestGotoChainRemovalPassIntegration:
         backend = InMemoryBackend(blocks)
 
         pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
-        total_mods = pipeline.run(blocks, mutation_gateway=object())
+        total_mods = pipeline.run(
+            blocks,
+            mutation_gateway=mutation_gateway_for(blocks),
+        )
 
         assert total_mods == 2
         assert len(backend.applied_modifications) == 2

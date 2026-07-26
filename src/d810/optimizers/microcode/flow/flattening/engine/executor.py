@@ -309,7 +309,7 @@ class TransactionalExecutor:
         fragment: PlanFragment,
         total_handlers: int,
     ) -> StageResult:
-        """Execute one plan fragment through IDAIRTranslator lowering."""
+        """Execute one plan fragment through the shared mutation backend."""
         if fragment.is_empty():
             return StageResult(strategy_name=fragment.strategy_name)
 

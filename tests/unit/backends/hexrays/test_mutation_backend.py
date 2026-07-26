@@ -8,7 +8,10 @@ import pytest
 from d810.analyses.control_flow.native_preanalysis_session import (
     NativePreanalysisSessionState,
 )
-from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
+from d810.backends.hexrays.mutation.backend import (
+    HexRaysMutationBackend,
+    HexRaysPatchPlanRuntime,
+)
 from d810.core.events import EventEmitter
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import (
@@ -415,6 +418,32 @@ def test_backend_commits_the_complete_ordinary_patch_transaction_timeline() -> N
         CfgTransactionPhase.OBSERVED,
         CfgTransactionPhase.COMMITTED,
     ]
+
+
+def test_patch_pipeline_runtime_preserves_exact_pre_cfg_authority() -> None:
+    cfg = _make_cfg([(0, 1)], stop_serials=(1,))
+    plan = _ordinary_plan(
+        PatchConvertToGoto,
+        serials=(0, 1),
+        block_serial=0,
+        goto_target=1,
+    )
+    translator = _FakeTranslator(cfg)
+    runtime = HexRaysPatchPlanRuntime(translator)
+    live = SimpleNamespace(qty=cfg.num_blocks)
+    gateway = _ordinary_gateway(cfg, plan)
+
+    pre_cfg = runtime.lift(live)
+    execution = runtime.execute_patch_plan(
+        plan,
+        live,
+        mutation_gateway=gateway,
+        pre_cfg=pre_cfg,
+    )
+
+    assert execution.applied_count == 1
+    assert execution.graph is cfg
+    assert translator.lift_count == 2
 
 
 def test_backend_poisons_when_realized_operation_inventory_differs() -> None:

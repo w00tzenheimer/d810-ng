@@ -17,6 +17,7 @@ from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.transforms.simplify_identical_branch import SimplifyIdenticalBranchPass
 
 from tests.unit.hexrays.conftest import InMemoryBackend
+from tests.typed_patch_authority import graph_modifications, mutation_gateway_for
 
 
 class TestSimplifyIdenticalBranchPass:
@@ -293,11 +294,15 @@ class TestSimplifyIdenticalBranchPassIntegration:
 
         # Run through PassPipeline
         pipeline = FlowGraphTransformPipeline(backend, [SimplifyIdenticalBranchPass()])
-        total_mods = pipeline.run(blocks, mutation_gateway=object())
+        total_mods = pipeline.run(
+            blocks,
+            mutation_gateway=mutation_gateway_for(blocks),
+        )
 
         assert total_mods == 1
-        assert len(backend.applied_modifications) == 1
-        mod = backend.applied_modifications[0]
+        modifications = graph_modifications(backend.applied_patch_plans[-1])
+        assert len(modifications) == 1
+        mod = modifications[0]
         assert isinstance(mod, ConvertToGoto)
         assert mod.block_serial == 0
         assert mod.goto_target == 5
@@ -337,10 +342,13 @@ class TestSimplifyIdenticalBranchPassIntegration:
 
         # Run through PassPipeline
         pipeline = FlowGraphTransformPipeline(backend, [SimplifyIdenticalBranchPass()])
-        total_mods = pipeline.run(blocks, mutation_gateway=object())
+        total_mods = pipeline.run(
+            blocks,
+            mutation_gateway=mutation_gateway_for(blocks),
+        )
 
         assert total_mods == 0
-        assert len(backend.applied_modifications) == 0
+        assert len(backend.applied_steps) == 0
 
     def test_pipeline_with_multiple_matches(self):
         """PassPipeline integration: multiple matching blocks."""
@@ -387,12 +395,16 @@ class TestSimplifyIdenticalBranchPassIntegration:
 
         # Run through PassPipeline
         pipeline = FlowGraphTransformPipeline(backend, [SimplifyIdenticalBranchPass()])
-        total_mods = pipeline.run(blocks, mutation_gateway=object())
+        total_mods = pipeline.run(
+            blocks,
+            mutation_gateway=mutation_gateway_for(blocks),
+        )
 
         assert total_mods == 2
-        assert len(backend.applied_modifications) == 2
-        serials = {mod.block_serial for mod in backend.applied_modifications}
+        modifications = graph_modifications(backend.applied_patch_plans[-1])
+        assert len(modifications) == 2
+        serials = {mod.block_serial for mod in modifications}
         assert serials == {3, 7}
         # Both should target block 10
-        for mod in backend.applied_modifications:
+        for mod in modifications:
             assert mod.goto_target == 10

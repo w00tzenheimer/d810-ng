@@ -18,8 +18,8 @@ from d810.passes.pass_pipeline_factory import (
     pass_pipeline_spec_from_config,
 )
 from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
+from d810.backends.hexrays.mutation.backend import HexRaysPatchPlanRuntime
 from d810.hexrays.mutation.transform.goto_chain_removal import GotoChainRemovalPass
-from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.transforms.simplify_identical_branch import SimplifyIdenticalBranchPass
 
 
@@ -64,10 +64,10 @@ class TestBuildPassPipeline:
         pass_types = [type(p) for p in pipeline.passes]
         assert GotoChainRemovalPass in pass_types
 
-    def test_backend_is_ir_translator(self):
-        """PassPipeline should use IDAIRTranslator."""
+    def test_backend_is_transaction_runtime(self):
+        """PassPipeline should use the shared Hex-Rays transaction runtime."""
         pipeline = build_cleanup_pipeline()
-        assert isinstance(pipeline.backend, IDAIRTranslator)
+        assert isinstance(pipeline.backend, HexRaysPatchPlanRuntime)
 
     def test_pipeline_repr_contains_pass_names(self):
         """PassPipeline repr should name both safe cleanup transforms."""

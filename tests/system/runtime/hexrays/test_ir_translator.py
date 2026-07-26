@@ -1,7 +1,7 @@
 """Tests for IDAIRTranslator.
 
-System-level integration tests that verify IDAIRTranslator conforms to the
-IRTranslator protocol and exposes the expected interface.
+System-level integration tests that verify IDAIRTranslator remains the private
+final-boundary lowering adapter behind the public PatchPlan runtime port.
 
 Runs in IDA environment (system/runtime); skips gracefully without IDA.
 """
@@ -789,12 +789,12 @@ class TestIDAIRTranslatorBasics:
         backend = IDAIRTranslator()
         assert backend.name == "ida"
 
-    def test_backend_implements_protocol(self):
-        """Test that IDAIRTranslator conforms to CFGBackend protocol."""
-        from d810.transforms.protocol import IRTranslator
+    def test_translator_is_not_a_public_patch_runtime(self):
+        """Final-boundary lowering must remain behind the runtime port."""
+        from d810.transforms.protocol import PatchPlanRuntime
 
         backend = IDAIRTranslator()
-        assert isinstance(backend, IRTranslator)
+        assert not isinstance(backend, PatchPlanRuntime)
 
     def test_lower_requires_patch_plan(self):
         backend = IDAIRTranslator()

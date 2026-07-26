@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from d810.core import logging, getLogger
+from d810.core import getLogger
 from d810.core.typing import Iterable, Literal
 
 from d810.hexrays.contracts.native_oracle import (
@@ -237,48 +237,6 @@ class IDACfgContract:
     ) -> tuple[InvariantViolation, ...]:
         """Validate a portable projection using the transaction interface."""
         return CfgContract().verify_projection(projection, scope=scope)
-
-    def check_projected(
-        self,
-        pre_cfg,
-        plan: PatchPlan,
-        *,
-        scope: ContractScope = "focused",
-    ) -> list[InvariantViolation]:
-        from d810.transforms.edit_simulator import project_patch_plan
-
-        projection = project_patch_plan(
-            pre_cfg,
-            plan,
-            snapshot_id=f"flow-graph:{id(pre_cfg):x}",
-        )
-        return self.check_projection(projection, scope=scope)
-
-    def verify_projected(
-        self,
-        pre_cfg,
-        plan: PatchPlan,
-        *,
-        scope: ContractScope = "focused",
-    ) -> tuple[InvariantViolation, ...]:
-        """Convenience wrapper: project + check + raise on violations.
-
-        Mirrors :meth:`verify` behaviour for the ``"projected"`` phase:
-        returns an empty tuple on success, raises
-        :class:`CfgContractViolationError` with ``phase="projected"``
-        when any invariant is violated.
-
-        Projected-state construction is delegated to the plan-specific
-        :func:`d810.transforms.edit_simulator.project_patch_plan` adapter.
-        """
-        from d810.transforms.edit_simulator import project_patch_plan
-
-        projection = project_patch_plan(
-            pre_cfg,
-            plan,
-            snapshot_id=f"flow-graph:{id(pre_cfg):x}",
-        )
-        return self.verify_projection(projection, scope=scope)
 
     def verify(
         self,

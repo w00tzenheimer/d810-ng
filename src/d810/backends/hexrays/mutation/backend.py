@@ -16,6 +16,7 @@ from d810.core.logging import getLogger
 from d810.core.typing import Callable, TYPE_CHECKING
 from d810.ir.block_identity import CurrentMbaIdentityBindingSnapshot
 from d810.ir.flowgraph import FlowGraph
+from d810.transforms.cfg_transaction import PatchPlanExecutionResult
 from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.plan import PatchPlan
 
@@ -103,19 +104,44 @@ class HexRaysMutationBackend:
         rewrite_plan: PatchPlan | FragmentPlan,
         live_source: object,
         safety_policy: object = None,
+        *,
+        pre_cfg: FlowGraph | None = None,
     ) -> FlowGraph:
         """The sole live transaction entry point for PatchPlan and FragmentPlan."""
         if isinstance(rewrite_plan, FragmentPlan):
             return self._apply_fragment(rewrite_plan, live_source, safety_policy)
         if not isinstance(rewrite_plan, PatchPlan):
             raise TypeError("HexRaysMutationBackend.apply requires a typed plan")
-        return self._apply_patch_plan(rewrite_plan, live_source, safety_policy)
+        return self._apply_patch_plan(
+            rewrite_plan,
+            live_source,
+            safety_policy,
+            pre_cfg=pre_cfg,
+        )
+
+    def execute_patch_plan(
+        self,
+        plan: PatchPlan,
+        live_source: object,
+        *,
+        pre_cfg: FlowGraph,
+    ) -> PatchPlanExecutionResult:
+        """Return typed commit authority for the portable pipeline port."""
+        graph = self.apply(plan, live_source, pre_cfg=pre_cfg)
+        execution = self.last_patch_execution
+        if execution is None:
+            return PatchPlanExecutionResult(applied_count=0, graph=graph)
+        if not isinstance(execution, PatchPlanExecutionResult):
+            raise TypeError("Hex-Rays backend produced invalid patch execution")
+        return execution
 
     def _apply_patch_plan(
         self,
         rewrite_plan: PatchPlan,
         live_source: object,
         safety_policy: object = None,
+        *,
+        pre_cfg: FlowGraph | None = None,
     ) -> FlowGraph:
         """Execute one already-lowered PatchPlan through the shared coordinator."""
         del safety_policy
@@ -124,7 +150,10 @@ class HexRaysMutationBackend:
             execute_patch_transaction,
         )
 
-        pre_cfg = self._translator.lift(live_source)
+        if pre_cfg is None:
+            pre_cfg = self._translator.lift(live_source)
+        elif not isinstance(pre_cfg, FlowGraph):
+            raise TypeError("PatchPlan execution requires an immutable pre-CFG")
         self._last_patch_execution = None
         self._last_patch_failure = None
         try:
@@ -158,3 +187,38 @@ class HexRaysMutationBackend:
             fragment_plan,
         )
         return self._translator.lift(live_source)
+
+
+class HexRaysPatchPlanRuntime:
+    """Hex-Rays implementation of the portable pass-pipeline runtime port."""
+
+    def __init__(self, translator: "IDAIRTranslator | None" = None) -> None:
+        if translator is None:
+            from d810.hexrays.contracts.cfg_contract import IDACfgContract
+            from d810.hexrays.mutation.ir_translator import IDAIRTranslator
+
+            translator = IDAIRTranslator(contract=IDACfgContract())
+        self._translator = translator
+
+    @property
+    def name(self) -> str:
+        return "hexrays"
+
+    def lift(self, state: object) -> FlowGraph:
+        return self._translator.lift(state)
+
+    def execute_patch_plan(
+        self,
+        plan: PatchPlan,
+        state: object,
+        *,
+        mutation_gateway: object,
+        pre_cfg: FlowGraph,
+    ) -> PatchPlanExecutionResult:
+        return HexRaysMutationBackend(
+            mutation_gateway=mutation_gateway,
+            translator=self._translator,
+        ).execute_patch_plan(plan, state, pre_cfg=pre_cfg)
+
+
+__all__ = ["HexRaysMutationBackend", "HexRaysPatchPlanRuntime"]
