@@ -24,6 +24,7 @@ from d810.transforms.fragment_plan import (
 )
 from d810.transforms.fragment_validation import (
     ProjectedFragment,
+    ProjectedFragmentBlock,
     projected_publication_authority_roots,
 )
 
@@ -496,6 +497,8 @@ def _reference_observation(route: ReferenceRouteRewrite) -> SemanticRouteObserva
 def _candidate_failure(
     route: ReferenceRouteRewrite,
     reason: str,
+    *,
+    failed_invariant: str | None = None,
 ) -> SemanticRouteObservation:
     return SemanticRouteObservation(
         route_id=route.route_id,
@@ -504,6 +507,40 @@ def _candidate_failure(
         outcome="invalid",
         shape=None,
         reason=reason,
+        failed_invariant=failed_invariant,
+    )
+
+
+def _candidate_terminator_failure(
+    route: ReferenceRouteRewrite,
+    source: ProjectedFragmentBlock,
+) -> SemanticRouteObservation:
+    source_block_id = source.block_id
+    instruction_eas = tuple(int(ea) for ea in source.instruction_eas)
+    terminator_ea_value = source.terminator_ea
+    terminator_ea = (
+        None if terminator_ea_value is None else int(terminator_ea_value)
+    )
+    terminator_kind = source.terminator_kind
+    expected_rewrite_anchor_ea = int(route.rewrite_anchor_ea)
+    failed_invariant = (
+        "staged_rewrite_anchor_missing"
+        if expected_rewrite_anchor_ea not in instruction_eas
+        else "staged_rewrite_terminator_mismatch"
+    )
+    staged_terminator = (
+        "none" if terminator_ea is None else f"0x{terminator_ea:X}"
+    )
+    staged_instruction_eas = ",".join(f"0x{ea:X}" for ea in instruction_eas)
+    return _candidate_failure(
+        route,
+        f"route {route.route_id} {failed_invariant}: "
+        f"source_block_id={source_block_id!r} "
+        f"expected_rewrite_anchor_ea=0x{expected_rewrite_anchor_ea:X} "
+        f"staged_terminator_ea={staged_terminator} "
+        f"staged_terminator_kind={terminator_kind.value} "
+        f"staged_instruction_eas=[{staged_instruction_eas}]",
+        failed_invariant=failed_invariant,
     )
 
 
@@ -558,10 +595,7 @@ def _candidate_observation(
         source.terminator_ea != route.rewrite_anchor_ea
         or route.rewrite_anchor_ea not in source.instruction_eas
     ):
-        return _candidate_failure(
-            route,
-            f"route {route.route_id} rewrite anchor is not the staged terminator",
-        )
+        return _candidate_terminator_failure(route, source)
     successor_blocks = []
     for block_id in source.successors:
         try:
