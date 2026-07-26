@@ -79,6 +79,10 @@ from d810.hexrays.mutation.ir_translator import (
     classify_live_insn_kind,
     classify_live_operand_kind,
 )
+from d810.hexrays.mutation.semantic_ownership import (
+    find_patch_plan_semantic_ownership_overlap,
+    format_patch_plan_semantic_ownership_overlap,
+)
 from d810.analyses.control_flow.provenance import (
     GateAccounting,
     GateDecision,
@@ -125,6 +129,61 @@ def _max_optional_int(*values: int | None) -> int | None:
     if not present:
         return None
     return max(present)
+
+
+def _committed_semantic_ownership_gate(
+    *,
+    strategy_name: str,
+    patch_plan: PatchPlan,
+    mutation_gateway: object,
+    gate_accounting: GateAccounting,
+) -> tuple[StageResult | None, GateAccounting]:
+    """Reject displaced cleanup before it opens a live CFG transaction."""
+    authority = getattr(mutation_gateway, "lifecycle_authority", None)
+    if authority is None:
+        return None, gate_accounting
+    publications = authority.committed_semantic_ownership()
+    if not publications:
+        return None, gate_accounting
+    overlap = find_patch_plan_semantic_ownership_overlap(
+        patch_plan,
+        mutation_gateway.identity_index,
+        publications,
+    )
+    if overlap is None:
+        return (
+            None,
+            gate_accounting.add(
+                GateDecision(
+                    gate_name="committed_semantic_ownership",
+                    verdict=GateVerdict.PASSED,
+                    reason="ordinary PatchPlan is disjoint from committed ownership",
+                )
+            ),
+        )
+    reason = format_patch_plan_semantic_ownership_overlap(overlap)
+    rejected = gate_accounting.add(
+        GateDecision(
+            gate_name="committed_semantic_ownership",
+            verdict=GateVerdict.FAILED,
+            reason=reason,
+        )
+    )
+    result = StageResult(
+        strategy_name=strategy_name,
+        success=False,
+        error=reason,
+        failure_phase="semantic_preflight",
+    )
+    result.metadata["committed_semantic_ownership_overlap"] = {
+        "plan_id": overlap.publication.plan_id,
+        "atomic_group_id": overlap.publication.atomic_group_id,
+        "operation_id": overlap.owner.operation_id,
+        "source_block_id": overlap.owner.source_block_id,
+        "anchor_ea": overlap.anchor_ea,
+    }
+    result.metadata["gate_accounting"] = rejected
+    return result, rejected
 
 
 def _reachable_count_from_block_snapshots(
@@ -576,6 +635,22 @@ class TransactionalExecutor:
                 return result
             return StageResult(strategy_name=fragment.strategy_name)
 
+        if not isinstance(patch_plan, PatchPlan):
+            raise TypeError("preflight must return one immutable PatchPlan")
+        ownership_rejection, gate_accounting = _committed_semantic_ownership_gate(
+            strategy_name=fragment.strategy_name,
+            patch_plan=patch_plan,
+            mutation_gateway=mutation_gateway,
+            gate_accounting=gate_accounting,
+        )
+        if ownership_rejection is not None:
+            executor_logger.info(
+                "Stage %s rejected before transaction construction: %s",
+                fragment.strategy_name,
+                ownership_rejection.error,
+            )
+            return ownership_rejection
+
         executor_logger.info(
             "Stage %s compiled PatchPlan once: operations=%d symbolic_blocks=%d",
             fragment.strategy_name,
@@ -635,7 +710,7 @@ class TransactionalExecutor:
             else (
                 getattr(self.translator, "last_lowering_phase", None)
                 or (
-                    "preflight"
+                    "semantic_preflight"
                     if backend.last_patch_failure is not None
                     else "backend_apply"
                 )

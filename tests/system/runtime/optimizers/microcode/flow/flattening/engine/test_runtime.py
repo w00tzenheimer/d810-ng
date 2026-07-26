@@ -5,6 +5,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.optimizers.microcode.flow.flattening import engine
+from d810.analyses.control_flow.native_preanalysis_session import (
+    CommittedSemanticFragmentOwnership,
+    SemanticFragmentBlockOwner,
+)
 from d810.analyses.control_flow.provenance import (
     DecisionPhase,
     DecisionReasonCode,
@@ -13,6 +17,12 @@ from d810.analyses.control_flow.provenance import (
     GateDecision,
     GateVerdict,
     PipelineProvenance,
+)
+from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
+from d810.ir.block_identity import StableBlockIdentity
+from d810.ir.maturity import MaturityEnvelope
+from d810.optimizers.microcode.flow.flattening.engine.executor import (
+    _committed_semantic_ownership_gate,
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     ExecutedPipeline,
@@ -32,12 +42,15 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     run_family_pass,
     run_ordered_family_hooks,
 )
+from d810.transforms.cfg_transaction import NativeBlockRef
+from d810.transforms.plan import PatchConvertToGoto, PatchPlan
 from d810.transforms.plan_fragment import (
     BenefitMetrics,
     OwnershipScope,
     PlanFragment,
     StageResult,
 )
+from tests.native_preanalysis import make_native_key
 
 
 def _fragment(name: str) -> PlanFragment:
@@ -74,6 +87,110 @@ def _provenance(*names: str) -> PipelineProvenance:
             for name in names
         ),
     )
+
+
+def _semantic_ownership_gate_plan(
+    *identity_eas: int,
+    plan_id: str,
+) -> PatchPlan:
+    native_key = make_native_key()
+    refs = tuple(
+        NativeBlockRef(
+            StableBlockIdentity.from_instruction_eas(
+                (ea,),
+                native_key=native_key,
+            )
+        )
+        for ea in identity_eas
+    )
+    return PatchPlan(
+        plan_id=plan_id,
+        source_maturity=MaturityEnvelope(
+            ir=None,
+            provider="hexrays",
+            provider_id=0,
+        ),
+        source_generation=1,
+        steps=(
+            PatchConvertToGoto(
+                block_serial=refs[0],
+                goto_target=refs[1],
+            ),
+        ),
+        source_coordinates=tuple(
+            (ref, coordinate) for coordinate, ref in enumerate(refs)
+        ),
+    )
+
+
+def test_committed_semantic_ownership_gate_rejects_before_transaction() -> None:
+    patch_plan = _semantic_ownership_gate_plan(
+        0x401000,
+        0x402000,
+        plan_id="ordinary-cleanup",
+    )
+    source_identity = patch_plan.source_coordinates[0][0].identity
+    native_key = source_identity.native_key
+    publication = CommittedSemanticFragmentOwnership(
+        plan_id="canonical-semantic-plan",
+        atomic_group_id="canonical-route",
+        evidence_generation=1,
+        owners=(
+            SemanticFragmentBlockOwner(
+                operation_id="semantic-route",
+                source_block_id="native-body-edge@0x401000",
+                stable_identity=source_identity,
+            ),
+        ),
+    )
+    identity_index = MbaBlockIdentityIndex.from_bindings(
+        generation=1,
+        native_key=native_key,
+        bindings=((source_identity, 7),),
+    )
+    gateway = SimpleNamespace(
+        identity_index=identity_index,
+        lifecycle_authority=SimpleNamespace(
+            committed_semantic_ownership=lambda: (publication,)
+        ),
+    )
+
+    result, accounting = _committed_semantic_ownership_gate(
+        strategy_name="ordinary-cleanup",
+        patch_plan=patch_plan,
+        mutation_gateway=gateway,
+        gate_accounting=GateAccounting(),
+    )
+
+    assert result is not None
+    assert result.success is False
+    assert result.failure_phase == "semantic_preflight"
+    assert result.metadata["gate_accounting"] is accounting
+    assert accounting.decisions[-1].verdict is GateVerdict.FAILED
+    assert result.metadata["committed_semantic_ownership_overlap"] == {
+        "plan_id": "canonical-semantic-plan",
+        "atomic_group_id": "canonical-route",
+        "operation_id": "semantic-route",
+        "source_block_id": "native-body-edge@0x401000",
+        "anchor_ea": 0x401000,
+    }
+    assert "serial" not in str(result.metadata)
+    assert patch_plan.plan_id not in (result.error or "")
+
+    disjoint = _semantic_ownership_gate_plan(
+        0x403000,
+        0x404000,
+        plan_id="disjoint-cleanup",
+    )
+    accepted, accepted_accounting = _committed_semantic_ownership_gate(
+        strategy_name="disjoint-cleanup",
+        patch_plan=disjoint,
+        mutation_gateway=gateway,
+        gate_accounting=GateAccounting(),
+    )
+
+    assert accepted is None
+    assert accepted_accounting.decisions[-1].verdict is GateVerdict.PASSED
 
 
 def test_engine_package_re_exports_runtime_types() -> None:

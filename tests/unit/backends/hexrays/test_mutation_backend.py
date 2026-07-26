@@ -25,6 +25,11 @@ from d810.hexrays.mutation.mba_mutation_events import (
 from d810.hexrays.mutation.patch_transaction import (
     HexRaysPatchTransactionParticipant,
 )
+from d810.hexrays.mutation.semantic_ownership import (
+    PatchPlanSemanticOwnershipOverlap,
+    find_patch_plan_semantic_ownership_overlap,
+    format_patch_plan_semantic_ownership_overlap,
+)
 from d810.ir.block_identity import (
     CurrentMbaBlockIdentityBinding,
     CurrentMbaIdentityBindingSnapshot,
@@ -468,6 +473,58 @@ def test_apply_cleanly_rejects_patch_overlapping_committed_semantic_owner() -> N
     assert "committed-semantic-plan" in failure.reason
     assert "committed-conditional" in failure.reason
     assert "0x1000" in failure.reason
+
+
+def test_shared_semantic_overlap_proof_is_serial_free_and_stable() -> None:
+    cfg = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
+    plan = replace(
+        _ordinary_plan(
+            PatchConvertToGoto,
+            serials=(0, 1),
+            block_serial=0,
+            goto_target=1,
+        ),
+        source_generation=1,
+    )
+    state = _state_with_committed_semantic_owner(_native_ref(0).identity)
+    gateway = _ordinary_gateway(cfg, plan)
+
+    overlap = find_patch_plan_semantic_ownership_overlap(
+        plan,
+        gateway.identity_index,
+        state.committed_semantic_ownership(),
+    )
+
+    assert isinstance(overlap, PatchPlanSemanticOwnershipOverlap)
+    assert overlap.publication.plan_id == "committed-semantic-plan"
+    assert overlap.owner.operation_id == "committed-conditional"
+    assert overlap.identity == _native_ref(0).identity
+    assert not hasattr(overlap, "serial")
+    assert not hasattr(overlap, "coordinate")
+    reason = format_patch_plan_semantic_ownership_overlap(overlap)
+    assert "committed-semantic-plan" in reason
+    assert "committed-conditional" in reason
+    assert "0x1000" in reason
+    assert plan.plan_id not in reason
+
+    disjoint = replace(
+        plan,
+        steps=(
+            PatchConvertToGoto(
+                block_serial=_native_ref(1),
+                goto_target=_native_ref(2),
+            ),
+        ),
+        source_coordinates=((_native_ref(1), 1), (_native_ref(2), 2)),
+    )
+    assert (
+        find_patch_plan_semantic_ownership_overlap(
+            disjoint,
+            gateway.identity_index,
+            state.committed_semantic_ownership(),
+        )
+        is None
+    )
 
 
 def test_apply_allows_patch_disjoint_from_committed_semantic_owner() -> None:
