@@ -3314,7 +3314,9 @@ def compose_canonical_carrier_ingress_fragment_plan(
             },
         )
     source_serial, _source_anchor_ea, source_identity = current_owners[0]
-    dispatcher_serials = frozenset(int(value) for value in prohibited_dispatcher_serials)
+    dispatcher_serials = frozenset(
+        int(value) for value in prohibited_dispatcher_serials
+    )
     dispatcher_successors = tuple(
         int(successor)
         for successor in graph.successors(source_serial)
@@ -3408,9 +3410,7 @@ def compose_canonical_carrier_ingress_fragment_plan(
 
     dispatcher_block_id = f"native[{stable_block_identity_token(dispatcher_identity)}]"
     existing_dispatchers = tuple(
-        block
-        for block in plan.blocks
-        if block.stable_identity == dispatcher_identity
+        block for block in plan.blocks if block.stable_identity == dispatcher_identity
     )
     if len(existing_dispatchers) > 1 or (
         existing_dispatchers
@@ -3428,7 +3428,9 @@ def compose_canonical_carrier_ingress_fragment_plan(
             block_id=dispatcher_block_id,
             role=FragmentBlockRole.EXTERNAL,
             materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
-            semantic_anchor_ea=stable_block_identity_semantic_anchor(dispatcher_identity),
+            semantic_anchor_ea=stable_block_identity_semantic_anchor(
+                dispatcher_identity
+            ),
             stable_identity=dispatcher_identity,
         )
     )
@@ -3507,11 +3509,7 @@ def compose_canonical_carrier_ingress_fragment_plan(
         plan,
         plan_id=f"canonical-carrier-ingress:{state_choice.proof_id}",
         atomic_group_id=scoped_atomic_group_id,
-        blocks=(
-            plan.blocks
-            if existing_dispatchers
-            else (*plan.blocks, dispatcher)
-        ),
+        blocks=(plan.blocks if existing_dispatchers else (*plan.blocks, dispatcher)),
         operations=operations,
         prohibited_dispatcher_blocks=(),
         boundary_ports=boundary_ports,
