@@ -490,6 +490,13 @@ def _interr_code(error: Exception) -> int | None:
 
 
 def _failure_message(error: Exception) -> str:
+    if isinstance(error, SemanticFragmentPublicationRejected):
+        failures = "; ".join(
+            f"{failure.postcondition.value}:{failure.subject_id} - {failure.reason}"
+            for failure in error.validation.failures
+        )
+        if failures:
+            return f"{error.phase} semantic validation failed: {failures}"
     return str(error) or "<no exception message>"
 
 

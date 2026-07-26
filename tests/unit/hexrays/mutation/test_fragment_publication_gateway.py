@@ -1545,6 +1545,11 @@ def test_preflight_rejection_is_clean_and_same_generation_remains_usable() -> No
     assert gateway.transaction_failure.first_failed_obligation == (
         "original_supersession:original"
     )
+    assert gateway.transaction_failure.reason == (
+        "prepublication semantic validation failed: "
+        "original_supersession:original - "
+        "owned original remains reachable from publication authority"
+    )
     receipt = gateway.execute_patch_transaction(_FragmentBackend(gateway), plan)
     assert receipt.pre_generation == 5
     assert receipt.post_generation == 6
