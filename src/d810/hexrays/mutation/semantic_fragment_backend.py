@@ -2831,6 +2831,9 @@ def _project_fragment(
     root_helper_ids = {
         helper.helper_block_id for helper in state.root_fallthrough_helpers
     }
+    fallthrough_helper_ids = {
+        helper.helper_block_id for helper in state.fallthrough_helpers
+    }
     projection_bindings = dict(state.bindings)
     live_by_id = {}
     for block_id, binding in projection_bindings.items():
@@ -2970,6 +2973,22 @@ def _project_fragment(
             block,
             state.instruction_origins_by_block_id.get(block_id),
         )
+        if block_id in fallthrough_helper_ids:
+            helper_instructions = tuple(_iter_block_instructions(block))
+            if (
+                block_kind is not BlockKind.ONE_WAY
+                or len(raw_successors) != 1
+                or len(helper_instructions) != 1
+                or int(helper_instructions[0].opcode) != int(ida_hexrays.m_goto)
+                or not int(block.flags) & int(ida_hexrays.MBL_GOTO)
+            ):
+                raise SemanticFragmentBackendRejected(
+                    f"planned fallthrough helper {block_id!r} lost its exact "
+                    "synthetic goto shape"
+                )
+            instruction_eas[block_id] = ()
+            terminator_eas[block_id] = None
+            terminator_kinds[block_id] = InsnKind.GOTO
     flag_write_eas = _project_flag_writes(state, plan, live_by_id)
 
     if simulate_root_publication:

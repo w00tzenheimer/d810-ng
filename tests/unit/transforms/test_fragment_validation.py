@@ -161,6 +161,10 @@ def test_project_fragment_derives_replacement_and_root_rewrite_from_snapshots() 
     assert tuple(
         helper.helper_block_id for helper in projection.fallthrough_helpers
     ) == ("fallthrough-helper:condition",)
+    helper = projection.block("fallthrough-helper:condition")
+    assert helper.instruction_eas == ()
+    assert helper.terminator_ea is None
+    assert helper.terminator_kind is InsnKind.GOTO
     assert (
         projection.binding("replacement").previous_version
         == projection.binding("original").version

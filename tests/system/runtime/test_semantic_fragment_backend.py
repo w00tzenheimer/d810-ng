@@ -52,7 +52,7 @@ from d810.ir.block_identity import (  # noqa: E402
     NativeEaInterval,
     StableBlockIdentity,
 )
-from d810.ir.flowgraph import BlockKind  # noqa: E402
+from d810.ir.flowgraph import BlockKind, InsnKind  # noqa: E402
 from d810.ir.semantic_edge import SemanticEdgeRole  # noqa: E402
 from d810.ir.semantics import PredicateKind  # noqa: E402
 from d810.ir.storage_identity import (  # noqa: E402
@@ -4184,6 +4184,12 @@ def test_native_body_origin_binding_translates_operations_and_projection(
         "target",
         "fallthrough-helper:imported-conditional-route",
     }
+    helper = projection.block(
+        "fallthrough-helper:imported-conditional-route"
+    )
+    assert helper.instruction_eas == ()
+    assert helper.terminator_ea is None
+    assert helper.terminator_kind is InsnKind.GOTO
     assert gateway.receipts == ()
 
     modifier._discard_staged_semantic_fragment(plan)
