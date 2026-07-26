@@ -14,6 +14,7 @@ from d810.hexrays.ir.exact_data_flow import (
     find_reaching_defs_for_stkvar_use_in_projection,
     find_uses_reached_by_reg_definition_in_projection,
     find_uses_reached_by_stkvar_definition_in_projection,
+    instruction_storage_access_roles,
 )
 from d810.hexrays.ir.exact_value_ranges import (
     ExactValueRangeQueryUnavailable,
@@ -2545,26 +2546,64 @@ def _project_data_flow_relations(
     successor_serials_by_block: Mapping[int, tuple[int, ...]],
     *,
     defer_materialized_predicate_uses: bool = False,
-    prepared_instruction_eas_by_block_id: (Mapping[str, tuple[int, ...]] | None) = None,
+    prepared_instruction_rows_by_block_id: (
+        Mapping[str, tuple[tuple[int, object], ...]] | None
+    ) = None,
 ) -> tuple[ProjectedDataFlowRelation, ...]:
-    prepared_instruction_eas_by_block_id = (
+    prepared_instruction_rows_by_block_id = (
         {}
-        if prepared_instruction_eas_by_block_id is None
-        else prepared_instruction_eas_by_block_id
+        if prepared_instruction_rows_by_block_id is None
+        else prepared_instruction_rows_by_block_id
     )
 
     def prepared_site_is_exact(obligation, site, *, role: str) -> bool:
-        instruction_eas = prepared_instruction_eas_by_block_id.get(site.block_id)
-        if instruction_eas is None:
+        instruction_rows = prepared_instruction_rows_by_block_id.get(site.block_id)
+        if instruction_rows is None:
             return False
-        match_count = sum(
-            int(instruction_ea) == int(site.instruction_ea)
-            for instruction_ea in instruction_eas
+        storage = site.storage_identity
+        if storage is None:
+            raise SemanticFragmentBackendRejected(
+                f"prepared data-flow {role} {site.site_id!r} is unbound"
+            )
+        register: int | None = None
+        stack_offset: int | None = None
+        if storage.kind is StorageIdentityKind.REGISTER:
+            register = int(storage.offset)
+        elif storage.kind is StorageIdentityKind.STACK:
+            try:
+                stack_offset = int(modifier.mba.stkoff_ida2vd(int(storage.offset)))
+            except Exception as exc:
+                raise SemanticFragmentBackendRejected(
+                    f"prepared data-flow {role} {site.site_id!r} stack identity "
+                    "cannot bind to the live MBA"
+                ) from exc
+        else:
+            raise SemanticFragmentBackendRejected(
+                f"prepared data-flow {role} {site.site_id!r} has unsupported "
+                f"storage namespace {storage.kind.name.lower()}"
+            )
+        native_anchor_rows = tuple(
+            instruction
+            for native_ea, instruction in instruction_rows
+            if int(native_ea) == int(site.instruction_ea)
         )
+        role_index = 1 if role == "definition" else 0
+        role_matches = tuple(
+            instruction
+            for instruction in native_anchor_rows
+            if instruction_storage_access_roles(
+                instruction,
+                register=register,
+                stack_offset=stack_offset,
+                size=int(site.width),
+            )[role_index]
+        )
+        match_count = len(role_matches)
         if match_count != 1:
             raise SemanticFragmentBackendRejected(
                 f"prepared data-flow {role} {site.site_id!r} has "
-                f"{match_count} exact instruction anchors "
+                f"{match_count} exact storage accesses across "
+                f"{len(native_anchor_rows)} instruction anchors "
                 f"(obligation_id={obligation.obligation_id!r}, "
                 f"block_id={site.block_id!r}, "
                 f"instruction_ea=0x{int(site.instruction_ea):X}, "
@@ -2579,6 +2618,7 @@ def _project_data_flow_relations(
                     "instruction_ea": site.instruction_ea,
                     "value_id": site.value_id,
                     "match_count": match_count,
+                    "native_anchor_count": len(native_anchor_rows),
                 },
             )
         return True
@@ -3720,10 +3760,8 @@ def snapshot_semantic_fragment_inputs(
             predecessor_serials,
             successor_serials,
             defer_materialized_predicate_uses=True,
-            prepared_instruction_eas_by_block_id={
-                block_id: tuple(
-                    int(native_ea) for native_ea, _instruction in instruction_rows
-                )
+            prepared_instruction_rows_by_block_id={
+                block_id: instruction_rows
                 for block_id, instruction_rows in (
                     prepared_instruction_rows_by_block.items()
                 )

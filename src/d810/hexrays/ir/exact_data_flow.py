@@ -154,6 +154,27 @@ def _instruction_storage_access(
     return (has_use, has_definition)
 
 
+def instruction_storage_access_roles(
+    instruction: object,
+    *,
+    register: int | None = None,
+    stack_offset: int | None = None,
+    size: int,
+) -> tuple[bool, bool]:
+    """Classify one SDK instruction as an exact storage use or definition.
+
+    The result is read-only and retains both roles because one microinstruction
+    may read and write the same storage location. Detached preparation uses
+    this classifier before a planned block has a live MBA serial.
+    """
+    return _instruction_storage_access(
+        instruction,
+        register=register,
+        stack_offset=stack_offset,
+        size=size,
+    )
+
+
 def _block_storage_accesses(
     mba: object,
     block_serial: int,
@@ -762,4 +783,5 @@ __all__ = [
     "find_uses_reached_by_reg_definition_in_projection",
     "find_uses_reached_by_stkvar_definition",
     "find_uses_reached_by_stkvar_definition_in_projection",
+    "instruction_storage_access_roles",
 ]
