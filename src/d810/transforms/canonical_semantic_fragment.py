@@ -3487,6 +3487,8 @@ def compose_canonical_carrier_ingress_fragment_plan(
     scoped_nested_proof = replace(
         nested_proof,
         atomic_group_id=scoped_atomic_group_id,
+        source_owner_identity=rewrite.owner_identity,
+        source_owner_anchor_ea=int(rewrite.owner_anchor_ea),
     )
     root_evidence = CanonicalSemanticEvidence(
         native_key=available_evidence.native_key,
