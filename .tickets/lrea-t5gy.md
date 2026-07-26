@@ -5781,3 +5781,51 @@ Continue by preserving the already verified detached-route owner authority
 through nested carrier projection; do not relax reference binding, reinterpret
 the state-write origin as the rewritten operation owner, or broaden beyond this
 one vertical fragment.
+
+**2026-07-25T22:24:27-0700 — refined plan identity authority and redo-scope boundary**
+
+Commits `7dba0a827` and `b50670b3f` preserve the detached reference-route owner
+through carrier projection and reuse the already projected dispatcher owner.
+Commit `72bd62c87` makes clean preflight rejections retain their exact typed
+validation reason in `cfg_transaction_attempts`. Commit `a0ad8b3f5` then
+removes a shared synthetic live start from current-graph authority, but its
+mandatory canary exposed a real post-write identity mismatch: immutable
+preflight held the refined plan identity while staged observation substituted
+the broader physical handle identity and poisoned the live generation.
+
+Functional commit `1678adfe7` fixes that boundary directionally. A physical
+current-MBA identity must cover every planned native range and exact
+instruction anchor; preflight rejects non-covering authority before any SDK
+write, while preflight and staged observation both expose the immutable plan
+identity. The full block-identity plus semantic-fragment backend gate is
+124/124 green. Formatting-only commit `282bec730` is the separately requested
+Ruff pass.
+
+The mandatory fresh cache-disabled A560 diagnostic canary at `282bec730`
+completed normally in 15.91 seconds. Log:
+`.tmp/rhad-a560-refined-plan-282bec730.txt`; primary DB:
+`.tmp/rhad-a560-refined-plan-282bec730/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+There is no crash, numeric INTERR, poisoned generation, rollback, or partial
+receipt. Both frontend-normalization attempts record the complete seven-phase
+timeline and committed 260/260 receipts. The first carrier attempt rejects
+cleanly to request analyzed CALLS companions, and the DB records the request,
+capture, and generated-restart consumption. The second carrier attempt also
+rejects before mutation. A560 still fails C6 only because the output contains
+one false `while ( 1 )`.
+
+The selected `0x40BB63` route now produces a complete canonical plan and enters
+the transaction coordinator, so its highest strict level is C3. The broad
+frontend-normalization path independently reaches C5 but is not the selected
+route's vertical receipt. The first failed selected-route obligation is
+`C4_staged_proof:runtime:preflight`, with exact reason
+`canonical semantic normalization work-item scope drifted`.
+
+The DB identifies why the authority is stale. Event 52 records normalization
+plan intent at publication revision 1. After the companion-triggered generated
+redo, events 271 through 312 commit the same 260-operation normalization plan
+again and event 314 publishes the same work-item scope, but no revision-2 plan
+intent event exists. The session lifecycle has advanced while
+`SessionFrontendNormalizationPlanAuthority` still exposes revision 1. Continue
+by retaining every immutable receipted work-item revision and selecting the
+current exact authority after redo; do not bypass lifecycle comparison, reset
+the session, reuse a stale receipt, or proceed to another semantic route.
