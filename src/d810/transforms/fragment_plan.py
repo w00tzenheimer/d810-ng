@@ -843,9 +843,7 @@ class FragmentDirectTransferRewrite:
                 payload={
                     "route_proof_id": route_proof_id,
                     "owner_anchor_ea": f"0x{owner_anchor_ea:X}",
-                    "proof_origin_ea": (
-                        f"0x{proof_corridor_instruction_eas[0]:X}"
-                    ),
+                    "proof_origin_ea": (f"0x{proof_corridor_instruction_eas[0]:X}"),
                     "rewrite_anchor_ea": f"0x{rewrite_anchor_ea:X}",
                 },
             )
