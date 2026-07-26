@@ -404,8 +404,20 @@ def test_bind_fragment_reference_oracle_rejects_partial_authority() -> None:
         routes=(route,),
     )
 
-    with pytest.raises(DetachedRouteOracleRejected, match="exact rewrite anchors"):
+    with pytest.raises(
+        DetachedRouteOracleRejected,
+        match="exact rewrite anchors",
+    ) as exc_info:
         bind_fragment_reference_oracle(plan, selection)
+
+    error = exc_info.value
+    assert error.reason_code == "fragment_reference_rewrite_anchor_set_mismatch"
+    assert error.payload == {
+        "missing_rewrite_anchors": ("0x40B52F",),
+        "planned_rewrite_anchors": ("0x40B52E",),
+        "selected_rewrite_anchors": ("0x40B52F",),
+        "unexpected_rewrite_anchors": ("0x40B52E",),
+    }
 
 
 def test_bind_fragment_reference_oracle_reports_identity_mismatch() -> None:

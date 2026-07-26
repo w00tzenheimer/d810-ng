@@ -1280,6 +1280,87 @@ def test_configured_reference_scope_drives_live_route_composition_before_boundar
     ]
 
 
+def test_configured_reference_scope_preserves_typed_anchor_mismatch(
+    monkeypatch,
+) -> None:
+    graph, bound = _graph_and_bound_evidence()
+    candidate = bound.evidence
+    plan = build_canonical_semantic_fragment_plan(
+        graph,
+        bound,
+        prohibited_dispatcher_serials=(30,),
+    )
+    root_route = ReferenceRouteRewrite(
+        route_id="test:0x1000:flow_route:0x1100",
+        function_ea=graph.func_ea,
+        owner_ea=0x1100,
+        rewrite_anchor_ea=0x1100,
+        corridor=((0x1100, 0x1101),),
+        reference_phase="flow_route",
+        original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        final_transfer_kind=SemanticTransferKind.DIRECT,
+        direct_target_ea=0x1200,
+        reference_ledger_identity="flow_route:0x1100",
+    )
+    selection = ReferenceRouteOracleSelection(
+        run=RouteOracleRun(
+            run_id="test-configured-anchor-mismatch",
+            function_ea=graph.func_ea,
+            fixture_sha256="a" * 64,
+            reference_binary_sha256="b" * 64,
+            candidate_binary_sha256="a" * 64,
+            reference_commit="deadbeef",
+            runtime_image="test-image",
+            runtime_image_id="sha256:" + "c" * 64,
+            cache_disabled=True,
+        ),
+        publication_root_ea=0x1100,
+        routes=(
+            root_route,
+            replace(
+                root_route,
+                route_id="test:0x1000:flow_route:0x1300",
+                owner_ea=0x1300,
+                rewrite_anchor_ea=0x1300,
+                corridor=((0x1300, 0x1301),),
+                reference_ledger_identity="flow_route:0x1300",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "compose_canonical_semantic_fragment_plan",
+        lambda *_args, **_kwargs: plan,
+    )
+
+    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
+        state_machine_module._compose_configured_reference_scope_plan(
+            graph=graph,
+            normalization_plan=plan,
+            configured_scope=selection,
+            available_evidence=candidate,
+            current_identity_by_serial={
+                serial: _identity(block.start_ea)
+                for serial, block in graph.blocks.items()
+            },
+            normalization_authority=object(),
+            prohibited_dispatcher_serials=(30,),
+            composition_attempts=[],
+        )
+
+    rejection = exc_info.value
+    assert rejection.reason_code == "canonical_configured_reference_scope_invalid"
+    assert rejection.payload["cause_reason_code"] == (
+        "fragment_reference_rewrite_anchor_set_mismatch"
+    )
+    assert rejection.payload["cause_payload"] == {
+        "missing_rewrite_anchors": ("0x1300",),
+        "planned_rewrite_anchors": ("0x1100",),
+        "selected_rewrite_anchors": ("0x1100", "0x1300"),
+        "unexpected_rewrite_anchors": (),
+    }
+
+
 def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
     monkeypatch,
 ) -> None:
