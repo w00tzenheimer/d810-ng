@@ -5371,6 +5371,9 @@ def test_backend_defers_prepared_imported_data_flow_use_until_observation(
         data_flow_obligations=(replace(obligation, uses=(prepared_use,)),),
     )
     monkeypatch.setattr(sfb, "_query_reached_uses", lambda *_args, **_kwargs: ())
+    exact_use = _Instruction(ida_hexrays.m_mov, 0x401020)
+    exact_use.l.make_reg(10, 4)
+    same_anchor_distractor = _Instruction(ida_hexrays.m_nop, 0x401020)
 
     relations = sfb._project_data_flow_relations(
         modifier,
@@ -5383,7 +5386,12 @@ def test_backend_defers_prepared_imported_data_flow_use_until_observation(
         {original.serial: "replacement"},
         {original.serial: ()},
         {original.serial: ()},
-        prepared_instruction_eas_by_block_id={"target": (0x401020,)},
+        prepared_instruction_rows_by_block_id={
+            "target": (
+                (0x401020, exact_use),
+                (0x401020, same_anchor_distractor),
+            )
+        },
     )
 
     assert relations == ()
