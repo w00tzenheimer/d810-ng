@@ -747,6 +747,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         new_gateway = getattr(lifecycle, "new_current_mba_mutation_gateway", None)
         if not callable(new_gateway):
             return
+
         def fresh_gateway() -> object | None:
             current_mba = flow_context.mba
             current_function_ea = int(
