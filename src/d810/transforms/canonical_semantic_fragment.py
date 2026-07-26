@@ -3328,8 +3328,7 @@ def compose_canonical_carrier_ingress_fragment_plan(
             current_identity,
         )
         for serial, block in graph.blocks.items()
-        if (current_identity := current_identity_by_serial.get(int(serial)))
-        is not None
+        if (current_identity := current_identity_by_serial.get(int(serial))) is not None
         and stable_block_identities_refine_at_anchor(
             current_identity,
             retained_carrier_identity,
