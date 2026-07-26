@@ -578,7 +578,7 @@ def project_fragment(
                 kinds[helper_id] = BlockKind.ONE_WAY
                 adjacency[helper_id] = None
                 terminator_eas[helper_id] = None
-                terminator_kinds[helper_id] = InsnKind.UNKNOWN
+                terminator_kinds[helper_id] = InsnKind.GOTO
                 instruction_eas[helper_id] = ()
                 flag_write_eas[helper_id] = frozenset()
                 bindings[helper_id] = ProjectedIdentityBinding(
