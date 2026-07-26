@@ -3289,12 +3289,14 @@ def test_call_fallthrough_predecessor_keeps_published_route_source_staged() -> N
                     route_source.block_id,
                 ),
                 terminal_block_ids=(),
-                    native_ranges=(
-                        *native_body.native_ranges,
-                        *current_identity_by_serial[30].native_ranges.intervals,
-                        *route_source.stable_identity.native_ranges.intervals,
-                    ),
-                proof_ids=tuple(dict.fromkeys((*native_body.proof_ids, *operation_ids))),
+                native_ranges=(
+                    *native_body.native_ranges,
+                    *current_identity_by_serial[30].native_ranges.intervals,
+                    *route_source.stable_identity.native_ranges.intervals,
+                ),
+                proof_ids=tuple(
+                    dict.fromkeys((*native_body.proof_ids, *operation_ids))
+                ),
             ),
         ),
     )
