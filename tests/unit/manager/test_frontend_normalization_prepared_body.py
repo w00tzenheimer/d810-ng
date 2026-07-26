@@ -6,6 +6,9 @@ from dataclasses import replace
 
 import pytest
 
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativePreanalysisSessionState,
+)
 from d810.manager.frontend_normalization import (
     FrontendNormalizationPublicationError,
     SessionFrontendNormalizationPlanAuthority,
@@ -188,6 +191,114 @@ def test_scoped_prepared_body_is_exposed_through_its_complete_plan_lineage() -> 
         generation_plan.complete_plan,
         authority,
     )
+
+
+def test_prepared_work_item_retains_each_receipt_revision_and_selects_latest() -> None:
+    generation_plan, evidence, authority, fact, plan_authority = (
+        _scoped_generation_case()
+    )
+    work_item_plan = generation_plan.work_item_plan
+    (work_item_body,) = work_item_plan.native_bodies
+    plan_authority.record_prepared_body_fact(
+        work_item_plan,
+        work_item_body,
+        fact,
+        evidence_generation=evidence.generation,
+    )
+    plan_authority.record_receipted_generation(
+        generation_plan,
+        authority=authority,
+    )
+    first = plan_authority.prepared_work_item_for(
+        0x40A560,
+        evidence.generation,
+        generation_plan.complete_plan.plan_id,
+        "native@0x40BB51",
+    )
+    assert first is not None
+
+    replay_authority = replace(
+        authority,
+        publication_revision=authority.publication_revision + 1,
+    )
+    plan_authority.record_receipted_generation(
+        generation_plan,
+        authority=replay_authority,
+    )
+
+    current = plan_authority.prepared_work_item_for(
+        0x40A560,
+        evidence.generation,
+        generation_plan.complete_plan.plan_id,
+        "native@0x40BB51",
+    )
+    assert current is not None
+    assert current is not first
+    assert first.authority == authority
+    assert current.authority == replay_authority
+    assert first.prepared_bodies.snapshot_id.endswith(
+        f"r{authority.publication_revision}"
+    )
+    assert current.prepared_bodies.snapshot_id.endswith(
+        f"r{replay_authority.publication_revision}"
+    )
+    assert plan_authority.plan_for(0x40A560, evidence.generation) == (
+        generation_plan.complete_plan,
+        replay_authority,
+    )
+
+
+def test_generated_redo_rebinds_canonical_lifecycle_to_latest_receipt() -> None:
+    generation_plan, evidence, authority, fact, plan_authority = (
+        _scoped_generation_case()
+    )
+    work_item_plan = generation_plan.work_item_plan
+    work_item_scope = work_item_plan.work_item_scope
+    assert work_item_scope is not None
+    (work_item_body,) = work_item_plan.native_bodies
+    state = NativePreanalysisSessionState(evidence_generation=evidence.generation)
+
+    def publish_normalization_receipt() -> None:
+        state._fragment_publication_mark_normalization_staged()
+        state._fragment_publication_mark_normalization_validated()
+        state._fragment_publication_commit_normalization_work_item(
+            work_item_id=work_item_scope.work_item_id,
+            published_operation_ids=tuple(
+                operation.operation_id for operation in work_item_plan.operations
+            ),
+            selected_obligation_ids=work_item_scope.selected_obligation_ids,
+            remaining_obligation_ids=work_item_scope.remaining_obligation_ids,
+            unreachable_obligation_ids=work_item_scope.unreachable_obligation_ids,
+        )
+
+    plan_authority.record_prepared_body_fact(
+        work_item_plan,
+        work_item_body,
+        fact,
+        evidence_generation=evidence.generation,
+    )
+    publish_normalization_receipt()
+    plan_authority.record_receipted_generation(
+        generation_plan,
+        authority=authority,
+    )
+    assert state.mark_canonical_semantic_plan_ready(authority)
+
+    publish_normalization_receipt()
+    replay_authority = replace(
+        authority,
+        publication_revision=authority.publication_revision + 1,
+    )
+    plan_authority.record_receipted_generation(
+        generation_plan,
+        authority=replay_authority,
+    )
+    retained = plan_authority.plan_for(0x40A560, evidence.generation)
+
+    assert state.normalization_work_item_publication_revision == 2
+    assert retained == (generation_plan.complete_plan, replay_authority)
+    assert state.mark_canonical_semantic_plan_ready(replay_authority)
+    assert state.canonical_semantic_normalization_authority == replay_authority
 
 
 def test_scoped_prepared_body_does_not_authorize_an_unpublished_block() -> None:
