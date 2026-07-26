@@ -181,6 +181,69 @@ def _next_position(positions: dict[str, int]) -> int:
     return max(positions.values(), default=-1) + 1
 
 
+def _complete_projected_data_flow_authority(
+    plan: FragmentPlan,
+    snapshot_relations: tuple[ProjectedDataFlowRelation, ...],
+) -> tuple[ProjectedDataFlowRelation, ...]:
+    """Project every required relation that realization must later observe.
+
+    Snapshot relations retain any already observable extra definitions or uses.
+    A relation introduced by the planned topology or typed materialization cannot
+    exist in the live prewrite graph, so add its two required query directions to
+    the immutable expected post-state. Staged live observation must still match
+    this authority before root publication.
+    """
+    relations = list(dict.fromkeys(snapshot_relations))
+    for obligation in plan.data_flow_obligations:
+        definition = obligation.definition
+        for use in obligation.uses:
+            relation_key = (
+                definition.value_id,
+                definition.site_id,
+                use.site_id,
+            )
+            for use_def_observed, def_use_observed in (
+                (True, False),
+                (False, True),
+            ):
+                if any(
+                    (
+                        relation.value_id,
+                        relation.definition_site_id,
+                        relation.use_site_id,
+                    )
+                    == relation_key
+                    and (
+                        relation.use_def_observed
+                        if use_def_observed
+                        else relation.def_use_observed
+                    )
+                    for relation in relations
+                ):
+                    continue
+                relations.append(
+                    ProjectedDataFlowRelation(
+                        value_id=definition.value_id,
+                        definition_site_id=definition.site_id,
+                        use_site_id=use.site_id,
+                        use_def_observed=use_def_observed,
+                        def_use_observed=def_use_observed,
+                    )
+                )
+    return tuple(
+        sorted(
+            relations,
+            key=lambda relation: (
+                relation.value_id,
+                relation.definition_site_id,
+                relation.use_site_id,
+                relation.use_def_observed,
+                relation.def_use_observed,
+            ),
+        )
+    )
+
+
 def project_fragment(
     plan: FragmentPlan,
     snapshot: FragmentProjectionInput,
@@ -489,7 +552,10 @@ def project_fragment(
         return_carriers=tuple(snapshot.return_carriers),
         terminal_returns=tuple(snapshot.terminal_returns),
         terminal_effect_diagnostics=snapshot.terminal_effect_diagnostics,
-        data_flow_relations=snapshot.data_flow_relations,
+        data_flow_relations=_complete_projected_data_flow_authority(
+            plan,
+            snapshot.data_flow_relations,
+        ),
         value_ranges=snapshot.value_ranges,
     )
 

@@ -5045,6 +5045,89 @@ def test_backend_validates_data_flow_across_unpublished_root_projection() -> Non
     gateway.abort(reason="runtime root-boundary projection cleanup")
 
 
+def test_participant_preflights_data_flow_created_by_planned_route() -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    original.tail.d.make_reg(10, 4)
+    target_use = _Instruction(ida_hexrays.m_mov, 0x401020)
+    target_use.l.make_reg(10, 4)
+    target.insert_into_block(target_use, None)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
+    storage = StorageIdentity(StorageIdentityKind.REGISTER, offset=10)
+    plan = replace(
+        plan,
+        data_flow_obligations=(
+            FragmentDataFlowObligation(
+                obligation_id="planned-route-flow",
+                role=FragmentDataFlowRole.STATE_VALUE,
+                definition=FragmentValueSite(
+                    site_id="planned-route.def",
+                    block_id="replacement",
+                    value_id="planned-route",
+                    instruction_ea=0x401010,
+                    storage_identity=storage,
+                    width=4,
+                ),
+                uses=(
+                    FragmentValueSite(
+                        site_id="planned-route.use",
+                        block_id="target",
+                        value_id="planned-route",
+                        instruction_ea=0x401020,
+                        storage_identity=storage,
+                        width=4,
+                    ),
+                ),
+            ),
+        ),
+    )
+    participant = SemanticFragmentTransactionParticipant(gateway, modifier)
+    quantity = mba.qty
+
+    projected = participant.project(plan, None)
+    prepared = participant.preflight(projected)
+
+    assert gateway.active is False
+    assert gateway.mutation_started is False
+    assert mba.qty == quantity
+    assert {
+        (relation.use_def_observed, relation.def_use_observed)
+        for relation in prepared.fragment.authority.projection.data_flow_relations
+    } == {(True, False), (False, True)}
+
+    bound = participant.bind(prepared, gateway.identity_index)
+    patch_plan = lower_fragment_plan(plan, prepared.fragment)
+    realized = participant.realize(replace(bound, patch_plan=patch_plan), gateway)
+    observed = participant.observe(realized, mba)
+
+    assert observed.data_flow_relations == (
+        ProjectedDataFlowRelation(
+            value_id="planned-route",
+            definition_site_id="planned-route.def",
+            use_site_id="planned-route.use",
+            use_def_observed=False,
+            def_use_observed=True,
+        ),
+        ProjectedDataFlowRelation(
+            value_id="planned-route",
+            definition_site_id="planned-route.def",
+            use_site_id="planned-route.use",
+            use_def_observed=True,
+            def_use_observed=False,
+        ),
+    )
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="planned-route data-flow cleanup")
+
+
 def test_backend_rejects_duplicate_physical_data_flow_anchors(
     monkeypatch,
 ) -> None:
