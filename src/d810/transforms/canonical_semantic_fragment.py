@@ -2071,6 +2071,30 @@ def _with_nested_imported_state_routes(
                 anchor_ea=int(proof.source_anchor_ea),
                 payload={"route_proof_id": proof.proof_id},
             )
+        projected_proof = proof
+        if direct_route:
+            source_identity = source.stable_identity
+            assert source_identity is not None
+            if proof.source_owner_identity is None:
+                projected_proof = replace(
+                    proof,
+                    source_owner_identity=source_identity,
+                    source_owner_anchor_ea=int(source.semantic_anchor_ea),
+                )
+            else:
+                owner_anchor_ea = proof.source_owner_anchor_ea
+                if owner_anchor_ea is None or not stable_block_identities_refine_at_anchor(
+                    source_identity,
+                    proof.source_owner_identity,
+                    owner_anchor_ea,
+                ):
+                    raise CanonicalSemanticFragmentRejected(
+                        "nested canonical direct route owner does not bind its "
+                        "raw operation source",
+                        reason_code="nested_state_route_operation_owner_mismatch",
+                        anchor_ea=int(proof.source_anchor_ea),
+                        payload={"route_proof_id": proof.proof_id},
+                    )
         existing_proof_id = claimed_source_ids.setdefault(
             source.block_id,
             proof.proof_id,
@@ -2108,7 +2132,7 @@ def _with_nested_imported_state_routes(
                 )
         replacements.append(
             (
-                proof,
+                projected_proof,
                 source,
                 raw_operation,
                 destinations,
