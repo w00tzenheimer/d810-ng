@@ -6361,3 +6361,40 @@ from flag-write authority at imported block `0x40A70E`: compare immutable
 prepared writes with SDK-observed writes and preserve only typed native-origin
 semantics. Do not hide the 18 later terminator mismatches, weaken staged
 comparison, or claim C6.
+
+**2026-07-26T03:35:09-0700 — no-corridor flag authority aligned**
+
+Functional commit `b93aa7bab` makes immutable imported-block projection obey
+the same typed flag-write authority as live staged observation. A plan with no
+`FragmentFlagCorridor` now carries no incidental condition-code-write
+obligation; a plan that declares a corridor still preserves and strictly
+compares the exact native write coordinates. The production participant
+regression was red with immutable `{0x500000}` versus live `{}`, then the
+participant plus selected-corridor safety gate passed 5/5. Ruff check and
+format check pass for both touched files, and commit-time ast-grep, cycle,
+portable-shape, and all 14 import-linter gates pass.
+
+The mandatory cache-disabled A560 canary at clean code SHA `b93aa7bab`
+completed without a process crash, numeric INTERR, or poisoned generation.
+Log: `.tmp/rhad-a560-flag-write-b93aa7bab-db.txt`; primary DB:
+`.tmp/rhad-a560-flag-write-b93aa7bab/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+Both frontend-normalization attempts commit through observation and receipt;
+each records 139 creation witnesses with zero invalidations. This is exact C5
+frontend proof, not C6. The emitted eight-line pseudocode still contains one
+false `while ( 1 )`.
+
+Canonical composition does not reach staged comparison in this canary, so the
+absence of the previous 135 flag-write divergences is not itself a live C4
+proof. The first canonical attempt requests CALLS companion preparation with
+zero writes; the lifecycle captures the companions and consumes the bounded
+restart. The retry then rejects cleanly in preflight, again with zero writes,
+at
+`return_carrier_integrity:return-carrier:terminal_return@0x40C7F6:0x19A7218A`:
+`CALLS companion stack window cannot be rebound; call=0x40A91C top=12 span=16`.
+
+The highest level in this canary is C5 for frontend normalization and C3 for
+canonical composition; the branch-wide earlier one-fragment C5 remains valid.
+Continue from the stable call anchor `0x40A91C` by comparing the captured CALLS
+stack-window authority with the current canonical terminal-carrier binding.
+Do not weaken return-carrier preflight, infer a block from a stale serial, or
+resume broad route publication before this zero-write obligation is satisfied.
