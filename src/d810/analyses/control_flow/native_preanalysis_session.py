@@ -1249,9 +1249,7 @@ class NativePreanalysisSessionState:
     semantic_fragment_validated_generation: int | None = None
     semantic_fragment_published_postvalidated_generation: int | None = None
     receipt_committed_generation: int | None = None
-    committed_semantic_publications: tuple[
-        CommittedSemanticFragmentOwnership, ...
-    ] = ()
+    committed_semantic_publications: tuple[CommittedSemanticFragmentOwnership, ...] = ()
     facts: NativePreanalysisFacts | None = None
     resolver_evidence: ResolverPortableEvidence | None = None
     bootstrap_routes: dict[tuple[StableBlockIdentity, int], BootstrapRouteEvidence] = (
@@ -1465,9 +1463,7 @@ class NativePreanalysisSessionState:
         if len(set(publication_scopes)) != len(publication_scopes):
             raise ValueError("committed semantic publication scopes must be unique")
         if publications and self.receipt_committed_generation != generation:
-            raise ValueError(
-                "committed semantic ownership requires receipt authority"
-            )
+            raise ValueError("committed semantic ownership requires receipt authority")
         self.committed_semantic_publications = publications
 
     def _require_current_portable_evidence(self) -> int:
