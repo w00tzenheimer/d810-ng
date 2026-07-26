@@ -7195,6 +7195,17 @@ def test_backend_normalizes_conditional_select_only_on_detached_replacement(
         "taken",
         "fallthrough-helper:native-indirect-transfer@0x40A605",
     }
+    projected_replacement = projection.block("replacement")
+    assert projected_replacement.instruction_eas == (0x40A5F0, 0x40A5F6)
+    assert projected_replacement.terminator_ea == 0x40A5F6
+    assert projected_replacement.terminator_kind is InsnKind.COND_JUMP
+    assert (
+        compare_fragment_projection_obligations(
+            prepared.authority.projection,
+            projection,
+        )
+        == ()
+    )
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="runtime conditional-select staging cleanup")

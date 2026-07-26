@@ -11,6 +11,7 @@ from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
+    FragmentConditionalSelectEnvelope,
     FragmentPlan,
     FragmentReturnCarrier,
     FragmentTerminalReturn,
@@ -617,6 +618,34 @@ def project_fragment(
         kinds[operation.source_block_id] = (
             BlockKind.TWO_WAY if len(projected_targets) == 2 else BlockKind.ONE_WAY
         )
+        normalization = operation.computed_branch_normalization
+        conditional_select_envelope = (
+            None
+            if normalization is None
+            else normalization.conditional_select_envelope
+        )
+        if isinstance(
+            conditional_select_envelope,
+            FragmentConditionalSelectEnvelope,
+        ):
+            predicate_anchor_ea = int(operation.predicate_anchor_ea)
+            rows = list(instruction_eas[operation.source_block_id])
+            if rows.count(predicate_anchor_ea) != 1:
+                raise FragmentProjectionFailure(
+                    FragmentValidationPostcondition.OPERATION_TOPOLOGY,
+                    operation.operation_id,
+                    "conditional-select replacement requires exactly one "
+                    "predicate anchor in its immutable instruction evidence",
+                )
+            rows = rows[: rows.index(predicate_anchor_ea) + 1]
+            instruction_eas[operation.source_block_id] = tuple(rows)
+            flag_write_eas[operation.source_block_id] = frozenset(
+                ea
+                for ea in flag_write_eas[operation.source_block_id]
+                if ea in rows
+            )
+            terminator_eas[operation.source_block_id] = predicate_anchor_ea
+            terminator_kinds[operation.source_block_id] = InsnKind.COND_JUMP
         direct_rewrite = operation.direct_transfer_rewrite
         if direct_rewrite is not None:
             rewrite_anchor_ea = int(direct_rewrite.rewrite_anchor_ea)
