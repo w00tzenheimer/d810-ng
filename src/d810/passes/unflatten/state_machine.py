@@ -98,6 +98,7 @@ from d810.core.semantic_route_oracle import (
 from d810.ir.block_identity import (
     RebindStatus,
     StableBlockIdentity,
+    refine_stable_block_identity_for_graph_block,
     stable_block_identity_from_snapshot,
 )
 from d810.ir.flowgraph import FlowGraph
@@ -147,6 +148,12 @@ def _current_graph_identity_authority(
             block,
             native_key=native_key,
         )
+        if identity is not None:
+            identity = refine_stable_block_identity_for_graph_block(
+                graph,
+                block,
+                identity,
+            )
         if identity is None:
             continue
         rebound = rebind_identity(identity)
@@ -162,6 +169,13 @@ def _current_graph_identity_authority(
                     anchor_ea=int(block.start_ea),
                     payload={"block": f"blk{int(serial)}@0x{int(block.start_ea):X}"},
                 )
+            rebound_identity = refine_stable_block_identity_for_graph_block(
+                graph,
+                block,
+                rebound_identity,
+            )
+            if rebound_identity is None:
+                continue
             authority[int(serial)] = rebound_identity
     return authority
 

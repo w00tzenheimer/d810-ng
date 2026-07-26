@@ -550,6 +550,28 @@ def test_provider_provenance_is_diagnostic_and_does_not_change_plan() -> None:
     assert first == second
 
 
+def test_graph_identities_discard_a_shared_noninstruction_start_coordinate() -> None:
+    graph = FlowGraph(
+        blocks={
+            0: _block(0, 0x1000, (), (), (_insn(0x1000, InsnKind.RET),)),
+            1: _block(1, 0x1000, (), (), (_insn(0x1100, InsnKind.RET),)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    identities = frontend_normalization_transform._graph_identities(
+        graph,
+        _evidence(),
+        {0, 1},
+    )
+
+    assert identities is not None
+    assert identities[0].native_ranges.contains(0x1000)
+    assert identities[1].exact_instruction_eas == frozenset({0x1100})
+    assert not identities[1].native_ranges.contains(0x1000)
+
+
 def test_live_conditional_select_is_one_detached_normalization_contract() -> None:
     relocated_instruction_eas = (0x110A, 0x110C)
     graph, evidence = _conditional_select_case(

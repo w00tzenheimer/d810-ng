@@ -431,6 +431,64 @@ def stable_block_identity_from_snapshot(
     )
 
 
+def refine_stable_block_identity_for_graph_block(
+    graph: FlowGraph,
+    block: BlockSnapshot,
+    identity: StableBlockIdentity,
+) -> StableBlockIdentity | None:
+    """Remove a shared block-start coordinate contradicted by exact origins.
+
+    Hex-Rays may assign the function entry EA as the physical ``start`` of an
+    imported block whose instructions originate elsewhere.  A start shared by
+    another current block is not portable ownership when this block has exact
+    instruction origins and none of them owns that coordinate.
+    """
+    if not isinstance(graph, FlowGraph) or not isinstance(block, BlockSnapshot):
+        raise TypeError("graph identity refinement requires a graph block")
+    if not isinstance(identity, StableBlockIdentity):
+        raise TypeError("graph identity refinement requires stable identity")
+
+    start_ea = int(
+        block.start_ea if block.native_start_ea is None else block.native_start_ea
+    )
+    if (
+        not 0 <= start_ea < _BADADDR
+        or start_ea in identity.exact_instruction_eas
+        or not identity.exact_instruction_eas
+        or not identity.native_ranges.contains(start_ea)
+    ):
+        return identity
+    shared_start_count = sum(
+        1
+        for candidate in graph.blocks.values()
+        if int(
+            candidate.start_ea
+            if candidate.native_start_ea is None
+            else candidate.native_start_ea
+        )
+        == start_ea
+    )
+    if shared_start_count < 2:
+        return identity
+
+    retained_intervals: list[NativeEaInterval] = []
+    for interval in identity.native_ranges.intervals:
+        if not interval.start_ea <= start_ea < interval.end_ea:
+            retained_intervals.append(interval)
+            continue
+        if interval.start_ea < start_ea:
+            retained_intervals.append(NativeEaInterval(interval.start_ea, start_ea))
+        if start_ea + 1 < interval.end_ea:
+            retained_intervals.append(NativeEaInterval(start_ea + 1, interval.end_ea))
+    if not retained_intervals:
+        return None
+    return StableBlockIdentity.from_intervals(
+        retained_intervals,
+        native_key=identity.native_key,
+        exact_instruction_eas=identity.exact_instruction_eas,
+    )
+
+
 class BlockHandleProvenance(Enum):
     """Whether a generation-local block handle has native identity."""
 
@@ -824,6 +882,7 @@ __all__ = [
     "hex64",
     "instruction_fingerprint",
     "maturity_label",
+    "refine_stable_block_identity_for_graph_block",
     "stable_block_identities_refine_at_anchor",
     "stable_block_identity_semantic_anchor",
     "stable_block_identity_from_snapshot",

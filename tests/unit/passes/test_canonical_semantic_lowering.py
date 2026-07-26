@@ -252,11 +252,19 @@ def test_current_graph_identity_authority_discards_shared_live_start_coordinate(
     )
     entry_identity = _identity(0x1000)
     imported_identity = _identity(0x1100)
+    imported_identity_with_shared_start = StableBlockIdentity.from_intervals(
+        (
+            NativeEaInterval(0x1000, 0x1001),
+            NativeEaInterval(0x1100, 0x1101),
+        ),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1100,),
+    )
 
     class _SharedStartIdentityIndex:
         def rebind_identity(self, identity: StableBlockIdentity):
             rebound_identity = (
-                imported_identity
+                imported_identity_with_shared_start
                 if 0x1100 in identity.exact_instruction_eas
                 else entry_identity
             )

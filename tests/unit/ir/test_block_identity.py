@@ -23,6 +23,7 @@ def test_exposes_the_portable_block_identity_contract() -> None:
         "RebindStatus",
         "BoundBlock",
         "RebindResult",
+        "refine_stable_block_identity_for_graph_block",
         "stable_block_identity_semantic_anchor",
         "stable_block_identities_refine_at_anchor",
         "stable_block_identity_token",
