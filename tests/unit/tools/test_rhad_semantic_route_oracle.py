@@ -68,6 +68,23 @@ def _conditional_ledger() -> dict[str, object]:
     ledger = _ledger()
     ledger["transactions"] = [
         {
+            "function_ea": 0x40A560,
+            "phase": "indirect_jump",
+            "planned_branches": [
+                {
+                    "anchor_ea": 0x40BED0,
+                    "opcode": "0f8c",
+                    "target_ea": 0x40B6C0,
+                },
+                {
+                    "anchor_ea": 0x40BEDA,
+                    "opcode": "e9",
+                    "target_ea": 0x40A607,
+                },
+            ],
+            "status": "committed",
+        },
+        {
             "corridor": [
                 {
                     "bytes": "8b5c2440",
