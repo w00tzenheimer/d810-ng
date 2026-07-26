@@ -151,7 +151,7 @@ def _conditional_ledger() -> dict[str, object]:
                 }
             ],
             "status": "committed",
-        }
+        },
     ]
     return ledger
 
