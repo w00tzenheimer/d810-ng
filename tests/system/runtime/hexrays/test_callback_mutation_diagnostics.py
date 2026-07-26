@@ -294,9 +294,7 @@ def test_instruction_optimizer_reports_a_nop_write_that_returns_false() -> None:
     _Mba((block,))
     persisted = []
     manager = SimpleNamespace(
-        _fact_consumer_callback=(
-            lambda _func_ea, records: persisted.extend(records)
-        ),
+        _fact_consumer_callback=(lambda _func_ea, records: persisted.extend(records)),
         current_maturity=ida_hexrays.MMAT_GLBOPT2,
         instruction_visitor=SimpleNamespace(blk=None),
         _last_optimizer_tried="synthetic_nop_writer",

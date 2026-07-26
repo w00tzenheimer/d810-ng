@@ -482,9 +482,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     # def-use scans (e.g. wide constant reconstruction for the
                     # magic-modulo rule) need the owning block, so set it explicitly.
                     self.instruction_visitor.blk = blk
-                    optimization_performed = ins.for_all_insns(
-                        self.instruction_visitor
-                    )
+                    optimization_performed = ins.for_all_insns(self.instruction_visitor)
 
                 if optimization_performed:
                     ins.optimize_solo()
