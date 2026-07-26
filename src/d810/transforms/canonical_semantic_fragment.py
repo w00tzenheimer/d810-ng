@@ -992,9 +992,7 @@ def _detached_target_component(
                                 source_anchor_ea=int(
                                     incoming_source.semantic_anchor_ea
                                 ),
-                                target_anchor_ea=int(
-                                    edge_target.semantic_anchor_ea
-                                ),
+                                target_anchor_ea=int(edge_target.semantic_anchor_ea),
                             )
                         )
                     selected_ids.add(edge_target.block_id)
@@ -2670,9 +2668,7 @@ def _resolved_detached_target_component(
                 )
             ),
             normalization_authority=normalization_authority,
-            allow_unresolved_published_boundaries=(
-                allow_temporary_published_egress
-            ),
+            allow_unresolved_published_boundaries=(allow_temporary_published_egress),
             prohibited_dispatcher_serials=prohibited_dispatcher_serials,
             replaced_current_owner_serials=replaced_current_owner_serials,
             required_staged_destination_ids=frozenset(required_staged_destination_ids),
