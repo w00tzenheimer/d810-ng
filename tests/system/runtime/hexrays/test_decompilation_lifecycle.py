@@ -37,6 +37,7 @@ NATIVE_KEY = make_native_key()
 _ROOT = Path(__file__).resolve().parents[4]
 _HOOK = _ROOT / "src/d810/hexrays/hooks/hexrays_hooks.py"
 _OPTBLOCK = _ROOT / "src/d810/hexrays/hooks/optblock_adapter.py"
+_OPTINSN = _ROOT / "src/d810/hexrays/hooks/optinsn_adapter.py"
 _LIFECYCLE = _ROOT / "src/d810/hexrays/lifecycle.py"
 _EVENTS = _ROOT / "src/d810/core/decompilation_session.py"
 _MANAGER = _ROOT / "src/d810/manager/manager.py"
@@ -96,9 +97,9 @@ def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo(
     assert not state.has_pending_generated_restart
 
 
-def test_preoptimized_hook_propagates_poison_instead_of_continuing(
-    monkeypatch,
-) -> None:
+def test_instruction_preopt_callback_propagates_poison_instead_of_continuing() -> None:
+    from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+
     failure = CfgTransactionFailure(
         attempt_id=TransactionAttemptId.new(
             "hook-preopt-poison",
@@ -112,38 +113,27 @@ def test_preoptimized_hook_propagates_poison_instead_of_continuing(
         interr_code=50856,
     )
 
-    def callback(event, **_kwargs) -> None:
+    def emit(event, **_kwargs) -> None:
         assert event is DecompilationEvent.HEXRAYS_PREOPT_READY
         raise CfgGenerationPoisoned(failure)
 
-    hook = SimpleNamespace(
-        callback=callback,
+    session = SimpleNamespace(native_preanalysis_depth=0)
+    manager = SimpleNamespace(
+        event_emitter=SimpleNamespace(emit=emit),
         _decompilation_lifecycle=SimpleNamespace(
+            current_session=lambda _function_ea: session,
             preopt_ready_was_emitted=lambda **_kwargs: False,
+            build_current_mba_identity_index=lambda **_kwargs: object(),
+            new_current_mba_mutation_gateway=lambda **_kwargs: object(),
+            new_semantic_native_body_materializer=lambda **_kwargs: object(),
         ),
     )
     mba = SimpleNamespace(
         entry_ea=0x40A560,
         maturity=ida_hexrays.MMAT_PREOPTIMIZED,
     )
-    monkeypatch.setattr(
-        HexraysDecompilationHook,
-        "_function_owner_ea",
-        staticmethod(lambda _mba: 0x40A560),
-    )
-    monkeypatch.setattr(
-        HexraysDecompilationHook,
-        "_decision_for_mba",
-        staticmethod(
-            lambda _self, _mba, **_kwargs: {
-                "request_redo": False,
-                "session": object(),
-            }
-        ),
-    )
-
     with pytest.raises(CfgGenerationPoisoned):
-        HexraysDecompilationHook.preoptimized(hook, mba)
+        InstructionOptimizerManager._emit_top_level_preopt_ready(manager, mba)
 
 
 def _method_source(path: Path, class_name: str, method_name: str) -> str:
@@ -179,6 +169,8 @@ def test_hook_starts_and_finishes_typed_sessions_through_the_coordinator() -> No
 
 def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> None:
     """One generated rebuild reuses the epoch and never repeats reset/capture."""
+    from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
+
     order: list[str] = []
 
     class _PreanalysisRuntime:
@@ -266,7 +258,10 @@ def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> 
         _database_identity="sample.i64",
         _block_optimizer=None,
     )
-    mba = SimpleNamespace(entry_ea=0x401000, maturity=1)
+    mba = SimpleNamespace(
+        entry_ea=0x401000,
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
     monkeypatch.setattr(
         HexraysDecompilationHook,
         "_function_owner_ea",
@@ -280,7 +275,21 @@ def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> 
     )
     assert HexraysDecompilationHook.prolog(hook, mba, object(), object(), 0) == 0
     assert HexraysDecompilationHook.flowchart(hook, object(), mba, object(), 0) == 0
-    assert HexraysDecompilationHook.preoptimized(hook, mba) == 0
+    preopt_owner = SimpleNamespace(
+        event_emitter=emitter,
+        _decompilation_lifecycle=SimpleNamespace(
+            current_session=coordinator.current_session,
+            preopt_ready_was_emitted=lambda **_kwargs: False,
+            build_current_mba_identity_index=lambda **_kwargs: object(),
+            new_current_mba_mutation_gateway=lambda **_kwargs: object(),
+            new_semantic_native_body_materializer=lambda **_kwargs: object(),
+            mark_preopt_ready_emitted=lambda **_kwargs: None,
+        ),
+    )
+    assert not InstructionOptimizerManager._emit_top_level_preopt_ready(
+        preopt_owner,
+        mba,
+    )
     assert HexraysDecompilationHook.calls_done(hook, mba) == 0
     assert HexraysDecompilationHook.structural(hook, SimpleNamespace()) == 0
 
@@ -331,14 +340,20 @@ def test_prolog_opens_diagnostics_for_top_level_session_owner(monkeypatch) -> No
 def test_every_resolver_callback_receives_the_lifecycle_session_decision() -> None:
     build_callinfo = _method_source(_HOOK, "HexraysDecompilationHook", "build_callinfo")
     stkpnts = _method_source(_HOOK, "HexraysDecompilationHook", "stkpnts")
-    preoptimized = _method_source(_HOOK, "HexraysDecompilationHook", "preoptimized")
+    preopt_owner = _method_source(
+        _OPTINSN,
+        "InstructionOptimizerManager",
+        "_emit_top_level_preopt_ready",
+    )
 
     assert "_decision_for_mba(self, blk.mba)" in build_callinfo
     assert "_decision_for_mba(self, mba)" in stkpnts
     assert "bind_live_identity=True" not in build_callinfo
     assert "bind_live_identity=True" not in stkpnts
-    assert "_decision_for_mba(" in preoptimized
-    assert "bind_live_identity=True" in preoptimized
+    assert "session = lifecycle.current_session(function_ea)" in preopt_owner
+    assert "lifecycle.build_current_mba_identity_index(" in preopt_owner
+    assert "lifecycle.new_current_mba_mutation_gateway(" in preopt_owner
+    assert '"session": session' in preopt_owner
 
 
 def test_live_mba_gateway_is_bound_once_per_flow_context() -> None:

@@ -406,15 +406,6 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     def log_info_on_input(self, blk: ida_hexrays.mblock_t):
         mba: ida_hexrays.mbl_array_t = blk.mba
 
-        lifecycle = getattr(self, "_decompilation_lifecycle", None)
-        consume_modified = getattr(
-            lifecycle,
-            "consume_current_preopt_microcode_modified",
-            None,
-        )
-        if callable(consume_modified) and consume_modified(consumer="block"):
-            return True
-
         if (mba is not None) and (mba.maturity != self.current_maturity):
             if main_logger.debug_on:
                 main_logger.debug(
