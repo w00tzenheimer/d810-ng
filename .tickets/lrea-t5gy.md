@@ -6013,3 +6013,37 @@ result itself; until that observability gap is closed, the exact E2E assertion
 and copied pseudocode are the output authority. The v3.1 one-fragment gate now
 permits a bounded broad-route attempt, but no C6 claim is allowed until the
 full semantic oracle passes.
+
+**2026-07-26T00:14:33-0700 — complete A560 reference scope; strict C3 anchor mismatch**
+
+Commits `6205a2f02`, `349891c24`, and `e2007f524` make the Rhad oracle
+generator compile ordered conditional transactions and select only
+`flow_route` authority when another transaction shares the same native anchor.
+Commits `2b0049e86` and `7218c162f` install the complete tracked A560 manifest
+and select it in production. The manifest SHA-256 is
+`9bc4682b608a49621588fb8f79af446fa7b98edcf55a5da755fecfe45c15c2e4`;
+it contains 93 unique route IDs and owners, comprising 91 direct and two
+conditional routes under publication root `0x40A5B2`. The focused route,
+manager, lifecycle, validation, lowering, and backend gate is 272/272 green.
+
+The mandatory cache-disabled A560 canary at `7218c162f` completed normally in
+19.13 seconds without a segfault, numeric INTERR, generation poison, rollback,
+or partial receipt. Log:
+`.tmp/rhad-a560-full-flow-routes-7218c162f.txt`; primary DB:
+`.tmp/rhad-a560-full-flow-routes-7218c162f/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode is beside the DB. The frontend-normalization transaction commits
+through all seven phases with 639/639 prepublication and 1180/1180
+postpublication checks, but no semantic PatchPlan transaction starts. The
+output is a six-line false infinite loop, so A560 remains below C6.
+
+The DB records the first broad-route C3 failure precisely. At `MMAT_CALLS`,
+configured-root composition accepts a 150-operation plan containing two
+reference rewrite anchors, then `bind_fragment_reference_oracle` rejects the
+93-route selection with
+`canonical_configured_reference_scope_invalid: fragment and reference
+selection require exact rewrite anchors`. The highest proven architecture
+level remains the earlier one-fragment C5 transaction. Continue by composing
+the selected reference scope into one closed plan whose rewrite-anchor set is
+exactly the selected 93-route set before binding or publication. Do not weaken
+the exact-anchor oracle, bind a subset under full-scope authority, or publish
+multiple independently live route fragments.
