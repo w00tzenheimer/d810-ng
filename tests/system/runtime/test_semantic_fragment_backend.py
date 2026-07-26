@@ -2870,7 +2870,10 @@ def test_production_participant_preflights_before_realization_and_observes_live_
     gateway.abort(reason="production participant test cleanup")
 
 
-def _clone_storage_predicate_runtime_case():
+def _clone_storage_predicate_runtime_case(
+    *,
+    implicit_dispatcher_fallthrough: bool = False,
+):
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
     target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
@@ -2884,6 +2887,16 @@ def _clone_storage_predicate_runtime_case():
     state_write.d.make_stkvar(None, 0x20)
     state_write.d.size = 4
     original.insert_into_block(state_write, None)
+    if implicit_dispatcher_fallthrough:
+        original.remove_from_block(original.tail)
+        first_dispatcher_write = _Instruction(ida_hexrays.m_mov, 0x401012)
+        first_dispatcher_write.l.make_number(0xABB95547, 4)
+        first_dispatcher_write.d.make_reg(20, 4)
+        original.insert_into_block(first_dispatcher_write, original.tail)
+        second_dispatcher_write = _Instruction(ida_hexrays.m_mov, 0x401013)
+        second_dispatcher_write.l.make_number(0xFDEE1C81, 4)
+        second_dispatcher_write.d.make_reg(36, 4)
+        original.insert_into_block(second_dispatcher_write, original.tail)
     mba = _Mba((entry, original, target, dispatcher, stop))
     gateway = _fragment_gateway(mba)
     modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
@@ -2993,6 +3006,79 @@ def test_participant_materializes_clone_owned_storage_predicate(monkeypatch) -> 
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="clone storage-predicate cleanup")
+
+
+def test_participant_materializes_predicate_over_implicit_dispatcher_fallthrough(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(ida_hexrays, "minsn_t", _fake_minsn)
+    monkeypatch.setattr(ida_hexrays, "mop_t", _BlockReference)
+    mba, gateway, modifier, plan, _operation, _original = (
+        _clone_storage_predicate_runtime_case(
+            implicit_dispatcher_fallthrough=True,
+        )
+    )
+    participant = SemanticFragmentTransactionParticipant(gateway, modifier)
+
+    projected = participant.project(plan, None)
+    prepared = participant.preflight(projected)
+    bound = participant.bind(prepared, gateway.identity_index)
+    patch_plan = lower_fragment_plan(plan, prepared.fragment)
+    realized = participant.realize(replace(bound, patch_plan=patch_plan), gateway)
+    participant.observe(realized, mba)
+
+    replacement = sfb._live_block_for_binding(
+        modifier,
+        modifier._semantic_fragment_state.binding("replacement"),
+    )
+    instruction_eas = tuple(
+        int(instruction.ea) for instruction in sfb._iter_block_instructions(replacement)
+    )
+    assert instruction_eas[0] == 0x401010
+    assert 0x401012 not in instruction_eas
+    assert 0x401013 not in instruction_eas
+    assert int(replacement.tail.opcode) == int(ida_hexrays.m_jz)
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="implicit clone storage-predicate cleanup")
+
+
+def test_participant_rejects_implicit_predicate_suffix_with_wrong_live_successor(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(ida_hexrays, "minsn_t", _fake_minsn)
+    mba, gateway, modifier, plan, _operation, original = (
+        _clone_storage_predicate_runtime_case(
+            implicit_dispatcher_fallthrough=True,
+        )
+    )
+    quantity = mba.qty
+    generation = gateway.generation
+    target = mba.get_mblock(2)
+    dispatcher = mba.get_mblock(3)
+    original.succset.clear()
+    original.succset.push_back(target.serial)
+    dispatcher.predset._del(original.serial)
+    target.predset.push_back(original.serial)
+    participant = SemanticFragmentTransactionParticipant(gateway, modifier)
+
+    with pytest.raises(
+        FragmentProjectionFailure,
+        match="clone-owned storage predicate suffix is not atomically discardable",
+    ) as failure:
+        participant.project(plan, None)
+
+    _prefix, separator, evidence_json = failure.value.reason.partition(" evidence=")
+    assert separator
+    evidence = json.loads(evidence_json)
+    assert evidence["source_kind"] == "one_way"
+    assert evidence["source_successors"] == ["target"]
+    assert evidence["planned_fallthrough_targets"] == ["dispatcher"]
+    assert mba.qty == quantity
+    assert gateway.generation == generation
+    assert gateway.active is False
+    assert gateway.mutation_started is False
+    assert gateway.generation_poisoned is False
 
 
 def test_participant_rejects_unsafe_clone_storage_predicate_suffix_before_write(

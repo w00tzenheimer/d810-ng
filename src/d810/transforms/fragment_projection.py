@@ -257,6 +257,7 @@ def _validate_clone_storage_predicate_sources(
     plan: FragmentPlan,
     snapshot: FragmentProjectionInput,
 ) -> None:
+    block_evidence_by_id = {block.block_id: block for block in snapshot.blocks}
     evidence_by_block_id = {
         evidence.block_id: evidence for evidence in snapshot.clone_source_instructions
     }
@@ -313,7 +314,7 @@ def _validate_clone_storage_predicate_sources(
                 "clone-owned storage predicate cut anchor is not contiguous",
             )
         suffix = instructions[last_cut_index + 1 :]
-        unsafe_suffix = tuple(
+        unsafe_explicit_suffix = tuple(
             instruction
             for index, instruction in enumerate(suffix)
             if (
@@ -328,15 +329,47 @@ def _validate_clone_storage_predicate_sources(
                 )
             )
         )
-        if (
-            not suffix
-            or suffix[-1].kind not in terminal_transfer_kinds
-            or unsafe_suffix
-        ):
+        explicit_transfer_suffix = bool(
+            suffix
+            and suffix[-1].kind in terminal_transfer_kinds
+            and not unsafe_explicit_suffix
+        )
+        source_input = block_evidence_by_id.get(evidence.source_block_id)
+        fallthrough_targets = tuple(
+            edge.target_block_id
+            for edge in operation.edges
+            if edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+        )
+        implicit_dispatcher_suffix = bool(
+            suffix
+            and source_input is not None
+            and source_input.kind is BlockKind.ONE_WAY
+            and source_input.terminator_kind is InsnKind.UNKNOWN
+            and source_input.successors == fallthrough_targets
+            and len(fallthrough_targets) == 1
+            and all(
+                instruction.kind in {InsnKind.NOP, InsnKind.MOV}
+                and instruction.destination_is_discardable
+                for instruction in suffix
+            )
+        )
+        if not explicit_transfer_suffix and not implicit_dispatcher_suffix:
             evidence = json.dumps(
                 {
                     "cut_after_ea": f"0x{predicate.cut_after_ea:X}",
                     "cut_indexes": cut_indexes,
+                    "source_kind": (
+                        None if source_input is None else source_input.kind.value
+                    ),
+                    "source_successors": (
+                        () if source_input is None else source_input.successors
+                    ),
+                    "source_terminator_kind": (
+                        None
+                        if source_input is None
+                        else source_input.terminator_kind.value
+                    ),
+                    "planned_fallthrough_targets": fallthrough_targets,
                     "suffix": tuple(
                         {
                             "native_ea": f"0x{instruction.native_ea:X}",
