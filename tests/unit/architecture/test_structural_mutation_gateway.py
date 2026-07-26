@@ -412,7 +412,10 @@ def test_every_production_minimal_unflatten_emit_names_complete_source_authority
     violations: list[str] = []
     for relative, call in _production_calls():
         function = call.func
-        if not isinstance(function, ast.Name) or function.id != "emit_minimal_unflatten":
+        if (
+            not isinstance(function, ast.Name)
+            or function.id != "emit_minimal_unflatten"
+        ):
             continue
         if relative == "transforms/minimal_unflatten_emit.py":
             continue

@@ -64,7 +64,11 @@ def emit_minimal_unflatten(flow_graph, dispatcher, **kwargs):
 def graph_modifications(patch_plan) -> list[object]:
     """Project simple typed patch steps back into planner values for assertions."""
     from d810.transforms import graph_modification as graph_modification_module
-    from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef, PlanBlockRef
+    from d810.transforms.cfg_transaction import (
+        LogicalBlockRef,
+        NativeBlockRef,
+        PlanBlockRef,
+    )
 
     coordinates = dict(patch_plan.source_coordinates)
 
