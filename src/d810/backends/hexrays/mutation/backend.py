@@ -53,6 +53,7 @@ class HexRaysMutationBackend:
         self._mutation_gateway = mutation_gateway
         self._semantic_native_body_materializer = semantic_native_body_materializer
         self._committed_fragment_receipt: object | None = None
+        self._committed_fragment_operation_count = 0
         self._last_patch_execution: object | None = None
         self._last_patch_failure: Exception | None = None
         self._fragment_backend_factory = (
@@ -82,6 +83,11 @@ class HexRaysMutationBackend:
     @property
     def last_patch_failure(self) -> Exception | None:
         return self._last_patch_failure
+
+    @property
+    def committed_fragment_operation_count(self) -> int:
+        """Return receipt-proven fragment operations committed this callback."""
+        return self._committed_fragment_operation_count
 
     def _new_fragment_backend(self, live_source: object, gateway: object) -> object:
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
@@ -182,10 +188,17 @@ class HexRaysMutationBackend:
         self._committed_fragment_receipt = None
         gateway = self._mutation_gateway.new_transaction()
         fragment_backend = self._fragment_backend_factory(live_source, gateway)
-        self._committed_fragment_receipt = gateway.execute_patch_transaction(
+        receipt = gateway.execute_patch_transaction(
             fragment_backend,
             fragment_plan,
         )
+        operation_count = getattr(receipt, "operation_count", None)
+        if isinstance(operation_count, bool) or not isinstance(operation_count, int):
+            raise TypeError("committed fragment receipt requires an operation count")
+        if operation_count <= 0:
+            raise ValueError("committed fragment receipt requires applied operations")
+        self._committed_fragment_receipt = receipt
+        self._committed_fragment_operation_count += operation_count
         return self._translator.lift(live_source)
 
 
