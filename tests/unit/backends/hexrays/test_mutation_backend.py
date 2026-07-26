@@ -229,9 +229,7 @@ class _FakeTranslator:
             planned_operation_count=len(rewrite_plan.steps),
             transaction_attempt=bound_transaction.prepared.attempt_id,
             patch_plan_id=rewrite_plan.plan_id,
-            patch_plan_refs=tuple(
-                spec.block_id for spec in rewrite_plan.new_blocks
-            ),
+            patch_plan_refs=tuple(spec.block_id for spec in rewrite_plan.new_blocks),
         )
         mutation_gateway.begin_patch_realization(
             bound_transaction.prepared.attempt_id,

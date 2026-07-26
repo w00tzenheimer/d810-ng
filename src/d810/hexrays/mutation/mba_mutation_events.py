@@ -769,9 +769,8 @@ class MbaMutationGateway:
             raise ValueError("CFG attempt belongs to another session")
         if attempt.generation != self.identity_index.generation:
             raise ValueError("CFG attempt belongs to another generation")
-        if (
-            len(set(plan_refs)) != len(plan_refs)
-            or any(ref.plan_id != plan_id for ref in plan_refs)
+        if len(set(plan_refs)) != len(plan_refs) or any(
+            ref.plan_id != plan_id for ref in plan_refs
         ):
             raise ValueError("CFG attempt has invalid plan block authority")
         self._reset_cfg_context()
