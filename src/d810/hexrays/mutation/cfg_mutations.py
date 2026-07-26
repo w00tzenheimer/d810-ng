@@ -326,7 +326,11 @@ def change_1way_block_successor(
 
 
 def change_0way_block_successor(
-    blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True
+    blk: ida_hexrays.mblock_t,
+    blk_successor_serial: int,
+    verify: bool = True,
+    *,
+    instruction_ea: int | None = None,
 ) -> bool:
     if blk.nsucc() != 0:
         return False
@@ -335,7 +339,10 @@ def change_0way_block_successor(
     if blk.tail is not None and blk.tail.opcode == ida_hexrays.m_ijmp:
         # We replace ijmp instruction with goto instruction
         insert_goto_instruction(
-            blk, blk_successor_serial, nop_previous_instruction=True
+            blk,
+            blk_successor_serial,
+            nop_previous_instruction=True,
+            instruction_ea=instruction_ea,
         )
     elif blk.tail is not None and blk.tail.opcode == ida_hexrays.m_goto:
         # Hex-Rays can materialize the direct transfer instruction before it
@@ -346,7 +353,10 @@ def change_0way_block_successor(
     else:
         # We add a goto instruction
         insert_goto_instruction(
-            blk, blk_successor_serial, nop_previous_instruction=False
+            blk,
+            blk_successor_serial,
+            nop_previous_instruction=False,
+            instruction_ea=instruction_ea,
         )
 
     # Update block properties

@@ -3681,7 +3681,8 @@ def _staged_patch_wiring(monkeypatch, mba):
         changes.append((blk.serial, new_target, "2way"))
         return True
 
-    def _fake_0way(blk, new_target, verify=True):
+    def _fake_0way(blk, new_target, verify=True, *, instruction_ea=None):
+        del instruction_ea
         assert blk.succset.size() == 0
         blk.succset.push_back(new_target)
         new_succ = mba.get_mblock(new_target)

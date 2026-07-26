@@ -280,6 +280,79 @@ def test_gateway_materializes_zero_way_direct_edge() -> None:
     assert int(source.type) == int(ida_hexrays.BLT_1WAY)
 
 
+def test_gateway_materializes_folded_direct_edge_at_rewrite_anchor(
+    monkeypatch,
+) -> None:
+    source = _Block(1, start=0x40A5AE)
+    target = _Block(2, start=0x40BECC)
+    source.tail = SimpleNamespace(
+        opcode=int(ida_hexrays.m_mov),
+        ea=0x40A5BD,
+        l=_BlockReference(),
+        r=_BlockReference(),
+        d=_BlockReference(),
+    )
+    mba = _Mba(source, target)
+    gateway = make_mutation_gateway(mba)
+    insertions: list[tuple[int, int | None]] = []
+
+    def _insert_goto(
+        block,
+        target_serial: int,
+        nop_previous_instruction: bool = False,
+        *,
+        instruction_ea: int | None = None,
+    ) -> None:
+        assert not nop_previous_instruction
+        insertions.append((int(target_serial), instruction_ea))
+        block.tail = _goto_tail(
+            target_serial,
+            ea=(int(mba.entry_ea) if instruction_ea is None else instruction_ea),
+        )
+
+    def _change_zero_way(
+        block,
+        target_serial: int,
+        verify: bool = True,
+        *,
+        instruction_ea: int | None = None,
+    ) -> bool:
+        assert not verify
+        _insert_goto(
+            block,
+            target_serial,
+            instruction_ea=instruction_ea,
+        )
+        block.type = int(ida_hexrays.BLT_1WAY)
+        block.flags |= int(ida_hexrays.MBL_GOTO)
+        block.succset.push_back(target_serial)
+        target.predset.push_back(int(block.serial))
+        return True
+
+    monkeypatch.setattr(dm, "change_0way_block_successor", _change_zero_way)
+    operation = LogicalSemanticEdgeOperation(
+        source=_proxy(gateway, 1),
+        edges=(
+            LogicalSemanticEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target=_proxy(gateway, 2),
+            ),
+        ),
+        rewrite_anchor_ea=0x40A5C8,
+        description="fragment operation route:state_assignment@0x40A5C8",
+    )
+
+    receipt = _apply(gateway, mba, operation)
+
+    assert receipt is not None
+    assert insertions == [(2, 0x40A5C8)]
+    assert int(source.tail.ea) == 0x40A5C8
+    assert int(source.tail.opcode) == int(ida_hexrays.m_goto)
+    assert int(source.tail.l.b) == 2
+    assert tuple(source.succset) == (2,)
+    assert tuple(target.predset) == (1,)
+
+
 def test_gateway_materializes_call_fallthrough_through_adjacent_helper(
     monkeypatch,
 ) -> None:
