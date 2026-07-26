@@ -48,7 +48,6 @@ GATEWAY_REQUIRED_ENTRYPOINTS = {
     ),
     "hexrays/mutation/ir_translator.py": frozenset({"lower"}),
     "passes/pipeline.py": frozenset({"run"}),
-    "passes/transaction_engine.py": frozenset({"apply"}),
     "backends/hexrays/mutation/backend.py": frozenset({"__init__"}),
     "hexrays/mutation/detached_handler_island.py": frozenset(
         {

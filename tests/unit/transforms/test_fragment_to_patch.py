@@ -12,7 +12,6 @@ from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
 from d810.transforms.fragment_to_patch import (
-    ApplyPatchLifecycle,
     CfgTransactionCoordinator,
     FragmentContractBundle,
     FragmentTransactionParticipant,
@@ -128,22 +127,6 @@ def test_lowering_rejects_projection_that_failed_fragment_preflight() -> None:
         assert "authority" in str(exc)
     else:
         raise AssertionError("foreign preflight authority was accepted")
-
-
-def test_fragment_and_patch_participants_use_one_coordinator_entrypoint() -> None:
-    plan = _plan()
-    seen = []
-    coordinator = CfgTransactionCoordinator(ApplyPatchLifecycle(seen.append))
-
-    fragment_result = coordinator.execute(
-        FragmentTransactionParticipant(),
-        plan,
-        prepared_projection=_prepared(plan),
-    )
-    assert fragment_result is None
-    lowered = seen[-1]
-    coordinator.execute(PatchTransactionParticipant(), lowered)
-    assert seen == [lowered, lowered]
 
 
 def test_coordinator_owns_complete_lifecycle_for_both_participants() -> None:
@@ -306,3 +289,4 @@ def test_both_production_paths_use_the_shared_transaction_coordinator() -> None:
     assert "FragmentTransactionParticipant()" in publication
     assert "lambda lowered: lowered" not in publication
     assert "from d810.passes.transaction_engine" not in publication
+    assert not (source_root / "passes" / "transaction_engine.py").exists()
