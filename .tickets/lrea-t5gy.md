@@ -5605,3 +5605,47 @@ loop may resume from its previously recorded first semantic obligation at
 native rewrite anchor `0x40BB63`. Broad 91-route publication remains
 prohibited until that one fragment is carried vertically through the live
 path.
+
+**2026-07-25T19:38:00-0700 — donor runtime parity and protected gate complete**
+
+Rhad composition remained paused while the final donor integration checksum
+was repaired and proved at clean production SHA `b52fe5b64`. Ordinary
+`PatchPlan` conditional lowering had planned 35 operations for the Tigress
+indirect oracle and applied 34 redirects, but adjacent fallthrough-helper
+creation incorrectly demanded fragment-only authority and rejected the final
+`LOWER_CONDITIONAL_STATE_TRANSITION`. Commit `b52fe5b64` changes that shared
+SDK-write boundary to the plan-neutral transaction authority and adds a
+focused regression proving a typed ordinary attempt may create the helper
+without an active `FragmentPlan`. The focused coordinator, gateway, translator,
+backend, and helper gate is 105/105 green. Ruff examined all 1,880 tracked
+Python files and produced no formatting delta.
+
+The exact Tigress Docker oracle is 1/1 green. Its primary diagnostic database
+is `.tmp/logs/d810_logs/0000000180013e30_1785033168_9.diag.sqlite3`: the one
+attempt records `planned -> projected -> preflighted -> bound -> realizing ->
+observed -> committed`, is unpoisoned, and owns a 35/35 committed receipt. The
+database again contains one `LOWER_CONDITIONAL_STATE_TRANSITION` at
+`blk[22]@0x1800141B1`, so state `0x1C` is restored through production
+provenance rather than inferred from pseudocode.
+
+The explicit seven-node protected-family Docker matrix then passed 7/7 in
+53.97 seconds. It covers both Hodur baselines, the Sub7ffd corridor regression,
+the Tigress indirect semantic oracle, and all three Approov characterization
+oracles. Log:
+`.tmp/lrea-portable-cfg-protected-exact7-b52fe5b64.txt`.
+
+The exact donor C5 checksum also passed at `b52fe5b64`; preserved log:
+`.tmp/lrea-portable-cfg-c5-b52fe5b64-preserved.txt`; preserved database:
+`.tmp/lrea-portable-cfg-c5-b52fe5b64/real-terminal-fragment.diag.sqlite3`.
+The database records a 7/7 committed fragment receipt, 32/32 passed
+prepublication outcomes, 59/59 passed postpublication outcomes, the complete
+seven-phase transaction timeline, and three exact committed creation witnesses
+for both replacements and the root fallthrough helper.
+
+All 41 donor-ledger rows are now accepted, including
+`protected_family_behavior_preserved`, and the strict executable parity gate
+is expected to pass with no pending runtime guarantee. The donor-first pause is
+therefore complete. Rhad may resume only through the v3.1 vertical loop from
+the recorded first semantic obligation `C3_complete_vertical_fragment_plan`
+at native rewrite anchor `0x40BB63`; broad 91-route publication remains
+prohibited until that one fragment reaches live C5.

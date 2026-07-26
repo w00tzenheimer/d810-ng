@@ -697,8 +697,8 @@
       "donor_source": "src/d810/backends/hexrays/mutation/backend.py::class HexRaysMutationBackend:",
       "donor_test": "tests/system/e2e/test_hodur_baselines.py::class TestHodurBaselines:",
       "current_production_seam": "src/d810/backends/hexrays/mutation/backend.py::class HexRaysMutationBackend:",
-      "current_status": "missing",
-      "required_port": "After the transaction gates and Rhad restoration, run Hodur, Sub7ffd, Tigress, and Approov at one clean SHA and treat any delta as an integration regression.",
+      "current_status": "accepted",
+      "required_port": "After the transaction gates and before Rhad restoration resumes, run Hodur, Sub7ffd, Tigress, and Approov at one clean SHA and treat any delta as an integration regression.",
       "diagnostic_proof": {
         "tables": ["diagnostic_sessions", "lifecycle_events", "cfg_transaction_attempts"],
         "events": ["decompilation_started", "committed", "decompilation_finished"],

@@ -37,7 +37,7 @@ def test_parity_ledger_is_complete_and_all_anchors_resolve() -> None:
     assert ledger["donor"]["commit"] == ("ab769f182942f83191d883151d74b78fecac43cb")
 
 
-def test_strict_gate_refuses_to_call_partial_runtime_integration_complete() -> None:
+def test_strict_gate_accepts_complete_runtime_integration() -> None:
     gate = _load_gate()
 
     ledger = gate.load_ledger(LEDGER_PATH)
@@ -48,5 +48,5 @@ def test_strict_gate_refuses_to_call_partial_runtime_integration_complete() -> N
     )
 
     assert report.errors == ()
-    assert report.pending_ids == ("protected_family_behavior_preserved",)
-    assert report.passed is False
+    assert report.pending_ids == ()
+    assert report.passed is True
