@@ -456,10 +456,10 @@ def _compile_conditional_route(
             instruction_ea=int(route.condition_producer_ea),
         ),
         consumer=FragmentValueSite(
-            site_id=f"consumer@0x{route.transfer_ea:X}",
+            site_id=f"consumer@0x{route.predicate_anchor_ea:X}",
             block_id=route.source_block_id,
             value_id=value_id,
-            instruction_ea=int(route.transfer_ea),
+            instruction_ea=int(route.predicate_anchor_ea),
         ),
         block_path=(route.source_block_id,),
         permitted_flag_write_eas=frozenset({int(route.condition_producer_ea)}),

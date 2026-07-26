@@ -166,6 +166,10 @@ def test_project_fragment_derives_replacement_and_root_rewrite_from_snapshots() 
     assert helper.terminator_ea is None
     assert helper.terminator_kind is InsnKind.GOTO
     assert (
+        projection.binding("fallthrough-helper:condition").generation
+        == projection.binding("replacement").generation
+    )
+    assert (
         projection.binding("replacement").previous_version
         == projection.binding("original").version
     )

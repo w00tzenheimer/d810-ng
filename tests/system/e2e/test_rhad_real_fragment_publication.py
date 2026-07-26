@@ -773,7 +773,7 @@ def _run_worker(
 
         backend = HexRaysMutationBackend(
             mutation_gateway=gateway,
-            fragment_backend_factory=lambda live, transaction: (
+            fragment_backend_factory=lambda live, transaction, _profile: (
                 VerifyingFragmentModifier(
                     live,
                     mutation_gateway=transaction,

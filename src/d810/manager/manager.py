@@ -38,7 +38,7 @@ from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
-from d810.hexrays.ir_maturity import HexRaysMaturity
+from d810.hexrays.ir_maturity import HexRaysMaturity, maturity_to_name
 from d810.core.decompilation_session import DecompilationEvent
 from d810.hexrays.lifecycle import HEXRAYS_MICROCODE_PROVIDER
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
@@ -187,11 +187,12 @@ def _build_current_mba_identity_index(*, session, mba):
     current_mba_identity_binding = state.current_mba_identity_binding_for(
         stable_mba_identity(mba)
     )
-    from d810.core.maturity_labels import mmat_label
     from d810.core.observability import emit as emit_diagnostic
     from d810.core.observability_events import IdentityDecisionObserved
 
-    maturity = mmat_label(int(getattr(mba, "maturity", 0) or 0))
+    maturity = (
+        f"maturity={maturity_to_name(int(getattr(mba, 'maturity', 0) or 0))}"
+    )
 
     def _observe_identity(observation):
         identity = observation.identity
@@ -622,6 +623,22 @@ class D810Manager:
                         )
                 prepared_carriers = prepare_terminal_return_carrier_evidence(state)
                 prepared_snippets = prepare_detached_handler_snippets(state)
+                from d810.manager.rhad_generated_checksum import (
+                    FUNCTION_EA as RHAD_GENERATED_CHECKSUM_FUNCTION_EA,
+                    observe_a560_generated_checksum_preparation,
+                    prepare_a560_generated_checksum_templates,
+                )
+
+                prepared_generated_checksum = (
+                    prepare_a560_generated_checksum_templates(state)
+                    if int(function_ea) == RHAD_GENERATED_CHECKSUM_FUNCTION_EA
+                    else False
+                )
+                if int(function_ea) == RHAD_GENERATED_CHECKSUM_FUNCTION_EA:
+                    observe_a560_generated_checksum_preparation(
+                        session,
+                        prepared=prepared_generated_checksum,
+                    )
                 # Snippet preparation publishes the portable transfer
                 # inventory that identifies the state selector.  Bootstrap
                 # discovery must consume that completed inventory; running it
@@ -632,6 +649,7 @@ class D810Manager:
                     sum(int(outcome.captured) for outcome in companion_outcomes)
                     + int(prepared_carriers)
                     + int(prepared_snippets)
+                    + int(prepared_generated_checksum)
                 )
             finally:
                 lifecycle.finish_native_preanalysis(session)
@@ -1215,7 +1233,6 @@ class D810Manager:
 
     @staticmethod
     def _on_mutation_planned(event) -> None:
-        from d810.core.maturity_labels import mmat_label
         from d810.core.observability import emit as emit_diagnostic
         from d810.core.observability_events import (
             MutationPlanItemObserved,
@@ -1273,7 +1290,7 @@ class D810Manager:
                 planned_operation_count=int(event.planned_operation_count),
                 mba_generation=int(event.mba_generation),
                 evidence_generation=int(event.evidence_generation),
-                maturity=mmat_label(int(event.maturity)),
+                maturity=f"maturity={maturity_to_name(int(event.maturity))}",
                 description=event.description,
                 items=tuple(items),
                 fragment_plan_id=event.fragment_plan_id,
@@ -1422,7 +1439,6 @@ class D810Manager:
 
     @staticmethod
     def _on_semantic_fragment_route_oracle_compared(event) -> None:
-        from d810.core.maturity_labels import mmat_label
         from d810.core.observability import emit as emit_diagnostic
         from d810.core.observability_events import (
             SemanticFragmentRouteOracleComparedObserved,
@@ -1438,7 +1454,7 @@ class D810Manager:
                 atomic_group_id=event.atomic_group_id,
                 mba_generation=int(event.mba_generation),
                 evidence_generation=int(event.evidence_generation),
-                maturity=mmat_label(int(event.maturity)),
+                maturity=f"maturity={maturity_to_name(int(event.maturity))}",
                 reference_ledger_identities=event.reference_ledger_identities,
                 comparisons=event.result.comparisons,
             )
@@ -1446,7 +1462,6 @@ class D810Manager:
 
     @staticmethod
     def _on_mutation_committed(event) -> None:
-        from d810.core.maturity_labels import mmat_label
         from d810.core.observability import emit as emit_diagnostic
         from d810.core.observability_events import MutationReceiptObserved
 
@@ -1463,7 +1478,7 @@ class D810Manager:
                 planned_operation_count=int(receipt.planned_operation_count),
                 applied_operation_count=int(receipt.operation_count),
                 evidence_generation=int(event.evidence_generation),
-                maturity=mmat_label(int(event.maturity)),
+                maturity=f"maturity={maturity_to_name(int(event.maturity))}",
                 outcome="committed",
                 description=receipt.description,
                 reason="",
@@ -1509,7 +1524,6 @@ class D810Manager:
 
     @staticmethod
     def _on_mutation_aborted(event) -> None:
-        from d810.core.maturity_labels import mmat_label
         from d810.core.observability import emit as emit_diagnostic
         from d810.core.observability_events import MutationReceiptObserved
 
@@ -1524,7 +1538,7 @@ class D810Manager:
                 planned_operation_count=int(event.planned_operation_count),
                 applied_operation_count=int(event.applied_operation_count),
                 evidence_generation=int(event.evidence_generation),
-                maturity=mmat_label(int(event.maturity)),
+                maturity=f"maturity={maturity_to_name(int(event.maturity))}",
                 outcome="aborted",
                 description=event.description,
                 reason=event.reason,
@@ -1732,6 +1746,18 @@ class D810Manager:
             self._capture_flowgraph_ready,
         )
 
+        from d810.manager.rhad_generated_checksum import (
+            observe_a560_generated_checksum_calls,
+            observe_a560_generated_checksum_locopt,
+            observe_a560_generated_checksum_preopt,
+            publish_a560_generated_checksum,
+        )
+
+        self.event_emitter.on(
+            DecompilationEvent.HEXRAYS_GENERATED_READY,
+            publish_a560_generated_checksum,
+        )
+
         from d810.hexrays.preanalysis.flowchart_preanalysis import (
             run_flowchart_preanalysis_handlers,
         )
@@ -1753,6 +1779,10 @@ class D810Manager:
             DecompilationEvent.HEXRAYS_PREOPT_READY,
             run_preopt_preanalysis_handlers,
         )
+        self.event_emitter.on(
+            DecompilationEvent.HEXRAYS_PREOPT_READY,
+            observe_a560_generated_checksum_preopt,
+        )
 
         from d810.hexrays.preanalysis.locopt_preanalysis import (
             run_locopt_preanalysis_handlers,
@@ -1761,6 +1791,10 @@ class D810Manager:
         self.event_emitter.on(
             DecompilationEvent.HEXRAYS_LOCOPT_READY,
             run_locopt_preanalysis_handlers,
+        )
+        self.event_emitter.on(
+            DecompilationEvent.HEXRAYS_LOCOPT_READY,
+            observe_a560_generated_checksum_locopt,
         )
 
         from d810.hexrays.preanalysis.callinfo_preanalysis import (
@@ -1788,6 +1822,10 @@ class D810Manager:
         self.event_emitter.on(
             DecompilationEvent.HEXRAYS_CALLS_DONE,
             run_calls_done_preanalysis_handlers,
+        )
+        self.event_emitter.on(
+            DecompilationEvent.HEXRAYS_CALLS_DONE,
+            observe_a560_generated_checksum_calls,
         )
 
         self.event_emitter.on(

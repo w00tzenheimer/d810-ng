@@ -57,6 +57,9 @@ from d810.transforms.fragment_validation import (
 from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventory,
 )
+from d810.hexrays.mutation.semantic_fragment_profile import (
+    SemanticFragmentPublicationProfile,
+)
 
 
 _BACKEND_PORT = (
@@ -177,6 +180,16 @@ class SemanticFragmentTransactionParticipant:
     gateway: object
     backend: object
     attempt_id: TransactionAttemptId | None = None
+    publication_profile: SemanticFragmentPublicationProfile = (
+        SemanticFragmentPublicationProfile.CFG_READY
+    )
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.publication_profile,
+            SemanticFragmentPublicationProfile,
+        ):
+            raise TypeError("semantic participant requires a typed profile")
 
     def project(self, plan: object, snapshot: object) -> CfgProjection:
         if not isinstance(plan, FragmentPlan):
@@ -332,12 +345,23 @@ class SemanticFragmentTransactionParticipant:
             ):
                 bindings.append((ref, ref))
                 continue
-            rebound = identity_index.rebind_identity(block.stable_identity)
-            if rebound.block is None:
-                raise ValueError(
-                    f"semantic binding cannot rebind {ref.local_block_id!r}"
+            if self.publication_profile.graph_free:
+                bindings.append(
+                    (
+                        ref,
+                        self.backend._generated_semantic_fragment_plan_handle(
+                            plan,
+                            ref.local_block_id,
+                        ),
+                    )
                 )
-            bindings.append((ref, rebound.block.handle))
+            else:
+                rebound = identity_index.rebind_identity(block.stable_identity)
+                if rebound.block is None:
+                    raise ValueError(
+                        f"semantic binding cannot rebind {ref.local_block_id!r}"
+                    )
+                bindings.append((ref, rebound.block.handle))
         return BoundSemanticCfgTransaction(
             prepared=prepared,
             session_id=prepared.attempt_id.session_id,
@@ -371,6 +395,7 @@ class SemanticFragmentTransactionParticipant:
             fragment.authority.snapshot_id,
             fragment,
             patch_plan,
+            self.publication_profile,
         )
         return self.backend._realize_semantic_patch_plan(patch_plan, fragment)
 
@@ -663,6 +688,9 @@ class _SemanticPatchLifecycle:
     prepublication: FragmentValidationResult
     root_inventory: SemanticFragmentRootInventory
     lifecycle_authority: FragmentPublicationLifecycleAuthority
+    publication_profile: SemanticFragmentPublicationProfile = (
+        SemanticFragmentPublicationProfile.CFG_READY
+    )
     stage_attempted: bool = False
     lifecycle_staged: bool = False
     root_attempted: bool = False
@@ -758,6 +786,23 @@ class _SemanticPatchLifecycle:
             self.plan,
             self.prepublication,
         )
+
+        if self.publication_profile.graph_free:
+            self.failure_phase = "logical_root_publication"
+            self.gateway._record_fragment_root_publication_attempted(self.plan)
+            for group in self.root_inventory.groups:
+                self.gateway._record_fragment_root_group_publication_attempted(
+                    self.plan,
+                    group.group_id,
+                )
+                self.gateway._record_fragment_root_group_publication_succeeded(
+                    self.plan,
+                    group.group_id,
+                )
+            self.gateway._record_fragment_root_publication_succeeded(self.plan)
+            self.failure_phase = "generated_verification"
+            self.backend._verify_generated_semantic_fragment(self.plan)
+            return staged
 
         self.failure_phase = "root_preparation"
         self.rollback_token = self.backend._prepare_semantic_fragment_root_publication(
@@ -927,10 +972,21 @@ class _SemanticPatchLifecycle:
             ) from recovery_error
 
 
-def execute_patch_transaction(gateway: object, backend: object, plan: FragmentPlan):
+def execute_patch_transaction(
+    gateway: object,
+    backend: object,
+    plan: FragmentPlan,
+    publication_profile: SemanticFragmentPublicationProfile = (
+        SemanticFragmentPublicationProfile.CFG_READY
+    ),
+):
     """Project, preflight, bind, lower, realize, and commit one typed transaction."""
     if not isinstance(plan, FragmentPlan):
         raise TypeError("semantic fragment transaction requires a FragmentPlan")
+    if not isinstance(publication_profile, SemanticFragmentPublicationProfile):
+        raise TypeError(
+            "semantic fragment transaction requires a typed publication profile"
+        )
     if bool(getattr(gateway, "active", False)):
         raise RuntimeError(
             "semantic fragment transaction requires an independent batch"
@@ -948,6 +1004,7 @@ def execute_patch_transaction(gateway: object, backend: object, plan: FragmentPl
         gateway,
         backend,
         transaction_attempt,
+        publication_profile,
     )
     try:
         projected = participant.project(plan, None)
@@ -997,6 +1054,7 @@ def execute_patch_transaction(gateway: object, backend: object, plan: FragmentPl
         prepublication=prepublication,
         root_inventory=prepared_fragment.authority.root_inventory,
         lifecycle_authority=lifecycle_authority,
+        publication_profile=publication_profile,
     )
     coordinator = CfgTransactionCoordinator(lifecycle)
     return coordinator.execute(

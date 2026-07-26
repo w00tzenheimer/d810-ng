@@ -55,6 +55,10 @@ from d810.hexrays.mutation.semantic_fragment_preparation import (
     PreparedNativeBodyPreparation,
     build_prepared_native_body,
 )
+from d810.hexrays.mutation.semantic_fragment_origins import (
+    IMPORTED_INSTRUCTION_ORIGINS as _IMPORTED_INSTRUCTION_ORIGINS,
+    LAST_IMPORTED_INSTRUCTION_ORIGINS as _LAST_IMPORTED_INSTRUCTION_ORIGINS,
+)
 from d810.hexrays.mutation.cfg_verify import (
     clear_owned_fake_block_registrations,
     clear_resolver_proven_live_predicates,
@@ -75,13 +79,17 @@ from d810.transforms.fragment_plan import (
     FragmentStoragePredicateMaterialization,
     FragmentTerminalReturn,
 )
-from d810.transforms.prepared_native_body import PreparedNativeBodyFact
+from d810.transforms.prepared_native_body import (
+    PreparedNativeBodyFact,
+    PreparedNativeEdgeFact,
+)
 from d810.ir.block_identity import (
     BlockHandleProvenance,
     NativeEaInterval,
     StableBlockIdentity,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.flowgraph import InsnKind
 from d810.ir.semantics import PredicateKind, inverted_predicate_kind
 from d810.ir.expressions import ValueOpKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
@@ -1121,6 +1129,27 @@ _PREOPT_UNION_SNIPPET_TEMPLATES: dict[
     tuple[int, int],
     DetachedSnippetTemplate,
 ] = {}
+_GENERATED_REFERENCE_SNIPPET_TEMPLATES: dict[
+    tuple[int, int],
+    DetachedSnippetTemplate,
+] = {}
+
+
+def _generated_reference_template_components(
+    *,
+    function_ea: int,
+    entry_anchors: set[int],
+) -> tuple[tuple[int, DetachedSnippetTemplate], ...]:
+    """Select capture roots without requiring one root per split entry."""
+    return tuple(
+        (int(target_ea), template)
+        for (owner_ea, target_ea), template in sorted(
+            _GENERATED_REFERENCE_SNIPPET_TEMPLATES.items()
+        )
+        if int(owner_ea) == int(function_ea) and int(target_ea) in entry_anchors
+    )
+
+
 _ACTIVE_PREOPT_UNION_IMPORT_MBA_IDS: set[int] = set()
 _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES: dict[
     tuple[int, int],
@@ -1134,13 +1163,6 @@ _IMPORTED_NATIVE_BLOCK_RANGES: dict[
     tuple[int, int, int],
     _ImportedSnippetRoot,
 ] = {}
-
-_IMPORTED_INSTRUCTION_ORIGINS: dict[tuple[int, int], int] = {}
-_LAST_IMPORTED_INSTRUCTION_ORIGINS: dict[
-    int,
-    tuple[tuple[int, int], ...],
-] = {}
-
 
 @dataclass(slots=True)
 class PreoptUnionSemanticNativeBodyMaterializer:
@@ -1192,96 +1214,52 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             for native_range in native_body.native_ranges
         )
         candidates: list[
-            tuple[
-                DetachedSnippetTemplate,
-                dict[str, DetachedSnippetBlockTemplate],
-            ]
+            tuple[DetachedSnippetTemplate, dict[str, DetachedSnippetBlockTemplate]]
         ] = []
         candidate_diagnostics: list[tuple[int, int, str]] = []
         for (owner_ea, target_ea), template in _PREOPT_UNION_SNIPPET_TEMPLATES.items():
             if int(owner_ea) != int(self.function_ea):
                 continue
-            if int(template.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED):
-                candidate_diagnostics.append(
-                    (int(target_ea), int(template.maturity), "maturity_mismatch")
-                )
-                continue
-            if not all(
-                any(
-                    int(owned_start) <= required_start
-                    and required_end <= int(owned_end)
-                    for owned_start, owned_end in template.owned_ranges
-                )
-                for required_start, required_end in required_ranges
-            ):
-                candidate_diagnostics.append(
-                    (int(target_ea), int(template.maturity), "range_not_owned")
-                )
-                continue
-            matched: dict[str, DetachedSnippetBlockTemplate] = {}
-            block_mismatch: tuple[int, int] | None = None
-            for block_id in native_body.block_ids:
-                plan_block = plan.block(block_id)
-                identity = plan_block.stable_identity
-                source_operations = tuple(
-                    operation
-                    for operation in plan.operations
-                    if operation.source_block_id == block_id
-                )
-                source_operation = (
-                    source_operations[0] if len(source_operations) == 1 else None
-                )
-                source_proof = _computed_branch_source_proof(source_operation)
-                matches = (
-                    ()
-                    if identity is None or identity.native_key != plan.native_key
-                    else tuple(
-                        template_block
-                        for template_block in template.blocks
-                        if (
-                            _template_block_covers_identity(
-                                template_block,
-                                identity,
-                            )
-                            or _template_block_anchors_split_normalization(
-                                template_block,
-                                identity,
-                                semantic_anchor_ea=int(plan_block.semantic_anchor_ea),
-                                source_proof=source_proof,
-                            )
-                        )
-                    )
-                )
-                substantive_matches = tuple(
-                    template_block
-                    for template_block in matches
-                    if template_block.instructions
-                )
-                if substantive_matches:
-                    matches = substantive_matches
-                if len(matches) != 1:
-                    block_mismatch = (
-                        int(plan_block.semantic_anchor_ea),
-                        len(matches),
-                    )
-                    break
-                matched[str(block_id)] = matches[0]
-            if block_mismatch is not None:
+            matched, mismatch = self._match_template_blocks(
+                plan=plan,
+                native_body=native_body,
+                template=template,
+                required_ranges=required_ranges,
+            )
+            if matched is None:
                 candidate_diagnostics.append(
                     (
                         int(target_ea),
                         int(template.maturity),
-                        (
-                            f"block@0x{block_mismatch[0]:X}:"
-                            f"matches={block_mismatch[1]}:"
-                            "template_shapes="
-                            f"{tuple((hex(int(block.native_entry_ea)), tuple(hex(int(insn.ea)) for insn in block.instructions)) for block in template.blocks)!r}"
-                        ),
+                        str(mismatch),
                     )
                 )
                 continue
-            if len(matched) == len(native_body.block_ids):
-                candidates.append((template, matched))
+            candidates.append((template, matched))
+        if not candidates:
+            try:
+                composite = self._compose_generated_reference_templates(entry_anchors)
+            except SemanticFragmentBackendRejected as exc:
+                candidate_diagnostics.append(
+                    (-1, int(ida_hexrays.MMAT_PREOPTIMIZED), str(exc))
+                )
+            else:
+                matched, mismatch = self._match_template_blocks(
+                    plan=plan,
+                    native_body=native_body,
+                    template=composite,
+                    required_ranges=required_ranges,
+                )
+                if matched is None:
+                    candidate_diagnostics.append(
+                        (
+                            int(composite.target_ea),
+                            int(composite.maturity),
+                            f"generated_composite:{mismatch}",
+                        )
+                    )
+                else:
+                    candidates.append((composite, matched))
         if len(candidates) != 1:
             raise SemanticFragmentBackendRejected(
                 f"native body {native_body.body_id!r} requires exactly one "
@@ -1291,6 +1269,252 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 f"candidates={tuple(candidate_diagnostics)!r}"
             )
         return candidates[0]
+
+    @staticmethod
+    def _match_template_blocks(
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+        template: DetachedSnippetTemplate,
+        required_ranges: tuple[tuple[int, int], ...],
+    ) -> tuple[
+        dict[str, DetachedSnippetBlockTemplate] | None,
+        str | None,
+    ]:
+        if int(template.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED):
+            return None, "maturity_mismatch"
+        if not all(
+            any(
+                int(owned_start) <= required_start
+                and required_end <= int(owned_end)
+                for owned_start, owned_end in template.owned_ranges
+            )
+            for required_start, required_end in required_ranges
+        ):
+            return None, "range_not_owned"
+        matched: dict[str, DetachedSnippetBlockTemplate] = {}
+        for block_id in native_body.block_ids:
+            plan_block = plan.block(block_id)
+            identity = plan_block.stable_identity
+            source_operations = tuple(
+                operation
+                for operation in plan.operations
+                if operation.source_block_id == block_id
+            )
+            source_operation = (
+                source_operations[0] if len(source_operations) == 1 else None
+            )
+            source_proof = _computed_branch_source_proof(source_operation)
+            matches = (
+                ()
+                if identity is None or identity.native_key != plan.native_key
+                else tuple(
+                    template_block
+                    for template_block in template.blocks
+                    if (
+                        _template_block_covers_identity(template_block, identity)
+                        or _template_block_anchors_split_normalization(
+                            template_block,
+                            identity,
+                            semantic_anchor_ea=int(plan_block.semantic_anchor_ea),
+                            source_proof=source_proof,
+                        )
+                    )
+                )
+            )
+            substantive_matches = tuple(
+                template_block
+                for template_block in matches
+                if template_block.instructions
+            )
+            if substantive_matches:
+                matches = substantive_matches
+            if len(matches) != 1:
+                return (
+                    None,
+                    (
+                        f"block@0x{int(plan_block.semantic_anchor_ea):X}:"
+                        f"matches={len(matches)}:template_entries="
+                        f"{tuple(hex(int(block.native_entry_ea)) for block in template.blocks)!r}"
+                    ),
+                )
+            matched[str(block_id)] = matches[0]
+        return matched, None
+
+    @classmethod
+    def _rebase_generated_reference_operand(
+        cls,
+        operand: object,
+        *,
+        rebased_serials: Mapping[int, int],
+        external_native_eas: Mapping[int, int],
+    ) -> None:
+        if int(operand.t) == int(ida_hexrays.mop_b):
+            old_serial = int(operand.b)
+            new_serial = rebased_serials.get(old_serial)
+            if new_serial is not None:
+                operand.make_blkref(int(new_serial))
+                return
+            external_ea = external_native_eas.get(old_serial)
+            if external_ea is None:
+                raise SemanticFragmentBackendRejected(
+                    f"GENERATED reference template lost block reference {old_serial}"
+                )
+            operand.make_gvar(int(external_ea))
+            return
+        if int(operand.t) == int(ida_hexrays.mop_d):
+            instruction = operand.d
+            for nested in (instruction.l, instruction.r, instruction.d):
+                cls._rebase_generated_reference_operand(
+                    nested,
+                    rebased_serials=rebased_serials,
+                    external_native_eas=external_native_eas,
+                )
+
+    @staticmethod
+    def _merge_generated_reference_rows(
+        templates: tuple[DetachedSnippetTemplate, ...],
+        attribute: str,
+        *,
+        key_width: int,
+    ) -> tuple[tuple[int, ...], ...]:
+        merged: dict[tuple[int, ...], tuple[int, ...]] = {}
+        for template in templates:
+            for raw_row in getattr(template, attribute):
+                row = tuple(int(value) for value in raw_row)
+                key = row[:key_width]
+                previous = merged.get(key)
+                if previous is not None and previous != row:
+                    raise SemanticFragmentBackendRejected(
+                        "GENERATED reference templates disagree on "
+                        f"{attribute} key {key!r}"
+                    )
+                merged[key] = row
+        return tuple(merged[key] for key in sorted(merged))
+
+    def _compose_generated_reference_templates(
+        self,
+        entry_anchors: set[int],
+    ) -> DetachedSnippetTemplate:
+        """Compose exact target-rooted PREOPT authority for graph-free staging."""
+        if not entry_anchors:
+            raise SemanticFragmentBackendRejected(
+                "GENERATED reference native body has no entry anchors"
+            )
+        keyed_templates = _generated_reference_template_components(
+            function_ea=int(self.function_ea),
+            entry_anchors=entry_anchors,
+        )
+        if not keyed_templates:
+            raise SemanticFragmentBackendRejected(
+                "GENERATED reference native body lacks a target-rooted template "
+                f"for entry anchors {tuple(hex(ea) for ea in sorted(entry_anchors))!r}"
+            )
+        templates: list[DetachedSnippetTemplate] = []
+        for anchor_ea, template in keyed_templates:
+            if int(template.target_ea) != int(anchor_ea):
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED reference template target identity changed"
+                )
+            if template.boundary_ports.direct or template.boundary_ports.conditional:
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED reference composition does not admit boundary ports"
+                )
+            templates.append(template)
+        components = tuple(templates)
+        root_target_ea = min(int(template.target_ea) for template in components)
+        rebased_blocks: list[DetachedSnippetBlockTemplate] = []
+        root_serial: int | None = None
+        next_serial = 0
+        for template in components:
+            rebased_serials = {
+                int(block.source_serial): int(next_serial + index)
+                for index, block in enumerate(template.blocks)
+            }
+            if len(rebased_serials) != len(template.blocks):
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED reference template contains duplicate serials"
+                )
+            external_native_eas: dict[int, int] = {}
+            for block in template.blocks:
+                for successor_serial, external_ea in zip(
+                    block.successor_serials,
+                    block.external_successor_eas,
+                ):
+                    if int(external_ea) > 0:
+                        previous = external_native_eas.setdefault(
+                            int(successor_serial), int(external_ea)
+                        )
+                        if int(previous) != int(external_ea):
+                            raise SemanticFragmentBackendRejected(
+                                "GENERATED reference template has ambiguous "
+                                f"external serial {int(successor_serial)}"
+                            )
+            for block in template.blocks:
+                instructions = tuple(
+                    ida_hexrays.minsn_t(instruction)
+                    for instruction in block.instructions
+                )
+                for instruction in instructions:
+                    for operand in (instruction.l, instruction.r, instruction.d):
+                        self._rebase_generated_reference_operand(
+                            operand,
+                            rebased_serials=rebased_serials,
+                            external_native_eas=external_native_eas,
+                        )
+                rebased_blocks.append(
+                    replace(
+                        block,
+                        source_serial=rebased_serials[int(block.source_serial)],
+                        instructions=instructions,
+                        successor_serials=tuple(
+                            rebased_serials.get(int(successor), int(successor))
+                            for successor in block.successor_serials
+                        ),
+                    )
+                )
+            if int(template.target_ea) == root_target_ea:
+                root_serial = rebased_serials[int(template.root_source_serial)]
+            next_serial += len(template.blocks)
+        if root_serial is None:
+            raise SemanticFragmentBackendRejected(
+                "GENERATED reference composite lost its root"
+            )
+
+        owned_ranges: list[list[int]] = []
+        for start_ea, end_ea in sorted(
+            row for template in components for row in template.owned_ranges
+        ):
+            if owned_ranges and int(start_ea) <= owned_ranges[-1][1]:
+                owned_ranges[-1][1] = max(owned_ranges[-1][1], int(end_ea))
+            else:
+                owned_ranges.append([int(start_ea), int(end_ea)])
+        carriers: list[CallResultCarrier] = []
+        for template in components:
+            for carrier in template.call_result_carriers:
+                if carrier not in carriers:
+                    carriers.append(carrier)
+        return DetachedSnippetTemplate(
+            function_ea=int(self.function_ea),
+            target_ea=root_target_ea,
+            maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
+            root_source_serial=int(root_serial),
+            blocks=tuple(rebased_blocks),
+            stack_vd_to_ida=self._merge_generated_reference_rows(
+                components, "stack_vd_to_ida", key_width=1
+            ),
+            owned_ranges=tuple((start, end) for start, end in owned_ranges),
+            call_result_carriers=tuple(carriers),
+            stable_stack_vd_to_ida=self._merge_generated_reference_rows(
+                components, "stable_stack_vd_to_ida", key_width=1
+            ),
+            instruction_stack_vd_to_ida=self._merge_generated_reference_rows(
+                components, "instruction_stack_vd_to_ida", key_width=2
+            ),
+            direct_call_stack_pointer_deltas=self._merge_generated_reference_rows(
+                components, "direct_call_stack_pointer_deltas", key_width=1
+            ),
+        )
 
     @staticmethod
     def _preflight_direct_transfer_rewrite(
@@ -1614,6 +1838,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         matched: Mapping[str, DetachedSnippetBlockTemplate],
         native_body: FragmentNativeBody,
         plan: object,
+        *,
+        allow_unplanned_transfers: bool = False,
     ) -> tuple[
         dict[int, int],
         dict[
@@ -1632,6 +1858,19 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         ] = {}
         direct_transfer_rewrites: dict[str, _DirectTransferRewritePlan] = {}
         terminal_block_ids = set(native_body.terminal_block_ids)
+        preserved_native_transfer_block_ids = set(
+            native_body.preserved_native_transfer_block_ids
+        )
+        if allow_unplanned_transfers:
+            if preserved_native_transfer_block_ids != set(native_body.block_ids):
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED reference native body must explicitly preserve "
+                    "every native transfer"
+                )
+        elif preserved_native_transfer_block_ids:
+            raise SemanticFragmentBackendRejected(
+                "preserved native transfers require graph-free GENERATED publication"
+            )
         for block_id, template_block in matched.items():
             return_indexes = tuple(
                 index
@@ -1641,7 +1880,21 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             has_terminal_return = return_indexes == (
                 len(template_block.instructions) - 1,
             )
-            if (block_id in terminal_block_ids) != has_terminal_return:
+            if allow_unplanned_transfers:
+                external_targets = tuple(
+                    int(ea)
+                    for ea in template_block.external_successor_eas
+                    if int(ea) > 0
+                )
+                if terminal_block_ids or (
+                    has_terminal_return and len(external_targets) != 1
+                ):
+                    raise SemanticFragmentBackendRejected(
+                        "GENERATED reference native body contains an unbound "
+                        f"terminal return; block={block_id!r} "
+                        f"external_targets={tuple(hex(ea) for ea in external_targets)!r}"
+                    )
+            elif (block_id in terminal_block_ids) != has_terminal_return:
                 raise SemanticFragmentBackendRejected(
                     "PREOPT native body terminal return ownership differs from the plan"
                 )
@@ -1712,7 +1965,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 for operation in plan.operations
                 if operation.source_block_id == block_id
             )
-            expected_operations = 0 if block_id in terminal_block_ids else 1
+            expected_operations = (
+                0
+                if allow_unplanned_transfers or block_id in terminal_block_ids
+                else 1
+            )
             conditional_tail = bool(
                 template_block.instructions
                 and ida_hexrays.is_mcode_jcond(
@@ -1804,10 +2061,15 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             if (
                 len(operations) != expected_operations
                 or (
+                    not allow_unplanned_transfers
+                    and
                     operations
                     and (len(operations[0].edges) == 2) != compatible_conditional
                 )
-                or has_call_fallthrough != operation_has_call_fallthrough
+                or (
+                    not allow_unplanned_transfers
+                    and has_call_fallthrough != operation_has_call_fallthrough
+                )
             ):
                 semantic_anchor_ea = int(plan.block(block_id).semantic_anchor_ea)
                 raise SemanticFragmentBackendRejected(
@@ -2877,6 +3139,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         *,
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
+        allow_unplanned_transfers: bool = False,
     ) -> tuple[
         DetachedSnippetTemplate,
         dict[str, DetachedSnippetBlockTemplate],
@@ -2893,6 +3156,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             matched,
             native_body,
             plan,
+            allow_unplanned_transfers=allow_unplanned_transfers,
         )
         prepared = self._prepare_native_body_instructions(
             template=template,
@@ -2919,6 +3183,14 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         matched: Mapping[str, DetachedSnippetBlockTemplate],
         prepared: Mapping[str, tuple[tuple[int, object], ...]],
         direct_transfer_operation_ids: tuple[str, ...],
+        preserved_successors_by_block_id: Mapping[
+            str, tuple[PreparedNativeEdgeFact, ...]
+        ]
+        | None = None,
+        preserved_terminators_by_block_id: Mapping[
+            str, tuple[int, InsnKind]
+        ]
+        | None = None,
     ) -> PreparedNativeBodyPreparation:
         return build_prepared_native_body(
             plan=plan,
@@ -2932,7 +3204,102 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 for block_id in native_body.block_ids
             ),
             direct_transfer_operation_ids=direct_transfer_operation_ids,
+            preserved_successors_by_block_id=(
+                preserved_successors_by_block_id
+            ),
+            preserved_terminators_by_block_id=(
+                preserved_terminators_by_block_id
+            ),
         )
+
+    @staticmethod
+    def _generated_preserved_transfer_authority(
+        *,
+        matched: Mapping[str, DetachedSnippetBlockTemplate],
+        native_body: FragmentNativeBody,
+    ) -> tuple[
+        dict[str, tuple[PreparedNativeEdgeFact, ...]],
+        dict[str, tuple[int, InsnKind]],
+    ]:
+        """Project cached native transfers into serial-free immutable facts."""
+        block_id_by_serial = {
+            int(template_block.source_serial): str(block_id)
+            for block_id, template_block in matched.items()
+        }
+        if len(block_id_by_serial) != len(matched):
+            raise SemanticFragmentBackendRejected(
+                "GENERATED preserved transfers contain duplicate template serials"
+            )
+        successors_by_id: dict[str, tuple[PreparedNativeEdgeFact, ...]] = {}
+        terminators_by_id: dict[str, tuple[int, InsnKind]] = {}
+        for block_id in native_body.block_ids:
+            template_block = matched[block_id]
+            internal_targets = tuple(
+                dict.fromkeys(
+                    block_id_by_serial[int(serial)]
+                    for serial in template_block.successor_serials
+                    if int(serial) in block_id_by_serial
+                )
+            )
+            tail = (
+                None
+                if not template_block.instructions
+                else template_block.instructions[-1]
+            )
+            if (
+                tail is not None
+                and ida_hexrays.is_mcode_jcond(int(tail.opcode))
+                and len(internal_targets) == 2
+                and int(tail.d.t) == int(ida_hexrays.mop_b)
+            ):
+                taken_id = block_id_by_serial.get(int(tail.d.b))
+                fallthrough_ids = tuple(
+                    target_id
+                    for target_id in internal_targets
+                    if target_id != taken_id
+                )
+                if taken_id is None or len(fallthrough_ids) != 1:
+                    raise SemanticFragmentBackendRejected(
+                        "GENERATED preserved conditional lacks exact arm authority; "
+                        f"block={block_id!r}"
+                    )
+                successors = (
+                    PreparedNativeEdgeFact(
+                        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        fallthrough_ids[0],
+                    ),
+                    PreparedNativeEdgeFact(
+                        SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        taken_id,
+                    ),
+                )
+            elif len(internal_targets) <= 1:
+                successors = tuple(
+                    PreparedNativeEdgeFact(SemanticEdgeRole.DIRECT, target_id)
+                    for target_id in internal_targets
+                )
+            else:
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED preserved transfer has ambiguous native topology; "
+                    f"block={block_id!r} targets={internal_targets!r}"
+                )
+            successors_by_id[str(block_id)] = successors
+            external_targets = tuple(
+                int(ea)
+                for ea in template_block.external_successor_eas
+                if int(ea) > 0
+            )
+            if external_targets:
+                if len(external_targets) != 1 or tail is None:
+                    raise SemanticFragmentBackendRejected(
+                        "GENERATED preserved boundary transfer is ambiguous; "
+                        f"block={block_id!r}"
+                    )
+                terminators_by_id[str(block_id)] = (
+                    int(tail.ea),
+                    InsnKind.GOTO,
+                )
+        return successors_by_id, terminators_by_id
 
     def prepare_native_body(
         self,
@@ -2965,6 +3332,48 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             matched=matched,
             prepared=prepared,
             direct_transfer_operation_ids=direct_transfer_operation_ids,
+        )
+        observer = self.prepared_fact_observer
+        if observer is not None:
+            observer(plan, native_body, preparation.fact)
+        return preparation
+
+    def prepare_generated_native_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> PreparedNativeBodyPreparation:
+        """Prepare target-rooted native transfers for graph-free publication."""
+        if int(self.mba.maturity) != int(ida_hexrays.MMAT_GENERATED):
+            raise SemanticFragmentBackendRejected(
+                "GENERATED native body requires the actual MMAT_GENERATED boundary"
+            )
+        (
+            _template,
+            matched,
+            prepared,
+            direct_transfer_operation_ids,
+        ) = self._prepare_native_body(
+            plan=plan,
+            native_body=native_body,
+            allow_unplanned_transfers=True,
+        )
+        (
+            preserved_successors,
+            preserved_terminators,
+        ) = self._generated_preserved_transfer_authority(
+            matched=matched,
+            native_body=native_body,
+        )
+        preparation = self._prepared_native_body(
+            plan=plan,
+            native_body=native_body,
+            matched=matched,
+            prepared=prepared,
+            direct_transfer_operation_ids=direct_transfer_operation_ids,
+            preserved_successors_by_block_id=preserved_successors,
+            preserved_terminators_by_block_id=preserved_terminators,
         )
         observer = self.prepared_fact_observer
         if observer is not None:
@@ -3010,6 +3419,116 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 context.bind_operation_predicate(
                     operation_id=operation.operation_id,
                 )
+
+    @classmethod
+    def _bind_generated_template_operand(
+        cls,
+        operand: object,
+        *,
+        live_serial_by_template_serial: Mapping[int, int],
+        native_ea_by_template_serial: Mapping[int, int],
+    ) -> None:
+        """Bind one cached-template operand without constructing a live graph."""
+        if int(operand.t) == int(ida_hexrays.mop_b):
+            template_serial = int(operand.b)
+            live_serial = live_serial_by_template_serial.get(template_serial)
+            if live_serial is not None:
+                operand.make_blkref(int(live_serial))
+                return
+            native_ea = native_ea_by_template_serial.get(template_serial)
+            if native_ea is None:
+                raise SemanticFragmentBackendRejected(
+                    f"GENERATED template block reference {template_serial} "
+                    "has no closed or boundary binding"
+                )
+            operand.make_gvar(int(native_ea))
+            return
+        if int(operand.t) == int(ida_hexrays.mop_d):
+            instruction = operand.d
+            for nested in (instruction.l, instruction.r, instruction.d):
+                cls._bind_generated_template_operand(
+                    nested,
+                    live_serial_by_template_serial=(
+                        live_serial_by_template_serial
+                    ),
+                    native_ea_by_template_serial=native_ea_by_template_serial,
+                )
+
+    def stage_generated_native_body(
+        self,
+        *,
+        context: object,
+        native_body: FragmentNativeBody,
+        preparation: PreparedNativeBodyPreparation,
+    ) -> None:
+        """Populate GENERATED blocks with serial-free cached-template bindings."""
+        try:
+            preparation.assert_authority(
+                plan=context.plan,
+                native_body=native_body,
+            )
+        except (TypeError, ValueError) as exc:
+            raise SemanticFragmentBackendRejected(
+                "prepared GENERATED native body changed before staging"
+            ) from exc
+        template, matched = self._select_template_blocks(
+            context.plan,
+            native_body,
+        )
+        for block_id in native_body.block_ids:
+            context.stage_block(block_id)
+        live_serial_by_template_serial: dict[int, int] = {}
+        for block_id in native_body.block_ids:
+            template_serial = int(matched[block_id].source_serial)
+            if template_serial in live_serial_by_template_serial:
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED native body matched one template block more than once"
+                )
+            live_serial_by_template_serial[template_serial] = (
+                context.generated_live_serial(block_id)
+            )
+        native_ea_by_template_serial = {
+            int(block.source_serial): int(block.native_entry_ea)
+            for block in template.blocks
+        }
+        row_by_id = {row[0]: row for row in preparation.payload.rows}
+        for block_id in native_body.block_ids:
+            _row_id, block_flags, instruction_rows = row_by_id[block_id]
+            clones: list[tuple[int, object]] = []
+            for native_ea, instruction in instruction_rows:
+                clone = ida_hexrays.minsn_t(instruction)
+                for operand in (clone.l, clone.r, clone.d):
+                    self._bind_generated_template_operand(
+                        operand,
+                        live_serial_by_template_serial=(
+                            live_serial_by_template_serial
+                        ),
+                        native_ea_by_template_serial=(
+                            native_ea_by_template_serial
+                        ),
+                    )
+                clones.append((int(native_ea), clone))
+            template_block = matched[block_id]
+            external_targets = tuple(
+                int(ea)
+                for ea in template_block.external_successor_eas
+                if int(ea) > 0
+            )
+            if external_targets:
+                if len(external_targets) != 1 or not clones:
+                    raise SemanticFragmentBackendRejected(
+                        f"GENERATED boundary block {block_id!r} is ambiguous"
+                    )
+                native_ea, _old_tail = clones[-1]
+                boundary = ida_hexrays.minsn_t(int(native_ea))
+                boundary.opcode = int(ida_hexrays.m_goto)
+                boundary.l.make_gvar(external_targets[0])
+                clones[-1] = (native_ea, boundary)
+            context.populate_block(
+                block_id=block_id,
+                instructions=tuple(clones),
+                block_flags=int(block_flags),
+            )
 
 
 @dataclass(slots=True)
@@ -5468,6 +5987,94 @@ def capture_preopt_union_snippet_template(
             else authoritative_stack_frame_offsets_by_ea
         ),
     )
+
+
+def capture_generated_reference_snippet_template(
+    function_ea: int,
+    target_ea: int,
+    mba: object,
+    ranges: tuple[tuple[int, int], ...],
+    *,
+    boundary_ranges: tuple[tuple[int, int], ...] = (),
+    boundary_exit_eas: Collection[int] = (),
+    owned_block_entry_eas: Collection[int],
+) -> bool:
+    """Cache one target-rooted PREOPT body for GENERATED publication.
+
+    This authority is intentionally separate from the broad PREOPT-union
+    cache.  A bounded GENERATED reference plan can require multiple
+    target-rooted translations of overlapping native bytes; replacing the
+    broad cache would make the older publication path depend on checksum-local
+    evidence.
+    """
+    if int(mba.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED):
+        return False
+    normalized_ranges = tuple(
+        (int(start_ea), int(end_ea))
+        for start_ea, end_ea in ranges
+        if int(start_ea) < int(end_ea)
+    )
+    normalized_boundary_ranges = tuple(
+        (int(start_ea), int(end_ea))
+        for start_ea, end_ea in boundary_ranges
+        if int(start_ea) < int(end_ea)
+    )
+    capture_ranges = (*normalized_ranges, *normalized_boundary_ranges)
+    range_split_entries = {
+        int(native_entry)
+        for serial in range(int(mba.qty))
+        for block in (mba.get_mblock(serial),)
+        for native_eas in (_block_native_eas(block),)
+        for native_entry in (_unique_block_native_ea(block),)
+        if native_entry is not None
+        and native_eas
+        and all(_ea_in_ranges(ea, capture_ranges) for ea in native_eas)
+    }
+    captured = _capture_detached_snippet_template(
+        int(function_ea),
+        int(target_ea),
+        mba,
+        capture_ranges,
+        _GENERATED_REFERENCE_SNIPPET_TEMPLATES,
+        DetachedSnippetBoundaryPorts((), ()),
+        tuple(int(ea) for ea in owned_block_entry_eas),
+        range_split_entries,
+        (),
+        {},
+        {},
+        {},
+    )
+    if not captured:
+        return False
+    key = (int(function_ea), int(target_ea))
+    template = _GENERATED_REFERENCE_SNIPPET_TEMPLATES[key]
+    normalized_boundary_exit_eas = tuple(
+        sorted({int(ea) for ea in boundary_exit_eas if int(ea) > 0})
+    )
+    normalized_blocks: list[DetachedSnippetBlockTemplate] = []
+    for block in template.blocks:
+        tail = block.instructions[-1] if block.instructions else None
+        if tail is None or int(tail.opcode) != int(ida_hexrays.m_ret):
+            normalized_blocks.append(block)
+            continue
+        matches = tuple(
+            ea
+            for ea in normalized_boundary_exit_eas
+            if int(block.native_end_ea) == int(ea)
+        )
+        if not matches and len(normalized_boundary_exit_eas) == 1:
+            matches = normalized_boundary_exit_eas
+        if len(matches) != 1:
+            return False
+        normalized_blocks.append(
+            replace(block, external_successor_eas=(int(matches[0]),))
+        )
+    _GENERATED_REFERENCE_SNIPPET_TEMPLATES[key] = replace(
+        template,
+        blocks=tuple(normalized_blocks),
+        owned_ranges=normalized_ranges,
+    )
+    return True
 
 
 def bind_preopt_union_snippet_boundary_ports(
@@ -12612,6 +13219,7 @@ def clear_detached_handler_call_templates() -> None:
     _ANALYZED_CALL_RESULT_DEFINITION_CONFLICTS.clear()
     _DETACHED_SNIPPET_TEMPLATES.clear()
     _PREOPT_UNION_SNIPPET_TEMPLATES.clear()
+    _GENERATED_REFERENCE_SNIPPET_TEMPLATES.clear()
     _ACTIVE_PREOPT_UNION_IMPORT_MBA_IDS.clear()
     _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES.clear()
     _DETACHED_CALLINFO_TEMPLATES.clear()

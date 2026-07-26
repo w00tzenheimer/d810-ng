@@ -314,10 +314,57 @@ def build_prepared_native_body(
     native_body: FragmentNativeBody,
     rows: tuple[tuple[str, int, tuple[tuple[int, object], ...]], ...],
     direct_transfer_operation_ids: tuple[str, ...] = (),
+    preserved_successors_by_block_id: Mapping[
+        str, tuple[PreparedNativeEdgeFact, ...]
+    ]
+    | None = None,
+    preserved_terminators_by_block_id: Mapping[str, tuple[int, InsnKind]]
+    | None = None,
 ) -> PreparedNativeBodyPreparation:
     """Build immutable facts beside, never from, mutable payload authority."""
     operations_by_source = _operations_by_source(plan)
-    predecessors = _predecessors(native_body, operations_by_source)
+    preserved_block_ids = set(native_body.preserved_native_transfer_block_ids)
+    preserved_successors = {
+        str(block_id): tuple(successors)
+        for block_id, successors in (preserved_successors_by_block_id or {}).items()
+    }
+    preserved_terminators = {
+        str(block_id): (int(terminator_ea), terminator_kind)
+        for block_id, (terminator_ea, terminator_kind) in (
+            preserved_terminators_by_block_id or {}
+        ).items()
+    }
+    if set(preserved_successors) != preserved_block_ids:
+        raise ValueError(
+            "prepared preserved-transfer successors differ from the native body"
+        )
+    if not set(preserved_terminators) <= preserved_block_ids:
+        raise ValueError(
+            "prepared preserved-transfer terminators differ from the native body"
+        )
+    successors_by_block_id = {
+        block_id: (
+            preserved_successors[block_id]
+            if block_id in preserved_block_ids
+            else tuple(
+                PreparedNativeEdgeFact(edge.role, edge.target_block_id)
+                for operation in operations_by_source.get(block_id, ())
+                for edge in operation.edges
+            )
+        )
+        for block_id in native_body.block_ids
+    }
+    predecessor_lists: dict[str, list[str]] = {
+        block_id: [] for block_id in native_body.block_ids
+    }
+    for source_block_id, successors in successors_by_block_id.items():
+        for successor in successors:
+            if successor.target_block_id in predecessor_lists:
+                predecessor_lists[successor.target_block_id].append(source_block_id)
+    predecessors = {
+        block_id: tuple(source_ids)
+        for block_id, source_ids in predecessor_lists.items()
+    }
     payload = PreparedNativeBodyPayload(
         plan_id=plan.plan_id,
         body_id=native_body.body_id,
@@ -352,23 +399,37 @@ def build_prepared_native_body(
             for index, (native_ea, instruction) in enumerate(instruction_rows)
         )
         operations = operations_by_source.get(block_id, ())
-        successors = tuple(
-            PreparedNativeEdgeFact(edge.role, edge.target_block_id)
-            for operation in operations
-            for edge in operation.edges
-        )
+        successors = successors_by_block_id[block_id]
         kind = {
             0: BlockKind.ZERO_WAY,
             1: BlockKind.ONE_WAY,
             2: BlockKind.TWO_WAY,
         }.get(len(successors), BlockKind.N_WAY)
-        terminator_ea, terminator_kind = _projected_terminator(
-            plan=plan,
-            native_body=native_body,
-            block_id=block_id,
-            operations=operations,
-            instructions=instructions,
-            instruction_rows=instruction_rows,
+        terminator_ea, terminator_kind = (
+            preserved_terminators.get(
+                block_id,
+                (
+                    (
+                        None
+                        if not instructions
+                        else int(instructions[-1].native_ea)
+                    ),
+                    (
+                        InsnKind.UNKNOWN
+                        if not instructions
+                        else instructions[-1].kind
+                    ),
+                ),
+            )
+            if block_id in preserved_block_ids
+            else _projected_terminator(
+                plan=plan,
+                native_body=native_body,
+                block_id=block_id,
+                operations=operations,
+                instructions=instructions,
+                instruction_rows=instruction_rows,
+            )
         )
         blocks.append(
             PreparedNativeBlockFact(
@@ -393,6 +454,9 @@ def build_prepared_native_body(
             terminal_block_ids=tuple(native_body.terminal_block_ids),
             blocks=tuple(blocks),
             direct_transfer_operation_ids=expected_direct_transfer_ids,
+            preserved_native_transfer_block_ids=tuple(
+                native_body.preserved_native_transfer_block_ids
+            ),
         ),
         payload=payload,
     )
@@ -444,12 +508,26 @@ class PreparedNativeBodyPreparation:
             self.fact.native_ranges != native_body.native_ranges
             or self.fact.entry_block_ids != native_body.entry_block_ids
             or self.fact.terminal_block_ids != native_body.terminal_block_ids
+            or self.fact.preserved_native_transfer_block_ids
+            != native_body.preserved_native_transfer_block_ids
             or tuple(block.block_id for block in self.fact.blocks)
             != native_body.block_ids
         ):
             raise ValueError("native preparation body authority changed before staging")
         operations_by_source = _operations_by_source(plan)
-        predecessors = _predecessors(native_body, operations_by_source)
+        predecessor_lists: dict[str, list[str]] = {
+            block_id: [] for block_id in native_body.block_ids
+        }
+        for block_fact in self.fact.blocks:
+            for successor in block_fact.successors:
+                if successor.target_block_id in predecessor_lists:
+                    predecessor_lists[successor.target_block_id].append(
+                        block_fact.block_id
+                    )
+        predecessors = {
+            block_id: tuple(source_ids)
+            for block_id, source_ids in predecessor_lists.items()
+        }
         expected_direct_transfer_ids = tuple(
             operation.operation_id
             for block_id in native_body.block_ids
@@ -465,23 +543,37 @@ class PreparedNativeBodyPreparation:
         for block_fact in self.fact.blocks:
             plan_block = plan.block(block_fact.block_id)
             operations = operations_by_source.get(block_fact.block_id, ())
-            expected_successors = tuple(
-                PreparedNativeEdgeFact(edge.role, edge.target_block_id)
-                for operation in operations
-                for edge in operation.edges
+            preserved = (
+                block_fact.block_id
+                in native_body.preserved_native_transfer_block_ids
+            )
+            expected_successors = (
+                block_fact.successors
+                if preserved
+                else tuple(
+                    PreparedNativeEdgeFact(edge.role, edge.target_block_id)
+                    for operation in operations
+                    for edge in operation.edges
+                )
             )
             expected_kind = {
                 0: BlockKind.ZERO_WAY,
                 1: BlockKind.ONE_WAY,
                 2: BlockKind.TWO_WAY,
             }.get(len(expected_successors), BlockKind.N_WAY)
-            expected_terminator = _projected_terminator(
-                plan=plan,
-                native_body=native_body,
-                block_id=block_fact.block_id,
-                operations=operations,
-                instructions=block_fact.instructions,
-                instruction_rows=instruction_rows_by_block_id[block_fact.block_id],
+            expected_terminator = (
+                (block_fact.terminator_ea, block_fact.terminator_kind)
+                if preserved
+                else _projected_terminator(
+                    plan=plan,
+                    native_body=native_body,
+                    block_id=block_fact.block_id,
+                    operations=operations,
+                    instructions=block_fact.instructions,
+                    instruction_rows=instruction_rows_by_block_id[
+                        block_fact.block_id
+                    ],
+                )
             )
             if (
                 block_fact.semantic_anchor_ea != plan_block.semantic_anchor_ea

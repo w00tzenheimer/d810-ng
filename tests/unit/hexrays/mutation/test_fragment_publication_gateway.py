@@ -44,6 +44,9 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
     SemanticFragmentRootInventory,
     SemanticFragmentRootInventoryItem,
 )
+from d810.hexrays.mutation.semantic_fragment_profile import (
+    SemanticFragmentPublicationProfile,
+)
 from d810.ir.expressions import ValueOpKind
 from d810.ir.block_identity import (
     CurrentMbaBlockIdentityBinding,
@@ -178,6 +181,39 @@ def _plan() -> FragmentPlan:
                 ),
             ),
         ),
+    )
+
+
+def test_generated_plan_inventory_excludes_logical_in_place_root_write() -> None:
+    plan = _plan()
+    inventory = SemanticFragmentRootInventory(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        items=(
+            SemanticFragmentRootInventoryItem(
+                edge_id="root:entry:direct:original",
+                root_block_id="replacement",
+                original_block_id="original",
+                predecessor_block_id="entry",
+                role=SemanticEdgeRole.DIRECT,
+                requires_helper=False,
+            ),
+        ),
+    )
+    gateway, _committed, _aborted = _gateway(plan)
+
+    cfg_ready = gateway._fragment_plan_items(plan, inventory)
+    generated = gateway._fragment_plan_items(
+        plan,
+        inventory,
+        SemanticFragmentPublicationProfile.GENERATED_GRAPH_FREE,
+    )
+
+    assert len(cfg_ready) == 3
+    assert len(generated) == 2
+    assert tuple(item.mutation_kind for item in generated) == (
+        "semantic_fragment_replacement_materialization",
+        "semantic_fragment_direct",
     )
 
 
@@ -460,6 +496,7 @@ class _FragmentBackend:
         raise_after_observation: bool = False,
         current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None,
         malformed_route_projection: bool = False,
+        raise_during_generated_verify: bool = False,
     ) -> None:
         self.get_mblock_calls = 0
 
@@ -486,11 +523,30 @@ class _FragmentBackend:
             else current_mba_identity_binding
         )
         self.malformed_route_projection = malformed_route_projection
+        self.raise_during_generated_verify = raise_during_generated_verify
         self.calls: list[str] = []
         self.root_published = False
         self.projection: ProjectedFragment | None = None
         self.original_handle = None
         self.replacement_handle = None
+
+    def _generated_semantic_fragment_plan_handle(
+        self,
+        plan: FragmentPlan,
+        block_id: str,
+    ):
+        serial_by_id = {
+            "entry": 0,
+            "original": 1,
+            "replacement": 1,
+            "target": 2,
+            "dispatcher": 3,
+        }
+        handle = self.gateway.identity_index.handle_for_serial(
+            serial_by_id[str(block_id)]
+        )
+        assert handle is not None
+        return handle
 
     def _snapshot_semantic_fragment_inputs(
         self,
@@ -925,6 +981,11 @@ class _FragmentBackend:
     def _complete_semantic_fragment_publication(self, _plan: FragmentPlan) -> None:
         self.calls.append("complete")
 
+    def _verify_generated_semantic_fragment(self, _plan: FragmentPlan) -> None:
+        self.calls.append("verify-generated")
+        if self.raise_during_generated_verify:
+            raise RuntimeError("generated post-write verifier failure")
+
 
 def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     plan = _plan()
@@ -993,6 +1054,53 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     assert [event.phase_index for event in authority_events] == list(range(7))
     assert len({event.attempt_id for event in authority_events}) == 1
     assert all(event.attempt_id.plan_id == plan.plan_id for event in authority_events)
+
+
+def test_generated_preflight_rejection_is_clean_and_write_free() -> None:
+    plan = _plan()
+    gateway, committed, aborted = _gateway(plan)
+    backend = _FragmentBackend(gateway, invalid_preprojection=True)
+
+    with pytest.raises(SemanticFragmentPublicationRejected, match="prepublication"):
+        gateway.execute_patch_transaction(
+            backend,
+            plan,
+            SemanticFragmentPublicationProfile.GENERATED_GRAPH_FREE,
+        )
+
+    assert backend.calls == ["plan-roots", "snapshot"]
+    assert gateway.mutation_started is False
+    assert gateway.generation_poisoned is False
+    assert committed == []
+    assert aborted == []
+    assert gateway.receipts == ()
+
+
+def test_generated_postwrite_verifier_failure_poisons_without_rollback() -> None:
+    plan = _plan()
+    gateway, committed, aborted = _gateway(plan)
+    backend = _FragmentBackend(gateway, raise_during_generated_verify=True)
+
+    with pytest.raises(CfgGenerationPoisoned, match="post-write verifier"):
+        gateway.execute_patch_transaction(
+            backend,
+            plan,
+            SemanticFragmentPublicationProfile.GENERATED_GRAPH_FREE,
+        )
+
+    assert backend.calls == [
+        "plan-roots",
+        "snapshot",
+        "stage",
+        "observe-staged",
+        "verify-generated",
+    ]
+    assert gateway.mutation_started is True
+    assert gateway.generation_poisoned is True
+    assert committed == []
+    assert len(aborted) == 1
+    assert aborted[0].rollback_attempted is False
+    assert aborted[0].rollback_succeeded is None
 
 
 def test_gateway_commits_reference_matched_route_before_root_publication() -> None:

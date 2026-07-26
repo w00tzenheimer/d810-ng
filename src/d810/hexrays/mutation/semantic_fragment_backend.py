@@ -449,6 +449,19 @@ class SemanticNativeBodyStagingContext:
             )
         self._populated_block_ids.append(block_id)
 
+    def generated_live_serial(self, block_id: str) -> int:
+        """Resolve one staged block for graph-free operand binding."""
+        if not _generated_graph_free(self._modifier):
+            raise SemanticFragmentBackendRejected(
+                "generated live serials require the graph-free profile"
+            )
+        return int(
+            _live_block_for_binding(
+                self._modifier,
+                self.state.binding(str(block_id)),
+            ).serial
+        )
+
     def bind_instruction_origin(
         self,
         *,
@@ -843,10 +856,22 @@ def _prepare_native_bodies(
     materializer = _native_body_materializer(modifier, plan)
     if materializer is None:
         return ()
+    prepare = materializer.prepare_native_body
+    if _generated_graph_free(modifier):
+        prepare_generated = getattr(
+            materializer,
+            "prepare_generated_native_body",
+            None,
+        )
+        if not callable(prepare_generated):
+            raise SemanticFragmentBackendRejected(
+                "GENERATED native body materializer lacks graph-free preparation"
+            )
+        prepare = prepare_generated
     preparations = tuple(
         (
             native_body.body_id,
-            materializer.prepare_native_body(
+            prepare(
                 plan=plan,
                 native_body=native_body,
             ),
@@ -911,11 +936,27 @@ def _stage_native_bodies(
         _receipt_count=len(gateway.receipts),
         _identity_generation=gateway.identity_index.generation,
     )
-    materializer.stage_native_body(
-        context=context,
-        native_body=native_body,
-        preparation=preparation_by_body_id[native_body.body_id],
-    )
+    if _generated_graph_free(modifier):
+        stage_generated = getattr(
+            materializer,
+            "stage_generated_native_body",
+            None,
+        )
+        if not callable(stage_generated):
+            raise SemanticFragmentBackendRejected(
+                "GENERATED native body materializer lacks graph-free staging"
+            )
+        stage_generated(
+            context=context,
+            native_body=native_body,
+            preparation=preparation_by_body_id[native_body.body_id],
+        )
+    else:
+        materializer.stage_native_body(
+            context=context,
+            native_body=native_body,
+            preparation=preparation_by_body_id[native_body.body_id],
+        )
     context.validate_complete()
     state.materialized_native_body_ids.add(native_body_id)
 
@@ -924,8 +965,55 @@ def _published_binding(
     modifier: DeferredGraphModifier,
     block_id: str,
     stable_identity,
+    *,
+    preflight_projection: ProjectedFragment | None = None,
 ) -> SemanticFragmentRuntimeBinding:
     gateway = _gateway(modifier)
+    if _generated_graph_free(modifier):
+        if preflight_projection is None:
+            raise SemanticFragmentBackendRejected(
+                "GENERATED published binding lacks immutable projection authority"
+            )
+        expected = next(
+            (
+                binding
+                for binding in preflight_projection.identity_bindings
+                if binding.block_id == str(block_id)
+            ),
+            None,
+        )
+        if expected is None:
+            raise SemanticFragmentBackendRejected(
+                f"GENERATED fragment block {block_id!r} lacks projected binding authority"
+            )
+        matches: list[tuple[object, object]] = []
+        for serial in range(int(modifier.mba.qty)):
+            handle = gateway.identity_index.handle_for_serial(serial)
+            proxy = gateway.identity_index.logical_proxy_for_handle(handle)
+            if proxy is None or proxy.proxy_token != expected.logical_owner_id:
+                continue
+            version = proxy.resolve()
+            if version is not None:
+                matches.append((proxy, version))
+        if len(matches) != 1:
+            raise SemanticFragmentBackendRejected(
+                f"GENERATED fragment block {block_id!r} does not retain one "
+                "projected logical owner"
+            )
+        proxy, version = matches[0]
+        if (
+            version.version_id.version != expected.version
+            or version.generation != expected.generation
+        ):
+            raise SemanticFragmentBackendRejected(
+                f"GENERATED fragment block {block_id!r} changed projected version"
+            )
+        return SemanticFragmentRuntimeBinding(
+            block_id=str(block_id),
+            proxy=proxy,
+            version=version,
+            state=FragmentBindingState.PUBLISHED,
+        )
     rebound = gateway.identity_index.rebind_identity(stable_identity)
     if rebound.block is None:
         raise SemanticFragmentBackendRejected(
@@ -979,17 +1067,34 @@ def _clone_replacement(
     plan_ref: PlanBlockRef,
 ) -> None:
     original_binding = state.binding(source_block_id)
-    staged = modifier._stage_detached_semantic_replacement(
-        original_version=original_binding.version,
-        plan_ref=plan_ref,
-    )
+    if _generated_graph_free(modifier):
+        gateway = _gateway(modifier)
+        original_live = _live_block_for_binding(modifier, original_binding)
+        # The GENERATED route rewrites the already-live root in place.  Its
+        # portable plan identity names the owned corridor, while the current
+        # Hex-Rays handle can legitimately cover a larger physical block.
+        # Stage a new logical version of that exact handle; manufacturing a
+        # narrower handle would violate the proxy's stable-identity lineage.
+        replacement_handle = original_binding.version.handle
+        staged = gateway.stage_replacement(
+            original=original_binding.version.handle,
+            replacement=replacement_handle,
+            returned_serial=int(original_live.serial),
+        )
+        creation_ref = None
+    else:
+        staged = modifier._stage_detached_semantic_replacement(
+            original_version=original_binding.version,
+            plan_ref=plan_ref,
+        )
+        creation_ref = plan_ref
 
     state.bindings[replacement_block.block_id] = SemanticFragmentRuntimeBinding(
         block_id=replacement_block.block_id,
         proxy=original_binding.proxy,
         version=staged,
         state=FragmentBindingState.STAGED,
-        creation_ref=plan_ref,
+        creation_ref=creation_ref,
     )
     state.staged_block_ids.append(replacement_block.block_id)
 
@@ -1013,6 +1118,14 @@ def _normalize_conditional_select_replacement(
         raise SemanticFragmentBackendRejected(
             "conditional-select normalization has no recognized backend owner"
         )
+    if _generated_graph_free(modifier):
+        _normalize_generated_conditional_select_replacement(
+            modifier,
+            plan,
+            state,
+            operation,
+        )
+        return
     source_plan_block = plan.block(operation.source_block_id)
     original_block_id = source_plan_block.replaces_block_id
     if original_block_id is None:
@@ -1177,6 +1290,156 @@ def _normalize_conditional_select_replacement(
         replacement,
         cut_ea=int(operation.predicate_anchor_ea),
         replacement=branch,
+    )
+
+
+def _replace_generated_instructions(
+    modifier: DeferredGraphModifier,
+    block: object,
+    instructions: tuple[object, ...],
+) -> None:
+    modifier.replace_all_instructions_now(
+        block,
+        instructions,
+        mark_dirty=False,
+    )
+
+
+def _normalize_generated_conditional_select_replacement(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    operation: FragmentOperation,
+) -> None:
+    """Normalize the exact GENERATED cmov-select corridor in place."""
+    normalization = operation.computed_branch_normalization
+    envelope = (
+        None if normalization is None else normalization.conditional_select_envelope
+    )
+    if normalization is None or not isinstance(
+        envelope,
+        FragmentConditionalSelectEnvelope,
+    ):
+        raise SemanticFragmentBackendRejected(
+            "GENERATED normalization requires a conditional-select envelope"
+        )
+    source_plan = plan.block(operation.source_block_id)
+    original_id = str(source_plan.replaces_block_id)
+    original = _live_block_for_binding(modifier, state.binding(original_id))
+    replacement = _live_block_for_binding(
+        modifier,
+        state.binding(operation.source_block_id),
+    )
+    selected = _live_block_for_binding(
+        modifier,
+        state.binding(envelope.selected_value_block_id),
+    )
+    join = _live_block_for_binding(
+        modifier,
+        state.binding(envelope.join_block_id),
+    )
+    source_rows = tuple(_iter_block_instructions(original))
+    selected_rows = tuple(_iter_block_instructions(selected))
+    observed = exact_branch_predicate_kind(
+        tuple(_capture_predicate_insn_snapshot(row) for row in source_rows),
+        condition_producer_ea=int(normalization.condition_producer_ea),
+    )
+    cut_indexes = tuple(
+        index
+        for index, row in enumerate(source_rows)
+        if int(row.ea) == int(operation.predicate_anchor_ea)
+    )
+    producer_indexes = tuple(
+        index
+        for index, row in enumerate(source_rows)
+        if int(row.ea) == int(normalization.condition_producer_ea)
+    )
+    if (
+        int(original.serial) != int(replacement.serial)
+        or original.nextb is None
+        or int(original.nextb.serial) != int(selected.serial)
+        or selected.nextb is None
+        or int(selected.nextb.serial) != int(join.serial)
+        or original.tail is None
+        or int(original.tail.ea) != int(envelope.predicate_ea)
+        or not ida_hexrays.is_mcode_jcond(int(original.tail.opcode))
+        or len(selected_rows) != 1
+        or value_op_from_opcode(int(selected_rows[0].opcode)) is not ValueOpKind.MOVE
+        or int(selected_rows[0].ea) != int(envelope.predicate_ea)
+        or join.tail is None
+        or int(join.tail.opcode) != int(ida_hexrays.m_ijmp)
+        or int(join.tail.ea) != int(normalization.unresolved_transfer_ea)
+        or observed is not envelope.observed_predicate_kind
+        or len(cut_indexes) != 1
+        or not producer_indexes
+        or max(producer_indexes) >= cut_indexes[0]
+    ):
+        raise SemanticFragmentBackendRejected(
+            "GENERATED conditional-select corridor changed before normalization; "
+            f"original=blk{int(original.serial)}@0x{int(original.start):X} "
+            f"replacement=blk{int(replacement.serial)}@0x{int(replacement.start):X} "
+            f"selected=blk{int(selected.serial)}@0x{int(selected.start):X} "
+            f"join=blk{int(join.serial)}@0x{int(join.start):X} "
+            f"next=({None if original.nextb is None else int(original.nextb.serial)},"
+            f"{None if selected.nextb is None else int(selected.nextb.serial)}) "
+            f"tails=({None if original.tail is None else (int(original.tail.ea), int(original.tail.opcode))},"
+            f"{None if join.tail is None else (int(join.tail.ea), int(join.tail.opcode))}) "
+            f"selected_rows={tuple((int(row.ea), int(row.opcode)) for row in selected_rows)!r} "
+            f"observed={observed!r} cuts={cut_indexes!r} producers={producer_indexes!r}"
+        )
+    branch = ida_hexrays.minsn_t(original.tail)
+    branch.ea = int(operation.predicate_anchor_ea)
+    removal_index = cut_indexes[0]
+    if observed is normalization.predicate_kind:
+        pass
+    elif (
+        observed is PredicateKind.SGE
+        and normalization.predicate_kind is PredicateKind.SLT
+        and int(branch.opcode) == int(ida_hexrays.m_jcnd)
+        and int(branch.l.t) == int(ida_hexrays.mop_d)
+        and int(branch.l.d.opcode) == int(ida_hexrays.m_lnot)
+        and int(branch.l.d.l.t) == int(ida_hexrays.mop_d)
+    ):
+        oriented = ida_hexrays.mop_t()
+        oriented.assign(branch.l.d.l)
+        branch.l.assign(oriented)
+    elif (
+        observed is PredicateKind.SGE
+        and normalization.predicate_kind is PredicateKind.SLT
+        and len(source_rows) >= 3
+        and int(branch.opcode) == int(ida_hexrays.m_jcnd)
+        and value_op_from_opcode(int(source_rows[-3].opcode)) is ValueOpKind.XOR
+        and value_op_from_opcode(int(source_rows[-2].opcode)) is ValueOpKind.LNOT
+        and source_rows[-2].l.equal_mops(
+            source_rows[-3].d,
+            int(ida_hexrays.EQ_IGNSIZE),
+        )
+        and source_rows[-2].d.equal_mops(
+            branch.l,
+            int(ida_hexrays.EQ_IGNSIZE),
+        )
+    ):
+        # The sequential lowering writes the complemented truth value back to
+        # the same temporary consumed by jcnd.  Preserve the exact SF xor OF
+        # producer, remove only the lnot, and retain the branch operand.
+        removal_index = len(source_rows) - 2
+    else:
+        raise SemanticFragmentBackendRejected(
+            "GENERATED conditional-select predicate cannot be oriented exactly"
+        )
+    _gateway(modifier)._record_fragment_mutation_started(plan)
+    cut = source_rows[removal_index]
+    modifier.replace_instruction_suffix_from_index_now(
+        original,
+        cut_index=removal_index,
+        expected_ea=int(cut.ea),
+        expected_opcode=int(cut.opcode),
+        replacement=branch,
+        mark_dirty=False,
+    )
+    modifier.configure_block_now(
+        original,
+        flags=int(original.flags) | int(ida_hexrays.MBL_PROP),
     )
 
 
@@ -1349,6 +1612,15 @@ def _realize_operations(
 ) -> None:
     from d810.transforms.plan import PatchFragmentOperation
 
+    if _generated_graph_free(modifier):
+        _realize_generated_graph_free_operations(
+            modifier,
+            plan,
+            state,
+            operation_steps,
+        )
+        return
+
     detached_capable_operation_ids = {
         operation.operation_id
         for operation in plan.operations
@@ -1450,6 +1722,112 @@ def _realize_operations(
                 source_block_id=operation.source_block_id,
                 semantic_target_block_id=fallthrough_target,
             )
+        )
+
+
+def _realize_generated_graph_free_operations(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    operation_steps: tuple[object, ...],
+) -> None:
+    from d810.transforms.plan import PatchFragmentOperation
+
+    gateway = _gateway(modifier)
+    for step in operation_steps:
+        if not isinstance(step, PatchFragmentOperation):
+            raise SemanticFragmentBackendRejected(
+                "GENERATED operation requires a typed PatchStep"
+            )
+        operation = step.operation
+        normalization = operation.computed_branch_normalization
+        envelope = (
+            None
+            if normalization is None
+            else normalization.conditional_select_envelope
+        )
+        edge_by_role = {edge.role: edge for edge in operation.edges}
+        if (
+            not isinstance(envelope, FragmentConditionalSelectEnvelope)
+            or set(edge_by_role)
+            != {
+                SemanticEdgeRole.CONDITIONAL_TAKEN,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }
+        ):
+            raise SemanticFragmentBackendRejected(
+                "GENERATED profile admits only the proven conditional-select route"
+            )
+        source = _live_block_for_binding(
+            modifier,
+            state.binding(operation.source_block_id),
+        )
+        selected_binding = state.binding(envelope.selected_value_block_id)
+        selected = _live_block_for_binding(modifier, selected_binding)
+        join = _live_block_for_binding(
+            modifier,
+            state.binding(envelope.join_block_id),
+        )
+        taken_binding = state.binding(
+            edge_by_role[SemanticEdgeRole.CONDITIONAL_TAKEN].target_block_id
+        )
+        fallthrough_binding = state.binding(
+            edge_by_role[
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+            ].target_block_id
+        )
+        taken = _live_block_for_binding(modifier, taken_binding)
+        fallthrough = _live_block_for_binding(modifier, fallthrough_binding)
+        if (
+            source.tail is None
+            or not ida_hexrays.is_mcode_jcond(int(source.tail.opcode))
+            or int(source.tail.ea) != int(operation.predicate_anchor_ea)
+            or source.nextb is None
+            or int(source.nextb.serial) != int(selected.serial)
+            or selected.nextb is None
+            or int(selected.nextb.serial) != int(join.serial)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "GENERATED normalized corridor changed before route binding"
+            )
+        source_branch = ida_hexrays.minsn_t(source.tail)
+        source_branch.d.make_blkref(int(taken.serial))
+        selected_goto = ida_hexrays.minsn_t(int(envelope.predicate_ea))
+        selected_goto.opcode = int(ida_hexrays.m_goto)
+        selected_goto.l.make_blkref(int(fallthrough.serial))
+        join_goto = ida_hexrays.minsn_t(
+            int(normalization.unresolved_transfer_ea)
+        )
+        join_goto.opcode = int(ida_hexrays.m_goto)
+        join_goto.l.make_blkref(int(taken.serial))
+        source_rows = tuple(_iter_block_instructions(source))
+        modifier.replace_instruction_suffix_from_index_now(
+            source,
+            cut_index=len(source_rows) - 1,
+            expected_ea=int(source.tail.ea),
+            expected_opcode=int(source.tail.opcode),
+            replacement=source_branch,
+            mark_dirty=False,
+        )
+        _replace_generated_instructions(modifier, selected, (selected_goto,))
+        _replace_generated_instructions(modifier, join, (join_goto,))
+        for block in (source, selected, join):
+            modifier.configure_block_now(
+                block,
+                block_type=int(ida_hexrays.BLT_NONE),
+                flags=int(block.flags) | int(ida_hexrays.MBL_PROP),
+            )
+        gateway.record_generated_existing_fallthrough_helper(
+            operation_id=operation.operation_id,
+            block=selected_binding.version.handle,
+        )
+        gateway.record_edge_redirect(
+            source=state.binding(operation.source_block_id).version.handle,
+            target=taken_binding.version.handle,
+        )
+        gateway.record_edge_redirect(
+            source=state.binding(operation.source_block_id).version.handle,
+            target=fallthrough_binding.version.handle,
         )
 
 
@@ -2824,6 +3202,123 @@ def _projected_live_serial_topology(
     return (predecessors_by_serial, successors_by_serial)
 
 
+def _observe_generated_graph_free_fragment(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+) -> ProjectedFragment:
+    """Validate exact live operands, then return the immutable projection."""
+    projection = state.preflight_projection
+    if projection is None:
+        raise SemanticFragmentBackendRejected(
+            "GENERATED observation lacks immutable preflight authority"
+        )
+    imported_serials: set[int] = set()
+    for block in plan.blocks:
+        binding = state.bindings.get(block.block_id)
+        if binding is None:
+            continue
+        live = _live_block_for_binding(modifier, binding)
+        if block.materialization is FragmentBlockMaterialization.IMPORT_NATIVE:
+            origins = state.instruction_origins_by_block_id.get(block.block_id, {})
+            live_rows = tuple(_iter_block_instructions(live))
+            if (
+                int(live.type) != int(ida_hexrays.BLT_NONE)
+                or tuple(int(value) for value in live.succset)
+                or tuple(int(value) for value in live.predset)
+                or len(origins) != len(live_rows)
+                or set(origins) != {int(row.ea) for row in live_rows}
+            ):
+                raise SemanticFragmentBackendRejected(
+                    f"GENERATED imported block {block.block_id!r} changed shape"
+                )
+            imported_serials.add(int(live.serial))
+    for operation in plan.operations:
+        normalization = operation.computed_branch_normalization
+        envelope = (
+            None
+            if normalization is None
+            else normalization.conditional_select_envelope
+        )
+        if not isinstance(envelope, FragmentConditionalSelectEnvelope):
+            raise SemanticFragmentBackendRejected(
+                "GENERATED observation found an unsupported operation"
+            )
+        edge_by_role = {edge.role: edge for edge in operation.edges}
+        source = _live_block_for_binding(
+            modifier,
+            state.binding(operation.source_block_id),
+        )
+        selected = _live_block_for_binding(
+            modifier,
+            state.binding(envelope.selected_value_block_id),
+        )
+        join = _live_block_for_binding(
+            modifier,
+            state.binding(envelope.join_block_id),
+        )
+        taken = _live_block_for_binding(
+            modifier,
+            state.binding(
+                edge_by_role[SemanticEdgeRole.CONDITIONAL_TAKEN].target_block_id
+            ),
+        )
+        fallthrough = _live_block_for_binding(
+            modifier,
+            state.binding(
+                edge_by_role[
+                    SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+                ].target_block_id
+            ),
+        )
+        selected_rows = tuple(_iter_block_instructions(selected))
+        join_rows = tuple(_iter_block_instructions(join))
+        if (
+            source.tail is None
+            or not ida_hexrays.is_mcode_jcond(int(source.tail.opcode))
+            or int(source.tail.ea) != int(operation.predicate_anchor_ea)
+            or int(source.tail.d.t) != int(ida_hexrays.mop_b)
+            or int(source.tail.d.b) != int(taken.serial)
+            or source.nextb is None
+            or int(source.nextb.serial) != int(selected.serial)
+            or selected.nextb is None
+            or int(selected.nextb.serial) != int(join.serial)
+            or len(selected_rows) != 1
+            or int(selected_rows[0].opcode) != int(ida_hexrays.m_goto)
+            or int(selected_rows[0].l.t) != int(ida_hexrays.mop_b)
+            or int(selected_rows[0].l.b) != int(fallthrough.serial)
+            or len(join_rows) != 1
+            or int(join_rows[0].opcode) != int(ida_hexrays.m_goto)
+            or int(join_rows[0].l.t) != int(ida_hexrays.mop_b)
+            or int(join_rows[0].l.b) != int(taken.serial)
+            or any(
+                int(block.type) != int(ida_hexrays.BLT_NONE)
+                for block in (source, selected, join)
+            )
+        ):
+            raise SemanticFragmentBackendRejected(
+                "GENERATED conditional route failed exact live observation"
+            )
+        _predecessors, successors, _kinds = (
+            _generated_structural_serial_topology(modifier)
+        )
+        reachable: set[int] = set()
+        pending = [int(source.serial)]
+        while pending:
+            serial = pending.pop()
+            if serial in reachable:
+                continue
+            reachable.add(serial)
+            pending.extend(successors.get(serial, ()))
+        if not imported_serials.issubset(reachable):
+            missing = tuple(sorted(imported_serials - reachable))
+            raise SemanticFragmentBackendRejected(
+                "GENERATED imported closure is not structurally reachable: "
+                f"serials={missing!r}"
+            )
+    return projection
+
+
 def _project_fragment(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -2831,6 +3326,8 @@ def _project_fragment(
     *,
     simulate_root_publication: bool = True,
 ) -> ProjectedFragment:
+    if _generated_graph_free(modifier):
+        return _observe_generated_graph_free_fragment(modifier, plan, state)
     root_helper_ids = {
         helper.helper_block_id for helper in state.root_fallthrough_helpers
     }
@@ -3342,6 +3839,206 @@ def _root_edge_requires_helper(
     return True
 
 
+def _generated_graph_free(modifier: DeferredGraphModifier) -> bool:
+    from d810.hexrays.mutation.semantic_fragment_profile import (
+        SemanticFragmentPublicationProfile,
+    )
+
+    return (
+        modifier.semantic_fragment_publication_profile
+        is SemanticFragmentPublicationProfile.GENERATED_GRAPH_FREE
+    )
+
+
+def _generated_structural_serial_topology(
+    modifier: DeferredGraphModifier,
+) -> tuple[
+    dict[int, tuple[int, ...]],
+    dict[int, tuple[int, ...]],
+    dict[int, BlockKind],
+]:
+    """Project GENERATED control flow without asking Hex-Rays for a graph."""
+    quantity = int(modifier.mba.qty)
+    stop_serial = quantity - 1
+    serials_by_start: dict[int, list[int]] = {}
+    for serial in range(quantity):
+        block = modifier.mba.get_mblock(serial)
+        if block is None:
+            raise SemanticFragmentBackendRejected(
+                f"GENERATED structural projection lost block serial {serial}"
+            )
+        serials_by_start.setdefault(int(block.start), []).append(serial)
+
+    def local_address_target(operand: object) -> int | None:
+        candidates = tuple(serials_by_start.get(int(operand.g), ()))
+        if len(candidates) > 1:
+            raise SemanticFragmentBackendRejected(
+                "GENERATED address target has ambiguous local block authority"
+            )
+        return None if not candidates else int(candidates[0])
+
+    successors: dict[int, tuple[int, ...]] = {}
+    kinds: dict[int, BlockKind] = {}
+    for serial in range(quantity):
+        block = modifier.mba.get_mblock(serial)
+        if block is None:
+            raise SemanticFragmentBackendRejected(
+                f"GENERATED structural projection lost block serial {serial}"
+            )
+        if serial == stop_serial or int(block.type) == int(ida_hexrays.BLT_STOP):
+            successors[serial] = ()
+            kinds[serial] = BlockKind.STOP
+            continue
+        tail = block.tail
+        projected: list[int] = []
+        if tail is None:
+            projected.append(serial + 1)
+        else:
+            opcode = int(tail.opcode)
+            if opcode == int(ida_hexrays.m_goto):
+                if int(tail.l.t) == int(ida_hexrays.mop_b):
+                    projected.append(int(tail.l.b))
+                elif int(tail.l.t) == int(ida_hexrays.mop_v):
+                    target = local_address_target(tail.l)
+                    if target is not None:
+                        projected.append(target)
+                else:
+                    raise SemanticFragmentBackendRejected(
+                        f"GENERATED goto lacks block authority in "
+                        f"blk{serial}@0x{int(block.start):X}"
+                    )
+            elif ida_hexrays.is_mcode_jcond(opcode):
+                taken_target: int | None = None
+                if int(tail.d.t) == int(ida_hexrays.mop_b):
+                    taken_target = int(tail.d.b)
+                elif int(tail.d.t) == int(ida_hexrays.mop_v):
+                    taken_target = local_address_target(tail.d)
+                elif int(tail.d.t) != int(ida_hexrays.mop_v):
+                    raise SemanticFragmentBackendRejected(
+                        f"GENERATED conditional lacks block authority in "
+                        f"blk{serial}@0x{int(block.start):X}"
+                    )
+                # Before Hex-Rays builds the CFG, native conditional targets
+                # outside the owned fragment remain address operands.  They
+                # are boundary exits, not missing internal block authority;
+                # only the physically adjacent fallthrough is locally
+                # projectable.  Plan-owned conditionals are observed below
+                # with exact mop_b destinations after realization.
+                projected.append(serial + 1)
+                if taken_target is not None:
+                    projected.append(taken_target)
+            elif opcode not in {
+                int(ida_hexrays.m_ijmp),
+                int(ida_hexrays.m_jtbl),
+                int(ida_hexrays.m_ret),
+            }:
+                projected.append(serial + 1)
+        normalized = tuple(
+            dict.fromkeys(
+                target
+                for target in projected
+                if 0 <= int(target) < quantity
+            )
+        )
+        successors[serial] = normalized
+        kinds[serial] = {
+            0: BlockKind.ZERO_WAY,
+            1: BlockKind.ONE_WAY,
+            2: BlockKind.TWO_WAY,
+        }.get(len(normalized), BlockKind.N_WAY)
+    predecessor_lists: dict[int, list[int]] = {
+        serial: [] for serial in range(quantity)
+    }
+    for source, targets in successors.items():
+        for target in targets:
+            predecessor_lists[target].append(source)
+    predecessors = {
+        serial: tuple(values) for serial, values in predecessor_lists.items()
+    }
+    return predecessors, successors, kinds
+
+
+def generated_plan_live_bindings(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+) -> dict[str, object]:
+    """Bind graph-free corridor roles from native anchors plus physical order."""
+    gateway = modifier._mutation_gateway
+    if gateway is None:
+        raise SemanticFragmentBackendRejected(
+            "GENERATED binding requires a mutation gateway"
+        )
+    live_by_id: dict[str, object] = {}
+    for root_id in plan.roots:
+        replacement = plan.block(root_id)
+        original_id = str(replacement.replaces_block_id)
+        original = plan.block(original_id)
+        rebound = gateway.identity_index.rebind_native_ea(
+            int(original.semantic_anchor_ea)
+        )
+        if rebound.block is None:
+            raise SemanticFragmentBackendRejected(
+                f"GENERATED source {original_id!r} does not bind uniquely"
+            )
+        live = modifier.mba.get_mblock(int(rebound.block.serial))
+        if live is None:
+            raise SemanticFragmentBackendRejected(
+                f"GENERATED source {original_id!r} is absent"
+            )
+        live_by_id[original_id] = live
+    for operation in plan.operations:
+        normalization = operation.computed_branch_normalization
+        envelope = (
+            None
+            if normalization is None
+            else normalization.conditional_select_envelope
+        )
+        if not isinstance(envelope, FragmentConditionalSelectEnvelope):
+            continue
+        source_plan = plan.block(operation.source_block_id)
+        source = live_by_id.get(str(source_plan.replaces_block_id))
+        selected = None if source is None else source.nextb
+        join = None if selected is None else selected.nextb
+        if selected is None or join is None:
+            raise SemanticFragmentBackendRejected(
+                "GENERATED conditional-select corridor lost physical adjacency"
+            )
+        if (
+            int(envelope.predicate_ea) not in _instruction_eas(selected)
+            or int(normalization.unresolved_transfer_ea) not in _instruction_eas(join)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "GENERATED conditional-select physical roles changed"
+            )
+        live_by_id[envelope.selected_value_block_id] = selected
+        live_by_id[envelope.join_block_id] = join
+    for planned in plan.blocks:
+        if (
+            planned.materialization is not FragmentBlockMaterialization.REUSE_PUBLISHED
+            or planned.block_id in live_by_id
+        ):
+            continue
+        rebound = gateway.identity_index.rebind_native_ea(
+            int(planned.semantic_anchor_ea)
+        )
+        if rebound.block is None:
+            raise SemanticFragmentBackendRejected(
+                f"GENERATED block {planned.block_id!r} does not bind uniquely"
+            )
+        live = modifier.mba.get_mblock(int(rebound.block.serial))
+        if live is None:
+            raise SemanticFragmentBackendRejected(
+                f"GENERATED block {planned.block_id!r} is absent"
+            )
+        live_by_id[planned.block_id] = live
+    serials = tuple(int(block.serial) for block in live_by_id.values())
+    if len(set(serials)) != len(serials):
+        raise SemanticFragmentBackendRejected(
+            "GENERATED plan roles alias one physical block"
+        )
+    return live_by_id
+
+
 def plan_semantic_fragment_root_inventory(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -3352,6 +4049,11 @@ def plan_semantic_fragment_root_inventory(
         raise SemanticFragmentBackendRejected(
             "root inventory requires an idle mutation gateway"
         )
+    generated_live_by_id = (
+        generated_plan_live_bindings(modifier, plan)
+        if _generated_graph_free(modifier)
+        else None
+    )
     live_by_id = {}
     ids_by_serial: dict[int, str] = {}
     for block in plan.blocks:
@@ -3359,12 +4061,20 @@ def plan_semantic_fragment_root_inventory(
             continue
         if block.stable_identity is None:
             continue
-        rebound = gateway.identity_index.rebind_identity(block.stable_identity)
-        if rebound.block is None:
+        rebound = (
+            gateway.identity_index.rebind_identity(block.stable_identity)
+            if generated_live_by_id is None
+            else None
+        )
+        if generated_live_by_id is None and rebound.block is None:
             raise SemanticFragmentBackendRejected(
                 f"root inventory block {block.block_id!r} does not rebind uniquely"
             )
-        live = modifier.mba.get_mblock(int(rebound.block.serial))
+        live = (
+            modifier.mba.get_mblock(int(rebound.block.serial))
+            if generated_live_by_id is None
+            else generated_live_by_id.get(block.block_id)
+        )
         if live is None:
             raise SemanticFragmentBackendRejected(
                 f"root inventory block {block.block_id!r} is absent from the MBA"
@@ -3395,6 +4105,12 @@ def plan_semantic_fragment_root_inventory(
         live_by_id[block.block_id] = live
         ids_by_serial[int(live.serial)] = block.block_id
 
+    generated_predecessors = None
+    if _generated_graph_free(modifier):
+        generated_predecessors, generated_successors, _generated_kinds = (
+            _generated_structural_serial_topology(modifier)
+        )
+
     items: list[SemanticFragmentRootInventoryItem] = []
     for root_block_id in plan.roots:
         original_block_id = str(plan.block(root_block_id).replaces_block_id)
@@ -3403,7 +4119,11 @@ def plan_semantic_fragment_root_inventory(
             raise SemanticFragmentBackendRejected(
                 f"root inventory lacks original {original_block_id!r}"
             )
-        predecessor_serials = tuple(int(value) for value in original.predset)
+        predecessor_serials = (
+            tuple(int(value) for value in original.predset)
+            if generated_predecessors is None
+            else generated_predecessors[int(original.serial)]
+        )
         if not predecessor_serials:
             raise SemanticFragmentBackendRejected(
                 f"root inventory original {original_block_id!r} has no predecessors"
@@ -3415,12 +4135,46 @@ def plan_semantic_fragment_root_inventory(
                 raise SemanticFragmentBackendRejected(
                     "root inventory predecessor is outside the closed fragment plan"
                 )
-            role = _incoming_root_edge_role(predecessor, original)
-            requires_helper = _root_edge_requires_helper(
-                predecessor,
-                original,
-                role,
-            )
+            if generated_predecessors is None:
+                role = _incoming_root_edge_role(predecessor, original)
+                requires_helper = _root_edge_requires_helper(
+                    predecessor,
+                    original,
+                    role,
+                )
+            else:
+                if generated_successors[predecessor_serial] != (
+                    int(original.serial),
+                ):
+                    raise SemanticFragmentBackendRejected(
+                        "GENERATED root predecessor is not an exact direct edge"
+                    )
+                tail = predecessor.tail
+                if (
+                    tail is None
+                    or int(tail.opcode) != int(ida_hexrays.m_goto)
+                    or (
+                        (
+                            int(tail.l.t) == int(ida_hexrays.mop_b)
+                            and int(tail.l.b) != int(original.serial)
+                        )
+                        or (
+                            int(tail.l.t) == int(ida_hexrays.mop_v)
+                            and int(tail.l.g)
+                            != int(plan.block(original_block_id).semantic_anchor_ea)
+                        )
+                        or int(tail.l.t)
+                        not in {
+                            int(ida_hexrays.mop_b),
+                            int(ida_hexrays.mop_v),
+                        }
+                    )
+                ):
+                    raise SemanticFragmentBackendRejected(
+                        "GENERATED root authority requires an explicit goto"
+                    )
+                role = SemanticEdgeRole.DIRECT
+                requires_helper = False
             items.append(
                 SemanticFragmentRootInventoryItem(
                     edge_id=(f"{root_block_id}:{predecessor_block_id}:{role.value}"),
@@ -3498,20 +4252,33 @@ def snapshot_semantic_fragment_inputs(
         )
         carrier_payloads.append((carrier.carrier_id, operand))
 
+    generated_live_by_id = (
+        generated_plan_live_bindings(modifier, plan)
+        if _generated_graph_free(modifier)
+        else None
+    )
     live_by_id: dict[str, object] = {}
     binding_by_id: dict[str, ProjectedIdentityBinding] = {}
     ids_by_serial: dict[int, str] = {}
     for planned in plan.blocks:
         if planned.materialization is not FragmentBlockMaterialization.REUSE_PUBLISHED:
             continue
-        rebound = gateway.identity_index.rebind_identity(planned.stable_identity)
-        if rebound.block is None:
+        rebound = (
+            gateway.identity_index.rebind_identity(planned.stable_identity)
+            if generated_live_by_id is None
+            else None
+        )
+        if generated_live_by_id is None and rebound.block is None:
             raise FragmentProjectionFailure(
                 FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
                 planned.block_id,
                 f"snapshot block {planned.block_id!r} does not rebind uniquely",
             )
-        live = modifier.mba.get_mblock(int(rebound.block.serial))
+        live = (
+            modifier.mba.get_mblock(int(rebound.block.serial))
+            if generated_live_by_id is None
+            else generated_live_by_id.get(planned.block_id)
+        )
         if live is None:
             raise FragmentProjectionFailure(
                 FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
@@ -3527,7 +4294,8 @@ def snapshot_semantic_fragment_inputs(
                 f"snapshot blocks {ids_by_serial[serial]!r} and "
                 f"{planned.block_id!r} alias blk{serial}@0x{anchor:X}",
             )
-        proxy = gateway.identity_index.logical_proxy_for_handle(rebound.block.handle)
+        live_handle = gateway.identity_index.handle_for_serial(serial)
+        proxy = gateway.identity_index.logical_proxy_for_handle(live_handle)
         version = None if proxy is None else proxy.resolve()
         if proxy is None or version is None:
             raise FragmentProjectionFailure(
@@ -3536,7 +4304,7 @@ def snapshot_semantic_fragment_inputs(
                 f"snapshot block {planned.block_id!r} lacks published authority",
             )
         physical_identity = version.handle.stable_identity
-        if (
+        if generated_live_by_id is None and (
             planned.stable_identity is None
             or physical_identity is None
             or not stable_block_identity_covers(
@@ -3614,6 +4382,11 @@ def snapshot_semantic_fragment_inputs(
         )
     entry_block_id = ids_by_serial[0]
 
+    generated_topology = (
+        _generated_structural_serial_topology(modifier)
+        if _generated_graph_free(modifier)
+        else None
+    )
     blocks: list[FragmentProjectionBlockInput] = []
     for block_id, live in live_by_id.items():
         writes = frozenset()
@@ -3626,8 +4399,16 @@ def snapshot_semantic_fragment_inputs(
                     plan.flag_corridors[0].corridor_id,
                     f"condition-code writes cannot be snapshotted for {block_id}",
                 ) from exc
-        kind = _block_kind(int(live.type))
-        raw_successors = tuple(int(serial) for serial in live.succset)
+        kind = (
+            _block_kind(int(live.type))
+            if generated_topology is None
+            else generated_topology[2][int(live.serial)]
+        )
+        raw_successors = (
+            tuple(int(serial) for serial in live.succset)
+            if generated_topology is None
+            else generated_topology[1][int(live.serial)]
+        )
         if kind is BlockKind.ZERO_WAY:
             successors: tuple[str, ...] = ()
             if raw_successors:
@@ -3657,7 +4438,12 @@ def snapshot_semantic_fragment_inputs(
                 kind=kind,
                 successors=successors,
                 predecessors=tuple(
-                    ids_by_serial[int(serial)] for serial in live.predset
+                    ids_by_serial[int(serial)]
+                    for serial in (
+                        live.predset
+                        if generated_topology is None
+                        else generated_topology[0][int(live.serial)]
+                    )
                 ),
                 physical_position=int(live.serial),
                 adjacent_fallthrough_target_id=(
@@ -3695,6 +4481,22 @@ def snapshot_semantic_fragment_inputs(
                 "imported block lacks immutable native-body preparation",
             )
         fact = preparation.fact.block(planned.block_id)
+        fact_block_ids = tuple(
+            block.block_id for block in preparation.fact.blocks
+        )
+        fact_index = fact_block_ids.index(planned.block_id)
+        next_fact_block_id = (
+            None
+            if fact_index + 1 >= len(fact_block_ids)
+            else fact_block_ids[fact_index + 1]
+        )
+        adjacent_fallthrough_target_id = (
+            fact.successors[0].target_block_id
+            if fact.kind is BlockKind.TWO_WAY
+            and fact.successors
+            and fact.successors[0].target_block_id == next_fact_block_id
+            else None
+        )
         payload_rows = {
             block_id: (block_flags, instruction_rows)
             for block_id, block_flags, instruction_rows in preparation.payload.rows
@@ -3724,7 +4526,9 @@ def snapshot_semantic_fragment_inputs(
                 successors=tuple(edge.target_block_id for edge in fact.successors),
                 predecessors=fact.predecessor_block_ids,
                 physical_position=next_position,
-                adjacent_fallthrough_target_id=None,
+                adjacent_fallthrough_target_id=(
+                    adjacent_fallthrough_target_id
+                ),
                 terminator_ea=fact.terminator_ea,
                 terminator_kind=fact.terminator_kind,
                 instruction_eas=instruction_eas,
@@ -3821,11 +4625,19 @@ def snapshot_semantic_fragment_inputs(
             ) from exc
 
     predecessor_serials = {
-        int(live.serial): tuple(int(value) for value in live.predset)
+        int(live.serial): (
+            tuple(int(value) for value in live.predset)
+            if generated_topology is None
+            else generated_topology[0][int(live.serial)]
+        )
         for live in analysis_live_by_id.values()
     }
     successor_serials = {
-        int(live.serial): tuple(int(value) for value in live.succset)
+        int(live.serial): (
+            tuple(int(value) for value in live.succset)
+            if generated_topology is None
+            else generated_topology[1][int(live.serial)]
+        )
         for live in analysis_live_by_id.values()
     }
     try:
@@ -4656,6 +5468,7 @@ def realize_semantic_patch_plan(
                         modifier,
                         block.block_id,
                         block.stable_identity,
+                        preflight_projection=state.preflight_projection,
                     )
                 elif (
                     step.materialization is FragmentBlockMaterialization.CLONE_PUBLISHED
@@ -4721,6 +5534,8 @@ def realize_semantic_patch_plan(
                 _materialize_terminal_effects(modifier, terminal_plan, state)
                 terminal_effects_materialized = True
             elif isinstance(step, PatchFragmentRootPublication):
+                if _generated_graph_free(modifier):
+                    continue
                 if not root_helpers_reserved:
                     _reserve_root_fallthrough_helpers(
                         modifier,

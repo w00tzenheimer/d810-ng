@@ -61,6 +61,34 @@ def _exact_signed_flag_xor(
     )
 
 
+def _exact_sequential_signed_flag_complement(
+    instructions: Sequence[InsnSnapshot],
+    *,
+    branch_register: int,
+    sign_register: int,
+    overflow_register: int,
+) -> bool:
+    """Recognize the exact ``xor SF, OF; lnot; jcnd`` lowered suffix."""
+    if len(instructions) < 3:
+        return False
+    xor, complement, _branch = instructions[-3:]
+    xor_left = _one_byte_register(xor.l)
+    xor_right = _one_byte_register(xor.r)
+    xor_result = _one_byte_register(xor.d)
+    return (
+        xor.value_op_kind is ValueOpKind.XOR
+        and xor_left is not None
+        and xor_right is not None
+        and {xor_left, xor_right}
+        == {int(sign_register), int(overflow_register)}
+        and xor_result is not None
+        and complement.value_op_kind is ValueOpKind.LNOT
+        and _one_byte_register(complement.l) == xor_result
+        and complement.r is None
+        and _one_byte_register(complement.d) == int(branch_register)
+    )
+
+
 def exact_branch_predicate_kind(
     instructions: Sequence[InsnSnapshot],
     *,
@@ -119,6 +147,14 @@ def exact_branch_predicate_kind(
             sign_register=sign_register,
             overflow_register=overflow_register,
         )
+    ):
+        return PredicateKind.SGE
+    branch_register = _one_byte_register(branch.l)
+    if branch_register is not None and _exact_sequential_signed_flag_complement(
+        instructions,
+        branch_register=branch_register,
+        sign_register=sign_register,
+        overflow_register=overflow_register,
     ):
         return PredicateKind.SGE
     return None
