@@ -2545,9 +2545,7 @@ def _project_data_flow_relations(
     successor_serials_by_block: Mapping[int, tuple[int, ...]],
     *,
     defer_materialized_predicate_uses: bool = False,
-    prepared_instruction_eas_by_block_id: (
-        Mapping[str, tuple[int, ...]] | None
-    ) = None,
+    prepared_instruction_eas_by_block_id: (Mapping[str, tuple[int, ...]] | None) = None,
 ) -> tuple[ProjectedDataFlowRelation, ...]:
     prepared_instruction_eas_by_block_id = (
         {}
