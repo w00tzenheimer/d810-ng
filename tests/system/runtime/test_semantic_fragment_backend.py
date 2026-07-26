@@ -96,6 +96,7 @@ from d810.transforms.fragment_validation import (  # noqa: E402
     ProjectedDataFlowRelation,
     ProjectedFragment,
     ProjectedRangeFact,
+    compare_fragment_projection_obligations,
     validate_fragment_projection,
 )
 from d810.transforms.fragment_to_patch import lower_fragment_plan  # noqa: E402
@@ -4303,6 +4304,13 @@ def test_calls_built_imported_native_splits_owned_continuation_after_call(
     )
     assert helper.successors == ("target",)
     assert not int(imported.flags) & int(ida_hexrays.MBL_GOTO)
+    assert (
+        compare_fragment_projection_obligations(
+            prepared.authority.projection,
+            projection,
+        )
+        == ()
+    )
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="runtime calls-built imported native cleanup")
