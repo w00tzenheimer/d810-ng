@@ -582,8 +582,7 @@ def _owned_projected_route_successors(
             helper.helper_block_id != expected_helper_id
             or helper.source_block_id != operation.source_block_id
             or len(fallthrough_edges) != 1
-            or helper.semantic_target_block_id
-            != fallthrough_edges[0].target_block_id
+            or helper.semantic_target_block_id != fallthrough_edges[0].target_block_id
         ):
             raise _ProjectedRouteOwnershipError(
                 f"route operation {operation.operation_id!r} has a drifted "
@@ -635,8 +634,7 @@ def _owned_projected_route_successors(
         conditional_fallthrough_block_id=(
             None
             if helper is None
-            or fallthrough_edges[0].role
-            is not SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+            or fallthrough_edges[0].role is not SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
             else helper.helper_block_id
         ),
     )
