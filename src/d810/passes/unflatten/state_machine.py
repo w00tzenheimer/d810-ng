@@ -1216,6 +1216,14 @@ def _compose_configured_reference_scope_plan(
     """Compose one exact configured root without losing its temporary entry port."""
     publication_root_ea = int(configured_scope.publication_root_ea)
 
+    def oracle_rejection_payload(exc: Exception) -> dict[str, object]:
+        if not isinstance(exc, DetachedRouteOracleRejected):
+            return {}
+        return {
+            "cause_reason_code": exc.reason_code,
+            "cause_payload": dict(exc.payload),
+        }
+
     def compose_boundary(
         boundary_anchor_ea: int,
         *,
@@ -1420,6 +1428,7 @@ def _compose_configured_reference_scope_plan(
                 anchor_ea=publication_root_ea,
                 payload={
                     "cause_detail": str(exc),
+                    **oracle_rejection_payload(exc),
                     "plan_id": configured_plan.plan_id,
                     "reference_run_id": configured_scope.run.run_id,
                     "reference_route_ids": tuple(
@@ -1524,6 +1533,7 @@ def _compose_configured_reference_scope_plan(
             payload={
                 **required.payload,
                 "cause_detail": str(exc),
+                **oracle_rejection_payload(exc),
                 "reference_run_id": configured_scope.run.run_id,
                 "reference_route_ids": tuple(
                     route.route_id for route in configured_scope.routes

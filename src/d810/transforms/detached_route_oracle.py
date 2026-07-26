@@ -29,6 +29,17 @@ _CANDIDATE_VARIANT = "detached_prepublication"
 class DetachedRouteOracleRejected(ValueError):
     """The staged fragment lacks complete reference-oracle authority."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(str(message))
+        self.reason_code = str(reason_code)
+        self.payload = {} if payload is None else dict(payload)
+
 
 @dataclass(frozen=True, slots=True)
 class DetachedRouteOracleResult:
@@ -81,7 +92,8 @@ def bind_fragment_reference_oracle(
         for operation in plan.operations
     ):
         raise DetachedRouteOracleRejected(
-            "fragment plan already carries reference oracle authority"
+            "fragment plan already carries reference oracle authority",
+            reason_code="fragment_reference_authority_already_bound",
         )
     root_anchors = tuple(
         int(plan.block(root_block_id).semantic_anchor_ea)
@@ -89,7 +101,16 @@ def bind_fragment_reference_oracle(
     )
     if root_anchors != (int(selection.publication_root_ea),):
         raise DetachedRouteOracleRejected(
-            "fragment and reference selection require one exact publication root"
+            "fragment and reference selection require one exact publication root",
+            reason_code="fragment_reference_publication_root_mismatch",
+            payload={
+                "planned_publication_roots": tuple(
+                    f"0x{anchor_ea:X}" for anchor_ea in root_anchors
+                ),
+                "selected_publication_root": (
+                    f"0x{int(selection.publication_root_ea):X}"
+                ),
+            },
         )
     operations_with_rewrites = tuple(
         operation
@@ -108,7 +129,24 @@ def bind_fragment_reference_oracle(
         or set(requested_anchors) != set(selected_anchors)
     ):
         raise DetachedRouteOracleRejected(
-            "fragment and reference selection require exact rewrite anchors"
+            "fragment and reference selection require exact rewrite anchors",
+            reason_code="fragment_reference_rewrite_anchor_set_mismatch",
+            payload={
+                "missing_rewrite_anchors": tuple(
+                    f"0x{anchor_ea:X}"
+                    for anchor_ea in sorted(set(selected_anchors) - set(requested_anchors))
+                ),
+                "planned_rewrite_anchors": tuple(
+                    f"0x{anchor_ea:X}" for anchor_ea in requested_anchors
+                ),
+                "selected_rewrite_anchors": tuple(
+                    f"0x{anchor_ea:X}" for anchor_ea in selected_anchors
+                ),
+                "unexpected_rewrite_anchors": tuple(
+                    f"0x{anchor_ea:X}"
+                    for anchor_ea in sorted(set(requested_anchors) - set(selected_anchors))
+                ),
+            },
         )
     route_by_anchor = {route.rewrite_anchor_ea: route for route in selection.routes}
     bound_operations: list[FragmentOperation] = []
@@ -316,7 +354,8 @@ def compare_detached_route_oracle(
         raise TypeError("detached route oracle requires a ProjectedFragment")
     if plan.reference_oracle_run is None:
         raise DetachedRouteOracleRejected(
-            "detached route oracle requires one pinned reference run"
+            "detached route oracle requires one pinned reference run",
+            reason_code="detached_reference_run_missing",
         )
 
     selected: list[tuple[FragmentOperation, ReferenceRouteRewrite]] = []
@@ -326,12 +365,15 @@ def compare_detached_route_oracle(
             continue
         if rewrite.reference_route is None:
             raise DetachedRouteOracleRejected(
-                f"operation {operation.operation_id!r} has no reference route"
+                f"operation {operation.operation_id!r} has no reference route",
+                reason_code="detached_operation_reference_route_missing",
+                payload={"operation_id": operation.operation_id},
             )
         selected.append((operation, rewrite.reference_route))
     if not selected:
         raise DetachedRouteOracleRejected(
-            "detached route oracle requires selected semantic rewrites"
+            "detached route oracle requires selected semantic rewrites",
+            reason_code="detached_semantic_rewrites_missing",
         )
 
     reachable_block_ids = _reachable_block_ids(plan, projection)
