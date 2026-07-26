@@ -944,6 +944,10 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
 
     class _Lifecycle:
         @staticmethod
+        def current_session(_function_ea: int):
+            return None
+
+        @staticmethod
         def has_exhausted_poison_restart(_function_ea: int) -> bool:
             return False
 
@@ -980,6 +984,60 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
     ]
 
 
+def test_decompile_controller_releases_stack_overlay_when_decompile_raises(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    session = object()
+
+    class _Lifecycle:
+        @staticmethod
+        def current_session(function_ea: int):
+            calls.append(("session", function_ea))
+            return session
+
+    class _Lease:
+        @staticmethod
+        def release() -> None:
+            calls.append(("release", session))
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(
+        manager,
+        "prepare_native_preanalysis",
+        lambda function_ea: calls.append(("prepare", function_ea)) or 0,
+    )
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "acquire_detached_call_stack_point_overlay",
+        lambda current_session: (
+            calls.append(("acquire", current_session)) or _Lease()
+        ),
+        raising=False,
+    )
+
+    def decompile():
+        calls.append(("decompile", 0x401000))
+        raise ValueError("decompile failed")
+
+    with pytest.raises(ValueError, match="decompile failed"):
+        manager.decompile_with_native_preanalysis(
+            0x401000,
+            decompile,
+            lambda: calls.append(("invalidate", 0x401000)),
+        )
+
+    assert calls == [
+        ("prepare", 0x401000),
+        ("session", 0x401000),
+        ("acquire", session),
+        ("invalidate", 0x401000),
+        ("decompile", 0x401000),
+        ("release", session),
+    ]
+
+
 def test_decompile_controller_services_poison_restart_from_second_round(
     monkeypatch,
 ) -> None:
@@ -987,6 +1045,10 @@ def test_decompile_controller_services_poison_restart_from_second_round(
     pending = iter((True, True, False))
 
     class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return None
+
         @staticmethod
         def has_exhausted_poison_restart(_function_ea: int) -> bool:
             return False
@@ -1021,6 +1083,10 @@ def test_decompile_controller_fails_loudly_if_restart_remains_after_poison_retry
 ) -> None:
     class _Lifecycle:
         @staticmethod
+        def current_session(_function_ea: int):
+            return None
+
+        @staticmethod
         def has_exhausted_poison_restart(_function_ea: int) -> bool:
             return False
 
@@ -1054,6 +1120,10 @@ def test_decompile_controller_fails_on_distinct_post_recovery_poison(
     assert state.consume_generated_restart()
 
     class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return None
+
         @staticmethod
         def has_pending_generated_restart(_function_ea: int) -> bool:
             return state.has_pending_generated_restart
