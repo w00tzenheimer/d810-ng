@@ -6152,3 +6152,34 @@ its donor condition producer, predicate, both targets, complete operation
 envelope, and fragment-level reference authority before addressing
 `0x40C4D2`. Do not encode conditional authority in a direct-only payload,
 publish the 91-route subset, or relax the exact 93-route oracle gate.
+
+**2026-07-26T01:20:00-0700 — carried state choice projected off-side**
+
+Functional commit `71b269d20` extends detached component composition to one
+field-complete `STATE_CHOICE` proof. The immutable frontend plan atomically
+replaces the imported raw conditional operation and both dispatcher arms with
+the proof's semantic taken/fallthrough targets. SDK-facing storage-predicate
+materialization remains deferred until the selected operation is under
+canonical publication authority. The focused canonical-fragment suite is
+48/48 green, including the new end-to-end nested-choice regression; commit-time
+ast-grep, import-cycle, portable-core shape lint, and all 14 import-linter
+contracts pass.
+
+The mandatory cache-disabled A560 canary at clean code SHA `71b269d20`
+completed normally in 16.74 seconds. Log:
+`.tmp/rhad-a560-nested-choice-71b269d20.txt`; primary DB:
+`.tmp/rhad-a560-nested-choice-71b269d20/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`.
+There is no process crash, numeric INTERR, generation poison, rollback, or
+partial transaction. The existing frontend-normalization transaction commits;
+no canonical semantic transaction stages. A560 still emits the six-line false
+infinite loop and remains below C6.
+
+The DB still reports 91 planned direct rewrite anchors against 93 selected
+routes, with no unexpected anchors and missing conditional donor anchors
+`0x40BED0` and `0x40C4D2`. That is now the expected direct-only oracle-binding
+blind spot, not evidence that the carried-choice proof is absent. The highest
+architecture level remains the previously proven one-fragment C5; the broad
+plan remains at C3. The first failed obligation is still conditional authority
+binding for owner `0x40BECC` / donor patch `0x40BED0`: bind and compare the
+typed conditional operation by owner, semantic predicate, both edge roles,
+both targets, corridor, and reachability before any 93-route staging.
