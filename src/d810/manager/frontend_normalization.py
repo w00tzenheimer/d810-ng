@@ -348,9 +348,7 @@ class SessionFrontendNormalizationPlanAuthority:
         )
         if not matches:
             return None
-        work_item_ids = {
-            snapshot.work_item_plan.plan_id for snapshot in matches
-        }
+        work_item_ids = {snapshot.work_item_plan.plan_id for snapshot in matches}
         if len(work_item_ids) != 1:
             raise FrontendNormalizationPublicationError(
                 "prepared normalization block has multiple receipt owners"
