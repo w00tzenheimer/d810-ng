@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from d810.analyses.control_flow.native_preanalysis_session import (
+    CommittedSemanticFragmentOwnership,
     NativePreanalysisSessionState,
+    SemanticFragmentBlockOwner,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.hexrays.mutation.mba_mutation_events import (
@@ -67,6 +69,38 @@ class SessionFragmentPublicationLifecycleAuthority:
         self._pending_purpose = None
         self._prepublication_validation = None
 
+    def committed_semantic_ownership(
+        self,
+    ) -> tuple[CommittedSemanticFragmentOwnership, ...]:
+        """Expose shared receipt-backed ownership to every gateway instance."""
+        return self.state.committed_semantic_ownership()
+
+    def _semantic_ownership_for(
+        self,
+        plan: FragmentPlan,
+    ) -> CommittedSemanticFragmentOwnership:
+        owners: list[SemanticFragmentBlockOwner] = []
+        for operation in plan.operations:
+            identity = plan.block(operation.source_block_id).stable_identity
+            if identity is None:
+                raise ValueError(
+                    "canonical semantic operation source lacks stable identity: "
+                    f"{operation.operation_id}"
+                )
+            owners.append(
+                SemanticFragmentBlockOwner(
+                    operation_id=operation.operation_id,
+                    source_block_id=operation.source_block_id,
+                    stable_identity=identity,
+                )
+            )
+        return CommittedSemanticFragmentOwnership(
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            evidence_generation=self.evidence_generation,
+            owners=tuple(owners),
+        )
+
     def record_fragment_plan_ready(self, plan: FragmentPlan) -> None:
         """Record canonical plan authority before detached staging begins."""
         self._require_typed_plan(plan)
@@ -76,6 +110,10 @@ class SessionFragmentPublicationLifecycleAuthority:
             plan.publication_purpose
             is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
         ):
+            # Validate serial-free ownership while the attempt is still wholly
+            # preflight-only. FragmentPlan is immutable, so reconstructing the
+            # same record at receipt commit cannot acquire new live authority.
+            self._semantic_ownership_for(plan)
             self.state.mark_canonical_semantic_plan_ready(plan.normalization_authority)
 
     def record_fragment_staged(self, plan: FragmentPlan) -> None:
@@ -180,8 +218,10 @@ class SessionFragmentPublicationLifecycleAuthority:
                 unreachable_obligation_ids=scope.unreachable_obligation_ids,
             )
         else:
+            ownership = self._semantic_ownership_for(plan)
             self.state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()
             self.state._fragment_publication_mark_receipt_committed()
+            self.state._fragment_publication_commit_semantic_ownership(ownership)
         self._clear_pending()
 
     def request_poisoned_generation_restart(

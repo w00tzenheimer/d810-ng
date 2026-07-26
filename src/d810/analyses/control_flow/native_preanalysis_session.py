@@ -1172,6 +1172,60 @@ class EvidenceLifecycleTransition:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticFragmentBlockOwner:
+    """Serial-free ownership of one committed semantic operation source."""
+
+    operation_id: str
+    source_block_id: str
+    stable_identity: StableBlockIdentity
+
+    def __post_init__(self) -> None:
+        operation_id = str(self.operation_id).strip()
+        source_block_id = str(self.source_block_id).strip()
+        if not operation_id or not source_block_id:
+            raise ValueError("semantic block owner requires portable identifiers")
+        if not isinstance(self.stable_identity, StableBlockIdentity):
+            raise TypeError("semantic block owner requires stable identity")
+        object.__setattr__(self, "operation_id", operation_id)
+        object.__setattr__(self, "source_block_id", source_block_id)
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedSemanticFragmentOwnership:
+    """Receipt-backed source ownership for one canonical publication."""
+
+    plan_id: str
+    atomic_group_id: str
+    evidence_generation: int
+    owners: tuple[SemanticFragmentBlockOwner, ...]
+
+    def __post_init__(self) -> None:
+        plan_id = str(self.plan_id).strip()
+        atomic_group_id = str(self.atomic_group_id).strip()
+        generation = int(self.evidence_generation)
+        owners = tuple(self.owners)
+        if not plan_id or not atomic_group_id:
+            raise ValueError("semantic ownership requires plan authority")
+        if generation <= 0:
+            raise ValueError("semantic ownership generation must be positive")
+        if not owners or any(
+            not isinstance(owner, SemanticFragmentBlockOwner) for owner in owners
+        ):
+            raise TypeError("semantic ownership requires typed block owners")
+        if len({owner.operation_id for owner in owners}) != len(owners):
+            raise ValueError("semantic ownership operation ids must be unique")
+        if len({owner.source_block_id for owner in owners}) != len(owners):
+            raise ValueError("semantic ownership source blocks must be unique")
+        native_keys = {owner.stable_identity.native_key for owner in owners}
+        if len(native_keys) != 1:
+            raise ValueError("semantic ownership cannot cross native functions")
+        object.__setattr__(self, "plan_id", plan_id)
+        object.__setattr__(self, "atomic_group_id", atomic_group_id)
+        object.__setattr__(self, "evidence_generation", generation)
+        object.__setattr__(self, "owners", owners)
+
+
 @dataclass(slots=True)
 class NativePreanalysisSessionState:
     """First-class portable evidence and epoch authority for a lifecycle."""
@@ -1195,6 +1249,9 @@ class NativePreanalysisSessionState:
     semantic_fragment_validated_generation: int | None = None
     semantic_fragment_published_postvalidated_generation: int | None = None
     receipt_committed_generation: int | None = None
+    committed_semantic_publications: tuple[
+        CommittedSemanticFragmentOwnership, ...
+    ] = ()
     facts: NativePreanalysisFacts | None = None
     resolver_evidence: ResolverPortableEvidence | None = None
     bootstrap_routes: dict[tuple[StableBlockIdentity, int], BootstrapRouteEvidence] = (
@@ -1392,6 +1449,26 @@ class NativePreanalysisSessionState:
         )
         if semantic_order != tuple(sorted(semantic_order)):
             raise ValueError("invalid semantic lifecycle generation order")
+        publications = tuple(self.committed_semantic_publications)
+        if any(
+            not isinstance(item, CommittedSemanticFragmentOwnership)
+            for item in publications
+        ):
+            raise TypeError("committed semantic publications must be typed")
+        if any(item.evidence_generation != generation for item in publications):
+            raise ValueError(
+                "committed semantic publication belongs to another generation"
+            )
+        publication_scopes = tuple(
+            (item.plan_id, item.atomic_group_id) for item in publications
+        )
+        if len(set(publication_scopes)) != len(publication_scopes):
+            raise ValueError("committed semantic publication scopes must be unique")
+        if publications and self.receipt_committed_generation != generation:
+            raise ValueError(
+                "committed semantic ownership requires receipt authority"
+            )
+        self.committed_semantic_publications = publications
 
     def _require_current_portable_evidence(self) -> int:
         generation = int(self.evidence_generation)
@@ -1681,6 +1758,47 @@ class NativePreanalysisSessionState:
                 "receipt commit requires current postvalidated semantic publication"
             ),
         )
+
+    def _fragment_publication_commit_semantic_ownership(
+        self,
+        ownership: CommittedSemanticFragmentOwnership,
+    ) -> bool:
+        """Persist canonical source ownership only behind a committed receipt."""
+        generation = self._require_current_portable_evidence()
+        if not isinstance(ownership, CommittedSemanticFragmentOwnership):
+            raise TypeError("semantic ownership commit requires typed authority")
+        if ownership.evidence_generation != generation:
+            raise ValueError("semantic ownership evidence generation drifted")
+        if self.receipt_committed_generation != generation:
+            raise RuntimeError("semantic ownership commit requires current receipt")
+        scope = (ownership.plan_id, ownership.atomic_group_id)
+        for existing in self.committed_semantic_publications:
+            existing_scope = (existing.plan_id, existing.atomic_group_id)
+            if existing_scope != scope:
+                continue
+            if existing == ownership:
+                return False
+            raise RuntimeError("semantic ownership scope changed after commit")
+        self.committed_semantic_publications = (
+            *self.committed_semantic_publications,
+            ownership,
+        )
+        self._observe_transition(
+            operation="semantic_fragment_ownership_committed",
+            previous_generation=generation,
+            evidence_family="semantic_lowering",
+            reason=(
+                f"committed {len(ownership.owners)} semantic block owners for "
+                f"plan {ownership.plan_id}"
+            ),
+        )
+        return True
+
+    def committed_semantic_ownership(
+        self,
+    ) -> tuple[CommittedSemanticFragmentOwnership, ...]:
+        """Return current receipt-backed canonical ownership authority."""
+        return tuple(self.committed_semantic_publications)
 
     def _fragment_publication_abort_semantic_fragment(self, *, reason: str) -> bool:
         """Discard current transient semantic state without moving authority."""
@@ -2699,6 +2817,7 @@ class NativePreanalysisSessionState:
             self.evidence_generation if poisoned_restart_pending else None
         )
         self.exhausted_poison_restart_generation = None
+        self.committed_semantic_publications = ()
         self._observe_transition(
             operation="evidence_changed",
             previous_generation=previous_generation,
@@ -3017,6 +3136,7 @@ __all__ = [
     "CallResultCarrier",
     "ComputedGotoPatchPlan",
     "ComputedGotoResolution",
+    "CommittedSemanticFragmentOwnership",
     "NativePreanalysisFacts",
     "NativePreanalysisSessionState",
     "PreoptUnionPreparationResult",
@@ -3025,5 +3145,6 @@ __all__ = [
     "ResolverPortableEvidence",
     "ResolverLifecycleSession",
     "ResolverSessionOwner",
+    "SemanticFragmentBlockOwner",
     "attached_resolver_session_state",
 ]

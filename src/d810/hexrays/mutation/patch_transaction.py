@@ -8,6 +8,14 @@ from d810.analyses.control_flow.graph_checks import (
     check_entry_reachability_not_collapsed,
     check_terminal_reachability_preserved,
 )
+from d810.analyses.control_flow.native_preanalysis_session import (
+    CommittedSemanticFragmentOwnership,
+)
+from d810.ir.block_identity import (
+    StableBlockIdentity,
+    stable_block_identities_overlap,
+    stable_block_identity_semantic_anchor,
+)
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.cfg_transaction import (
     BoundCfgTransaction,
@@ -15,6 +23,8 @@ from d810.transforms.cfg_transaction import (
     CfgProjection,
     PatchPlanExecutionResult,
     PreparedCfgTransaction,
+    LogicalBlockRef,
+    NativeBlockRef,
     TransactionAttemptId,
 )
 from d810.transforms.contract import CfgContract
@@ -132,6 +142,45 @@ class HexRaysPatchTransactionParticipant:
         self._projection = projection
         return projection
 
+    def _portable_identity_for_ref(
+        self,
+        ref: NativeBlockRef | LogicalBlockRef,
+    ) -> StableBlockIdentity | None:
+        if isinstance(ref, NativeBlockRef):
+            return ref.identity
+        if isinstance(ref, LogicalBlockRef):
+            return self.gateway.identity_index.published_identity_for_logical_ref(ref)
+        raise TypeError("semantic ownership preflight requires a portable block ref")
+
+    def _reject_committed_semantic_overlap(self) -> None:
+        authority = getattr(self.gateway, "lifecycle_authority", None)
+        if authority is None:
+            return
+        publications = authority.committed_semantic_ownership()
+        if not isinstance(publications, tuple) or any(
+            not isinstance(item, CommittedSemanticFragmentOwnership)
+            for item in publications
+        ):
+            raise TypeError("semantic ownership lifecycle result is not typed")
+        for ref, _coordinate in self.plan.source_coordinates:
+            identity = self._portable_identity_for_ref(ref)
+            if identity is None:
+                continue
+            for publication in publications:
+                for owner in publication.owners:
+                    if not stable_block_identities_overlap(
+                        owner.stable_identity,
+                        identity,
+                    ):
+                        continue
+                    anchor_ea = stable_block_identity_semantic_anchor(identity)
+                    raise PatchTransactionPreflightRejected(
+                        f"patch plan {self.plan.plan_id} overlaps committed "
+                        f"semantic plan {publication.plan_id} operation "
+                        f"{owner.operation_id} source {owner.source_block_id} at "
+                        f"0x{anchor_ea:X}"
+                    )
+
     def preflight(self, projection: CfgProjection) -> PreparedCfgTransaction:
         if projection is not self._projection:
             raise ValueError("patch preflight changed immutable projection authority")
@@ -142,6 +191,7 @@ class HexRaysPatchTransactionParticipant:
         snapshot = self._snapshot
         if snapshot is None:
             raise RuntimeError("patch preflight lacks immutable source snapshot")
+        self._reject_committed_semantic_overlap()
         terminal_reachability = check_terminal_reachability_preserved(
             snapshot,
             post_adj=projection.graph.as_adjacency_dict(),

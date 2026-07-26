@@ -25,6 +25,7 @@ def test_exposes_the_portable_block_identity_contract() -> None:
         "RebindResult",
         "refine_stable_block_identity_for_graph_block",
         "stable_block_identity_covers",
+        "stable_block_identities_overlap",
         "stable_block_identity_semantic_anchor",
         "stable_block_identities_refine_at_anchor",
         "stable_block_identity_token",
@@ -181,6 +182,47 @@ def test_stable_identity_coverage_is_directional_and_exact() -> None:
         missing_exact_anchor,
     )
     assert not block_identity.stable_block_identity_covers(physical, wider_plan)
+
+
+def test_stable_identity_overlap_is_symmetric_and_native_key_scoped() -> None:
+    native_key = make_native_key()
+    canonical_owner = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40C10A, 0x40C132),),
+        native_key=native_key,
+        exact_instruction_eas=(0x40C10A,),
+    )
+    later_live_split = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40C115, 0x40C120),),
+        native_key=native_key,
+        exact_instruction_eas=(0x40C115,),
+    )
+    adjacent = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40C132, 0x40C140),),
+        native_key=native_key,
+        exact_instruction_eas=(0x40C132,),
+    )
+    foreign = block_identity.StableBlockIdentity.from_intervals(
+        (block_identity.NativeEaInterval(0x40C115, 0x40C120),),
+        native_key=make_native_key(function_rva=0x2000),
+        exact_instruction_eas=(0x40C115,),
+    )
+
+    assert block_identity.stable_block_identities_overlap(
+        canonical_owner,
+        later_live_split,
+    )
+    assert block_identity.stable_block_identities_overlap(
+        later_live_split,
+        canonical_owner,
+    )
+    assert not block_identity.stable_block_identities_overlap(
+        canonical_owner,
+        adjacent,
+    )
+    assert not block_identity.stable_block_identities_overlap(
+        canonical_owner,
+        foreign,
+    )
 
 
 def test_identity_contract_exposes_explicit_construction_and_rebind_results() -> None:

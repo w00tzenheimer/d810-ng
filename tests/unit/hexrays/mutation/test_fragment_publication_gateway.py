@@ -382,6 +382,9 @@ class _ReceiptLifecycleAuthority:
         self.events.append(("cfg_poisoned", (attempt, failure)))
         return True
 
+    def committed_semantic_ownership(self):
+        return ()
+
 
 def _gateway(
     plan: FragmentPlan,
@@ -1266,6 +1269,17 @@ def test_gateway_advances_semantic_lifecycle_only_after_receipt_commit() -> None
     assert lifecycle.semantic_fragment_published_postvalidated_generation == 1
     assert lifecycle.receipt_committed_generation == 1
     assert lifecycle.normalization_published_postvalidated_generation == 1
+    publications = lifecycle.committed_semantic_publications
+    assert len(publications) == 1
+    assert publications[0].plan_id == plan.plan_id
+    assert publications[0].atomic_group_id == plan.atomic_group_id
+    assert publications[0].evidence_generation == 1
+    assert tuple(owner.operation_id for owner in publications[0].owners) == (
+        "direct-route",
+    )
+    assert publications[0].owners[0].stable_identity == plan.block(
+        "replacement"
+    ).stable_identity
 
 
 def test_gateway_records_canonical_plan_ready_before_semantic_staging() -> None:
@@ -1425,6 +1439,7 @@ def test_postpublication_failure_poisons_transient_semantic_lifecycle() -> None:
     assert lifecycle.semantic_fragment_validated_generation is None
     assert lifecycle.semantic_fragment_published_postvalidated_generation is None
     assert lifecycle.receipt_committed_generation is None
+    assert lifecycle.committed_semantic_publications == ()
     assert lifecycle.canonical_semantic_plan_generation == 1
     assert lifecycle.has_pending_generated_restart
 
@@ -1487,6 +1502,7 @@ def test_receipt_event_precedes_committed_semantic_lifecycle_authority() -> None
         "mutation_receipt_committed",
         "semantic_fragment_published_postvalidated",
         "receipt_committed",
+        "semantic_fragment_ownership_committed",
     ]
 
 

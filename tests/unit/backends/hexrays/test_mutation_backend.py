@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from d810.analyses.control_flow.native_preanalysis_session import (
+    CommittedSemanticFragmentOwnership,
     NativePreanalysisSessionState,
+    SemanticFragmentBlockOwner,
 )
 from d810.backends.hexrays.mutation.backend import (
     HexRaysMutationBackend,
@@ -374,6 +377,122 @@ def test_apply_lowers_plan_when_reachability_is_preserved() -> None:
     translator = _FakeTranslator(cfg)
     backend = HexRaysMutationBackend(
         mutation_gateway=_ordinary_gateway(cfg, plan),
+        translator=translator,
+    )
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
+
+    assert result is cfg
+    assert translator.lower_calls == [plan]
+    assert translator.lift_count == 2
+
+
+def _state_with_committed_semantic_owner(
+    identity: StableBlockIdentity,
+) -> NativePreanalysisSessionState:
+    state = NativePreanalysisSessionState(evidence_generation=1)
+    state._fragment_publication_mark_normalization_staged()
+    state._fragment_publication_mark_normalization_validated()
+    state._fragment_publication_mark_normalization_published_and_postvalidated()
+    state.mark_canonical_semantic_plan_ready()
+    state._fragment_publication_mark_semantic_fragment_staged()
+    state._fragment_publication_mark_semantic_fragment_validated()
+    state._fragment_publication_mark_semantic_fragment_published_and_postvalidated()
+    state._fragment_publication_mark_receipt_committed()
+    state._fragment_publication_commit_semantic_ownership(
+        CommittedSemanticFragmentOwnership(
+            plan_id="committed-semantic-plan",
+            atomic_group_id="committed-semantic-group",
+            evidence_generation=1,
+            owners=(
+                SemanticFragmentBlockOwner(
+                    operation_id="committed-conditional",
+                    source_block_id="native-body-edge@0x40C10A",
+                    stable_identity=identity,
+                ),
+            ),
+        )
+    )
+    return state
+
+
+def test_apply_cleanly_rejects_patch_overlapping_committed_semantic_owner() -> None:
+    cfg = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
+    plan = replace(
+        _ordinary_plan(
+            PatchConvertToGoto,
+            serials=(0, 1),
+            block_serial=0,
+            goto_target=1,
+        ),
+        source_generation=1,
+    )
+    state = _state_with_committed_semantic_owner(_native_ref(0).identity)
+    first_authority = SessionFragmentPublicationLifecycleAuthority(
+        native_key=NATIVE_KEY,
+        state=state,
+    )
+    second_authority = SessionFragmentPublicationLifecycleAuthority(
+        native_key=NATIVE_KEY,
+        state=state,
+    )
+    assert first_authority is not second_authority
+    emitter = EventEmitter()
+    phases: list[MbaCfgTransactionAuthorityObserved] = []
+    emitter.on(MbaCfgTransactionAuthorityObserved, phases.append)
+    translator = _FakeTranslator(cfg)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_ordinary_gateway(
+            cfg,
+            plan,
+            event_emitter=emitter,
+            lifecycle_authority=second_authority,
+        ),
+        translator=translator,
+    )
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
+
+    assert result is cfg
+    assert translator.lower_calls == []
+    assert translator.lift_count == 1
+    assert backend.last_patch_execution is None
+    assert [event.phase for event in phases] == [
+        CfgTransactionPhase.PLANNED,
+        CfgTransactionPhase.PROJECTED,
+        CfgTransactionPhase.REJECTED_CLEAN,
+    ]
+    failure = phases[-1].failure
+    assert failure is not None
+    assert not failure.live_mutation_started
+    assert "committed-semantic-plan" in failure.reason
+    assert "committed-conditional" in failure.reason
+    assert "0x1000" in failure.reason
+
+
+def test_apply_allows_patch_disjoint_from_committed_semantic_owner() -> None:
+    cfg = _make_cfg([(0, 1), (1, 2)], stop_serials=(2,))
+    plan = replace(
+        _ordinary_plan(
+            PatchConvertToGoto,
+            serials=(1, 2),
+            block_serial=1,
+            goto_target=2,
+        ),
+        source_generation=1,
+    )
+    state = _state_with_committed_semantic_owner(_native_ref(0).identity)
+    authority = SessionFragmentPublicationLifecycleAuthority(
+        native_key=NATIVE_KEY,
+        state=state,
+    )
+    translator = _FakeTranslator(cfg)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_ordinary_gateway(
+            cfg,
+            plan,
+            lifecycle_authority=authority,
+        ),
         translator=translator,
     )
 

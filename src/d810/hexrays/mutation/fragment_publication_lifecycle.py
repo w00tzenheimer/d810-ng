@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from d810.analyses.control_flow.native_preanalysis_session import (
+    CommittedSemanticFragmentOwnership,
+)
 from d810.core.typing import Protocol, runtime_checkable
 from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.fragment_validation import FragmentValidationResult
@@ -39,6 +42,10 @@ class FragmentPublicationLifecycleAuthority(Protocol):
         plan: FragmentPlan,
         receipt: object,
     ) -> None: ...
+
+    def committed_semantic_ownership(
+        self,
+    ) -> tuple[CommittedSemanticFragmentOwnership, ...]: ...
 
     def request_poisoned_generation_restart(
         self,
