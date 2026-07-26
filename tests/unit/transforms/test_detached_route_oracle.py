@@ -15,6 +15,8 @@ from d810.core.semantic_route_oracle import (
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockKind, InsnKind
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.detached_route_oracle import (
     DetachedRouteOracleRejected,
     bind_fragment_reference_oracle,
@@ -33,6 +35,7 @@ from d810.transforms.fragment_plan import (
     FragmentPlanRejected,
     FragmentPublicationPurpose,
     FragmentReferenceRouteAuthority,
+    FragmentStoragePredicateMaterialization,
 )
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
@@ -413,6 +416,184 @@ def test_bind_fragment_reference_oracle_rebinds_unique_donor_patch_coordinate() 
     result = compare_detached_route_oracle(bound, _projection(bound))
     assert result.passed
     assert result.comparisons[0].rewrite_anchor_ea == _REWRITE_ANCHOR_EA
+
+
+def test_bind_fragment_reference_oracle_rebinds_complete_conditional_route() -> None:
+    plan = _unbound_plan()
+    source = plan.block("route.replacement")
+    false_target_ea = _TARGET_EA + 0x20
+    false_target = FragmentBlock(
+        block_id="false-target",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=false_target_ea,
+        stable_identity=_identity(
+            false_target_ea,
+            false_target_ea + 0x10,
+            false_target_ea,
+        ),
+    )
+    plan = replace(
+        plan,
+        blocks=(*plan.blocks, false_target),
+        operations=(
+            FragmentOperation(
+                operation_id="route:state-choice@0x40B51B",
+                source_block_id=source.block_id,
+                predicate_anchor_ea=_OWNER_EA,
+                storage_predicate_materialization=(
+                    FragmentStoragePredicateMaterialization(
+                        predicate_kind=PredicateKind.EQ,
+                        storage_identity=StorageIdentity(
+                            StorageIdentityKind.STACK,
+                            0x40,
+                        ),
+                        width=4,
+                        compare_constant=0,
+                        cut_after_ea=_OWNER_EA,
+                    )
+                ),
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id="target",
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        target_block_id=false_target.block_id,
+                    ),
+                ),
+            ),
+        ),
+    )
+    route = replace(
+        _reference_route(),
+        final_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        direct_target_ea=None,
+        true_target_ea=_TARGET_EA,
+        false_target_ea=false_target_ea,
+        predicate_kind="z",
+    )
+    selection = ReferenceRouteOracleSelection(
+        run=_reference_run(),
+        publication_root_ea=_OWNER_EA,
+        routes=(route,),
+    )
+
+    bound = bind_fragment_reference_oracle(plan, selection)
+
+    authority = bound.operations[0].reference_route_authority
+    assert authority is not None
+    assert authority.reference_route == route
+    assert authority.candidate_rewrite_anchor_ea == _OWNER_EA
+    projection = ProjectedFragment(
+        entry_block_id="entry",
+        blocks=(
+            ProjectedFragmentBlock(
+                block_id="entry",
+                kind=BlockKind.ONE_WAY,
+                successors=(source.block_id,),
+                predecessors=(),
+                physical_position=0,
+                adjacent_fallthrough_target_id=None,
+                instruction_eas=(_FUNCTION_EA,),
+                terminator_ea=_FUNCTION_EA,
+                terminator_kind=InsnKind.GOTO,
+            ),
+            ProjectedFragmentBlock(
+                block_id=source.block_id,
+                kind=BlockKind.TWO_WAY,
+                successors=("target", false_target.block_id),
+                predecessors=("entry",),
+                physical_position=1,
+                adjacent_fallthrough_target_id=false_target.block_id,
+                instruction_eas=(_OWNER_EA,),
+                terminator_ea=_OWNER_EA,
+                terminator_kind=InsnKind.EQUALITY_JUMP,
+            ),
+            ProjectedFragmentBlock(
+                block_id=false_target.block_id,
+                kind=BlockKind.ZERO_WAY,
+                successors=(),
+                predecessors=(source.block_id,),
+                physical_position=2,
+                adjacent_fallthrough_target_id=None,
+                instruction_eas=(false_target_ea,),
+                terminator_ea=None,
+                terminator_kind=InsnKind.UNKNOWN,
+            ),
+            ProjectedFragmentBlock(
+                block_id="target",
+                kind=BlockKind.ZERO_WAY,
+                successors=(),
+                predecessors=(source.block_id,),
+                physical_position=3,
+                adjacent_fallthrough_target_id=None,
+                instruction_eas=(_TARGET_EA,),
+                terminator_ea=None,
+                terminator_kind=InsnKind.UNKNOWN,
+            ),
+            ProjectedFragmentBlock(
+                block_id="route.original",
+                kind=BlockKind.ZERO_WAY,
+                successors=(),
+                predecessors=(),
+                physical_position=4,
+                adjacent_fallthrough_target_id=None,
+                instruction_eas=(_OWNER_EA,),
+                terminator_ea=None,
+                terminator_kind=InsnKind.UNKNOWN,
+            ),
+        ),
+        identity_bindings=(
+            _binding(
+                bound,
+                "entry",
+                owner="logical:entry",
+                version=0,
+                state=FragmentBindingState.PUBLISHED,
+            ),
+            _binding(
+                bound,
+                "route.original",
+                owner="logical:route",
+                version=1,
+                state=FragmentBindingState.PUBLISHED,
+            ),
+            _binding(
+                bound,
+                source.block_id,
+                owner="logical:route",
+                version=2,
+                state=FragmentBindingState.STAGED,
+                previous_version=1,
+            ),
+            _binding(
+                bound,
+                "target",
+                owner="logical:true-target",
+                version=0,
+                state=FragmentBindingState.PUBLISHED,
+            ),
+            _binding(
+                bound,
+                false_target.block_id,
+                owner="logical:false-target",
+                version=0,
+                state=FragmentBindingState.PUBLISHED,
+            ),
+        ),
+    )
+
+    result = compare_detached_route_oracle(bound, projection)
+
+    assert result.passed
+    comparison = result.comparisons[0]
+    assert comparison.candidate_shape is not None
+    assert comparison.candidate_shape.predicate_kind == "z"
+    assert comparison.candidate_shape.true_target_ea == _TARGET_EA
+    assert comparison.candidate_shape.false_target_ea == false_target_ea
+    assert comparison.candidate_shape.physical_fallthrough_ea == false_target_ea
 
 
 def test_bind_fragment_reference_oracle_rejects_partial_authority() -> None:

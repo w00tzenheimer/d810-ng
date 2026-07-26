@@ -15,6 +15,8 @@ from d810.core.semantic_route_oracle import (
     compare_route_maturities,
 )
 from d810.ir.flowgraph import InsnKind
+from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind
 from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
@@ -28,6 +30,19 @@ from d810.transforms.fragment_validation import (
 
 _DETACHED_MATURITY = "DETACHED_PREPUBLICATION"
 _CANDIDATE_VARIANT = "detached_prepublication"
+
+_REFERENCE_PREDICATE_BY_PORTABLE = {
+    PredicateKind.EQ: "z",
+    PredicateKind.NE: "nz",
+    PredicateKind.UGE: "ae",
+    PredicateKind.UGT: "a",
+    PredicateKind.ULE: "be",
+    PredicateKind.ULT: "b",
+    PredicateKind.SGE: "ge",
+    PredicateKind.SGT: "g",
+    PredicateKind.SLE: "le",
+    PredicateKind.SLT: "l",
+}
 
 
 class DetachedRouteOracleRejected(ValueError):
@@ -80,6 +95,85 @@ class DetachedRouteOracleResult:
         )
 
 
+def _conditional_candidate_anchor(operation: FragmentOperation) -> int | None:
+    if (
+        operation.direct_transfer_rewrite is not None
+        or operation.predicate_anchor_ea is None
+        or operation.roles
+        != frozenset(
+            {
+                SemanticEdgeRole.CONDITIONAL_TAKEN,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }
+        )
+    ):
+        return None
+    return int(operation.predicate_anchor_ea)
+
+
+def _conditional_reference_predicate(operation: FragmentOperation) -> str | None:
+    materialization = operation.storage_predicate_materialization
+    normalization = operation.computed_branch_normalization
+    portable_predicate = (
+        materialization.predicate_kind
+        if materialization is not None
+        else normalization.predicate_kind
+        if normalization is not None
+        else None
+    )
+    return (
+        None
+        if portable_predicate is None
+        else _REFERENCE_PREDICATE_BY_PORTABLE.get(portable_predicate)
+    )
+
+
+def _conditional_operation_semantically_matches(
+    plan: FragmentPlan,
+    operation: FragmentOperation,
+    route: ReferenceRouteRewrite,
+) -> bool:
+    candidate_anchor_ea = _conditional_candidate_anchor(operation)
+    if (
+        route.final_transfer_kind is not SemanticTransferKind.CONDITIONAL
+        or candidate_anchor_ea is None
+        or route.true_target_ea is None
+        or route.false_target_ea is None
+        or candidate_anchor_ea != int(route.owner_ea)
+        or _conditional_reference_predicate(operation) != route.predicate_kind
+        or not any(
+            int(start_ea) <= candidate_anchor_ea < int(end_ea)
+            for start_ea, end_ea in route.corridor
+        )
+    ):
+        return False
+    source = plan.block(operation.source_block_id)
+    source_identity = source.stable_identity
+    if source_identity is None or not source_identity.native_ranges.contains(
+        int(route.owner_ea)
+    ):
+        return False
+    edge_by_role = {edge.role: edge for edge in operation.edges}
+    expected_targets = (
+        (SemanticEdgeRole.CONDITIONAL_TAKEN, int(route.true_target_ea)),
+        (SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, int(route.false_target_ea)),
+    )
+    return all(
+        (edge := edge_by_role.get(role)) is not None
+        and (target_identity := plan.block(edge.target_block_id).stable_identity)
+        is not None
+        and target_identity.native_ranges.contains(target_ea)
+        for role, target_ea in expected_targets
+    )
+
+
+def _candidate_rewrite_anchor(operation: FragmentOperation) -> int | None:
+    rewrite = operation.direct_transfer_rewrite
+    if rewrite is not None:
+        return int(rewrite.rewrite_anchor_ea)
+    return _conditional_candidate_anchor(operation)
+
+
 def bind_fragment_reference_oracle(
     plan: FragmentPlan,
     selection: ReferenceRouteOracleSelection,
@@ -114,104 +208,148 @@ def bind_fragment_reference_oracle(
                 ),
             },
         )
-    operations_with_rewrites = tuple(
+    direct_operations = tuple(
         operation
         for operation in plan.operations
         if operation.direct_transfer_rewrite is not None
     )
-    planned_anchors = tuple(
-        operation.direct_transfer_rewrite.rewrite_anchor_ea
-        for operation in operations_with_rewrites
-        if operation.direct_transfer_rewrite is not None
-    )
     selected_anchors = tuple(route.rewrite_anchor_ea for route in selection.routes)
-    if not planned_anchors or len(set(planned_anchors)) != len(planned_anchors):
-        raise DetachedRouteOracleRejected(
-            "fragment and reference selection require exact rewrite anchors",
-            reason_code="fragment_reference_rewrite_anchor_set_mismatch",
-            payload={
-                "missing_rewrite_anchors": tuple(
-                    f"0x{anchor_ea:X}" for anchor_ea in selected_anchors
-                ),
-                "planned_rewrite_anchors": tuple(
-                    f"0x{anchor_ea:X}" for anchor_ea in planned_anchors
-                ),
-                "selected_rewrite_anchors": tuple(
-                    f"0x{anchor_ea:X}" for anchor_ea in selected_anchors
-                ),
-                "unexpected_rewrite_anchors": tuple(
-                    f"0x{anchor_ea:X}" for anchor_ea in planned_anchors
-                ),
-            },
-        )
-
-    unused_routes = list(selection.routes)
     route_by_operation_id: dict[str, ReferenceRouteRewrite] = {}
     coordinate_rebindings: list[dict[str, object]] = []
-    unexpected_operations: list[FragmentOperation] = []
-    for operation in operations_with_rewrites:
-        rewrite = operation.direct_transfer_rewrite
-        assert rewrite is not None
-        exact_matches = tuple(
-            route
-            for route in unused_routes
-            if int(route.rewrite_anchor_ea) == int(rewrite.rewrite_anchor_ea)
-        )
-        if len(exact_matches) == 1:
-            (selected_route,) = exact_matches
-        else:
-            target = plan.block(operation.edges[0].target_block_id)
-            target_identity = target.stable_identity
-            semantic_matches = tuple(
-                route
-                for route in unused_routes
-                if (
-                    route.final_transfer_kind is SemanticTransferKind.DIRECT
-                    and route.direct_target_ea is not None
-                    and int(rewrite.owner_anchor_ea) == int(route.owner_ea)
-                    and rewrite.owner_identity.native_ranges.contains(route.owner_ea)
-                    and target_identity is not None
-                    and target_identity.native_ranges.contains(route.direct_target_ea)
-                    and any(
-                        start_ea <= int(rewrite.rewrite_anchor_ea) < end_ea
-                        for start_ea, end_ea in route.corridor
-                    )
-                    and all(
-                        any(
-                            start_ea <= ea < end_ea
+    unused_operation_ids = {operation.operation_id for operation in plan.operations}
+    missing_routes: list[ReferenceRouteRewrite] = []
+    for route in selection.routes:
+        if route.final_transfer_kind is SemanticTransferKind.DIRECT:
+            direct_candidates = tuple(
+                operation
+                for operation in direct_operations
+                if operation.operation_id in unused_operation_ids
+            )
+            exact_matches = tuple(
+                operation
+                for operation in direct_candidates
+                if operation.direct_transfer_rewrite is not None
+                and int(operation.direct_transfer_rewrite.rewrite_anchor_ea)
+                == int(route.rewrite_anchor_ea)
+            )
+            if len(exact_matches) == 1:
+                (selected_operation,) = exact_matches
+            else:
+                semantic_matches: list[FragmentOperation] = []
+                for operation in direct_candidates:
+                    rewrite = operation.direct_transfer_rewrite
+                    assert rewrite is not None
+                    target = plan.block(operation.edges[0].target_block_id)
+                    target_identity = target.stable_identity
+                    if (
+                        route.direct_target_ea is not None
+                        and int(rewrite.owner_anchor_ea) == int(route.owner_ea)
+                        and rewrite.owner_identity.native_ranges.contains(
+                            route.owner_ea
+                        )
+                        and target_identity is not None
+                        and target_identity.native_ranges.contains(
+                            route.direct_target_ea
+                        )
+                        and any(
+                            start_ea <= int(rewrite.rewrite_anchor_ea) < end_ea
                             for start_ea, end_ea in route.corridor
                         )
-                        for ea in rewrite.proof_corridor_instruction_eas
+                        and all(
+                            any(
+                                start_ea <= ea < end_ea
+                                for start_ea, end_ea in route.corridor
+                            )
+                            for ea in rewrite.proof_corridor_instruction_eas
+                        )
+                    ):
+                        semantic_matches.append(operation)
+                if len(semantic_matches) != 1:
+                    missing_routes.append(route)
+                    continue
+                (selected_operation,) = semantic_matches
+        elif route.final_transfer_kind is SemanticTransferKind.CONDITIONAL:
+            conditional_candidates = tuple(
+                operation
+                for operation in plan.operations
+                if operation.operation_id in unused_operation_ids
+                and _conditional_candidate_anchor(operation) is not None
+            )
+            exact_matches = tuple(
+                operation
+                for operation in conditional_candidates
+                if _conditional_candidate_anchor(operation)
+                == int(route.rewrite_anchor_ea)
+                and _conditional_reference_predicate(operation)
+                == route.predicate_kind
+            )
+            if len(exact_matches) == 1:
+                (selected_operation,) = exact_matches
+            else:
+                semantic_matches = tuple(
+                    operation
+                    for operation in conditional_candidates
+                    if _conditional_operation_semantically_matches(
+                        plan,
+                        operation,
+                        route,
                     )
                 )
-            )
-            if len(semantic_matches) != 1:
-                unexpected_operations.append(operation)
-                continue
-            (selected_route,) = semantic_matches
+                if len(semantic_matches) != 1:
+                    missing_routes.append(route)
+                    continue
+                (selected_operation,) = semantic_matches
+        else:
+            missing_routes.append(route)
+            continue
+
+        candidate_anchor_ea = _candidate_rewrite_anchor(selected_operation)
+        assert candidate_anchor_ea is not None
+        route_by_operation_id[selected_operation.operation_id] = route
+        unused_operation_ids.remove(selected_operation.operation_id)
+        if candidate_anchor_ea != int(route.rewrite_anchor_ea):
             coordinate_rebindings.append(
                 {
                     "candidate_rewrite_anchor_ea": (
-                        f"0x{int(rewrite.rewrite_anchor_ea):X}"
+                        f"0x{candidate_anchor_ea:X}"
                     ),
-                    "operation_id": operation.operation_id,
+                    "operation_id": selected_operation.operation_id,
                     "reference_patch_anchor_ea": (
-                        f"0x{int(selected_route.rewrite_anchor_ea):X}"
+                        f"0x{int(route.rewrite_anchor_ea):X}"
                     ),
-                    "reference_route_id": selected_route.route_id,
+                    "reference_route_id": route.route_id,
                 }
             )
-        route_by_operation_id[operation.operation_id] = selected_route
-        unused_routes.remove(selected_route)
 
-    if unused_routes or unexpected_operations:
+    unexpected_operations = tuple(
+        operation
+        for operation in direct_operations
+        if operation.operation_id in unused_operation_ids
+    )
+    planned_operations = tuple(
+        operation
+        for operation in plan.operations
+        if operation.operation_id in route_by_operation_id
+        or operation in unexpected_operations
+    )
+    planned_anchors = tuple(
+        anchor_ea
+        for operation in planned_operations
+        if (anchor_ea := _candidate_rewrite_anchor(operation)) is not None
+    )
+    if (
+        missing_routes
+        or unexpected_operations
+        or not planned_anchors
+        or len(set(planned_anchors)) != len(planned_anchors)
+    ):
         raise DetachedRouteOracleRejected(
             "fragment and reference selection require exact rewrite anchors",
             reason_code="fragment_reference_rewrite_anchor_set_mismatch",
             payload={
                 "coordinate_rebindings": tuple(coordinate_rebindings),
                 "missing_rewrite_anchors": tuple(
-                    f"0x{int(route.rewrite_anchor_ea):X}" for route in unused_routes
+                    f"0x{int(route.rewrite_anchor_ea):X}" for route in missing_routes
                 ),
                 "planned_rewrite_anchors": tuple(
                     f"0x{anchor_ea:X}" for anchor_ea in planned_anchors
@@ -220,26 +358,27 @@ def bind_fragment_reference_oracle(
                     f"0x{anchor_ea:X}" for anchor_ea in selected_anchors
                 ),
                 "unexpected_rewrite_anchors": tuple(
-                    f"0x{int(operation.direct_transfer_rewrite.rewrite_anchor_ea):X}"
+                    f"0x{int(anchor_ea):X}"
                     for operation in unexpected_operations
-                    if operation.direct_transfer_rewrite is not None
+                    if (anchor_ea := _candidate_rewrite_anchor(operation)) is not None
                 ),
             },
         )
 
     bound_operations: list[FragmentOperation] = []
     for operation in plan.operations:
-        rewrite = operation.direct_transfer_rewrite
-        if rewrite is None:
+        route = route_by_operation_id.get(operation.operation_id)
+        if route is None:
             bound_operations.append(operation)
             continue
-        route = route_by_operation_id[operation.operation_id]
+        candidate_anchor_ea = _candidate_rewrite_anchor(operation)
+        assert candidate_anchor_ea is not None
         bound_operations.append(
             replace(
                 operation,
                 reference_route_authority=FragmentReferenceRouteAuthority(
                     reference_route=route,
-                    candidate_rewrite_anchor_ea=int(rewrite.rewrite_anchor_ea),
+                    candidate_rewrite_anchor_ea=candidate_anchor_ea,
                 ),
             )
         )
@@ -281,18 +420,53 @@ def _semantic_transfer_kind(kind: InsnKind) -> SemanticTransferKind:
 
 
 def _reference_observation(route: ReferenceRouteRewrite) -> SemanticRouteObservation:
-    target_ea = route.direct_target_ea
-    if (
-        route.final_transfer_kind is not SemanticTransferKind.DIRECT
-        or target_ea is None
-    ):
+    if route.final_transfer_kind is SemanticTransferKind.DIRECT:
+        target_ea = route.direct_target_ea
+        if target_ea is None:
+            return SemanticRouteObservation(
+                route_id=route.route_id,
+                lane=RouteCaptureLane.REFERENCE,
+                maturity=_DETACHED_MATURITY,
+                outcome="rejected",
+                shape=None,
+                reason=f"reference route {route.route_id} has no direct target",
+            )
+        terminator_kind = InsnKind.GOTO
+        direct_target_ea = int(target_ea)
+        true_target_ea = None
+        false_target_ea = None
+        predicate_kind = None
+        successor_eas = (int(target_ea),)
+        physical_fallthrough_ea = None
+    elif route.final_transfer_kind is SemanticTransferKind.CONDITIONAL:
+        if (
+            route.true_target_ea is None
+            or route.false_target_ea is None
+            or route.predicate_kind is None
+        ):
+            return SemanticRouteObservation(
+                route_id=route.route_id,
+                lane=RouteCaptureLane.REFERENCE,
+                maturity=_DETACHED_MATURITY,
+                outcome="rejected",
+                shape=None,
+                reason=f"reference route {route.route_id} is incomplete",
+            )
+        terminator_kind = InsnKind.EQUALITY_JUMP
+        direct_target_ea = None
+        true_target_ea = int(route.true_target_ea)
+        false_target_ea = int(route.false_target_ea)
+        predicate_kind = str(route.predicate_kind)
+        successor_eas = tuple(sorted((true_target_ea, false_target_ea)))
+        physical_fallthrough_ea = false_target_ea
+    else:
         return SemanticRouteObservation(
             route_id=route.route_id,
             lane=RouteCaptureLane.REFERENCE,
             maturity=_DETACHED_MATURITY,
             outcome="rejected",
             shape=None,
-            reason=f"reference route {route.route_id} is not one direct rewrite",
+            reason=f"reference route {route.route_id} is not a semantic rewrite",
         )
     return SemanticRouteObservation(
         route_id=route.route_id,
@@ -308,14 +482,14 @@ def _reference_observation(route: ReferenceRouteRewrite) -> SemanticRouteObserva
             owner_block_start_ea=int(route.owner_ea),
             instruction_eas=(int(route.rewrite_anchor_ea),),
             terminator_ea=int(route.rewrite_anchor_ea),
-            terminator_opcode=InsnKind.GOTO.value,
-            transfer_kind=SemanticTransferKind.DIRECT,
-            direct_target_ea=int(target_ea),
-            true_target_ea=None,
-            false_target_ea=None,
-            predicate_kind=None,
-            successor_eas=(int(target_ea),),
-            physical_fallthrough_ea=None,
+            terminator_opcode=terminator_kind.value,
+            transfer_kind=route.final_transfer_kind,
+            direct_target_ea=direct_target_ea,
+            true_target_ea=true_target_ea,
+            false_target_ea=false_target_ea,
+            predicate_kind=predicate_kind,
+            successor_eas=successor_eas,
+            physical_fallthrough_ea=physical_fallthrough_ea,
             reachable_from_entry=True,
         ),
         reason="",
@@ -351,15 +525,33 @@ def _candidate_observation(
             f"route {route.route_id} has no staged source block",
         )
     rewrite = operation.direct_transfer_rewrite
-    if rewrite is None:
+    if route.final_transfer_kind is SemanticTransferKind.DIRECT:
+        if rewrite is None:
+            return _candidate_failure(
+                route,
+                f"route {route.route_id} has no staged direct rewrite",
+            )
+        owner_identity = rewrite.owner_identity
+        owner_anchor_ea = int(rewrite.owner_anchor_ea)
+        predicate_kind = None
+    elif route.final_transfer_kind is SemanticTransferKind.CONDITIONAL:
+        candidate_anchor_ea = _conditional_candidate_anchor(operation)
+        source_plan_block = plan.block(operation.source_block_id)
+        owner_identity = source_plan_block.stable_identity
+        if candidate_anchor_ea is None or owner_identity is None:
+            return _candidate_failure(
+                route,
+                f"route {route.route_id} has no staged conditional authority",
+            )
+        owner_anchor_ea = candidate_anchor_ea
+        predicate_kind = _conditional_reference_predicate(operation)
+    else:
         return _candidate_failure(
             route,
-            f"route {route.route_id} has no staged direct rewrite",
+            f"route {route.route_id} has no supported staged transfer",
         )
-    owner_identity = rewrite.owner_identity
-    if (
-        rewrite.owner_anchor_ea != route.owner_ea
-        or not owner_identity.native_ranges.contains(route.owner_ea)
+    if owner_anchor_ea != route.owner_ea or not owner_identity.native_ranges.contains(
+        route.owner_ea
     ):
         return _candidate_failure(
             route,
@@ -382,6 +574,12 @@ def _candidate_observation(
                 route,
                 f"route {route.route_id} has an unowned staged successor {block_id!r}",
             )
+    operation_target_ids = frozenset(edge.target_block_id for edge in operation.edges)
+    if frozenset(source.successors) != operation_target_ids:
+        return _candidate_failure(
+            route,
+            f"route {route.route_id} staged successors drifted from its operation",
+        )
     successor_eas = tuple(
         sorted(int(block.semantic_anchor_ea) for block in successor_blocks)
     )
@@ -391,6 +589,29 @@ def _candidate_observation(
         if transfer_kind is SemanticTransferKind.DIRECT and len(successor_blocks) == 1
         else None
     )
+    true_target_ea: int | None = None
+    false_target_ea: int | None = None
+    physical_fallthrough_ea: int | None = None
+    if route.final_transfer_kind is SemanticTransferKind.CONDITIONAL:
+        edge_by_role = {edge.role: edge for edge in operation.edges}
+        true_edge = edge_by_role.get(SemanticEdgeRole.CONDITIONAL_TAKEN)
+        false_edge = edge_by_role.get(SemanticEdgeRole.CONDITIONAL_FALLTHROUGH)
+        if (
+            true_edge is None
+            or false_edge is None
+            or source.adjacent_fallthrough_target_id != false_edge.target_block_id
+        ):
+            return _candidate_failure(
+                route,
+                f"route {route.route_id} has no exact semantic fallthrough",
+            )
+        true_target_ea = int(
+            plan.block(true_edge.target_block_id).semantic_anchor_ea
+        )
+        false_target_ea = int(
+            plan.block(false_edge.target_block_id).semantic_anchor_ea
+        )
+        physical_fallthrough_ea = false_target_ea
     owner_start_ea = min(
         int(interval.start_ea) for interval in owner_identity.native_ranges.intervals
     )
@@ -411,11 +632,11 @@ def _candidate_observation(
             terminator_opcode=source.terminator_kind.value,
             transfer_kind=transfer_kind,
             direct_target_ea=direct_target_ea,
-            true_target_ea=None,
-            false_target_ea=None,
-            predicate_kind=None,
+            true_target_ea=true_target_ea,
+            false_target_ea=false_target_ea,
+            predicate_kind=predicate_kind,
             successor_eas=successor_eas,
-            physical_fallthrough_ea=None,
+            physical_fallthrough_ea=physical_fallthrough_ea,
             reachable_from_entry=(source.block_id in reachable_block_ids),
         ),
         reason="",
@@ -439,16 +660,15 @@ def compare_detached_route_oracle(
 
     selected: list[tuple[FragmentOperation, ReferenceRouteRewrite]] = []
     for operation in plan.operations:
-        rewrite = operation.direct_transfer_rewrite
-        if rewrite is None:
-            continue
         authority = operation.reference_route_authority
         if authority is None:
-            raise DetachedRouteOracleRejected(
-                f"operation {operation.operation_id!r} has no reference route",
-                reason_code="detached_operation_reference_route_missing",
-                payload={"operation_id": operation.operation_id},
-            )
+            if operation.direct_transfer_rewrite is not None:
+                raise DetachedRouteOracleRejected(
+                    f"operation {operation.operation_id!r} has no reference route",
+                    reason_code="detached_operation_reference_route_missing",
+                    payload={"operation_id": operation.operation_id},
+                )
+            continue
         selected.append((operation, authority.semantic_route))
     if not selected:
         raise DetachedRouteOracleRejected(
