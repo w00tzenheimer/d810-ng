@@ -15,7 +15,11 @@ from d810.core.semantic_route_oracle import (
     compare_route_maturities,
 )
 from d810.ir.flowgraph import InsnKind
-from d810.transforms.fragment_plan import FragmentOperation, FragmentPlan
+from d810.transforms.fragment_plan import (
+    FragmentOperation,
+    FragmentPlan,
+    FragmentReferenceRouteAuthority,
+)
 from d810.transforms.fragment_validation import (
     ProjectedFragment,
     projected_publication_authority_roots,
@@ -80,15 +84,14 @@ def bind_fragment_reference_oracle(
     plan: FragmentPlan,
     selection: ReferenceRouteOracleSelection,
 ) -> FragmentPlan:
-    """Bind exact reference authority to every direct rewrite in one plan."""
+    """Bind donor semantics to every exact candidate rewrite in one plan."""
 
     if not isinstance(plan, FragmentPlan):
         raise TypeError("reference oracle binding requires a FragmentPlan")
     if not isinstance(selection, ReferenceRouteOracleSelection):
         raise TypeError("reference oracle binding requires a route selection")
     if plan.reference_oracle_run is not None or any(
-        operation.direct_transfer_rewrite is not None
-        and operation.direct_transfer_rewrite.reference_route is not None
+        operation.reference_route_authority is not None
         for operation in plan.operations
     ):
         raise DetachedRouteOracleRejected(
@@ -117,54 +120,124 @@ def bind_fragment_reference_oracle(
         for operation in plan.operations
         if operation.direct_transfer_rewrite is not None
     )
-    requested_anchors = tuple(
+    planned_anchors = tuple(
         operation.direct_transfer_rewrite.rewrite_anchor_ea
         for operation in operations_with_rewrites
         if operation.direct_transfer_rewrite is not None
     )
     selected_anchors = tuple(route.rewrite_anchor_ea for route in selection.routes)
-    if (
-        not requested_anchors
-        or len(set(requested_anchors)) != len(requested_anchors)
-        or set(requested_anchors) != set(selected_anchors)
-    ):
+    if not planned_anchors or len(set(planned_anchors)) != len(planned_anchors):
         raise DetachedRouteOracleRejected(
             "fragment and reference selection require exact rewrite anchors",
             reason_code="fragment_reference_rewrite_anchor_set_mismatch",
             payload={
                 "missing_rewrite_anchors": tuple(
-                    f"0x{anchor_ea:X}"
-                    for anchor_ea in sorted(
-                        set(selected_anchors) - set(requested_anchors)
-                    )
+                    f"0x{anchor_ea:X}" for anchor_ea in selected_anchors
                 ),
                 "planned_rewrite_anchors": tuple(
-                    f"0x{anchor_ea:X}" for anchor_ea in requested_anchors
+                    f"0x{anchor_ea:X}" for anchor_ea in planned_anchors
                 ),
                 "selected_rewrite_anchors": tuple(
                     f"0x{anchor_ea:X}" for anchor_ea in selected_anchors
                 ),
                 "unexpected_rewrite_anchors": tuple(
-                    f"0x{anchor_ea:X}"
-                    for anchor_ea in sorted(
-                        set(requested_anchors) - set(selected_anchors)
-                    )
+                    f"0x{anchor_ea:X}" for anchor_ea in planned_anchors
                 ),
             },
         )
-    route_by_anchor = {route.rewrite_anchor_ea: route for route in selection.routes}
+
+    unused_routes = list(selection.routes)
+    route_by_operation_id: dict[str, ReferenceRouteRewrite] = {}
+    coordinate_rebindings: list[dict[str, object]] = []
+    unexpected_operations: list[FragmentOperation] = []
+    for operation in operations_with_rewrites:
+        rewrite = operation.direct_transfer_rewrite
+        assert rewrite is not None
+        exact_matches = tuple(
+            route
+            for route in unused_routes
+            if int(route.rewrite_anchor_ea) == int(rewrite.rewrite_anchor_ea)
+        )
+        if len(exact_matches) == 1:
+            (selected_route,) = exact_matches
+        else:
+            target = plan.block(operation.edges[0].target_block_id)
+            target_identity = target.stable_identity
+            semantic_matches = tuple(
+                route
+                for route in unused_routes
+                if (
+                    route.final_transfer_kind is SemanticTransferKind.DIRECT
+                    and route.direct_target_ea is not None
+                    and int(rewrite.owner_anchor_ea) == int(route.owner_ea)
+                    and rewrite.owner_identity.native_ranges.contains(route.owner_ea)
+                    and target_identity is not None
+                    and target_identity.native_ranges.contains(route.direct_target_ea)
+                    and any(
+                        start_ea <= int(rewrite.rewrite_anchor_ea) < end_ea
+                        for start_ea, end_ea in route.corridor
+                    )
+                    and all(
+                        any(start_ea <= ea < end_ea for start_ea, end_ea in route.corridor)
+                        for ea in rewrite.proof_corridor_instruction_eas
+                    )
+                )
+            )
+            if len(semantic_matches) != 1:
+                unexpected_operations.append(operation)
+                continue
+            (selected_route,) = semantic_matches
+            coordinate_rebindings.append(
+                {
+                    "candidate_rewrite_anchor_ea": (
+                        f"0x{int(rewrite.rewrite_anchor_ea):X}"
+                    ),
+                    "operation_id": operation.operation_id,
+                    "reference_patch_anchor_ea": (
+                        f"0x{int(selected_route.rewrite_anchor_ea):X}"
+                    ),
+                    "reference_route_id": selected_route.route_id,
+                }
+            )
+        route_by_operation_id[operation.operation_id] = selected_route
+        unused_routes.remove(selected_route)
+
+    if unused_routes or unexpected_operations:
+        raise DetachedRouteOracleRejected(
+            "fragment and reference selection require exact rewrite anchors",
+            reason_code="fragment_reference_rewrite_anchor_set_mismatch",
+            payload={
+                "coordinate_rebindings": tuple(coordinate_rebindings),
+                "missing_rewrite_anchors": tuple(
+                    f"0x{int(route.rewrite_anchor_ea):X}" for route in unused_routes
+                ),
+                "planned_rewrite_anchors": tuple(
+                    f"0x{anchor_ea:X}" for anchor_ea in planned_anchors
+                ),
+                "selected_rewrite_anchors": tuple(
+                    f"0x{anchor_ea:X}" for anchor_ea in selected_anchors
+                ),
+                "unexpected_rewrite_anchors": tuple(
+                    f"0x{int(operation.direct_transfer_rewrite.rewrite_anchor_ea):X}"
+                    for operation in unexpected_operations
+                    if operation.direct_transfer_rewrite is not None
+                ),
+            },
+        )
+
     bound_operations: list[FragmentOperation] = []
     for operation in plan.operations:
         rewrite = operation.direct_transfer_rewrite
         if rewrite is None:
             bound_operations.append(operation)
             continue
+        route = route_by_operation_id[operation.operation_id]
         bound_operations.append(
             replace(
                 operation,
-                direct_transfer_rewrite=replace(
-                    rewrite,
-                    reference_route=route_by_anchor[rewrite.rewrite_anchor_ea],
+                reference_route_authority=FragmentReferenceRouteAuthority(
+                    reference_route=route,
+                    candidate_rewrite_anchor_ea=int(rewrite.rewrite_anchor_ea),
                 ),
             )
         )
@@ -367,13 +440,14 @@ def compare_detached_route_oracle(
         rewrite = operation.direct_transfer_rewrite
         if rewrite is None:
             continue
-        if rewrite.reference_route is None:
+        authority = operation.reference_route_authority
+        if authority is None:
             raise DetachedRouteOracleRejected(
                 f"operation {operation.operation_id!r} has no reference route",
                 reason_code="detached_operation_reference_route_missing",
                 payload={"operation_id": operation.operation_id},
             )
-        selected.append((operation, rewrite.reference_route))
+        selected.append((operation, authority.semantic_route))
     if not selected:
         raise DetachedRouteOracleRejected(
             "detached route oracle requires selected semantic rewrites",

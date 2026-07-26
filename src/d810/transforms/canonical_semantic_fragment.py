@@ -51,6 +51,7 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentPublicationPurpose,
+    FragmentReferenceRouteAuthority,
     FragmentReturnCarrier,
     FragmentReturnSource,
     FragmentReturnSourceKind,
@@ -177,7 +178,12 @@ class DetachedDirectRoutePlan:
         superseded = self.superseded_operation
         operation = self.operation
         rewrite = operation.direct_transfer_rewrite
-        reference_route = None if rewrite is None else rewrite.reference_route
+        reference_authority = operation.reference_route_authority
+        reference_route = (
+            None
+            if reference_authority is None
+            else reference_authority.reference_route
+        )
         if (
             not isinstance(superseded, FragmentOperation)
             or not isinstance(operation, FragmentOperation)
@@ -206,8 +212,9 @@ class DetachedDirectRoutePlan:
         """Serialize the complete serial-free C3 operation intent."""
         rewrite = self.operation.direct_transfer_rewrite
         assert rewrite is not None
-        reference_route = rewrite.reference_route
-        assert reference_route is not None
+        reference_authority = self.operation.reference_route_authority
+        assert reference_authority is not None
+        reference_route = reference_authority.reference_route
         source_identity = self.source_block.stable_identity
         target_identity = self.target_block.stable_identity
         assert source_identity is not None
@@ -1712,9 +1719,10 @@ def plan_detached_reference_direct_route(
     assert direct_rewrite is not None
     operation = replace(
         operation_without_rewrite,
-        direct_transfer_rewrite=replace(
-            direct_rewrite,
+        direct_transfer_rewrite=direct_rewrite,
+        reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=reference_route,
+            candidate_rewrite_anchor_ea=int(direct_rewrite.rewrite_anchor_ea),
         ),
     )
     return DetachedDirectRoutePlan(

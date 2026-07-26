@@ -650,7 +650,9 @@ def test_detached_direct_route_binds_imported_operation_anchor_and_owner() -> No
         0x40BB4B,
         0x40BB63,
     )
-    assert rewrite.reference_route == reference_route
+    authority = detached_plan.operation.reference_route_authority
+    assert authority is not None
+    assert authority.reference_route == reference_route
     assert detached_plan.corridor_block_ids == (
         "native@0x40BB3A",
         "native@0x40BB51",

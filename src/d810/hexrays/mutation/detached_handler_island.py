@@ -1418,8 +1418,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     "tail_opcode": None if tail is None else int(tail.opcode),
                     "reference_ledger_identity": (
                         None
-                        if rewrite.reference_route is None
-                        else rewrite.reference_route.reference_ledger_identity
+                        if operation.reference_route_authority is None
+                        else operation.reference_route_authority.reference_route.reference_ledger_identity
                     ),
                 },
             )

@@ -1354,6 +1354,7 @@ def test_configured_reference_scope_preserves_typed_anchor_mismatch(
         "fragment_reference_rewrite_anchor_set_mismatch"
     )
     assert rejection.payload["cause_payload"] == {
+        "coordinate_rebindings": (),
         "missing_rewrite_anchors": ("0x1300",),
         "planned_rewrite_anchors": ("0x1100",),
         "selected_rewrite_anchors": ("0x1100", "0x1300"),

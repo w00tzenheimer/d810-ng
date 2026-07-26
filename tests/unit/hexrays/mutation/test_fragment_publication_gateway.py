@@ -65,6 +65,7 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentPublicationPurpose,
+    FragmentReferenceRouteAuthority,
     FragmentReturnCarrier,
     FragmentReturnSource,
     FragmentReturnSourceKind,
@@ -186,6 +187,19 @@ def _plan_with_reference_route() -> FragmentPlan:
         native_key=NATIVE_KEY,
         exact_instruction_eas=(0x401000, 0x401004),
     )
+    reference_route = ReferenceRouteRewrite(
+        route_id="rhad:0x40A560:flow_route:0x401004",
+        function_ea=0x40A560,
+        owner_ea=0x401000,
+        rewrite_anchor_ea=0x401004,
+        corridor=((0x401000, 0x401010),),
+        reference_phase="flow_route",
+        original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        final_transfer_kind=SemanticTransferKind.DIRECT,
+        direct_target_ea=0x402000,
+        reference_ledger_identity="flow_route:0x401004",
+        reference_ledger_json='{"status":"committed"}',
+    )
     operation = FragmentOperation(
         operation_id="route:state_assignment@0x401004:0x1",
         source_block_id="replacement",
@@ -197,19 +211,10 @@ def _plan_with_reference_route() -> FragmentPlan:
             delivery_region=NativeEaInterval(0x401004, 0x401010),
             proof_corridor_instruction_eas=(0x401000, 0x401004),
             superseded_instruction_eas=(0x401004,),
-            reference_route=ReferenceRouteRewrite(
-                route_id="rhad:0x40A560:flow_route:0x401004",
-                function_ea=0x40A560,
-                owner_ea=0x401000,
-                rewrite_anchor_ea=0x401004,
-                corridor=((0x401000, 0x401010),),
-                reference_phase="flow_route",
-                original_transfer_kind=SemanticTransferKind.CONDITIONAL,
-                final_transfer_kind=SemanticTransferKind.DIRECT,
-                direct_target_ea=0x402000,
-                reference_ledger_identity="flow_route:0x401004",
-                reference_ledger_json='{"status":"committed"}',
-            ),
+        ),
+        reference_route_authority=FragmentReferenceRouteAuthority(
+            reference_route=reference_route,
+            candidate_rewrite_anchor_ea=0x401004,
         ),
         edges=(
             FragmentEdge(
