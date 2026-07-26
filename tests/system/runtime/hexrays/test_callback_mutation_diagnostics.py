@@ -1,0 +1,278 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import ida_hexrays
+
+from d810.core.stats import OptimizationStatistics
+from d810.hexrays.hooks.callback_mutation_diagnostics import (
+    build_callback_nop_delta_records,
+    capture_live_nop_sites,
+)
+from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
+from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
+from d810.optimizers.microcode.flow.context import FlowMaturityContext
+
+
+class _Instruction:
+    def __init__(self, opcode: int, ea: int, next_instruction=None) -> None:
+        self.opcode = int(opcode)
+        self.ea = int(ea)
+        self.next = next_instruction
+
+
+class _Block:
+    def __init__(
+        self,
+        *,
+        serial: int,
+        start: int,
+        end: int,
+        head: _Instruction | None,
+    ) -> None:
+        self.serial = int(serial)
+        self.start = int(start)
+        self.end = int(end)
+        self.head = head
+
+
+class _Mba:
+    def __init__(
+        self,
+        blocks: tuple[_Block, ...],
+        *,
+        entry_ea: int = 0x401000,
+        maturity: int = ida_hexrays.MMAT_GLBOPT2,
+    ) -> None:
+        self._blocks = blocks
+        self.qty = len(blocks)
+        self.entry_ea = int(entry_ea)
+        self.maturity = int(maturity)
+        for block in blocks:
+            block.mba = self
+
+    def get_mblock(self, serial: int) -> _Block:
+        return self._blocks[serial]
+
+
+class _NopWritingRule:
+    name = "unreported_nop_writer"
+    priority = 100
+
+    def __init__(self, instruction: _Instruction) -> None:
+        self._instruction = instruction
+        self.current_maturity = None
+        self.current_generation = 0
+
+    def set_flow_context(self, _flow_context) -> None:
+        return None
+
+    def optimize(self, _block) -> int:
+        self._instruction.opcode = ida_hexrays.m_nop
+        return 0
+
+
+class _RuleScope:
+    def __init__(self, rule: _NopWritingRule) -> None:
+        self._rule = rule
+
+    def get_active_rules(self, **_kwargs):
+        return (self._rule,)
+
+
+class _GlboptNopProbe:
+    def __init__(self) -> None:
+        self.reports = []
+
+    def prefold_return_reg_consumer_def_eas_for(self, _function_ea: int):
+        return frozenset()
+
+    def _capture_callback_nop_sites(self, mba):
+        return capture_live_nop_sites(mba)
+
+    def _report_callback_nop_delta(self, mba, **kwargs) -> None:
+        self.reports.append((mba, kwargs))
+
+
+def test_callback_nop_delta_records_unreported_live_write_with_ea_anchor() -> None:
+    instruction = _Instruction(ida_hexrays.m_mov, 0x40C115)
+    mba = _Mba(
+        (
+            _Block(
+                serial=77,
+                start=0x40C100,
+                end=0x40C120,
+                head=instruction,
+            ),
+        )
+    )
+    before = capture_live_nop_sites(mba)
+
+    instruction.opcode = ida_hexrays.m_nop
+    after = capture_live_nop_sites(mba)
+
+    records = build_callback_nop_delta_records(
+        before=before,
+        after=after,
+        callback_kind="optblock_rule",
+        callback_name="JumpFixer",
+        callback_result=0,
+        maturity="MMAT_GLBOPT2",
+    )
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.strategy == "hexrays_callback_nop_delta"
+    assert record.decision == "mutation_unreported"
+    assert record.payload == {
+        "block_anchor": "blk77@0x40c100",
+        "block_end_ea": "0x40c120",
+        "callback_kind": "optblock_rule",
+        "callback_name": "JumpFixer",
+        "callback_result": 0,
+        "instruction_ea": "0x40c115",
+        "instruction_ordinal": 0,
+    }
+
+
+def test_callback_nop_delta_distinguishes_nonzero_report_and_exception() -> None:
+    instruction = _Instruction(ida_hexrays.m_nop, 0x401010)
+    site = capture_live_nop_sites(
+        _Mba(
+            (
+                _Block(
+                    serial=2,
+                    start=0x401000,
+                    end=0x401020,
+                    head=instruction,
+                ),
+            )
+        )
+    )
+
+    reported = build_callback_nop_delta_records(
+        before=(),
+        after=site,
+        callback_kind="glbopt_hook",
+        callback_name="return_const_corruption_cleanup",
+        callback_result=ida_hexrays.MERR_LOOP,
+        maturity="MMAT_GLBOPT2",
+    )
+    raised = build_callback_nop_delta_records(
+        before=(),
+        after=site,
+        callback_kind="optblock_rule",
+        callback_name="broken_rule",
+        callback_result=None,
+        maturity="MMAT_GLBOPT2",
+        exception_name="RuntimeError",
+    )
+
+    assert reported[0].decision == "mutation_reported"
+    assert reported[0].reason == "callback returned a nonzero mutation result"
+    assert raised[0].decision == "mutation_result_missing"
+    assert raised[0].reason == "callback raised after creating an m_nop"
+    assert raised[0].payload["exception_name"] == "RuntimeError"
+
+
+def test_callback_nop_delta_ignores_preexisting_nop() -> None:
+    instruction = _Instruction(ida_hexrays.m_nop, 0x401010)
+    mba = _Mba(
+        (
+            _Block(
+                serial=2,
+                start=0x401000,
+                end=0x401020,
+                head=instruction,
+            ),
+        )
+    )
+    snapshot = capture_live_nop_sites(mba)
+
+    assert (
+        build_callback_nop_delta_records(
+            before=snapshot,
+            after=snapshot,
+            callback_kind="optblock_rule",
+            callback_name="no_change",
+            callback_result=0,
+            maturity="MMAT_GLBOPT2",
+        )
+        == ()
+    )
+
+
+def test_block_optimizer_reports_a_rule_nop_write_that_returns_zero() -> None:
+    instruction = _Instruction(ida_hexrays.m_mov, 0x401010)
+    block = _Block(
+        serial=4,
+        start=0x401000,
+        end=0x401020,
+        head=instruction,
+    )
+    _Mba((block,))
+    rule = _NopWritingRule(instruction)
+    persisted = []
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(),
+        Path("."),
+        ctx_cls=FlowMaturityContext,
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+    manager.configure(
+        rule_scope_service=_RuleScope(rule),
+        rule_scope_project_name="test",
+        rule_scope_idb_key="test-idb",
+        fact_consumer_callback=lambda _func_ea, records: persisted.extend(records),
+    )
+
+    assert manager.optimize(block) == 0
+
+    assert len(persisted) == 1
+    assert persisted[0].decision == "mutation_unreported"
+    assert persisted[0].payload["callback_name"] == "unreported_nop_writer"
+
+
+def test_glbopt_reports_its_nop_write_with_merr_loop(
+    monkeypatch,
+) -> None:
+    instruction = _Instruction(ida_hexrays.m_mov, 0x401010)
+    mba = _Mba(
+        (
+            _Block(
+                serial=0,
+                start=0x401000,
+                end=0x401020,
+                head=instruction,
+            ),
+        )
+    )
+    probe = _GlboptNopProbe()
+    hook = HexraysDecompilationHook(lambda *_args, **_kwargs: None)
+    hook._block_optimizer = probe
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_decision_for_mba",
+        lambda _self, _mba, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.hexrays_hooks.prune_unreachable_condition_chain",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    def create_nop(_mba, **_kwargs) -> int:
+        instruction.opcode = ida_hexrays.m_nop
+        return 1
+
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.hexrays_hooks.apply_return_const_corruption_cleanup",
+        create_nop,
+    )
+
+    assert hook.glbopt(mba) == ida_hexrays.MERR_LOOP
+
+    assert len(probe.reports) == 1
+    _, report = probe.reports[0]
+    assert report["callback_kind"] == "glbopt_hook"
+    assert report["callback_name"] == "return_const_corruption_cleanup"
+    assert report["callback_result"] == ida_hexrays.MERR_LOOP
