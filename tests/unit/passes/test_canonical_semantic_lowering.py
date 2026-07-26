@@ -105,7 +105,10 @@ def _cross_maturity_identity_index(
             return SimpleNamespace(status=RebindStatus.AMBIGUOUS, block=None)
         return SimpleNamespace(
             status=RebindStatus.BOUND,
-            block=SimpleNamespace(serial=matches[0] + 700),
+            block=SimpleNamespace(
+                serial=matches[0] + 700,
+                handle=SimpleNamespace(stable_identity=identity),
+            ),
         )
 
     return SimpleNamespace(
@@ -203,7 +206,10 @@ def test_current_graph_identity_authority_rebinds_snapshot_derived_identities(
                 return SimpleNamespace(status=RebindStatus.MISSING, block=None)
             return SimpleNamespace(
                 status=RebindStatus.BOUND,
-                block=SimpleNamespace(serial=int(anchor_ea) + 700),
+                block=SimpleNamespace(
+                    serial=int(anchor_ea) + 700,
+                    handle=SimpleNamespace(stable_identity=identity),
+                ),
             )
 
     authority = state_machine_module._current_graph_identity_authority(
@@ -223,6 +229,56 @@ def test_current_graph_identity_authority_rebinds_snapshot_derived_identities(
         _identity(0x1400),
         _identity(0x1200),
     ]
+
+
+def test_current_graph_identity_authority_discards_shared_live_start_coordinate() -> (
+    None
+):
+    graph = FlowGraph(
+        blocks={
+            10: _block(10, 0x1000, succs=(), preds=()),
+            20: BlockSnapshot(
+                serial=20,
+                block_type=0,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x1000,
+                insn_snapshots=(InsnSnapshot(opcode=0, ea=0x1100, operands=()),),
+            ),
+        },
+        entry_serial=10,
+        func_ea=0x1000,
+    )
+    entry_identity = _identity(0x1000)
+    imported_identity = _identity(0x1100)
+
+    class _SharedStartIdentityIndex:
+        def rebind_identity(self, identity: StableBlockIdentity):
+            rebound_identity = (
+                imported_identity
+                if 0x1100 in identity.exact_instruction_eas
+                else entry_identity
+            )
+            return SimpleNamespace(
+                status=RebindStatus.BOUND,
+                block=SimpleNamespace(
+                    serial=900,
+                    handle=SimpleNamespace(stable_identity=rebound_identity),
+                ),
+            )
+
+    authority = state_machine_module._current_graph_identity_authority(
+        graph,
+        native_key=NATIVE_KEY,
+        current_identity_index=_SharedStartIdentityIndex(),
+    )
+
+    assert authority == {
+        10: entry_identity,
+        20: imported_identity,
+    }
+    assert not authority[20].native_ranges.contains(0x1000)
 
 
 def test_canonical_semantic_lowering_returns_only_a_fragment_plan() -> None:
