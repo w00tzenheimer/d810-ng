@@ -755,6 +755,74 @@ def test_detached_route_matches_reference_before_root_publication() -> None:
     assert comparison.candidate_shape.reachable_from_entry
 
 
+def test_detached_route_identifies_missing_staged_rewrite_anchor() -> None:
+    plan = _plan()
+    projection = _projection(plan)
+    malformed = replace(
+        projection,
+        blocks=tuple(
+            replace(
+                block,
+                instruction_eas=(_OWNER_EA,),
+                terminator_ea=_OWNER_EA,
+            )
+            if block.block_id == "route.replacement"
+            else block
+            for block in projection.blocks
+        ),
+    )
+
+    result = compare_detached_route_oracle(plan, malformed)
+
+    comparison = result.comparisons[0]
+    assert comparison.failed_invariant == "staged_rewrite_anchor_missing"
+    assert comparison.reason == (
+        "route rhad:0x40A560:flow_route:0x40B52E "
+        "staged_rewrite_anchor_missing: "
+        "source_block_id='route.replacement' "
+        "expected_rewrite_anchor_ea=0x40B52E "
+        "staged_terminator_ea=0x40B51B "
+        "staged_terminator_kind=goto "
+        "staged_instruction_eas=[0x40B51B]"
+    )
+
+
+def test_detached_route_identifies_staged_rewrite_terminator_mismatch() -> None:
+    plan = _plan()
+    projection = _projection(plan)
+    malformed = replace(
+        projection,
+        blocks=tuple(
+            replace(
+                block,
+                instruction_eas=(
+                    _OWNER_EA,
+                    _REWRITE_ANCHOR_EA,
+                    _REWRITE_ANCHOR_EA + 1,
+                ),
+                terminator_ea=_REWRITE_ANCHOR_EA + 1,
+            )
+            if block.block_id == "route.replacement"
+            else block
+            for block in projection.blocks
+        ),
+    )
+
+    result = compare_detached_route_oracle(plan, malformed)
+
+    comparison = result.comparisons[0]
+    assert comparison.failed_invariant == "staged_rewrite_terminator_mismatch"
+    assert comparison.reason == (
+        "route rhad:0x40A560:flow_route:0x40B52E "
+        "staged_rewrite_terminator_mismatch: "
+        "source_block_id='route.replacement' "
+        "expected_rewrite_anchor_ea=0x40B52E "
+        "staged_terminator_ea=0x40B52F "
+        "staged_terminator_kind=goto "
+        "staged_instruction_eas=[0x40B51B,0x40B52E,0x40B52F]"
+    )
+
+
 def test_detached_route_normalizes_exact_temporary_port_as_entry_authority() -> None:
     plan, projection = _projection_behind_temporary_port(_plan())
 

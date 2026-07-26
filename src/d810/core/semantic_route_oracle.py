@@ -157,6 +157,7 @@ class SemanticRouteObservation:
     outcome: str
     shape: SemanticRouteShape | None
     reason: str
+    failed_invariant: str | None = None
 
 
 @dataclass(frozen=True)
@@ -917,7 +918,9 @@ def _compare_one(
         return RouteOracleComparison(
             **base,
             outcome="diverged",
-            failed_invariant="candidate_observation",
+            failed_invariant=(
+                candidate.failed_invariant or "candidate_observation"
+            ),
             reason=candidate.reason,
         )
 
