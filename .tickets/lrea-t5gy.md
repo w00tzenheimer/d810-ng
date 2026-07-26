@@ -6700,3 +6700,15 @@ Compiler slice committed as 2d370a58b. Added an IDA-free RhadConditionalRoute/Rh
 **2026-07-26T20:51:42Z**
 
 Checkpoint 14917ad00: added manager-owned actual MMAT_GENERATED optinsn seam, once-per-MBA-generation lifecycle guard, graph-free identity indexing at GENERATED, complete injected live ports, recursion suppression, and modified-return propagation. Verification: 76 focused tests pass; sg clean; all 14 import contracts kept; strict 41-row parity gate PASS. Existing untracked capture test remains untouched.
+
+**2026-07-26T23:00:17Z**
+
+
+
+**2026-07-26T23:00:32Z**
+
+2026-07-26 GENERATED checksum C6 checkpoint at commit c9cb1aab8.\n\nThe bounded A560 reference-semantic route now commits at actual MMAT_GENERATED through the existing FragmentPlan -> PatchPlan -> final binding -> shared coordinator -> HexRaysMutationBackend -> DeferredGraphModifier path. The graph-free publication profile performs no build_graph/use-def/dirty operations at GENERATED, imports the exact nine-block closure, rewrites 0x40A605 to the proven comparison 0x0BB2D365 with true 0x40B6C0 and false 0x40A607, and preserves exits 0x40A61B/0x40A68C/0x40B790.\n\nPrimary canary evidence: .tmp/generated-checksum-dev33.txt, 1/1 passed through ctree. The E2E copies and queries the diagnostic SQLite DB: one 13/13 committed receipt, pre/post validation and logical root publication confirmed, no poison or INTERR, route-specific passed observations at MMAT_GENERATED, MMAT_PREOPTIMIZED, MMAT_LOCOPT, and MMAT_CALLS, plus CMAT_FINAL. CALLS observes the expected optimized-away source, no surviving ijmp at 0x40A605, and retained reachability of 0x40B6C0. The binary SHA256 remains 2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c.\n\nFailure policy is covered explicitly: generated preflight rejection is zero-write and non-poisoning; a generated post-write verifier failure poisons and does not roll back. Focused local gate is 157/157; actual-generated capture and final canary are green. Commit hooks pass sg, import-cycle detection, all 14 import contracts, and portable-core shape lint. The pre-existing user-owned untracked tests/system/e2e/test_rhad_generated_microcode_capture.py remains untouched. This proves only the requested checksum route, not full A560 restoration.
+
+**2026-07-26T23:00:55Z**
+
+Correction to the preceding escaped note: commit c9cb1aab8 is the bounded GENERATED checksum checkpoint. The authoritative evidence is .tmp/generated-checksum-dev33.txt plus its copied SQLite assertions: one 13/13 committed receipt; passed GENERATED, PREOPT, LOCOPT, CALLS, and CMAT_FINAL observations; no redo, poison, or INTERR. It proves this one route only, not full A560.
