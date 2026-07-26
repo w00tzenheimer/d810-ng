@@ -3611,6 +3611,7 @@ class DeferredGraphModifier:
                 changed = self._apply_terminal_goto_change(
                     source,
                     int(target.serial),
+                    instruction_ea=operation.rewrite_anchor_ea,
                 )
         elif len(source_successors) == 1:
             if edge.expected_target is None:
@@ -10706,8 +10707,10 @@ class DeferredGraphModifier:
         self,
         blk: ida_hexrays.mblock_t,
         new_target: int,
+        *,
+        instruction_ea: int | None = None,
     ) -> bool:
-        """Convert a 0-way block to an unconditional goto."""
+        """Convert a 0-way block to an optionally native-anchored goto."""
         if blk.nsucc() != 0:
             logger.warning(
                 "Block %d is not terminal (nsucc=%d)",
@@ -10715,7 +10718,14 @@ class DeferredGraphModifier:
                 blk.nsucc(),
             )
             return False
-        return change_0way_block_successor(blk, new_target, verify=False)
+        if instruction_ea is None:
+            return change_0way_block_successor(blk, new_target, verify=False)
+        return change_0way_block_successor(
+            blk,
+            new_target,
+            verify=False,
+            instruction_ea=instruction_ea,
+        )
 
     def _apply_target_change(
         self,

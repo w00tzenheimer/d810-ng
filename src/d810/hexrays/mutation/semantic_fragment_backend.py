@@ -1374,13 +1374,10 @@ def _realize_operations(
         direct_rewrite_anchor_ea = (
             state.live_instruction_ea(
                 operation.source_block_id,
-                (
-                    direct_rewrite.rewrite_anchor_ea
-                    if direct_rewrite is not None
-                    else plan.block(operation.source_block_id).semantic_anchor_ea
-                ),
+                direct_rewrite.rewrite_anchor_ea,
             )
-            if len(operation.edges) == 1
+            if direct_rewrite is not None
+            and len(operation.edges) == 1
             and operation.edges[0].role is SemanticEdgeRole.DIRECT
             else None
         )

@@ -729,13 +729,14 @@ def _change_fake_zero_way_successor(
     target_serial: int,
     *,
     verify: bool = False,
+    instruction_ea: int | None = None,
 ) -> bool:
     del verify
     target_serial = int(target_serial)
     block.type = int(ida_hexrays.BLT_1WAY)
     block.tail = _Instruction(
         ida_hexrays.m_goto,
-        block.mba.entry_ea,
+        block.mba.entry_ea if instruction_ea is None else int(instruction_ea),
         target_serial,
     )
     block.head = block.tail
@@ -752,6 +753,7 @@ def _change_fake_zero_way_successor_preserving_instructions(
     target_serial: int,
     *,
     verify: bool = False,
+    instruction_ea: int | None = None,
 ) -> bool:
     del verify
     target_serial = int(target_serial)
@@ -760,7 +762,7 @@ def _change_fake_zero_way_successor_preserving_instructions(
     else:
         goto = _Instruction(
             ida_hexrays.m_goto,
-            block.mba.entry_ea,
+            block.mba.entry_ea if instruction_ea is None else int(instruction_ea),
             target_serial,
         )
         block.insert_into_block(goto, block.tail)
