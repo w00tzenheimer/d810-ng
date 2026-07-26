@@ -1284,10 +1284,7 @@ def _compose_configured_reference_scope_plan(
                     kind="configured_reference_detached_direct_fragment",
                 )
             except CanonicalSemanticFragmentRejected as exc:
-                if (
-                    exc.reason_code
-                    != "published_boundary_current_owner_count_mismatch"
-                ):
+                if exc.reason_code != "published_boundary_current_owner_count_mismatch":
                     raise _with_canonical_composition_attempts(
                         exc,
                         tuple(composition_attempts),
@@ -1309,9 +1306,7 @@ def _compose_configured_reference_scope_plan(
                     ):
                         carrier_exc = CanonicalSemanticFragmentRejected(
                             "carrier ingress target component is not closed",
-                            reason_code=(
-                                "carrier_ingress_target_component_not_closed"
-                            ),
+                            reason_code=("carrier_ingress_target_component_not_closed"),
                             anchor_ea=carrier_exc.anchor_ea,
                             payload={
                                 **carrier_exc.payload,
