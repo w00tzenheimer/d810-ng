@@ -2083,10 +2083,13 @@ def _with_nested_imported_state_routes(
                 )
             else:
                 owner_anchor_ea = proof.source_owner_anchor_ea
-                if owner_anchor_ea is None or not stable_block_identities_refine_at_anchor(
-                    source_identity,
-                    proof.source_owner_identity,
-                    owner_anchor_ea,
+                if (
+                    owner_anchor_ea is None
+                    or not stable_block_identities_refine_at_anchor(
+                        source_identity,
+                        proof.source_owner_identity,
+                        owner_anchor_ea,
+                    )
                 ):
                     raise CanonicalSemanticFragmentRejected(
                         "nested canonical direct route owner does not bind its "
