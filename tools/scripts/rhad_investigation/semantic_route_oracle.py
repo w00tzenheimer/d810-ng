@@ -112,15 +112,11 @@ def _transaction_for_anchor(
             function_ea
         ):
             continue
-        planned = candidate.get("planned_branches")
-        if not isinstance(planned, list):
+        try:
+            candidate_anchor_ea = _transaction_rewrite_anchor(candidate)
+        except ValueError:
             continue
-        anchors = {
-            _parse_int(branch.get("anchor_ea"), field="anchor_ea")
-            for branch in planned
-            if isinstance(branch, dict)
-        }
-        if anchors == {int(rewrite_anchor_ea)}:
+        if candidate_anchor_ea == int(rewrite_anchor_ea):
             matches.append(candidate)
     if not matches:
         raise ValueError(
@@ -133,6 +129,25 @@ def _transaction_for_anchor(
             f"function={_hex(function_ea)} anchor={_hex(rewrite_anchor_ea)}"
         )
     return matches[0]
+
+
+def _planned_instructions(
+    transaction: dict[str, object],
+) -> tuple[dict[str, object], ...]:
+    planned = transaction.get("planned_branches")
+    if not isinstance(planned, list) or not planned:
+        raise ValueError("reference transaction has no planned branches")
+    if not all(isinstance(instruction, dict) for instruction in planned):
+        raise ValueError("reference planned branch is not an object")
+    return tuple(planned)
+
+
+def _transaction_rewrite_anchor(transaction: dict[str, object]) -> int:
+    """Return the first instruction replaced by one reference transaction."""
+    return min(
+        _parse_int(instruction.get("anchor_ea"), field="anchor_ea")
+        for instruction in _planned_instructions(transaction)
+    )
 
 
 def _original_transfer_kind(
@@ -165,11 +180,13 @@ def _original_transfer_kind(
 def _final_transfer(
     transaction: dict[str, object],
 ) -> tuple[SemanticTransferKind, int | None, int | None, int | None, str | None]:
-    branches = transaction.get("planned_branches")
-    if not isinstance(branches, list) or not branches:
-        raise ValueError("reference transaction has no planned branches")
-    if not all(isinstance(branch, dict) for branch in branches):
-        raise ValueError("reference planned branch is not an object")
+    branches = tuple(
+        instruction
+        for instruction in _planned_instructions(transaction)
+        if instruction.get("target_ea") is not None
+    )
+    if not branches:
+        raise ValueError("reference transaction has no planned control transfer")
     if len(branches) == 1:
         branch = branches[0]
         if str(branch.get("opcode", "")).lower() not in {"e9", "eb"}:
