@@ -620,9 +620,7 @@ def project_fragment(
         )
         normalization = operation.computed_branch_normalization
         conditional_select_envelope = (
-            None
-            if normalization is None
-            else normalization.conditional_select_envelope
+            None if normalization is None else normalization.conditional_select_envelope
         )
         if isinstance(
             conditional_select_envelope,
@@ -640,9 +638,7 @@ def project_fragment(
             rows = rows[: rows.index(predicate_anchor_ea) + 1]
             instruction_eas[operation.source_block_id] = tuple(rows)
             flag_write_eas[operation.source_block_id] = frozenset(
-                ea
-                for ea in flag_write_eas[operation.source_block_id]
-                if ea in rows
+                ea for ea in flag_write_eas[operation.source_block_id] if ea in rows
             )
             terminator_eas[operation.source_block_id] = predicate_anchor_ea
             terminator_kinds[operation.source_block_id] = InsnKind.COND_JUMP
