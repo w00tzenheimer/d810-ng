@@ -6109,3 +6109,46 @@ obligation is now the absent direct route at `0x40AE7A`; diagnose its evidence,
 component ownership, and raw operation disposition before addressing
 `0x40B36B` or either conditional route. Do not encode a function-specific
 coordinate alias or treat donor byte placement as candidate IR identity.
+
+**2026-07-26T01:00:24-07:00 — post-call state routes complete direct C3 inventory**
+
+Functional commit `c8ac5bab1` fixes the two missing direct routes without
+weakening publication boundaries. The diagnostic DB and receipt-backed
+frontend plan prove that `0x40AE7A` and `0x40B36B` are normalized conditional
+route sources immediately after `CALL_FALLTHROUGH` operations. Because those
+raw normalization operations were already published, component selection
+mistook them for closed semantic boundaries and stopped before their direct
+state-assignment proofs could supersede them. The call-backed staging contract
+now also accepts this exact post-call shape only when there is one imported
+call predecessor, one normalized source operation at the proof anchor, an
+unresolved transfer strictly inside the typed delivery region, and a wholly
+owned state-write corridor. The call predecessor and route source then remain
+staged as one closed corridor. The prior call-inside-corridor contract remains
+unchanged. Ruff-only commit `78eb6ad55` formats the repository-wide tracked
+Python set; two files changed and the unrelated untracked Rhad capture test was
+not touched.
+
+The affected canonical, oracle, gateway, manager, and runtime gate is 274/274
+green with the known random-identity `PatchPlan()` assertion deselected.
+Commit-time ast-grep, import-cycle analysis, portable-core shape lint, and all
+14 import-linter contracts pass.
+
+The mandatory cache-disabled A560 canary at clean code SHA `78eb6ad55`
+completed normally in 17.46 seconds without a process crash, numeric INTERR,
+generation poison, rollback, partial receipt, or semantic transaction attempt.
+Log: `.tmp/rhad-a560-post-call-78eb6ad55.txt`; primary DB:
+`.tmp/rhad-a560-post-call-78eb6ad55/test_real_loader_matches_reach0/sub_40A560.diag.sqlite3`;
+pseudocode is beside the DB. A560 still emits the six-line false infinite loop,
+so this is not C6 or semantic acceptance.
+
+The DB now records 91 planned rewrite anchors against all 93 selected donor
+routes, with no unexpected anchors. Both direct routes `0x40AE7A` and
+`0x40B36B` are present. The only missing routes are conditional anchors
+`0x40BED0` and `0x40C4D2`. Broad publication therefore remains at C3 and no
+semantic PatchPlan may stage yet; the earlier one-fragment C5 remains the
+highest architecture level proven on this branch. The first failed broad C3
+obligation is the typed conditional route at `0x40BED0`. Continue by matching
+its donor condition producer, predicate, both targets, complete operation
+envelope, and fragment-level reference authority before addressing
+`0x40C4D2`. Do not encode conditional authority in a direct-only payload,
+publish the 91-route subset, or relax the exact 93-route oracle gate.
