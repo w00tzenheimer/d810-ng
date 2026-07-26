@@ -14,6 +14,11 @@ from d810.core.cymode import CythonMode
 from d810.core.decompilation_session import DecompilationEvent
 from d810.core.rule_scope import PIPELINE_INSTRUCTION
 from d810.errors import D810Exception
+from d810.hexrays.hooks.callback_mutation_diagnostics import (
+    LiveNopSite,
+    build_callback_nop_delta_records,
+    capture_live_nop_sites,
+)
 from d810.hexrays.ir.minsn_utils import build_z3_equivalence_proof
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
@@ -174,6 +179,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         # capture, analysis, and hint application; this adapter only emits
         # the callback-local FlowGraph event.
         self._decompilation_lifecycle = None
+        self._fact_consumer_callback = None
 
         self.instruction_optimizers = []
         self._active_optimizers: list = []
@@ -394,48 +400,129 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     func_ea,
                 )
 
-    def func(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
-        if self.log_info_on_input(blk, ins):
-            # The PREOPT gateway may have structurally changed the MBA.  Do not
-            # touch this callback's instruction pointer again; returning true
-            # asks Hex-Rays to revisit optimization with fresh pointers.
-            return True
+    def _capture_callback_nop_sites(
+        self,
+        mba: object,
+    ) -> tuple[LiveNopSite, ...] | None:
+        """Capture GLBOPT2 NOP sites only when diagnostics are installed."""
+        if self._fact_consumer_callback is None or int(
+            getattr(mba, "maturity", -1)
+        ) < int(ida_hexrays.MMAT_GLBOPT2):
+            return None
         try:
-            optimization_performed = self.optimize(blk, ins)
+            return capture_live_nop_sites(mba)
+        except Exception:
+            optimizer_logger.debug(
+                "failed to capture pre-instruction-callback NOP sites",
+                exc_info=True,
+            )
+            return None
 
-            if not optimization_performed:
-                # ``minsn_t.for_all_insns`` does not populate the visitor's
-                # ``blk`` member (only the ``mba``/``mblock_t`` overloads do), so
-                # nested sub-instructions would otherwise be optimized with no
-                # block context.  Rules that resolve operands via block-local
-                # def-use scans (e.g. wide constant reconstruction for the
-                # magic-modulo rule) need the owning block, so set it explicitly.
-                self.instruction_visitor.blk = blk
-                optimization_performed = ins.for_all_insns(self.instruction_visitor)
+    def _report_callback_nop_delta(
+        self,
+        mba: object,
+        *,
+        before: tuple[LiveNopSite, ...] | None,
+        callback_result: int | bool | None,
+        exception_name: str | None = None,
+    ) -> None:
+        """Persist instruction-callback NOP deltas without changing behavior."""
+        if before is None or self._fact_consumer_callback is None:
+            return
+        try:
+            optimizer_name = str(
+                getattr(
+                    self._last_optimizer_tried,
+                    "name",
+                    self._last_optimizer_tried or "instruction_optimizer",
+                )
+            )
+            maturity_value = getattr(mba, "maturity", self.current_maturity)
+            records = build_callback_nop_delta_records(
+                before=before,
+                after=capture_live_nop_sites(mba),
+                callback_kind="optinsn_callback",
+                callback_name=optimizer_name,
+                callback_result=(
+                    None if callback_result is None else int(callback_result)
+                ),
+                maturity=maturity_to_string(maturity_value),
+                exception_name=exception_name,
+            )
+            if records:
+                self._fact_consumer_callback(
+                    int(getattr(mba, "entry_ea", 0) or 0),
+                    records,
+                )
+        except Exception:
+            optimizer_logger.debug(
+                "failed to persist instruction callback NOP delta",
+                exc_info=True,
+            )
 
-            if optimization_performed:
-                ins.optimize_solo()
+    def func(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
+        callback_nop_sites = self._capture_callback_nop_sites(blk.mba)
+        callback_result: bool | None = None
+        callback_exception_name: str | None = None
+        try:
+            if self.log_info_on_input(blk, ins):
+                # The PREOPT gateway may have structurally changed the MBA.  Do not
+                # touch this callback's instruction pointer again; returning true
+                # asks Hex-Rays to revisit optimization with fresh pointers.
+                callback_result = True
+                return callback_result
+            try:
+                optimization_performed = self.optimize(blk, ins)
 
-                if blk is not None:
-                    blk.mark_lists_dirty()
-                    safe_verify(
-                        blk.mba, "rewriting", logger_func=optimizer_logger.error
+                if not optimization_performed:
+                    # ``minsn_t.for_all_insns`` does not populate the visitor's
+                    # ``blk`` member (only the ``mba``/``mblock_t`` overloads do), so
+                    # nested sub-instructions would otherwise be optimized with no
+                    # block context.  Rules that resolve operands via block-local
+                    # def-use scans (e.g. wide constant reconstruction for the
+                    # magic-modulo rule) need the owning block, so set it explicitly.
+                    self.instruction_visitor.blk = blk
+                    optimization_performed = ins.for_all_insns(
+                        self.instruction_visitor
                     )
 
-            return bool(optimization_performed)
-        except RuntimeError as e:
-            optimizer_logger.error(
-                "RuntimeError while optimizing ins {0} with {1}: {2}".format(
-                    format_minsn_t(ins), self._last_optimizer_tried, e
+                if optimization_performed:
+                    ins.optimize_solo()
+
+                    if blk is not None:
+                        blk.mark_lists_dirty()
+                        safe_verify(
+                            blk.mba, "rewriting", logger_func=optimizer_logger.error
+                        )
+
+                callback_result = bool(optimization_performed)
+                return callback_result
+            except RuntimeError as error:
+                callback_exception_name = type(error).__name__
+                optimizer_logger.error(
+                    "RuntimeError while optimizing ins {0} with {1}: {2}".format(
+                        format_minsn_t(ins), self._last_optimizer_tried, error
+                    )
                 )
-            )
-        except D810Exception as e:
-            optimizer_logger.error(
-                "D810Exception while optimizing ins {0} with {1}: {2}".format(
-                    format_minsn_t(ins), self._last_optimizer_tried, e
+            except D810Exception as error:
+                callback_exception_name = type(error).__name__
+                optimizer_logger.error(
+                    "D810Exception while optimizing ins {0} with {1}: {2}".format(
+                        format_minsn_t(ins), self._last_optimizer_tried, error
+                    )
                 )
+            callback_result = False
+            return callback_result
+        except Exception as error:
+            callback_exception_name = type(error).__name__
+            raise
+        finally:
+            self._report_callback_nop_delta(
+                blk.mba,
+                before=callback_nop_sites,
+                callback_result=callback_result,
+                exception_name=callback_exception_name,
             )
-        return False
 
     # statistics are managed centrally via the stats object
 
@@ -656,6 +743,10 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._decompilation_lifecycle = kwargs.get(
             "decompilation_lifecycle",
             self._decompilation_lifecycle,
+        )
+        self._fact_consumer_callback = kwargs.get(
+            "fact_consumer_callback",
+            self._fact_consumer_callback,
         )
         self._run_later_scheduler = kwargs.get(
             "pass_scheduler",

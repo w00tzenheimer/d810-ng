@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import MethodType, SimpleNamespace
 
 import ida_hexrays
 
@@ -11,6 +12,7 @@ from d810.hexrays.hooks.callback_mutation_diagnostics import (
 )
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
+from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 
 
@@ -19,6 +21,9 @@ class _Instruction:
         self.opcode = int(opcode)
         self.ea = int(ea)
         self.next = next_instruction
+
+    def for_all_insns(self, _visitor) -> bool:
+        return False
 
 
 class _Block:
@@ -276,3 +281,44 @@ def test_glbopt_reports_its_nop_write_with_merr_loop(
     assert report["callback_kind"] == "glbopt_hook"
     assert report["callback_name"] == "return_const_corruption_cleanup"
     assert report["callback_result"] == ida_hexrays.MERR_LOOP
+
+
+def test_instruction_optimizer_reports_a_nop_write_that_returns_false() -> None:
+    instruction = _Instruction(ida_hexrays.m_mov, 0x401010)
+    block = _Block(
+        serial=9,
+        start=0x401000,
+        end=0x401020,
+        head=instruction,
+    )
+    _Mba((block,))
+    persisted = []
+    manager = SimpleNamespace(
+        _fact_consumer_callback=(
+            lambda _func_ea, records: persisted.extend(records)
+        ),
+        current_maturity=ida_hexrays.MMAT_GLBOPT2,
+        instruction_visitor=SimpleNamespace(blk=None),
+        _last_optimizer_tried="synthetic_nop_writer",
+    )
+    manager._capture_callback_nop_sites = MethodType(
+        InstructionOptimizerManager._capture_callback_nop_sites,
+        manager,
+    )
+    manager._report_callback_nop_delta = MethodType(
+        InstructionOptimizerManager._report_callback_nop_delta,
+        manager,
+    )
+    manager.log_info_on_input = lambda _blk, _ins: False
+
+    def create_unreported_nop(_blk, _ins) -> bool:
+        instruction.opcode = ida_hexrays.m_nop
+        return False
+
+    manager.optimize = create_unreported_nop
+
+    assert InstructionOptimizerManager.func(manager, block, instruction) is False
+
+    assert len(persisted) == 1
+    assert persisted[0].decision == "mutation_unreported"
+    assert persisted[0].payload["callback_kind"] == "optinsn_callback"
