@@ -1514,6 +1514,44 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             raise
         return True
 
+    def _fragment_publication_callback_change_count(
+        self,
+        mba: object,
+        backend: HexRaysMutationBackend,
+    ) -> int:
+        """Report one callback change for any receipt-proven publication."""
+        operation_count = backend.committed_fragment_operation_count
+        if isinstance(operation_count, bool) or not isinstance(operation_count, int):
+            raise TypeError("fragment callback accounting requires an integer count")
+        if operation_count < 0:
+            raise ValueError("fragment callback accounting cannot be negative")
+        if operation_count == 0:
+            return 0
+        callback_change_count = 1
+        flow_context = getattr(self, "flow_context", None)
+        report = getattr(flow_context, "report_fact_consumers", None)
+        if callable(report):
+            function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            report(
+                (
+                    FactConsumerRecord(
+                        consumer="state_machine_cff_unflattener",
+                        strategy="hexrays_callback_change_accounting",
+                        fact_id=f"fragment_publication_callback:0x{function_ea:X}",
+                        maturity=maturity_to_string(
+                            int(getattr(mba, "maturity", 0))
+                        ),
+                        decision="applied",
+                        reason="committed_fragment_reported_to_hexrays",
+                        payload={
+                            "committed_fragment_operation_count": operation_count,
+                            "reported_callback_change_count": callback_change_count,
+                        },
+                    ),
+                )
+            )
+        return callback_change_count
+
     def _report_materialized_handler_completeness(
         self,
         mba: object,
@@ -1797,11 +1835,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         is byte-identical: :meth:`optimize` binds ``self.mba`` and logs, then
         delegates here.
 
-        Returns 0 to the optblock caller (the historical contract: convergence is
-        driven by IDA's optblock re-invocation cadence interleaved with its own
-        ``optimize_global`` cleanup, NOT by the reported change count -- returning
-        the real count front-loads an ``optimize_global`` that collapses the
-        residual dispatcher before recovery can redirect it).
+        Returns zero under the historical optblock contract when no fragment
+        publication commits.  A receipt-proven FragmentPlan publication returns
+        one logical change so Hex-Rays does not carry a mutation-created ``m_nop``
+        into ctree generation.
         """
         self.mba = mba
         mba = self.mba
@@ -2008,7 +2045,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 canonical_composition_ready=canonical_composition_ready,
                 run_pipeline=run_pipeline,
             ):
-                return 0
+                return self._fragment_publication_callback_change_count(mba, backend)
             facts = self._pass_manager.analysis_manager_for(func_ea) or facts
         # Iteration diagnostics: where does the unflatten chain stand for this function?
         rec = facts.get_analysis("recover_dispatcher")
@@ -2049,14 +2086,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         )
         if family is not None and not dispatcher_present:
             self._mark_ea_converged(func_ea)
-        # Report 0 to IDA's optblock callback (historical contract): convergence is driven by
-        # IDA's own optblock re-invocation cadence (it re-calls ``optimize`` per block per
-        # GLBOPT1 round) interleaved with its optimize_global cleanup, which the bounded re-run
-        # rides. Reporting the real change count instead makes IDA front-load an extra
-        # optimize_global that partially collapses the residual dispatcher BEFORE the next
-        # round can recover + redirect it, so the convergence redirect is never emitted and the
-        # dispatcher survives (verified: returning the count regressed approov_real_pattern).
-        return 0
+        # Preserve the historical zero-return cadence for legacy PatchPlan and
+        # no-op rounds: approov_real_pattern depends on IDA's interleaved
+        # optimize_global cadence. A committed FragmentPlan is different: SDK
+        # verifier 50409 requires the callback to acknowledge its live write.
+        # Report one logical change, not the operation inventory, so the receipt
+        # remains the detailed authority without exaggerating callback progress.
+        return self._fragment_publication_callback_change_count(mba, backend)
 
     def _should_recover(
         self,

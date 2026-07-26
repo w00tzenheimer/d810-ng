@@ -865,6 +865,7 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
             published.append((self.name, fragment_backend, fragment_plan))
             return SimpleNamespace(
                 current_mba_identity_binding=snapshot,
+                operation_count=260,
             )
 
     fragment_backend = object()
@@ -884,6 +885,7 @@ def test_publish_fragment_uses_independent_receipt_backed_gateway() -> None:
     assert published == [("fragment", fragment_backend, plan)]
     assert translator.lift_count == 1
     assert backend.committed_current_mba_identity_binding() is snapshot
+    assert backend.committed_fragment_operation_count == 260
 
 
 def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
@@ -902,6 +904,7 @@ def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
                 raise RuntimeError("publication aborted")
             return SimpleNamespace(
                 current_mba_identity_binding=snapshot,
+                operation_count=17,
             )
 
     gateway = _Gateway()
@@ -919,6 +922,7 @@ def test_publish_fragment_exposes_no_prior_origins_after_abort() -> None:
         backend.apply(plan, live_source=object())
 
     assert backend.committed_current_mba_identity_binding() is None
+    assert backend.committed_fragment_operation_count == 17
 
 
 def test_default_fragment_backend_receives_native_body_materializer(

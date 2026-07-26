@@ -1508,6 +1508,45 @@ def _fresh_rule() -> StateMachineCffUnflattener:
     return rule
 
 
+def test_committed_fragment_reports_one_hexrays_callback_change() -> None:
+    reported = []
+    rule = _fresh_rule()
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    mba = SimpleNamespace(entry_ea=_EA, maturity=_MAT2)
+
+    assert (
+        rule._fragment_publication_callback_change_count(
+            mba,
+            SimpleNamespace(committed_fragment_operation_count=406),
+        )
+        == 1
+    )
+
+    assert len(reported) == 1
+    record = reported[0]
+    assert record.consumer == "state_machine_cff_unflattener"
+    assert record.strategy == "hexrays_callback_change_accounting"
+    assert record.fact_id == "fragment_publication_callback:0x1800017F0"
+    assert record.maturity == "MMAT_CALLS"
+    assert record.decision == "applied"
+    assert record.reason == "committed_fragment_reported_to_hexrays"
+    assert record.payload == {
+        "committed_fragment_operation_count": 406,
+        "reported_callback_change_count": 1,
+    }
+
+    assert (
+        rule._fragment_publication_callback_change_count(
+            mba,
+            SimpleNamespace(committed_fragment_operation_count=0),
+        )
+        == 0
+    )
+    assert len(reported) == 1
+
+
 def test_recovery_gate_reports_session_profile_and_identity_phase() -> None:
     reported = []
     rule = _fresh_rule()
@@ -2264,6 +2303,8 @@ class TestUnflattenBoundedRerunGate:
             recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
 
         class _Backend:
+            committed_fragment_operation_count = 0
+
             def __init__(
                 self,
                 *,
@@ -2448,6 +2489,8 @@ class TestUnflattenBoundedRerunGate:
             recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
 
         class _Backend:
+            committed_fragment_operation_count = 0
+
             def __init__(
                 self,
                 *,
