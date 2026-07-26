@@ -185,9 +185,7 @@ def test_project_fragment_includes_required_future_data_flow_relations() -> None
                 if block.block_id == "original"
                 else block.predecessors,
                 physical_position=block.physical_position,
-                adjacent_fallthrough_target_id=(
-                    block.adjacent_fallthrough_target_id
-                ),
+                adjacent_fallthrough_target_id=(block.adjacent_fallthrough_target_id),
                 terminator_ea=(
                     replacement.terminator_ea
                     if block.block_id == "original"
@@ -215,8 +213,7 @@ def test_project_fragment_includes_required_future_data_flow_relations() -> None
         identity_bindings=tuple(
             binding
             for binding in staged.identity_bindings
-            if binding.block_id in plan_block_ids
-            and binding.block_id != "replacement"
+            if binding.block_id in plan_block_ids and binding.block_id != "replacement"
         ),
         data_flow_relations=(),
         value_ranges=staged.value_ranges,
