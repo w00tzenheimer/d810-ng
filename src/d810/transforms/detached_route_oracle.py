@@ -280,8 +280,7 @@ def bind_fragment_reference_oracle(
                 for operation in conditional_candidates
                 if _conditional_candidate_anchor(operation)
                 == int(route.rewrite_anchor_ea)
-                and _conditional_reference_predicate(operation)
-                == route.predicate_kind
+                and _conditional_reference_predicate(operation) == route.predicate_kind
             )
             if len(exact_matches) == 1:
                 (selected_operation,) = exact_matches
@@ -310,9 +309,7 @@ def bind_fragment_reference_oracle(
         if candidate_anchor_ea != int(route.rewrite_anchor_ea):
             coordinate_rebindings.append(
                 {
-                    "candidate_rewrite_anchor_ea": (
-                        f"0x{candidate_anchor_ea:X}"
-                    ),
+                    "candidate_rewrite_anchor_ea": (f"0x{candidate_anchor_ea:X}"),
                     "operation_id": selected_operation.operation_id,
                     "reference_patch_anchor_ea": (
                         f"0x{int(route.rewrite_anchor_ea):X}"
@@ -605,12 +602,8 @@ def _candidate_observation(
                 route,
                 f"route {route.route_id} has no exact semantic fallthrough",
             )
-        true_target_ea = int(
-            plan.block(true_edge.target_block_id).semantic_anchor_ea
-        )
-        false_target_ea = int(
-            plan.block(false_edge.target_block_id).semantic_anchor_ea
-        )
+        true_target_ea = int(plan.block(true_edge.target_block_id).semantic_anchor_ea)
+        false_target_ea = int(plan.block(false_edge.target_block_id).semantic_anchor_ea)
         physical_fallthrough_ea = false_target_ea
     owner_start_ea = min(
         int(interval.start_ea) for interval in owner_identity.native_ranges.intervals
