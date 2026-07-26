@@ -13,7 +13,7 @@ from __future__ import annotations
 import collections
 import itertools
 import struct
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 import ida_funcs  # type: ignore[import-untyped]
 import ida_hexrays  # type: ignore[import-untyped]
@@ -138,11 +138,9 @@ from d810.hexrays.mutation.detached_handler_island import (
     capture_detached_callinfo_templates,
     capture_preopt_union_call_companion_template,
     capture_preopt_union_snippet_template,
-    detached_callinfo_template_eas,
     detached_preopt_call_stack_points,
     exact_live_predicate_true_is_taken,
     imported_detached_snippet_instruction_origins,
-    last_imported_detached_snippet_instruction_origins,
     native_stack_frame_offsets_for_ranges,
     prepare_detached_callinfo_template,
 )
@@ -442,11 +440,9 @@ def _merge_terminal_return_carriers(
 try:
     from d810.speedups.cythxr._chexrays_api import (
         copy_mcallinfo as _copy_mcallinfo,
-        upsert_stkpnt as _upsert_stkpnt,
     )
-except ImportError:  # Optional native SDK bridge; provider abstains when absent.
+except ImportError:  # Optional native SDK bridge for call-info cloning only.
     _copy_mcallinfo = None
-    _upsert_stkpnt = None
 
 logger = getLogger("D810.hexrays.preanalysis.computed_goto")
 
@@ -461,6 +457,299 @@ _DEFAULT_MAX_INSTRUCTIONS = 20000
 _STACK_BASE = 0x00F00000
 _STACK_SIZE = 0x00040000
 _STACK_TOP = _STACK_BASE + _STACK_SIZE // 2
+
+
+@dataclass(frozen=True, slots=True)
+class NativeStackPointOverlayRecord:
+    """Immutable authority for one temporary native stack-point projection."""
+
+    native_ea: int
+    original_spd: int
+    original_delta: int
+    projected_spd: int
+
+    @property
+    def requires_write(self) -> bool:
+        """Return whether the native cumulative SPD needs a temporary point."""
+        return int(self.original_spd) != int(self.projected_spd)
+
+
+def _native_stack_point_overlay_payload(
+    records: Sequence[NativeStackPointOverlayRecord],
+    *,
+    outcome: str,
+    reason: str,
+) -> list[dict[str, object]]:
+    """Serialize immutable overlay authority for the diagnostic database."""
+    return [
+        {
+            "native_ea": hex(int(record.native_ea)),
+            "original_spd": int(record.original_spd),
+            "original_delta": int(record.original_delta),
+            "projected_spd": int(record.projected_spd),
+            "requires_write": bool(record.requires_write),
+            "outcome": str(outcome),
+            "reason": str(reason),
+        }
+        for record in records
+    ]
+
+
+def _observe_native_stack_point_overlay(
+    session: ResolverLifecycleSession,
+    state: ResolverSessionState,
+    *,
+    phase: str,
+    summary: str,
+    points: Sequence[Mapping[str, object]],
+) -> None:
+    """Persist one overlay lifecycle transition through the diagnostic port."""
+    session_id = getattr(session, "identity_key", None)
+    if session_id is None:
+        return
+    try:
+        emit_diagnostic(
+            LifecycleEventObserved(
+                session_id=str(session_id),
+                func_ea=int(getattr(session, "function_ea")),
+                event_kind="native_stack_point_overlay",
+                provider="manager_native_preanalysis",
+                maturity=None,
+                phase=str(phase),
+                evidence_generation=int(state.evidence_generation),
+                mba_generation_before=int(
+                    getattr(session, "current_mba_generation", 0)
+                ),
+                mba_generation_after=int(
+                    getattr(session, "current_mba_generation", 0)
+                ),
+                summary=str(summary),
+                payload={"points": [dict(point) for point in points]},
+            )
+        )
+    except Exception:
+        logger.debug(
+            "native stack-point overlay diagnostic failed: phase=%s",
+            phase,
+            exc_info=True,
+        )
+
+
+@dataclass(slots=True)
+class NativeStackPointOverlayLease:
+    """One-decompile lease over transactionally installed native SP points."""
+
+    function: object
+    records: tuple[NativeStackPointOverlayRecord, ...]
+    session: ResolverLifecycleSession
+    state: ResolverSessionState
+    _released: bool = False
+
+    def _restore(self) -> None:
+        """Delete all temporary points and prove the original SPDs returned."""
+        import ida_frame  # type: ignore[import-untyped]
+
+        failures: list[str] = []
+        for record in reversed(self.records):
+            if not record.requires_write:
+                continue
+            if not ida_frame.del_stkpnt(self.function, int(record.native_ea)):
+                failures.append(f"delete@0x{int(record.native_ea):X}")
+        for record in self.records:
+            restored_spd = int(
+                ida_frame.get_spd(self.function, int(record.native_ea))
+            )
+            if restored_spd != int(record.original_spd):
+                failures.append(
+                    f"verify@0x{int(record.native_ea):X}:"
+                    f"{restored_spd}!={int(record.original_spd)}"
+                )
+        if failures:
+            raise RuntimeError(
+                "native stack-point overlay restoration failed: "
+                + ", ".join(failures)
+            )
+
+    def release(self) -> None:
+        """Restore the native function exactly once after its decompile round."""
+        if self._released:
+            return
+        self._restore()
+        self._released = True
+        _observe_native_stack_point_overlay(
+            self.session,
+            self.state,
+            phase="released",
+            summary=f"restored {sum(r.requires_write for r in self.records)} points",
+            points=_native_stack_point_overlay_payload(
+                self.records,
+                outcome="restored",
+                reason="lease_released",
+            ),
+        )
+
+
+def acquire_detached_call_stack_point_overlay(
+    session: ResolverLifecycleSession,
+) -> NativeStackPointOverlayLease | None:
+    """Install one transactionally verified native stack overlay lease.
+
+    The immutable preflight is completed before the first IDA SDK write.  Only
+    missing automatic points are installed; an existing nonzero change point
+    is never displaced.  A partial write is rolled back before this function
+    raises, and the returned lease owns exact restoration after one decompile.
+    """
+    import ida_frame  # type: ignore[import-untyped]
+    import ida_funcs  # type: ignore[import-untyped]
+
+    state = resolver_session_state(session)
+    resolution = state.portable_evidence.computed_goto_resolution
+    if not isinstance(resolution, ComputedGotoResolution) or resolution.arch != "x86":
+        return None
+    function_ea = int(resolution.function_ea)
+    call_points = detached_preopt_call_stack_points(function_ea)
+    if not call_points:
+        return None
+    function = ida_funcs.get_func(function_ea)
+    if function is None:
+        return None
+    canonical_spd = -(
+        int(getattr(function, "frsize")) + int(getattr(function, "frregs"))
+    )
+    records: list[NativeStackPointOverlayRecord] = []
+    preflight_points: list[dict[str, object]] = []
+    rejected = False
+    for native_ea, route_call_delta in sorted(call_points):
+        native_ea = int(native_ea)
+        original_spd = int(ida_frame.get_spd(function, native_ea))
+        original_delta = int(ida_frame.get_sp_delta(function, native_ea))
+        projected_spd = project_detached_call_stack_point(
+            native_spd=original_spd,
+            canonical_spd=canonical_spd,
+            route_call_delta=int(route_call_delta),
+        )
+        if projected_spd is None:
+            rejected = True
+            preflight_points.append(
+                {
+                    "native_ea": hex(native_ea),
+                    "original_spd": original_spd,
+                    "original_delta": original_delta,
+                    "canonical_spd": canonical_spd,
+                    "route_call_delta": int(route_call_delta),
+                    "projected_spd": None,
+                    "outcome": "rejected",
+                    "reason": "conflicting_stack_evidence",
+                }
+            )
+            continue
+        record = NativeStackPointOverlayRecord(
+            native_ea=native_ea,
+            original_spd=original_spd,
+            original_delta=original_delta,
+            projected_spd=int(projected_spd),
+        )
+        records.append(record)
+        if record.requires_write and original_delta != 0:
+            rejected = True
+            outcome = "rejected"
+            reason = "existing_stack_change_point"
+        else:
+            outcome = "accepted"
+            reason = "requires_overlay" if record.requires_write else "already_present"
+        preflight_points.append(
+            {
+                "native_ea": hex(native_ea),
+                "original_spd": original_spd,
+                "original_delta": original_delta,
+                "canonical_spd": canonical_spd,
+                "route_call_delta": int(route_call_delta),
+                "projected_spd": int(projected_spd),
+                "outcome": outcome,
+                "reason": reason,
+            }
+        )
+    if rejected:
+        _observe_native_stack_point_overlay(
+            session,
+            state,
+            phase="preflight_rejected",
+            summary="native stack-point overlay rejected before first write",
+            points=preflight_points,
+        )
+        return None
+
+    immutable_records = tuple(records)
+    applied: list[NativeStackPointOverlayRecord] = []
+    try:
+        for record in immutable_records:
+            if not record.requires_write:
+                continue
+            if not ida_frame.set_auto_spd(
+                function,
+                int(record.native_ea),
+                int(record.projected_spd),
+            ):
+                raise RuntimeError(
+                    f"set_auto_spd failed at 0x{int(record.native_ea):X}"
+                )
+            applied.append(record)
+        for record in immutable_records:
+            observed_spd = int(ida_frame.get_spd(function, int(record.native_ea)))
+            if observed_spd != int(record.projected_spd):
+                raise RuntimeError(
+                    f"post-install verification failed at 0x{int(record.native_ea):X}: "
+                    f"{observed_spd}!={int(record.projected_spd)}"
+                )
+    except Exception as error:
+        rollback_failures: list[str] = []
+        for record in reversed(applied):
+            if not ida_frame.del_stkpnt(function, int(record.native_ea)):
+                rollback_failures.append(f"delete@0x{int(record.native_ea):X}")
+        for record in immutable_records:
+            restored_spd = int(ida_frame.get_spd(function, int(record.native_ea)))
+            if restored_spd != int(record.original_spd):
+                rollback_failures.append(
+                    f"verify@0x{int(record.native_ea):X}:"
+                    f"{restored_spd}!={int(record.original_spd)}"
+                )
+        _observe_native_stack_point_overlay(
+            session,
+            state,
+            phase="installation_rolled_back",
+            summary=f"overlay installation failed and rolled back: {error}",
+            points=_native_stack_point_overlay_payload(
+                immutable_records,
+                outcome="rolled_back",
+                reason="installation_failed",
+            ),
+        )
+        detail = ""
+        if rollback_failures:
+            detail = "; rollback failures: " + ", ".join(rollback_failures)
+        raise RuntimeError(
+            f"native stack-point overlay transactional installation failed: {error}"
+            f"{detail}"
+        ) from error
+
+    lease = NativeStackPointOverlayLease(
+        function=function,
+        records=immutable_records,
+        session=session,
+        state=state,
+    )
+    _observe_native_stack_point_overlay(
+        session,
+        state,
+        phase="installed",
+        summary=f"installed {sum(r.requires_write for r in immutable_records)} points",
+        points=_native_stack_point_overlay_payload(
+            immutable_records,
+            outcome="installed",
+            reason="lease_acquired",
+        ),
+    )
+    return lease
 
 
 # --------------------------------------------------------------------------- #
@@ -11797,24 +12086,6 @@ def _first_x86_fastcall_register_accesses(
     return first[0], first[1]
 
 
-def _capture_range_instruction_eas(mba: object) -> tuple[int, ...]:
-    """Return native code heads owned by an isolated capture MBA."""
-    import ida_bytes  # type: ignore[import-untyped]
-    import idautils  # type: ignore[import-untyped]
-
-    instruction_eas: set[int] = set()
-    ranges = mba.mbr.ranges
-    for index in range(int(ranges.size())):
-        native_range = ranges[index]
-        for ea in idautils.Heads(
-            int(native_range.start_ea),
-            int(native_range.end_ea),
-        ):
-            if ida_bytes.is_code(ida_bytes.get_flags(int(ea))):
-                instruction_eas.add(int(ea))
-    return tuple(sorted(instruction_eas))
-
-
 def _on_stkpnts(
     *,
     function_ea: int,
@@ -11822,126 +12093,76 @@ def _on_stkpnts(
     stack_points: object,
     decision: dict,
 ) -> None:
-    """Project native SP facts onto resolver-owned imported instructions."""
+    """Observe the manager-owned native stack overlay without mutating it."""
     import ida_frame  # type: ignore[import-untyped]
     import ida_funcs  # type: ignore[import-untyped]
 
+    del function_ea, stack_points
     state = _resolver_state_from_decision(decision)
     if state is None:
         return
     resolution = state.portable_evidence.computed_goto_resolution
-    if (
-        not isinstance(resolution, ComputedGotoResolution)
-        or resolution.arch != "x86"
-        or _upsert_stkpnt is None
-    ):
+    if not isinstance(resolution, ComputedGotoResolution) or resolution.arch != "x86":
         return
-    capture_active = state.snippet_capture_active
+    if state.snippet_capture_active:
+        # Isolated capture must never acquire or extend the top-level IDB lease.
+        return
     key = int(resolution.function_ea)
     function = ida_funcs.get_func(key)
     if function is None:
         return
-
-    if capture_active:
-        native_ea_by_live_ea = {
-            int(native_ea): int(native_ea)
-            for native_ea in _capture_range_instruction_eas(mba)
-        }
-    else:
-        detached_call_spd_by_ea = dict(detached_preopt_call_stack_points(key))
-        native_ea_by_live_ea = {
-            int(imported_ea): int(native_ea)
-            for imported_ea, native_ea in (
-                last_imported_detached_snippet_instruction_origins(key)
-            )
-        }
-        native_ea_by_live_ea.update(
-            {
-                int(call_ea): int(call_ea)
-                for call_ea in (
-                    *detached_callinfo_template_eas(key),
-                    *detached_call_spd_by_ea,
-                )
-            }
-        )
-        native_ea_by_live_ea.update(
-            {
-                int(imported_ea): int(native_ea)
-                for imported_ea, native_ea in (
-                    imported_detached_snippet_instruction_origins(mba)
-                )
-            }
-        )
-    projected: list[tuple[int, int, int]] = []
-    diagnostic_points: list[dict[str, object]] = []
-    detached_call_spd_by_ea = (
-        {} if capture_active else dict(detached_preopt_call_stack_points(key))
+    canonical_spd = -(
+        int(getattr(function, "frsize")) + int(getattr(function, "frregs"))
     )
-    for live_ea, native_ea in sorted(native_ea_by_live_ea.items()):
+    diagnostic_points: list[dict[str, object]] = []
+    observed = 0
+    missing = 0
+    for native_ea, route_call_delta in detached_preopt_call_stack_points(key):
+        native_ea = int(native_ea)
+        route_call_delta = int(route_call_delta)
         try:
-            native_spd = int(ida_frame.get_spd(function, int(native_ea)))
-            route_call_delta = detached_call_spd_by_ea.get(int(native_ea))
-            canonical_spd: int | None = None
-            if route_call_delta is None:
-                spd = native_spd
-            else:
-                # hxe_stkpnts runs before this MBA's frame fields are populated.
-                # The native function already owns the authoritative frame size.
-                canonical_spd = -(
-                    int(getattr(function, "frsize")) + int(getattr(function, "frregs"))
-                )
-                resolved_spd = project_detached_call_stack_point(
-                    native_spd=native_spd,
-                    canonical_spd=canonical_spd,
-                    route_call_delta=int(route_call_delta),
-                )
-                if resolved_spd is None:
-                    diagnostic_points.append(
-                        {
-                            "live_ea": hex(int(live_ea)),
-                            "native_ea": hex(int(native_ea)),
-                            "native_spd": int(native_spd),
-                            "canonical_spd": int(canonical_spd),
-                            "route_call_delta": int(route_call_delta),
-                            "applied_spd": None,
-                            "outcome": "abstained",
-                            "reason": "conflicting_stack_evidence",
-                        }
-                    )
-                    continue
-                spd = int(resolved_spd)
-            _upsert_stkpnt(stack_points, int(live_ea), spd)
+            native_spd = int(ida_frame.get_spd(function, native_ea))
+            projected_spd = project_detached_call_stack_point(
+                native_spd=native_spd,
+                canonical_spd=canonical_spd,
+                route_call_delta=route_call_delta,
+            )
         except Exception:
             logger.debug(
-                "computed-goto stack-point projection failed: "
-                "func=0x%X live=0x%X native=0x%X",
+                "computed-goto stack-point observation failed: "
+                "func=0x%X native=0x%X",
                 key,
-                int(live_ea),
-                int(native_ea),
+                native_ea,
                 exc_info=True,
             )
             continue
-        projected.append((int(live_ea), int(native_ea), spd))
+        expected_spd = canonical_spd + route_call_delta
+        if projected_spd is None:
+            outcome = "conflict"
+            reason = "conflicting_stack_evidence"
+            missing += 1
+        elif native_spd == expected_spd:
+            outcome = "observed"
+            reason = "overlay_present"
+            observed += 1
+        else:
+            outcome = "missing"
+            reason = "overlay_not_installed"
+            missing += 1
         diagnostic_points.append(
             {
-                "live_ea": hex(int(live_ea)),
-                "native_ea": hex(int(native_ea)),
-                "native_spd": int(native_spd),
-                "canonical_spd": (
-                    None if canonical_spd is None else int(canonical_spd)
-                ),
-                "route_call_delta": (
-                    None if route_call_delta is None else int(route_call_delta)
-                ),
-                "applied_spd": int(spd),
-                "outcome": "applied",
-                "reason": "native_spd" if route_call_delta is None else "merged",
+                "native_ea": hex(native_ea),
+                "observed_spd": native_spd,
+                "canonical_spd": canonical_spd,
+                "route_call_delta": route_call_delta,
+                "expected_spd": expected_spd,
+                "outcome": outcome,
+                "reason": reason,
             }
         )
     if not diagnostic_points:
         return
-    if projected:
-        decision["stack_points_modified"] = len(projected)
+    decision["stack_points_observed"] = observed
     session = decision.get("session")
     session_id = getattr(session, "identity_key", None)
     if session_id is not None:
@@ -11961,28 +12182,22 @@ def _on_stkpnts(
                     getattr(session, "current_mba_generation", 0)
                 ),
                 mba_generation_after=int(getattr(session, "current_mba_generation", 0)),
-                summary=(
-                    f"projected {len(projected)} stack points; "
-                    f"abstained {len(diagnostic_points) - len(projected)}"
-                ),
+                summary=f"observed {observed} stack points; missing {missing}",
                 payload={
-                    "capture_active": bool(capture_active),
+                    "capture_active": False,
                     "points": diagnostic_points,
                 },
             )
         )
-    if not projected:
-        return
     logger.info(
-        "computed-goto stack provenance projected: func=0x%X points=%d "
-        "capture=%s native_calls=%s route_call_spds=%s",
+        "computed-goto stack overlay observed: func=0x%X observed=%d missing=%d "
+        "route_call_spds=%s",
         key,
-        len(projected),
-        capture_active,
-        [hex(int(ea)) for ea in detached_callinfo_template_eas(key)],
+        observed,
+        missing,
         [
             (hex(int(call_ea)), int(spd))
-            for call_ea, spd in sorted(detached_call_spd_by_ea.items())
+            for call_ea, spd in detached_preopt_call_stack_points(key)
         ],
     )
 

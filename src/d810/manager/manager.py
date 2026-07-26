@@ -659,11 +659,25 @@ class D810Manager:
         result: typing.Any = None
         for _round in range(3):
             self.prepare_native_preanalysis(function_ea)
+            from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
+                acquire_detached_call_stack_point_overlay,
+            )
+
+            session = self.decompilation_lifecycle.current_session(function_ea)
+            overlay_lease = (
+                None
+                if session is None
+                else acquire_detached_call_stack_point_overlay(session)
+            )
             # Native preanalysis may generate top-level or snippet cfuncs while
             # capturing pristine templates.  None of those cache entries owns
             # the live decompile that follows this preparation round.
-            invalidate_cached_cfunc()
-            result = decompile()
+            try:
+                invalidate_cached_cfunc()
+                result = decompile()
+            finally:
+                if overlay_lease is not None:
+                    overlay_lease.release()
             if self.decompilation_lifecycle.has_exhausted_poison_restart(function_ea):
                 raise RuntimeError(
                     "native preanalysis poison restart exhausted for "

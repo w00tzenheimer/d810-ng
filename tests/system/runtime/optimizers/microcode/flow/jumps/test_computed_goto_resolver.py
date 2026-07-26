@@ -3593,17 +3593,15 @@ def test_build_callinfo_does_not_replay_route_template_into_source_mba(
     assert replayed == []
 
 
-def test_stkpnts_projects_native_spd_to_imported_and_call_eas(
+def test_native_stack_point_overlay_is_preflighted_atomic_and_restored(
     monkeypatch,
 ) -> None:
     import ida_frame
     import ida_funcs
 
-    function_ea = 0x1000
-    imported_call_ea = 0xF10020
-    imported_body_ea = 0xF10024
-    native_call_ea = 0x2030
-    native_body_ea = 0x2034
+    function_ea = 0x40A560
+    first_call_ea = 0x40A91C
+    second_call_ea = 0x40AA20
     resolution = ComputedGotoResolution(
         function_ea=function_ea,
         jmp_targets={},
@@ -3613,80 +3611,254 @@ def test_stkpnts_projects_native_spd_to_imported_and_call_eas(
         seeds_run=0,
     )
     session, _state = _resolver_session(resolution)
+    session.identity_key = "overlay-session"
+    session.function_ea = function_ea
+    session.current_mba_generation = 7
     monkeypatch.setattr(
         computed_goto_resolver,
-        "imported_detached_snippet_instruction_origins",
-        lambda _mba: (),
-    )
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "last_imported_detached_snippet_instruction_origins",
+        "detached_preopt_call_stack_points",
         lambda _function_ea: (
-            (imported_call_ea, native_call_ea),
-            (imported_body_ea, native_body_ea),
+            (first_call_ea, -16),
+            (second_call_ea, -8),
         ),
-        raising=False,
     )
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "detached_callinfo_template_eas",
-        lambda _function_ea: (native_call_ea,),
-        raising=False,
-    )
-    function = object()
+    function = SimpleNamespace(frsize=1164, frregs=4)
     monkeypatch.setattr(
         ida_funcs,
         "get_func",
         lambda ea: function if int(ea) == function_ea else None,
     )
-    spd_by_ea = {native_call_ea: -12, native_body_ea: -8}
-    monkeypatch.setattr(
-        ida_frame,
-        "get_spd",
-        lambda candidate, ea: spd_by_ea[int(ea)] if candidate is function else 0,
-    )
-    applied: list[tuple[object, int, int]] = []
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "_upsert_stkpnt",
-        lambda points, ea, spd: not applied.append((points, ea, spd)),
-        raising=False,
-    )
-    stack_points = object()
-    decision: dict[str, object] = {"session": session}
+    canonical_spd = -1168
+    original_spds = {
+        first_call_ea: canonical_spd,
+        second_call_ea: canonical_spd,
+    }
+    overlays: dict[int, int] = {}
+    preflighted: list[tuple[str, int]] = []
+    writes: list[tuple[str, int, int | None]] = []
 
-    computed_goto_resolver._on_stkpnts(
-        function_ea=function_ea,
-        mba=SimpleNamespace(entry_ea=function_ea, frsize=1168, frregs=0),
-        stack_points=stack_points,
-        decision=decision,
-    )
+    def get_spd(candidate, ea):
+        assert candidate is function
+        native_ea = int(ea)
+        preflighted.append(("spd", native_ea))
+        return overlays.get(native_ea, original_spds[native_ea])
 
-    assert applied == [
-        (stack_points, native_call_ea, -12),
-        (stack_points, imported_call_ea, -12),
-        (stack_points, imported_body_ea, -8),
+    def get_sp_delta(candidate, ea):
+        assert candidate is function
+        native_ea = int(ea)
+        preflighted.append(("delta", native_ea))
+        return 0
+
+    def set_auto_spd(candidate, ea, spd):
+        assert candidate is function
+        assert {
+            native_ea
+            for kind, native_ea in preflighted
+            if kind == "delta"
+        } == {first_call_ea, second_call_ea}
+        native_ea = int(ea)
+        projected_spd = int(spd)
+        writes.append(("set", native_ea, projected_spd))
+        overlays[native_ea] = projected_spd
+        return True
+
+    def del_stkpnt(candidate, ea):
+        assert candidate is function
+        native_ea = int(ea)
+        writes.append(("del", native_ea, None))
+        overlays.pop(native_ea)
+        return True
+
+    monkeypatch.setattr(ida_frame, "get_spd", get_spd)
+    monkeypatch.setattr(ida_frame, "get_sp_delta", get_sp_delta)
+    monkeypatch.setattr(ida_frame, "set_auto_spd", set_auto_spd)
+    monkeypatch.setattr(ida_frame, "del_stkpnt", del_stkpnt)
+    observed: list[object] = []
+    monkeypatch.setattr(computed_goto_resolver, "emit_diagnostic", observed.append)
+
+    lease = computed_goto_resolver.acquire_detached_call_stack_point_overlay(session)
+
+    assert lease is not None
+    assert tuple(
+        (record.native_ea, record.original_spd, record.projected_spd)
+        for record in lease.records
+    ) == (
+        (first_call_ea, canonical_spd, canonical_spd - 16),
+        (second_call_ea, canonical_spd, canonical_spd - 8),
+    )
+    assert writes == [
+        ("set", first_call_ea, canonical_spd - 16),
+        ("set", second_call_ea, canonical_spd - 8),
     ]
-    assert decision["stack_points_modified"] == 3
+    assert overlays == {
+        first_call_ea: canonical_spd - 16,
+        second_call_ea: canonical_spd - 8,
+    }
+
+    lease.release()
+    lease.release()
+
+    assert writes[-2:] == [
+        ("del", second_call_ea, None),
+        ("del", first_call_ea, None),
+    ]
+    assert overlays == {}
+    assert [event.event_kind for event in observed] == [
+        "native_stack_point_overlay",
+        "native_stack_point_overlay",
+    ]
+    assert [event.phase for event in observed] == ["installed", "released"]
 
 
 @pytest.mark.parametrize(
-    ("native_call_spd", "expected_call_spd"),
-    ((-1168, -1172), (-1172, -1172)),
+    ("native_spd", "native_delta", "expected_reason"),
+    (
+        (-1172, 0, "conflicting_stack_evidence"),
+        (-1168, -4, "existing_stack_change_point"),
+    ),
 )
-def test_stkpnts_merges_detached_call_push_delta_exactly_once(
+def test_native_stack_point_overlay_conflict_writes_nothing(
+    monkeypatch,
+    native_spd: int,
+    native_delta: int,
+    expected_reason: str,
+) -> None:
+    import ida_frame
+    import ida_funcs
+
+    function_ea = 0x40A560
+    call_ea = 0x40A91C
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    session, _state = _resolver_session(resolution)
+    session.identity_key = "overlay-conflict"
+    session.function_ea = function_ea
+    session.current_mba_generation = 2
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "detached_preopt_call_stack_points",
+        lambda _function_ea: ((call_ea, -16),),
+    )
+    function = SimpleNamespace(frsize=1164, frregs=4)
+    monkeypatch.setattr(ida_funcs, "get_func", lambda _ea: function)
+    monkeypatch.setattr(ida_frame, "get_spd", lambda _function, _ea: native_spd)
+    monkeypatch.setattr(
+        ida_frame,
+        "get_sp_delta",
+        lambda _function, _ea: native_delta,
+    )
+    writes: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        ida_frame,
+        "set_auto_spd",
+        lambda *args: writes.append(args) or True,
+    )
+    monkeypatch.setattr(
+        ida_frame,
+        "del_stkpnt",
+        lambda *args: writes.append(args) or True,
+    )
+    observed: list[object] = []
+    monkeypatch.setattr(computed_goto_resolver, "emit_diagnostic", observed.append)
+
+    assert (
+        computed_goto_resolver.acquire_detached_call_stack_point_overlay(session)
+        is None
+    )
+    assert writes == []
+    assert len(observed) == 1
+    assert observed[0].phase == "preflight_rejected"
+    assert observed[0].payload["points"][0]["reason"] == expected_reason
+
+
+def test_native_stack_point_overlay_rolls_back_partial_install(monkeypatch) -> None:
+    import ida_frame
+    import ida_funcs
+
+    function_ea = 0x40A560
+    first_call_ea = 0x40A91C
+    second_call_ea = 0x40AA20
+    resolution = ComputedGotoResolution(
+        function_ea=function_ea,
+        jmp_targets={},
+        reachable_eas=(),
+        arch="x86",
+        executed_insns=0,
+        seeds_run=0,
+    )
+    session, _state = _resolver_session(resolution)
+    session.identity_key = "overlay-rollback"
+    session.function_ea = function_ea
+    session.current_mba_generation = 3
+    monkeypatch.setattr(
+        computed_goto_resolver,
+        "detached_preopt_call_stack_points",
+        lambda _function_ea: (
+            (first_call_ea, -16),
+            (second_call_ea, -8),
+        ),
+    )
+    function = SimpleNamespace(frsize=1164, frregs=4)
+    monkeypatch.setattr(ida_funcs, "get_func", lambda _ea: function)
+    overlays: dict[int, int] = {}
+    monkeypatch.setattr(
+        ida_frame,
+        "get_spd",
+        lambda _function, ea: overlays.get(int(ea), -1168),
+    )
+    monkeypatch.setattr(ida_frame, "get_sp_delta", lambda _function, _ea: 0)
+    writes: list[tuple[str, int]] = []
+
+    def set_auto_spd(_function, ea, spd):
+        native_ea = int(ea)
+        writes.append(("set", native_ea))
+        if native_ea == second_call_ea:
+            return False
+        overlays[native_ea] = int(spd)
+        return True
+
+    def del_stkpnt(_function, ea):
+        native_ea = int(ea)
+        writes.append(("del", native_ea))
+        overlays.pop(native_ea)
+        return True
+
+    monkeypatch.setattr(ida_frame, "set_auto_spd", set_auto_spd)
+    monkeypatch.setattr(ida_frame, "del_stkpnt", del_stkpnt)
+    monkeypatch.setattr(computed_goto_resolver, "emit_diagnostic", lambda _event: None)
+
+    with pytest.raises(RuntimeError, match="transactional installation failed"):
+        computed_goto_resolver.acquire_detached_call_stack_point_overlay(session)
+
+    assert writes == [
+        ("set", first_call_ea),
+        ("set", second_call_ea),
+        ("del", first_call_ea),
+    ]
+    assert overlays == {}
+
+
+@pytest.mark.parametrize(
+    ("native_call_spd", "expected_outcome", "expected_observed"),
+    ((-1168, "missing", 0), (-1172, "observed", 1)),
+)
+def test_stkpnts_observes_native_overlay_without_mutating_callback_points(
     monkeypatch,
     native_call_spd: int,
-    expected_call_spd: int,
+    expected_outcome: str,
+    expected_observed: int,
 ) -> None:
     import ida_frame
     import ida_funcs
 
     function_ea = 0x1000
-    imported_call_ea = 0xF10020
-    imported_body_ea = 0xF10024
     native_call_ea = 0x2030
-    native_body_ea = 0x2034
     resolution = ComputedGotoResolution(
         function_ea=function_ea,
         jmp_targets={},
@@ -3699,24 +3871,6 @@ def test_stkpnts_merges_detached_call_push_delta_exactly_once(
     session.identity_key = "diag-session"
     session.function_ea = function_ea
     session.current_mba_generation = 7
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "imported_detached_snippet_instruction_origins",
-        lambda _mba: (),
-    )
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "last_imported_detached_snippet_instruction_origins",
-        lambda _function_ea: (
-            (imported_call_ea, native_call_ea),
-            (imported_body_ea, native_body_ea),
-        ),
-    )
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "detached_callinfo_template_eas",
-        lambda _function_ea: (),
-    )
     monkeypatch.setattr(
         computed_goto_resolver,
         "detached_preopt_call_stack_points",
@@ -3735,16 +3889,8 @@ def test_stkpnts_merges_detached_call_push_delta_exactly_once(
         lambda candidate, ea: (
             native_call_spd
             if candidate is function and int(ea) == native_call_ea
-            else -1168
-            if candidate is function
             else 0
         ),
-    )
-    applied: list[tuple[object, int, int]] = []
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "_upsert_stkpnt",
-        lambda points, ea, spd: not applied.append((points, ea, spd)),
     )
     observed = []
     monkeypatch.setattr(
@@ -3762,12 +3908,10 @@ def test_stkpnts_merges_detached_call_push_delta_exactly_once(
         decision=decision,
     )
 
-    assert applied == [
-        (stack_points, native_call_ea, expected_call_spd),
-        (stack_points, imported_call_ea, expected_call_spd),
-        (stack_points, imported_body_ea, -1168),
-    ]
-    assert decision == {"session": session, "stack_points_modified": 3}
+    assert decision == {
+        "session": session,
+        "stack_points_observed": expected_observed,
+    }
     assert len(observed) == 1
     event = observed[0]
     assert event.event_kind == "stack_point_projection"
@@ -3778,51 +3922,29 @@ def test_stkpnts_merges_detached_call_push_delta_exactly_once(
         "capture_active": False,
         "points": [
             {
-                "applied_spd": expected_call_spd,
                 "canonical_spd": -1168,
-                "live_ea": "0x2030",
+                "expected_spd": -1172,
                 "native_ea": "0x2030",
-                "native_spd": native_call_spd,
-                "outcome": "applied",
-                "reason": "merged",
+                "observed_spd": native_call_spd,
+                "outcome": expected_outcome,
+                "reason": (
+                    "overlay_present"
+                    if expected_outcome == "observed"
+                    else "overlay_not_installed"
+                ),
                 "route_call_delta": -4,
-            },
-            {
-                "applied_spd": expected_call_spd,
-                "canonical_spd": -1168,
-                "live_ea": "0xf10020",
-                "native_ea": "0x2030",
-                "native_spd": native_call_spd,
-                "outcome": "applied",
-                "reason": "merged",
-                "route_call_delta": -4,
-            },
-            {
-                "applied_spd": -1168,
-                "canonical_spd": None,
-                "live_ea": "0xf10024",
-                "native_ea": "0x2034",
-                "native_spd": -1168,
-                "outcome": "applied",
-                "reason": "native_spd",
-                "route_call_delta": None,
             },
         ],
     }
 
 
-def test_stkpnts_projects_native_spd_into_isolated_capture_ranges(
+def test_stkpnts_is_observation_only_during_isolated_capture(
     monkeypatch,
 ) -> None:
-    import ida_bytes
-    import ida_frame
     import ida_funcs
-    import idautils
 
     profile_ea = 0x1000
     capture_entry_ea = 0x2000
-    first_instruction_ea = 0x2010
-    second_instruction_ea = 0x2014
     resolution = ComputedGotoResolution(
         function_ea=profile_ea,
         jmp_targets={},
@@ -3833,66 +3955,22 @@ def test_stkpnts_projects_native_spd_into_isolated_capture_ranges(
     )
     session, state = _resolver_session(resolution)
     assert state.begin_snippet_capture(profile_ea)
-
-    class _Ranges(list):
-        def size(self) -> int:
-            return len(self)
-
-    mba = SimpleNamespace(
-        entry_ea=capture_entry_ea,
-        mbr=SimpleNamespace(
-            ranges=_Ranges(
-                [SimpleNamespace(start_ea=first_instruction_ea, end_ea=0x2020)]
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        idautils,
-        "Heads",
-        lambda start_ea, end_ea: (
-            (
-                first_instruction_ea,
-                second_instruction_ea,
-            )
-            if (int(start_ea), int(end_ea)) == (first_instruction_ea, 0x2020)
-            else ()
-        ),
-    )
-    monkeypatch.setattr(ida_bytes, "get_flags", lambda _ea: 1)
-    monkeypatch.setattr(ida_bytes, "is_code", lambda flags: int(flags) == 1)
-    function = object()
     monkeypatch.setattr(
         ida_funcs,
         "get_func",
-        lambda ea: function if int(ea) == profile_ea else None,
-    )
-    spd_by_ea = {first_instruction_ea: -8, second_instruction_ea: -12}
-    monkeypatch.setattr(
-        ida_frame,
-        "get_spd",
-        lambda candidate, ea: spd_by_ea[int(ea)] if candidate is function else 0,
-    )
-    applied: list[tuple[object, int, int]] = []
-    monkeypatch.setattr(
-        computed_goto_resolver,
-        "_upsert_stkpnt",
-        lambda points, ea, spd: not applied.append((points, ea, spd)),
+        lambda _ea: pytest.fail("capture callback touched native overlay state"),
     )
     stack_points = object()
     decision: dict[str, object] = {"session": session}
 
     computed_goto_resolver._on_stkpnts(
         function_ea=capture_entry_ea,
-        mba=mba,
+        mba=SimpleNamespace(entry_ea=capture_entry_ea),
         stack_points=stack_points,
         decision=decision,
     )
 
-    assert applied == [
-        (stack_points, first_instruction_ea, -8),
-        (stack_points, second_instruction_ea, -12),
-    ]
-    assert decision["stack_points_modified"] == 2
+    assert decision == {"session": session}
 
 
 def test_build_callinfo_reuses_proof_after_cfg_rewrite_hides_reentry(

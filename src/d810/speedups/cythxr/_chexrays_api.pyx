@@ -173,36 +173,6 @@ cpdef tuple snapshot_stkpnts(object py_stkpnts):
     return tuple(rows)
 
 
-cpdef bint upsert_stkpnt(object py_stkpnts, uint64 ea, long long spd):
-    """Insert or replace one transient Hex-Rays stack point by native EA.
-
-    ``hxe_stkpnts`` receives a sorted ``stkpnts_t``.  Stock IDAPython wraps
-    the object but exposes no vector methods, so this optional SDK adapter
-    performs the smallest possible operation while preserving that ordering.
-    """
-    cdef stkpnts_t* points = <stkpnts_t*>_swig_ptr(py_stkpnts)
-    cdef stkpnt_t point
-    cdef size_t index
-    cdef size_t count
-
-    if points == NULL:
-        return False
-    count = deref(points).size()
-    for index in range(count):
-        if deref(points)[index].ea == <ea_t>ea:
-            deref(points)[index].spd = <sval_t>spd
-            return False
-        if deref(points)[index].ea > <ea_t>ea:
-            point.ea = <ea_t>ea
-            point.spd = <sval_t>spd
-            deref(points).insert_copy(deref(points).begin() + index, point)
-            return True
-    point.ea = <ea_t>ea
-    point.spd = <sval_t>spd
-    deref(points).push_back(point)
-    return True
-
-
 cpdef bint copy_mcallinfo(object py_destination, object py_source):
     """Deep-copy one SDK ``mcallinfo_t`` into another.
 
