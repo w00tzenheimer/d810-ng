@@ -3634,9 +3634,7 @@ def test_native_stack_capacity_witness_is_preflighted_atomic_and_restored(
     def get_func(ea):
         native_ea = int(ea)
         return (
-            function
-            if any(start <= native_ea < end for start, end in chunks)
-            else None
+            function if any(start <= native_ea < end for start, end in chunks) else None
         )
 
     monkeypatch.setattr(
@@ -3647,8 +3645,10 @@ def test_native_stack_capacity_witness_is_preflighted_atomic_and_restored(
     monkeypatch.setattr(
         ida_funcs,
         "func_contains",
-        lambda candidate, ea: candidate is function
-        and any(start <= int(ea) < end for start, end in chunks),
+        lambda candidate, ea: (
+            candidate is function
+            and any(start <= int(ea) < end for start, end in chunks)
+        ),
     )
     monkeypatch.setattr(
         ida_funcs,
@@ -3728,9 +3728,7 @@ def test_native_stack_capacity_witness_is_preflighted_atomic_and_restored(
     observed: list[object] = []
     monkeypatch.setattr(computed_goto_resolver, "emit_diagnostic", observed.append)
 
-    lease = computed_goto_resolver.acquire_detached_call_stack_capacity_witness(
-        session
-    )
+    lease = computed_goto_resolver.acquire_detached_call_stack_capacity_witness(session)
 
     assert lease is not None
     assert (
@@ -3826,7 +3824,9 @@ def test_native_stack_capacity_witness_conflict_writes_nothing(
     monkeypatch.setattr(
         ida_funcs,
         "func_tail_iterator_t",
-        lambda _function: iter((SimpleNamespace(start_ea=function_ea, end_ea=0x40A607),)),
+        lambda _function: iter(
+            (SimpleNamespace(start_ea=function_ea, end_ea=0x40A607),)
+        ),
     )
     monkeypatch.setattr(ida_bytes, "get_item_end", lambda ea: int(ea) + 5)
     monkeypatch.setattr(ida_frame, "get_spd", lambda _function, _ea: native_spd)
@@ -3906,24 +3906,23 @@ def test_native_stack_capacity_witness_rolls_back_partial_install(
     def get_func(ea):
         native_ea = int(ea)
         return (
-            function
-            if any(start <= native_ea < end for start, end in chunks)
-            else None
+            function if any(start <= native_ea < end for start, end in chunks) else None
         )
 
     monkeypatch.setattr(ida_funcs, "get_func", get_func)
     monkeypatch.setattr(
         ida_funcs,
         "func_contains",
-        lambda candidate, ea: candidate is function
-        and any(start <= int(ea) < end for start, end in chunks),
+        lambda candidate, ea: (
+            candidate is function
+            and any(start <= int(ea) < end for start, end in chunks)
+        ),
     )
     monkeypatch.setattr(
         ida_funcs,
         "func_tail_iterator_t",
         lambda _function: (
-            SimpleNamespace(start_ea=start, end_ea=end)
-            for start, end in tuple(chunks)
+            SimpleNamespace(start_ea=start, end_ea=end) for start, end in tuple(chunks)
         ),
     )
     monkeypatch.setattr(ida_bytes, "get_item_end", lambda _ea: witness_end_ea)
