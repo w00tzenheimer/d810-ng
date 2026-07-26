@@ -108,6 +108,8 @@ def _transaction_for_anchor(
             continue
         if candidate.get("status") != "committed":
             continue
+        if candidate.get("phase") != "flow_route":
+            continue
         if _parse_int(candidate.get("function_ea"), field="function_ea") != int(
             function_ea
         ):
