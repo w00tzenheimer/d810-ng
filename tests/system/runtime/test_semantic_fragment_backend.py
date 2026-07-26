@@ -2916,9 +2916,10 @@ def test_production_participant_observes_plan_owned_identity_refinement() -> Non
     realized = participant.realize(replace(bound, patch_plan=patch_plan), gateway)
     observed = participant.observe(realized, mba)
 
-    assert prepared.fragment.authority.projection.binding(
-        "target"
-    ).stable_identity == refined_identity
+    assert (
+        prepared.fragment.authority.projection.binding("target").stable_identity
+        == refined_identity
+    )
     assert realized.binding("target").stable_identity == refined_identity
     assert observed.binding("target").stable_identity == refined_identity
 
