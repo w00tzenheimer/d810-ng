@@ -134,7 +134,9 @@ def bind_fragment_reference_oracle(
             payload={
                 "missing_rewrite_anchors": tuple(
                     f"0x{anchor_ea:X}"
-                    for anchor_ea in sorted(set(selected_anchors) - set(requested_anchors))
+                    for anchor_ea in sorted(
+                        set(selected_anchors) - set(requested_anchors)
+                    )
                 ),
                 "planned_rewrite_anchors": tuple(
                     f"0x{anchor_ea:X}" for anchor_ea in requested_anchors
@@ -144,7 +146,9 @@ def bind_fragment_reference_oracle(
                 ),
                 "unexpected_rewrite_anchors": tuple(
                     f"0x{anchor_ea:X}"
-                    for anchor_ea in sorted(set(requested_anchors) - set(selected_anchors))
+                    for anchor_ea in sorted(
+                        set(requested_anchors) - set(selected_anchors)
+                    )
                 ),
             },
         )
