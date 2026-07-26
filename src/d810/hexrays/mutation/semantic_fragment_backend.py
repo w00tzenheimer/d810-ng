@@ -54,6 +54,7 @@ from d810.hexrays.mutation.semantic_fragment_preparation import (
     SemanticFragmentSnapshotPreparation,
     sdk_instruction_kind,
     sdk_instruction_operand_shape,
+    sdk_owned_call,
 )
 from d810.ir.block_identity import (
     BlockHandleProvenance,
@@ -1502,6 +1503,8 @@ def _projected_terminator(
     elif opcode == int(ida_hexrays.m_jtbl):
         kind = InsnKind.TABLE_JUMP
     elif opcode in {int(ida_hexrays.m_call), int(ida_hexrays.m_icall)}:
+        kind = InsnKind.CALL
+    elif sdk_owned_call(tail) is not None:
         kind = InsnKind.CALL
     elif opcode == int(ida_hexrays.m_ret):
         kind = InsnKind.RET
@@ -3704,10 +3707,16 @@ def snapshot_semantic_fragment_inputs(
                 int(native_ea) for native_ea, _instruction in instruction_rows
             )
         )
-        if fact.terminator_ea is not None and (
-            not instruction_eas or instruction_eas[-1] != fact.terminator_ea
-        ):
-            instruction_eas = (*instruction_eas, fact.terminator_ea)
+        if fact.terminator_ea is not None:
+            if (
+                fact.terminator_kind is InsnKind.CALL
+                and fact.terminator_ea in instruction_eas
+            ):
+                instruction_eas = instruction_eas[
+                    : instruction_eas.index(fact.terminator_ea) + 1
+                ]
+            elif not instruction_eas or instruction_eas[-1] != fact.terminator_ea:
+                instruction_eas = (*instruction_eas, fact.terminator_ea)
         blocks.append(
             FragmentProjectionBlockInput(
                 block_id=planned.block_id,

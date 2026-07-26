@@ -4670,6 +4670,11 @@ def test_calls_built_imported_native_splits_owned_continuation_after_call(
     )
     prepared, patch_plan = _begin_preflight_fragment_batch(gateway, modifier, plan)
 
+    expected_imported = prepared.authority.projection.block("imported-call")
+    assert expected_imported.instruction_eas == (0x40AE5D, 0x40AE60)
+    assert expected_imported.terminator_ea == 0x40AE60
+    assert expected_imported.terminator_kind is InsnKind.CALL
+
     projection = modifier._realize_semantic_patch_plan(patch_plan, prepared)
 
     state = modifier._semantic_fragment_state
@@ -4694,6 +4699,9 @@ def test_calls_built_imported_native_splits_owned_continuation_after_call(
     )
     assert helper.successors == ("target",)
     assert not int(imported.flags) & int(ida_hexrays.MBL_GOTO)
+    realized_imported = projection.block("imported-call")
+    assert realized_imported.terminator_ea == 0x40AE60
+    assert realized_imported.terminator_kind is InsnKind.CALL
     assert (
         compare_fragment_projection_obligations(
             prepared.authority.projection,
