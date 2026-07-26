@@ -2376,9 +2376,7 @@ def _live_data_flow_site_binding(
         for instruction in _iter_block_instructions(live_block)
         if int(getattr(instruction, "ea", -1)) == native_ea
     )
-    candidate_eas = tuple(
-        dict.fromkeys((*origin_matches, *physical_native_matches))
-    )
+    candidate_eas = tuple(dict.fromkeys((*origin_matches, *physical_native_matches)))
     if len(candidate_eas) == 1:
         return (int(candidate_eas[0]), int(identifier), storage.kind)
     matches = find_exact_storage_access_eas(
