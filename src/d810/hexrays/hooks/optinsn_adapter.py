@@ -466,7 +466,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         callback_exception_name: str | None = None
         try:
             if self.log_info_on_input(blk, ins):
-                # The PREOPT gateway may have structurally changed the MBA.  Do not
+                # An early-maturity gateway may have structurally changed the MBA. Do not
                 # touch this callback's instruction pointer again; returning true
                 # asks Hex-Rays to revisit optimization with fresh pointers.
                 callback_result = True
@@ -523,6 +523,110 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             )
 
     # statistics are managed centrally via the stats object
+
+    def _emit_top_level_generated_ready(self, mba: ida_hexrays.mbl_array_t) -> bool:
+        """Emit the actual GENERATED seam once per top-level MBA generation.
+
+        IDA 9.3 still reports ``MMAT_ZERO`` from ``hxe_microcode``. The first
+        instruction-optimizer callback with a live ``MMAT_GENERATED`` MBA is
+        therefore the mutation-capable boundary. Identity collection here is
+        graph-free; later maturities own CFG authority.
+        """
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        emitter = self.event_emitter
+        if (
+            lifecycle is None
+            or emitter is None
+            or int(getattr(mba, "maturity", -1)) != int(ida_hexrays.MMAT_GENERATED)
+        ):
+            return False
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        session = lifecycle.current_session(function_ea)
+        if session is None:
+            return False
+        native_preanalysis_depth = int(session.native_preanalysis_depth)
+        if native_preanalysis_depth > 0:
+            optimizer_logger.debug(
+                "instruction GENERATED seam abstain: func=0x%x "
+                "reason=native_preanalysis depth=%d mba_entry=0x%x",
+                function_ea,
+                native_preanalysis_depth,
+                int(getattr(mba, "entry_ea", 0) or 0),
+            )
+            return False
+        was_emitted = getattr(lifecycle, "generated_ready_was_emitted", None)
+        if callable(was_emitted) and was_emitted(function_ea=function_ea):
+            return False
+        index = lifecycle.build_current_mba_identity_index(
+            function_ea=function_ea,
+            mba=mba,
+        )
+        if index is None:
+            optimizer_logger.debug(
+                "instruction GENERATED seam abstain: func=0x%x reason=no_index",
+                function_ea,
+            )
+            return False
+        gateway = lifecycle.new_current_mba_mutation_gateway(
+            function_ea=function_ea,
+            maturity=int(mba.maturity),
+        )
+        if gateway is None:
+            optimizer_logger.debug(
+                "instruction GENERATED seam abstain: func=0x%x reason=no_gateway",
+                function_ea,
+            )
+            return False
+        materializer = lifecycle.new_semantic_native_body_materializer(
+            function_ea=function_ea,
+            mba=mba,
+        )
+        if materializer is None:
+            optimizer_logger.debug(
+                "instruction GENERATED seam abstain: func=0x%x "
+                "reason=no_native_body_materializer",
+                function_ea,
+            )
+            return False
+        decision: dict[str, object] = {
+            "request_redo": False,
+            "session": session,
+            "identity_index": index,
+            "mutation_gateway": gateway,
+            "semantic_native_body_materializer": materializer,
+        }
+        emitter.emit(
+            DecompilationEvent.HEXRAYS_GENERATED_READY,
+            function_ea=function_ea,
+            mba=mba,
+            decision=decision,
+        )
+        mark_emitted = getattr(lifecycle, "mark_generated_ready_emitted", None)
+        if callable(mark_emitted):
+            mark_emitted(
+                function_ea=function_ea,
+                microcode_modified=bool(decision.get("microcode_modified")),
+            )
+        optimizer_logger.debug(
+            "instruction GENERATED seam emitted: func=0x%x modified=%s "
+            "request_redo=%s listeners=%d",
+            function_ea,
+            bool(decision.get("microcode_modified")),
+            bool(decision.get("request_redo")),
+            len(
+                getattr(emitter, "_listeners", {}).get(
+                    DecompilationEvent.HEXRAYS_GENERATED_READY,
+                    (),
+                )
+            ),
+        )
+        if bool(decision.get("request_redo")):
+            optimizer_logger.warning(
+                "instruction GENERATED seam cannot restart maturity for func=0x%x: %s",
+                function_ea,
+                decision.get("reason", "unspecified"),
+            )
+        return bool(decision.get("microcode_modified"))
 
     def _emit_top_level_preopt_ready(self, mba: ida_hexrays.mbl_array_t) -> bool:
         """Emit the live PREOPT seam once the top-level MBA is populated.
@@ -647,6 +751,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         ins: ida_hexrays.minsn_t,
     ) -> bool:
         mba: ida_hexrays.mbl_array_t = blk.mba
+        generated_modified = False
         preopt_modified = False
 
         if (mba is not None) and (mba.maturity != self.current_maturity):
@@ -703,13 +808,18 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 )
 
         if mba is not None and int(getattr(mba, "maturity", -1)) == int(
+            ida_hexrays.MMAT_GENERATED
+        ):
+            generated_modified = self._emit_top_level_generated_ready(mba)
+
+        if mba is not None and int(getattr(mba, "maturity", -1)) == int(
             ida_hexrays.MMAT_PREOPTIMIZED
         ):
             preopt_modified = self._emit_top_level_preopt_ready(mba)
 
         if blk.serial != self.current_blk_serial:
             self.current_blk_serial = blk.serial
-        return preopt_modified
+        return generated_modified or preopt_modified
 
     def configure(
         self, generate_z3_code=False, dump_intermediate_microcode=False, **kwargs

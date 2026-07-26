@@ -658,7 +658,7 @@ def test_lifecycle_releases_current_mba_identity_index_when_session_finishes() -
     assert session.current_mba_identity_index is None
 
 
-def test_flowchart_generation_resets_and_preopt_marks_publication_guard() -> None:
+def test_flowchart_generation_resets_generated_and_preopt_publication_guards() -> None:
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
     session, _created = coordinator.ensure_hexrays_session(
@@ -669,12 +669,17 @@ def test_flowchart_generation_resets_and_preopt_marks_publication_guard() -> Non
         function_ea=0x401000,
         index=object(),
     )
+    coordinator.mark_generated_ready_emitted(
+        function_ea=0x401000,
+        microcode_modified=False,
+    )
     coordinator.mark_preopt_ready_emitted(
         function_ea=0x401000,
         microcode_modified=True,
     )
 
     assert session.current_mba_identity_index is None
+    assert coordinator.generated_ready_was_emitted(function_ea=0x401000)
     assert coordinator.preopt_ready_was_emitted(function_ea=0x401000)
     coordinator.mark_preopt_ready_emitted(
         function_ea=0x401000,
@@ -685,8 +690,21 @@ def test_flowchart_generation_resets_and_preopt_marks_publication_guard() -> Non
 
     assert session.current_mba_identity_index is None
     assert coordinator.current_mba_generation(function_ea=0x401000) == 1
+    assert not coordinator.generated_ready_was_emitted(function_ea=0x401000)
     assert not coordinator.preopt_ready_was_emitted(function_ea=0x401000)
 
+    coordinator.mark_generated_ready_emitted(
+        function_ea=0x401000,
+        microcode_modified=True,
+    )
+
+    assert session.current_mba_identity_index is None
+    assert coordinator.generated_ready_was_emitted(function_ea=0x401000)
+
+    coordinator.bind_current_mba_identity_index(
+        function_ea=0x401000,
+        index=object(),
+    )
     coordinator.mark_preopt_ready_emitted(
         function_ea=0x401000,
         microcode_modified=False,
@@ -697,6 +715,8 @@ def test_flowchart_generation_resets_and_preopt_marks_publication_guard() -> Non
     coordinator.begin_current_mba_generation(function_ea=0x401000)
 
     assert coordinator.current_mba_generation(function_ea=0x401000) == 2
+    assert not coordinator.generated_ready_was_emitted(function_ea=0x401000)
+    assert not coordinator.preopt_ready_was_emitted(function_ea=0x401000)
 
 
 def test_session_gateway_reuses_the_active_current_mba_identity_index() -> None:

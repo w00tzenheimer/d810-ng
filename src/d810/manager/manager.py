@@ -178,10 +178,11 @@ def _build_current_mba_identity_index(*, session, mba):
             is None
         ):
             return None
-        build_graph = getattr(mba, "build_graph", None)
-        if not callable(build_graph):
-            raise TypeError("current MBA identity index requires a live graph")
-        build_graph()
+        if maturity_stage is not HexRaysMaturity.MMAT_GENERATED:
+            build_graph = getattr(mba, "build_graph", None)
+            if not callable(build_graph):
+                raise TypeError("current MBA identity index requires a live graph")
+            build_graph()
 
     current_mba_identity_binding = state.current_mba_identity_binding_for(
         stable_mba_identity(mba)
