@@ -3021,6 +3021,22 @@ def test_participant_rejects_unsafe_clone_storage_predicate_suffix_before_write(
         failure.value.postcondition
         is FragmentValidationPostcondition.OPERATION_TOPOLOGY
     )
+    _prefix, separator, evidence_json = failure.value.reason.partition(" evidence=")
+    assert separator
+    evidence = json.loads(evidence_json)
+    assert evidence["cut_after_ea"] == "0x401010"
+    assert evidence["cut_indexes"] == [0]
+    assert evidence["suffix"][0] == {
+        "destination_is_discardable": False,
+        "kind": "mov",
+        "native_ea": "0x401012",
+        "opcode": int(ida_hexrays.m_mov),
+        "operand_shape": [
+            [int(ida_hexrays.mop_n), 4, ["number", 9]],
+            [int(ida_hexrays.mop_z), 0, None],
+            [int(ida_hexrays.mop_S), 4, ["stack", 36]],
+        ],
+    }
     assert mba.qty == quantity
     assert gateway.generation == generation
     assert gateway.active is False

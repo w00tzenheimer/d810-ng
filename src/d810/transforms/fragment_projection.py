@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from d810.core.typing import Protocol
@@ -332,10 +333,31 @@ def _validate_clone_storage_predicate_sources(
             or suffix[-1].kind not in terminal_transfer_kinds
             or unsafe_suffix
         ):
+            evidence = json.dumps(
+                {
+                    "cut_after_ea": f"0x{predicate.cut_after_ea:X}",
+                    "cut_indexes": cut_indexes,
+                    "suffix": tuple(
+                        {
+                            "native_ea": f"0x{instruction.native_ea:X}",
+                            "opcode": instruction.opcode,
+                            "kind": instruction.kind.value,
+                            "destination_is_discardable": (
+                                instruction.destination_is_discardable
+                            ),
+                            "operand_shape": instruction.operand_shape,
+                        }
+                        for instruction in suffix
+                    ),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
             raise FragmentProjectionFailure(
                 FragmentValidationPostcondition.OPERATION_TOPOLOGY,
                 operation.operation_id,
-                "clone-owned storage predicate suffix is not atomically discardable",
+                "clone-owned storage predicate suffix is not atomically discardable"
+                f" evidence={evidence}",
             )
 
 
