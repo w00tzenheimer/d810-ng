@@ -5273,6 +5273,76 @@ def test_backend_rejects_ambiguous_lowered_data_flow_sites_for_same_role() -> No
         )
 
 
+def test_backend_reports_exact_missing_data_flow_use_coordinates(
+    monkeypatch,
+) -> None:
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _with_data_flow(
+        _plan(gateway, entry=0, original=1, target=2, dispatcher=3),
+        StorageIdentity(StorageIdentityKind.REGISTER, offset=10),
+    )
+    obligation = plan.data_flow_obligations[0]
+    displaced_use = replace(
+        obligation.uses[0],
+        block_id="target",
+        instruction_ea=0x401020,
+    )
+    plan = replace(
+        plan,
+        data_flow_obligations=(
+            replace(
+                obligation,
+                obligation_id="predicate:state-choice@0x40BECC:use-def",
+                uses=(displaced_use,),
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(sfb, "_query_reached_uses", lambda *_args, **_kwargs: ())
+    with pytest.raises(sfb.SemanticFragmentBackendRejected) as raised:
+        sfb._project_data_flow_relations(
+            modifier,
+            plan,
+            sfb.SemanticFragmentBackendState(
+                plan_id=plan.plan_id,
+                atomic_group_id=plan.atomic_group_id,
+            ),
+            {"replacement": original},
+            {original.serial: "replacement"},
+            {original.serial: ()},
+            {original.serial: ()},
+        )
+
+    assert str(raised.value) == (
+        "data-flow use 'state.use' has no live block "
+        "(obligation_id='predicate:state-choice@0x40BECC:use-def', "
+        "block_id='target', instruction_ea=0x401020, "
+        "value_id='state')"
+    )
+    assert raised.value.reason_code == "data_flow_use_block_missing"
+    assert raised.value.anchor_ea == 0x401020
+    assert raised.value.payload == {
+        "obligation_id": "predicate:state-choice@0x40BECC:use-def",
+        "site_id": "state.use",
+        "site_role": "use",
+        "block_id": "target",
+        "instruction_ea": 0x401020,
+        "value_id": "state",
+    }
+    assert gateway.active is False
+    assert gateway.mutation_started is False
+    assert mba.qty == 5
+
+
 def test_backend_validates_data_flow_across_unpublished_root_projection() -> None:
     entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
     original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
