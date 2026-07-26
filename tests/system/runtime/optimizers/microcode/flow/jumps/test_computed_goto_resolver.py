@@ -3651,11 +3651,10 @@ def test_native_stack_point_overlay_is_preflighted_atomic_and_restored(
 
     def set_auto_spd(candidate, ea, spd):
         assert candidate is function
-        assert {
-            native_ea
-            for kind, native_ea in preflighted
-            if kind == "delta"
-        } == {first_call_ea, second_call_ea}
+        assert {native_ea for kind, native_ea in preflighted if kind == "delta"} == {
+            first_call_ea,
+            second_call_ea,
+        }
         native_ea = int(ea)
         projected_spd = int(spd)
         writes.append(("set", native_ea, projected_spd))
