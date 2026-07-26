@@ -175,6 +175,31 @@ def test_only_nonstructural_probes_construct_gatewayless_modifiers() -> None:
     assert violations == []
 
 
+def test_jump_fixer_uses_the_shared_typed_transaction_port() -> None:
+    source = (
+        SRC_ROOT / "optimizers/microcode/flow/jumps/handler.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    jump_fixer = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "JumpFixer"
+    )
+    optimize = next(
+        node
+        for node in jump_fixer.body
+        if isinstance(node, ast.FunctionDef) and node.name == "optimize"
+    )
+    calls = {
+        node.func.attr
+        for node in ast.walk(optimize)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "execute_graph_modifications" in calls
+    assert "new_deferred_modifier" not in calls
+    assert "apply" not in calls
+
+
 def test_low_level_cfg_mutation_helpers_are_private_to_the_gateway_backend() -> None:
     violations = []
     for path in SRC_ROOT.rglob("*.py"):

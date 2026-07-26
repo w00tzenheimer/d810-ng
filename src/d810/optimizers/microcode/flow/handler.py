@@ -153,6 +153,41 @@ class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
             )
         return DeferredGraphModifier(mba, mutation_gateway=gateway)
 
+    def execute_graph_modifications(self, mba, modifications) -> int:
+        """Execute portable CFG intents through the shared transaction coordinator."""
+        if not modifications:
+            return 0
+        flow_context = self.flow_context
+        new_gateway = getattr(flow_context, "new_mba_mutation_gateway", None)
+        gateway = new_gateway() if callable(new_gateway) else None
+        if gateway is None:
+            raise RuntimeError(
+                "flow rule requires a coordinator-owned mutation gateway"
+            )
+        identity_index = getattr(gateway, "identity_index", None)
+        if identity_index is None:
+            raise RuntimeError("flow rule mutation gateway lacks identity authority")
+
+        from d810.backends.hexrays.mutation.backend import HexRaysPatchPlanRuntime
+        from d810.transforms.plan import compile_patch_plan
+
+        runtime = HexRaysPatchPlanRuntime()
+        pre_cfg = runtime.lift(mba)
+        patch_plan = compile_patch_plan(
+            list(modifications),
+            pre_cfg,
+            snapshot_id=identity_index.snapshot_id,
+            source_generation=identity_index.generation,
+            block_refs_by_serial=identity_index.plan_refs_by_serial(),
+        )
+        execution = runtime.execute_patch_plan(
+            patch_plan,
+            mba,
+            mutation_gateway=gateway,
+            pre_cfg=pre_cfg,
+        )
+        return int(execution.applied_count)
+
     def current_resolver_session_state(self) -> object | None:
         """Return the lifecycle-injected resolver state for the current MBA."""
         flow_context = self.flow_context

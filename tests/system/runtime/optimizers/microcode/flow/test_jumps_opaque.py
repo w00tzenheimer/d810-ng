@@ -13,6 +13,7 @@ from d810.hexrays.mutation.cfg_verify import (
 )
 from d810.optimizers.microcode.flow.jumps import handler
 from d810.optimizers.microcode.flow.jumps import opaque
+from d810.transforms.graph_modification import ConvertToGoto
 
 
 def _num(value: int, size: int = 4):
@@ -134,16 +135,182 @@ def test_jump_fixer_preserves_resolver_proven_live_predicate(monkeypatch):
     monkeypatch.setattr(handler, "is_conditional_jump", lambda _block: True)
     monkeypatch.setattr(handler, "mop_to_ast", lambda _mop: object())
 
-    def unexpected_modifier(_mba):
+    def unexpected_transaction(_mba, _modifications):
         raise AssertionError("resolver-proven predicate must not be folded")
 
-    monkeypatch.setattr(handler, "DeferredGraphModifier", unexpected_modifier)
+    monkeypatch.setattr(fixer, "execute_graph_modifications", unexpected_transaction)
     clear_resolver_proven_live_predicates()
     register_resolver_proven_live_predicate(mba, predicate_ea)
     try:
         assert fixer.optimize(block) is False
     finally:
         clear_resolver_proven_live_predicates()
+
+
+def test_jump_fixer_executes_goto_fold_through_typed_transaction(monkeypatch):
+    mba = SimpleNamespace()
+    branch = _insn(
+        ida_hexrays.m_jz,
+        left=_reg(20),
+        right=_num(0),
+        dest=_blkref(11),
+    )
+    branch.ea = 0x40C115
+    block = SimpleNamespace(
+        mba=mba,
+        serial=247,
+        start=0x40C115,
+        tail=branch,
+        nextb=SimpleNamespace(serial=248),
+    )
+    folded = _insn(ida_hexrays.m_goto, dest=_blkref(299))
+    folding_rule = SimpleNamespace(
+        name="JmpRuleZ3Const",
+        check_pattern_and_replace=lambda *_args: folded,
+    )
+    fixer = handler.JumpFixer()
+    fixer.rules = [folding_rule]
+    observed: list[tuple[object, tuple[ConvertToGoto, ...]]] = []
+
+    monkeypatch.setattr(handler, "is_conditional_jump", lambda _block: True)
+    monkeypatch.setattr(handler, "mop_to_ast", lambda _mop: object())
+    monkeypatch.setattr(handler, "format_minsn_t", lambda _insn: "insn")
+    monkeypatch.setattr(
+        fixer,
+        "execute_graph_modifications",
+        lambda live_mba, modifications: observed.append(
+            (live_mba, tuple(modifications))
+        )
+        or 1,
+    )
+
+    assert fixer.optimize(block) is True
+    assert observed == [
+        (
+            mba,
+            (ConvertToGoto(block_serial=247, goto_target=299),),
+        )
+    ]
+
+
+def test_jump_fixer_does_not_claim_rejected_typed_transaction(monkeypatch):
+    mba = SimpleNamespace()
+    branch = _insn(
+        ida_hexrays.m_jz,
+        left=_reg(20),
+        right=_num(0),
+        dest=_blkref(11),
+    )
+    branch.ea = 0x40C217
+    block = SimpleNamespace(
+        mba=mba,
+        serial=254,
+        start=0x40C217,
+        tail=branch,
+        nextb=SimpleNamespace(serial=255),
+    )
+    folded = _insn(ida_hexrays.m_goto, dest=_blkref(300))
+    fixer = handler.JumpFixer()
+    fixer.rules = [
+        SimpleNamespace(
+            name="JmpRuleZ3Const",
+            check_pattern_and_replace=lambda *_args: folded,
+        )
+    ]
+
+    monkeypatch.setattr(handler, "is_conditional_jump", lambda _block: True)
+    monkeypatch.setattr(handler, "mop_to_ast", lambda _mop: object())
+    monkeypatch.setattr(handler, "format_minsn_t", lambda _insn: "insn")
+    monkeypatch.setattr(
+        fixer,
+        "execute_graph_modifications",
+        lambda _live_mba, _modifications: 0,
+    )
+
+    assert fixer.optimize(block) is False
+
+
+def test_flow_rule_transaction_port_preserves_immutable_authority(monkeypatch):
+    from d810.backends.hexrays.mutation import backend as backend_module
+    from d810.transforms import plan as plan_module
+
+    source_refs = {7: object(), 11: object()}
+    identity_index = SimpleNamespace(
+        snapshot_id="snapshot-7",
+        generation=3,
+        plan_refs_by_serial=lambda: source_refs,
+    )
+    gateway = SimpleNamespace(identity_index=identity_index)
+    flow_context = SimpleNamespace(new_mba_mutation_gateway=lambda: gateway)
+    live_mba = object()
+    pre_cfg = object()
+    patch_plan = object()
+    calls: list[tuple] = []
+
+    class _Runtime:
+        def lift(self, state):
+            calls.append(("lift", state))
+            return pre_cfg
+
+        def execute_patch_plan(
+            self,
+            plan,
+            state,
+            *,
+            mutation_gateway,
+            pre_cfg: object,
+        ):
+            calls.append(
+                (
+                    "execute",
+                    plan,
+                    state,
+                    mutation_gateway,
+                    pre_cfg,
+                )
+            )
+            return SimpleNamespace(applied_count=1)
+
+    def _compile(
+        modifications,
+        cfg,
+        *,
+        snapshot_id,
+        source_generation,
+        block_refs_by_serial,
+    ):
+        calls.append(
+            (
+                "compile",
+                tuple(modifications),
+                cfg,
+                snapshot_id,
+                source_generation,
+                block_refs_by_serial,
+            )
+        )
+        return patch_plan
+
+    monkeypatch.setattr(backend_module, "HexRaysPatchPlanRuntime", _Runtime)
+    monkeypatch.setattr(plan_module, "compile_patch_plan", _compile)
+
+    fixer = handler.JumpFixer()
+    fixer.set_flow_context(flow_context)
+    modification = ConvertToGoto(block_serial=7, goto_target=11)
+
+    assert fixer.execute_graph_modifications(live_mba, (modification,)) == 1
+    assert calls == [
+        ("lift", live_mba),
+        (
+            "compile",
+            (modification,),
+            pre_cfg,
+            "snapshot-7",
+            3,
+            source_refs,
+        ),
+        ("execute", patch_plan, live_mba, gateway, pre_cfg),
+    ]
 
 
 def test_constant_relation_true_when_both_constant(monkeypatch):
