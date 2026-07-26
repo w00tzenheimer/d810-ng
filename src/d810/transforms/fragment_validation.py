@@ -1947,6 +1947,15 @@ def compare_fragment_projection_obligations(
             right.adjacent_fallthrough_target_id,
         ):
             mismatches.append(f"block:{block_id}")
+        if left.instruction_eas != right.instruction_eas:
+            mismatches.append(f"block:{block_id}:instruction-eas")
+        if (left.terminator_ea, left.terminator_kind) != (
+            right.terminator_ea,
+            right.terminator_kind,
+        ):
+            mismatches.append(f"block:{block_id}:terminator")
+        if left.flag_write_eas != right.flag_write_eas:
+            mismatches.append(f"block:{block_id}:flag-writes")
     for label, left, right in (
         (
             "fallthrough-helpers",

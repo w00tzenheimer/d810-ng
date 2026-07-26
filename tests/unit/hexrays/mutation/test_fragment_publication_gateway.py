@@ -669,11 +669,7 @@ class _FragmentBackend:
         original_predecessors = ("entry",) if self.invalid_preprojection else ()
         replacement_predecessors = () if self.invalid_preprojection else ("entry",)
         route_rewrite = plan.operations[0].direct_transfer_rewrite
-        route_instruction_eas = (
-            ()
-            if route_rewrite is None
-            else route_rewrite.proof_corridor_instruction_eas
-        )
+        route_instruction_eas = (0x401000, 0x401004)
         route_terminator_ea = (
             None if route_rewrite is None else route_rewrite.rewrite_anchor_ea
         )
@@ -695,7 +691,7 @@ class _FragmentBackend:
                     physical_position=0,
                     adjacent_fallthrough_target_id=None,
                     terminator_ea=None,
-                    terminator_kind=InsnKind.UNKNOWN,
+                    terminator_kind=InsnKind.GOTO,
                 ),
                 ProjectedFragmentBlock(
                     block_id="replacement",
@@ -725,6 +721,7 @@ class _FragmentBackend:
                     predecessors=original_predecessors,
                     physical_position=3,
                     adjacent_fallthrough_target_id=None,
+                    instruction_eas=(0x401000, 0x401004),
                     terminator_ea=None,
                     terminator_kind=InsnKind.UNKNOWN,
                 ),
@@ -1050,7 +1047,7 @@ def test_route_oracle_inventory_preserves_mixed_operation_order() -> None:
     )
 
 
-def test_gateway_route_mismatch_after_staging_poisons_before_root_preparation() -> None:
+def test_gateway_realization_semantics_mismatch_poisons_before_observation() -> None:
     plan = _plan_with_reference_route()
     gateway, committed, aborted = _gateway(plan)
     backend = _FragmentBackend(gateway, malformed_route_projection=True)
@@ -1060,26 +1057,25 @@ def test_gateway_route_mismatch_after_staging_poisons_before_root_preparation() 
         compared.append,
     )
 
-    with pytest.raises(CfgGenerationPoisoned, match="transfer_kind"):
+    with pytest.raises(
+        CfgGenerationPoisoned,
+        match="block:replacement:terminator",
+    ):
         gateway.execute_patch_transaction(backend, plan)
 
     assert backend.calls == [
         "plan-roots",
         "snapshot",
         "stage",
-        "observe-staged",
     ]
     assert not backend.root_published
-    assert len(compared) == 1
-    assert not compared[0].result.passed
-    assert compared[0].result.first_failure is not None
-    assert compared[0].result.first_failure.failed_invariant == "transfer_kind"
+    assert compared == []
     assert committed == []
     assert len(aborted) == 1
     assert not aborted[0].root_publication_attempted
     assert gateway.generation_poisoned
     assert gateway.transaction_failure is not None
-    assert gateway.transaction_failure.failure_phase == "detached_route_oracle"
+    assert gateway.transaction_failure.failure_phase == "stage"
 
 
 def test_gateway_receipts_current_mba_identity_binding_only_after_commit() -> None:

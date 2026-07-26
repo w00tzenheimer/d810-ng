@@ -617,6 +617,20 @@ def project_fragment(
         kinds[operation.source_block_id] = (
             BlockKind.TWO_WAY if len(projected_targets) == 2 else BlockKind.ONE_WAY
         )
+        direct_rewrite = operation.direct_transfer_rewrite
+        if direct_rewrite is not None:
+            rewrite_anchor_ea = int(direct_rewrite.rewrite_anchor_ea)
+            rows = list(instruction_eas[operation.source_block_id])
+            if rewrite_anchor_ea in rows:
+                rows = rows[: rows.index(rewrite_anchor_ea) + 1]
+            else:
+                rows.append(rewrite_anchor_ea)
+            instruction_eas[operation.source_block_id] = tuple(rows)
+            flag_write_eas[operation.source_block_id] = frozenset(
+                ea for ea in flag_write_eas[operation.source_block_id] if ea in rows
+            )
+            terminator_eas[operation.source_block_id] = rewrite_anchor_ea
+            terminator_kinds[operation.source_block_id] = InsnKind.GOTO
 
     root_helpers: list[ProjectedRootFallthroughHelper] = []
     for item in inventory.items:
