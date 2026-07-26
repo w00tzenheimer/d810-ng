@@ -3174,6 +3174,193 @@ def test_call_backed_nested_route_keeps_published_corridor_staged(
     assert 0x1350 not in imported_anchors
 
 
+def test_call_fallthrough_predecessor_keeps_published_route_source_staged() -> None:
+    graph, normalization_plan, root_evidence = _live_source_detached_target_case()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            30: _block(
+                30,
+                0x1250,
+                succs=(40,),
+                preds=(),
+                insn_eas=(0x1250, 0x1255),
+            ),
+            40: _block(
+                40,
+                0x1260,
+                succs=(),
+                preds=(30,),
+                insn_eas=(0x1260, 0x1264, 0x1268),
+            ),
+        },
+    )
+    current_identity_by_serial = _current_identity_authority(graph)
+    native_body = normalization_plan.native_bodies[0]
+    call_block = FragmentBlock(
+        block_id="call-predecessor",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=current_identity_by_serial[30],
+        native_body_id=native_body.body_id,
+    )
+    route_source = FragmentBlock(
+        block_id="post-call-route-source",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1260,
+        stable_identity=StableBlockIdentity.from_intervals(
+            (NativeEaInterval(0x1260, 0x1269),),
+            native_key=NATIVE_KEY,
+            exact_instruction_eas=(0x1260, 0x1264),
+        ),
+        native_body_id=native_body.body_id,
+    )
+    operation_ids = (
+        "detached-normalization",
+        "call-fallthrough@0x1255",
+        "native-indirect-transfer@0x1268",
+    )
+    scope = normalization_plan.work_item_scope
+    assert scope is not None
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(*normalization_plan.blocks, call_block, route_source),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id=operation_ids[0],
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=call_block.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id=operation_ids[1],
+                source_block_id=call_block.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                        target_block_id=route_source.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id=operation_ids[2],
+                source_block_id=route_source.block_id,
+                predicate_anchor_ea=0x1264,
+                computed_branch_normalization=FragmentComputedBranchNormalization(
+                    predicate_kind=PredicateKind.SLT,
+                    normalization_start_ea=0x1264,
+                    condition_producer_ea=0x1260,
+                    unresolved_transfer_ea=0x1268,
+                ),
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id="unrelated-exit",
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        target_block_id="live-route-source",
+                    ),
+                ),
+            ),
+        ),
+        work_item_scope=replace(
+            scope,
+            selected_obligation_ids=(
+                *scope.selected_obligation_ids,
+                *operation_ids,
+            ),
+            remaining_obligation_ids=(),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    call_block.block_id,
+                    route_source.block_id,
+                ),
+                terminal_block_ids=(),
+                    native_ranges=(
+                        *native_body.native_ranges,
+                        *current_identity_by_serial[30].native_ranges.intervals,
+                        *route_source.stable_identity.native_ranges.intervals,
+                    ),
+                proof_ids=tuple(dict.fromkeys((*native_body.proof_ids, *operation_ids))),
+            ),
+        ),
+    )
+    nested_proof = SemanticRouteProof(
+        proof_id="state-assignment@0x1264:0x55",
+        atomic_group_id=root_evidence.atomic_group_id,
+        proof_kind=SemanticRouteProofKind.STATE_ASSIGNMENT,
+        shape=SemanticRouteShape.DIRECT,
+        source_identity=route_source.stable_identity,
+        source_anchor_ea=0x1264,
+        delivery_region=NativeEaInterval(0x1264, 0x1269),
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.DIRECT,
+                state_constant=0x55,
+                target_identity=_identity(0x1500),
+                target_anchor_ea=0x1500,
+            ),
+        ),
+        state_write=SemanticStateWriteProof(
+            identity=route_source.stable_identity,
+            instruction_ea=0x1260,
+            state_variable=StorageIdentity(
+                StorageIdentityKind.REGISTER,
+                20,
+            ),
+            width=4,
+            state_constant=0x55,
+            corridor_instruction_eas=(0x1260, 0x1264),
+            authority_transfer_ea=None,
+            preserved_call_instruction_eas=(),
+        ),
+    )
+    available_evidence = replace(
+        root_evidence,
+        route_proofs=(*root_evidence.route_proofs, nested_proof),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        root_evidence,
+        available_evidence=available_evidence,
+        current_identity_by_serial=current_identity_by_serial,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            root_evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    operations = {operation.operation_id: operation for operation in plan.operations}
+    call_operation = operations[operation_ids[1]]
+    assert tuple(edge.role for edge in call_operation.edges) == (
+        SemanticEdgeRole.CALL_FALLTHROUGH,
+    )
+    route_operation = operations[f"route:{nested_proof.proof_id}"]
+    assert route_operation.direct_transfer_rewrite is not None
+    imported_anchors = {
+        block.semantic_anchor_ea
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.IMPORTED
+    }
+    assert {0x1250, 0x1260}.issubset(imported_anchors)
+
+
 @pytest.mark.parametrize("topology_receipted", (False, True))
 def test_detached_component_requires_receipted_current_imported_successor_topology(
     topology_receipted: bool,
