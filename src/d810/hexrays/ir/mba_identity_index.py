@@ -1962,7 +1962,6 @@ class MbaBlockIdentityIndex:
         self._attempt_by_transaction.clear()
         self._insertion_serials_by_transaction.clear()
         self._plan_reservations.clear()
-        self._plan_creation_receipts.clear()
 
     def refresh_from_mba(
         self,

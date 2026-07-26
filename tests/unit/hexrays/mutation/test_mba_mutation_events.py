@@ -10,6 +10,7 @@ import pytest
 from d810.core.events import EventEmitter
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import (
+    MbaCfgTransactionAuthorityObserved,
     MbaMutationAborted,
     MbaMutationCommitted,
     MbaMutationGateway,
@@ -17,10 +18,34 @@ from d810.hexrays.mutation.mba_mutation_events import (
     StructuralMutationKind,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
-from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
+from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
+from d810.transforms.cfg_transaction import (
+    CfgTransactionPhase,
+    PlanBlockRef,
+    TransactionAttemptId,
+)
 from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key()
+
+
+def _one_block_graph() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0,
+                block_type=0,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x401000,
+                insn_snapshots=(),
+                kind=BlockKind.STOP,
+            )
+        },
+        entry_serial=0,
+        func_ea=0x401000,
+    )
 
 
 def test_mutation_receipts_have_a_dedicated_module() -> None:
@@ -908,3 +933,94 @@ def test_gateway_reserves_before_sdk_creation_and_binds_exact_returned_block() -
     assert receipt.returned_serial == sdk_returned_serial
     assert receipt.block.serial == sdk_returned_serial
     assert gateway.plan_creation_receipts == (receipt,)
+
+
+def test_patch_attempt_observes_exact_applied_count_before_commit() -> None:
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    emitter = EventEmitter()
+    phases: list[MbaCfgTransactionAuthorityObserved] = []
+    committed: list[MbaMutationCommitted] = []
+    emitter.on(MbaCfgTransactionAuthorityObserved, phases.append)
+    emitter.on(MbaMutationCommitted, committed.append)
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        event_emitter=emitter,
+        native_key=NATIVE_KEY,
+    )
+    attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="attempt-patch",
+    )
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_REPLACE,
+        serial_quantity=1,
+        planned_operation_count=2,
+        transaction_attempt=attempt,
+        patch_plan_id=attempt.plan_id,
+    )
+
+    gateway.begin_patch_realization(attempt, plan_refs=())
+    gateway.observe_patch_realization(
+        _one_block_graph(),
+        applied_operation_count=2,
+    )
+    receipt = gateway.commit()
+
+    assert [event.phase for event in phases] == [
+        CfgTransactionPhase.PLANNED,
+        CfgTransactionPhase.BOUND,
+        CfgTransactionPhase.REALIZING,
+        CfgTransactionPhase.OBSERVED,
+        CfgTransactionPhase.COMMITTED,
+    ]
+    assert [event.mutation_started for event in phases] == [
+        False,
+        False,
+        True,
+        True,
+        True,
+    ]
+    assert receipt.planned_operation_count == 2
+    assert receipt.operation_count == 2
+    assert committed[-1].receipt is receipt
+
+
+def test_patch_attempt_cannot_commit_without_complete_observation() -> None:
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+    attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="attempt-incomplete",
+    )
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_REPLACE,
+        serial_quantity=1,
+        planned_operation_count=2,
+        transaction_attempt=attempt,
+        patch_plan_id=attempt.plan_id,
+    )
+    gateway.begin_patch_realization(attempt, plan_refs=())
+
+    with pytest.raises(RuntimeError, match="operation inventory mismatch"):
+        gateway.commit()
