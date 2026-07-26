@@ -1854,12 +1854,12 @@ def _with_nested_imported_state_routes(
     """Replace reachable imported dispatcher exits with canonical state routes.
 
     Frontend normalization retains the native selector topology so later
-    canonical passes can inspect it.  Once a state assignment or terminal
-    return and its delivery corridor are proved, however, the generic selector
-    edge is no longer authoritative.  This projection replaces only routes
-    whose complete write-to-delivery corridor already belongs to the selected
-    detached component.  It never expands the work item merely because another
-    route is present elsewhere in the normalization inventory.
+    canonical passes can inspect it.  Once a state assignment, terminal return,
+    or carried state choice is proved, however, the generic selector edge is no
+    longer authoritative.  This projection replaces only routes whose complete
+    mutable corridor already belongs to the selected detached component.  It
+    never expands the work item merely because another route is present
+    elsewhere in the normalization inventory.
     """
     imported_component_blocks = tuple(
         block
@@ -1882,23 +1882,40 @@ def _with_nested_imported_state_routes(
             SemanticRouteProof,
             FragmentBlock,
             FragmentOperation,
-            FragmentBlock,
+            tuple[FragmentBlock, ...],
         ]
     ] = []
     decisions: list[_NestedStateRouteProjectionDecision] = []
     claimed_source_ids = dict(claimed_source_proof_ids)
     claimed_corridor_ids = dict(claimed_corridor_proof_ids)
     for proof in available_evidence.route_proofs:
-        if (
-            proof.proof_id in excluded_proof_ids
-            or proof.proof_kind
-            not in {
+        direct_route = bool(
+            proof.proof_kind
+            in {
                 SemanticRouteProofKind.STATE_ASSIGNMENT,
                 SemanticRouteProofKind.TERMINAL_RETURN,
             }
-            or proof.shape is not SemanticRouteShape.DIRECT
-            or len(proof.destinations) != 1
-            or proof.state_write is None
+            and proof.shape is SemanticRouteShape.DIRECT
+            and len(proof.destinations) == 1
+            and proof.state_write is not None
+        )
+        predicate = proof.predicate
+        state_choice = bool(
+            proof.proof_kind is SemanticRouteProofKind.STATE_CHOICE
+            and proof.shape is SemanticRouteShape.CONDITIONAL
+            and len(proof.destinations) == 2
+            and proof.state_write is None
+            and predicate is not None
+            and predicate.kind is SemanticPredicateKind.STORAGE_EQUALS
+            and predicate.storage_identity is not None
+            and predicate.compare_constant is not None
+            and len(proof.carriers) == 1
+            and proof.source_owner_identity == proof.source_identity
+            and proof.source_owner_anchor_ea == proof.source_anchor_ea
+        )
+        if (
+            proof.proof_id in excluded_proof_ids
+            or not (direct_route or state_choice)
             or proof.source_anchor_ea not in proof.source_identity.exact_instruction_eas
         ):
             continue
@@ -1941,25 +1958,58 @@ def _with_nested_imported_state_routes(
             )
         (source,) = source_matches
         corridor_owner_ids: list[str] = []
-        for corridor_ea in proof.state_write.corridor_instruction_eas:
-            owners = tuple(
-                block
-                for block in imported_component_blocks
-                if block.stable_identity is not None
-                and block.stable_identity.native_ranges.contains(int(corridor_ea))
-            )
-            if len(owners) != 1:
-                raise CanonicalSemanticFragmentRejected(
-                    "nested canonical state route corridor is not wholly "
-                    "owned by its imported component",
-                    reason_code="nested_state_route_corridor_owner_mismatch",
-                    anchor_ea=int(corridor_ea),
-                    payload={
-                        "route_proof_id": proof.proof_id,
-                        "owner_block_ids": tuple(block.block_id for block in owners),
-                    },
+        if direct_route:
+            state_write = proof.state_write
+            assert state_write is not None
+            for corridor_ea in state_write.corridor_instruction_eas:
+                owners = tuple(
+                    block
+                    for block in imported_component_blocks
+                    if block.stable_identity is not None
+                    and block.stable_identity.native_ranges.contains(int(corridor_ea))
                 )
-            corridor_owner_ids.append(owners[0].block_id)
+                if len(owners) != 1:
+                    raise CanonicalSemanticFragmentRejected(
+                        "nested canonical state route corridor is not wholly "
+                        "owned by its imported component",
+                        reason_code="nested_state_route_corridor_owner_mismatch",
+                        anchor_ea=int(corridor_ea),
+                        payload={
+                            "route_proof_id": proof.proof_id,
+                            "owner_block_ids": tuple(
+                                block.block_id for block in owners
+                            ),
+                        },
+                    )
+                corridor_owner_ids.append(owners[0].block_id)
+        else:
+            assert predicate is not None
+            consumer_points = (
+                predicate.consumer,
+                *(
+                    consumer
+                    for carrier in proof.carriers
+                    for consumer in carrier.consumers
+                ),
+            )
+            source_identity = source.stable_identity
+            assert source_identity is not None
+            if any(
+                not stable_block_identities_refine_at_anchor(
+                    source_identity,
+                    consumer.identity,
+                    consumer.anchor_ea,
+                )
+                for consumer in consumer_points
+            ):
+                raise CanonicalSemanticFragmentRejected(
+                    "nested canonical state choice consumer is not wholly owned "
+                    "by its imported source",
+                    reason_code="nested_state_choice_consumer_owner_mismatch",
+                    anchor_ea=int(proof.source_anchor_ea),
+                    payload={"route_proof_id": proof.proof_id},
+                )
+            corridor_owner_ids.append(source.block_id)
         source_operations = tuple(operation_by_source.get(source.block_id, ()))
         if len(source_operations) != 1:
             raise CanonicalSemanticFragmentRejected(
@@ -1974,23 +2024,46 @@ def _with_nested_imported_state_routes(
                     "corridor_block_ids": tuple(dict.fromkeys(corridor_owner_ids)),
                 },
             )
-        destination_evidence = proof.destinations[0]
-        destination = _unique_plan_block(
-            plan,
-            destination_evidence.target_identity,
-            destination_evidence.target_anchor_ea,
-            roles=frozenset(
-                {
-                    FragmentBlockRole.EXTERNAL,
-                    FragmentBlockRole.IMPORTED,
-                    FragmentBlockRole.REPLACEMENT,
-                }
-            ),
-            description="nested canonical state-route destination",
+        raw_operation = source_operations[0]
+        if state_choice and raw_operation.roles != frozenset(
+            {
+                SemanticEdgeRole.CONDITIONAL_TAKEN,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "nested canonical state choice does not supersede one complete "
+                "raw conditional envelope",
+                reason_code="nested_state_choice_raw_envelope_incomplete",
+                anchor_ea=int(proof.source_anchor_ea),
+                payload={
+                    "route_proof_id": proof.proof_id,
+                    "operation_id": raw_operation.operation_id,
+                    "edge_roles": tuple(
+                        edge.role.value for edge in raw_operation.edges
+                    ),
+                },
+            )
+        destinations = tuple(
+            _unique_plan_block(
+                plan,
+                destination_evidence.target_identity,
+                destination_evidence.target_anchor_ea,
+                roles=frozenset(
+                    {
+                        FragmentBlockRole.EXTERNAL,
+                        FragmentBlockRole.IMPORTED,
+                        FragmentBlockRole.REPLACEMENT,
+                    }
+                ),
+                description="nested canonical state-route destination",
+            )
+            for destination_evidence in proof.destinations
         )
-        if (
+        if any(
             destination.role is FragmentBlockRole.IMPORTED
             and destination.native_body_id != source.native_body_id
+            for destination in destinations
         ):
             raise CanonicalSemanticFragmentRejected(
                 "nested canonical state route crosses native-body ownership",
@@ -2037,8 +2110,8 @@ def _with_nested_imported_state_routes(
             (
                 proof,
                 source,
-                source_operations[0],
-                destination,
+                raw_operation,
+                destinations,
             )
         )
         decisions.append(
@@ -2056,31 +2129,43 @@ def _with_nested_imported_state_routes(
     if not replacements:
         return plan, (), tuple(decisions)
 
-    replacement_by_operation_id = {
-        raw_operation.operation_id: FragmentOperation(
+    replacement_by_operation_id: dict[str, FragmentOperation] = {}
+    for proof, source, raw_operation, destinations in replacements:
+        replacement_by_operation_id[raw_operation.operation_id] = FragmentOperation(
             operation_id=f"route:{proof.proof_id}",
             source_block_id=source.block_id,
             superseded_computed_branch_normalization=(
                 raw_operation.computed_branch_normalization
+                if proof.shape is SemanticRouteShape.DIRECT
+                else None
             ),
             superseded_predicate_anchor_ea=(
                 raw_operation.predicate_anchor_ea
-                if raw_operation.computed_branch_normalization is not None
+                if proof.shape is SemanticRouteShape.DIRECT
+                and raw_operation.computed_branch_normalization is not None
                 else None
             ),
-            edges=(
+            predicate_anchor_ea=(
+                int(proof.source_anchor_ea)
+                if proof.shape is SemanticRouteShape.CONDITIONAL
+                else None
+            ),
+            edges=tuple(
                 FragmentEdge(
-                    role=SemanticEdgeRole.DIRECT,
+                    role=destination_evidence.role,
                     target_block_id=destination.block_id,
-                ),
+                )
+                for destination_evidence, destination in zip(
+                    proof.destinations,
+                    destinations,
+                    strict=True,
+                )
             ),
         )
-        for proof, source, raw_operation, destination in replacements
-    }
     raw_operation_ids = frozenset(replacement_by_operation_id)
     proof_ids_by_body: dict[str, list[str]] = {}
     source_ids_by_body: dict[str, set[str]] = {}
-    for proof, source, _raw_operation, _destination in replacements:
+    for proof, source, _raw_operation, _destinations in replacements:
         if source.native_body_id is None:
             raise CanonicalSemanticFragmentRejected(
                 "nested canonical state route lacks native-body ownership"
@@ -2801,19 +2886,50 @@ def _resolved_detached_target_component(
     nested_proof_by_operation_id = {
         f"route:{item.proof_id}": item for item in nested_route_proofs
     }
-    target_operations = tuple(
-        replace(
+
+    def finalize_nested_operation(operation: FragmentOperation) -> FragmentOperation:
+        proof = nested_proof_by_operation_id.get(operation.operation_id)
+        if proof is None:
+            return operation
+        if proof.shape is SemanticRouteShape.DIRECT:
+            return replace(
+                operation,
+                direct_transfer_rewrite=_direct_transfer_rewrite(
+                    proof,
+                    source_operation=operation,
+                ),
+                superseded_computed_branch_normalization=None,
+                superseded_predicate_anchor_ea=None,
+            )
+        predicate = proof.predicate
+        if (
+            proof.shape is not SemanticRouteShape.CONDITIONAL
+            or predicate is None
+            or predicate.kind is not SemanticPredicateKind.STORAGE_EQUALS
+            or predicate.storage_identity is None
+            or predicate.compare_constant is None
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "nested canonical state choice lost its storage predicate",
+                reason_code="nested_state_choice_predicate_materialization_missing",
+                anchor_ea=int(proof.source_anchor_ea),
+                payload={"route_proof_id": proof.proof_id},
+            )
+        return replace(
             operation,
-            direct_transfer_rewrite=_direct_transfer_rewrite(
-                nested_proof_by_operation_id[operation.operation_id],
-                source_operation=operation,
+            storage_predicate_materialization=(
+                FragmentStoragePredicateMaterialization(
+                    predicate_kind=PredicateKind.EQ,
+                    storage_identity=predicate.storage_identity,
+                    width=int(predicate.width),
+                    compare_constant=int(predicate.compare_constant),
+                    cut_after_ea=int(proof.source_anchor_ea),
+                )
             ),
-            superseded_computed_branch_normalization=None,
-            superseded_predicate_anchor_ea=None,
         )
-        if operation.operation_id in nested_proof_by_operation_id
-        else operation
-        for operation in target_operations
+
+    target_operations = tuple(
+        finalize_nested_operation(operation) for operation in target_operations
     )
     return_carriers, terminal_returns, terminal_routes = _nested_terminal_effects(
         target_blocks,

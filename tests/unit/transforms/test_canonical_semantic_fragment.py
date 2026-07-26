@@ -1623,6 +1623,229 @@ def test_nested_imported_state_assignment_supersedes_raw_dispatcher_edge(
     assert f"route:{nested_proof.proof_id}" in planned_native_body.proof_ids
 
 
+def test_nested_imported_state_choice_supersedes_both_raw_dispatcher_arms() -> None:
+    graph, normalization_plan, root_evidence = _live_source_detached_target_case()
+    (native_body,) = normalization_plan.native_bodies
+    route_source = FragmentBlock(
+        block_id="nested-choice-source",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1210,
+        stable_identity=_wide_identity(0x1210, 0x1220),
+        native_body_id=native_body.body_id,
+    )
+    semantic_taken = FragmentBlock(
+        block_id="nested-choice-semantic-taken",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=_identity(0x1250),
+        native_body_id=native_body.body_id,
+    )
+    semantic_fallthrough = FragmentBlock(
+        block_id="nested-choice-semantic-fallthrough",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1260,
+        stable_identity=_identity(0x1260),
+        native_body_id=native_body.body_id,
+    )
+    raw_taken = FragmentBlock(
+        block_id="nested-choice-raw-taken",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1300,
+        stable_identity=_identity(0x1300),
+        native_body_id=native_body.body_id,
+    )
+    raw_fallthrough = FragmentBlock(
+        block_id="nested-choice-raw-fallthrough",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1310,
+        stable_identity=_identity(0x1310),
+        native_body_id=native_body.body_id,
+    )
+    raw_operation_id = "native-indirect-transfer@0x121F"
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *normalization_plan.blocks,
+            route_source,
+            semantic_taken,
+            semantic_fallthrough,
+            raw_taken,
+            raw_fallthrough,
+        ),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="native-body-edge@0x1200",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=route_source.block_id,
+                    ),
+                ),
+            ),
+            FragmentOperation(
+                operation_id=raw_operation_id,
+                source_block_id=route_source.block_id,
+                predicate_anchor_ea=0x1218,
+                computed_branch_normalization=FragmentComputedBranchNormalization(
+                    predicate_kind=PredicateKind.SLT,
+                    normalization_start_ea=0x1214,
+                    condition_producer_ea=0x1212,
+                    unresolved_transfer_ea=0x121F,
+                ),
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                        target_block_id=raw_taken.block_id,
+                    ),
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                        target_block_id=raw_fallthrough.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    route_source.block_id,
+                    semantic_taken.block_id,
+                    semantic_fallthrough.block_id,
+                    raw_taken.block_id,
+                    raw_fallthrough.block_id,
+                ),
+                terminal_block_ids=(
+                    semantic_taken.block_id,
+                    semantic_fallthrough.block_id,
+                    raw_taken.block_id,
+                    raw_fallthrough.block_id,
+                ),
+                native_ranges=(
+                    NativeEaInterval(0x1200, 0x1201),
+                    NativeEaInterval(0x1210, 0x1220),
+                    NativeEaInterval(0x1250, 0x1251),
+                    NativeEaInterval(0x1260, 0x1261),
+                    NativeEaInterval(0x1300, 0x1301),
+                    NativeEaInterval(0x1310, 0x1311),
+                ),
+                proof_ids=(
+                    *native_body.proof_ids,
+                    "native-body-edge@0x1200",
+                    raw_operation_id,
+                ),
+            ),
+        ),
+    )
+    (root_proof,) = root_evidence.route_proofs
+    state_choice = SemanticRouteProof(
+        proof_id="state-choice@0x1210:0x22:0x33",
+        atomic_group_id=root_evidence.atomic_group_id,
+        proof_kind=SemanticRouteProofKind.STATE_CHOICE,
+        shape=SemanticRouteShape.CONDITIONAL,
+        source_identity=route_source.stable_identity,
+        source_anchor_ea=0x1210,
+        source_owner_identity=route_source.stable_identity,
+        source_owner_anchor_ea=0x1210,
+        destinations=(
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                state_constant=0x22,
+                target_identity=semantic_taken.stable_identity,
+                target_anchor_ea=0x1250,
+            ),
+            SemanticRouteDestination(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                state_constant=0x33,
+                target_identity=semantic_fallthrough.stable_identity,
+                target_anchor_ea=0x1260,
+            ),
+        ),
+        predicate=SemanticPredicateProof(
+            kind=SemanticPredicateKind.STORAGE_EQUALS,
+            origin=SemanticCorridorPoint(_identity(0x1100), 0x1100),
+            consumer=SemanticCorridorPoint(route_source.stable_identity, 0x1210),
+            corridor=(
+                SemanticCorridorPoint(_identity(0x1100), 0x1100),
+                SemanticCorridorPoint(route_source.stable_identity, 0x1210),
+            ),
+            storage_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+            width=4,
+            compare_constant=0,
+        ),
+        carriers=(
+            SemanticCarrierProof(
+                carrier_id="entry-state@0x1100:0x1210",
+                definition=SemanticCorridorPoint(_identity(0x1100), 0x1100),
+                consumers=(
+                    SemanticCorridorPoint(route_source.stable_identity, 0x1210),
+                ),
+                corridor=(
+                    SemanticCorridorPoint(_identity(0x1100), 0x1100),
+                    SemanticCorridorPoint(route_source.stable_identity, 0x1210),
+                ),
+                storage_identity=StorageIdentity(StorageIdentityKind.STACK, 0x44),
+                width=4,
+                state_values=(0x22, 0x33),
+                permitted_write_eas=frozenset({0x1100}),
+            ),
+        ),
+    )
+    available_evidence = replace(
+        root_evidence,
+        route_proofs=(root_proof, state_choice),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        root_evidence,
+        available_evidence=available_evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            root_evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    operations = {operation.operation_id: operation for operation in plan.operations}
+    assert raw_operation_id not in operations
+    semantic_operation = operations[f"route:{state_choice.proof_id}"]
+    assert semantic_operation.source_block_id == route_source.block_id
+    assert semantic_operation.predicate_anchor_ea == 0x1210
+    assert semantic_operation.storage_predicate_materialization == (
+        FragmentStoragePredicateMaterialization(
+            predicate_kind=PredicateKind.EQ,
+            storage_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+            width=4,
+            compare_constant=0,
+            cut_after_ea=0x1210,
+        )
+    )
+    assert tuple(
+        (edge.role, plan.block(edge.target_block_id).semantic_anchor_ea)
+        for edge in semantic_operation.edges
+    ) == (
+        (SemanticEdgeRole.CONDITIONAL_TAKEN, 0x1250),
+        (SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, 0x1260),
+    )
+    assert all(
+        plan.block(edge.target_block_id).semantic_anchor_ea not in {0x1300, 0x1310}
+        for operation in plan.operations
+        for edge in operation.edges
+    )
+    (planned_native_body,) = plan.native_bodies
+    assert f"route:{state_choice.proof_id}" in planned_native_body.proof_ids
+
+
 def test_nested_imported_state_assignments_reach_fixpoint() -> None:
     graph, normalization_plan, root_evidence = _live_source_detached_target_case()
     graph = replace(
