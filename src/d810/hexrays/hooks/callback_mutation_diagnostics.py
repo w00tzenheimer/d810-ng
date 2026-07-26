@@ -130,9 +130,7 @@ def capture_live_nop_sites(mba: object) -> tuple[LiveNopSite, ...]:
                 path=f"top[{ordinal}]",
                 seen_instructions=seen_instructions,
             ):
-                if int(getattr(candidate, "opcode", -1)) == int(
-                    ida_hexrays.m_nop
-                ):
+                if int(getattr(candidate, "opcode", -1)) == int(ida_hexrays.m_nop):
                     sites.append(
                         LiveNopSite(
                             block_runtime_identity=_runtime_identity(block),
