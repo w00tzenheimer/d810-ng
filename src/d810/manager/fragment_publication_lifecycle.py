@@ -21,6 +21,7 @@ from d810.transforms.fragment_validation import FragmentValidationResult
 from d810.transforms.cfg_transaction import (
     CfgTransactionFailure,
     CfgTransactionPhase,
+    TransactionAttemptId,
 )
 
 
@@ -210,9 +211,27 @@ class SessionFragmentPublicationLifecycleAuthority:
                     reason=failure.reason
                 )
             self._clear_pending()
+        return self.request_cfg_generation_restart(failure.attempt_id, failure)
+
+    def request_cfg_generation_restart(
+        self,
+        attempt: TransactionAttemptId,
+        failure: CfgTransactionFailure,
+    ) -> bool:
+        """Stage one controller-owned restart for an ordinary CFG transaction."""
+        if not isinstance(attempt, TransactionAttemptId):
+            raise TypeError("CFG restart requires typed attempt authority")
+        if not isinstance(failure, CfgTransactionFailure):
+            raise TypeError("CFG restart requires a transaction failure")
+        if attempt != failure.attempt_id:
+            raise ValueError("CFG restart attempt differs from failure authority")
+        if failure.phase is not CfgTransactionPhase.POISONED_RESTART_REQUIRED:
+            raise ValueError("CFG restart requires poisoned failure evidence")
+        if self._pending_plan_id is not None:
+            raise RuntimeError("ordinary CFG restart overlaps fragment publication")
         return self.state.request_poisoned_generation_restart(
             reason=(
-                f"poisoned fragment generation during {failure.failure_phase}: "
+                f"poisoned CFG generation during {failure.failure_phase}: "
                 f"{failure.reason}"
             ),
         )

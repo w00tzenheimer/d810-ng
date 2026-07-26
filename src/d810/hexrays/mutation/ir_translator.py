@@ -11,7 +11,7 @@ from __future__ import annotations
 from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING, Callable
 
-from d810.hexrays.contracts import CfgContractViolationError, IDACfgContract
+from d810.hexrays.contracts import IDACfgContract
 from d810.hexrays.ir_maturity import (
     hexrays_maturity_envelope,
     ida_maturity_to_ir,
@@ -72,17 +72,15 @@ from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 from d810.hexrays.mutation.mba_mutation_events import StructuralMutationKind
 from d810.hexrays.mutation.patch_binding import (
     BoundModifier,
-    PatchBindingRejected,
-    bind_patch_plan,
 )
-from d810.transforms.cfg_transaction import CfgGenerationPoisoned, TransactionAttemptId
+from d810.hexrays.mutation.patch_transaction import BoundPatchCfgTransaction
+from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 
 if TYPE_CHECKING:
     import ida_hexrays
     from d810.hexrays.mutation.deferred_modifier import (
         DeferredGraphModifier as DeferredGraphModifierType,
     )
-    from d810.hexrays.mutation.cfg_verify import safe_verify as safe_verify_type
 
 logger = getLogger(__name__)
 
@@ -940,6 +938,7 @@ class IDAIRTranslator:
         mba: "ida_hexrays.mba_t",
         *,
         mutation_gateway: MbaMutationGateway,
+        bound_transaction: BoundPatchCfgTransaction,
         post_apply_hook=None,
     ) -> int:
         """Apply a PatchPlan to mba via DeferredGraphModifier.
@@ -1023,10 +1022,11 @@ class IDAIRTranslator:
                 len(patch_plan.new_blocks),
             )
 
-        modifier, patch_gateway = self._bind_and_queue_patch_plan(
+        modifier, patch_gateway = self._queue_bound_patch_plan(
             patch_plan,
             mba,
             mutation_gateway=mutation_gateway,
+            bound_transaction=bound_transaction,
             deferred_modifier_module=deferred_modifier,
         )
 
@@ -1140,13 +1140,6 @@ class IDAIRTranslator:
                 failure_phase="realization",
             )
             raise RuntimeError("PatchPlan reported writes before realization started")
-        post_graph = modifier.observe_live_graph()
-        patch_gateway.observe_patch_realization(
-            post_graph,
-            applied_operation_count=len(patch_plan.steps),
-        )
-        patch_gateway.commit()
-
         return result_count
 
     @staticmethod
@@ -1174,21 +1167,28 @@ class IDAIRTranslator:
         )
         patch_gateway.abort(reason=reason)
 
-    def _bind_and_queue_patch_plan(
+    def _queue_bound_patch_plan(
         self,
         patch_plan: PatchPlan,
         mba: "ida_hexrays.mba_t",
         *,
         mutation_gateway: MbaMutationGateway,
+        bound_transaction: BoundPatchCfgTransaction,
         deferred_modifier_module: object,
     ) -> tuple["DeferredGraphModifierType", MbaMutationGateway]:
-        """Prepare a plan without leaving identity residue on prewrite failure."""
-        patch_gateway = mutation_gateway.new_transaction()
-        transaction_attempt = TransactionAttemptId.new(
-            patch_plan.plan_id,
-            patch_gateway.session_id,
-            patch_gateway.generation,
-        )
+        """Queue one already-preflighted and exactly bound PatchPlan."""
+        if not isinstance(bound_transaction, BoundPatchCfgTransaction):
+            raise TypeError("PatchPlan lowering requires bound transaction authority")
+        if (
+            bound_transaction.plan is not patch_plan
+            or bound_transaction.prepared.attempt_id
+            != mutation_gateway.current_transaction_attempt
+            or bound_transaction.patch_binding.plan is not patch_plan
+        ):
+            raise ValueError("PatchPlan lowering authority differs from binding")
+        patch_gateway = mutation_gateway
+        transaction_attempt = bound_transaction.prepared.attempt_id
+        bound_patch_plan = bound_transaction.patch_binding
         try:
             patch_gateway.begin_batch(
                 StructuralMutationKind.BLOCK_REPLACE,
@@ -1198,14 +1198,6 @@ class IDAIRTranslator:
                 transaction_attempt=transaction_attempt,
                 patch_plan_id=patch_plan.plan_id,
                 patch_plan_refs=tuple(spec.block_id for spec in patch_plan.new_blocks),
-            )
-            bound_patch_plan = bind_patch_plan(
-                patch_plan,
-                patch_gateway.identity_index,
-                transaction_attempt,
-            )
-            patch_gateway.register_patch_plan_reservations(
-                bound_patch_plan.reservations
             )
             modifier = deferred_modifier_module.DeferredGraphModifier(
                 mba,
@@ -1220,9 +1212,7 @@ class IDAIRTranslator:
                 self._queue_patch_step(bound_modifier, step)
             return modifier, patch_gateway
         except Exception as exc:
-            failure_phase = (
-                "binding" if isinstance(exc, PatchBindingRejected) else "queueing"
-            )
+            failure_phase = "queueing"
             if patch_gateway.active:
                 patch_gateway._record_clean_cfg_failure(
                     reason=str(exc) or type(exc).__name__,

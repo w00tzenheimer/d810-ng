@@ -12,18 +12,12 @@ only after semantic postvalidation commits. ``apply`` is the sole live entry.
 
 from __future__ import annotations
 
-from d810.analyses.control_flow.graph_checks import (
-    check_entry_reachability_not_collapsed,
-    check_terminal_reachability_preserved,
-)
-from d810.analyses.control_flow.edit_simulation import simulate_edits
 from d810.core.logging import getLogger
 from d810.core.typing import Callable, TYPE_CHECKING
 from d810.ir.block_identity import CurrentMbaIdentityBindingSnapshot
 from d810.ir.flowgraph import FlowGraph
 from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.plan import PatchPlan
-from d810.transforms.edit_simulator import patch_plan_to_simulated_edits
 
 
 logger = getLogger(__name__)
@@ -50,13 +44,16 @@ class HexRaysMutationBackend:
         ) = None,
     ) -> None:
         if translator is None:
+            from d810.hexrays.contracts.cfg_contract import IDACfgContract
             from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 
-            translator = IDAIRTranslator()
+            translator = IDAIRTranslator(contract=IDACfgContract())
         self._translator = translator
         self._mutation_gateway = mutation_gateway
         self._semantic_native_body_materializer = semantic_native_body_materializer
         self._committed_fragment_receipt: object | None = None
+        self._last_patch_execution: object | None = None
+        self._last_patch_failure: Exception | None = None
         self._fragment_backend_factory = (
             fragment_backend_factory
             if fragment_backend_factory is not None
@@ -76,6 +73,14 @@ class HexRaysMutationBackend:
                 "committed fragment receipt has invalid current-MBA identity binding"
             )
         return binding
+
+    @property
+    def last_patch_execution(self) -> object | None:
+        return self._last_patch_execution
+
+    @property
+    def last_patch_failure(self) -> Exception | None:
+        return self._last_patch_failure
 
     def _new_fragment_backend(self, live_source: object, gateway: object) -> object:
         from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
@@ -104,22 +109,7 @@ class HexRaysMutationBackend:
             return self._apply_fragment(rewrite_plan, live_source, safety_policy)
         if not isinstance(rewrite_plan, PatchPlan):
             raise TypeError("HexRaysMutationBackend.apply requires a typed plan")
-        from d810.transforms.fragment_to_patch import (
-            ApplyPatchLifecycle,
-            CfgTransactionCoordinator,
-            PatchTransactionParticipant,
-        )
-
-        coordinator = CfgTransactionCoordinator(
-            ApplyPatchLifecycle(
-                lambda plan: self._apply_patch_plan(
-                    plan,
-                    live_source,
-                    safety_policy,
-                )
-            )
-        )
-        return coordinator.execute(PatchTransactionParticipant(), rewrite_plan)  # type: ignore[return-value]
+        return self._apply_patch_plan(rewrite_plan, live_source, safety_policy)
 
     def _apply_patch_plan(
         self,
@@ -128,43 +118,29 @@ class HexRaysMutationBackend:
         safety_policy: object = None,
     ) -> FlowGraph:
         """Execute one already-lowered PatchPlan through the shared coordinator."""
-        pre_cfg = self._translator.lift(live_source)
-        simulation = simulate_edits(
-            pre_cfg.as_adjacency_dict(),
-            patch_plan_to_simulated_edits(rewrite_plan),
+        del safety_policy
+        from d810.hexrays.mutation.patch_transaction import (
+            PatchTransactionPreflightRejected,
+            execute_patch_transaction,
         )
-        terminal_reachability = check_terminal_reachability_preserved(
-            pre_cfg,
-            post_adj=simulation.adj,
-        )
-        entry_reachability = check_entry_reachability_not_collapsed(
-            pre_cfg,
-            post_adj=simulation.adj,
-        )
-        if not terminal_reachability.passed or not entry_reachability.passed:
-            logger.warning(
-                "Rejecting Hex-Rays mutation plan: terminal_ok=%s entry_ok=%s "
-                "pre_reach=%d post_reach=%d pre_terminals=%s post_terminals=%s "
-                "entry_retained=%.2f reason=%s/%s steps=%d",
-                terminal_reachability.passed,
-                entry_reachability.passed,
-                terminal_reachability.pre_reachable_count,
-                terminal_reachability.post_reachable_count,
-                sorted(terminal_reachability.pre_reachable_terminals),
-                sorted(terminal_reachability.post_reachable_terminals),
-                entry_reachability.retained_ratio,
-                terminal_reachability.reason,
-                entry_reachability.reason,
-                len(rewrite_plan.steps),
-            )
-            return pre_cfg
 
-        self._translator.lower(
-            rewrite_plan,
-            live_source,
-            mutation_gateway=self._mutation_gateway,
-        )
-        return self._translator.lift(live_source)
+        pre_cfg = self._translator.lift(live_source)
+        self._last_patch_execution = None
+        self._last_patch_failure = None
+        try:
+            self._last_patch_execution = execute_patch_transaction(
+                self._mutation_gateway,
+                self._translator,
+                rewrite_plan,
+                live_source,
+                pre_cfg=pre_cfg,
+                contract=getattr(self._translator, "contract", None),
+            )
+        except PatchTransactionPreflightRejected as error:
+            self._last_patch_failure = error
+            logger.warning("Rejecting Hex-Rays PatchPlan preflight: %s", error)
+            return pre_cfg
+        return self._last_patch_execution.graph
 
     def _apply_fragment(
         self,

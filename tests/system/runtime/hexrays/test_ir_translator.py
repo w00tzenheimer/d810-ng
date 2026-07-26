@@ -48,7 +48,6 @@ from d810.transforms.graph_modification import (
 from d810.transforms.plan import (
     ExecutionPolicy,
     PatchDuplicateBlock,
-    PatchDuplicateReplayEntry,
     PatchDuplicateReplayAndRedirect,
     PatchInsertBlock,
     PatchBlockSpec,
@@ -59,9 +58,12 @@ from d810.transforms.plan import (
     compile_patch_plan,
 )
 from d810.transforms.cfg_transaction import (
+    CfgProjection,
     CfgTransactionPhase,
     LogicalBlockRef,
     PlanBlockRef,
+    PreparedCfgTransaction,
+    TransactionAttemptId,
 )
 from d810.transforms.materialization_payload import (
     CapturedBlockBody,
@@ -69,7 +71,11 @@ from d810.transforms.materialization_payload import (
 )
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.ir.mba_identity_index import BlockHandleProvenance
-from d810.hexrays.mutation.patch_binding import PatchBindingRejected
+from d810.hexrays.mutation.patch_binding import (
+    PatchBindingRejected,
+    bind_patch_plan,
+)
+from d810.hexrays.mutation.patch_transaction import BoundPatchCfgTransaction
 from d810.hexrays.mutation.ir_translator import (
     _build_lvar_stkoff_map,
     _branch_predicate_only_from_hexrays,
@@ -643,7 +649,89 @@ def _lower(backend: IDAIRTranslator, plan: PatchPlan, mba: object) -> int:
             for ref, serial in plan.source_coordinates
         ),
     )
-    return backend.lower(bound_plan, mba, mutation_gateway=gateway)
+    return _lower_bound(backend, bound_plan, mba, gateway)
+
+
+def _lower_bound(
+    backend: IDAIRTranslator,
+    plan: PatchPlan,
+    mba: object,
+    gateway: object,
+) -> int:
+    """Exercise translator lowering beneath the production participant seam."""
+    child = gateway.new_transaction()
+    attempt = TransactionAttemptId.new(
+        plan.plan_id,
+        child.session_id,
+        child.generation,
+    )
+    quantity = max(int(getattr(mba, "qty", 0) or 0), 1)
+    authority_graph = FlowGraph(
+        blocks={serial: _block(serial, (), ()) for serial in range(quantity)},
+        entry_serial=0,
+        func_ea=int(getattr(mba, "entry_ea", 0) or 0),
+    )
+    projection = CfgProjection(
+        plan_id=plan.plan_id,
+        snapshot_id=plan.snapshot_id,
+        graph=authority_graph,
+    )
+    prepared = PreparedCfgTransaction(
+        attempt_id=attempt,
+        projection=projection,
+        obligation_ids=("translator_test_boundary",),
+    )
+    child._record_cfg_attempt_planned(
+        plan_id=plan.plan_id,
+        plan_refs=tuple(spec.block_id for spec in plan.new_blocks),
+        attempt=attempt,
+    )
+    child._record_cfg_projected()
+    child._record_cfg_preflighted()
+    try:
+        child._prepare_patch_binding(attempt, serial_quantity=int(mba.qty))
+        binding = bind_patch_plan(plan, child.identity_index, attempt)
+        child.register_patch_plan_reservations(binding.reservations)
+        child._record_cfg_bound()
+        bound = BoundPatchCfgTransaction(
+            prepared=prepared,
+            session_id=attempt.session_id,
+            generation=attempt.generation,
+            bindings=binding.bindings,
+            plan=plan,
+            patch_binding=binding,
+        )
+        result = backend.lower(
+            plan,
+            mba,
+            mutation_gateway=child,
+            bound_transaction=bound,
+        )
+    except Exception:
+        if child.current_transaction_attempt is not None and not child.generation_poisoned:
+            child.abort(reason="translator test boundary rejected")
+        raise
+    if result <= 0:
+        if child.current_transaction_attempt is not None and not child.generation_poisoned:
+            if child.transaction_failure is None:
+                child._record_clean_cfg_failure(
+                    reason="translator returned no applied operations",
+                    failure_phase="lowering",
+                    first_failed_obligation="runtime:lowering",
+                )
+            child.abort(reason="translator returned no applied operations")
+        return result
+    observed = (
+        backend.lift(mba)
+        if callable(getattr(mba, "get_mblock", None))
+        else _FakeDeferredGraphModifier(mba).observe_live_graph()
+    )
+    child.observe_patch_realization(
+        observed,
+        applied_operation_count=len(plan.steps),
+    )
+    child.commit()
+    return result
 
 
 def _compile_for_gateway(
@@ -709,6 +797,7 @@ class TestIDAIRTranslatorBasics:
                 [RedirectGoto(from_serial=1, old_target=2, new_target=3)],
                 object(),
                 mutation_gateway=make_mutation_gateway(),
+                bound_transaction=object(),  # type: ignore[arg-type]
             )
 
 
@@ -1033,12 +1122,14 @@ class TestTypedPatchBinding:
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
         monkeypatch.setattr(translator_module, "lift", lambda _mba: graph)
 
-        assert IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway) == 1
+        assert _lower_bound(IDAIRTranslator(), plan, mba, gateway) == 1
 
         child = child_gateways[0]
         assert child.active is False
         assert [event.phase for event in phases] == [
             CfgTransactionPhase.PLANNED,
+            CfgTransactionPhase.PROJECTED,
+            CfgTransactionPhase.PREFLIGHTED,
             CfgTransactionPhase.BOUND,
             CfgTransactionPhase.REALIZING,
             CfgTransactionPhase.OBSERVED,
@@ -1075,7 +1166,7 @@ class TestTypedPatchBinding:
         )
         monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
 
-        assert IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway) == 1
+        assert _lower_bound(IDAIRTranslator(), plan, mba, gateway) == 1
         assert created[0].bound_plan is not None
         assert created[0].calls[0][:3] == ("nop", 0, 0x401000)
 
@@ -1104,7 +1195,7 @@ class TestTypedPatchBinding:
         )
 
         with pytest.raises(PatchBindingRejected, match="snapshot authority"):
-            IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway)
+            _lower_bound(IDAIRTranslator(), plan, mba, gateway)
 
         assert created == []
 
@@ -1155,13 +1246,13 @@ class TestTypedPatchBinding:
         baseline_proxy_count = gateway.identity_index.logical_proxy_count
 
         with pytest.raises(RuntimeError, match="queue exploded"):
-            IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway)
+            _lower_bound(IDAIRTranslator(), plan, mba, gateway)
 
         assert not child_gateways[0].active
         assert gateway.identity_index.logical_proxy_count == baseline_proxy_count
         assert gateway.identity_index.plan_creation_receipts == ()
 
-        assert IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway) == 1
+        assert _lower_bound(IDAIRTranslator(), plan, mba, gateway) == 1
 
     def test_partial_reservation_failure_aborts_prewrite_identity_residue(
         self,
@@ -1204,7 +1295,7 @@ class TestTypedPatchBinding:
         baseline_proxy_count = gateway.identity_index.logical_proxy_count
 
         with pytest.raises(RuntimeError, match="second reservation failed"):
-            IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway)
+            _lower_bound(IDAIRTranslator(), plan, mba, gateway)
 
         assert not child_gateways[0].active
         assert gateway.identity_index.logical_proxy_count == baseline_proxy_count
@@ -1215,7 +1306,7 @@ class TestTypedPatchBinding:
             "reserve_plan_block",
             original_reserve,
         )
-        assert IDAIRTranslator().lower(plan, mba, mutation_gateway=gateway) == 0
+        assert _lower_bound(IDAIRTranslator(), plan, mba, gateway) == 0
 
 
 class TestIDAIntegration:
@@ -1273,7 +1364,7 @@ class TestIDAIntegration:
             step for step in patch_plan.steps if isinstance(step, PatchInsertBlock)
         )
 
-        count = backend.lower(patch_plan, mba, mutation_gateway=gateway)
+        count = _lower_bound(backend, patch_plan, mba, gateway)
 
         assert count == 1
         mba.verify(True)
@@ -1310,7 +1401,7 @@ class TestIDAIntegration:
         assert isinstance(step, PatchRedirectBranch)
         assert step.fallthrough_helper_block_id is not None
 
-        assert backend.lower(patch_plan, mba, mutation_gateway=gateway) == 1
+        assert _lower_bound(backend, patch_plan, mba, gateway) == 1
         mba.verify(True)
 
         receipts = tuple(
@@ -1362,7 +1453,7 @@ class TestIDAIntegration:
             == duplicate_step.pred_serial
         )
 
-        count = backend.lower(patch_plan, mba, mutation_gateway=gateway)
+        count = _lower_bound(backend, patch_plan, mba, gateway)
 
         assert count == 1
         mba.verify(True)
@@ -1407,7 +1498,7 @@ class TestIDAIntegration:
 
         assert duplicate_step.fallthrough_block_id is not None
 
-        count = backend.lower(patch_plan, mba, mutation_gateway=gateway)
+        count = _lower_bound(backend, patch_plan, mba, gateway)
 
         assert count == 1
         mba.verify(True)
@@ -1840,31 +1931,41 @@ class TestIDAIntegration:
         )
 
         backend = IDAIRTranslator()
-        plan_id = "reject-call-replay"
-        snapshot_id = "reject-call-replay:m4:g0"
-        snapshot = _manual_ref
-        patch_plan = PatchPlan(
-            plan_id=plan_id,
-            snapshot_id=snapshot_id,
-            source_maturity=_TEST_MATURITY,
-            source_generation=0,
-            steps=(
-                PatchDuplicateReplayAndRedirect(
-                    source_serial=snapshot(45),
-                    dispatcher_entry=snapshot(2),
+        patch_plan = _compile_test_patch_plan(
+            [
+                DuplicateReplayAndRedirect(
+                    source_serial=45,
+                    dispatcher_entry=2,
                     per_pred_replays=(
-                        PatchDuplicateReplayEntry(
-                            pred_serial=snapshot(44),
-                            target_serial=snapshot(199),
-                            replay_block_id=PlanBlockRef(plan_id, "duplicate_replay:0"),
-                            captured_body=_captured_body(45, contains_call=True),
-                        ),
-                        PatchDuplicateReplayEntry(
-                            pred_serial=snapshot(122),
-                            target_serial=snapshot(199),
-                            replay_block_id=PlanBlockRef(plan_id, "duplicate_replay:1"),
+                        DuplicateReplayEntry(
+                            pred_serial=44,
+                            target_serial=199,
                             captured_body=_captured_body(45),
                         ),
+                        DuplicateReplayEntry(
+                            pred_serial=122,
+                            target_serial=199,
+                            captured_body=_captured_body(45),
+                        ),
+                    ),
+                )
+            ],
+            _cfg(),
+        )
+        replay_step = patch_plan.steps[0]
+        assert isinstance(replay_step, PatchDuplicateReplayAndRedirect)
+        first, second = replay_step.per_pred_replays
+        patch_plan = replace(
+            patch_plan,
+            steps=(
+                replace(
+                    replay_step,
+                    per_pred_replays=(
+                        replace(
+                            first,
+                            captured_body=_captured_body(45, contains_call=True),
+                        ),
+                        second,
                     ),
                 ),
             ),
@@ -2206,14 +2307,8 @@ class TestExecutionPolicyGuard:
         plan = _compile_test_patch_plan(
             [RedirectGoto(from_serial=10, old_target=20, new_target=30)],
         )
-        plan = PatchPlan(
-            plan_id=plan.plan_id,
-            snapshot_id=plan.snapshot_id,
-            source_maturity=plan.source_maturity,
-            source_generation=plan.source_generation,
-            steps=plan.steps,
-            new_blocks=plan.new_blocks,
-            relocation_map=plan.relocation_map,
+        plan = replace(
+            plan,
             execution_policy=ExecutionPolicy.NOP_CLEANUP_RELAXED,
         )
         count = _lower(backend, plan, object())

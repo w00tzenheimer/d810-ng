@@ -51,7 +51,6 @@ from d810.transforms.fragment_validation import (
     FragmentValidationResult,
     ProjectedFragment,
     PublishedFragmentGraphObservation,
-    PublishedFragmentObservation,
     validate_fragment_projection,
     validate_published_fragment_observation,
 )
@@ -939,9 +938,9 @@ def execute_patch_transaction(gateway: object, backend: object, plan: FragmentPl
     )
     try:
         projected = participant.project(plan, None)
-        gateway._record_fragment_projected()
+        gateway._record_cfg_projected()
         prepared = participant.preflight(projected)
-        gateway._record_fragment_preflighted()
+        gateway._record_cfg_preflighted()
         bound = participant.bind(prepared, gateway.identity_index)
     except FragmentProjectionFailure as error:
         rejection = FragmentValidationResult(
