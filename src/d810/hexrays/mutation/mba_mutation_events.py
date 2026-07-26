@@ -1696,9 +1696,7 @@ class MbaMutationGateway:
         ):
             raise ValueError("detached route oracle does not match the active plan")
         ledger_identities = _fragment_reference_ledger_identities(plan)
-        expected_route_ids = tuple(
-            route_id for route_id, _ledger in ledger_identities
-        )
+        expected_route_ids = tuple(route_id for route_id, _ledger in ledger_identities)
         observed_route_ids = tuple(
             comparison.route_id for comparison in result.comparisons
         )
