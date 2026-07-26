@@ -169,6 +169,7 @@ class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
             raise RuntimeError("flow rule mutation gateway lacks identity authority")
 
         from d810.backends.hexrays.mutation.backend import HexRaysPatchPlanRuntime
+        from d810.ir.maturity import MaturityEnvelope
         from d810.transforms.plan import compile_patch_plan
 
         runtime = HexRaysPatchPlanRuntime()
@@ -177,6 +178,11 @@ class FlowOptimizationRule(OptimizationRule, Registrant, abc.ABC):
             list(modifications),
             pre_cfg,
             snapshot_id=identity_index.snapshot_id,
+            source_maturity=MaturityEnvelope(
+                ir=None,
+                provider="hexrays",
+                provider_id=int(identity_index.maturity),
+            ),
             source_generation=identity_index.generation,
             block_refs_by_serial=identity_index.plan_refs_by_serial(),
         )

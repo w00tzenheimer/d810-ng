@@ -231,12 +231,14 @@ def test_jump_fixer_does_not_claim_rejected_typed_transaction(monkeypatch):
 
 def test_flow_rule_transaction_port_preserves_immutable_authority(monkeypatch):
     from d810.backends.hexrays.mutation import backend as backend_module
+    from d810.ir.maturity import MaturityEnvelope
     from d810.transforms import plan as plan_module
 
     source_refs = {7: object(), 11: object()}
     identity_index = SimpleNamespace(
         snapshot_id="snapshot-7",
         generation=3,
+        maturity=ida_hexrays.MMAT_LOCOPT,
         plan_refs_by_serial=lambda: source_refs,
     )
     gateway = SimpleNamespace(identity_index=identity_index)
@@ -275,6 +277,7 @@ def test_flow_rule_transaction_port_preserves_immutable_authority(monkeypatch):
         cfg,
         *,
         snapshot_id,
+        source_maturity,
         source_generation,
         block_refs_by_serial,
     ):
@@ -284,6 +287,7 @@ def test_flow_rule_transaction_port_preserves_immutable_authority(monkeypatch):
                 tuple(modifications),
                 cfg,
                 snapshot_id,
+                source_maturity,
                 source_generation,
                 block_refs_by_serial,
             )
@@ -305,6 +309,11 @@ def test_flow_rule_transaction_port_preserves_immutable_authority(monkeypatch):
             (modification,),
             pre_cfg,
             "snapshot-7",
+            MaturityEnvelope(
+                ir=None,
+                provider="hexrays",
+                provider_id=ida_hexrays.MMAT_LOCOPT,
+            ),
             3,
             source_refs,
         ),
