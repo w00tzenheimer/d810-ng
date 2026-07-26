@@ -12,6 +12,7 @@ from d810.hexrays.hooks.glbopt_diagnostics import (
     apply_return_const_corruption_cleanup,
     prune_unreachable_condition_chain,
 )
+
 main_logger = getLogger("D810")
 
 if typing.TYPE_CHECKING:
