@@ -180,9 +180,7 @@ class DetachedDirectRoutePlan:
         rewrite = operation.direct_transfer_rewrite
         reference_authority = operation.reference_route_authority
         reference_route = (
-            None
-            if reference_authority is None
-            else reference_authority.reference_route
+            None if reference_authority is None else reference_authority.reference_route
         )
         if (
             not isinstance(superseded, FragmentOperation)

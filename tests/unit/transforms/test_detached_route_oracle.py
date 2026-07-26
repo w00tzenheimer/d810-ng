@@ -391,9 +391,7 @@ def test_bind_fragment_reference_oracle_attaches_exact_authority() -> None:
     assert authority.candidate_rewrite_anchor_ea == _REWRITE_ANCHOR_EA
 
 
-def test_bind_fragment_reference_oracle_rebinds_unique_donor_patch_coordinate() -> (
-    None
-):
+def test_bind_fragment_reference_oracle_rebinds_unique_donor_patch_coordinate() -> None:
     plan = _unbound_plan()
     route = replace(
         _reference_route(),

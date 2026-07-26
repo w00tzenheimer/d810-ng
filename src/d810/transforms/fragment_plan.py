@@ -1904,17 +1904,14 @@ class FragmentPlan:
                 )
                 owner_bound = bool(
                     operation_owner_identity is not None
-                    and int(operation_owner_anchor_ea)
-                    == int(reference_route.owner_ea)
+                    and int(operation_owner_anchor_ea) == int(reference_route.owner_ea)
                     and operation_owner_identity.native_ranges.contains(
                         reference_route.owner_ea
                     )
                 )
                 target_rows: list[dict[str, object]] = []
                 expected_targets = (
-                    (
-                        (SemanticEdgeRole.DIRECT, reference_route.direct_target_ea),
-                    )
+                    ((SemanticEdgeRole.DIRECT, reference_route.direct_target_ea),)
                     if reference_route.final_transfer_kind
                     is SemanticTransferKind.DIRECT
                     else (
@@ -1932,9 +1929,7 @@ class FragmentPlan:
                 for role, target_ea in expected_targets:
                     edge = edge_by_role.get(role)
                     target = (
-                        None
-                        if edge is None
-                        else block_by_id.get(edge.target_block_id)
+                        None if edge is None else block_by_id.get(edge.target_block_id)
                     )
                     target_identity = None if target is None else target.stable_identity
                     target_bound = bool(
@@ -1966,9 +1961,7 @@ class FragmentPlan:
                         f"fragment operation {operation.operation_id!r} does not "
                         "bind its reference route owner and targets",
                         reason_code="fragment_reference_route_identity_mismatch",
-                        anchor_ea=(
-                            reference_authority.candidate_rewrite_anchor_ea
-                        ),
+                        anchor_ea=(reference_authority.candidate_rewrite_anchor_ea),
                         payload={
                             "operation_id": operation.operation_id,
                             "candidate_rewrite_anchor_ea": (

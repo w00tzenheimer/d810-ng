@@ -91,8 +91,7 @@ def bind_fragment_reference_oracle(
     if not isinstance(selection, ReferenceRouteOracleSelection):
         raise TypeError("reference oracle binding requires a route selection")
     if plan.reference_oracle_run is not None or any(
-        operation.reference_route_authority is not None
-        for operation in plan.operations
+        operation.reference_route_authority is not None for operation in plan.operations
     ):
         raise DetachedRouteOracleRejected(
             "fragment plan already carries reference oracle authority",
@@ -178,7 +177,10 @@ def bind_fragment_reference_oracle(
                         for start_ea, end_ea in route.corridor
                     )
                     and all(
-                        any(start_ea <= ea < end_ea for start_ea, end_ea in route.corridor)
+                        any(
+                            start_ea <= ea < end_ea
+                            for start_ea, end_ea in route.corridor
+                        )
                         for ea in rewrite.proof_corridor_instruction_eas
                     )
                 )
