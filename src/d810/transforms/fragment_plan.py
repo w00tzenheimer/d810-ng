@@ -1656,11 +1656,15 @@ class FragmentPlan:
                         "cannot also be prohibited"
                     )
             elif port.kind is FragmentBoundaryPortKind.TEMPORARY_DISPATCHER_EGRESS:
-                if source.role not in {
-                    FragmentBlockRole.REPLACEMENT,
-                    FragmentBlockRole.SYNTHETIC,
-                    FragmentBlockRole.IMPORTED,
-                } or target.role is not FragmentBlockRole.EXTERNAL:
+                if (
+                    source.role
+                    not in {
+                        FragmentBlockRole.REPLACEMENT,
+                        FragmentBlockRole.SYNTHETIC,
+                        FragmentBlockRole.IMPORTED,
+                    }
+                    or target.role is not FragmentBlockRole.EXTERNAL
+                ):
                     raise FragmentPlanRejected(
                         f"fragment boundary port {port.port_id!r} requires a staged "
                         "source and external egress target"

@@ -722,8 +722,7 @@ def _boundary_port_egress_witness(
             for operation in plan.operations
             if operation.source_block_id == port.source_block_id
             and any(
-                edge.target_block_id == port.target_block_id
-                for edge in operation.edges
+                edge.target_block_id == port.target_block_id for edge in operation.edges
             )
         ),
         None,
