@@ -100,7 +100,10 @@ from d810.transforms.fragment_validation import (  # noqa: E402
     validate_fragment_projection,
 )
 from d810.transforms.fragment_to_patch import lower_fragment_plan  # noqa: E402
-from d810.transforms.plan import PatchPlan  # noqa: E402
+from d810.transforms.plan import (  # noqa: E402
+    PatchFragmentOperationNormalization,
+    PatchPlan,
+)
 from d810.transforms.cfg_transaction import (  # noqa: E402
     BoundCfgTransaction,
     CfgGenerationPoisoned,
@@ -2865,6 +2868,161 @@ def test_production_participant_preflights_before_realization_and_observes_live_
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="production participant test cleanup")
+
+
+def _clone_storage_predicate_runtime_case():
+    entry = _Block(0, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    original = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_1WAY)
+    target = _Block(2, start=0x401020, block_type=ida_hexrays.BLT_0WAY)
+    dispatcher = _Block(3, start=0x401030, block_type=ida_hexrays.BLT_0WAY)
+    stop = _Block(4, start=0x401040, block_type=ida_hexrays.BLT_STOP)
+    _connect(entry, original)
+    _connect(original, dispatcher)
+    original.tail.ea = 0x401011
+    state_write = _Instruction(ida_hexrays.m_mov, 0x401010)
+    state_write.l.make_number(7, 4)
+    state_write.d.make_stkvar(None, 0x20)
+    state_write.d.size = 4
+    original.insert_into_block(state_write, None)
+    mba = _Mba((entry, original, target, dispatcher, stop))
+    gateway = _fragment_gateway(mba)
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
+    storage = StorageIdentity(StorageIdentityKind.STACK, offset=0x20)
+    operation = FragmentOperation(
+        operation_id="clone-storage-choice",
+        source_block_id="replacement",
+        predicate_anchor_ea=0x401010,
+        storage_predicate_materialization=FragmentStoragePredicateMaterialization(
+            predicate_kind=PredicateKind.EQ,
+            storage_identity=storage,
+            width=4,
+            compare_constant=7,
+            cut_after_ea=0x401010,
+        ),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                target_block_id="target",
+            ),
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                target_block_id="dispatcher",
+            ),
+        ),
+    )
+    plan = replace(
+        plan,
+        operations=(operation,),
+        prohibited_dispatcher_blocks=(),
+        data_flow_obligations=(
+            FragmentDataFlowObligation(
+                obligation_id="clone-storage-flow",
+                role=FragmentDataFlowRole.CONDITION,
+                definition=FragmentValueSite(
+                    site_id="clone-storage.def",
+                    block_id="replacement",
+                    value_id="clone-storage",
+                    instruction_ea=0x401010,
+                    storage_identity=storage,
+                    width=4,
+                ),
+                uses=(
+                    FragmentValueSite(
+                        site_id="clone-storage.use",
+                        block_id="replacement",
+                        value_id="clone-storage",
+                        instruction_ea=0x401010,
+                        storage_identity=storage,
+                        width=4,
+                    ),
+                ),
+            ),
+        ),
+    )
+    return mba, gateway, modifier, plan, operation, original
+
+
+def test_participant_materializes_clone_owned_storage_predicate(monkeypatch) -> None:
+    monkeypatch.setattr(ida_hexrays, "minsn_t", _fake_minsn)
+    monkeypatch.setattr(ida_hexrays, "mop_t", _BlockReference)
+    mba, gateway, modifier, plan, operation, _original = (
+        _clone_storage_predicate_runtime_case()
+    )
+    participant = SemanticFragmentTransactionParticipant(gateway, modifier)
+    quantity = mba.qty
+    projected = participant.project(plan, None)
+    projected_relations = {
+        (relation.use_def_observed, relation.def_use_observed)
+        for relation in projected.semantic_projection.data_flow_relations
+        if relation.definition_site_id == "clone-storage.def"
+        and relation.use_site_id == "clone-storage.use"
+    }
+    assert projected_relations == {(True, False), (False, True)}
+    assert mba.qty == quantity
+    assert gateway.active is False
+    assert gateway.mutation_started is False
+    prepared = participant.preflight(projected)
+    bound = participant.bind(prepared, gateway.identity_index)
+    patch_plan = lower_fragment_plan(plan, prepared.fragment)
+    normalizations = tuple(
+        step
+        for step in patch_plan.steps
+        if isinstance(step, PatchFragmentOperationNormalization)
+    )
+    assert len(normalizations) == 1
+    assert normalizations[0].operations == (operation,)
+
+    realized = participant.realize(replace(bound, patch_plan=patch_plan), gateway)
+    observed = participant.observe(realized, mba)
+
+    replacement = sfb._live_block_for_binding(
+        modifier,
+        modifier._semantic_fragment_state.binding("replacement"),
+    )
+    branch = replacement.tail
+    assert branch is not None
+    assert int(branch.opcode) == int(ida_hexrays.m_jz)
+    assert int(branch.l.t) == int(ida_hexrays.mop_S)
+    assert int(branch.l.s.off) == 0x20
+    assert int(branch.r.nnn.value) == 7
+    assert modifier._semantic_fragment_state.live_operation_predicate_ea(operation) == int(
+        branch.ea
+    )
+    assert validate_fragment_projection(plan, observed).passed
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="clone storage-predicate cleanup")
+
+
+def test_participant_rejects_unsafe_clone_storage_predicate_suffix_before_write(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(ida_hexrays, "minsn_t", _fake_minsn)
+    mba, gateway, modifier, plan, _operation, original = (
+        _clone_storage_predicate_runtime_case()
+    )
+    quantity = mba.qty
+    generation = gateway.generation
+    unsafe_write = _Instruction(ida_hexrays.m_mov, 0x401012)
+    unsafe_write.l.make_number(9, 4)
+    unsafe_write.d.make_stkvar(None, 0x24)
+    unsafe_write.d.size = 4
+    original.insert_into_block(unsafe_write, original.head)
+    participant = SemanticFragmentTransactionParticipant(gateway, modifier)
+
+    with pytest.raises(
+        FragmentProjectionFailure,
+        match="clone-owned storage predicate suffix is not atomically discardable",
+    ) as failure:
+        participant.project(plan, None)
+
+    assert failure.value.postcondition is FragmentValidationPostcondition.OPERATION_TOPOLOGY
+    assert mba.qty == quantity
+    assert gateway.generation == generation
+    assert gateway.active is False
+    assert gateway.mutation_started is False
+    assert gateway.generation_poisoned is False
 
 
 def _refined_published_identity_runtime_case(*, plan_end_ea: int):

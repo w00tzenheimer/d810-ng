@@ -109,10 +109,18 @@ class FragmentCloneSourceInstruction:
 
     native_ea: int
     opcode: int
+    kind: InsnKind
+    destination_is_discardable: bool
+    operand_shape: tuple[object, ...]
 
     def __post_init__(self) -> None:
         if self.native_ea < 0 or self.opcode < 0:
             raise ValueError("clone-source instruction values must be non-negative")
+        if not isinstance(self.kind, InsnKind):
+            raise TypeError("clone-source instruction requires a portable kind")
+        if not isinstance(self.destination_is_discardable, bool):
+            raise TypeError("clone-source destination evidence must be boolean")
+        object.__setattr__(self, "operand_shape", tuple(self.operand_shape))
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +252,93 @@ def _complete_projected_data_flow_authority(
     )
 
 
+def _validate_clone_storage_predicate_sources(
+    plan: FragmentPlan,
+    snapshot: FragmentProjectionInput,
+) -> None:
+    evidence_by_block_id = {
+        evidence.block_id: evidence for evidence in snapshot.clone_source_instructions
+    }
+    if len(evidence_by_block_id) != len(snapshot.clone_source_instructions):
+        raise FragmentProjectionFailure(
+            FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+            "clone-source-instructions",
+            "clone-source snapshot contains duplicate block ids",
+        )
+    terminal_transfer_kinds = {
+        InsnKind.COND_JUMP,
+        InsnKind.GOTO,
+        InsnKind.INDIRECT_JUMP,
+    }
+    unsafe_control_kinds = terminal_transfer_kinds | {
+        InsnKind.TABLE_JUMP,
+        InsnKind.CALL,
+        InsnKind.RET,
+    }
+    for operation in plan.operations:
+        predicate = operation.storage_predicate_materialization
+        source = plan.block(operation.source_block_id)
+        if (
+            predicate is None
+            or source.materialization
+            is not FragmentBlockMaterialization.CLONE_PUBLISHED
+        ):
+            continue
+        evidence = evidence_by_block_id.get(source.block_id)
+        if evidence is None:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.IDENTITY_OWNERSHIP,
+                operation.operation_id,
+                "clone-owned storage predicate lacks immutable source evidence",
+            )
+        instructions = evidence.instructions
+        cut_indexes = tuple(
+            index
+            for index, instruction in enumerate(instructions)
+            if instruction.native_ea == predicate.cut_after_ea
+        )
+        if not cut_indexes:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.OPERATION_TOPOLOGY,
+                operation.operation_id,
+                "clone-owned storage predicate cut anchor is absent",
+            )
+        first_cut_index = cut_indexes[0]
+        last_cut_index = cut_indexes[-1]
+        if cut_indexes != tuple(range(first_cut_index, last_cut_index + 1)):
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.OPERATION_TOPOLOGY,
+                operation.operation_id,
+                "clone-owned storage predicate cut anchor is not contiguous",
+            )
+        suffix = instructions[last_cut_index + 1 :]
+        unsafe_suffix = tuple(
+            instruction
+            for index, instruction in enumerate(suffix)
+            if (
+                instruction.kind in {InsnKind.CALL, InsnKind.RET}
+                or (
+                    index != len(suffix) - 1
+                    and instruction.kind in unsafe_control_kinds
+                )
+                or (
+                    index != len(suffix) - 1
+                    and not instruction.destination_is_discardable
+                )
+            )
+        )
+        if (
+            not suffix
+            or suffix[-1].kind not in terminal_transfer_kinds
+            or unsafe_suffix
+        ):
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.OPERATION_TOPOLOGY,
+                operation.operation_id,
+                "clone-owned storage predicate suffix is not atomically discardable",
+            )
+
+
 def project_fragment(
     plan: FragmentPlan,
     snapshot: FragmentProjectionInput,
@@ -273,6 +368,8 @@ def project_fragment(
             snapshot.entry_block_id,
             "fragment projection entry lacks snapshot evidence",
         )
+
+    _validate_clone_storage_predicate_sources(plan, snapshot)
 
     successors = {
         block_id: list(block.successors) for block_id, block in evidence.items()

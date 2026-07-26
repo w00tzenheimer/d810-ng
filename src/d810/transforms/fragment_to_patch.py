@@ -217,6 +217,11 @@ def lower_fragment_plan(
         operation
         for operation in plan.operations
         if operation.computed_branch_normalization is not None
+        or (
+            operation.storage_predicate_materialization is not None
+            and plan.block(operation.source_block_id).materialization
+            is FragmentBlockMaterialization.CLONE_PUBLISHED
+        )
     )
     if normalized_operations:
         steps.append(PatchFragmentOperationNormalization(normalized_operations))

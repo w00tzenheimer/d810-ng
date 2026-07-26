@@ -3039,6 +3039,38 @@ class DeferredGraphModifier:
         block.mark_lists_dirty()
         self.mba.mark_chains_dirty()
 
+    def replace_instruction_tail_after_anchor_now(
+        self,
+        block: ida_hexrays.mblock_t,
+        *,
+        retained_ea: int,
+        replacement: ida_hexrays.minsn_t,
+    ) -> None:
+        """Retain one contiguous anchor group and replace its detached tail."""
+        instructions = self._block_instructions(block)
+        retained_indexes = tuple(
+            index
+            for index, instruction in enumerate(instructions)
+            if int(instruction.ea) == int(retained_ea)
+        )
+        if not retained_indexes or retained_indexes != tuple(
+            range(retained_indexes[0], retained_indexes[-1] + 1)
+        ):
+            raise ValueError(
+                "instruction tail replacement requires one contiguous retained "
+                f"anchor group; blk{int(block.serial)}@0x{int(block.start):X} "
+                f"anchor=0x{int(retained_ea):X} matches={retained_indexes!r}"
+            )
+        discarded = instructions[retained_indexes[-1] + 1 :]
+        if not discarded:
+            raise ValueError("instruction tail replacement requires a suffix")
+        for instruction in discarded:
+            block.make_nop(instruction)
+            block.remove_from_block(instruction)
+        block.insert_into_block(replacement, block.tail)
+        block.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+
     def insert_instruction_now(
         self,
         block: ida_hexrays.mblock_t,
