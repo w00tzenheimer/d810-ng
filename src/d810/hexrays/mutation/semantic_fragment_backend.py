@@ -3020,8 +3020,7 @@ def _project_fragment(
                     or tuple(raw_successors) != (int(target.serial),)
                     or direct_tail is None
                     or int(direct_tail.opcode) != int(ida_hexrays.m_goto)
-                    or int(getattr(direct_tail.l, "t", -1))
-                    != int(ida_hexrays.mop_b)
+                    or int(getattr(direct_tail.l, "t", -1)) != int(ida_hexrays.mop_b)
                     or int(getattr(direct_tail.l, "b", -1)) != int(target.serial)
                     or not int(block.flags) & int(ida_hexrays.MBL_GOTO)
                     or any(ea not in instruction_origins for ea in prefix_live_eas)
