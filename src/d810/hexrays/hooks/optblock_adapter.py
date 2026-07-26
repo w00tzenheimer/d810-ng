@@ -19,6 +19,7 @@ from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     LiveNopSite,
     build_callback_nop_delta_records,
+    build_callback_nop_inventory_records,
     capture_live_nop_sites,
 )
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
@@ -1008,6 +1009,37 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         except Exception:
             optimizer_logger.debug(
                 "failed to persist callback NOP delta",
+                exc_info=True,
+            )
+
+    def _report_callback_nop_inventory(
+        self,
+        mba: object,
+        *,
+        sites: tuple[LiveNopSite, ...] | None,
+        callback_kind: str,
+        callback_name: str,
+        stage: str,
+    ) -> None:
+        """Persist boundary presence or absence without changing behavior."""
+        if sites is None or self._fact_consumer_callback is None:
+            return
+        try:
+            maturity_value = getattr(mba, "maturity", self.current_maturity)
+            records = build_callback_nop_inventory_records(
+                sites=sites,
+                callback_kind=callback_kind,
+                callback_name=callback_name,
+                stage=stage,
+                maturity=maturity_to_string(maturity_value),
+            )
+            self._fact_consumer_callback(
+                int(getattr(mba, "entry_ea", 0) or 0),
+                records,
+            )
+        except Exception:
+            optimizer_logger.debug(
+                "failed to persist callback NOP inventory",
                 exc_info=True,
             )
 

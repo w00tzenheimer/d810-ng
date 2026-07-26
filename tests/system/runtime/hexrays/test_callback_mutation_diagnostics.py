@@ -8,6 +8,7 @@ import ida_hexrays
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     build_callback_nop_delta_records,
+    build_callback_nop_inventory_records,
     capture_live_nop_sites,
 )
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
@@ -88,6 +89,7 @@ class _RuleScope:
 class _GlboptNopProbe:
     def __init__(self) -> None:
         self.reports = []
+        self.inventories = []
 
     def prefold_return_reg_consumer_def_eas_for(self, _function_ea: int):
         return frozenset()
@@ -97,6 +99,9 @@ class _GlboptNopProbe:
 
     def _report_callback_nop_delta(self, mba, **kwargs) -> None:
         self.reports.append((mba, kwargs))
+
+    def _report_callback_nop_inventory(self, mba, **kwargs) -> None:
+        self.inventories.append((mba, kwargs))
 
 
 def test_callback_nop_delta_records_unreported_live_write_with_ea_anchor() -> None:
@@ -208,6 +213,57 @@ def test_callback_nop_delta_ignores_preexisting_nop() -> None:
     )
 
 
+def test_callback_nop_inventory_records_explicit_absence() -> None:
+    records = build_callback_nop_inventory_records(
+        sites=(),
+        callback_kind="glbopt_hook",
+        callback_name="hxe_glbopt_boundary",
+        stage="entry",
+        maturity="MMAT_GLBOPT2",
+    )
+
+    assert len(records) == 1
+    assert records[0].strategy == "hexrays_callback_nop_inventory"
+    assert records[0].decision == "absent"
+    assert records[0].payload == {
+        "callback_kind": "glbopt_hook",
+        "callback_name": "hxe_glbopt_boundary",
+        "inventory_count": 0,
+        "stage": "entry",
+    }
+
+
+def test_callback_nop_inventory_records_ea_anchored_presence() -> None:
+    sites = capture_live_nop_sites(
+        _Mba(
+            (
+                _Block(
+                    serial=77,
+                    start=0x40C100,
+                    end=0x40C120,
+                    head=_Instruction(ida_hexrays.m_nop, 0x40C115),
+                ),
+            )
+        )
+    )
+
+    records = build_callback_nop_inventory_records(
+        sites=sites,
+        callback_kind="glbopt_hook",
+        callback_name="hxe_glbopt_boundary",
+        stage="exit",
+        maturity="MMAT_GLBOPT2",
+    )
+
+    assert len(records) == 1
+    assert records[0].decision == "present"
+    assert records[0].payload["block_anchor"] == "blk77@0x40c100"
+    assert records[0].payload["instruction_ea"] == "0x40c115"
+    assert records[0].payload["instruction_path"] == "top[0]"
+    assert records[0].payload["inventory_count"] == 1
+    assert records[0].payload["stage"] == "exit"
+
+
 def test_callback_nop_delta_captures_nested_mop_d_instruction() -> None:
     nested = _Instruction(ida_hexrays.m_mov, 0x401014)
     outer = _Instruction(ida_hexrays.m_add, 0x401010)
@@ -316,6 +372,10 @@ def test_glbopt_reports_its_nop_write_with_merr_loop(
     assert report["callback_kind"] == "glbopt_hook"
     assert report["callback_name"] == "return_const_corruption_cleanup"
     assert report["callback_result"] == ida_hexrays.MERR_LOOP
+    assert [
+        (inventory["stage"], len(inventory["sites"]))
+        for _mba, inventory in probe.inventories
+    ] == [("entry", 0), ("exit", 1)]
 
 
 def test_instruction_optimizer_reports_a_nop_write_that_returns_false() -> None:

@@ -206,8 +206,72 @@ def build_callback_nop_delta_records(
     return tuple(records)
 
 
+def build_callback_nop_inventory_records(
+    *,
+    sites: tuple[LiveNopSite, ...],
+    callback_kind: str,
+    callback_name: str,
+    stage: str,
+    maturity: str,
+) -> tuple[FactConsumerRecord, ...]:
+    """Persist a boundary NOP inventory, including explicit absence."""
+    callback_kind = str(callback_kind)
+    callback_name = str(callback_name)
+    stage = str(stage)
+    inventory_count = len(sites)
+    common_payload: dict[str, object] = {
+        "callback_kind": callback_kind,
+        "callback_name": callback_name,
+        "inventory_count": inventory_count,
+        "stage": stage,
+    }
+    if not sites:
+        return (
+            FactConsumerRecord(
+                consumer="hexrays_callback",
+                strategy="hexrays_callback_nop_inventory",
+                fact_id=(
+                    f"callback-nop-inventory:{callback_kind}:{callback_name}:"
+                    f"{stage}:absent"
+                ),
+                maturity=str(maturity),
+                decision="absent",
+                reason="no live m_nop exists at the callback boundary",
+                payload=common_payload,
+            ),
+        )
+
+    records: list[FactConsumerRecord] = []
+    for site in sites:
+        payload = {
+            **common_payload,
+            "block_anchor": site.block_anchor,
+            "block_end_ea": f"0x{site.block_end_ea:x}",
+            "instruction_ea": f"0x{site.instruction_ea:x}",
+            "instruction_ordinal": int(site.instruction_ordinal),
+            "instruction_path": site.instruction_path,
+        }
+        records.append(
+            FactConsumerRecord(
+                consumer="hexrays_callback",
+                strategy="hexrays_callback_nop_inventory",
+                fact_id=(
+                    f"callback-nop-inventory:{callback_kind}:{callback_name}:"
+                    f"{stage}:0x{site.block_start_ea:x}:"
+                    f"0x{site.instruction_ea:x}:{site.instruction_path}"
+                ),
+                maturity=str(maturity),
+                decision="present",
+                reason="a live m_nop exists at the callback boundary",
+                payload=payload,
+            )
+        )
+    return tuple(records)
+
+
 __all__ = [
     "LiveNopSite",
     "build_callback_nop_delta_records",
+    "build_callback_nop_inventory_records",
     "capture_live_nop_sites",
 ]
