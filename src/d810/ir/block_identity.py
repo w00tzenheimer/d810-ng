@@ -260,6 +260,26 @@ def stable_block_identity_covers(
     )
 
 
+def stable_block_identities_overlap(
+    first: StableBlockIdentity,
+    second: StableBlockIdentity,
+) -> bool:
+    """Return whether two portable identities own intersecting native code."""
+    if not isinstance(first, StableBlockIdentity) or not isinstance(
+        second,
+        StableBlockIdentity,
+    ):
+        raise TypeError("identity overlap requires stable block identities")
+    if first.native_key != second.native_key:
+        return False
+    return any(
+        int(first_interval.start_ea) < int(second_interval.end_ea)
+        and int(second_interval.start_ea) < int(first_interval.end_ea)
+        for first_interval in first.native_ranges.intervals
+        for second_interval in second.native_ranges.intervals
+    )
+
+
 def stable_block_identities_refine_at_anchor(
     first: StableBlockIdentity,
     second: StableBlockIdentity,
@@ -900,6 +920,7 @@ __all__ = [
     "instruction_fingerprint",
     "maturity_label",
     "refine_stable_block_identity_for_graph_block",
+    "stable_block_identities_overlap",
     "stable_block_identities_refine_at_anchor",
     "stable_block_identity_covers",
     "stable_block_identity_semantic_anchor",

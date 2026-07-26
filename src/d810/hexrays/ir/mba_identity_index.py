@@ -597,6 +597,24 @@ class MbaBlockIdentityIndex:
             transaction_id=str(transaction_id),
         )
 
+    def published_identity_for_logical_ref(
+        self,
+        ref: LogicalBlockRef,
+    ) -> StableBlockIdentity | None:
+        """Read serial-free published identity without opening a transaction."""
+        self.require_generation_usable()
+        if not isinstance(ref, LogicalBlockRef):
+            raise TypeError("logical identity lookup requires a LogicalBlockRef")
+        if ref.session_id != self.session_id:
+            return None
+        proxy = self._proxies_by_token.get(ref.proxy_token)
+        if proxy is None:
+            return None
+        version = proxy.resolve()
+        if version is None or version.version_id.version != ref.version:
+            return None
+        return version.handle.stable_identity
+
     def _new_token(self, prefix: str) -> str:
         token = f"{prefix}:{self._next_token}"
         self._next_token += 1
