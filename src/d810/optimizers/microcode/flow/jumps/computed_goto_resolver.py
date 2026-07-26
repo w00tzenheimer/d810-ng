@@ -460,17 +460,33 @@ _STACK_TOP = _STACK_BASE + _STACK_SIZE // 2
 
 
 @dataclass(frozen=True, slots=True)
+class NativeStackCapacityCorridor:
+    """One reachable stack-neutral instruction with point-free boundaries."""
+
+    start_ea: int
+    end_ea: int
+    original_start_spd: int
+    original_start_delta: int
+    original_end_spd: int
+    original_end_delta: int
+    original_chunks: tuple[tuple[int, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class NativeStackCapacityWitnessRecord:
-    """Immutable authority for one reversible native stack-capacity witness."""
+    """Immutable authority for one reversible stack-capacity corridor."""
 
     function_ea: int
-    native_ea: int
-    tail_end_ea: int
+    deepest_native_ea: int
+    capacity_start_ea: int
+    capacity_end_ea: int
     canonical_spd: int
-    original_spd: int
-    original_delta: int
     projected_spd: int
     route_call_delta: int
+    original_start_spd: int
+    original_start_delta: int
+    original_end_spd: int
+    original_end_delta: int
     original_chunks: tuple[tuple[int, int], ...]
     portable_points: tuple[tuple[int, int], ...]
 
@@ -478,16 +494,6 @@ class NativeStackCapacityWitnessRecord:
     def portable_point_count(self) -> int:
         """Return the complete portable inventory represented by this witness."""
         return len(self.portable_points)
-
-    @property
-    def expected_chunks(self) -> tuple[tuple[int, int], ...]:
-        """Return the exact function inventory while the witness is leased."""
-        return tuple(
-            sorted(
-                (*self.original_chunks, (int(self.native_ea), int(self.tail_end_ea)))
-            )
-        )
-
 
 def _function_chunk_inventory(function: object) -> tuple[tuple[int, int], ...]:
     """Snapshot every function chunk as immutable address intervals."""
@@ -497,6 +503,84 @@ def _function_chunk_inventory(function: object) -> tuple[tuple[int, int], ...]:
         (int(chunk.start_ea), int(chunk.end_ea))
         for chunk in ida_funcs.func_tail_iterator_t(function)
     )
+
+
+def _instruction_is_stack_neutral_capacity_corridor(instruction: object) -> bool:
+    """Prove one instruction neither changes/uses SP nor ends control flow."""
+    import ida_bytes  # type: ignore[import-untyped]
+    import ida_idp  # type: ignore[import-untyped]
+    import ida_ua  # type: ignore[import-untyped]
+
+    if ida_idp.is_basic_block_end(instruction, True):
+        return False
+    flags = ida_bytes.get_flags(int(instruction.ea))
+    for operand_index, operand in enumerate(instruction.ops):
+        if int(operand.type) == int(ida_ua.o_void):
+            break
+        if ida_bytes.is_stkvar(flags, operand_index):
+            return False
+    register_names = ida_idp.ph_get_regnames()
+    accesses = ida_idp.reg_accesses_t()
+    if ida_idp.ph_get_reg_accesses(accesses, instruction, 0) < 0:
+        return False
+    stack_registers = {"sp", "esp", "rsp", "spl"}
+    return not any(
+        str(register_names[int(access.regnum)]).lower() in stack_registers
+        for access in accesses
+    )
+
+
+def _select_native_stack_capacity_corridor(
+    function: object,
+    canonical_spd: int,
+) -> NativeStackCapacityCorridor | None:
+    """Select the first reachable point-free stack-neutral instruction."""
+    import ida_bytes  # type: ignore[import-untyped]
+    import ida_frame  # type: ignore[import-untyped]
+    import ida_ua  # type: ignore[import-untyped]
+
+    original_chunks = _function_chunk_inventory(function)
+    function_ea = int(getattr(function, "start_ea"))
+    main_chunks = tuple(
+        (start_ea, end_ea)
+        for start_ea, end_ea in original_chunks
+        if int(start_ea) == function_ea
+    )
+    if len(main_chunks) != 1:
+        return None
+    current_ea, main_end_ea = main_chunks[0]
+    while current_ea < main_end_ea:
+        instruction = ida_ua.insn_t()
+        size = int(ida_ua.decode_insn(instruction, int(current_ea)))
+        end_ea = int(ida_bytes.get_item_end(int(current_ea)))
+        if size <= 0 or end_ea != int(current_ea) + size:
+            return None
+        if end_ea >= main_end_ea:
+            break
+        original_start_spd = int(ida_frame.get_spd(function, int(current_ea)))
+        original_start_delta = int(
+            ida_frame.get_sp_delta(function, int(current_ea))
+        )
+        original_end_spd = int(ida_frame.get_spd(function, end_ea))
+        original_end_delta = int(ida_frame.get_sp_delta(function, end_ea))
+        if (
+            original_start_spd == int(canonical_spd)
+            and original_end_spd == int(canonical_spd)
+            and original_start_delta == 0
+            and original_end_delta == 0
+            and _instruction_is_stack_neutral_capacity_corridor(instruction)
+        ):
+            return NativeStackCapacityCorridor(
+                start_ea=int(current_ea),
+                end_ea=end_ea,
+                original_start_spd=original_start_spd,
+                original_start_delta=original_start_delta,
+                original_end_spd=original_end_spd,
+                original_end_delta=original_end_delta,
+                original_chunks=original_chunks,
+            )
+        current_ea = end_ea
+    return None
 
 
 def _normalize_detached_stack_points(
@@ -526,20 +610,19 @@ def _native_stack_capacity_witness_payload(
     """Serialize immutable witness authority for the diagnostic database."""
     return {
         "function_ea": hex(int(record.function_ea)),
-        "native_ea": hex(int(record.native_ea)),
-        "tail_end_ea": hex(int(record.tail_end_ea)),
+        "deepest_native_ea": hex(int(record.deepest_native_ea)),
+        "capacity_start_ea": hex(int(record.capacity_start_ea)),
+        "capacity_end_ea": hex(int(record.capacity_end_ea)),
         "canonical_spd": int(record.canonical_spd),
-        "original_spd": int(record.original_spd),
-        "original_delta": int(record.original_delta),
         "projected_spd": int(record.projected_spd),
         "route_call_delta": int(record.route_call_delta),
+        "original_start_spd": int(record.original_start_spd),
+        "original_start_delta": int(record.original_start_delta),
+        "original_end_spd": int(record.original_end_spd),
+        "original_end_delta": int(record.original_end_delta),
         "original_chunks": [
             [hex(int(start_ea)), hex(int(end_ea))]
             for start_ea, end_ea in record.original_chunks
-        ],
-        "expected_chunks": [
-            [hex(int(start_ea)), hex(int(end_ea))]
-            for start_ea, end_ea in record.expected_chunks
         ],
         "portable_point_count": int(record.portable_point_count),
         "outcome": str(outcome),
@@ -606,70 +689,68 @@ def _restore_native_stack_capacity_witness(
     function: object,
     record: NativeStackCapacityWitnessRecord,
     *,
-    point_write_attempted: bool,
-    tail_write_attempted: bool,
+    start_write_attempted: bool,
+    end_write_attempted: bool,
     installed: bool,
 ) -> tuple[str, ...]:
     """Best-effort restore one witness and return every failed obligation."""
     import ida_frame  # type: ignore[import-untyped]
-    import ida_funcs  # type: ignore[import-untyped]
 
     failures: list[str] = []
-    native_ea = int(record.native_ea)
-    if point_write_attempted:
+    start_ea = int(record.capacity_start_ea)
+    end_ea = int(record.capacity_end_ea)
+    points = (
+        (
+            end_ea,
+            int(record.original_end_spd),
+            int(record.original_end_delta),
+            end_write_attempted,
+        ),
+        (
+            start_ea,
+            int(record.original_start_spd),
+            int(record.original_start_delta),
+            start_write_attempted,
+        ),
+    )
+    for native_ea, _original_spd, original_delta, write_attempted in points:
+        if not write_attempted:
+            continue
         try:
-            observed_spd = int(ida_frame.get_spd(function, native_ea))
             observed_delta = int(ida_frame.get_sp_delta(function, native_ea))
-            point_changed = observed_spd != int(
-                record.original_spd
-            ) or observed_delta != int(record.original_delta)
+            point_changed = observed_delta != original_delta
             if (installed or point_changed) and not ida_frame.del_stkpnt(
                 function, native_ea
             ):
                 failures.append(f"delete_point@0x{native_ea:X}")
         except Exception as error:
             failures.append(f"delete_point@0x{native_ea:X}:{error}")
+    for native_ea, original_spd, original_delta, _write_attempted in reversed(points):
         try:
             restored_spd = int(ida_frame.get_spd(function, native_ea))
             restored_delta = int(ida_frame.get_sp_delta(function, native_ea))
-            if restored_spd != int(record.original_spd) or restored_delta != int(
-                record.original_delta
-            ):
+            if restored_spd != original_spd or restored_delta != original_delta:
                 failures.append(
                     f"verify_point@0x{native_ea:X}:"
-                    f"spd={restored_spd}/{int(record.original_spd)},"
-                    f"delta={restored_delta}/{int(record.original_delta)}"
+                    f"spd={restored_spd}/{original_spd},"
+                    f"delta={restored_delta}/{original_delta}"
                 )
         except Exception as error:
             failures.append(f"verify_point@0x{native_ea:X}:{error}")
-    if tail_write_attempted:
-        try:
-            observed_chunks = _function_chunk_inventory(function)
-            if (
-                observed_chunks != record.original_chunks
-                and not ida_funcs.remove_func_tail(function, native_ea)
-            ):
-                failures.append(f"remove_tail@0x{native_ea:X}")
-        except Exception as error:
-            failures.append(f"remove_tail@0x{native_ea:X}:{error}")
     try:
         restored_chunks = _function_chunk_inventory(function)
         if restored_chunks != record.original_chunks:
             failures.append(
                 f"verify_chunks:{restored_chunks!r}!={record.original_chunks!r}"
             )
-        if ida_funcs.func_contains(function, native_ea):
-            failures.append(f"verify_detached@0x{native_ea:X}")
-        if ida_funcs.get_func(native_ea) is not None:
-            failures.append(f"verify_unowned@0x{native_ea:X}")
     except Exception as error:
-        failures.append(f"verify_tail@0x{native_ea:X}:{error}")
+        failures.append(f"verify_chunks:{error}")
     return tuple(failures)
 
 
 @dataclass(slots=True)
 class NativeStackCapacityWitnessLease:
-    """One-decompile lease over a tail-backed native stack capacity witness."""
+    """One-decompile lease over a reachable stack-neutral capacity corridor."""
 
     function: object
     record: NativeStackCapacityWitnessRecord
@@ -678,14 +759,14 @@ class NativeStackCapacityWitnessLease:
     _released: bool = False
 
     def release(self) -> None:
-        """Restore the native point and tail exactly once after decompilation."""
+        """Restore both native stack points exactly once after decompilation."""
         if self._released:
             return
         failures = _restore_native_stack_capacity_witness(
             self.function,
             self.record,
-            point_write_attempted=True,
-            tail_write_attempted=True,
+            start_write_attempted=True,
+            end_write_attempted=True,
             installed=True,
         )
         if failures:
@@ -712,7 +793,7 @@ class NativeStackCapacityWitnessLease:
             self.session,
             self.state,
             phase="released",
-            summary="restored one stack point and one temporary function tail",
+            summary="restored both temporary stack-capacity corridor points",
             witness=_native_stack_capacity_witness_payload(
                 self.record,
                 outcome="restored",
@@ -725,16 +806,15 @@ class NativeStackCapacityWitnessLease:
 def acquire_detached_call_stack_capacity_witness(
     session: ResolverLifecycleSession,
 ) -> NativeStackCapacityWitnessLease | None:
-    """Lease one deepest detached call site as a stack-capacity witness.
+    """Lease one reachable stack-neutral corridor as a capacity witness.
 
-    All portable call-depth facts, native stack observations, ownership, item
-    extent, and the complete function chunk inventory are frozen before the
-    first SDK write.  Realization appends one instruction tail and installs one
-    automatic SPD point.  Any partial write is rolled back and verified before
-    this function raises; the returned lease restores both writes in reverse
-    order after exactly one decompile round.
+    All portable call-depth facts, both native corridor boundaries, and the
+    complete function chunk inventory are frozen before the first SDK write.
+    Realization deepens SPD for one stack-neutral reachable instruction and
+    restores canonical SPD at its end.  Any partial write is rolled back and
+    verified before this function raises; the returned lease restores both
+    points in reverse order after exactly one decompile round.
     """
-    import ida_bytes  # type: ignore[import-untyped]
     import ida_frame  # type: ignore[import-untyped]
     import ida_funcs  # type: ignore[import-untyped]
 
@@ -813,103 +893,106 @@ def acquire_detached_call_stack_capacity_witness(
             int(candidate["native_ea"]),
         ),
     )
-    native_ea = int(deepest["native_ea"])
-    tail_end_ea = int(ida_bytes.get_item_end(native_ea))
-    owner = ida_funcs.get_func(native_ea)
-    end_owner = ida_funcs.get_func(tail_end_ea - 1) if tail_end_ea > native_ea else None
-    reason: str | None = None
-    if (
-        owner is not None
-        or end_owner is not None
-        or ida_funcs.func_contains(function, native_ea)
-    ):
-        reason = "capacity_witness_not_detached"
-    elif tail_end_ea <= native_ea or tail_end_ea == int(getattr(idaapi, "BADADDR", -1)):
-        reason = "invalid_capacity_witness_item_extent"
-    elif int(deepest["original_spd"]) == int(deepest["projected_spd"]):
-        reason = "capacity_witness_already_projected_without_owned_point"
-    original_chunks = _function_chunk_inventory(function)
-    if reason is not None:
+    if int(deepest["projected_spd"]) >= canonical_spd:
+        return None
+    corridor = _select_native_stack_capacity_corridor(function, canonical_spd)
+    if corridor is None:
         _observe_native_stack_capacity_witness(
             session,
             state,
             phase="preflight_rejected",
-            summary="native stack-capacity witness ownership preflight rejected",
+            summary="no reachable stack-neutral capacity corridor was proven",
             witness={
                 **deepest,
-                "native_ea": hex(native_ea),
-                "tail_end_ea": hex(tail_end_ea),
+                "native_ea": hex(int(deepest["native_ea"])),
                 "outcome": "rejected",
-                "reason": reason,
+                "reason": "no_reachable_stack_neutral_capacity_corridor",
             },
             portable_points=_portable_stack_points_payload(portable_points),
         )
         return None
     record = NativeStackCapacityWitnessRecord(
         function_ea=function_ea,
-        native_ea=native_ea,
-        tail_end_ea=tail_end_ea,
+        deepest_native_ea=int(deepest["native_ea"]),
+        capacity_start_ea=int(corridor.start_ea),
+        capacity_end_ea=int(corridor.end_ea),
         canonical_spd=canonical_spd,
-        original_spd=int(deepest["original_spd"]),
-        original_delta=int(deepest["original_delta"]),
         projected_spd=int(deepest["projected_spd"]),
         route_call_delta=int(deepest["route_call_delta"]),
-        original_chunks=original_chunks,
+        original_start_spd=int(corridor.original_start_spd),
+        original_start_delta=int(corridor.original_start_delta),
+        original_end_spd=int(corridor.original_end_spd),
+        original_end_delta=int(corridor.original_end_delta),
+        original_chunks=tuple(corridor.original_chunks),
         portable_points=portable_points,
     )
 
-    tail_write_attempted = False
-    point_write_attempted = False
-    point_installed = False
+    start_ea = int(record.capacity_start_ea)
+    end_ea = int(record.capacity_end_ea)
+    start_write_attempted = False
+    end_write_attempted = False
+    installed = False
     try:
-        tail_write_attempted = True
-        if not ida_funcs.append_func_tail(function, native_ea, tail_end_ea):
-            raise RuntimeError(f"append_func_tail failed at 0x{native_ea:X}")
-        if (
-            not ida_funcs.func_contains(function, native_ea)
-            or _function_chunk_inventory(function) != record.expected_chunks
+        start_write_attempted = True
+        if not ida_frame.set_auto_spd(
+            function,
+            start_ea,
+            int(record.projected_spd),
         ):
-            raise RuntimeError(f"temporary tail verification failed at 0x{native_ea:X}")
+            raise RuntimeError(f"capacity-entry set_auto_spd failed at 0x{start_ea:X}")
         _observe_native_stack_capacity_witness(
             session,
             state,
-            phase="tail_created",
-            summary="created one-instruction stack-capacity witness tail",
+            phase="capacity_entered",
+            summary="entered one-instruction stack-capacity corridor",
             witness=_native_stack_capacity_witness_payload(
                 record,
                 outcome="created",
-                reason="temporary_tail_created",
+                reason="capacity_entry_installed",
             ),
             portable_points=_portable_stack_points_payload(portable_points),
         )
-        point_write_attempted = True
+        end_write_attempted = True
         if not ida_frame.set_auto_spd(
             function,
-            native_ea,
-            int(record.projected_spd),
+            end_ea,
+            int(record.original_end_spd),
         ):
-            raise RuntimeError(f"set_auto_spd failed at 0x{native_ea:X}")
-        point_installed = True
-        observed_spd = int(ida_frame.get_spd(function, native_ea))
-        observed_delta = int(ida_frame.get_sp_delta(function, native_ea))
-        expected_delta = int(record.projected_spd) - int(record.original_spd)
+            raise RuntimeError(f"capacity-exit set_auto_spd failed at 0x{end_ea:X}")
+        installed = True
+        observed_start_spd = int(ida_frame.get_spd(function, start_ea))
+        observed_start_delta = int(ida_frame.get_sp_delta(function, start_ea))
+        observed_end_spd = int(ida_frame.get_spd(function, end_ea))
+        observed_end_delta = int(ida_frame.get_sp_delta(function, end_ea))
+        expected_start_delta = int(record.projected_spd) - int(
+            record.original_start_spd
+        )
+        expected_end_delta = int(record.original_end_spd) - int(
+            record.projected_spd
+        )
         if (
-            observed_spd != int(record.projected_spd)
-            or observed_delta != expected_delta
-            or _function_chunk_inventory(function) != record.expected_chunks
+            observed_start_spd != int(record.projected_spd)
+            or observed_start_delta != expected_start_delta
+            or observed_end_spd != int(record.original_end_spd)
+            or observed_end_delta != expected_end_delta
+            or _function_chunk_inventory(function) != record.original_chunks
         ):
             raise RuntimeError(
-                f"stack-capacity witness verification failed at 0x{native_ea:X}: "
-                f"spd={observed_spd}/{int(record.projected_spd)}, "
-                f"delta={observed_delta}/{expected_delta}"
+                "stack-capacity corridor verification failed: "
+                f"entry=0x{start_ea:X}:"
+                f"spd={observed_start_spd}/{int(record.projected_spd)},"
+                f"delta={observed_start_delta}/{expected_start_delta}; "
+                f"exit=0x{end_ea:X}:"
+                f"spd={observed_end_spd}/{int(record.original_end_spd)},"
+                f"delta={observed_end_delta}/{expected_end_delta}"
             )
     except Exception as error:
         rollback_failures = _restore_native_stack_capacity_witness(
             function,
             record,
-            point_write_attempted=point_write_attempted,
-            tail_write_attempted=tail_write_attempted,
-            installed=point_installed,
+            start_write_attempted=start_write_attempted,
+            end_write_attempted=end_write_attempted,
+            installed=installed,
         )
         _observe_native_stack_capacity_witness(
             session,
@@ -941,7 +1024,7 @@ def acquire_detached_call_stack_capacity_witness(
         session,
         state,
         phase="installed",
-        summary="installed one deepest detached-call stack-capacity witness",
+        summary="installed one reachable stack-neutral capacity corridor",
         witness=_native_stack_capacity_witness_payload(
             record,
             outcome="installed",
@@ -12294,9 +12377,6 @@ def _on_stkpnts(
     decision: dict,
 ) -> None:
     """Observe the manager-owned stack-capacity witness without mutating it."""
-    import ida_frame  # type: ignore[import-untyped]
-    import ida_funcs  # type: ignore[import-untyped]
-
     del function_ea, stack_points
     state = _resolver_state_from_decision(decision)
     if state is None:
@@ -12305,15 +12385,9 @@ def _on_stkpnts(
     if not isinstance(resolution, ComputedGotoResolution) or resolution.arch != "x86":
         return
     if state.snippet_capture_active:
-        # Isolated capture must never acquire or extend the top-level IDB lease.
+        # Isolated capture must never inspect or extend the top-level IDB lease.
         return
     key = int(resolution.function_ea)
-    function = ida_funcs.get_func(key)
-    if function is None:
-        return
-    canonical_spd = -(
-        int(getattr(function, "frsize")) + int(getattr(function, "frregs"))
-    )
     try:
         portable_points = _normalize_detached_stack_points(
             detached_preopt_call_stack_points(key)
@@ -12330,21 +12404,20 @@ def _on_stkpnts(
         return
     native_ea, route_call_delta = min(
         portable_points,
-        key=lambda point: (canonical_spd + int(point[1]), int(point[0])),
+        key=lambda point: (int(point[1]), int(point[0])),
     )
     try:
-        native_spd = int(ida_frame.get_spd(function, int(native_ea)))
+        destination_top = int(mba.stkoff_ida2vd(0))
     except Exception:
         logger.debug(
             "computed-goto stack-capacity witness observation failed: "
-            "func=0x%X native=0x%X",
+            "func=0x%X",
             key,
-            int(native_ea),
             exc_info=True,
         )
         return
-    expected_spd = canonical_spd + int(route_call_delta)
-    if native_spd == expected_spd:
+    required_capacity = max(0, -int(route_call_delta))
+    if destination_top >= required_capacity:
         outcome = "observed"
         reason = "capacity_witness_present"
         observed = 1
@@ -12354,10 +12427,9 @@ def _on_stkpnts(
         observed = 0
     witness = {
         "native_ea": hex(int(native_ea)),
-        "observed_spd": native_spd,
-        "canonical_spd": canonical_spd,
+        "observed_stack_zero_vd": destination_top,
+        "required_stack_capacity": required_capacity,
         "route_call_delta": int(route_call_delta),
-        "expected_spd": expected_spd,
         "outcome": outcome,
         "reason": reason,
     }
@@ -12395,9 +12467,11 @@ def _on_stkpnts(
         )
     logger.info(
         "computed-goto stack-capacity witness observed: func=0x%X "
-        "witness=%s outcome=%s route_call_spds=%s",
+        "witness=%s capacity=%d/%d outcome=%s route_call_spds=%s",
         key,
         hex(int(native_ea)),
+        destination_top,
+        required_capacity,
         outcome,
         [(hex(int(call_ea)), int(spd)) for call_ea, spd in portable_points],
     )
