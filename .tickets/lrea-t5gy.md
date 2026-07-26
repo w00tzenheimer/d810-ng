@@ -6712,3 +6712,7 @@ Checkpoint 14917ad00: added manager-owned actual MMAT_GENERATED optinsn seam, on
 **2026-07-26T23:00:55Z**
 
 Correction to the preceding escaped note: commit c9cb1aab8 is the bounded GENERATED checksum checkpoint. The authoritative evidence is .tmp/generated-checksum-dev33.txt plus its copied SQLite assertions: one 13/13 committed receipt; passed GENERATED, PREOPT, LOCOPT, CALLS, and CMAT_FINAL observations; no redo, poison, or INTERR. It proves this one route only, not full A560.
+
+**2026-07-26T23:24:23Z**
+
+C6 checksum accepted on 2026-07-26 at 25f74026b: exact A560 GENERATED canary 1 passed; diagnostic receipt 13/13 committed, attempt committed and unpoisoned, route passed GENERATED/PREOPT/LOCOPT/CALLS, CMAT_FINAL present, no rollback or INTERR; strict 41-row parity passed; focused unit 157 passed; runtime seam 210 passed; protected Hodur/Sub7FFD/Tigress/Approov 13 passed; input SHA-256 remains 2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c. This is the bounded checksum route only, not full A560 restoration.
