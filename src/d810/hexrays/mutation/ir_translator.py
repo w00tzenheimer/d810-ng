@@ -1107,9 +1107,7 @@ class IDAIRTranslator:
                 self._fail_patch_attempt(
                     patch_gateway,
                     RuntimeError("post-apply native verification failed"),
-                    failure_phase=(
-                        self._last_lowering_phase or "native_verify"
-                    ),
+                    failure_phase=(self._last_lowering_phase or "native_verify"),
                 )
                 return 0
 
@@ -1141,9 +1139,7 @@ class IDAIRTranslator:
                 RuntimeError("PatchPlan reported writes before realization started"),
                 failure_phase="realization",
             )
-            raise RuntimeError(
-                "PatchPlan reported writes before realization started"
-            )
+            raise RuntimeError("PatchPlan reported writes before realization started")
         post_graph = modifier.observe_live_graph()
         patch_gateway.observe_patch_realization(
             post_graph,
