@@ -1175,6 +1175,18 @@ def _generated_reference_template_components(
     )
 
 
+def _generated_superseded_transfer_carrier_block_ids(
+    *,
+    plan: FragmentPlan,
+    native_body: FragmentNativeBody,
+) -> set[str]:
+    """Return the exact plan-owned imported carriers replaced at publication."""
+    return (
+        superseded_direct_transfer_carrier_block_ids(plan)
+        | superseded_referenced_conditional_carrier_block_ids(plan)
+    ) & set(native_body.block_ids)
+
+
 _ACTIVE_PREOPT_UNION_IMPORT_MBA_IDS: set[int] = set()
 _DETACHED_REPLACEMENT_SNIPPET_TEMPLATES: dict[
     tuple[int, int],
@@ -1487,6 +1499,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
 
         rebased_serial_by_component: list[dict[int, int]] = []
         owned_serial_by_interval: dict[tuple[int, int], int] = {}
+        owned_serial_by_entry: dict[int, int] = {}
         next_serial = 0
         for template, owned_blocks in zip(components, owned_blocks_by_component):
             rebased_serials: dict[int, int] = {}
@@ -1507,6 +1520,14 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     )
                 rebased_serials[old_serial] = next_serial
                 owned_serial_by_interval[interval] = next_serial
+                previous_entry_serial = owned_serial_by_entry.setdefault(
+                    int(block.native_entry_ea), next_serial
+                )
+                if int(previous_entry_serial) != next_serial:
+                    raise SemanticFragmentBackendRejected(
+                        "GENERATED reference templates contain duplicate typed "
+                        f"owned entry 0x{int(block.native_entry_ea):X}"
+                    )
                 next_serial += 1
             if int(template.root_source_serial) not in rebased_serials:
                 raise SemanticFragmentBackendRejected(
@@ -1568,6 +1589,22 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                         )
                 internal_successors: list[int] = []
                 external_successors: list[int] = []
+                tail = None if not instructions else instructions[-1]
+                unresolved_multi_exit_carrier = bool(
+                    tail is not None
+                    and int(tail.opcode) == int(ida_hexrays.m_ret)
+                    and int(tail.ea) == int(block.native_entry_ea)
+                    and int(block.block_type) == int(ida_hexrays.BLT_STOP)
+                    and bool(int(block.block_flags) & int(ida_hexrays.MBL_FAKE))
+                    and len(
+                        tuple(
+                            int(ea)
+                            for ea in block.external_successor_eas
+                            if int(ea) > 0
+                        )
+                    )
+                    > 1
+                )
                 for index, successor in enumerate(block.successor_serials):
                     old_successor = int(successor)
                     external_ea = (
@@ -1594,20 +1631,29 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                             f"boundary: serial={old_successor}"
                         )
                     external_successors.append(int(boundary_ea))
-                external_successors.extend(
-                    int(external_ea)
-                    for external_ea in block.external_successor_eas[
-                        len(block.successor_serials) :
-                    ]
-                    if int(external_ea) > 0
-                )
+                for external_ea in block.external_successor_eas[
+                    len(block.successor_serials) :
+                ]:
+                    external_ea = int(external_ea)
+                    if external_ea <= 0:
+                        continue
+                    imported_successor = owned_serial_by_entry.get(external_ea)
+                    if (
+                        imported_successor is not None
+                        and not unresolved_multi_exit_carrier
+                    ):
+                        internal_successors.append(int(imported_successor))
+                    else:
+                        external_successors.append(external_ea)
                 rebased_blocks.append(
                     replace(
                         block,
                         source_serial=rebased_serials[int(block.source_serial)],
                         instructions=instructions,
-                        successor_serials=tuple(internal_successors),
-                        external_successor_eas=tuple(external_successors),
+                        successor_serials=tuple(dict.fromkeys(internal_successors)),
+                        external_successor_eas=tuple(
+                            dict.fromkeys(external_successors)
+                        ),
                     )
                 )
             if int(template.target_ea) == root_target_ea:
@@ -2068,9 +2114,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             }
         )
         superseded_transfer_carrier_block_ids = (
-            superseded_direct_transfer_carrier_block_ids(plan)
-            | superseded_referenced_conditional_carrier_block_ids(plan)
-        ) & set(native_body.block_ids)
+            _generated_superseded_transfer_carrier_block_ids(
+                plan=plan,
+                native_body=native_body,
+            )
+        )
         if allow_unplanned_transfers:
             body_block_ids = set(native_body.block_ids)
             if (
@@ -2115,14 +2163,16 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     if int(ea) > 0
                 )
                 terminal_return_is_bound = bool(
-                    not has_terminal_return
-                    or (
-                        block_id in superseded_transfer_carrier_block_ids
-                        and not external_targets
-                    )
-                    or (
-                        block_id in preserved_native_transfer_block_ids
-                        and bool(external_targets)
+                    self._generated_terminal_return_is_bound(
+                        block_id=block_id,
+                        template_block=template_block,
+                        has_terminal_return=has_terminal_return,
+                        superseded_transfer_carrier_block_ids=(
+                            superseded_transfer_carrier_block_ids
+                        ),
+                        preserved_native_transfer_block_ids=(
+                            preserved_native_transfer_block_ids
+                        ),
                     )
                 )
                 if terminal_block_ids or not terminal_return_is_bound:
@@ -2336,6 +2386,31 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     f"plan_call_fallthrough={operation_has_call_fallthrough}"
                 )
         return stack_map, computed_normalizations, direct_transfer_rewrites
+
+    @staticmethod
+    def _generated_terminal_return_is_bound(
+        *,
+        block_id: str,
+        template_block: DetachedSnippetBlockTemplate,
+        has_terminal_return: bool,
+        superseded_transfer_carrier_block_ids: set[str],
+        preserved_native_transfer_block_ids: set[str],
+    ) -> bool:
+        """Accept exact external or internally stitched GENERATED carriers."""
+        external_targets = tuple(
+            int(ea) for ea in template_block.external_successor_eas if int(ea) > 0
+        )
+        return bool(
+            not has_terminal_return
+            or (
+                block_id in superseded_transfer_carrier_block_ids
+                and not external_targets
+            )
+            or (
+                block_id in preserved_native_transfer_block_ids
+                and bool(external_targets or template_block.successor_serials)
+            )
+        )
 
     @staticmethod
     def _preflight_split_conditional_select_normalization(
@@ -3672,6 +3747,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         *,
         matched: Mapping[str, DetachedSnippetBlockTemplate],
         native_body: FragmentNativeBody,
+        superseded_transfer_carrier_block_ids: Collection[str],
     ) -> tuple[
         dict[str, tuple[PreparedNativeEdgeFact, ...]],
         dict[str, tuple[int, InsnKind]],
@@ -3687,7 +3763,13 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             )
         successors_by_id: dict[str, tuple[PreparedNativeEdgeFact, ...]] = {}
         terminators_by_id: dict[str, tuple[int, InsnKind]] = {}
+        superseded_carriers = {
+            str(block_id) for block_id in superseded_transfer_carrier_block_ids
+        }
         for block_id in native_body.preserved_native_transfer_block_ids:
+            if block_id in superseded_carriers:
+                successors_by_id[str(block_id)] = ()
+                continue
             template_block = matched[block_id]
             internal_targets = tuple(
                 dict.fromkeys(
@@ -3701,7 +3783,19 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 if not template_block.instructions
                 else template_block.instructions[-1]
             )
-            if (
+            unresolved_transfer_carrier = bool(
+                tail is not None
+                and int(tail.opcode) == int(ida_hexrays.m_ret)
+                and int(tail.ea) == int(template_block.native_entry_ea)
+                and int(template_block.block_type) == int(ida_hexrays.BLT_STOP)
+                and bool(int(template_block.block_flags) & int(ida_hexrays.MBL_FAKE))
+            )
+            if unresolved_transfer_carrier and len(internal_targets) <= 1:
+                successors = tuple(
+                    PreparedNativeEdgeFact(SemanticEdgeRole.DIRECT, target_id)
+                    for target_id in internal_targets
+                )
+            elif (
                 tail is not None
                 and ida_hexrays.is_mcode_jcond(int(tail.opcode))
                 and len(internal_targets) == 2
@@ -3740,23 +3834,13 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             external_targets = tuple(
                 int(ea) for ea in template_block.external_successor_eas if int(ea) > 0
             )
-            if external_targets:
-                unresolved_transfer_carrier = bool(
-                    tail is not None
-                    and int(tail.opcode) == int(ida_hexrays.m_ret)
-                    and int(tail.ea) == int(template_block.native_entry_ea)
-                    and int(template_block.block_type) == int(ida_hexrays.BLT_STOP)
-                    and bool(
-                        int(template_block.block_flags) & int(ida_hexrays.MBL_FAKE)
-                    )
-                    and not template_block.successor_serials
+            if unresolved_transfer_carrier:
+                terminators_by_id[str(block_id)] = (
+                    int(tail.ea),
+                    InsnKind.INDIRECT_JUMP,
                 )
-                if unresolved_transfer_carrier:
-                    terminators_by_id[str(block_id)] = (
-                        int(tail.ea),
-                        InsnKind.INDIRECT_JUMP,
-                    )
-                elif len(external_targets) != 1 or tail is None:
+            elif external_targets:
+                if len(external_targets) != 1 or tail is None:
                     raise SemanticFragmentBackendRejected(
                         "GENERATED preserved boundary transfer is ambiguous; "
                         f"block={block_id!r}"
@@ -3832,6 +3916,12 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         ) = self._generated_preserved_transfer_authority(
             matched=matched,
             native_body=native_body,
+            superseded_transfer_carrier_block_ids=(
+                _generated_superseded_transfer_carrier_block_ids(
+                    plan=plan,
+                    native_body=native_body,
+                )
+            ),
         )
         preparation = self._prepared_native_body(
             plan=plan,
@@ -3958,6 +4048,12 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         }
         row_by_id = {row[0]: row for row in preparation.payload.rows}
         fact_by_id = {block.block_id: block for block in preparation.fact.blocks}
+        superseded_transfer_carrier_block_ids = (
+            _generated_superseded_transfer_carrier_block_ids(
+                plan=context.plan,
+                native_body=native_body,
+            )
+        )
         for block_id in native_body.block_ids:
             _row_id, block_flags, instruction_rows = row_by_id[block_id]
             clones: list[tuple[int, object]] = []
@@ -3974,7 +4070,10 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             external_targets = tuple(
                 int(ea) for ea in template_block.external_successor_eas if int(ea) > 0
             )
-            if external_targets:
+            if (
+                external_targets
+                and block_id not in superseded_transfer_carrier_block_ids
+            ):
                 prepared_block = fact_by_id[block_id]
                 if prepared_block.terminator_kind is InsnKind.INDIRECT_JUMP:
                     if not clones:

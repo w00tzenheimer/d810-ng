@@ -4073,6 +4073,7 @@ def test_generated_preserved_fake_transfer_retains_multi_exit_indirect_fact() ->
             native_body=SimpleNamespace(
                 preserved_native_transfer_block_ids=("carrier",),
             ),
+            superseded_transfer_carrier_block_ids=(),
         )
     )
 
@@ -4080,6 +4081,249 @@ def test_generated_preserved_fake_transfer_retains_multi_exit_indirect_fact() ->
     assert terminators == {
         "carrier": (transfer_ea, InsnKind.INDIRECT_JUMP),
     }
+
+
+def test_generated_stitched_preserved_fake_transfer_rejects_multi_exit() -> None:
+    transfer_ea = 0x40A73D
+    carrier = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=1,
+        native_entry_ea=transfer_ea,
+        native_end_ea=transfer_ea + 2,
+        instructions=(_Instruction(ida_hexrays.m_ret, transfer_ea),),
+        block_type=ida_hexrays.BLT_STOP,
+        block_flags=ida_hexrays.MBL_FAKE,
+        successor_serials=(2, 3),
+        external_successor_eas=(),
+    )
+    first = replace(
+        carrier,
+        source_serial=2,
+        native_entry_ea=0x40A607,
+        native_end_ea=0x40A609,
+        instructions=(_Instruction(ida_hexrays.m_nop, 0x40A607),),
+        successor_serials=(),
+    )
+    second = replace(
+        first,
+        source_serial=3,
+        native_entry_ea=0x40B6C0,
+        native_end_ea=0x40B6C2,
+        instructions=(_Instruction(ida_hexrays.m_nop, 0x40B6C0),),
+    )
+
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="ambiguous native topology",
+    ):
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._generated_preserved_transfer_authority(
+            matched={"carrier": carrier, "first": first, "second": second},
+            native_body=SimpleNamespace(
+                preserved_native_transfer_block_ids=("carrier",),
+            ),
+            superseded_transfer_carrier_block_ids=(),
+        )
+
+
+def test_generated_preserved_authority_excludes_superseded_conditional_carrier() -> None:
+    carrier = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=1,
+        native_entry_ea=0x40A818,
+        native_end_ea=0x40A81A,
+        instructions=(_Instruction(ida_hexrays.m_ret, 0x40A818),),
+        block_type=ida_hexrays.BLT_STOP,
+        block_flags=ida_hexrays.MBL_FAKE,
+        successor_serials=(2, 3),
+        external_successor_eas=(),
+    )
+    taken = replace(
+        carrier,
+        source_serial=2,
+        native_entry_ea=0x40A81A,
+        native_end_ea=0x40A828,
+        instructions=(_Instruction(ida_hexrays.m_nop, 0x40A81A),),
+        successor_serials=(),
+    )
+    fallthrough = replace(
+        taken,
+        source_serial=3,
+        native_entry_ea=0x40AA60,
+        native_end_ea=0x40AA6E,
+        instructions=(_Instruction(ida_hexrays.m_nop, 0x40AA60),),
+    )
+
+    successors, terminators = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._generated_preserved_transfer_authority(
+        matched={"carrier": carrier, "taken": taken, "fallthrough": fallthrough},
+        native_body=SimpleNamespace(
+            preserved_native_transfer_block_ids=("carrier",),
+        ),
+        superseded_transfer_carrier_block_ids=("carrier",),
+    )
+
+    assert successors == {"carrier": ()}
+    assert terminators == {}
+
+
+def test_generated_composition_stitches_typed_external_exit_to_imported_root(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    source_ea = 0x40A8B3
+    target_ea = 0x40A64B
+    source = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=7,
+        native_entry_ea=source_ea,
+        native_end_ea=source_ea + 2,
+        instructions=(_Instruction(ida_hexrays.m_ret, source_ea),),
+        block_type=ida_hexrays.BLT_STOP,
+        block_flags=ida_hexrays.MBL_FAKE,
+        successor_serials=(),
+        external_successor_eas=(target_ea,),
+    )
+    target = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=11,
+        native_entry_ea=target_ea,
+        native_end_ea=target_ea + 2,
+        instructions=(_Instruction(ida_hexrays.m_nop, target_ea),),
+        block_type=ida_hexrays.BLT_0WAY,
+        block_flags=0,
+        successor_serials=(),
+        external_successor_eas=(),
+    )
+    templates = {
+        (function_ea, source_ea): detached_handler_island.DetachedSnippetTemplate(
+            function_ea=function_ea,
+            target_ea=source_ea,
+            maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+            root_source_serial=source.source_serial,
+            blocks=(source,),
+            stack_vd_to_ida=(),
+            owned_ranges=((source_ea, source_ea + 2),),
+        ),
+        (function_ea, target_ea): detached_handler_island.DetachedSnippetTemplate(
+            function_ea=function_ea,
+            target_ea=target_ea,
+            maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+            root_source_serial=target.source_serial,
+            blocks=(target,),
+            stack_vd_to_ida=(),
+            owned_ranges=((target_ea, target_ea + 2),),
+        ),
+    }
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_GENERATED_REFERENCE_SNIPPET_TEMPLATES",
+        templates,
+    )
+    destination = _MBA(
+        (_Block(0, function_ea, (_Instruction(ida_hexrays.m_nop, function_ea),)),)
+    )
+    materializer = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=function_ea,
+    )
+
+    composed = materializer._compose_generated_reference_templates(
+        {source_ea, target_ea}
+    )
+
+    source_block = next(
+        block for block in composed.blocks if block.native_entry_ea == source_ea
+    )
+    target_block = next(
+        block for block in composed.blocks if block.native_entry_ea == target_ea
+    )
+    assert source_block.successor_serials == (target_block.source_serial,)
+    assert source_block.external_successor_eas == ()
+
+
+def test_generated_composition_keeps_unresolved_multi_exit_external(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    source_ea = 0x40A73D
+    target_eas = (0x40A607, 0x40B6C0)
+    source = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=7,
+        native_entry_ea=source_ea,
+        native_end_ea=source_ea + 2,
+        instructions=(_Instruction(ida_hexrays.m_ret, source_ea),),
+        block_type=ida_hexrays.BLT_STOP,
+        block_flags=ida_hexrays.MBL_FAKE,
+        successor_serials=(),
+        external_successor_eas=target_eas,
+    )
+    targets = tuple(
+        detached_handler_island.DetachedSnippetBlockTemplate(
+            source_serial=11 + index,
+            native_entry_ea=target_ea,
+            native_end_ea=target_ea + 2,
+            instructions=(_Instruction(ida_hexrays.m_nop, target_ea),),
+            block_type=ida_hexrays.BLT_0WAY,
+            block_flags=0,
+            successor_serials=(),
+            external_successor_eas=(),
+        )
+        for index, target_ea in enumerate(target_eas)
+    )
+    templates = {
+        (function_ea, block.native_entry_ea): (
+            detached_handler_island.DetachedSnippetTemplate(
+                function_ea=function_ea,
+                target_ea=block.native_entry_ea,
+                maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+                root_source_serial=block.source_serial,
+                blocks=(block,),
+                stack_vd_to_ida=(),
+                owned_ranges=((block.native_entry_ea, block.native_end_ea),),
+            )
+        )
+        for block in (source, *targets)
+    }
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_GENERATED_REFERENCE_SNIPPET_TEMPLATES",
+        templates,
+    )
+    destination = _MBA(
+        (_Block(0, function_ea, (_Instruction(ida_hexrays.m_nop, function_ea),)),)
+    )
+    materializer = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=function_ea,
+    )
+
+    composed = materializer._compose_generated_reference_templates(
+        {source_ea, *target_eas}
+    )
+
+    source_block = next(
+        block for block in composed.blocks if block.native_entry_ea == source_ea
+    )
+    assert source_block.successor_serials == ()
+    assert source_block.external_successor_eas == target_eas
+
+
+def test_generated_stitched_preserved_fake_return_is_bound() -> None:
+    carrier = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=7,
+        native_entry_ea=0x40A73D,
+        native_end_ea=0x40A73F,
+        instructions=(_Instruction(ida_hexrays.m_ret, 0x40A73D),),
+        block_type=ida_hexrays.BLT_STOP,
+        block_flags=ida_hexrays.MBL_FAKE,
+        successor_serials=(11,),
+        external_successor_eas=(),
+    )
+
+    assert detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._generated_terminal_return_is_bound(
+        block_id="native@0x40A73D",
+        template_block=carrier,
+        has_terminal_return=True,
+        superseded_transfer_carrier_block_ids=set(),
+        preserved_native_transfer_block_ids={"native@0x40A73D"},
+    )
 
 
 def test_generated_capture_partitions_multiple_preserved_transfer_exits(
