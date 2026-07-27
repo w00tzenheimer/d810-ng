@@ -30,6 +30,7 @@ from d810.transforms.fragment_plan import (
     FragmentTerminalReturn,
     FragmentValueSite,
     superseded_direct_transfer_carrier_block_ids,
+    superseded_referenced_conditional_carrier_block_ids,
 )
 
 
@@ -1076,7 +1077,9 @@ def _validate_reachability(
             reason,
             *root_witness,
         )
-    superseded_carrier_block_ids = superseded_direct_transfer_carrier_block_ids(plan)
+    superseded_carrier_block_ids = superseded_direct_transfer_carrier_block_ids(
+        plan
+    ) | superseded_referenced_conditional_carrier_block_ids(plan)
     for block in plan.blocks:
         if block.role not in {
             FragmentBlockRole.REPLACEMENT,

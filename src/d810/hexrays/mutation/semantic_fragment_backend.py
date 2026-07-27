@@ -76,9 +76,11 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentRangeObservation,
+    FragmentReferencedImportedConditionalSelectEnvelope,
     FragmentReturnCarrier,
     FragmentReturnSource,
     superseded_direct_transfer_carrier_block_ids,
+    superseded_referenced_conditional_carrier_block_ids,
     FragmentReturnSourceKind,
     FragmentTerminalReturn,
 )
@@ -1764,9 +1766,13 @@ def _realize_generated_graph_free_operations(
             None if normalization is None else normalization.conditional_select_envelope
         )
         edge_by_role = {edge.role: edge for edge in operation.edges}
-        if not isinstance(envelope, FragmentConditionalSelectEnvelope) or set(
-            edge_by_role
-        ) != {
+        if not isinstance(
+            envelope,
+            (
+                FragmentConditionalSelectEnvelope,
+                FragmentReferencedImportedConditionalSelectEnvelope,
+            ),
+        ) or set(edge_by_role) != {
             SemanticEdgeRole.CONDITIONAL_TAKEN,
             SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
         }:
@@ -1791,24 +1797,65 @@ def _realize_generated_graph_free_operations(
         )
         taken = _live_block_for_binding(modifier, taken_binding)
         fallthrough = _live_block_for_binding(modifier, fallthrough_binding)
-        if (
-            source.tail is None
-            or not ida_hexrays.is_mcode_jcond(int(source.tail.opcode))
-            or int(source.tail.ea) != int(operation.predicate_anchor_ea)
-            or source.nextb is None
-            or int(source.nextb.serial) != int(selected.serial)
-            or selected.nextb is None
-            or int(selected.nextb.serial) != int(join.serial)
-        ):
+        source_predicate_live_ea = state.live_operation_predicate_ea(operation)
+        selected_value_native_ea = (
+            int(envelope.predicate_ea)
+            if isinstance(envelope, FragmentConditionalSelectEnvelope)
+            else int(envelope.selected_value_ea)
+        )
+        selected_value_live_ea = state.live_instruction_ea(
+            envelope.selected_value_block_id,
+            selected_value_native_ea,
+        )
+        join_transfer_live_ea = state.live_instruction_ea(
+            envelope.join_block_id,
+            int(normalization.unresolved_transfer_ea),
+        )
+        corridor_obligations = (
+            ("source_tail_present", source.tail is not None),
+            (
+                "source_tail_conditional",
+                source.tail is not None
+                and ida_hexrays.is_mcode_jcond(int(source.tail.opcode)),
+            ),
+            (
+                "predicate_anchor_exact",
+                source.tail is not None
+                and int(source.tail.ea) == source_predicate_live_ea,
+            ),
+            ("source_next_present", source.nextb is not None),
+            (
+                "selected_physically_adjacent",
+                source.nextb is not None
+                and int(source.nextb.serial) == int(selected.serial),
+            ),
+            ("selected_next_present", selected.nextb is not None),
+            (
+                "join_physically_adjacent",
+                selected.nextb is not None
+                and int(selected.nextb.serial) == int(join.serial),
+            ),
+        )
+        failed_corridor_obligations = tuple(
+            name for name, passed in corridor_obligations if not passed
+        )
+        if failed_corridor_obligations:
             raise SemanticFragmentBackendRejected(
-                "GENERATED normalized corridor changed before route binding"
+                "GENERATED normalized corridor changed before route binding; "
+                f"operation_id={operation.operation_id!r} "
+                f"failed_obligations={failed_corridor_obligations!r} "
+                f"source=blk{int(source.serial)}@0x{int(source.start):X} "
+                f"selected=blk{int(selected.serial)}@0x{int(selected.start):X} "
+                f"join=blk{int(join.serial)}@0x{int(join.start):X} "
+                f"source_next={None if source.nextb is None else int(source.nextb.serial)} "
+                f"selected_next={None if selected.nextb is None else int(selected.nextb.serial)}"
             )
         source_branch = ida_hexrays.minsn_t(source.tail)
         source_branch.d.make_blkref(int(taken.serial))
-        selected_goto = ida_hexrays.minsn_t(int(envelope.predicate_ea))
+        selected_goto = ida_hexrays.minsn_t(selected_value_live_ea)
         selected_goto.opcode = int(ida_hexrays.m_goto)
         selected_goto.l.make_blkref(int(fallthrough.serial))
-        join_goto = ida_hexrays.minsn_t(int(normalization.unresolved_transfer_ea))
+        join_goto = ida_hexrays.minsn_t(join_transfer_live_ea)
         join_goto.opcode = int(ida_hexrays.m_goto)
         join_goto.l.make_blkref(int(taken.serial))
         source_rows = tuple(_iter_block_instructions(source))
@@ -1822,6 +1869,12 @@ def _realize_generated_graph_free_operations(
         )
         _replace_generated_instructions(modifier, selected, (selected_goto,))
         _replace_generated_instructions(modifier, join, (join_goto,))
+        state.instruction_origins_by_block_id[envelope.selected_value_block_id] = {
+            selected_value_live_ea: selected_value_native_ea
+        }
+        state.instruction_origins_by_block_id[envelope.join_block_id] = {
+            join_transfer_live_ea: int(normalization.unresolved_transfer_ea)
+        }
         for block in (source, selected, join):
             modifier.configure_block_now(
                 block,
@@ -3224,8 +3277,10 @@ def _observe_generated_graph_free_fragment(
         raise SemanticFragmentBackendRejected(
             "GENERATED observation lacks immutable preflight authority"
         )
-    superseded_carrier_ids = superseded_direct_transfer_carrier_block_ids(plan)
-    imported_serials: set[int] = set()
+    superseded_carrier_ids = superseded_direct_transfer_carrier_block_ids(
+        plan
+    ) | superseded_referenced_conditional_carrier_block_ids(plan)
+    imported_serials_by_block_id: dict[str, int] = {}
     superseded_carrier_serials: set[int] = set()
     for block in plan.blocks:
         binding = state.bindings.get(block.block_id)
@@ -3235,7 +3290,7 @@ def _observe_generated_graph_free_fragment(
         if block.materialization is FragmentBlockMaterialization.IMPORT_NATIVE:
             origins = state.instruction_origins_by_block_id.get(block.block_id, {})
             live_rows = tuple(_iter_block_instructions(live))
-            if (
+            if block.block_id not in superseded_carrier_ids and (
                 int(live.type) != int(ida_hexrays.BLT_NONE)
                 or tuple(int(value) for value in live.succset)
                 or tuple(int(value) for value in live.predset)
@@ -3245,7 +3300,7 @@ def _observe_generated_graph_free_fragment(
                 raise SemanticFragmentBackendRejected(
                     f"GENERATED imported block {block.block_id!r} changed shape"
                 )
-            imported_serials.add(int(live.serial))
+            imported_serials_by_block_id[block.block_id] = int(live.serial)
             if block.block_id in superseded_carrier_ids:
                 superseded_carrier_serials.add(int(live.serial))
     for operation in plan.operations:
@@ -3322,7 +3377,13 @@ def _observe_generated_graph_free_fragment(
         envelope = (
             None if normalization is None else normalization.conditional_select_envelope
         )
-        if not isinstance(envelope, FragmentConditionalSelectEnvelope):
+        if not isinstance(
+            envelope,
+            (
+                FragmentConditionalSelectEnvelope,
+                FragmentReferencedImportedConditionalSelectEnvelope,
+            ),
+        ):
             raise SemanticFragmentBackendRejected(
                 "GENERATED observation found an unsupported operation"
             )
@@ -3351,12 +3412,26 @@ def _observe_generated_graph_free_fragment(
                 edge_by_role[SemanticEdgeRole.CONDITIONAL_FALLTHROUGH].target_block_id
             ),
         )
+        source_predicate_live_ea = state.live_operation_predicate_ea(operation)
+        selected_value_native_ea = (
+            int(envelope.predicate_ea)
+            if isinstance(envelope, FragmentConditionalSelectEnvelope)
+            else int(envelope.selected_value_ea)
+        )
+        selected_value_live_ea = state.live_instruction_ea(
+            envelope.selected_value_block_id,
+            selected_value_native_ea,
+        )
+        join_transfer_live_ea = state.live_instruction_ea(
+            envelope.join_block_id,
+            int(normalization.unresolved_transfer_ea),
+        )
         selected_rows = tuple(_iter_block_instructions(selected))
         join_rows = tuple(_iter_block_instructions(join))
         if (
             source.tail is None
             or not ida_hexrays.is_mcode_jcond(int(source.tail.opcode))
-            or int(source.tail.ea) != int(operation.predicate_anchor_ea)
+            or int(source.tail.ea) != source_predicate_live_ea
             or int(source.tail.d.t) != int(ida_hexrays.mop_b)
             or int(source.tail.d.b) != int(taken.serial)
             or source.nextb is None
@@ -3364,10 +3439,12 @@ def _observe_generated_graph_free_fragment(
             or selected.nextb is None
             or int(selected.nextb.serial) != int(join.serial)
             or len(selected_rows) != 1
+            or int(selected_rows[0].ea) != selected_value_live_ea
             or int(selected_rows[0].opcode) != int(ida_hexrays.m_goto)
             or int(selected_rows[0].l.t) != int(ida_hexrays.mop_b)
             or int(selected_rows[0].l.b) != int(fallthrough.serial)
             or len(join_rows) != 1
+            or int(join_rows[0].ea) != join_transfer_live_ea
             or int(join_rows[0].opcode) != int(ida_hexrays.m_goto)
             or int(join_rows[0].l.t) != int(ida_hexrays.mop_b)
             or int(join_rows[0].l.b) != int(taken.serial)
@@ -3390,7 +3467,26 @@ def _observe_generated_graph_free_fragment(
                 continue
             reachable.add(serial)
             pending.extend(successors.get(serial, ()))
-        required_reachable_serials = imported_serials - superseded_carrier_serials
+        reference_authority = operation.reference_route_authority
+        closure_block_ids = (
+            ()
+            if reference_authority is None
+            else reference_authority.imported_closure_block_ids
+        )
+        missing_closure_bindings = tuple(
+            block_id
+            for block_id in closure_block_ids
+            if block_id not in imported_serials_by_block_id
+        )
+        if not closure_block_ids or missing_closure_bindings:
+            raise SemanticFragmentBackendRejected(
+                "GENERATED conditional route lacks typed imported closure; "
+                f"operation_id={operation.operation_id!r} "
+                f"missing_block_ids={missing_closure_bindings!r}"
+            )
+        required_reachable_serials = {
+            imported_serials_by_block_id[block_id] for block_id in closure_block_ids
+        } - superseded_carrier_serials
         if not required_reachable_serials.issubset(reachable):
             missing = tuple(sorted(required_reachable_serials - reachable))
             raise SemanticFragmentBackendRejected(

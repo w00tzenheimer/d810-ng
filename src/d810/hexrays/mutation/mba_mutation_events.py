@@ -47,6 +47,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentConditionalSelectEnvelope,
     FragmentPlan,
+    FragmentReferencedImportedConditionalSelectEnvelope,
     serialize_fragment_plan,
 )
 from d810.transforms.detached_route_oracle import DetachedRouteOracleResult
@@ -1398,7 +1399,10 @@ class MbaMutationGateway:
                 )
                 if publication_profile.graph_free and isinstance(
                     envelope,
-                    FragmentConditionalSelectEnvelope,
+                    (
+                        FragmentConditionalSelectEnvelope,
+                        FragmentReferencedImportedConditionalSelectEnvelope,
+                    ),
                 ):
                     helper_target = plan.block(envelope.selected_value_block_id)
                 items.append(
@@ -2399,16 +2403,10 @@ class MbaMutationGateway:
             and identity.native_key == item.target_identity.native_key
             and int(item.target_anchor_ea) in identity.exact_instruction_eas
             and identity.native_ranges.contains(int(item.target_anchor_ea))
-            and item.target_identity.native_ranges.contains(
-                int(item.target_anchor_ea)
-            )
+            and item.target_identity.native_ranges.contains(int(item.target_anchor_ea))
         )
-        if (
-            identity is None
-            or (
-                identity not in expected_identities
-                and not generated_helper_anchor_matches
-            )
+        if identity is None or (
+            identity not in expected_identities and not generated_helper_anchor_matches
         ):
             raise ValueError(
                 "semantic-fragment effect block identity does not match its "
