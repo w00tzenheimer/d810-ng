@@ -218,6 +218,7 @@ class RhadDirectRoute:
 
     operation_id: str
     source_block_id: str
+    source_native_ea: int
     transfer_ea: int
     owner_anchor_ea: int
     direct_target_block_id: str
@@ -243,7 +244,7 @@ class RhadDirectRoute:
             raise RhadCompilerRejection(
                 "Rhad direct operation id requires route-proof identity"
             )
-        for field_name in ("transfer_ea", "owner_anchor_ea"):
+        for field_name in ("source_native_ea", "transfer_ea", "owner_anchor_ea"):
             object.__setattr__(
                 self,
                 field_name,
@@ -259,11 +260,14 @@ class RhadDirectRoute:
             tuple(self.owned_corridor_instruction_eas),
             "Rhad owned corridor",
         )
-        if corridor[-1] != int(self.transfer_ea) or int(self.owner_anchor_ea) != int(
-            self.transfer_ea
+        if (
+            corridor[0] != int(self.source_native_ea)
+            or corridor[-1] != int(self.transfer_ea)
+            or int(self.owner_anchor_ea) not in corridor
         ):
             raise RhadCompilerRejection(
-                "Rhad direct corridor must end at its owned indirect transfer"
+                "Rhad direct corridor must run from its native source through "
+                "its source-block anchor to its indirect transfer"
             )
         closure = _unique_identifiers(
             tuple(self.imported_closure_block_ids),
@@ -451,7 +455,13 @@ def _reference_payload(
             }
         )
     elif isinstance(route, RhadDirectRoute):
-        payload["direct_target_block_id"] = route.direct_target_block_id
+        payload.update(
+            {
+                "direct_target_block_id": route.direct_target_block_id,
+                "source_block_anchor_ea": int(route.owner_anchor_ea),
+                "source_native_ea": int(route.source_native_ea),
+            }
+        )
     else:
         raise RhadCompilerRejection(
             f"Rhad operation type is unsupported: {type(route).__name__}"
@@ -630,9 +640,13 @@ def _compile_direct_route(
         raise RhadCompilerRejection(
             "Rhad direct route is absent from frontend work-item authority"
         )
-    if not source.stable_identity.native_ranges.contains(route.transfer_ea):
+    if not all(
+        source.stable_identity.native_ranges.contains(ea)
+        for ea in (route.owner_anchor_ea, route.transfer_ea)
+    ):
         raise RhadCompilerRejection(
-            "Rhad direct transfer lies outside its imported source identity"
+            "Rhad direct source anchor or transfer lies outside its imported "
+            "source identity"
         )
     target = block_by_id[route.direct_target_block_id]
     if (
@@ -687,6 +701,7 @@ def _compile_direct_route(
             delivery_region=delivery_region,
             proof_corridor_instruction_eas=route.owned_corridor_instruction_eas,
             superseded_instruction_eas=(int(route.transfer_ea),),
+            source_transfer_kind=SemanticTransferKind.INDIRECT,
         ),
         reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=reference_route,

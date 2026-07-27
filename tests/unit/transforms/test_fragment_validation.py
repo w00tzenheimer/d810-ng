@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from d810.core.semantic_route_oracle import SemanticTransferKind
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockKind, InsnKind
@@ -194,6 +195,7 @@ def test_project_fragment_materializes_folded_direct_rewrite_anchor() -> None:
                     delivery_region=NativeEaInterval(0x1004, 0x1005),
                     proof_corridor_instruction_eas=(0x1000, 0x1004),
                     superseded_instruction_eas=(0x1004,),
+                    source_transfer_kind=SemanticTransferKind.INDIRECT,
                 ),
                 edges=(
                     FragmentEdge(

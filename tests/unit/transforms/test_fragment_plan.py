@@ -288,6 +288,7 @@ def test_direct_transfer_rewrite_separates_proof_origin_from_operation_owner() -
         delivery_region=NativeEaInterval(0x40BB63, 0x40BB64),
         proof_corridor_instruction_eas=(0x40BB44, 0x40BB4B, 0x40BB63),
         superseded_instruction_eas=(0x40BB63,),
+        source_transfer_kind=SemanticTransferKind.INDIRECT,
     )
     operation = FragmentOperation(
         operation_id="route:state_assignment@0x40BB63:0xE9795EF",
@@ -319,6 +320,7 @@ def test_direct_transfer_rewrite_rejects_incomplete_or_conditional_ownership() -
             delivery_region=NativeEaInterval(0x40BB63, 0x40BB64),
             proof_corridor_instruction_eas=(0x40BB44, 0x40BB4B),
             superseded_instruction_eas=(0x40BB63,),
+            source_transfer_kind=SemanticTransferKind.INDIRECT,
         )
 
     with pytest.raises(FragmentPlanRejected, match="proof-corridor subset"):
@@ -330,6 +332,7 @@ def test_direct_transfer_rewrite_rejects_incomplete_or_conditional_ownership() -
             delivery_region=NativeEaInterval(0x40BB63, 0x40BB64),
             proof_corridor_instruction_eas=(0x40BB44, 0x40BB63),
             superseded_instruction_eas=(0x40BB4B, 0x40BB63),
+            source_transfer_kind=SemanticTransferKind.INDIRECT,
         )
 
     with pytest.raises(
@@ -344,6 +347,7 @@ def test_direct_transfer_rewrite_rejects_incomplete_or_conditional_ownership() -
             delivery_region=NativeEaInterval(0x40BB63, 0x40BB64),
             proof_corridor_instruction_eas=(0x40BB44, 0x40BB63),
             superseded_instruction_eas=(0x40BB63,),
+            source_transfer_kind=SemanticTransferKind.INDIRECT,
         )
     assert exc_info.value.reason_code == "direct_transfer_owner_outside_corridor"
     assert exc_info.value.anchor_ea == 0x40BB63
@@ -367,6 +371,7 @@ def test_direct_transfer_rewrite_rejects_incomplete_or_conditional_ownership() -
                 delivery_region=NativeEaInterval(0x40BB63, 0x40BB64),
                 proof_corridor_instruction_eas=(0x40BB44, 0x40BB63),
                 superseded_instruction_eas=(0x40BB63,),
+                source_transfer_kind=SemanticTransferKind.CONDITIONAL,
             ),
             edges=(
                 FragmentEdge(
@@ -407,6 +412,7 @@ def test_fragment_plan_rejects_competing_semantic_transfer_envelopes() -> None:
             delivery_region=NativeEaInterval(0x40BECD, 0x40BECE),
             proof_corridor_instruction_eas=(0x40BECC, 0x40BECD),
             superseded_instruction_eas=(0x40BECD,),
+            source_transfer_kind=SemanticTransferKind.INDIRECT,
         ),
         edges=(
             FragmentEdge(
@@ -458,6 +464,7 @@ def test_fragment_plan_allows_preserved_proof_corridor_overlap() -> None:
                 0x40BECF,
             ),
             superseded_instruction_eas=(0x40BECF,),
+            source_transfer_kind=SemanticTransferKind.INDIRECT,
         ),
         edges=(
             FragmentEdge(
@@ -490,6 +497,7 @@ def test_fragment_plan_rejects_direct_rewrite_outside_canonical_lowering() -> No
             delivery_region=NativeEaInterval(0x40BECC, 0x40BECD),
             proof_corridor_instruction_eas=(0x40BECC,),
             superseded_instruction_eas=(0x40BECC,),
+            source_transfer_kind=SemanticTransferKind.INDIRECT,
         ),
         edges=(
             FragmentEdge(
@@ -597,6 +605,7 @@ def _referenced_frontend_direct_plan() -> FragmentPlan:
             delivery_region=NativeEaInterval(0x40A619, 0x40A61B),
             proof_corridor_instruction_eas=(0x40A619,),
             superseded_instruction_eas=(0x40A619,),
+            source_transfer_kind=SemanticTransferKind.INDIRECT,
         ),
         reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=reference_route,
@@ -811,7 +820,35 @@ def test_direct_rewrite_rejects_unpaired_source_normalization() -> None:
             delivery_region=NativeEaInterval(0x40ADFD, 0x40AE1A),
             proof_corridor_instruction_eas=(0x40ADF2, 0x40ADF7, 0x40AE09),
             superseded_instruction_eas=(0x40AE09,),
+            source_transfer_kind=SemanticTransferKind.CONDITIONAL,
             source_computed_branch_normalization=normalization,
+        )
+
+
+def test_direct_rewrite_rejects_indirect_kind_with_conditional_normalization() -> None:
+    normalization = FragmentComputedBranchNormalization(
+        predicate_kind=PredicateKind.SLT,
+        normalization_start_ea=0x40ADFD,
+        condition_producer_ea=0x40ADF7,
+        unresolved_transfer_ea=0x40AE18,
+        relocated_instruction_eas=(),
+    )
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="conditional normalization requires a conditional source kind",
+    ):
+        FragmentDirectTransferRewrite(
+            route_proof_id="state_assignment@0x40AE09:0xF6A636EF",
+            owner_identity=_identity(0x40ADF2),
+            owner_anchor_ea=0x40ADF2,
+            rewrite_anchor_ea=0x40AE09,
+            delivery_region=NativeEaInterval(0x40ADFD, 0x40AE1A),
+            proof_corridor_instruction_eas=(0x40ADF2, 0x40ADF7, 0x40AE09),
+            superseded_instruction_eas=(0x40AE09,),
+            source_transfer_kind=SemanticTransferKind.INDIRECT,
+            source_computed_branch_normalization=normalization,
+            source_predicate_anchor_ea=0x40AE09,
         )
 
 

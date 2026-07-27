@@ -1430,6 +1430,11 @@ def _direct_transfer_rewrite(
         delivery_region=delivery_region,
         proof_corridor_instruction_eas=corridor_instruction_eas,
         superseded_instruction_eas=(int(proof.source_anchor_ea),),
+        source_transfer_kind=(
+            SemanticTransferKind.CONDITIONAL
+            if source_normalization is not None
+            else SemanticTransferKind.INDIRECT
+        ),
         source_computed_branch_normalization=source_normalization,
         source_predicate_anchor_ea=source_predicate_anchor_ea,
     )

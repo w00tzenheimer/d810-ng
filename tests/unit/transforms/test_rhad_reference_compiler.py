@@ -23,6 +23,7 @@ from d810.transforms.fragment_plan import (
     FragmentPlan,
     FragmentPublicationPurpose,
     FragmentWorkItemScope,
+    superseded_direct_transfer_carrier_block_ids,
 )
 from tests.native_preanalysis import make_native_key
 
@@ -257,7 +258,7 @@ def _mixed_ledger():
     )
     placeholder_direct = FragmentOperation(
         operation_id="placeholder@0x40A619",
-        source_block_id="native@0x40A619",
+        source_block_id="native@0x40A615",
         edges=(
             FragmentEdge(
                 role=SemanticEdgeRole.DIRECT,
@@ -291,7 +292,7 @@ def _mixed_ledger():
                 terminal_block_ids=tuple(
                     block_id
                     for block_id in COMBINED_IMPORTED_BLOCK_IDS
-                    if block_id != "native@0x40A619"
+                    if block_id != "native@0x40A615"
                 ),
                 native_ranges=(
                     NativeEaInterval(0x40A607, 0x40A61B),
@@ -310,9 +311,10 @@ def _mixed_ledger():
     accepted_route = _ledger().operations[0]
     direct_route = compiler.RhadDirectRoute(
         operation_id="route:rhad-direct@0x40A619",
-        source_block_id="native@0x40A619",
+        source_block_id="native@0x40A615",
+        source_native_ea=0x40A607,
         transfer_ea=0x40A619,
-        owner_anchor_ea=0x40A619,
+        owner_anchor_ea=0x40A615,
         direct_target_block_id="native@0x40A61B",
         owned_corridor_instruction_eas=(
             0x40A607,
@@ -366,9 +368,9 @@ def test_compiler_emits_distinct_direct_route_in_one_reference_batch() -> None:
     rewrite = direct.direct_transfer_rewrite
     assert rewrite is not None
     assert rewrite.route_proof_id == "rhad-direct@0x40A619"
-    assert rewrite.owner_anchor_ea == 0x40A619
+    assert rewrite.owner_anchor_ea == 0x40A615
     assert rewrite.rewrite_anchor_ea == 0x40A619
-    assert rewrite.delivery_region == NativeEaInterval(0x40A619, 0x40A61B)
+    assert rewrite.delivery_region == NativeEaInterval(0x40A615, 0x40A61B)
     assert rewrite.proof_corridor_instruction_eas == (
         0x40A607,
         0x40A615,
@@ -383,7 +385,22 @@ def test_compiler_emits_distinct_direct_route_in_one_reference_batch() -> None:
     assert payload["imported_closure_block_ids"] == list(DIRECT_IMPORTED_BLOCK_IDS)
     assert payload["boundary_exit_eas"] == [0x40A633, 0x40A74C]
     assert payload["direct_target_block_id"] == "native@0x40A61B"
+    assert payload["source_native_ea"] == 0x40A607
+    assert payload["source_block_anchor_ea"] == 0x40A615
     assert len(plan.flag_corridors) == 1
+
+
+def test_compiled_plan_identifies_only_the_detached_superseded_carrier() -> None:
+    compiler = _compiler_module()
+
+    plan = compiler.compile_rhad_reference_fragment(
+        _mixed_ledger(),
+        expected_evidence_generation=1,
+    )
+
+    assert superseded_direct_transfer_carrier_block_ids(plan) == frozenset(
+        {"native@0x40A619"}
+    )
 
 
 def test_compiler_rejects_direct_route_from_non_imported_source() -> None:
@@ -435,7 +452,12 @@ def test_compiler_rejects_direct_corridor_outside_native_body() -> None:
                     accepted,
                     replace(
                         direct,
-                        owned_corridor_instruction_eas=(0x40A000, 0x40A619),
+                        source_native_ea=0x40A000,
+                        owned_corridor_instruction_eas=(
+                            0x40A000,
+                            0x40A615,
+                            0x40A619,
+                        ),
                     ),
                 ),
             ),

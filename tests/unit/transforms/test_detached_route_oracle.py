@@ -179,6 +179,7 @@ def _plan() -> FragmentPlan:
                         _REWRITE_ANCHOR_EA,
                     ),
                     superseded_instruction_eas=(_REWRITE_ANCHOR_EA,),
+                    source_transfer_kind=SemanticTransferKind.CONDITIONAL,
                 ),
                 reference_route_authority=FragmentReferenceRouteAuthority(
                     reference_route=_reference_route(),

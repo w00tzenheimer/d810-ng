@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import ida_hexrays
 import pytest
 
+from d810.core.semantic_route_oracle import SemanticTransferKind
 from d810.hexrays.mutation import detached_handler_island
 from d810.hexrays.mutation import cfg_verify
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
@@ -1980,6 +1981,7 @@ def test_preopt_native_body_lowers_owned_direct_transfer_while_unpublished(
                             rewrite_anchor_ea,
                         ),
                         superseded_instruction_eas=(rewrite_anchor_ea,),
+                        source_transfer_kind=SemanticTransferKind.CONDITIONAL,
                     ),
                     edges=(
                         FragmentEdge(
@@ -2081,6 +2083,7 @@ def test_preopt_direct_transfer_rejects_delivery_suffix_outside_owned_cut() -> N
         delivery_region=NativeEaInterval(0x3610, 0x3611),
         proof_corridor_instruction_eas=(0x3604, 0x3610),
         superseded_instruction_eas=(0x3610,),
+        source_transfer_kind=SemanticTransferKind.CONDITIONAL,
     )
     native_body, operation, matched = _direct_transfer_preflight_case(
         rewrite=rewrite,
@@ -2123,6 +2126,7 @@ def test_preopt_direct_transfer_rejects_corridor_outside_native_body() -> None:
         delivery_region=NativeEaInterval(0x3610, 0x3611),
         proof_corridor_instruction_eas=(0x35FC, 0x3610),
         superseded_instruction_eas=(0x3610,),
+        source_transfer_kind=SemanticTransferKind.CONDITIONAL,
     )
     native_body, operation, matched = _direct_transfer_preflight_case(
         rewrite=rewrite,
@@ -2178,6 +2182,7 @@ def test_preopt_split_direct_requires_join_identity_only_for_relocated_tail(
         delivery_region=NativeEaInterval(normalization_start_ea, 0x3619),
         proof_corridor_instruction_eas=(0x3604, 0x3608, 0x3610),
         superseded_instruction_eas=(0x3610,),
+        source_transfer_kind=SemanticTransferKind.CONDITIONAL,
         source_computed_branch_normalization=normalization,
         source_predicate_anchor_ea=0x3610,
     )
@@ -3453,6 +3458,7 @@ def test_preopt_native_body_lowers_split_normalized_direct_route_with_live_tail(
                 predicate_ea,
             ),
             superseded_instruction_eas=(predicate_ea,),
+            source_transfer_kind=SemanticTransferKind.CONDITIONAL,
             source_computed_branch_normalization=normalization,
             source_predicate_anchor_ea=predicate_ea,
         ),
