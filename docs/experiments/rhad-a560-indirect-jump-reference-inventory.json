@@ -1277,9 +1277,14 @@
       "boundary_exit_eas": [
         4236784
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_setcc_indexed_table",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "53eed0e43",
+          "a33311661"
+        ],
+        "proof_artifact_identity": "sha256:a67a3d2cc432df11ca627c90f06f3a854004a9463a529ee1d0cdf1f759406e67",
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
