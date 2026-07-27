@@ -4036,6 +4036,98 @@ def test_gateway_poisons_disappeared_terminal_effect_and_receipts_applied_work(
     ]
 
 
+def test_generated_reference_composition_prefers_typed_owned_blocks(
+    monkeypatch,
+) -> None:
+    function_ea = 0x401000
+    first_root_ea = 0x500000
+    second_root_ea = 0x500010
+    boundary_exit_ea = 0x500020
+    first = dhi.DetachedSnippetTemplate(
+        function_ea=function_ea,
+        target_ea=first_root_ea,
+        maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
+        root_source_serial=0,
+        blocks=(
+            dhi.DetachedSnippetBlockTemplate(
+                source_serial=0,
+                native_entry_ea=first_root_ea,
+                native_end_ea=second_root_ea,
+                instructions=(_Instruction(ida_hexrays.m_goto, 0x50000F),),
+                block_type=int(ida_hexrays.BLT_1WAY),
+                block_flags=0,
+                successor_serials=(1,),
+                external_successor_eas=(0,),
+            ),
+            dhi.DetachedSnippetBlockTemplate(
+                source_serial=1,
+                native_entry_ea=second_root_ea,
+                native_end_ea=boundary_exit_ea,
+                instructions=(_Instruction(ida_hexrays.m_goto, 0x50001F),),
+                block_type=int(ida_hexrays.BLT_1WAY),
+                block_flags=0,
+                successor_serials=(),
+                external_successor_eas=(),
+            ),
+        ),
+        stack_vd_to_ida=(),
+        owned_ranges=((first_root_ea, second_root_ea),),
+    )
+    second = dhi.DetachedSnippetTemplate(
+        function_ea=function_ea,
+        target_ea=second_root_ea,
+        maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
+        root_source_serial=0,
+        blocks=(
+            dhi.DetachedSnippetBlockTemplate(
+                source_serial=0,
+                native_entry_ea=second_root_ea,
+                native_end_ea=boundary_exit_ea,
+                instructions=(_Instruction(ida_hexrays.m_goto, 0x50001F),),
+                block_type=int(ida_hexrays.BLT_1WAY),
+                block_flags=0,
+                successor_serials=(1,),
+                external_successor_eas=(0,),
+            ),
+            dhi.DetachedSnippetBlockTemplate(
+                source_serial=1,
+                native_entry_ea=boundary_exit_ea,
+                native_end_ea=0x500030,
+                instructions=(_Instruction(ida_hexrays.m_nop, boundary_exit_ea),),
+                block_type=int(ida_hexrays.BLT_0WAY),
+                block_flags=0,
+                successor_serials=(),
+                external_successor_eas=(),
+            ),
+        ),
+        stack_vd_to_ida=(),
+        owned_ranges=((second_root_ea, boundary_exit_ea),),
+    )
+    monkeypatch.setattr(
+        dhi,
+        "_GENERATED_REFERENCE_SNIPPET_TEMPLATES",
+        {
+            (function_ea, first_root_ea): first,
+            (function_ea, second_root_ea): second,
+        },
+    )
+    monkeypatch.setattr(dhi.ida_hexrays, "minsn_t", deepcopy)
+
+    composite = dhi.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=object(),
+        function_ea=function_ea,
+    )._compose_generated_reference_templates({first_root_ea, second_root_ea})
+
+    assert tuple(
+        (block.native_entry_ea, block.native_end_ea) for block in composite.blocks
+    ) == (
+        (first_root_ea, second_root_ea),
+        (second_root_ea, boundary_exit_ea),
+    )
+    assert composite.blocks[0].successor_serials == (composite.blocks[1].source_serial,)
+    assert composite.blocks[1].external_successor_eas == (boundary_exit_ea,)
+
+
 @pytest.mark.parametrize(
     ("operation", "source", "return_width", "expected_opcode", "expected_type"),
     (

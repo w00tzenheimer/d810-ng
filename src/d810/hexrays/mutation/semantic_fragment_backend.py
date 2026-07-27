@@ -78,6 +78,7 @@ from d810.transforms.fragment_plan import (
     FragmentRangeObservation,
     FragmentReturnCarrier,
     FragmentReturnSource,
+    superseded_direct_transfer_carrier_block_ids,
     FragmentReturnSourceKind,
     FragmentTerminalReturn,
 )
@@ -1734,27 +1735,41 @@ def _realize_generated_graph_free_operations(
     from d810.transforms.plan import PatchFragmentOperation
 
     gateway = _gateway(modifier)
+    detached_capable_operation_ids = {
+        operation.operation_id
+        for operation in plan.operations
+        if (
+            operation.direct_transfer_rewrite is not None
+            and plan.block(operation.source_block_id).role is FragmentBlockRole.IMPORTED
+        )
+    }
+    if not state.detached_operation_ids <= detached_capable_operation_ids:
+        raise SemanticFragmentBackendRejected(
+            "GENERATED detached native-body lowering consumed an ineligible operation"
+        )
     for step in operation_steps:
         if not isinstance(step, PatchFragmentOperation):
             raise SemanticFragmentBackendRejected(
                 "GENERATED operation requires a typed PatchStep"
             )
         operation = step.operation
+        if operation.operation_id in state.detached_operation_ids:
+            if step.fallthrough_helper_ref is not None:
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED detached direct route cannot allocate a helper"
+                )
+            continue
         normalization = operation.computed_branch_normalization
         envelope = (
-            None
-            if normalization is None
-            else normalization.conditional_select_envelope
+            None if normalization is None else normalization.conditional_select_envelope
         )
         edge_by_role = {edge.role: edge for edge in operation.edges}
-        if (
-            not isinstance(envelope, FragmentConditionalSelectEnvelope)
-            or set(edge_by_role)
-            != {
-                SemanticEdgeRole.CONDITIONAL_TAKEN,
-                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
-            }
-        ):
+        if not isinstance(envelope, FragmentConditionalSelectEnvelope) or set(
+            edge_by_role
+        ) != {
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }:
             raise SemanticFragmentBackendRejected(
                 "GENERATED profile admits only the proven conditional-select route"
             )
@@ -1772,9 +1787,7 @@ def _realize_generated_graph_free_operations(
             edge_by_role[SemanticEdgeRole.CONDITIONAL_TAKEN].target_block_id
         )
         fallthrough_binding = state.binding(
-            edge_by_role[
-                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
-            ].target_block_id
+            edge_by_role[SemanticEdgeRole.CONDITIONAL_FALLTHROUGH].target_block_id
         )
         taken = _live_block_for_binding(modifier, taken_binding)
         fallthrough = _live_block_for_binding(modifier, fallthrough_binding)
@@ -1795,9 +1808,7 @@ def _realize_generated_graph_free_operations(
         selected_goto = ida_hexrays.minsn_t(int(envelope.predicate_ea))
         selected_goto.opcode = int(ida_hexrays.m_goto)
         selected_goto.l.make_blkref(int(fallthrough.serial))
-        join_goto = ida_hexrays.minsn_t(
-            int(normalization.unresolved_transfer_ea)
-        )
+        join_goto = ida_hexrays.minsn_t(int(normalization.unresolved_transfer_ea))
         join_goto.opcode = int(ida_hexrays.m_goto)
         join_goto.l.make_blkref(int(taken.serial))
         source_rows = tuple(_iter_block_instructions(source))
@@ -3213,7 +3224,9 @@ def _observe_generated_graph_free_fragment(
         raise SemanticFragmentBackendRejected(
             "GENERATED observation lacks immutable preflight authority"
         )
+    superseded_carrier_ids = superseded_direct_transfer_carrier_block_ids(plan)
     imported_serials: set[int] = set()
+    superseded_carrier_serials: set[int] = set()
     for block in plan.blocks:
         binding = state.bindings.get(block.block_id)
         if binding is None:
@@ -3233,12 +3246,81 @@ def _observe_generated_graph_free_fragment(
                     f"GENERATED imported block {block.block_id!r} changed shape"
                 )
             imported_serials.add(int(live.serial))
+            if block.block_id in superseded_carrier_ids:
+                superseded_carrier_serials.add(int(live.serial))
     for operation in plan.operations:
+        if operation.operation_id in state.detached_operation_ids:
+            rewrite = operation.direct_transfer_rewrite
+            edge = operation.edges[0] if len(operation.edges) == 1 else None
+            source = _live_block_for_binding(
+                modifier,
+                state.binding(operation.source_block_id),
+            )
+            target = (
+                None
+                if edge is None
+                else _live_block_for_binding(
+                    modifier,
+                    state.binding(edge.target_block_id),
+                )
+            )
+            tail_live_ea = None if source.tail is None else int(source.tail.ea)
+            tail_native_ea = (
+                None
+                if tail_live_ea is None
+                else state.instruction_origins_by_block_id.get(
+                    operation.source_block_id,
+                    {},
+                ).get(tail_live_ea)
+            )
+            failed_obligations = tuple(
+                name
+                for name, passed in (
+                    ("rewrite_present", rewrite is not None),
+                    ("direct_edge_present", edge is not None),
+                    (
+                        "edge_role_direct",
+                        edge is not None and edge.role is SemanticEdgeRole.DIRECT,
+                    ),
+                    ("target_bound", target is not None),
+                    ("tail_present", source.tail is not None),
+                    (
+                        "rewrite_anchor_exact",
+                        rewrite is not None
+                        and tail_native_ea == int(rewrite.rewrite_anchor_ea),
+                    ),
+                    (
+                        "tail_direct",
+                        source.tail is not None
+                        and int(source.tail.opcode) == int(ida_hexrays.m_goto),
+                    ),
+                    (
+                        "target_operand_bound",
+                        target is not None
+                        and source.tail is not None
+                        and int(source.tail.l.t) == int(ida_hexrays.mop_b)
+                        and int(source.tail.l.b) == int(target.serial),
+                    ),
+                    ("graph_free_type", int(source.type) == int(ida_hexrays.BLT_NONE)),
+                )
+                if not passed
+            )
+            if failed_obligations:
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED detached direct route failed exact live observation; "
+                    f"failed_obligations={failed_obligations!r} "
+                    f"source=blk{int(source.serial)}@0x{int(source.start):X} "
+                    f"tail_native_ea={None if tail_native_ea is None else hex(int(tail_native_ea))} "
+                    f"tail_opcode={None if source.tail is None else int(source.tail.opcode)} "
+                    f"tail_l_type={None if source.tail is None else int(source.tail.l.t)} "
+                    f"tail_l_block={None if source.tail is None else int(source.tail.l.b)} "
+                    f"target_serial={None if target is None else int(target.serial)} "
+                    f"block_type={int(source.type)}"
+                )
+            continue
         normalization = operation.computed_branch_normalization
         envelope = (
-            None
-            if normalization is None
-            else normalization.conditional_select_envelope
+            None if normalization is None else normalization.conditional_select_envelope
         )
         if not isinstance(envelope, FragmentConditionalSelectEnvelope):
             raise SemanticFragmentBackendRejected(
@@ -3266,9 +3348,7 @@ def _observe_generated_graph_free_fragment(
         fallthrough = _live_block_for_binding(
             modifier,
             state.binding(
-                edge_by_role[
-                    SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
-                ].target_block_id
+                edge_by_role[SemanticEdgeRole.CONDITIONAL_FALLTHROUGH].target_block_id
             ),
         )
         selected_rows = tuple(_iter_block_instructions(selected))
@@ -3299,8 +3379,8 @@ def _observe_generated_graph_free_fragment(
             raise SemanticFragmentBackendRejected(
                 "GENERATED conditional route failed exact live observation"
             )
-        _predecessors, successors, _kinds = (
-            _generated_structural_serial_topology(modifier)
+        _predecessors, successors, _kinds = _generated_structural_serial_topology(
+            modifier
         )
         reachable: set[int] = set()
         pending = [int(source.serial)]
@@ -3310,8 +3390,9 @@ def _observe_generated_graph_free_fragment(
                 continue
             reachable.add(serial)
             pending.extend(successors.get(serial, ()))
-        if not imported_serials.issubset(reachable):
-            missing = tuple(sorted(imported_serials - reachable))
+        required_reachable_serials = imported_serials - superseded_carrier_serials
+        if not required_reachable_serials.issubset(reachable):
+            missing = tuple(sorted(required_reachable_serials - reachable))
             raise SemanticFragmentBackendRejected(
                 "GENERATED imported closure is not structurally reachable: "
                 f"serials={missing!r}"
@@ -3934,11 +4015,7 @@ def _generated_structural_serial_topology(
             }:
                 projected.append(serial + 1)
         normalized = tuple(
-            dict.fromkeys(
-                target
-                for target in projected
-                if 0 <= int(target) < quantity
-            )
+            dict.fromkeys(target for target in projected if 0 <= int(target) < quantity)
         )
         successors[serial] = normalized
         kinds[serial] = {
@@ -3946,9 +4023,7 @@ def _generated_structural_serial_topology(
             1: BlockKind.ONE_WAY,
             2: BlockKind.TWO_WAY,
         }.get(len(normalized), BlockKind.N_WAY)
-    predecessor_lists: dict[int, list[int]] = {
-        serial: [] for serial in range(quantity)
-    }
+    predecessor_lists: dict[int, list[int]] = {serial: [] for serial in range(quantity)}
     for source, targets in successors.items():
         for target in targets:
             predecessor_lists[target].append(source)
@@ -3989,9 +4064,7 @@ def generated_plan_live_bindings(
     for operation in plan.operations:
         normalization = operation.computed_branch_normalization
         envelope = (
-            None
-            if normalization is None
-            else normalization.conditional_select_envelope
+            None if normalization is None else normalization.conditional_select_envelope
         )
         if not isinstance(envelope, FragmentConditionalSelectEnvelope):
             continue
@@ -4003,10 +4076,9 @@ def generated_plan_live_bindings(
             raise SemanticFragmentBackendRejected(
                 "GENERATED conditional-select corridor lost physical adjacency"
             )
-        if (
-            int(envelope.predicate_ea) not in _instruction_eas(selected)
-            or int(normalization.unresolved_transfer_ea) not in _instruction_eas(join)
-        ):
+        if int(envelope.predicate_ea) not in _instruction_eas(selected) or int(
+            normalization.unresolved_transfer_ea
+        ) not in _instruction_eas(join):
             raise SemanticFragmentBackendRejected(
                 "GENERATED conditional-select physical roles changed"
             )
@@ -4143,9 +4215,7 @@ def plan_semantic_fragment_root_inventory(
                     role,
                 )
             else:
-                if generated_successors[predecessor_serial] != (
-                    int(original.serial),
-                ):
+                if generated_successors[predecessor_serial] != (int(original.serial),):
                     raise SemanticFragmentBackendRejected(
                         "GENERATED root predecessor is not an exact direct edge"
                     )
@@ -4481,9 +4551,7 @@ def snapshot_semantic_fragment_inputs(
                 "imported block lacks immutable native-body preparation",
             )
         fact = preparation.fact.block(planned.block_id)
-        fact_block_ids = tuple(
-            block.block_id for block in preparation.fact.blocks
-        )
+        fact_block_ids = tuple(block.block_id for block in preparation.fact.blocks)
         fact_index = fact_block_ids.index(planned.block_id)
         next_fact_block_id = (
             None
@@ -4526,9 +4594,7 @@ def snapshot_semantic_fragment_inputs(
                 successors=tuple(edge.target_block_id for edge in fact.successors),
                 predecessors=fact.predecessor_block_ids,
                 physical_position=next_position,
-                adjacent_fallthrough_target_id=(
-                    adjacent_fallthrough_target_id
-                ),
+                adjacent_fallthrough_target_id=(adjacent_fallthrough_target_id),
                 terminator_ea=fact.terminator_ea,
                 terminator_kind=fact.terminator_kind,
                 instruction_eas=instruction_eas,

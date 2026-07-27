@@ -89,6 +89,7 @@ class RhadGeneratedReferenceBatch:
     batch_id: str
     input_sha256: str
     function_ea: int
+    native_function_rva: int
     predecessor: RhadGeneratedBlockEvidence
     source_original_id: str
     source: RhadGeneratedBlockEvidence
@@ -159,9 +160,10 @@ _ACCEPTED_ROUTE = RhadConditionalRoute(
 
 _DIRECT_ROUTE = RhadDirectRoute(
     operation_id="route:rhad-direct@0x40A619",
-    source_block_id="native@0x40A619",
+    source_block_id="native@0x40A615",
+    source_native_ea=0x40A607,
     transfer_ea=0x40A619,
-    owner_anchor_ea=0x40A619,
+    owner_anchor_ea=0x40A615,
     direct_target_block_id="native@0x40A61B",
     owned_corridor_instruction_eas=(0x40A607, 0x40A615, 0x40A617, 0x40A619),
     imported_closure_block_ids=DIRECT_IMPORTED_BLOCK_IDS,
@@ -174,6 +176,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
     function_ea=0x40A560,
+    native_function_rva=0xA560,
     predecessor=RhadGeneratedBlockEvidence(
         block_id="native@0x40A5AE",
         start_ea=0x40A5AE,
@@ -260,7 +263,7 @@ def reference_batch_for_native_key(
             batch
             for batch in _GENERATED_REFERENCE_BATCHES
             if input_identity == f"sha256:{batch.input_sha256.lower()}"
-            and int(native_key.function_rva) == int(batch.function_ea)
+            and int(native_key.function_rva) == int(batch.native_function_rva)
         ),
         None,
     )
@@ -881,12 +884,12 @@ def build_rhad_generated_reference_plan(
     )
     ledger = RhadReferenceLedger(
         ledger_id=f"{batch.batch_id}:g{generation}",
-        function_ea=batch.function_ea,
+        function_ea=batch.native_function_rva,
         evidence_generation=generation,
         base_plan=base_plan,
         reference_oracle_run=RouteOracleRun(
             run_id=batch.batch_id,
-            function_ea=batch.function_ea,
+            function_ea=batch.native_function_rva,
             fixture_sha256=batch.input_sha256,
             reference_binary_sha256=batch.reference_binary_sha256,
             candidate_binary_sha256=candidate_sha256,

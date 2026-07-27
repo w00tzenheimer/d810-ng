@@ -144,8 +144,9 @@ The accepted conditional canary remains exact: while its source topology
 exists, the indirect transfer at `0x40A605` is absent and the semantic targets
 are `0x40A607` and `0x40B6C0`.
 
-The selected direct canary is exact: while `native@0x40A619` exists, its
-indirect transfer is absent and its direct target is `0x40A61B`. If Hex-Rays
+The selected direct canary is exact: while the source `native@0x40A615` exists,
+its indirect transfer at `0x40A619` is absent and its direct target is
+`0x40A61B`. If Hex-Rays
 legitimately optimizes the source block away, the whole function must contain
 no residual indirect transfer attributable to `0x40A619`, and the required
 reachable downstream semantics at `0x40A633` and `0x40A74C` remain represented

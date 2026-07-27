@@ -21,7 +21,7 @@ def _native_key():
         input_identity=(
             "sha256:2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
         ),
-        function_rva=0x40A560,
+        function_rva=0xA560,
     )
 
 
@@ -58,8 +58,19 @@ def test_checksum_producer_compiles_two_serial_free_reference_shapes() -> None:
         0x40B790,
     )
     direct = plan.operation("route:rhad-direct@0x40A619")
+    assert direct.source_block_id == "native@0x40A615"
     assert direct.direct_transfer_rewrite.rewrite_anchor_ea == 0x40A619
+    assert direct.direct_transfer_rewrite.owner_anchor_ea == 0x40A615
     assert direct.edges[0].target_block_id == "native@0x40A61B"
+    native_body = plan.native_bodies[0]
+    rewritten_sources = {
+        candidate.source_block_id
+        for candidate in plan.operations
+        if candidate.direct_transfer_rewrite is not None
+    }
+    preserved_sources = set(native_body.preserved_native_transfer_block_ids)
+    assert rewritten_sources.isdisjoint(preserved_sources)
+    assert rewritten_sources | preserved_sources == set(native_body.block_ids)
     direct_payload = json.loads(
         direct.reference_route_authority.reference_route.reference_ledger_json
     )
@@ -72,12 +83,13 @@ def test_generated_batch_registry_selects_by_complete_native_identity() -> None:
 
     assert selected is not None
     assert selected.function_ea == 0x40A560
+    assert selected.native_function_rva == 0xA560
     assert selected.template_root_eas == TEMPLATE_ROOT_EAS
     assert (
         reference_batch_for_native_key(
             make_native_key(
                 input_identity=f"sha256:{'d' * 64}",
-                function_rva=0x40A560,
+                function_rva=0xA560,
             )
         )
         is None
@@ -86,7 +98,7 @@ def test_generated_batch_registry_selects_by_complete_native_identity() -> None:
         reference_batch_for_native_key(
             make_native_key(
                 input_identity=_native_key().input_identity,
-                function_rva=0x40A561,
+                function_rva=0xA561,
             )
         )
         is None
