@@ -1237,6 +1237,43 @@ def _native_anchor(block: object, origins: dict[int, int]) -> int:
     )
 
 
+def _typed_delivery_block_closure(
+    batch: RhadGeneratedReferenceBatch,
+    root_block_id: str,
+) -> tuple[str, ...]:
+    """Expand one semantic target through typed downstream operations."""
+    pending = [str(root_block_id)]
+    closure: list[str] = []
+    seen: set[str] = set()
+    while pending:
+        block_id = pending.pop(0)
+        if block_id in seen:
+            continue
+        seen.add(block_id)
+        closure.append(block_id)
+        for operation in batch.operations:
+            if operation.source_block_id != block_id:
+                continue
+            if isinstance(operation, RhadDirectRoute):
+                targets = (operation.direct_target_block_id,)
+            elif isinstance(
+                operation,
+                (
+                    RhadConditionalRoute,
+                    RhadExistingConditionalRoute,
+                    RhadSetccIndexedTableRoute,
+                ),
+            ):
+                targets = (
+                    operation.true_target_block_id,
+                    operation.false_target_block_id,
+                )
+            else:
+                continue
+            pending.extend(str(target) for target in targets if str(target) not in seen)
+    return tuple(closure)
+
+
 def _reference_batch_observation(
     mba: object,
     batch: RhadGeneratedReferenceBatch,
@@ -1276,22 +1313,28 @@ def _reference_batch_observation(
         """Canonicalize an optimized live anchor through typed target ownership."""
         live_anchor = _native_anchor(block, origins)
         rooted_targets = tuple(
-            block_anchor_by_id[block_id]
-            for block_id in target_block_ids
-            for root_ea in (block_anchor_by_id[block_id],)
-            for fragment in batch.template_fragments
-            if int(fragment.root_ea) == int(root_ea)
-            and any(
-                int(start_ea) <= live_anchor < int(end_ea)
-                for start_ea, end_ea in fragment.owned_ranges
+            dict.fromkeys(
+                block_anchor_by_id[block_id]
+                for block_id in target_block_ids
+                for owned_block_id in _typed_delivery_block_closure(batch, block_id)
+                for root_ea in (block_anchor_by_id[owned_block_id],)
+                for fragment in batch.template_fragments
+                if int(fragment.root_ea) == int(root_ea)
+                and any(
+                    int(start_ea) <= live_anchor < int(end_ea)
+                    for start_ea, end_ea in fragment.owned_ranges
+                )
             )
         )
         if not rooted_targets:
             rooted_targets = tuple(
-                int(evidence.start_ea)
-                for block_id in target_block_ids
-                for evidence in (block_evidence_by_id[block_id],)
-                if int(evidence.start_ea) <= live_anchor < int(evidence.end_ea)
+                dict.fromkeys(
+                    block_anchor_by_id[block_id]
+                    for block_id in target_block_ids
+                    for owned_block_id in _typed_delivery_block_closure(batch, block_id)
+                    for evidence in (block_evidence_by_id[owned_block_id],)
+                    if int(evidence.start_ea) <= live_anchor < int(evidence.end_ea)
+                )
             )
         return int(rooted_targets[0]) if len(rooted_targets) == 1 else live_anchor
 
