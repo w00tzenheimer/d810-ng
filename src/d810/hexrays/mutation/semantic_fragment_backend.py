@@ -169,6 +169,13 @@ def _setcc_indexed_table_branch_opcode(
     normalization: FragmentSetccIndexedTableNormalization,
 ) -> int:
     """Return the exact boolean branch selected by typed predicate evidence."""
+    if normalization.predicate_kind not in {PredicateKind.SLT, PredicateKind.SGE}:
+        raise SemanticFragmentBackendRejected(
+            "setcc indexed-table normalization has an unsupported predicate",
+            reason_code="setcc_indexed_table_predicate_unsupported",
+            anchor_ea=int(normalization.table_evidence.setcc_ea),
+            payload={"predicate_kind": normalization.predicate_kind.value},
+        )
     predicate_true_opcode = (
         int(ida_hexrays.m_jnz)
         if normalization.predicate_kind is PredicateKind.SLT
