@@ -28,6 +28,7 @@ from d810.analyses.control_flow.detached_handler_island import (
     DetachedSnippetConditionalBoundaryPort,
     DetachedSnippetDirectBoundaryPort,
     DetachedSnippetReplacementEvidence,
+    make_resolver_cut_boundary_port,
     normalize_detached_snippet_boundary_ports,
     select_unique_block_native_ea,
 )
@@ -77,6 +78,7 @@ from d810.transforms.fragment_plan import (
     FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
+    FragmentReferencedImportedConditionalSelectEnvelope,
     FragmentStoragePredicateMaterialization,
     FragmentTerminalReturn,
 )
@@ -1285,14 +1287,21 @@ class PreoptUnionSemanticNativeBodyMaterializer:
     ]:
         if int(template.maturity) != int(ida_hexrays.MMAT_PREOPTIMIZED):
             return None, "maturity_mismatch"
-        if not all(
-            any(
+        missing_ranges = tuple(
+            (required_start, required_end)
+            for required_start, required_end in required_ranges
+            if not any(
                 int(owned_start) <= required_start and required_end <= int(owned_end)
                 for owned_start, owned_end in template.owned_ranges
             )
-            for required_start, required_end in required_ranges
-        ):
-            return None, "range_not_owned"
+        )
+        if missing_ranges:
+            return (
+                None,
+                "range_not_owned:"
+                f"missing={tuple((hex(start), hex(end)) for start, end in missing_ranges)!r}:"
+                f"owned={tuple((hex(int(start)), hex(int(end))) for start, end in template.owned_ranges)!r}",
+            )
         matched: dict[str, DetachedSnippetBlockTemplate] = {}
         for block_id in native_body.block_ids:
             plan_block = plan.block(block_id)
@@ -1697,8 +1706,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             if any(
                 int(instruction.ea) in rewrite.superseded_instruction_eas
                 and (
-                    rewrite.source_transfer_kind
-                    is SemanticTransferKind.CONDITIONAL
+                    rewrite.source_transfer_kind is SemanticTransferKind.CONDITIONAL
                     or is_owned_source_transfer(instruction)
                 )
                 for instruction in candidate.instructions
@@ -2002,12 +2010,39 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             if operation.direct_transfer_rewrite is not None
             and operation.source_block_id in native_body.block_ids
         }
+        planned_referenced_conditional_block_ids = {
+            str(block_id)
+            for operation in plan.operations
+            for normalization in (operation.computed_branch_normalization,)
+            if normalization is not None
+            for envelope in (normalization.conditional_select_envelope,)
+            if isinstance(
+                envelope,
+                FragmentReferencedImportedConditionalSelectEnvelope,
+            )
+            for block_id in (
+                operation.source_block_id,
+                envelope.selected_value_block_id,
+                envelope.join_block_id,
+            )
+            if block_id in native_body.block_ids
+        }
+        planned_operation_source_block_ids = planned_direct_transfer_block_ids | {
+            str(operation.source_block_id)
+            for operation in plan.operations
+            if operation.source_block_id in planned_referenced_conditional_block_ids
+        }
         if allow_unplanned_transfers:
             body_block_ids = set(native_body.block_ids)
             if (
                 preserved_native_transfer_block_ids & planned_direct_transfer_block_ids
                 or preserved_native_transfer_block_ids
+                & planned_referenced_conditional_block_ids
+                or planned_direct_transfer_block_ids
+                & planned_referenced_conditional_block_ids
+                or preserved_native_transfer_block_ids
                 | planned_direct_transfer_block_ids
+                | planned_referenced_conditional_block_ids
                 != body_block_ids
             ):
                 raise SemanticFragmentBackendRejected(
@@ -2115,7 +2150,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             expected_operations = (
                 1
                 if allow_unplanned_transfers
-                and block_id in planned_direct_transfer_block_ids
+                and block_id in planned_operation_source_block_ids
                 else 0
                 if allow_unplanned_transfers or block_id in terminal_block_ids
                 else 1
@@ -6131,6 +6166,7 @@ def capture_generated_reference_snippet_template(
     boundary_ranges: tuple[tuple[int, int], ...] = (),
     boundary_exit_eas: Collection[int] = (),
     owned_block_entry_eas: Collection[int],
+    direct_boundary_routes: Collection[tuple[int, int, int]],
 ) -> bool:
     """Cache one target-rooted PREOPT body for GENERATED publication.
 
@@ -6163,13 +6199,25 @@ def capture_generated_reference_snippet_template(
         and native_eas
         and all(_ea_in_ranges(ea, capture_ranges) for ea in native_eas)
     }
+    direct_ports = tuple(
+        make_resolver_cut_boundary_port(
+            source_block_ea=int(source_block_ea),
+            source_instruction_ea=int(source_instruction_ea),
+            target_ea=int(route_target_ea),
+            source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+            target_owner=DetachedSnippetBoundaryPortOwner.LIVE,
+            provenance="generated_reference_typed_boundary",
+        )
+        for source_block_ea, source_instruction_ea, route_target_ea in direct_boundary_routes
+    )
+    boundary_ports = normalize_detached_snippet_boundary_ports(direct_ports, ())
     captured = _capture_detached_snippet_template(
         int(function_ea),
         int(target_ea),
         mba,
         capture_ranges,
         _GENERATED_REFERENCE_SNIPPET_TEMPLATES,
-        DetachedSnippetBoundaryPorts((), ()),
+        boundary_ports,
         tuple(int(ea) for ea in owned_block_entry_eas),
         range_split_entries,
         (),
@@ -6206,6 +6254,7 @@ def capture_generated_reference_snippet_template(
         template,
         blocks=tuple(normalized_blocks),
         owned_ranges=normalized_ranges,
+        boundary_ports=DetachedSnippetBoundaryPorts((), ()),
     )
     return True
 
