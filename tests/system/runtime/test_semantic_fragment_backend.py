@@ -2703,8 +2703,50 @@ def test_backend_does_not_realize_prepared_imported_direct_transfer_twice(
     gateway.abort(reason="prepared direct transfer staging cleanup")
 
 
+@pytest.mark.parametrize(
+    (
+        "operation_id",
+        "source_ea",
+        "predicate_ea",
+        "branch_opcode",
+        "fallthrough_block_id",
+        "fallthrough_ea",
+        "taken_block_id",
+        "taken_ea",
+    ),
+    (
+        (
+            "rhad:route@0x40A77C",
+            0x40A766,
+            0x40A76E,
+            ida_hexrays.m_jnz,
+            "native@0x40ABC6",
+            0x40ABC6,
+            "native@0x40A77E",
+            0x40A77E,
+        ),
+        (
+            "rhad:route@0x40A792",
+            0x40A77E,
+            0x40A786,
+            ida_hexrays.m_jz,
+            "native@0x40A794",
+            0x40A794,
+            "native@0x40AEE6",
+            0x40AEE6,
+        ),
+    ),
+)
 def test_generated_graph_free_realizer_binds_prepared_setcc_table_conditional(
     monkeypatch,
+    operation_id,
+    source_ea,
+    predicate_ea,
+    branch_opcode,
+    fallthrough_block_id,
+    fallthrough_ea,
+    taken_block_id,
+    taken_ea,
 ) -> None:
     input_sha256 = "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
     plan = build_rhad_generated_reference_plan(
@@ -2714,13 +2756,13 @@ def test_generated_graph_free_realizer_binds_prepared_setcc_table_conditional(
         ),
         evidence_generation=1,
     )
-    operation = plan.operation("rhad:route@0x40A77C")
-    source = _Block(0, start=0x40A766, block_type=ida_hexrays.BLT_NONE)
-    fallthrough = _Block(1, start=0x40ABC6, block_type=ida_hexrays.BLT_NONE)
-    taken = _Block(2, start=0x40A77E, block_type=ida_hexrays.BLT_NONE)
-    branch = _Instruction(ida_hexrays.m_jnz, 0x40A76E)
+    operation = plan.operation(operation_id)
+    source = _Block(0, start=source_ea, block_type=ida_hexrays.BLT_NONE)
+    fallthrough = _Block(1, start=fallthrough_ea, block_type=ida_hexrays.BLT_NONE)
+    taken = _Block(2, start=taken_ea, block_type=ida_hexrays.BLT_NONE)
+    branch = _Instruction(branch_opcode, predicate_ea)
     branch.l.make_reg(1, 1)
-    branch.r.make_number(0, 1, 0x40A76E)
+    branch.r.make_number(0, 1, predicate_ea)
     source.head = source.tail = branch
     _Mba((source, fallthrough, taken))
 
@@ -2733,15 +2775,15 @@ def test_generated_graph_free_realizer_binds_prepared_setcc_table_conditional(
 
     bindings = {
         operation.source_block_id: binding(operation.source_block_id, source),
-        "native@0x40A77E": binding("native@0x40A77E", taken),
-        "native@0x40ABC6": binding("native@0x40ABC6", fallthrough),
+        taken_block_id: binding(taken_block_id, taken),
+        fallthrough_block_id: binding(fallthrough_block_id, fallthrough),
     }
     state = sfb.SemanticFragmentBackendState(
         plan_id=plan.plan_id,
         atomic_group_id=plan.atomic_group_id,
         bindings=bindings,
         instruction_origins_by_block_id={
-            operation.source_block_id: {0x40A76E: 0x40A76E},
+            operation.source_block_id: {predicate_ea: predicate_ea},
         },
     )
     edge_records: list[tuple[str, str]] = []
@@ -2763,8 +2805,8 @@ def test_generated_graph_free_realizer_binds_prepared_setcc_table_conditional(
     ) -> None:
         assert block is source
         assert cut_index == 0
-        assert expected_ea == 0x40A76E
-        assert expected_opcode == int(ida_hexrays.m_jnz)
+        assert expected_ea == predicate_ea
+        assert expected_opcode == int(branch_opcode)
         assert mark_dirty is False
         source.head = source.tail = replacement
 
@@ -2799,13 +2841,13 @@ def test_generated_graph_free_realizer_binds_prepared_setcc_table_conditional(
     )
 
     assert source.tail is not None
-    assert int(source.tail.opcode) == int(ida_hexrays.m_jnz)
+    assert int(source.tail.opcode) == int(branch_opcode)
     assert int(source.tail.d.t) == int(ida_hexrays.mop_b)
     assert int(source.tail.d.b) == int(taken.serial)
     assert source.nextb is fallthrough
     assert edge_records == [
-        ("handle:native@0x40A766", "handle:native@0x40A77E"),
-        ("handle:native@0x40A766", "handle:native@0x40ABC6"),
+        (f"handle:{operation.source_block_id}", f"handle:{taken_block_id}"),
+        (f"handle:{operation.source_block_id}", f"handle:{fallthrough_block_id}"),
     ]
 
 
