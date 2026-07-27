@@ -57,7 +57,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 65
+    assert len(IMPORTED_BLOCK_IDS) == 73
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -66,6 +66,8 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40A6A6,
         0x40A6C0,
         0x40A960,
+        0x40A6DA,
+        0x40AB76,
         0x40A800,
         0x40A74C,
         0x40A766,
@@ -82,6 +84,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "route:rhad-direct@0x40A68A",
         "rhad:route@0x40A6A4",
         "rhad:route@0x40A6BE",
+        "rhad:route@0x40A6D8",
         "route:rhad-direct@0x40A74A",
         "rhad:route@0x40A764",
         "rhad:route@0x40A77C",
@@ -128,6 +131,8 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     selected_envelope = selected_normalization.conditional_select_envelope
     row9 = plan.operation("rhad:route@0x40A6BE")
     row9_envelope = row9.computed_branch_normalization.conditional_select_envelope
+    row10 = plan.operation("rhad:route@0x40A6D8")
+    row10_envelope = row10.computed_branch_normalization.conditional_select_envelope
     fourth_existing = plan.operation("rhad:route@0x40A764")
     fourth_existing_envelope = (
         fourth_existing.computed_branch_normalization.conditional_select_envelope
@@ -144,6 +149,9 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         row9.source_block_id,
         row9_envelope.selected_value_block_id,
         row9_envelope.join_block_id,
+        row10.source_block_id,
+        row10_envelope.selected_value_block_id,
+        row10_envelope.join_block_id,
         fourth_existing.source_block_id,
         fourth_existing_envelope.selected_value_block_id,
         fourth_existing_envelope.join_block_id,
@@ -209,11 +217,12 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     assert BOUNDARY_EXIT_EAS == (
         0x40A5F0,
         0x40A633,
-        0x40A6DA,
+        0x40A6F4,
         0x40A9A0,
-        0x40AB76,
         0x40AD1E,
         0x40AD6E,
+        0x40AE8B,
+        0x40B17F,
         0x40B1D0,
         0x40B790,
     )
@@ -335,6 +344,68 @@ def test_checksum_producer_compiles_row9_existing_conditional_reference() -> Non
     )
     assert false_template.preserved_transfer_exit_map == {
         0x40A978: (0x40AD1E,),
+    }
+
+
+def test_checksum_producer_compiles_row10_existing_conditional_reference() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(),
+        evidence_generation=7,
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("rhad:route@0x40A6D8")
+    normalization = operation.computed_branch_normalization
+    assert normalization is not None
+    assert normalization.predicate_kind is PredicateKind.SLT
+    assert normalization.condition_producer_ea == 0x40A6C6
+    assert normalization.unresolved_transfer_ea == 0x40A6D8
+    assert isinstance(
+        normalization.conditional_select_envelope,
+        FragmentReferencedImportedConditionalSelectEnvelope,
+    )
+    envelope = normalization.conditional_select_envelope
+    assert envelope.selected_value_block_id == "native@0x40A6CE"
+    assert envelope.join_block_id == "native@0x40A6D4"
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.CONDITIONAL_TAKEN: "native@0x40A6DA",
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40AB76",
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_order"] == 10
+    assert payload["observed_predicate_kind"] == PredicateKind.SGE.value
+    assert payload["predicate_kind"] == PredicateKind.SLT.value
+    assert payload["comparison_constant"] == 0x40D5B460
+    assert payload["boundary_exit_eas"] == [
+        0x40A6F4,
+        0x40AE8B,
+        0x40B17F,
+    ]
+    closure = {
+        "native@0x40A6DA",
+        "native@0x40A6E8",
+        "native@0x40A6EE",
+        "native@0x40A6F2",
+        "native@0x40AB76",
+        "native@0x40AB84",
+        "native@0x40AB8A",
+        "native@0x40AB8E",
+    }
+    assert closure.issubset(plan.native_bodies[0].block_ids)
+    true_template = next(
+        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A6DA
+    )
+    assert true_template.preserved_transfer_exit_map == {
+        0x40A6F2: (0x40A6F4, 0x40AE8B),
+    }
+    false_template = next(
+        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40AB76
+    )
+    assert false_template.preserved_transfer_exit_map == {
+        0x40AB8E: (0x40B17F,),
     }
 
 
