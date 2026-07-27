@@ -285,7 +285,7 @@ def test_row17_proof_artifact_is_required_and_content_addressed(
         )
 
 
-def test_stable_228_row_inventory_references_required_row16_artifact() -> None:
+def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     inventory = json.loads(
         (
             _REPO
@@ -299,7 +299,11 @@ def test_stable_228_row_inventory_references_required_row16_artifact() -> None:
     row16 = next(
         operation for operation in operations if operation["reference_order"] == 16
     )
-    artifact = generated_reference.load_row16_table_proof_artifact()
+    row17 = next(
+        operation for operation in operations if operation["reference_order"] == 17
+    )
+    row16_artifact = generated_reference.load_row16_table_proof_artifact()
+    row17_artifact = generated_reference.load_row17_table_proof_artifact()
 
     assert inventory["schema_version"] == 1
     assert inventory["operation_count"] == len(operations) == 228
@@ -307,10 +311,54 @@ def test_stable_228_row_inventory_references_required_row16_artifact() -> None:
         range(228)
     )
     assert len(row_keys) == 1
-    assert row16["operation_id"] == artifact.operation_id
+    assert row16["operation_id"] == row16_artifact.operation_id
     assert row16["current_generated_proof"]["proof_artifact_identity"] == (
-        artifact.content_identity
+        row16_artifact.content_identity
     )
+    assert row17["operation_id"] == row17_artifact.operation_id
+    assert row17["current_compiler_support"] == "typed_setcc_indexed_table"
+    assert row17["current_generated_proof"] == {
+        "accepted_commits": ["53eed0e43", "a33311661"],
+        "proof_artifact_identity": row17_artifact.content_identity,
+        "status": "accepted_generated_c6",
+    }
+
+
+def test_indirect_jump_coverage_summary_matches_committed_row17_batch() -> None:
+    summary = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-coverage-summary.json"
+        ).read_text(encoding="utf-8")
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+    setcc = next(
+        row
+        for row in summary["variants"]
+        if row["operation_variant"] == "setcc_indexed_table"
+    )
+
+    assert summary["accepted_code_sha"] == ("a333116618c6cfa0ff42a5870a2a87e36edf1795")
+    assert summary["accepted_receipt_operation_ids"] == [
+        operation.operation_id for operation in batch.operations
+    ]
+    assert setcc == {
+        "operation_variant": "setcc_indexed_table",
+        "total_reference_operations": 8,
+        "compiler_supported_operations": 8,
+        "compiled_operation_instances": 2,
+        "vertically_proved_operations": 2,
+        "accepted_receipt_operations": 2,
+        "earliest_unproved_reference_order": 68,
+        "earliest_unproved_operation_id": "rhad:route@0x40AE3C",
+        "first_missing_typed_obligation": (
+            "instantiate the proved RhadSetccIndexedTableRoute vocabulary with "
+            "exact per-operation proof artifact and dependency closure"
+        ),
+    }
 
 
 def test_production_dispatch_and_compilation_have_no_sample_ea_guards() -> None:
