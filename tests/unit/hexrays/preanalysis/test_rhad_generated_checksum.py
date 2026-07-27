@@ -124,9 +124,10 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "route:rhad-direct@0x40A74A",
         "rhad:route@0x40A764",
         "rhad:route@0x40A77C",
-        "rhad:route@0x40A792",
-        "rhad:route@0x40A7AC",
-        "rhad:route@0x40A818",
+            "rhad:route@0x40A792",
+            "rhad:route@0x40A7AC",
+            "route:rhad-direct@0x40A7EF",
+            "rhad:route@0x40A818",
         "rhad:route@0x40A832",
         "rhad:route@0x40A84C",
         "rhad:route@0x40A866",
@@ -1184,6 +1185,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row6 = next(
         operation for operation in operations if operation["reference_order"] == 6
     )
+    row19 = next(
+        operation for operation in operations if operation["reference_order"] == 19
+    )
     row11 = next(
         operation for operation in operations if operation["reference_order"] == 11
     )
@@ -1267,6 +1271,19 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     assert row6["imported_closure_block_anchor_eas"] == [
         0x40AE26,
         0x40AE3C,
+    ]
+    assert row19["operation_id"] == "rhad:route@0x40A7EF"
+    assert row19["current_compiler_support"] == "typed_simple_indirect_jump"
+    assert row19["current_generated_proof"] == {
+        "accepted_commits": ["0543fe2dd", "1b3fadea3"],
+        "status": "accepted_generated_c6",
+    }
+    assert row19["boundary_exit_eas"] == [0x40B790]
+    assert row19["imported_closure_block_anchor_eas"] == [
+        0x40B6C0,
+        0x40B6CA,
+        0x40B6D0,
+        0x40B6D4,
     ]
     assert row11["operation_id"] == "rhad:route@0x40A6F2"
     assert row11["current_compiler_support"] == (
@@ -1404,7 +1421,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     }
 
 
-def test_indirect_jump_coverage_summary_matches_committed_row6_batch() -> None:
+def test_indirect_jump_coverage_summary_matches_committed_row19_batch() -> None:
     summary = json.loads(
         (
             _REPO
@@ -1431,7 +1448,7 @@ def test_indirect_jump_coverage_summary_matches_committed_row6_batch() -> None:
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("d0cc044175f54907b8afeb8b06f36ef35e74a2b7")
+    assert summary["accepted_code_sha"] == ("1b3fadea3387c92271ae9ef1672ce3ce1b276d75")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     assert accepted_operation_ids == [
         operation.operation_id for operation in batch.operations
@@ -1440,11 +1457,11 @@ def test_indirect_jump_coverage_summary_matches_committed_row6_batch() -> None:
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 7,
-        "vertically_proved_operations": 7,
-        "accepted_receipt_operations": 7,
-        "earliest_unproved_reference_order": 19,
-        "earliest_unproved_operation_id": "rhad:route@0x40A7EF",
+        "compiled_operation_instances": 8,
+        "vertically_proved_operations": 8,
+        "accepted_receipt_operations": 8,
+        "earliest_unproved_reference_order": 25,
+        "earliest_unproved_operation_id": "rhad:route@0x40A8B3",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadDirectRoute vocabulary with exact "
             "per-operation native-body proof and dependency closure"
