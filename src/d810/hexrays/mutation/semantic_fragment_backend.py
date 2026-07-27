@@ -165,6 +165,24 @@ class SemanticFragmentBackendRejected(RuntimeError):
         self.payload = dict(payload or {})
 
 
+def _setcc_indexed_table_branch_opcode(
+    normalization: FragmentSetccIndexedTableNormalization,
+) -> int:
+    """Return the exact boolean branch selected by typed predicate evidence."""
+    predicate_true_opcode = (
+        int(ida_hexrays.m_jnz)
+        if normalization.predicate_kind is PredicateKind.SLT
+        else int(ida_hexrays.m_jz)
+    )
+    if int(normalization.table_evidence.true_index) == 1:
+        return predicate_true_opcode
+    return (
+        int(ida_hexrays.m_jz)
+        if predicate_true_opcode == int(ida_hexrays.m_jnz)
+        else int(ida_hexrays.m_jnz)
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SemanticFragmentRuntimeBinding:
     """One exact logical version used by a live fragment transaction."""
@@ -1808,9 +1826,7 @@ def _realize_generated_setcc_indexed_table_operation(
             plan.block(fallthrough_edge.target_block_id).semantic_anchor_ea,
         )
     )
-    expected_opcode = (
-        int(ida_hexrays.m_jnz) if evidence.true_index == 1 else int(ida_hexrays.m_jz)
-    )
+    expected_opcode = _setcc_indexed_table_branch_opcode(normalization)
     failed_obligations = tuple(
         name
         for name, passed in (
@@ -3582,12 +3598,7 @@ def _observe_generated_graph_free_fragment(
                     ].target_block_id
                 ),
             )
-            evidence = normalization.table_evidence
-            expected_opcode = (
-                int(ida_hexrays.m_jnz)
-                if evidence.true_index == 1
-                else int(ida_hexrays.m_jz)
-            )
+            expected_opcode = _setcc_indexed_table_branch_opcode(normalization)
             source_predicate_live_ea = state.live_operation_predicate_ea(operation)
             if (
                 source.tail is None

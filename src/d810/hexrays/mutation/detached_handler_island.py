@@ -164,6 +164,23 @@ def _diagnostic_operand_shape(operand: object, *, depth: int = 2) -> tuple:
     return (operand_type, int(operand.size), detail)
 
 
+def _nested_mcode_instructions(
+    operand: object,
+    *,
+    depth: int = 8,
+) -> tuple[object, ...]:
+    """Return the exact finite instruction tree owned by one nested operand."""
+    if depth <= 0 or int(operand.t) != int(ida_hexrays.mop_d):
+        return ()
+    nested = operand.d
+    descendants = tuple(
+        descendant
+        for child in (nested.l, nested.r, nested.d)
+        for descendant in _nested_mcode_instructions(child, depth=depth - 1)
+    )
+    return (nested, *descendants)
+
+
 def stable_mba_identity(mba: object) -> int:
     """Return the underlying mba_t address, stable across SWIG proxy wrappers."""
     try:
@@ -2900,26 +2917,40 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 predicate_anchor_ea=int(operation.predicate_anchor_ea),
             )
         )
-        scaling_indexes = (
+        explicit_scaling_indexes = (
             tuple(
                 index
                 for index, instruction in enumerate(instructions)
                 if int(instruction.ea) == int(scaling.shift_ea)
             )
             if isinstance(scaling, FragmentSetccExplicitShiftScaling)
-            else tuple(
-                index
-                for index in lookup_indexes
-                if int(instructions[index].opcode) == int(ida_hexrays.m_mul)
-            )
+            else ()
         )
         load_indexes = tuple(
             index
             for index in lookup_indexes
             if int(instructions[index].opcode) == int(ida_hexrays.m_ldx)
         )
+        lookup = None if len(load_indexes) != 1 else instructions[load_indexes[0]]
+        nested_scaling_instructions = (
+            ()
+            if not isinstance(scaling, FragmentSetccScaledLookupScaling)
+            or lookup is None
+            else tuple(
+                nested
+                for operand in (lookup.l, lookup.r, lookup.d)
+                for nested in _nested_mcode_instructions(operand)
+                if int(nested.opcode) == int(ida_hexrays.m_mul)
+            )
+        )
         scaling_instruction = (
-            None if len(scaling_indexes) != 1 else instructions[scaling_indexes[0]]
+            instructions[explicit_scaling_indexes[0]]
+            if len(explicit_scaling_indexes) == 1
+            else (
+                nested_scaling_instructions[0]
+                if len(nested_scaling_instructions) == 1
+                else None
+            )
         )
         scaling_constants = (
             ()
@@ -2930,7 +2961,6 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 if int(operand.t) == int(ida_hexrays.mop_n)
             )
         )
-        lookup = None if len(load_indexes) != 1 else instructions[load_indexes[0]]
         transfer = (
             None
             if transfer_indexes != (len(instructions) - 1,)
@@ -2958,27 +2988,45 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 else int(ida_hexrays.m_jnz)
             )
         )
+        predicate_end_index = (
+            None if not predicate_indexes else int(predicate_indexes[-1])
+        )
+        exact_predicate_partition = bool(
+            predicate_indexes in {(2,), (2, 3)}
+            and signed_plan is not None
+            and int(signed_plan.cut_index) == 2
+        )
         exact_scaling_partition = bool(
             (
                 isinstance(scaling, FragmentSetccExplicitShiftScaling)
-                and scaling_indexes == (3,)
-                and lookup_indexes == (4,)
-                and load_indexes == (4,)
+                and predicate_end_index is not None
+                and explicit_scaling_indexes == (predicate_end_index + 1,)
+                and lookup_indexes == (predicate_end_index + 2,)
+                and load_indexes == lookup_indexes
             )
             or (
                 isinstance(scaling, FragmentSetccScaledLookupScaling)
-                and scaling_indexes == (3,)
-                and lookup_indexes == (3, 4)
-                and load_indexes == (4,)
+                and predicate_end_index is not None
+                and lookup_indexes == (predicate_end_index + 1,)
+                and load_indexes == lookup_indexes
+                and len(nested_scaling_instructions) == 1
             )
+        )
+        lookup_index = None if len(load_indexes) != 1 else int(load_indexes[0])
+        expected_decode_indexes = (
+            ()
+            if lookup_index is None
+            else tuple(range(lookup_index + 1, lookup_index + 7))
         )
         exact_index_partition = bool(
             producer_indexes == (0, 1)
-            and predicate_indexes == (2,)
+            and exact_predicate_partition
             and exact_scaling_partition
-            and decode_indexes == tuple(range(5, 11))
-            and transfer_indexes == (11,)
-            and len(instructions) == 12
+            and decode_indexes == expected_decode_indexes
+            and transfer_indexes == (len(instructions) - 1,)
+            and expected_decode_indexes
+            and transfer_indexes == (expected_decode_indexes[-1] + 1,)
+            and len(instructions) == transfer_indexes[0] + 1
         )
         checks = (
             (
