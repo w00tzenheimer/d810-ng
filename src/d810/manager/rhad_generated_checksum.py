@@ -3317,7 +3317,11 @@ def _reference_batch_observation(
     for conditional_route in (
         operation
         for operation in batch.operations
-        if isinstance(operation, RhadExistingConditionalRoute)
+        if isinstance(
+            operation,
+            (RhadConditionalRoute, RhadExistingConditionalRoute),
+        )
+        and operation is not accepted_route
     ):
         conditional_target_block_ids = (
             conditional_route.true_target_block_id,
@@ -3356,7 +3360,14 @@ def _reference_batch_observation(
                     while (
                         _native_anchor(target, origins)
                         in {
-                            int(conditional_route.selected_value_ea),
+                            int(
+                                conditional_route.conditional_select_ea
+                                if isinstance(
+                                    conditional_route,
+                                    RhadConditionalRoute,
+                                )
+                                else conditional_route.selected_value_ea
+                            ),
                             block_anchor_by_id[conditional_route.join_block_id],
                         }
                         and len(tuple(target.succset)) == 1
@@ -3390,6 +3401,7 @@ def _reference_batch_observation(
                         )
         source_topology_reachable = bool(
             conditional_source is not None
+            and conditional_targets == delivery_target_eas
             and (
                 int(mba.maturity) == int(ida_hexrays.MMAT_GENERATED)
                 or int(conditional_source.serial) in reachable_block_serials
