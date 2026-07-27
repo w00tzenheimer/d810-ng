@@ -6,6 +6,11 @@ from dataclasses import fields, replace
 
 import pytest
 
+from d810.core.semantic_route_oracle import (
+    ReferenceRouteRewrite,
+    RouteOracleRun,
+    SemanticTransferKind,
+)
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
 from d810.ir.semantic_edge import SemanticEdgeRole
@@ -31,6 +36,7 @@ from d810.transforms.fragment_plan import (
     FragmentRangeAssumption,
     FragmentRangeObservation,
     FragmentStoragePredicateMaterialization,
+    FragmentReferenceRouteAuthority,
     FragmentValueSite,
     FragmentWorkItemScope,
 )
@@ -510,6 +516,207 @@ def test_fragment_plan_rejects_direct_rewrite_outside_canonical_lowering() -> No
             data_flow_obligations=(),
             flag_corridors=(),
             value_range_assumptions=(),
+        )
+
+
+def _referenced_frontend_direct_plan() -> FragmentPlan:
+    fixture_sha256 = "a" * 64
+    native_key = make_native_key(
+        input_identity=f"sha256:{fixture_sha256}",
+        function_rva=0x40A560,
+    )
+
+    def identity(start_ea: int, end_ea: int) -> StableBlockIdentity:
+        return StableBlockIdentity.from_intervals(
+            (NativeEaInterval(start_ea, end_ea),),
+            native_key=native_key,
+            exact_instruction_eas=(start_ea,),
+        )
+
+    operation_id = "route:rhad-direct@0x40A619"
+    body_id = "rhad-a560-generated-native-body"
+    root_identity = identity(0x40A607, 0x40A619)
+    original = FragmentBlock(
+        block_id="native-original@0x40A607",
+        role=FragmentBlockRole.ORIGINAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x40A607,
+        stable_identity=root_identity,
+    )
+    replacement = FragmentBlock(
+        block_id="native@0x40A607",
+        role=FragmentBlockRole.REPLACEMENT,
+        materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
+        semantic_anchor_ea=0x40A607,
+        stable_identity=root_identity,
+        replaces_block_id=original.block_id,
+    )
+    source_identity = identity(0x40A619, 0x40A61B)
+    source = FragmentBlock(
+        block_id="native@0x40A619",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x40A619,
+        stable_identity=source_identity,
+        native_body_id=body_id,
+    )
+    target = FragmentBlock(
+        block_id="native@0x40A61B",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x40A61B,
+        stable_identity=identity(0x40A61B, 0x40A62D),
+        native_body_id=body_id,
+    )
+    reference_route = ReferenceRouteRewrite(
+        route_id=operation_id,
+        function_ea=0x40A560,
+        owner_ea=0x40A619,
+        rewrite_anchor_ea=0x40A619,
+        corridor=((0x40A619, 0x40A61B),),
+        reference_phase="indirect_jump_reconstruction",
+        original_transfer_kind=SemanticTransferKind.INDIRECT,
+        final_transfer_kind=SemanticTransferKind.DIRECT,
+        direct_target_ea=0x40A61B,
+        reference_ledger_identity="rhad-generated-reference@0x40A560:g1",
+    )
+    operation = FragmentOperation(
+        operation_id=operation_id,
+        source_block_id=source.block_id,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=target.block_id,
+            ),
+        ),
+        direct_transfer_rewrite=FragmentDirectTransferRewrite(
+            route_proof_id="rhad-direct@0x40A619",
+            owner_identity=source_identity,
+            owner_anchor_ea=0x40A619,
+            rewrite_anchor_ea=0x40A619,
+            delivery_region=NativeEaInterval(0x40A619, 0x40A61B),
+            proof_corridor_instruction_eas=(0x40A619,),
+            superseded_instruction_eas=(0x40A619,),
+        ),
+        reference_route_authority=FragmentReferenceRouteAuthority(
+            reference_route=reference_route,
+            candidate_rewrite_anchor_ea=0x40A619,
+        ),
+    )
+    return FragmentPlan(
+        plan_id="rhad-a560-generated-two-operation-base",
+        atomic_group_id="rhad-a560-generated-two-operation:g1",
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        native_key=native_key,
+        blocks=(original, replacement, source, target),
+        roots=(replacement.block_id,),
+        owned_originals=(original.block_id,),
+        prohibited_dispatcher_blocks=(),
+        operations=(
+            FragmentOperation(
+                operation_id="publish-native@0x40A607",
+                source_block_id=replacement.block_id,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=source.block_id,
+                    ),
+                ),
+            ),
+            operation,
+        ),
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="rhad-generated-reference:g1",
+            selected_obligation_ids=(operation_id,),
+            remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
+        ),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id=body_id,
+                block_ids=(source.block_id, target.block_id),
+                entry_block_ids=(source.block_id, target.block_id),
+                terminal_block_ids=(target.block_id,),
+                native_ranges=(
+                    NativeEaInterval(0x40A619, 0x40A61B),
+                    NativeEaInterval(0x40A61B, 0x40A62D),
+                ),
+                proof_ids=(operation_id,),
+            ),
+        ),
+        reference_oracle_run=RouteOracleRun(
+            run_id="rhad-a560-generated-two-operation",
+            function_ea=0x40A560,
+            fixture_sha256=fixture_sha256,
+            reference_binary_sha256="b" * 64,
+            candidate_binary_sha256=fixture_sha256,
+            reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+            runtime_image="d810-idapro-9.3-test-runtime:py313-v1",
+            runtime_image_id="sha256:" + "c" * 64,
+            cache_disabled=True,
+        ),
+    )
+
+
+def test_fragment_plan_admits_reference_owned_frontend_imported_direct_route() -> None:
+    plan = _referenced_frontend_direct_plan()
+
+    operation = plan.operation("route:rhad-direct@0x40A619")
+    assert plan.publication_purpose is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+    assert operation.source_block_id == "native@0x40A619"
+    assert operation.edges[0].target_block_id == "native@0x40A61B"
+
+
+@pytest.mark.parametrize(
+    "missing_contract",
+    ("reference_authority", "native_body_proof", "selected_obligation", "oracle_run"),
+)
+def test_fragment_plan_rejects_incomplete_referenced_frontend_direct_route(
+    missing_contract: str,
+) -> None:
+    plan = _referenced_frontend_direct_plan()
+    entry_operation, direct_operation = plan.operations
+    changes: dict[str, object]
+    if missing_contract == "reference_authority":
+        changes = {
+            "operations": (
+                entry_operation,
+                replace(direct_operation, reference_route_authority=None),
+            )
+        }
+    elif missing_contract == "native_body_proof":
+        changes = {
+            "native_bodies": (
+                replace(plan.native_bodies[0], proof_ids=("unrelated-proof",)),
+            )
+        }
+    elif missing_contract == "selected_obligation":
+        changes = {
+            "work_item_scope": replace(
+                plan.work_item_scope,
+                selected_obligation_ids=("unrelated-obligation",),
+            )
+        }
+    else:
+        changes = {"reference_oracle_run": None}
+
+    with pytest.raises(
+        FragmentPlanRejected,
+        match="referenced frontend route proof",
+    ):
+        replace(plan, **changes)
+
+
+def test_fragment_plan_rejects_foreign_oracle_for_frontend_direct_route() -> None:
+    plan = _referenced_frontend_direct_plan()
+
+    with pytest.raises(FragmentPlanRejected, match="oracle authority"):
+        replace(
+            plan,
+            reference_oracle_run=replace(
+                plan.reference_oracle_run,
+                candidate_binary_sha256="d" * 64,
+            ),
         )
 
 
