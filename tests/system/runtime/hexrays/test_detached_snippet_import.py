@@ -45,6 +45,10 @@ from d810.transforms.fragment_plan import (
     FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
     FragmentOperation,
+    FragmentSetccIndexedTableEntry,
+    FragmentSetccIndexedTableEvidence,
+    FragmentSetccIndexedTableNormalization,
+    FragmentSetccScaledLookupScaling,
     FragmentStoragePredicateMaterialization,
     FragmentTerminalReturn,
 )
@@ -3924,7 +3928,7 @@ def test_preopt_setcc_table_accepts_typed_artificial_transfer_suffix() -> None:
     )
     with pytest.raises(
         detached_handler_island.SemanticFragmentBackendRejected,
-        match="shift_stride_exact",
+        match="scaling_stride_exact",
     ):
         detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._preflight_setcc_indexed_table_normalization(
             wrong_stride,
@@ -3932,6 +3936,139 @@ def test_preopt_setcc_table_accepts_typed_artificial_transfer_suffix() -> None:
             operation,
             normalization,
         )
+
+
+def test_preopt_setcc_table_accepts_scaled_lookup_suffix() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=f"sha256:{RHAD_INPUT_SHA256}",
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+    native_body = replace(
+        plan.native_bodies[0],
+        proof_ids=plan.native_bodies[0].proof_ids + ("rhad:route@0x40A792",),
+    )
+    operation = SimpleNamespace(
+        operation_id="rhad:route@0x40A792",
+        predicate_anchor_ea=0x40A786,
+    )
+    evidence = FragmentSetccIndexedTableEvidence(
+        table_identity="native-table@0x48B4F8:stride-8:u32le:add-esi",
+        zeroing_ea=0x40A77E,
+        zeroed_width_bits=32,
+        setcc_ea=0x40A786,
+        setcc_destination_width_bits=8,
+        extension_kind=plan.operation(
+            "rhad:route@0x40A77C"
+        ).computed_branch_normalization.table_evidence.extension_kind,
+        index_width_bits=32,
+        index_scaling=FragmentSetccScaledLookupScaling(
+            lookup_ea=0x40A789,
+            scale_bytes=8,
+        ),
+        lookup_ea=0x40A789,
+        table_base_ea=0x48B4F8,
+        stride_bytes=8,
+        entry_width_bytes=4,
+        byte_order=plan.operation(
+            "rhad:route@0x40A77C"
+        ).computed_branch_normalization.table_evidence.byte_order,
+        interpretation=plan.operation(
+            "rhad:route@0x40A77C"
+        ).computed_branch_normalization.table_evidence.interpretation,
+        decode_ea=0x40A790,
+        additive_key_producer_ea=0x40A5BD,
+        additive_key=0xFDEE1C81,
+        true_index=1,
+        false_index=0,
+        entries=(
+            FragmentSetccIndexedTableEntry(
+                index=0,
+                entry_ea=0x48B4F8,
+                raw_value=0x02528B13,
+                decoded_target_ea=0x40A794,
+            ),
+            FragmentSetccIndexedTableEntry(
+                index=1,
+                entry_ea=0x48B500,
+                raw_value=0x02529265,
+                decoded_target_ea=0x40AEE6,
+            ),
+        ),
+    )
+    normalization = FragmentSetccIndexedTableNormalization(
+        predicate_kind=PredicateKind.SGE,
+        normalization_start_ea=0x40A786,
+        condition_producer_ea=0x40A780,
+        unresolved_transfer_ea=0x40A792,
+        table_evidence=evidence,
+    )
+    overflow_result = _Operand(ida_hexrays.mop_r, register=60, size=1)
+    sign_result = _Operand(ida_hexrays.mop_r, register=61, size=1)
+    predicate_result = _Operand(ida_hexrays.mop_r, register=7, size=4)
+    predicate = _Instruction(
+        ida_hexrays.m_xdu,
+        0x40A786,
+        left=_Operand(
+            ida_hexrays.mop_d,
+            size=1,
+            nested=_Instruction(
+                ida_hexrays.m_xor,
+                0x40A786,
+                left=sign_result,
+                right=overflow_result,
+            ),
+        ),
+        dest=predicate_result,
+    )
+    instructions = (
+        _Instruction(ida_hexrays.m_seto, 0x40A780, dest=overflow_result),
+        _Instruction(ida_hexrays.m_sets, 0x40A780, dest=sign_result),
+        predicate,
+        _Instruction(
+            ida_hexrays.m_mul,
+            0x40A789,
+            left=predicate_result,
+            right=_Operand(ida_hexrays.mop_n, value=8, size=4),
+            dest=predicate_result,
+        ),
+        _Instruction(ida_hexrays.m_ldx, 0x40A789),
+        _Instruction(ida_hexrays.m_cfadd, 0x40A790),
+        _Instruction(ida_hexrays.m_ofadd, 0x40A790),
+        _Instruction(ida_hexrays.m_setz, 0x40A790),
+        _Instruction(ida_hexrays.m_setp, 0x40A790),
+        _Instruction(ida_hexrays.m_sets, 0x40A790),
+        _Instruction(ida_hexrays.m_add, 0x40A790),
+        _Instruction(
+            ida_hexrays.m_icall,
+            0x40A792,
+            left=_Operand(ida_hexrays.mop_r, register=7, size=4),
+            right=_Operand(ida_hexrays.mop_r, register=7, size=4),
+            dest=_Operand(ida_hexrays.mop_z),
+        ),
+    )
+    template_block = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=0,
+        native_entry_ea=0x40A77E,
+        native_end_ea=0x40A794,
+        instructions=instructions,
+        block_type=ida_hexrays.BLT_1WAY,
+        block_flags=ida_hexrays.MBL_TCAL,
+        successor_serials=(1,),
+        external_successor_eas=(0,),
+    )
+
+    prepared = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._preflight_setcc_indexed_table_normalization(
+        template_block,
+        native_body,
+        operation,
+        normalization,
+    )
+
+    assert prepared.cut_index == 2
+    assert prepared.branch_opcode == ida_hexrays.m_jz
 
 
 def test_generated_preserved_fake_transfer_retains_multi_exit_indirect_fact() -> None:

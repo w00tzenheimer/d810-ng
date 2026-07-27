@@ -81,6 +81,74 @@ class FragmentSetccIndexExtensionKind(str, Enum):
     ZERO_EXTEND_BY_FULL_REGISTER_PREZERO = "zero_extend_by_full_register_prezero"
 
 
+class FragmentSetccIndexScalingKind(str, Enum):
+    """Typed native realization of a Boolean table-index scale."""
+
+    EXPLICIT_SHIFT = "explicit_shift"
+    SCALED_LOOKUP = "scaled_lookup"
+
+
+@dataclass(frozen=True, slots=True)
+class FragmentSetccExplicitShiftScaling:
+    """A standalone native shift/multiply before the table lookup."""
+
+    shift_ea: int
+    shift_bits: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "shift_ea",
+            _require_native_ea(self.shift_ea, "setcc explicit shift"),
+        )
+        shift_bits = int(self.shift_bits)
+        if shift_bits < 0:
+            raise FragmentPlanRejected("setcc explicit shift bits must be non-negative")
+        object.__setattr__(self, "shift_bits", shift_bits)
+
+    @property
+    def kind(self) -> FragmentSetccIndexScalingKind:
+        return FragmentSetccIndexScalingKind.EXPLICIT_SHIFT
+
+    @property
+    def stride_bytes(self) -> int:
+        return 1 << int(self.shift_bits)
+
+
+@dataclass(frozen=True, slots=True)
+class FragmentSetccScaledLookupScaling:
+    """A native table lookup whose address expression owns the index scale."""
+
+    lookup_ea: int
+    scale_bytes: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "lookup_ea",
+            _require_native_ea(self.lookup_ea, "setcc scaled lookup"),
+        )
+        scale_bytes = int(self.scale_bytes)
+        if scale_bytes not in {1, 2, 4, 8}:
+            raise FragmentPlanRejected(
+                "setcc scaled lookup requires a native address scale"
+            )
+        object.__setattr__(self, "scale_bytes", scale_bytes)
+
+    @property
+    def kind(self) -> FragmentSetccIndexScalingKind:
+        return FragmentSetccIndexScalingKind.SCALED_LOOKUP
+
+    @property
+    def stride_bytes(self) -> int:
+        return int(self.scale_bytes)
+
+
+FragmentSetccIndexScaling = (
+    FragmentSetccExplicitShiftScaling | FragmentSetccScaledLookupScaling
+)
+
+
 class FragmentTableByteOrder(str, Enum):
     """Byte order of one reference-owned native table entry."""
 
@@ -726,8 +794,7 @@ class FragmentSetccIndexedTableEvidence:
     setcc_destination_width_bits: int
     extension_kind: FragmentSetccIndexExtensionKind
     index_width_bits: int
-    shift_ea: int
-    shift_bits: int
+    index_scaling: FragmentSetccIndexScaling
     lookup_ea: int
     table_base_ea: int
     stride_bytes: int
@@ -755,7 +822,6 @@ class FragmentSetccIndexedTableEvidence:
             for field_name in (
                 "zeroing_ea",
                 "setcc_ea",
-                "shift_ea",
                 "lookup_ea",
                 "table_base_ea",
                 "decode_ea",
@@ -764,12 +830,25 @@ class FragmentSetccIndexedTableEvidence:
         }
         for field_name, ea in native_eas.items():
             object.__setattr__(self, field_name, ea)
+        scaling = self.index_scaling
+        if not isinstance(
+            scaling,
+            (FragmentSetccExplicitShiftScaling, FragmentSetccScaledLookupScaling),
+        ):
+            raise FragmentPlanRejected(
+                "setcc table requires a typed index-scaling realization"
+            )
+        scaling_ordered = (
+            native_eas["setcc_ea"] < scaling.shift_ea < native_eas["lookup_ea"]
+            if isinstance(scaling, FragmentSetccExplicitShiftScaling)
+            else scaling.lookup_ea == native_eas["lookup_ea"]
+        )
         if not (
             native_eas["zeroing_ea"]
             < native_eas["setcc_ea"]
-            < native_eas["shift_ea"]
             < native_eas["lookup_ea"]
             < native_eas["decode_ea"]
+            and scaling_ordered
         ):
             raise FragmentPlanRejected(
                 "setcc table construction anchors are not strictly ordered"
@@ -789,10 +868,9 @@ class FragmentSetccIndexedTableEvidence:
             raise FragmentPlanRejected(
                 "setcc table index requires exact full-register prezero extension"
             )
-        shift_bits = int(self.shift_bits)
         stride_bytes = int(self.stride_bytes)
-        if shift_bits < 0 or stride_bytes != 1 << shift_bits:
-            raise FragmentPlanRejected("setcc table shift and stride disagree")
+        if stride_bytes != scaling.stride_bytes:
+            raise FragmentPlanRejected("setcc table scaling and stride disagree")
         entry_width_bytes = int(self.entry_width_bytes)
         if not 1 <= entry_width_bytes <= 8:
             raise FragmentPlanRejected(
@@ -862,7 +940,7 @@ class FragmentSetccIndexedTableEvidence:
             setcc_width_bits,
         )
         object.__setattr__(self, "index_width_bits", index_width_bits)
-        object.__setattr__(self, "shift_bits", shift_bits)
+        object.__setattr__(self, "index_scaling", scaling)
         object.__setattr__(self, "stride_bytes", stride_bytes)
         object.__setattr__(self, "entry_width_bytes", entry_width_bytes)
         object.__setattr__(self, "additive_key", additive_key)
@@ -3401,6 +3479,10 @@ __all__ = [
     "FragmentRangeObservation",
     "FragmentReferenceRouteAuthority",
     "FragmentSetccIndexExtensionKind",
+    "FragmentSetccIndexScaling",
+    "FragmentSetccIndexScalingKind",
+    "FragmentSetccExplicitShiftScaling",
+    "FragmentSetccScaledLookupScaling",
     "FragmentSetccIndexedTableEntry",
     "FragmentSetccIndexedTableEvidence",
     "FragmentSetccIndexedTableNormalization",

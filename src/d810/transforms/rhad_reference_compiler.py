@@ -32,10 +32,12 @@ from d810.transforms.fragment_plan import (
     FragmentPlan,
     FragmentReferenceRouteAuthority,
     FragmentReferencedImportedConditionalSelectEnvelope,
+    FragmentSetccExplicitShiftScaling,
     FragmentSetccIndexExtensionKind,
     FragmentSetccIndexedTableEntry,
     FragmentSetccIndexedTableEvidence,
     FragmentSetccIndexedTableNormalization,
+    FragmentSetccScaledLookupScaling,
     FragmentTableByteOrder,
     FragmentTableEntryInterpretation,
     FragmentValueSite,
@@ -164,11 +166,12 @@ class RhadSetccIndexedTableProofArtifact:
             raise RhadCompilerRejection(
                 "Rhad setcc proof artifact requires its typed artifact kind"
             )
-        if int(self.schema_version) != 1:
+        schema_version = int(self.schema_version)
+        if schema_version not in {1, 2}:
             raise RhadCompilerRejection(
                 "Rhad setcc proof artifact schema version is unsupported"
             )
-        object.__setattr__(self, "schema_version", 1)
+        object.__setattr__(self, "schema_version", schema_version)
         object.__setattr__(
             self,
             "input_sha256",
@@ -197,6 +200,13 @@ class RhadSetccIndexedTableProofArtifact:
         object.__setattr__(self, "reference_order", reference_order)
         if not isinstance(self.table_evidence, FragmentSetccIndexedTableEvidence):
             raise TypeError("Rhad setcc proof artifact requires typed table evidence")
+        if schema_version == 1 and not isinstance(
+            self.table_evidence.index_scaling,
+            FragmentSetccExplicitShiftScaling,
+        ):
+            raise RhadCompilerRejection(
+                "Rhad setcc proof artifact schema 1 requires explicit-shift scaling"
+            )
         declared_identity = str(self.content_identity).lower()
         expected_identity = (
             "sha256:"
@@ -211,6 +221,61 @@ class RhadSetccIndexedTableProofArtifact:
     @property
     def proof_payload(self) -> dict[str, object]:
         evidence = self.table_evidence
+        scaling = evidence.index_scaling
+        table_payload: dict[str, object] = {
+            "additive_key": int(evidence.additive_key),
+            "additive_key_producer_ea": int(evidence.additive_key_producer_ea),
+            "byte_order": evidence.byte_order.value,
+            "decode_ea": int(evidence.decode_ea),
+            "entries": [
+                {
+                    "decoded_target_ea": int(entry.decoded_target_ea),
+                    "entry_ea": int(entry.entry_ea),
+                    "index": int(entry.index),
+                    "raw_value": int(entry.raw_value),
+                }
+                for entry in evidence.entries
+            ],
+            "entry_width_bytes": int(evidence.entry_width_bytes),
+            "extension_kind": evidence.extension_kind.value,
+            "false_index": int(evidence.false_index),
+            "index_width_bits": int(evidence.index_width_bits),
+            "interpretation": evidence.interpretation.value,
+            "lookup_ea": int(evidence.lookup_ea),
+            "setcc_destination_width_bits": int(evidence.setcc_destination_width_bits),
+            "setcc_ea": int(evidence.setcc_ea),
+            "stride_bytes": int(evidence.stride_bytes),
+            "table_base_ea": int(evidence.table_base_ea),
+            "table_identity": evidence.table_identity,
+            "true_index": int(evidence.true_index),
+            "zeroed_width_bits": int(evidence.zeroed_width_bits),
+            "zeroing_ea": int(evidence.zeroing_ea),
+        }
+        if int(self.schema_version) == 1:
+            if not isinstance(scaling, FragmentSetccExplicitShiftScaling):
+                raise RhadCompilerRejection(
+                    "Rhad setcc proof artifact schema 1 cannot serialize scaled lookup"
+                )
+            table_payload.update(
+                {
+                    "shift_bits": int(scaling.shift_bits),
+                    "shift_ea": int(scaling.shift_ea),
+                }
+            )
+        else:
+            table_payload["index_scaling"] = (
+                {
+                    "kind": scaling.kind.value,
+                    "shift_bits": int(scaling.shift_bits),
+                    "shift_ea": int(scaling.shift_ea),
+                }
+                if isinstance(scaling, FragmentSetccExplicitShiftScaling)
+                else {
+                    "kind": scaling.kind.value,
+                    "lookup_ea": int(scaling.lookup_ea),
+                    "scale_bytes": int(scaling.scale_bytes),
+                }
+            )
         return {
             "artifact_type": self.artifact_type.value,
             "schema_version": int(self.schema_version),
@@ -221,39 +286,7 @@ class RhadSetccIndexedTableProofArtifact:
                 "reference_commit": self.reference_commit,
                 "reference_order": int(self.reference_order),
             },
-            "table_evidence": {
-                "additive_key": int(evidence.additive_key),
-                "additive_key_producer_ea": int(evidence.additive_key_producer_ea),
-                "byte_order": evidence.byte_order.value,
-                "decode_ea": int(evidence.decode_ea),
-                "entries": [
-                    {
-                        "decoded_target_ea": int(entry.decoded_target_ea),
-                        "entry_ea": int(entry.entry_ea),
-                        "index": int(entry.index),
-                        "raw_value": int(entry.raw_value),
-                    }
-                    for entry in evidence.entries
-                ],
-                "entry_width_bytes": int(evidence.entry_width_bytes),
-                "extension_kind": evidence.extension_kind.value,
-                "false_index": int(evidence.false_index),
-                "index_width_bits": int(evidence.index_width_bits),
-                "interpretation": evidence.interpretation.value,
-                "lookup_ea": int(evidence.lookup_ea),
-                "setcc_destination_width_bits": int(
-                    evidence.setcc_destination_width_bits
-                ),
-                "setcc_ea": int(evidence.setcc_ea),
-                "shift_bits": int(evidence.shift_bits),
-                "shift_ea": int(evidence.shift_ea),
-                "stride_bytes": int(evidence.stride_bytes),
-                "table_base_ea": int(evidence.table_base_ea),
-                "table_identity": evidence.table_identity,
-                "true_index": int(evidence.true_index),
-                "zeroed_width_bits": int(evidence.zeroed_width_bits),
-                "zeroing_ea": int(evidence.zeroing_ea),
-            },
+            "table_evidence": table_payload,
         }
 
     @property
@@ -292,33 +325,39 @@ class RhadSetccIndexedTableProofArtifact:
             ),
             "Rhad setcc proof binding",
         )
+        try:
+            schema_version = int(proof["schema_version"])
+        except (TypeError, ValueError) as error:
+            raise RhadCompilerRejection(
+                "Rhad setcc proof artifact schema version is invalid"
+            ) from error
+        common_table_fields = {
+            "additive_key",
+            "additive_key_producer_ea",
+            "byte_order",
+            "decode_ea",
+            "entries",
+            "entry_width_bytes",
+            "extension_kind",
+            "false_index",
+            "index_width_bits",
+            "interpretation",
+            "lookup_ea",
+            "setcc_destination_width_bits",
+            "setcc_ea",
+            "stride_bytes",
+            "table_base_ea",
+            "table_identity",
+            "true_index",
+            "zeroed_width_bits",
+            "zeroing_ea",
+        }
+        scaling_fields = (
+            {"shift_bits", "shift_ea"} if schema_version == 1 else {"index_scaling"}
+        )
         table = _require_mapping_keys(
             proof["table_evidence"],
-            frozenset(
-                {
-                    "additive_key",
-                    "additive_key_producer_ea",
-                    "byte_order",
-                    "decode_ea",
-                    "entries",
-                    "entry_width_bytes",
-                    "extension_kind",
-                    "false_index",
-                    "index_width_bits",
-                    "interpretation",
-                    "lookup_ea",
-                    "setcc_destination_width_bits",
-                    "setcc_ea",
-                    "shift_bits",
-                    "shift_ea",
-                    "stride_bytes",
-                    "table_base_ea",
-                    "table_identity",
-                    "true_index",
-                    "zeroed_width_bits",
-                    "zeroing_ea",
-                }
-            ),
+            frozenset(common_table_fields | scaling_fields),
             "Rhad setcc table evidence",
         )
         raw_entries = table["entries"]
@@ -336,6 +375,36 @@ class RhadSetccIndexedTableProofArtifact:
             )
             for entry in raw_entries
         )
+        if schema_version == 1:
+            index_scaling = FragmentSetccExplicitShiftScaling(
+                shift_ea=int(table["shift_ea"]),
+                shift_bits=int(table["shift_bits"]),
+            )
+        else:
+            scaling_payload = _require_mapping_keys(
+                table["index_scaling"],
+                (
+                    frozenset({"kind", "shift_bits", "shift_ea"})
+                    if isinstance(table["index_scaling"], Mapping)
+                    and table["index_scaling"].get("kind") == "explicit_shift"
+                    else frozenset({"kind", "lookup_ea", "scale_bytes"})
+                ),
+                "Rhad setcc index scaling",
+            )
+            if scaling_payload["kind"] == "explicit_shift":
+                index_scaling = FragmentSetccExplicitShiftScaling(
+                    shift_ea=int(scaling_payload["shift_ea"]),
+                    shift_bits=int(scaling_payload["shift_bits"]),
+                )
+            elif scaling_payload["kind"] == "scaled_lookup":
+                index_scaling = FragmentSetccScaledLookupScaling(
+                    lookup_ea=int(scaling_payload["lookup_ea"]),
+                    scale_bytes=int(scaling_payload["scale_bytes"]),
+                )
+            else:
+                raise RhadCompilerRejection(
+                    "Rhad setcc proof artifact scaling kind is unsupported"
+                )
         try:
             evidence = FragmentSetccIndexedTableEvidence(
                 table_identity=str(table["table_identity"]),
@@ -347,8 +416,7 @@ class RhadSetccIndexedTableProofArtifact:
                     str(table["extension_kind"])
                 ),
                 index_width_bits=int(table["index_width_bits"]),
-                shift_ea=int(table["shift_ea"]),
-                shift_bits=int(table["shift_bits"]),
+                index_scaling=index_scaling,
                 lookup_ea=int(table["lookup_ea"]),
                 table_base_ea=int(table["table_base_ea"]),
                 stride_bytes=int(table["stride_bytes"]),
@@ -372,7 +440,7 @@ class RhadSetccIndexedTableProofArtifact:
         return cls(
             content_identity=str(envelope["content_identity"]),
             artifact_type=artifact_type,
-            schema_version=int(proof["schema_version"]),
+            schema_version=schema_version,
             input_sha256=str(binding["input_sha256"]),
             function_ea=int(binding["function_ea"]),
             reference_commit=str(binding["reference_commit"]),
@@ -838,6 +906,14 @@ class RhadSetccIndexedTableRoute:
             tuple(self.owned_corridor_instruction_eas),
             "Rhad setcc table corridor",
         )
+        scaling_eas = (
+            {int(table_evidence.index_scaling.shift_ea)}
+            if isinstance(
+                table_evidence.index_scaling,
+                FragmentSetccExplicitShiftScaling,
+            )
+            else {int(table_evidence.index_scaling.lookup_ea)}
+        )
         required_corridor_eas = {
             int(self.source_native_ea),
             int(self.source_block_anchor_ea),
@@ -845,11 +921,10 @@ class RhadSetccIndexedTableRoute:
             int(self.predicate_anchor_ea),
             int(table_evidence.zeroing_ea),
             int(table_evidence.setcc_ea),
-            int(table_evidence.shift_ea),
             int(table_evidence.lookup_ea),
             int(table_evidence.decode_ea),
             int(self.transfer_ea),
-        }
+        } | scaling_eas
         if (
             corridor[0] != int(self.source_native_ea)
             or corridor[-1] != int(self.transfer_ea)
@@ -1189,8 +1264,22 @@ def _reference_payload(
                         evidence.setcc_destination_width_bits
                     ),
                     "setcc_ea": int(evidence.setcc_ea),
-                    "shift_bits": int(evidence.shift_bits),
-                    "shift_ea": int(evidence.shift_ea),
+                    "index_scaling": (
+                        {
+                            "kind": evidence.index_scaling.kind.value,
+                            "shift_bits": int(evidence.index_scaling.shift_bits),
+                            "shift_ea": int(evidence.index_scaling.shift_ea),
+                        }
+                        if isinstance(
+                            evidence.index_scaling,
+                            FragmentSetccExplicitShiftScaling,
+                        )
+                        else {
+                            "kind": evidence.index_scaling.kind.value,
+                            "lookup_ea": int(evidence.index_scaling.lookup_ea),
+                            "scale_bytes": int(evidence.index_scaling.scale_bytes),
+                        }
+                    ),
                     "stride_bytes": int(evidence.stride_bytes),
                     "table_base_ea": int(evidence.table_base_ea),
                     "table_identity": evidence.table_identity,
