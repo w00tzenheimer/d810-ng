@@ -1041,6 +1041,7 @@ def test_direct_rewrite_rejects_indirect_kind_with_conditional_normalization() -
 def _same_ea_imported_conditional_plan(
     *,
     selected_identity: StableBlockIdentity | None = None,
+    shared_instruction_end_ea: int = 0x5007,
 ) -> FragmentPlan:
     original = _native_block(
         "entry.original",
@@ -1060,7 +1061,7 @@ def _same_ea_imported_conditional_plan(
             NativeEaInterval(0x5000, 0x5001),
             NativeEaInterval(0x5002, 0x5003),
             NativeEaInterval(0x5004, 0x5005),
-            NativeEaInterval(0x5006, 0x5007),
+            NativeEaInterval(0x5006, shared_instruction_end_ea),
         ),
         native_key=NATIVE_KEY,
         exact_instruction_eas=(0x5000, 0x5002, 0x5004, 0x5006),
@@ -1073,7 +1074,11 @@ def _same_ea_imported_conditional_plan(
         stable_identity=source_identity,
         native_body_id="native-body:split",
     )
-    selected_identity = selected_identity or _identity(0x5006)
+    selected_identity = selected_identity or StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x5006, shared_instruction_end_ea),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x5006,),
+    )
     join_identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x5010, 0x5013),),
         native_key=NATIVE_KEY,
@@ -1149,7 +1154,7 @@ def _same_ea_imported_conditional_plan(
                 entry_block_ids=(source.block_id,),
                 terminal_block_ids=(),
                 native_ranges=(
-                    NativeEaInterval(0x5000, 0x5007),
+                    NativeEaInterval(0x5000, shared_instruction_end_ea),
                     NativeEaInterval(0x5010, 0x5013),
                 ),
                 proof_ids=(operation_id,),
@@ -1167,6 +1172,21 @@ def test_imported_conditional_select_allows_one_role_shared_ea() -> None:
     envelope = normalization.conditional_select_envelope
     assert isinstance(envelope, FragmentImportedConditionalSelectEnvelope)
     assert envelope.source_branch_ea == envelope.selected_value_ea == 0x5006
+
+
+def test_imported_conditional_select_allows_one_multibyte_role_shared_instruction() -> (
+    None
+):
+    plan = _same_ea_imported_conditional_plan(shared_instruction_end_ea=0x5009)
+
+    operation = plan.operations[1]
+    normalization = operation.computed_branch_normalization
+    assert normalization is not None
+    envelope = normalization.conditional_select_envelope
+    assert isinstance(envelope, FragmentImportedConditionalSelectEnvelope)
+    assert envelope.selected_value_identity.native_ranges.intervals == (
+        NativeEaInterval(0x5006, 0x5009),
+    )
 
 
 def test_imported_conditional_select_rejects_wider_role_overlap() -> None:
