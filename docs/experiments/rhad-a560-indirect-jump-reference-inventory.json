@@ -1188,9 +1188,14 @@
         4239078,
         4239824
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_setcc_indexed_table",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "61757881d",
+          "65ef9b419"
+        ],
+        "proof_artifact_identity": "sha256:cab149ee6cce29957798829cceba0a2da5e17bbf3fda4c6d55dad62d64ec3785",
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
