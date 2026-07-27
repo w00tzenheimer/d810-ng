@@ -13,6 +13,7 @@ from d810.core.semantic_route_oracle import RouteOracleRun, SemanticTransferKind
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
+import d810.transforms.fragment_plan as fragment_plan
 from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
@@ -1010,3 +1011,411 @@ def test_compiler_rejects_existing_conditional_ambiguous_native_anchor() -> None
 
     with pytest.raises(compiler.RhadCompilerRejection, match="ambiguous.*corridor"):
         replace(selected, source_branch_ea=0x40A697)
+
+
+def _fourth_shape_ledger():
+    compiler = _compiler_module()
+    third = _third_shape_ledger()
+    base = third.base_plan
+    body = base.native_bodies[0]
+    body_id = body.body_id
+    added_ranges = (
+        (0x40A74C, 0x40A75A, (0x40A74C, 0x40A752, 0x40A758)),
+        (0x40A75A, 0x40A760, (0x40A75A,)),
+        (0x40A760, 0x40A766, (0x40A760, 0x40A762, 0x40A764)),
+        (0x40A764, 0x40A766, (0x40A764,)),
+        (
+            0x40A766,
+            0x40A77E,
+            (
+                0x40A766,
+                0x40A768,
+                0x40A76E,
+                0x40A771,
+                0x40A774,
+                0x40A77A,
+                0x40A77C,
+            ),
+        ),
+        (0x40A77C, 0x40A77E, (0x40A77C,)),
+        (
+            0x40A77E,
+            0x40A794,
+            (0x40A77E, 0x40A780, 0x40A786, 0x40A789, 0x40A790, 0x40A792),
+        ),
+        (0x40A792, 0x40A794, (0x40A792,)),
+        (0x40A9DE, 0x40A9EC, (0x40A9DE, 0x40A9E4, 0x40A9EA)),
+        (0x40A9EC, 0x40A9F2, (0x40A9EC,)),
+        (0x40A9F2, 0x40A9F8, (0x40A9F2, 0x40A9F4, 0x40A9F6)),
+        (0x40A9F6, 0x40A9F8, (0x40A9F6,)),
+        (0x40ABC6, 0x40ABD4, (0x40ABC6, 0x40ABCC, 0x40ABD2)),
+        (0x40ABD4, 0x40ABDA, (0x40ABD4,)),
+        (0x40ABDA, 0x40ABE0, (0x40ABDA, 0x40ABDC, 0x40ABDE)),
+        (0x40ABDE, 0x40ABE0, (0x40ABDE,)),
+    )
+    added_blocks = tuple(
+        FragmentBlock(
+            block_id=f"native@0x{start_ea:X}",
+            role=FragmentBlockRole.IMPORTED,
+            materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+            semantic_anchor_ea=start_ea,
+            stable_identity=_identity(start_ea, end_ea, *exact_eas),
+            native_body_id=body_id,
+        )
+        for start_ea, end_ea, exact_eas in added_ranges
+    )
+    direct_id = "route:rhad-direct@0x40A74A"
+    existing_id = "rhad:route@0x40A764"
+    selected_id = "rhad:route@0x40A77C"
+    direct = compiler.RhadDirectRoute(
+        operation_id=direct_id,
+        source_block_id="native@0x40A740",
+        source_native_ea=0x40A607,
+        transfer_ea=0x40A74A,
+        owner_anchor_ea=0x40A740,
+        direct_target_block_id="native@0x40A74C",
+        owned_corridor_instruction_eas=(
+            0x40A607,
+            0x40A740,
+            0x40A746,
+            0x40A748,
+            0x40A74A,
+        ),
+        imported_closure_block_ids=(
+            "native@0x40A74C",
+            "native@0x40A75A",
+            "native@0x40A760",
+            "native@0x40A764",
+        ),
+        boundary_exit_eas=(0x40A9DE,),
+        phase=compiler.RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+        depends_on=(third.operations[1].operation_id,),
+    )
+    existing = compiler.RhadExistingConditionalRoute(
+        operation_id=existing_id,
+        reference_order=15,
+        operation_variant=(
+            compiler.RhadOperationVariant.EXISTING_CONDITIONAL_PLUS_INDIRECT
+        ),
+        reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
+        source_block_id="native@0x40A74C",
+        selected_value_block_id="native@0x40A75A",
+        join_block_id="native@0x40A760",
+        source_native_ea=0x40A74C,
+        source_block_anchor_ea=0x40A760,
+        transfer_ea=0x40A764,
+        condition_producer_ea=0x40A752,
+        predicate_anchor_ea=0x40A758,
+        normalization_start_ea=0x40A758,
+        source_branch_ea=0x40A758,
+        selected_value_ea=0x40A75A,
+        observed_predicate_kind=PredicateKind.SGE,
+        predicate_kind=PredicateKind.SLT,
+        true_target_block_id="native@0x40A766",
+        false_target_block_id="native@0x40A9DE",
+        true_target_ea=0x40A766,
+        false_target_ea=0x40A9DE,
+        comparison_constant=0x23B8E806,
+        owned_corridor_instruction_eas=(
+            0x40A74C,
+            0x40A752,
+            0x40A758,
+            0x40A75A,
+            0x40A760,
+            0x40A762,
+            0x40A764,
+        ),
+        imported_closure_block_ids=(
+            "native@0x40A766",
+            "native@0x40A77C",
+            "native@0x40A9DE",
+            "native@0x40A9EC",
+            "native@0x40A9F2",
+            "native@0x40A9F6",
+        ),
+        boundary_exit_eas=(0x40A77E, 0x40ABC6, 0x40ADCE),
+        flag_corridor_id="flags-intact@0x40A752",
+        phase=compiler.RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+        depends_on=(direct_id,),
+    )
+    assert hasattr(compiler, "RhadSetccIndexedTableRoute"), (
+        "the compiler has no typed setcc-indexed-table operation"
+    )
+    table_evidence = fragment_plan.FragmentSetccIndexedTableEvidence(
+        table_identity="native-table@0x48B81C:stride-0x20:u32le:add-esi",
+        zeroing_ea=0x40A766,
+        zeroed_width_bits=32,
+        setcc_ea=0x40A76E,
+        setcc_destination_width_bits=8,
+        extension_kind=(
+            fragment_plan.FragmentSetccIndexExtensionKind.ZERO_EXTEND_BY_FULL_REGISTER_PREZERO
+        ),
+        index_width_bits=32,
+        shift_ea=0x40A771,
+        shift_bits=5,
+        lookup_ea=0x40A774,
+        table_base_ea=0x48B81C,
+        stride_bytes=32,
+        entry_width_bytes=4,
+        byte_order=fragment_plan.FragmentTableByteOrder.LITTLE,
+        interpretation=(
+            fragment_plan.FragmentTableEntryInterpretation.ADD_CONSTANT_MODULO_ENTRY_WIDTH
+        ),
+        decode_ea=0x40A77A,
+        additive_key_producer_ea=0x40A5BD,
+        additive_key=0xFDEE1C81,
+        true_index=1,
+        false_index=0,
+        entries=(
+            fragment_plan.FragmentSetccIndexedTableEntry(
+                index=0,
+                entry_ea=0x48B81C,
+                raw_value=0x02528F45,
+                decoded_target_ea=0x40ABC6,
+            ),
+            fragment_plan.FragmentSetccIndexedTableEntry(
+                index=1,
+                entry_ea=0x48B83C,
+                raw_value=0x02528AFD,
+                decoded_target_ea=0x40A77E,
+            ),
+        ),
+    )
+    selected = compiler.RhadSetccIndexedTableRoute(
+        operation_id=selected_id,
+        reference_order=16,
+        operation_variant=compiler.RhadOperationVariant.SETCC_INDEXED_TABLE,
+        reference_symbol="JumpInliner._fixup_index_access",
+        source_block_id="native@0x40A766",
+        source_native_ea=0x40A766,
+        source_block_anchor_ea=0x40A766,
+        transfer_ea=0x40A77C,
+        condition_producer_ea=0x40A768,
+        predicate_anchor_ea=0x40A76E,
+        predicate_kind=PredicateKind.SLT,
+        true_target_block_id="native@0x40A77E",
+        false_target_block_id="native@0x40ABC6",
+        true_target_ea=0x40A77E,
+        false_target_ea=0x40ABC6,
+        table_evidence=table_evidence,
+        owned_corridor_instruction_eas=(
+            0x40A766,
+            0x40A768,
+            0x40A76E,
+            0x40A771,
+            0x40A774,
+            0x40A77A,
+            0x40A77C,
+        ),
+        imported_closure_block_ids=(
+            "native@0x40A77E",
+            "native@0x40A792",
+            "native@0x40ABC6",
+            "native@0x40ABD4",
+            "native@0x40ABDA",
+            "native@0x40ABDE",
+        ),
+        boundary_exit_eas=(0x40A794, 0x40AEE6, 0x40B1D0),
+        flag_corridor_id="flags-intact@0x40A768",
+        phase=compiler.RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+        depends_on=(existing_id,),
+    )
+    placeholders = tuple(
+        FragmentOperation(
+            operation_id=f"placeholder:{operation.operation_id}",
+            source_block_id=operation.source_block_id,
+            edges=(
+                FragmentEdge(
+                    role=SemanticEdgeRole.DIRECT,
+                    target_block_id=(
+                        operation.direct_target_block_id
+                        if isinstance(operation, compiler.RhadDirectRoute)
+                        else operation.false_target_block_id
+                    ),
+                ),
+            ),
+        )
+        for operation in (direct, existing, selected)
+    )
+    all_block_ids = body.block_ids + tuple(block.block_id for block in added_blocks)
+    operation_source_ids = {
+        operation.source_block_id
+        for operation in (*third.operations, direct, existing, selected)
+    }
+    expanded_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=all_block_ids,
+        entry_block_ids=body.entry_block_ids
+        + (
+            "native@0x40A74C",
+            "native@0x40A764",
+            "native@0x40A766",
+            "native@0x40A77C",
+            "native@0x40A77E",
+            "native@0x40A792",
+            "native@0x40A9DE",
+            "native@0x40A9F6",
+            "native@0x40ABC6",
+            "native@0x40ABDE",
+        ),
+        terminal_block_ids=tuple(
+            block_id
+            for block_id in all_block_ids
+            if block_id not in operation_source_ids
+        ),
+        native_ranges=tuple(
+            sorted(
+                body.native_ranges
+                + (
+                    NativeEaInterval(0x40A74C, 0x40A77E),
+                    NativeEaInterval(0x40A77E, 0x40A794),
+                    NativeEaInterval(0x40A9DE, 0x40A9F8),
+                    NativeEaInterval(0x40ABC6, 0x40ABE0),
+                ),
+                key=lambda interval: int(interval.start_ea),
+            )
+        ),
+        proof_ids=body.proof_ids + (direct_id, existing_id, selected_id),
+    )
+    plan = replace(
+        base,
+        blocks=base.blocks + added_blocks,
+        operations=base.operations + placeholders,
+        work_item_scope=replace(
+            base.work_item_scope,
+            selected_obligation_ids=tuple(
+                operation.operation_id
+                for operation in (*third.operations, direct, existing, selected)
+            ),
+        ),
+        native_bodies=(expanded_body,),
+    )
+    return compiler.RhadReferenceLedger(
+        ledger_id="rhad-generated-reference@0x40A560:g1",
+        function_ea=0x40A560,
+        evidence_generation=1,
+        base_plan=plan,
+        reference_oracle_run=_reference_run(),
+        operations=(*third.operations, direct, existing, selected),
+        required_boundary_exit_eas=(
+            0x40A633,
+            0x40A794,
+            0x40A9A0,
+            0x40ADCE,
+            0x40AEE6,
+            0x40B1D0,
+            0x40B790,
+        ),
+        reference_provenance={
+            "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+            "inventory_identity": "rhad-a560-indirect-jump-reference-inventory:v1",
+            "setcc_evidence_identity": (
+                "rhad-a560-setcc-indexed-table-row16-evidence:v1"
+            ),
+        },
+    )
+
+
+def test_compiler_emits_typed_setcc_indexed_table_route() -> None:
+    compiler = _compiler_module()
+
+    plan = compiler.compile_rhad_reference_fragment(
+        _fourth_shape_ledger(),
+        expected_evidence_generation=1,
+    )
+
+    assert tuple(operation.operation_id for operation in plan.operations) == (
+        "rhad:route@0x40A605",
+        "route:rhad-direct@0x40A619",
+        "route:rhad-direct@0x40A68A",
+        "rhad:route@0x40A6A4",
+        "route:rhad-direct@0x40A74A",
+        "rhad:route@0x40A764",
+        "rhad:route@0x40A77C",
+    )
+    operation = plan.operation("rhad:route@0x40A77C")
+    normalization = operation.computed_branch_normalization
+    assert isinstance(
+        normalization,
+        fragment_plan.FragmentSetccIndexedTableNormalization,
+    )
+    assert normalization.condition_producer_ea == 0x40A768
+    assert normalization.normalization_start_ea == 0x40A76E
+    assert normalization.unresolved_transfer_ea == 0x40A77C
+    assert normalization.table_evidence.true_entry.decoded_target_ea == 0x40A77E
+    assert normalization.table_evidence.false_entry.decoded_target_ea == 0x40ABC6
+    assert operation.edges == (
+        FragmentEdge(
+            role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+            target_block_id="native@0x40A77E",
+        ),
+        FragmentEdge(
+            role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            target_block_id="native@0x40ABC6",
+        ),
+    )
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_order"] == 16
+    assert payload["operation_variant"] == "setcc_indexed_table"
+    assert payload["setcc_table"]["table_base_ea"] == 0x48B81C
+    assert payload["setcc_table"]["entries"][1]["decoded_target_ea"] == 0x40A77E
+
+
+def test_compiler_rejects_setcc_route_without_native_body_proof() -> None:
+    compiler = _compiler_module()
+    ledger = _fourth_shape_ledger()
+    body = ledger.base_plan.native_bodies[0]
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="operation proof"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                base_plan=replace(
+                    ledger.base_plan,
+                    native_bodies=(replace(body, proof_ids=body.proof_ids[:-1]),),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_setcc_route_with_mismatched_derived_target() -> None:
+    compiler = _compiler_module()
+    ledger = _fourth_shape_ledger()
+    *dependencies, selected = ledger.operations
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="derived.*target"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                operations=(
+                    *dependencies,
+                    replace(selected, true_target_ea=0x40A780),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_unselected_setcc_route() -> None:
+    compiler = _compiler_module()
+    ledger = _fourth_shape_ledger()
+    scope = ledger.base_plan.work_item_scope
+    assert scope is not None
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="work-item authority"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                base_plan=replace(
+                    ledger.base_plan,
+                    work_item_scope=replace(
+                        scope,
+                        selected_obligation_ids=scope.selected_obligation_ids[:-1],
+                    ),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )

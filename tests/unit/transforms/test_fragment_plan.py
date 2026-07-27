@@ -775,6 +775,136 @@ def test_fragment_operation_carries_typed_computed_branch_normalization() -> Non
     assert operation.computed_branch_normalization is normalization
 
 
+def test_setcc_indexed_table_normalization_persists_exact_target_derivation() -> None:
+    assert hasattr(fragment_plan, "FragmentSetccIndexedTableEntry"), (
+        "setcc table entries require a dedicated portable type"
+    )
+    assert hasattr(fragment_plan, "FragmentSetccIndexedTableEvidence"), (
+        "setcc table derivation requires dedicated portable evidence"
+    )
+    assert hasattr(fragment_plan, "FragmentSetccIndexedTableNormalization"), (
+        "setcc table routes require a dedicated normalization subtype"
+    )
+    assert hasattr(fragment_plan, "FragmentSetccIndexExtensionKind")
+    assert hasattr(fragment_plan, "FragmentTableByteOrder")
+    assert hasattr(fragment_plan, "FragmentTableEntryInterpretation")
+
+    entries = (
+        fragment_plan.FragmentSetccIndexedTableEntry(
+            index=0,
+            entry_ea=0x48B81C,
+            raw_value=0x02528F45,
+            decoded_target_ea=0x40ABC6,
+        ),
+        fragment_plan.FragmentSetccIndexedTableEntry(
+            index=1,
+            entry_ea=0x48B83C,
+            raw_value=0x02528AFD,
+            decoded_target_ea=0x40A77E,
+        ),
+    )
+    evidence = fragment_plan.FragmentSetccIndexedTableEvidence(
+        table_identity="native-table@0x48B81C:stride-0x20:u32le:add-esi",
+        zeroing_ea=0x40A766,
+        zeroed_width_bits=32,
+        setcc_ea=0x40A76E,
+        setcc_destination_width_bits=8,
+        extension_kind=(
+            fragment_plan.FragmentSetccIndexExtensionKind.ZERO_EXTEND_BY_FULL_REGISTER_PREZERO
+        ),
+        index_width_bits=32,
+        shift_ea=0x40A771,
+        shift_bits=5,
+        lookup_ea=0x40A774,
+        table_base_ea=0x48B81C,
+        stride_bytes=32,
+        entry_width_bytes=4,
+        byte_order=fragment_plan.FragmentTableByteOrder.LITTLE,
+        interpretation=(
+            fragment_plan.FragmentTableEntryInterpretation.ADD_CONSTANT_MODULO_ENTRY_WIDTH
+        ),
+        decode_ea=0x40A77A,
+        additive_key_producer_ea=0x40A5BD,
+        additive_key=0xFDEE1C81,
+        true_index=1,
+        false_index=0,
+        entries=entries,
+    )
+    normalization = fragment_plan.FragmentSetccIndexedTableNormalization(
+        predicate_kind=PredicateKind.SLT,
+        normalization_start_ea=0x40A76E,
+        condition_producer_ea=0x40A768,
+        unresolved_transfer_ea=0x40A77C,
+        table_evidence=evidence,
+    )
+
+    assert normalization.table_evidence.entries == entries
+    assert normalization.table_evidence.true_entry.decoded_target_ea == 0x40A77E
+    assert normalization.table_evidence.false_entry.decoded_target_ea == 0x40ABC6
+
+
+@pytest.mark.parametrize(
+    ("field_name", "wrong_value", "message"),
+    (
+        ("stride_bytes", 16, "shift.*stride"),
+        ("table_base_ea", 0x48B820, "entry address"),
+        ("additive_key", 0xFDEE1C80, "decoded target"),
+        ("true_index", 0, "distinct Boolean indices"),
+    ),
+)
+def test_setcc_indexed_table_rejects_inconsistent_derivation(
+    field_name,
+    wrong_value,
+    message,
+) -> None:
+    assert hasattr(fragment_plan, "FragmentSetccIndexedTableEvidence")
+    entries = (
+        fragment_plan.FragmentSetccIndexedTableEntry(
+            index=0,
+            entry_ea=0x48B81C,
+            raw_value=0x02528F45,
+            decoded_target_ea=0x40ABC6,
+        ),
+        fragment_plan.FragmentSetccIndexedTableEntry(
+            index=1,
+            entry_ea=0x48B83C,
+            raw_value=0x02528AFD,
+            decoded_target_ea=0x40A77E,
+        ),
+    )
+    kwargs = {
+        "table_identity": "native-table@0x48B81C:stride-0x20:u32le:add-esi",
+        "zeroing_ea": 0x40A766,
+        "zeroed_width_bits": 32,
+        "setcc_ea": 0x40A76E,
+        "setcc_destination_width_bits": 8,
+        "extension_kind": (
+            fragment_plan.FragmentSetccIndexExtensionKind.ZERO_EXTEND_BY_FULL_REGISTER_PREZERO
+        ),
+        "index_width_bits": 32,
+        "shift_ea": 0x40A771,
+        "shift_bits": 5,
+        "lookup_ea": 0x40A774,
+        "table_base_ea": 0x48B81C,
+        "stride_bytes": 32,
+        "entry_width_bytes": 4,
+        "byte_order": fragment_plan.FragmentTableByteOrder.LITTLE,
+        "interpretation": (
+            fragment_plan.FragmentTableEntryInterpretation.ADD_CONSTANT_MODULO_ENTRY_WIDTH
+        ),
+        "decode_ea": 0x40A77A,
+        "additive_key_producer_ea": 0x40A5BD,
+        "additive_key": 0xFDEE1C81,
+        "true_index": 1,
+        "false_index": 0,
+        "entries": entries,
+    }
+    kwargs[field_name] = wrong_value
+
+    with pytest.raises(FragmentPlanRejected, match=message):
+        fragment_plan.FragmentSetccIndexedTableEvidence(**kwargs)
+
+
 @pytest.mark.parametrize(
     "relocated_instruction_eas",
     (

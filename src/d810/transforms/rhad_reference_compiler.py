@@ -27,11 +27,12 @@ from d810.transforms.fragment_plan import (
     FragmentDirectTransferRewrite,
     FragmentEdge,
     FragmentFlagCorridor,
-    FragmentImportedConditionalSelectEnvelope,
     FragmentOperation,
     FragmentPlan,
     FragmentReferenceRouteAuthority,
     FragmentReferencedImportedConditionalSelectEnvelope,
+    FragmentSetccIndexedTableEvidence,
+    FragmentSetccIndexedTableNormalization,
     FragmentValueSite,
 )
 
@@ -62,6 +63,7 @@ class RhadOperationVariant(str, Enum):
     """Reference implementation shapes admitted by the portable compiler."""
 
     EXISTING_CONDITIONAL_PLUS_INDIRECT = "existing_conditional_plus_indirect"
+    SETCC_INDEXED_TABLE = "setcc_indexed_table"
 
 
 EXPECTED_REFERENCE_PHASE_ORDER = (
@@ -470,8 +472,151 @@ class RhadExistingConditionalRoute:
         object.__setattr__(self, "depends_on", dependencies)
 
 
+@dataclass(frozen=True, slots=True)
+class RhadSetccIndexedTableRoute:
+    """One imported setcc-selected table followed by an indirect jump."""
+
+    operation_id: str
+    reference_order: int
+    operation_variant: RhadOperationVariant
+    reference_symbol: str
+    source_block_id: str
+    source_native_ea: int
+    source_block_anchor_ea: int
+    transfer_ea: int
+    condition_producer_ea: int
+    predicate_anchor_ea: int
+    predicate_kind: PredicateKind
+    true_target_block_id: str
+    false_target_block_id: str
+    true_target_ea: int
+    false_target_ea: int
+    table_evidence: FragmentSetccIndexedTableEvidence
+    owned_corridor_instruction_eas: tuple[int, ...]
+    imported_closure_block_ids: tuple[str, ...]
+    boundary_exit_eas: tuple[int, ...]
+    flag_corridor_id: str
+    phase: RhadReferencePhase
+    depends_on: tuple[str, ...]
+    category: RhadOperationCategory = RhadOperationCategory.CONDITIONAL_ROUTE
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "operation_id",
+            "reference_symbol",
+            "source_block_id",
+            "true_target_block_id",
+            "false_target_block_id",
+            "flag_corridor_id",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _identifier(getattr(self, field_name), field_name.replace("_", " ")),
+            )
+        reference_order = int(self.reference_order)
+        if reference_order < 0:
+            raise RhadCompilerRejection(
+                "Rhad setcc table reference order must be non-negative"
+            )
+        if self.operation_variant is not RhadOperationVariant.SETCC_INDEXED_TABLE:
+            raise RhadCompilerRejection(
+                "Rhad setcc table route requires its typed operation variant"
+            )
+        if self.category is not RhadOperationCategory.CONDITIONAL_ROUTE:
+            raise RhadCompilerRejection(
+                "Rhad setcc table route requires its conditional category"
+            )
+        if not isinstance(self.phase, RhadReferencePhase):
+            raise TypeError("Rhad setcc table route requires a reference phase")
+        for field_name in (
+            "source_native_ea",
+            "source_block_anchor_ea",
+            "transfer_ea",
+            "condition_producer_ea",
+            "predicate_anchor_ea",
+            "true_target_ea",
+            "false_target_ea",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _native_ea(getattr(self, field_name), field_name.replace("_", " ")),
+            )
+        if not isinstance(self.predicate_kind, PredicateKind):
+            raise TypeError("Rhad setcc table route requires a portable predicate")
+        table_evidence = self.table_evidence
+        if not isinstance(table_evidence, FragmentSetccIndexedTableEvidence):
+            raise TypeError("Rhad setcc table route requires typed table evidence")
+        corridor = _ordered_unique_eas(
+            tuple(self.owned_corridor_instruction_eas),
+            "Rhad setcc table corridor",
+        )
+        required_corridor_eas = {
+            int(self.source_native_ea),
+            int(self.source_block_anchor_ea),
+            int(self.condition_producer_ea),
+            int(self.predicate_anchor_ea),
+            int(table_evidence.zeroing_ea),
+            int(table_evidence.setcc_ea),
+            int(table_evidence.shift_ea),
+            int(table_evidence.lookup_ea),
+            int(table_evidence.decode_ea),
+            int(self.transfer_ea),
+        }
+        if (
+            corridor[0] != int(self.source_native_ea)
+            or corridor[-1] != int(self.transfer_ea)
+            or not required_corridor_eas.issubset(corridor)
+            or int(self.source_native_ea) != int(self.source_block_anchor_ea)
+            or int(self.source_native_ea) != int(table_evidence.zeroing_ea)
+            or int(self.condition_producer_ea) >= int(self.predicate_anchor_ea)
+            or int(self.predicate_anchor_ea) != int(table_evidence.setcc_ea)
+        ):
+            raise RhadCompilerRejection(
+                "Rhad setcc table native anchors are ambiguous or out of corridor order"
+            )
+        if int(self.true_target_ea) != int(
+            table_evidence.true_entry.decoded_target_ea
+        ) or int(self.false_target_ea) != int(
+            table_evidence.false_entry.decoded_target_ea
+        ):
+            raise RhadCompilerRejection(
+                "Rhad setcc table derived semantic target disagrees with its route"
+            )
+        if self.true_target_block_id == self.false_target_block_id or int(
+            self.true_target_ea
+        ) == int(self.false_target_ea):
+            raise RhadCompilerRejection(
+                "Rhad setcc table route requires complete distinct arms"
+            )
+        closure = _unique_identifiers(
+            tuple(self.imported_closure_block_ids),
+            "Rhad imported closure",
+        )
+        boundaries = _ordered_unique_eas(
+            tuple(self.boundary_exit_eas),
+            "Rhad boundary exits",
+        )
+        dependencies = tuple(
+            _identifier(value, "Rhad dependency") for value in self.depends_on
+        )
+        if not dependencies or len(set(dependencies)) != len(dependencies):
+            raise RhadCompilerRejection(
+                "Rhad setcc table dependencies must be non-empty and unique"
+            )
+        object.__setattr__(self, "reference_order", reference_order)
+        object.__setattr__(self, "owned_corridor_instruction_eas", corridor)
+        object.__setattr__(self, "imported_closure_block_ids", closure)
+        object.__setattr__(self, "boundary_exit_eas", boundaries)
+        object.__setattr__(self, "depends_on", dependencies)
+
+
 RhadReferenceOperation = (
-    RhadConditionalRoute | RhadDirectRoute | RhadExistingConditionalRoute
+    RhadConditionalRoute
+    | RhadDirectRoute
+    | RhadExistingConditionalRoute
+    | RhadSetccIndexedTableRoute
 )
 
 
@@ -507,6 +652,7 @@ class RhadReferenceLedger:
                     RhadConditionalRoute,
                     RhadDirectRoute,
                     RhadExistingConditionalRoute,
+                    RhadSetccIndexedTableRoute,
                 ),
             )
             for operation in operations
@@ -669,6 +815,56 @@ def _reference_payload(
                 "true_target_ea": int(route.true_target_ea),
                 "false_target_ea": int(route.false_target_ea),
                 "true_target_block_id": route.true_target_block_id,
+            }
+        )
+    elif isinstance(route, RhadSetccIndexedTableRoute):
+        evidence = route.table_evidence
+        payload.update(
+            {
+                "condition_producer_ea": int(route.condition_producer_ea),
+                "false_target_block_id": route.false_target_block_id,
+                "false_target_ea": int(route.false_target_ea),
+                "operation_variant": route.operation_variant.value,
+                "predicate_kind": route.predicate_kind.value,
+                "reference_order": int(route.reference_order),
+                "reference_symbol": route.reference_symbol,
+                "source_block_anchor_ea": int(route.source_block_anchor_ea),
+                "source_native_ea": int(route.source_native_ea),
+                "true_target_block_id": route.true_target_block_id,
+                "true_target_ea": int(route.true_target_ea),
+                "setcc_table": {
+                    "additive_key": int(evidence.additive_key),
+                    "additive_key_producer_ea": int(evidence.additive_key_producer_ea),
+                    "byte_order": evidence.byte_order.value,
+                    "decode_ea": int(evidence.decode_ea),
+                    "entries": [
+                        {
+                            "decoded_target_ea": int(entry.decoded_target_ea),
+                            "entry_ea": int(entry.entry_ea),
+                            "index": int(entry.index),
+                            "raw_value": int(entry.raw_value),
+                        }
+                        for entry in evidence.entries
+                    ],
+                    "entry_width_bytes": int(evidence.entry_width_bytes),
+                    "extension_kind": evidence.extension_kind.value,
+                    "false_index": int(evidence.false_index),
+                    "index_width_bits": int(evidence.index_width_bits),
+                    "interpretation": evidence.interpretation.value,
+                    "lookup_ea": int(evidence.lookup_ea),
+                    "setcc_destination_width_bits": int(
+                        evidence.setcc_destination_width_bits
+                    ),
+                    "setcc_ea": int(evidence.setcc_ea),
+                    "shift_bits": int(evidence.shift_bits),
+                    "shift_ea": int(evidence.shift_ea),
+                    "stride_bytes": int(evidence.stride_bytes),
+                    "table_base_ea": int(evidence.table_base_ea),
+                    "table_identity": evidence.table_identity,
+                    "true_index": int(evidence.true_index),
+                    "zeroed_width_bits": int(evidence.zeroed_width_bits),
+                    "zeroing_ea": int(evidence.zeroing_ea),
+                },
             }
         )
     else:
@@ -1120,6 +1316,154 @@ def _compile_existing_conditional_route(
     return operation, corridor
 
 
+def _compile_setcc_indexed_table_route(
+    ledger: RhadReferenceLedger,
+    route: RhadSetccIndexedTableRoute,
+) -> tuple[FragmentOperation, FragmentFlagCorridor]:
+    plan = ledger.base_plan
+    block_by_id = {block.block_id: block for block in plan.blocks}
+    required_block_ids = {
+        route.source_block_id,
+        route.true_target_block_id,
+        route.false_target_block_id,
+        *route.imported_closure_block_ids,
+    }
+    missing = tuple(sorted(required_block_ids - set(block_by_id)))
+    if missing:
+        raise RhadCompilerRejection(
+            "Rhad setcc table branch arms or closure are incomplete: "
+            + ", ".join(missing)
+        )
+    source = block_by_id[route.source_block_id]
+    native_body = next(
+        (body for body in plan.native_bodies if body.body_id == source.native_body_id),
+        None,
+    )
+    if (
+        source.role is not FragmentBlockRole.IMPORTED
+        or source.materialization is not FragmentBlockMaterialization.IMPORT_NATIVE
+        or source.stable_identity is None
+        or source.native_body_id is None
+        or native_body is None
+        or route.operation_id not in native_body.proof_ids
+    ):
+        raise RhadCompilerRejection(
+            "Rhad setcc table source lacks imported native-body operation proof"
+        )
+    if (
+        plan.work_item_scope is None
+        or route.operation_id not in plan.work_item_scope.selected_obligation_ids
+    ):
+        raise RhadCompilerRejection(
+            "Rhad setcc table route is absent from frontend work-item authority"
+        )
+    if any(
+        not any(
+            int(native_range.start_ea) <= int(corridor_ea) < int(native_range.end_ea)
+            for native_range in native_body.native_ranges
+        )
+        for corridor_ea in route.owned_corridor_instruction_eas
+    ):
+        raise RhadCompilerRejection(
+            "Rhad setcc table corridor lies outside its native body"
+        )
+    if any(
+        not source.stable_identity.native_ranges.contains(ea)
+        or ea not in source.stable_identity.exact_instruction_eas
+        for ea in route.owned_corridor_instruction_eas
+    ):
+        raise RhadCompilerRejection(
+            "Rhad setcc table source anchors are ambiguous or out of corridor ownership"
+        )
+    targets = (route.true_target_block_id, route.false_target_block_id)
+    if any(
+        target_id not in route.imported_closure_block_ids
+        or block_by_id[target_id].role is not FragmentBlockRole.IMPORTED
+        or block_by_id[target_id].stable_identity is None
+        for target_id in targets
+    ):
+        raise RhadCompilerRejection(
+            "Rhad setcc table requires complete imported branch arms"
+        )
+    if int(block_by_id[route.true_target_block_id].semantic_anchor_ea) != int(
+        route.true_target_ea
+    ) or int(block_by_id[route.false_target_block_id].semantic_anchor_ea) != int(
+        route.false_target_ea
+    ):
+        raise RhadCompilerRejection(
+            "Rhad setcc table delivery targets differ from derived reference targets"
+        )
+    payload = _reference_payload(ledger, route)
+    reference_route = ReferenceRouteRewrite(
+        route_id=route.operation_id,
+        function_ea=int(ledger.function_ea),
+        owner_ea=int(route.predicate_anchor_ea),
+        rewrite_anchor_ea=int(route.predicate_anchor_ea),
+        corridor=tuple(
+            (int(interval.start_ea), int(interval.end_ea))
+            for interval in source.stable_identity.native_ranges.intervals
+        ),
+        reference_phase=route.phase.value,
+        original_transfer_kind=SemanticTransferKind.INDIRECT,
+        final_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        true_target_ea=int(route.true_target_ea),
+        false_target_ea=int(route.false_target_ea),
+        predicate_kind=route.predicate_kind.value,
+        reference_ledger_identity=ledger.ledger_id,
+        reference_ledger_json=json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+    operation = FragmentOperation(
+        operation_id=route.operation_id,
+        source_block_id=route.source_block_id,
+        predicate_anchor_ea=int(route.predicate_anchor_ea),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                target_block_id=route.true_target_block_id,
+            ),
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                target_block_id=route.false_target_block_id,
+            ),
+        ),
+        computed_branch_normalization=FragmentSetccIndexedTableNormalization(
+            predicate_kind=route.predicate_kind,
+            normalization_start_ea=int(route.predicate_anchor_ea),
+            condition_producer_ea=int(route.condition_producer_ea),
+            unresolved_transfer_ea=int(route.transfer_ea),
+            table_evidence=route.table_evidence,
+        ),
+        reference_route_authority=FragmentReferenceRouteAuthority(
+            reference_route=reference_route,
+            candidate_rewrite_anchor_ea=int(route.predicate_anchor_ea),
+            imported_closure_block_ids=route.imported_closure_block_ids,
+        ),
+    )
+    value_id = f"rhad-flags@0x{route.condition_producer_ea:X}"
+    corridor = FragmentFlagCorridor(
+        corridor_id=route.flag_corridor_id,
+        producer=FragmentValueSite(
+            site_id=f"producer@0x{route.condition_producer_ea:X}",
+            block_id=route.source_block_id,
+            value_id=value_id,
+            instruction_ea=int(route.condition_producer_ea),
+        ),
+        consumer=FragmentValueSite(
+            site_id=f"consumer@0x{route.predicate_anchor_ea:X}",
+            block_id=route.source_block_id,
+            value_id=value_id,
+            instruction_ea=int(route.predicate_anchor_ea),
+        ),
+        block_path=(route.source_block_id,),
+        permitted_flag_write_eas=frozenset({int(route.condition_producer_ea)}),
+    )
+    return operation, corridor
+
+
 def compile_rhad_reference_fragment(
     ledger: RhadReferenceLedger,
     *,
@@ -1146,6 +1490,13 @@ def compile_rhad_reference_fragment(
             operations.append(_compile_direct_route(ledger, operation))
         elif isinstance(operation, RhadExistingConditionalRoute):
             compiled_operation, corridor = _compile_existing_conditional_route(
+                ledger,
+                operation,
+            )
+            operations.append(compiled_operation)
+            corridors.append(corridor)
+        elif isinstance(operation, RhadSetccIndexedTableRoute):
+            compiled_operation, corridor = _compile_setcc_indexed_table_route(
                 ledger,
                 operation,
             )
@@ -1207,6 +1558,7 @@ __all__ = [
     "RhadConditionalRoute",
     "RhadDirectRoute",
     "RhadExistingConditionalRoute",
+    "RhadSetccIndexedTableRoute",
     "RhadOperationCategory",
     "RhadOperationVariant",
     "RhadReferenceLedger",
