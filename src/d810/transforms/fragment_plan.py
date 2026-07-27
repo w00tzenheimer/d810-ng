@@ -322,7 +322,7 @@ def _stable_identity_overlap_is_one_shared_anchor(
     *,
     anchor_ea: int,
 ) -> bool:
-    """Allow one role-tagged same-EA microblock split, and nothing wider."""
+    """Allow one exact role-tagged instruction split, and nothing wider."""
     anchor_ea = int(anchor_ea)
     exact_overlap = left.exact_instruction_eas & right.exact_instruction_eas
     if exact_overlap != {anchor_ea}:
@@ -337,10 +337,13 @@ def _stable_identity_overlap_is_one_shared_anchor(
         if max(int(left_interval.start_ea), int(right_interval.start_ea))
         < min(int(left_interval.end_ea), int(right_interval.end_ea))
     )
+    right_intervals = right.native_ranges.intervals
     return bool(
         overlaps
+        and len(right_intervals) == 1
+        and right.exact_instruction_eas == {anchor_ea}
         and all(
-            start_ea == anchor_ea and end_ea == anchor_ea + 1
+            start_ea == anchor_ea and end_ea == int(right_intervals[0].end_ea)
             for start_ea, end_ea in overlaps
         )
     )
