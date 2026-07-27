@@ -819,13 +819,19 @@ class RhadGeneratedReferenceBatch:
         if not set(self.native_body_proof_ids).issuperset(
             operation.operation_id
             for operation in self.operations
-            if isinstance(
-                operation,
-                (
-                    RhadDirectRoute,
-                    RhadExistingConditionalRoute,
-                    RhadSetccIndexedTableRoute,
-                ),
+            if (
+                isinstance(
+                    operation,
+                    (
+                        RhadDirectRoute,
+                        RhadExistingConditionalRoute,
+                        RhadSetccIndexedTableRoute,
+                    ),
+                )
+                or (
+                    isinstance(operation, RhadConditionalRoute)
+                    and operation.source_block_id in imported_ids
+                )
             )
         ):
             raise ValueError("Rhad GENERATED imported routes require native-body proof")
@@ -868,7 +874,12 @@ class RhadGeneratedReferenceBatch:
 
 _ACCEPTED_ROUTE = RhadConditionalRoute(
     operation_id="rhad:route@0x40A605",
+    reference_order=1,
+    operation_variant=RhadOperationVariant.CMOV_SELECTED_INDIRECT,
+    reference_symbol="JumpInliner._fixup_cmov",
     source_block_id="native@0x40A5F0",
+    source_native_ea=0x40A5BD,
+    source_block_anchor_ea=0x40A5F0,
     transfer_ea=0x40A605,
     predicate_anchor_ea=0x40A5F6,
     normalization_start_ea=0x40A5F6,
@@ -880,6 +891,8 @@ _ACCEPTED_ROUTE = RhadConditionalRoute(
     predicate_kind=PredicateKind.SLT,
     true_target_block_id="native@0x40B6C0",
     false_target_block_id="native@0x40A607",
+    true_target_ea=0x40B6C0,
+    false_target_ea=0x40A607,
     comparison_constant=0x0BB2D365,
     owned_corridor_instruction_eas=(
         0x40A5F0,
@@ -1836,6 +1849,45 @@ _ROW32_EXISTING_ROUTE = RhadExistingConditionalRoute(
     depends_on=(_ROW31_EXISTING_ROUTE.operation_id,),
 )
 
+_ROW33_CMOV_ROUTE = RhadConditionalRoute(
+    operation_id="rhad:route@0x40A9DC",
+    reference_order=33,
+    operation_variant=RhadOperationVariant.CMOV_SELECTED_INDIRECT,
+    reference_symbol="JumpInliner._fixup_cmov",
+    source_block_id="native@0x40A9AE",
+    source_native_ea=0x40A9B3,
+    source_block_anchor_ea=0x40A9AE,
+    transfer_ea=0x40A9DC,
+    predicate_anchor_ea=0x40A9D5,
+    normalization_start_ea=0x40A9D5,
+    condition_producer_ea=0x40A9C7,
+    conditional_select_ea=0x40A9D5,
+    selected_value_block_id="native@0x40A9D5",
+    join_block_id="native@0x40A9D8",
+    observed_predicate_kind=PredicateKind.SGE,
+    predicate_kind=PredicateKind.SLT,
+    true_target_block_id="native@0x40B6C0",
+    false_target_block_id="native@0x40A607",
+    true_target_ea=0x40B6C0,
+    false_target_ea=0x40A607,
+    comparison_constant=0x0BB2D365,
+    owned_corridor_instruction_eas=(
+        0x40A9B3,
+        0x40A9C7,
+        0x40A9CD,
+        0x40A9CF,
+        0x40A9D5,
+        0x40A9D8,
+        0x40A9DA,
+        0x40A9DC,
+    ),
+    imported_closure_block_ids=ACCEPTED_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40A61B, 0x40A68C, 0x40B790),
+    flag_corridor_id="flags-intact@0x40A9C7",
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_ROW32_EXISTING_ROUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -2091,6 +2143,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW30_EXISTING_ROUTE.operation_id,
         _ROW31_EXISTING_ROUTE.operation_id,
         _ROW32_EXISTING_ROUTE.operation_id,
+        _ROW33_CMOV_ROUTE.operation_id,
     ),
     template_fragments=(
         RhadGeneratedTemplateFragment(
@@ -2862,6 +2915,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW30_EXISTING_ROUTE,
         _ROW31_EXISTING_ROUTE,
         _ROW32_EXISTING_ROUTE,
+        _ROW33_CMOV_ROUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",

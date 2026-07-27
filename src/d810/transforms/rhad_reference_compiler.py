@@ -69,6 +69,7 @@ class RhadOperationCategory(str, Enum):
 class RhadOperationVariant(str, Enum):
     """Reference implementation shapes admitted by the portable compiler."""
 
+    CMOV_SELECTED_INDIRECT = "cmov_selected_indirect"
     SIMPLE_INDIRECT_JUMP = "simple_indirect_jump"
     EXISTING_CONDITIONAL_PLUS_INDIRECT = "existing_conditional_plus_indirect"
     SETCC_INDEXED_TABLE = "setcc_indexed_table"
@@ -456,7 +457,12 @@ class RhadConditionalRoute:
     """One reference conditional route with explicit native orientation."""
 
     operation_id: str
+    reference_order: int
+    operation_variant: RhadOperationVariant
+    reference_symbol: str
     source_block_id: str
+    source_native_ea: int
+    source_block_anchor_ea: int
     transfer_ea: int
     predicate_anchor_ea: int
     normalization_start_ea: int
@@ -468,6 +474,8 @@ class RhadConditionalRoute:
     predicate_kind: PredicateKind
     true_target_block_id: str
     false_target_block_id: str
+    true_target_ea: int
+    false_target_ea: int
     comparison_constant: int
     owned_corridor_instruction_eas: tuple[int, ...]
     imported_closure_block_ids: tuple[str, ...]
@@ -480,6 +488,7 @@ class RhadConditionalRoute:
     def __post_init__(self) -> None:
         for field_name in (
             "operation_id",
+            "reference_symbol",
             "source_block_id",
             "selected_value_block_id",
             "join_block_id",
@@ -492,12 +501,25 @@ class RhadConditionalRoute:
                 field_name,
                 _identifier(getattr(self, field_name), field_name.replace("_", " ")),
             )
+        reference_order = int(self.reference_order)
+        if reference_order < 0:
+            raise RhadCompilerRejection(
+                "Rhad conditional reference order must be non-negative"
+            )
+        if self.operation_variant is not RhadOperationVariant.CMOV_SELECTED_INDIRECT:
+            raise RhadCompilerRejection(
+                "Rhad conditional route requires its typed cmov operation variant"
+            )
         for field_name in (
+            "source_native_ea",
+            "source_block_anchor_ea",
             "transfer_ea",
             "predicate_anchor_ea",
             "normalization_start_ea",
             "condition_producer_ea",
             "conditional_select_ea",
+            "true_target_ea",
+            "false_target_ea",
         ):
             object.__setattr__(
                 self,
@@ -511,6 +533,14 @@ class RhadConditionalRoute:
             PredicateKind,
         ):
             raise TypeError("Rhad conditional route requires portable predicates")
+        if (
+            inverted_predicate_kind(self.observed_predicate_kind)
+            is not self.predicate_kind
+        ):
+            raise RhadCompilerRejection(
+                "Rhad conditional selected-value orientation does not invert to "
+                "its semantic predicate"
+            )
         if not isinstance(self.phase, RhadReferencePhase):
             raise TypeError("Rhad conditional route requires a reference phase")
         if self.category is not RhadOperationCategory.CONDITIONAL_ROUTE:
@@ -537,7 +567,13 @@ class RhadConditionalRoute:
                 "Rhad owned corridor lost its producer, predicate, select, or transfer"
             )
         if not (
-            self.condition_producer_ea < self.predicate_anchor_ea < self.transfer_ea
+            corridor[-1] == int(self.transfer_ea)
+            and self.source_native_ea < self.transfer_ea
+            and self.source_block_anchor_ea
+            <= self.condition_producer_ea
+            < self.predicate_anchor_ea
+            <= self.conditional_select_ea
+            < self.transfer_ea
             and self.normalization_start_ea == self.predicate_anchor_ea
         ):
             raise RhadCompilerRejection(
@@ -563,6 +599,7 @@ class RhadConditionalRoute:
         if len(set(dependencies)) != len(dependencies):
             raise RhadCompilerRejection("Rhad operation dependencies must be unique")
         object.__setattr__(self, "comparison_constant", comparison_constant)
+        object.__setattr__(self, "reference_order", reference_order)
         object.__setattr__(self, "owned_corridor_instruction_eas", corridor)
         object.__setattr__(self, "imported_closure_block_ids", closure)
         object.__setattr__(self, "boundary_exit_eas", boundaries)
@@ -1246,8 +1283,17 @@ def _reference_payload(
                 "comparison_constant": int(route.comparison_constant),
                 "condition_producer_ea": int(route.condition_producer_ea),
                 "false_target_block_id": route.false_target_block_id,
+                "false_target_ea": int(route.false_target_ea),
+                "observed_predicate_kind": route.observed_predicate_kind.value,
+                "operation_variant": route.operation_variant.value,
+                "predicate_anchor_ea": int(route.predicate_anchor_ea),
                 "predicate_kind": route.predicate_kind.value,
+                "reference_order": int(route.reference_order),
+                "reference_symbol": route.reference_symbol,
+                "source_block_anchor_ea": int(route.source_block_anchor_ea),
+                "source_native_ea": int(route.source_native_ea),
                 "true_target_block_id": route.true_target_block_id,
+                "true_target_ea": int(route.true_target_ea),
             }
         )
     elif isinstance(route, RhadDirectRoute):
@@ -1378,19 +1424,88 @@ def _compile_conditional_route(
             "Rhad route block binding is incomplete: " + ", ".join(missing)
         )
     source = block_by_id[route.source_block_id]
+    selected = block_by_id[route.selected_value_block_id]
+    join = block_by_id[route.join_block_id]
     if (
-        source.role is not FragmentBlockRole.REPLACEMENT
-        or source.stable_identity is None
+        source.stable_identity is None
+        or selected.stable_identity is None
+        or join.stable_identity is None
     ):
         raise RhadCompilerRejection(
-            "Rhad route source must be a portable replacement identity"
+            "Rhad conditional source and select envelope require stable identities"
         )
+    imported_source = (
+        source.role is FragmentBlockRole.IMPORTED
+        and source.materialization is FragmentBlockMaterialization.IMPORT_NATIVE
+        and source.native_body_id is not None
+    )
+    replacement_source = source.role is FragmentBlockRole.REPLACEMENT
+    if not imported_source and not replacement_source:
+        raise RhadCompilerRejection(
+            "Rhad conditional source requires typed replacement or imported ownership"
+        )
+    if imported_source:
+        native_body = next(
+            (
+                body
+                for body in plan.native_bodies
+                if body.body_id == source.native_body_id
+            ),
+            None,
+        )
+        if (
+            native_body is None
+            or route.operation_id not in native_body.proof_ids
+            or plan.work_item_scope is None
+            or route.operation_id not in plan.work_item_scope.selected_obligation_ids
+            or selected.role is not FragmentBlockRole.IMPORTED
+            or join.role is not FragmentBlockRole.IMPORTED
+            or selected.native_body_id != native_body.body_id
+            or join.native_body_id != native_body.body_id
+        ):
+            raise RhadCompilerRejection(
+                "Rhad imported conditional source lacks native-body operation proof"
+            )
+    corridor_identities = (
+        source.stable_identity,
+        selected.stable_identity,
+        join.stable_identity,
+    )
     if any(
-        not source.stable_identity.native_ranges.contains(ea)
+        not any(identity.native_ranges.contains(ea) for identity in corridor_identities)
         for ea in route.owned_corridor_instruction_eas
     ):
         raise RhadCompilerRejection(
-            "Rhad route corridor lies outside its source identity"
+            "Rhad route corridor lies outside its typed select envelope"
+        )
+    if (
+        not all(
+            source.stable_identity.native_ranges.contains(ea)
+            for ea in (
+                route.source_block_anchor_ea,
+                route.condition_producer_ea,
+                route.predicate_anchor_ea,
+            )
+        )
+        or (
+            imported_source
+            and not source.stable_identity.native_ranges.contains(
+                route.source_native_ea
+            )
+        )
+        or route.condition_producer_ea
+        not in source.stable_identity.exact_instruction_eas
+        or route.predicate_anchor_ea not in source.stable_identity.exact_instruction_eas
+        or not selected.stable_identity.native_ranges.contains(
+            route.conditional_select_ea
+        )
+        or route.conditional_select_ea
+        not in selected.stable_identity.exact_instruction_eas
+        or not join.stable_identity.native_ranges.contains(route.transfer_ea)
+        or route.transfer_ea not in join.stable_identity.exact_instruction_eas
+    ):
+        raise RhadCompilerRejection(
+            "Rhad conditional native anchors are ambiguous or outside ownership"
         )
     if any(
         target_id not in route.imported_closure_block_ids
@@ -1400,8 +1515,8 @@ def _compile_conditional_route(
         raise RhadCompilerRejection(
             "Rhad conditional targets must belong to the imported closure"
         )
-    true_target_ea = int(block_by_id[route.true_target_block_id].semantic_anchor_ea)
-    false_target_ea = int(block_by_id[route.false_target_block_id].semantic_anchor_ea)
+    true_target_ea = int(route.true_target_ea)
+    false_target_ea = int(route.false_target_ea)
     payload = _reference_payload(ledger, route)
     reference_route = ReferenceRouteRewrite(
         route_id=route.operation_id,
@@ -1410,7 +1525,8 @@ def _compile_conditional_route(
         rewrite_anchor_ea=int(route.predicate_anchor_ea),
         corridor=tuple(
             (int(interval.start_ea), int(interval.end_ea))
-            for interval in source.stable_identity.native_ranges.intervals
+            for identity in corridor_identities
+            for interval in identity.native_ranges.intervals
         ),
         reference_phase=route.phase.value,
         original_transfer_kind=SemanticTransferKind.INDIRECT,
@@ -1430,11 +1546,30 @@ def _compile_conditional_route(
         normalization_start_ea=int(route.normalization_start_ea),
         condition_producer_ea=int(route.condition_producer_ea),
         unresolved_transfer_ea=int(route.transfer_ea),
-        conditional_select_envelope=FragmentConditionalSelectEnvelope(
-            predicate_ea=int(route.conditional_select_ea),
-            observed_predicate_kind=route.observed_predicate_kind,
-            selected_value_block_id=route.selected_value_block_id,
-            join_block_id=route.join_block_id,
+        conditional_select_envelope=(
+            FragmentReferencedImportedConditionalSelectEnvelope(
+                source_branch_ea=int(route.predicate_anchor_ea),
+                selected_value_ea=int(route.conditional_select_ea),
+                selected_value_identity=selected.stable_identity,
+                join_identity=join.stable_identity,
+                selected_value_block_id=route.selected_value_block_id,
+                join_block_id=route.join_block_id,
+                true_target_reference_ea=int(route.true_target_ea),
+                false_target_reference_ea=int(route.false_target_ea),
+                true_target_delivery_ea=int(
+                    block_by_id[route.true_target_block_id].semantic_anchor_ea
+                ),
+                false_target_delivery_ea=int(
+                    block_by_id[route.false_target_block_id].semantic_anchor_ea
+                ),
+            )
+            if imported_source
+            else FragmentConditionalSelectEnvelope(
+                predicate_ea=int(route.conditional_select_ea),
+                observed_predicate_kind=route.observed_predicate_kind,
+                selected_value_block_id=route.selected_value_block_id,
+                join_block_id=route.join_block_id,
+            )
         ),
     )
     operation = FragmentOperation(
