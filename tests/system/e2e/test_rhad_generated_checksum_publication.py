@@ -20,11 +20,29 @@ idapro = pytest.importorskip("idapro")
 _REPO = pathlib.Path(__file__).resolve().parents[3]
 _BINARY = _REPO / "samples" / "bins" / "rhad_loader_unpacked.bin"
 _FUNCTION_EA = 0x40A560
-_EXPECTED_SHA256 = (
-    "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
-)
+_EXPECTED_SHA256 = "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
 _SIDECARS = (".id0", ".id1", ".id2", ".nam", ".til", ".i64")
 _FAILURE_OUTPUT_LIMIT = 12_000
+_REFERENCE_OPERATION_IDS = (
+    "rhad:route@0x40A605",
+    "route:rhad-direct@0x40A619",
+)
+_IMPORTED_BLOCK_IDS = (
+    "native@0x40A607",
+    "native@0x40A615",
+    "native@0x40A619",
+    "native@0x40A680",
+    "native@0x40A68A",
+    "native@0x40B6C0",
+    "native@0x40B6CA",
+    "native@0x40B6D0",
+    "native@0x40B6D4",
+    "native@0x40A61B",
+    "native@0x40A62D",
+    "native@0x40A631",
+    "native@0x40A740",
+    "native@0x40A74A",
+)
 
 
 def _output_excerpt(value: str | bytes | None) -> str:
@@ -97,9 +115,7 @@ def _route_snapshot(mba: object) -> dict[str, object]:
     )
 
     origins = dict(imported_detached_snippet_instruction_origins(mba))
-    blocks = {
-        serial: mba.get_mblock(serial) for serial in range(int(mba.qty))
-    }
+    blocks = {serial: mba.get_mblock(serial) for serial in range(int(mba.qty))}
 
     def reachable_anchors() -> tuple[int, ...]:
         reachable: set[int] = set()
@@ -111,12 +127,7 @@ def _route_snapshot(mba: object) -> dict[str, object]:
             reachable.add(serial)
             pending.extend(int(value) for value in blocks[serial].succset)
         return tuple(
-            sorted(
-                {
-                    _native_anchor(blocks[serial], origins)
-                    for serial in reachable
-                }
-            )
+            sorted({_native_anchor(blocks[serial], origins) for serial in reachable})
         )
 
     transfer_indirect = any(
@@ -162,8 +173,7 @@ def _route_snapshot(mba: object) -> dict[str, object]:
                 route_serials.append(successor_serial)
             target_eas.add(_native_anchor(target, origins))
         indirect = any(
-            block.tail is not None
-            and int(block.tail.opcode) == int(ida_hexrays.m_ijmp)
+            block.tail is not None and int(block.tail.opcode) == int(ida_hexrays.m_ijmp)
             for block in (blocks[serial] for serial in route_serials)
         )
     else:
@@ -248,10 +258,7 @@ def _run_worker(binary: pathlib.Path) -> None:
                 return 0
 
             def locopt(self, mba):
-                if (
-                    int(mba.entry_ea) == _FUNCTION_EA
-                    and "first_cfg" not in captures
-                ):
+                if int(mba.entry_ea) == _FUNCTION_EA and "first_cfg" not in captures:
                     captures["first_cfg"] = _route_snapshot(mba)
                 return 0
 
@@ -283,23 +290,21 @@ def _run_worker(binary: pathlib.Path) -> None:
             str(receipt.fragment_plan_id) for receipt in receipts
         )
         receipt = matching[0]
-        assert receipt.operation_count == receipt.planned_operation_count == 13
+        assert receipt.operation_count == receipt.planned_operation_count == 19
         assert len(receipt.version_transitions) >= 10
         assert receipt.prepublication_validation.passed
         assert receipt.postpublication_validation.passed
         assert receipt.root_publication_confirmed
         assert captures["preopt"]["indirect"] is False
-        assert set(captures["preopt"]["target_eas"]) == {0x40A607, 0x40B6C0}, (
-            captures["preopt"]
-        )
+        assert set(captures["preopt"]["target_eas"]) == {0x40A607, 0x40B6C0}, captures[
+            "preopt"
+        ]
         assert captures["first_cfg"]["indirect"] is False
         assert set(captures["first_cfg"]["target_eas"]) == {
             0x40A607,
             0x40B6C0,
         }, captures["first_cfg"]
-        assert 0x40B6C0 in captures["first_cfg"]["reachable_eas"], captures[
-            "first_cfg"
-        ]
+        assert 0x40B6C0 in captures["first_cfg"]["reachable_eas"], captures["first_cfg"]
         assert captures["calls_count"] == 1
         assert captures["calls"]["indirect"] is False, captures["calls"]
         if captures["calls"]["source_present"]:
@@ -406,6 +411,50 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             "MMAT_CALLS",
         )
         assert all(bool(json.loads(row[3])["passed"]) for row in maturity_rows)
+        compiled_payload = json.loads(lifecycle_rows[1][3])
+        assert tuple(compiled_payload["operation_ids"]) == _REFERENCE_OPERATION_IDS
+        assert tuple(compiled_payload["imported_block_ids"]) == _IMPORTED_BLOCK_IDS
+        assert compiled_payload["imported_block_count"] == len(_IMPORTED_BLOCK_IDS)
+        reference_payloads = {
+            row["operation_id"]: json.loads(row["reference_ledger_json"])
+            for row in compiled_payload["reference_operations"]
+        }
+        assert set(reference_payloads) == set(_REFERENCE_OPERATION_IDS)
+        direct_reference = reference_payloads["route:rhad-direct@0x40A619"]
+        assert direct_reference["operation_category"] == "direct_route"
+        assert direct_reference["source_native_ea"] == 0x40A607
+        assert direct_reference["source_block_anchor_ea"] == 0x40A615
+        assert direct_reference["transfer_ea"] == 0x40A619
+        assert direct_reference["direct_target_block_id"] == "native@0x40A61B"
+
+        maturity_payloads = {row[1]: json.loads(row[3]) for row in maturity_rows}
+        for maturity in ("MMAT_GENERATED", "MMAT_PREOPTIMIZED", "MMAT_LOCOPT"):
+            observations = {
+                row["operation_id"]: row
+                for row in maturity_payloads[maturity]["operation_observations"]
+            }
+            direct = observations["route:rhad-direct@0x40A619"]
+            assert direct["source_present"] is True
+            assert direct["source_topology_reachable"] is True
+            assert direct["source_topology_retired"] is False
+            assert direct["indirect_transfer_present"] is False
+            assert direct["target_eas"] == [0x40A61B]
+            assert direct["passed"] is True
+        calls_payload = maturity_payloads["MMAT_CALLS"]
+        calls_observations = {
+            row["operation_id"]: row for row in calls_payload["operation_observations"]
+        }
+        direct_calls = calls_observations["route:rhad-direct@0x40A619"]
+        assert direct_calls["source_present"] is True
+        assert direct_calls["source_topology_reachable"] is False
+        assert direct_calls["source_topology_retired"] is True
+        assert direct_calls["indirect_transfer_present"] is False
+        assert direct_calls["target_eas"] == [0x40A61B]
+        assert direct_calls["passed"] is True
+        accepted_calls = calls_observations["rhad:route@0x40A605"]
+        assert accepted_calls["indirect_transfer_present"] is False
+        assert accepted_calls["passed"] is True
+        assert 0x40B6C0 in calls_payload["reachable_eas"]
         assert connection.execute(
             "SELECT COUNT(*) FROM lifecycle_events "
             "WHERE event_kind='ctree_captured' AND maturity='CMAT_FINAL'"
@@ -413,7 +462,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT planned_operation_count, applied_operation_count, outcome "
             "FROM mutation_receipts"
-        ).fetchall() == [(13, 13, "committed")]
+        ).fetchall() == [(19, 19, "committed")]
         assert connection.execute(
             "SELECT current_phase, mutation_started, poisoned, interr_code "
             "FROM cfg_transaction_attempts"
@@ -423,9 +472,33 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             "root_publication_succeeded, rollback_attempted "
             "FROM semantic_fragment_transactions"
         ).fetchall() == [("committed", 1, 1, 1, 0)]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM semantic_fragment_route_oracle_comparisons "
+            "WHERE outcome='matched'"
+        ).fetchone() == (2,)
+        committed_witnesses = connection.execute(
+            "SELECT local_block_id, provenance, logical_proxy_token, "
+            "logical_version, logical_generation, insertion_quantity_before, "
+            "insertion_quantity_after, requested_insertion_serial, "
+            "returned_serial, invalidated "
+            "FROM cfg_creation_witnesses WHERE state='committed' "
+            "ORDER BY rowid"
+        ).fetchall()
+        assert tuple(row[0] for row in committed_witnesses) == _IMPORTED_BLOCK_IDS
+        assert all(
+            row[1] == "imported_native"
+            and row[2]
+            and row[3:5] == (0, 1)
+            and row[6] == row[5] + 1
+            and row[7] == row[8]
+            and row[9] == 0
+            for row in committed_witnesses
+        )
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 3 or sys.argv[1] != "--worker":
-        raise SystemExit("usage: test_rhad_generated_checksum_publication.py --worker BINARY")
+        raise SystemExit(
+            "usage: test_rhad_generated_checksum_publication.py --worker BINARY"
+        )
     _run_worker(pathlib.Path(sys.argv[2]))

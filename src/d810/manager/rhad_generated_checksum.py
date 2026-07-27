@@ -378,7 +378,7 @@ def _reference_batch_observation(
         )
     }
 
-    def reachable_anchors() -> tuple[int, ...]:
+    def reachable_serials() -> set[int]:
         reachable: set[int] = set()
         pending = [0]
         while pending:
@@ -387,9 +387,9 @@ def _reference_batch_observation(
                 continue
             reachable.add(serial)
             pending.extend(int(value) for value in blocks[serial].succset)
-        return tuple(
-            sorted({_native_anchor(blocks[serial], origins) for serial in reachable})
-        )
+        return reachable
+
+    reachable_block_serials = reachable_serials()
 
     accepted_route = next(
         operation
@@ -414,7 +414,14 @@ def _reference_batch_observation(
         ),
         None,
     )
-    reachable = reachable_anchors()
+    reachable = tuple(
+        sorted(
+            {
+                _native_anchor(blocks[serial], origins)
+                for serial in reachable_block_serials
+            }
+        )
+    )
     if accepted_source is None:
         accepted_targets: set[int] = set()
         accepted_passed = (
@@ -479,53 +486,66 @@ def _reference_batch_observation(
         for operation in batch.operations
         if isinstance(operation, RhadDirectRoute)
     ):
+        direct_target_ea = block_anchor_by_id[direct_route.direct_target_block_id]
         direct_indirect = any(
-            int(row.opcode) == int(ida_hexrays.m_ijmp)
+            int(row.opcode)
+            in {
+                int(ida_hexrays.m_ijmp),
+                int(ida_hexrays.m_icall),
+            }
             and int(origins.get(int(row.ea), int(row.ea)))
             == int(direct_route.transfer_ea)
             for block in blocks.values()
             for row in _instructions(block)
         )
-        direct_source = next(
-            (
-                block
-                for block in blocks.values()
-                if any(
-                    int(origins.get(int(row.ea), int(row.ea)))
-                    == int(direct_route.transfer_ea)
-                    for row in _instructions(block)
-                )
-            ),
-            None,
-        )
-        direct_targets: set[int] = set()
-        if direct_source is not None:
-            for successor_serial in tuple(
-                int(value) for value in direct_source.succset
-            ):
-                direct_targets.add(_native_anchor(blocks[successor_serial], origins))
-            if not direct_targets and direct_source.tail is not None:
-                tail = direct_source.tail
+
+        def direct_targets_for(block: object) -> set[int]:
+            target_eas: set[int] = set()
+            for successor_serial in tuple(int(value) for value in block.succset):
+                target_eas.add(_native_anchor(blocks[successor_serial], origins))
+            if not target_eas and block.tail is not None:
+                tail = block.tail
                 operand = (
                     tail.l if int(tail.opcode) == int(ida_hexrays.m_goto) else tail.d
                 )
                 if int(operand.t) == int(ida_hexrays.mop_b):
-                    direct_targets.add(_native_anchor(blocks[int(operand.b)], origins))
-        direct_target_ea = block_anchor_by_id[direct_route.direct_target_block_id]
-        required_reachable_eas = set(direct_route.boundary_exit_eas)
+                    target_eas.add(_native_anchor(blocks[int(operand.b)], origins))
+            return target_eas
+
+        direct_source = next(
+            (
+                block
+                for block in blocks.values()
+                if block.tail is not None
+                and int(origins.get(int(block.tail.ea), int(block.tail.ea)))
+                == int(direct_route.transfer_ea)
+                and direct_targets_for(block) == {direct_target_ea}
+            ),
+            None,
+        )
+        direct_targets = (
+            set() if direct_source is None else direct_targets_for(direct_source)
+        )
+        source_topology_reachable = bool(
+            direct_source is not None
+            and (
+                int(mba.maturity) == int(ida_hexrays.MMAT_GENERATED)
+                or int(direct_source.serial) in reachable_block_serials
+            )
+        )
         direct_passed = not direct_indirect and (
-            direct_targets == {direct_target_ea}
-            if direct_source is not None
-            else required_reachable_eas.issubset(reachable)
+            direct_targets == {direct_target_ea} if source_topology_reachable else True
         )
         operation_observations.append(
             {
                 "operation_id": direct_route.operation_id,
                 "operation_category": direct_route.category.value,
                 "source_present": direct_source is not None,
+                "source_topology_reachable": source_topology_reachable,
+                "source_topology_retired": not source_topology_reachable,
                 "indirect_transfer_present": direct_indirect,
                 "target_eas": sorted(direct_targets),
-                "required_reachable_eas": sorted(required_reachable_eas),
+                "boundary_exit_eas": sorted(direct_route.boundary_exit_eas),
                 "passed": direct_passed,
             }
         )
