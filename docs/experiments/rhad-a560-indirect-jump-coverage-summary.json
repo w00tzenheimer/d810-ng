@@ -4,12 +4,15 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "37176e6fe831ddeb439ea7ccb59f241b1adf113a",
+  "accepted_code_sha": "46d010c8ba96e72c241645ead3d911fff6ad0f14",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
     "route:rhad-direct@0x40A68A",
-    "rhad:route@0x40A6A4"
+    "rhad:route@0x40A6A4",
+    "route:rhad-direct@0x40A74A",
+    "rhad:route@0x40A764",
+    "rhad:route@0x40A77C"
   ],
   "variants": [
     {
@@ -48,13 +51,13 @@
     {
       "operation_variant": "setcc_indexed_table",
       "total_reference_operations": 8,
-      "compiler_supported_operations": 0,
-      "compiled_operation_instances": 0,
-      "vertically_proved_operations": 0,
-      "accepted_receipt_operations": 0,
-      "earliest_unproved_reference_order": 16,
-      "earliest_unproved_operation_id": "rhad:route@0x40A77C",
-      "first_missing_typed_obligation": "define a serial-free setcc-indexed table route with exact index predicate and two-target table authority"
+      "compiler_supported_operations": 8,
+      "compiled_operation_instances": 1,
+      "vertically_proved_operations": 1,
+      "accepted_receipt_operations": 1,
+      "earliest_unproved_reference_order": 17,
+      "earliest_unproved_operation_id": "rhad:route@0x40A792",
+      "first_missing_typed_obligation": "instantiate the proved RhadSetccIndexedTableRoute vocabulary with exact per-operation evidence and dependency closure"
     }
   ],
   "selected_third_shape": {
@@ -108,5 +111,30 @@
       "transfer_native_ea": "0x40A68A",
       "direct_target_ea": "0x40A68C"
     }
+  },
+  "selected_fourth_shape": {
+    "reference_order": 16,
+    "operation_id": "rhad:route@0x40A77C",
+    "operation_variant": "setcc_indexed_table",
+    "reference_symbol": "JumpInliner._fixup_index_access",
+    "source_native_ea": "0x40A766",
+    "flag_producer_native_ea": "0x40A768",
+    "predicate_native_ea": "0x40A76E",
+    "unresolved_transfer_native_ea": "0x40A77C",
+    "predicate_kind": "signed_less_than",
+    "semantic_targets": ["0x40A77E", "0x40ABC6"],
+    "receipt": {
+      "planned_operations": 55,
+      "applied_operations": 55,
+      "committed": true,
+      "created_block_witnesses": 40
+    },
+    "lifecycle": [
+      "MMAT_GENERATED",
+      "MMAT_PREOPTIMIZED",
+      "MMAT_LOCOPT",
+      "MMAT_CALLS",
+      "CMAT_FINAL"
+    ]
   }
 }
