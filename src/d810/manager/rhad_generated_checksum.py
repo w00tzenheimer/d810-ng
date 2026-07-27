@@ -444,6 +444,12 @@ ROW6_TARGET_IMPORTED_BLOCK_IDS = tuple(
     f"native@0x{start_ea:X}"
     for start_ea, _end_ea, _exact_eas in ROW6_TARGET_IMPORTED_LAYOUT
 )
+ROW19_TARGET_IMPORTED_BLOCK_IDS = (
+    "native@0x40B6C0",
+    "native@0x40B6CA",
+    "native@0x40B6D0",
+    "native@0x40B6D4",
+)
 ROW26_SOURCE_IMPORTED_BLOCK_IDS = tuple(
     f"native@0x{start_ea:X}"
     for start_ea, _end_ea, _exact_eas in ROW26_SOURCE_IMPORTED_LAYOUT
@@ -1255,6 +1261,30 @@ _SIXTH_EXISTING_ROUTE = RhadExistingConditionalRoute(
     depends_on=(_FIFTH_SETCC_ROUTE.operation_id,),
 )
 
+_ROW19_DIRECT_ROUTE = RhadDirectRoute(
+    operation_id="route:rhad-direct@0x40A7EF",
+    reference_operation_id="rhad:route@0x40A7EF",
+    reference_order=19,
+    operation_variant=RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+    reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
+    source_block_id="native@0x40A7E5",
+    source_native_ea=0x40A7CD,
+    transfer_ea=0x40A7EF,
+    owner_anchor_ea=0x40A7E5,
+    direct_target_block_id="native@0x40B6C0",
+    owned_corridor_instruction_eas=(
+        0x40A7CD,
+        0x40A7E5,
+        0x40A7E7,
+        0x40A7E9,
+        0x40A7EF,
+    ),
+    imported_closure_block_ids=ROW19_TARGET_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40B790,),
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_SIXTH_EXISTING_ROUTE.operation_id,),
+)
+
 _ROW20_EXISTING_ROUTE = RhadExistingConditionalRoute(
     operation_id="rhad:route@0x40A818",
     reference_order=20,
@@ -1641,6 +1671,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _SETCC_ROUTE.operation_id,
         _FIFTH_SETCC_ROUTE.operation_id,
         _SIXTH_EXISTING_ROUTE.operation_id,
+        _ROW19_DIRECT_ROUTE.operation_id,
         _ROW20_EXISTING_ROUTE.operation_id,
         _ROW21_EXISTING_ROUTE.operation_id,
         _ROW22_EXISTING_ROUTE.operation_id,
@@ -2279,6 +2310,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _SETCC_ROUTE,
         _FIFTH_SETCC_ROUTE,
         _SIXTH_EXISTING_ROUTE,
+        _ROW19_DIRECT_ROUTE,
         _ROW20_EXISTING_ROUTE,
         _ROW21_EXISTING_ROUTE,
         _ROW22_EXISTING_ROUTE,
