@@ -1376,7 +1376,27 @@ def _fourth_shape_ledger():
         )
         for operation in (direct, existing, selected)
     )
-    all_block_ids = body.block_ids + tuple(block.block_id for block in added_blocks)
+    false_target_block = next(
+        block
+        for block in added_blocks
+        if block.block_id == selected.false_target_block_id
+    )
+    ordered_added_blocks = tuple(
+        block for block in added_blocks if block is not false_target_block
+    )
+    source_index = next(
+        index
+        for index, block in enumerate(ordered_added_blocks)
+        if block.block_id == selected.source_block_id
+    )
+    ordered_added_blocks = (
+        ordered_added_blocks[: source_index + 1]
+        + (false_target_block,)
+        + ordered_added_blocks[source_index + 1 :]
+    )
+    all_block_ids = body.block_ids + tuple(
+        block.block_id for block in ordered_added_blocks
+    )
     operation_source_ids = {
         operation.source_block_id
         for operation in (*third.operations, direct, existing, selected)
@@ -1418,7 +1438,7 @@ def _fourth_shape_ledger():
     )
     plan = replace(
         base,
-        blocks=base.blocks + added_blocks,
+        blocks=base.blocks + ordered_added_blocks,
         operations=base.operations + placeholders,
         work_item_scope=replace(
             base.work_item_scope,
@@ -1713,7 +1733,22 @@ def _fifth_shape_ledger():
         phase=compiler.RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
         depends_on=(fourth.operations[-1].operation_id,),
     )
-    all_block_ids = body.block_ids + tuple(block.block_id for block in added_blocks)
+    source_block_index = next(
+        index
+        for index, block in enumerate(base.blocks)
+        if block.block_id == selected.source_block_id
+    )
+    ordered_blocks = (
+        base.blocks[: source_block_index + 1]
+        + added_blocks
+        + base.blocks[source_block_index + 1 :]
+    )
+    source_body_index = body.block_ids.index(selected.source_block_id)
+    all_block_ids = (
+        body.block_ids[: source_body_index + 1]
+        + tuple(block.block_id for block in added_blocks)
+        + body.block_ids[source_body_index + 1 :]
+    )
     operation_source_ids = {
         operation.source_block_id for operation in (*fourth.operations, selected)
     }
@@ -1751,7 +1786,7 @@ def _fifth_shape_ledger():
     )
     plan = replace(
         base,
-        blocks=base.blocks + added_blocks,
+        blocks=ordered_blocks,
         operations=base.operations + (placeholder,),
         work_item_scope=replace(
             base.work_item_scope,
@@ -1832,3 +1867,28 @@ def test_compiler_emits_scaled_lookup_setcc_route_for_row17() -> None:
         "scale_bytes": 8,
     }
     assert plan.plan_id.endswith(ledger.aggregate_program_identity)
+
+
+def test_compiler_rejects_setcc_without_false_target_physical_adjacency() -> None:
+    compiler = _compiler_module()
+    ledger = _fifth_shape_ledger()
+    blocks = list(ledger.base_plan.blocks)
+    source_index = next(
+        index
+        for index, block in enumerate(blocks)
+        if block.block_id == "native@0x40A77E"
+    )
+    false_target = blocks.pop(source_index + 1)
+    blocks.append(false_target)
+
+    with pytest.raises(
+        compiler.RhadCompilerRejection,
+        match="false-target physical adjacency",
+    ):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                base_plan=replace(ledger.base_plan, blocks=tuple(blocks)),
+            ),
+            expected_evidence_generation=1,
+        )

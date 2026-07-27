@@ -1139,6 +1139,21 @@ def _validate_ledger(
         block for block in plan.blocks if block.role is FragmentBlockRole.IMPORTED
     )
     imported_ids = {block.block_id for block in imported_blocks}
+    block_positions = {block.block_id: index for index, block in enumerate(plan.blocks)}
+    for operation in ledger.operations:
+        if not isinstance(operation, RhadSetccIndexedTableRoute):
+            continue
+        source_position = block_positions.get(operation.source_block_id)
+        false_position = block_positions.get(operation.false_target_block_id)
+        if (
+            source_position is None
+            or false_position is None
+            or false_position != source_position + 1
+        ):
+            raise RhadCompilerRejection(
+                "Rhad setcc false-target physical adjacency is not proven by "
+                f"the portable block order: operation={operation.operation_id!r}"
+            )
     closure_ids = {
         block_id
         for operation in ledger.operations
@@ -1210,6 +1225,7 @@ def _reference_payload(
                 "false_target_block_id": route.false_target_block_id,
                 "observed_predicate_kind": route.observed_predicate_kind.value,
                 "operation_variant": route.operation_variant.value,
+                "predicate_anchor_ea": int(route.predicate_anchor_ea),
                 "predicate_kind": route.predicate_kind.value,
                 "reference_order": int(route.reference_order),
                 "reference_symbol": route.reference_symbol,
@@ -1229,6 +1245,7 @@ def _reference_payload(
                 "false_target_block_id": route.false_target_block_id,
                 "false_target_ea": int(route.false_target_ea),
                 "operation_variant": route.operation_variant.value,
+                "predicate_anchor_ea": int(route.predicate_anchor_ea),
                 "predicate_kind": route.predicate_kind.value,
                 "reference_order": int(route.reference_order),
                 "reference_symbol": route.reference_symbol,
