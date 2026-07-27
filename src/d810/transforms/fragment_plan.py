@@ -1873,27 +1873,41 @@ class FragmentPlan:
             direct_rewrite = operation.direct_transfer_rewrite
             if direct_rewrite is not None:
                 native_body = native_body_by_id.get(str(source.native_body_id))
-                canonical_imported_rewrite = bool(
+                imported_body_rewrite_proof = bool(
                     source.role is FragmentBlockRole.IMPORTED
                     and source.materialization
                     is FragmentBlockMaterialization.IMPORT_NATIVE
                     and native_body is not None
                     and operation.operation_id in native_body.proof_ids
                 )
-                if (
+                canonical_route_proof = bool(
                     self.publication_purpose
-                    is not FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+                    is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+                    and (
+                        source.role is not FragmentBlockRole.IMPORTED
+                        or imported_body_rewrite_proof
+                    )
+                )
+                referenced_frontend_route_proof = bool(
+                    self.publication_purpose
+                    is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+                    and imported_body_rewrite_proof
+                    and isinstance(work_item_scope, FragmentWorkItemScope)
+                    and operation.operation_id
+                    in work_item_scope.selected_obligation_ids
+                    and operation.reference_route_authority is not None
+                    and self.reference_oracle_run is not None
+                )
+                if (
+                    not (canonical_route_proof or referenced_frontend_route_proof)
                     or source.stable_identity is None
                     or operation.operation_id
                     != f"route:{direct_rewrite.route_proof_id}"
-                    or (
-                        source.role is FragmentBlockRole.IMPORTED
-                        and not canonical_imported_rewrite
-                    )
                 ):
                     raise FragmentPlanRejected(
                         f"fragment operation {operation.operation_id!r} direct "
-                        "transfer rewrite requires owned canonical route proof"
+                        "transfer rewrite requires owned canonical route proof or "
+                        "referenced frontend route proof"
                     )
                 delivery_region = direct_rewrite.delivery_region
                 source_owns_delivery_region = any(
