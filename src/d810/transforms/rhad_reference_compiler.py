@@ -18,7 +18,7 @@ from d810.core.semantic_route_oracle import (
     SemanticTransferKind,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
-from d810.ir.semantics import PredicateKind
+from d810.ir.semantics import PredicateKind, inverted_predicate_kind
 from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
@@ -27,9 +27,11 @@ from d810.transforms.fragment_plan import (
     FragmentDirectTransferRewrite,
     FragmentEdge,
     FragmentFlagCorridor,
+    FragmentImportedConditionalSelectEnvelope,
     FragmentOperation,
     FragmentPlan,
     FragmentReferenceRouteAuthority,
+    FragmentReferencedImportedConditionalSelectEnvelope,
     FragmentValueSite,
 )
 
@@ -54,6 +56,12 @@ class RhadOperationCategory(str, Enum):
     CONSTANT_MATERIALIZATION = "constant_materialization"
     MATERIALIZED_PREDICATE = "materialized_predicate"
     ORDERED_SIDE_EFFECT_CORRIDOR = "ordered_side_effect_corridor"
+
+
+class RhadOperationVariant(str, Enum):
+    """Reference implementation shapes admitted by the portable compiler."""
+
+    EXISTING_CONDITIONAL_PLUS_INDIRECT = "existing_conditional_plus_indirect"
 
 
 EXPECTED_REFERENCE_PHASE_ORDER = (
@@ -288,7 +296,179 @@ class RhadDirectRoute:
         object.__setattr__(self, "depends_on", dependencies)
 
 
-RhadReferenceOperation = RhadConditionalRoute | RhadDirectRoute
+@dataclass(frozen=True, slots=True)
+class RhadExistingConditionalRoute:
+    """One imported native conditional-select followed by an indirect jump."""
+
+    operation_id: str
+    reference_order: int
+    operation_variant: RhadOperationVariant
+    reference_symbol: str
+    source_block_id: str
+    selected_value_block_id: str
+    join_block_id: str
+    source_native_ea: int
+    source_block_anchor_ea: int
+    transfer_ea: int
+    condition_producer_ea: int
+    predicate_anchor_ea: int
+    normalization_start_ea: int
+    source_branch_ea: int
+    selected_value_ea: int
+    observed_predicate_kind: PredicateKind
+    predicate_kind: PredicateKind
+    true_target_block_id: str
+    false_target_block_id: str
+    comparison_constant: int
+    owned_corridor_instruction_eas: tuple[int, ...]
+    imported_closure_block_ids: tuple[str, ...]
+    boundary_exit_eas: tuple[int, ...]
+    flag_corridor_id: str
+    phase: RhadReferencePhase
+    depends_on: tuple[str, ...]
+    category: RhadOperationCategory = RhadOperationCategory.CONDITIONAL_ROUTE
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "operation_id",
+            "reference_symbol",
+            "source_block_id",
+            "selected_value_block_id",
+            "join_block_id",
+            "true_target_block_id",
+            "false_target_block_id",
+            "flag_corridor_id",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _identifier(getattr(self, field_name), field_name.replace("_", " ")),
+            )
+        reference_order = int(self.reference_order)
+        if reference_order < 0:
+            raise RhadCompilerRejection(
+                "Rhad existing conditional reference order must be non-negative"
+            )
+        if (
+            self.operation_variant
+            is not RhadOperationVariant.EXISTING_CONDITIONAL_PLUS_INDIRECT
+        ):
+            raise RhadCompilerRejection(
+                "Rhad existing conditional route requires its typed operation variant"
+            )
+        if self.category is not RhadOperationCategory.CONDITIONAL_ROUTE:
+            raise RhadCompilerRejection(
+                "Rhad existing conditional route requires its conditional category"
+            )
+        if not isinstance(self.phase, RhadReferencePhase):
+            raise TypeError(
+                "Rhad existing conditional route requires a reference phase"
+            )
+        for field_name in (
+            "source_native_ea",
+            "source_block_anchor_ea",
+            "transfer_ea",
+            "condition_producer_ea",
+            "predicate_anchor_ea",
+            "normalization_start_ea",
+            "source_branch_ea",
+            "selected_value_ea",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _native_ea(getattr(self, field_name), field_name.replace("_", " ")),
+            )
+        if not isinstance(
+            self.observed_predicate_kind,
+            PredicateKind,
+        ) or not isinstance(self.predicate_kind, PredicateKind):
+            raise TypeError(
+                "Rhad existing conditional route requires portable predicates"
+            )
+        if (
+            inverted_predicate_kind(self.observed_predicate_kind)
+            is not self.predicate_kind
+        ):
+            raise RhadCompilerRejection(
+                "Rhad existing conditional selected-value orientation does not "
+                "invert to its semantic predicate"
+            )
+        comparison_constant = int(self.comparison_constant)
+        if not 0 <= comparison_constant <= 0xFFFFFFFFFFFFFFFF:
+            raise RhadCompilerRejection(
+                "Rhad existing conditional comparison constant is out of range"
+            )
+        corridor = _ordered_unique_eas(
+            tuple(self.owned_corridor_instruction_eas),
+            "Rhad existing conditional corridor",
+        )
+        required_corridor_eas = {
+            int(self.source_native_ea),
+            int(self.condition_producer_ea),
+            int(self.predicate_anchor_ea),
+            int(self.source_branch_ea),
+            int(self.selected_value_ea),
+            int(self.source_block_anchor_ea),
+            int(self.transfer_ea),
+        }
+        if (
+            corridor[0] != int(self.source_native_ea)
+            or corridor[-1] != int(self.transfer_ea)
+            or not required_corridor_eas.issubset(corridor)
+            or self.normalization_start_ea != self.predicate_anchor_ea
+            or not (
+                self.source_native_ea
+                < self.condition_producer_ea
+                < self.predicate_anchor_ea
+                < self.selected_value_ea
+                <= self.source_block_anchor_ea
+                < self.transfer_ea
+            )
+        ):
+            raise RhadCompilerRejection(
+                "Rhad existing conditional native anchors are ambiguous or out of "
+                "corridor order"
+            )
+        if (
+            self.source_block_id == self.selected_value_block_id
+            or self.source_block_id == self.join_block_id
+            or self.selected_value_block_id == self.join_block_id
+        ):
+            raise RhadCompilerRejection(
+                "Rhad existing conditional source, selected value, and join "
+                "require distinct identities"
+            )
+        if self.true_target_block_id == self.false_target_block_id:
+            raise RhadCompilerRejection(
+                "Rhad existing conditional route requires complete distinct arms"
+            )
+        closure = _unique_identifiers(
+            tuple(self.imported_closure_block_ids),
+            "Rhad imported closure",
+        )
+        boundaries = _ordered_unique_eas(
+            tuple(self.boundary_exit_eas),
+            "Rhad boundary exits",
+        )
+        dependencies = tuple(
+            _identifier(value, "Rhad dependency") for value in self.depends_on
+        )
+        if not dependencies or len(set(dependencies)) != len(dependencies):
+            raise RhadCompilerRejection(
+                "Rhad existing conditional dependencies must be non-empty and unique"
+            )
+        object.__setattr__(self, "reference_order", reference_order)
+        object.__setattr__(self, "comparison_constant", comparison_constant)
+        object.__setattr__(self, "owned_corridor_instruction_eas", corridor)
+        object.__setattr__(self, "imported_closure_block_ids", closure)
+        object.__setattr__(self, "boundary_exit_eas", boundaries)
+        object.__setattr__(self, "depends_on", dependencies)
+
+
+RhadReferenceOperation = (
+    RhadConditionalRoute | RhadDirectRoute | RhadExistingConditionalRoute
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,7 +497,14 @@ class RhadReferenceLedger:
             raise TypeError("Rhad ledger requires a reference oracle run")
         operations = tuple(self.operations)
         if not operations or any(
-            not isinstance(operation, (RhadConditionalRoute, RhadDirectRoute))
+            not isinstance(
+                operation,
+                (
+                    RhadConditionalRoute,
+                    RhadDirectRoute,
+                    RhadExistingConditionalRoute,
+                ),
+            )
             for operation in operations
         ):
             raise RhadCompilerRejection(
@@ -460,6 +647,22 @@ def _reference_payload(
                 "direct_target_block_id": route.direct_target_block_id,
                 "source_block_anchor_ea": int(route.owner_anchor_ea),
                 "source_native_ea": int(route.source_native_ea),
+            }
+        )
+    elif isinstance(route, RhadExistingConditionalRoute):
+        payload.update(
+            {
+                "comparison_constant": int(route.comparison_constant),
+                "condition_producer_ea": int(route.condition_producer_ea),
+                "false_target_block_id": route.false_target_block_id,
+                "observed_predicate_kind": route.observed_predicate_kind.value,
+                "operation_variant": route.operation_variant.value,
+                "predicate_kind": route.predicate_kind.value,
+                "reference_order": int(route.reference_order),
+                "reference_symbol": route.reference_symbol,
+                "source_block_anchor_ea": int(route.source_block_anchor_ea),
+                "source_native_ea": int(route.source_native_ea),
+                "true_target_block_id": route.true_target_block_id,
             }
         )
     else:
@@ -710,6 +913,194 @@ def _compile_direct_route(
     )
 
 
+def _compile_existing_conditional_route(
+    ledger: RhadReferenceLedger,
+    route: RhadExistingConditionalRoute,
+) -> tuple[FragmentOperation, FragmentFlagCorridor]:
+    plan = ledger.base_plan
+    block_by_id = {block.block_id: block for block in plan.blocks}
+    required_block_ids = {
+        route.source_block_id,
+        route.selected_value_block_id,
+        route.join_block_id,
+        route.true_target_block_id,
+        route.false_target_block_id,
+        *route.imported_closure_block_ids,
+    }
+    missing = tuple(sorted(required_block_ids - set(block_by_id)))
+    if missing:
+        raise RhadCompilerRejection(
+            "Rhad existing conditional branch arms or envelope are incomplete: "
+            + ", ".join(missing)
+        )
+    source = block_by_id[route.source_block_id]
+    selected = block_by_id[route.selected_value_block_id]
+    join = block_by_id[route.join_block_id]
+    native_body = next(
+        (body for body in plan.native_bodies if body.body_id == source.native_body_id),
+        None,
+    )
+    if (
+        source.role is not FragmentBlockRole.IMPORTED
+        or source.materialization is not FragmentBlockMaterialization.IMPORT_NATIVE
+        or source.stable_identity is None
+        or source.native_body_id is None
+        or native_body is None
+        or route.operation_id not in native_body.proof_ids
+    ):
+        raise RhadCompilerRejection(
+            "Rhad existing conditional source lacks imported native-body "
+            "operation proof"
+        )
+    if (
+        selected.role is not FragmentBlockRole.IMPORTED
+        or join.role is not FragmentBlockRole.IMPORTED
+        or selected.native_body_id != native_body.body_id
+        or join.native_body_id != native_body.body_id
+        or selected.stable_identity is None
+        or join.stable_identity is None
+    ):
+        raise RhadCompilerRejection(
+            "Rhad existing conditional envelope lacks imported-body ownership"
+        )
+    if (
+        plan.work_item_scope is None
+        or route.operation_id not in plan.work_item_scope.selected_obligation_ids
+    ):
+        raise RhadCompilerRejection(
+            "Rhad existing conditional route is absent from frontend work-item "
+            "authority"
+        )
+    if any(
+        not any(
+            int(native_range.start_ea) <= int(corridor_ea) < int(native_range.end_ea)
+            for native_range in native_body.native_ranges
+        )
+        for corridor_ea in route.owned_corridor_instruction_eas
+    ):
+        raise RhadCompilerRejection(
+            "Rhad existing conditional corridor lies outside its native body"
+        )
+    if any(
+        not source.stable_identity.native_ranges.contains(ea)
+        for ea in (
+            route.source_native_ea,
+            route.condition_producer_ea,
+            route.predicate_anchor_ea,
+            route.source_branch_ea,
+        )
+    ) or not all(
+        ea in source.stable_identity.exact_instruction_eas
+        for ea in (route.condition_producer_ea, route.predicate_anchor_ea)
+    ):
+        raise RhadCompilerRejection(
+            "Rhad existing conditional source anchors are ambiguous or out of "
+            "corridor ownership"
+        )
+    if (
+        not selected.stable_identity.native_ranges.contains(route.selected_value_ea)
+        or route.selected_value_ea not in selected.stable_identity.exact_instruction_eas
+        or not join.stable_identity.native_ranges.contains(route.source_block_anchor_ea)
+        or not join.stable_identity.native_ranges.contains(route.transfer_ea)
+        or route.transfer_ea not in join.stable_identity.exact_instruction_eas
+    ):
+        raise RhadCompilerRejection(
+            "Rhad existing conditional selected-value or join anchors are ambiguous"
+        )
+    targets = (route.true_target_block_id, route.false_target_block_id)
+    if any(
+        target_id not in route.imported_closure_block_ids
+        or block_by_id[target_id].role is not FragmentBlockRole.IMPORTED
+        for target_id in targets
+    ):
+        raise RhadCompilerRejection(
+            "Rhad existing conditional requires complete imported branch arms"
+        )
+    true_target_ea = int(block_by_id[route.true_target_block_id].semantic_anchor_ea)
+    false_target_ea = int(block_by_id[route.false_target_block_id].semantic_anchor_ea)
+    payload = _reference_payload(ledger, route)
+    corridor_identities = (
+        source.stable_identity,
+        selected.stable_identity,
+        join.stable_identity,
+    )
+    reference_route = ReferenceRouteRewrite(
+        route_id=route.operation_id,
+        function_ea=int(ledger.function_ea),
+        owner_ea=int(route.predicate_anchor_ea),
+        rewrite_anchor_ea=int(route.predicate_anchor_ea),
+        corridor=tuple(
+            (int(interval.start_ea), int(interval.end_ea))
+            for identity in corridor_identities
+            for interval in identity.native_ranges.intervals
+        ),
+        reference_phase=route.phase.value,
+        original_transfer_kind=SemanticTransferKind.INDIRECT,
+        final_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        predicate_kind=route.predicate_kind.value,
+        reference_ledger_identity=ledger.ledger_id,
+        reference_ledger_json=json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+    operation = FragmentOperation(
+        operation_id=route.operation_id,
+        source_block_id=route.source_block_id,
+        predicate_anchor_ea=int(route.predicate_anchor_ea),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                target_block_id=route.true_target_block_id,
+            ),
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                target_block_id=route.false_target_block_id,
+            ),
+        ),
+        computed_branch_normalization=FragmentComputedBranchNormalization(
+            predicate_kind=route.predicate_kind,
+            normalization_start_ea=int(route.normalization_start_ea),
+            condition_producer_ea=int(route.condition_producer_ea),
+            unresolved_transfer_ea=int(route.transfer_ea),
+            conditional_select_envelope=(
+                FragmentReferencedImportedConditionalSelectEnvelope(
+                    source_branch_ea=int(route.source_branch_ea),
+                    selected_value_ea=int(route.selected_value_ea),
+                    selected_value_identity=selected.stable_identity,
+                    join_identity=join.stable_identity,
+                )
+            ),
+        ),
+        reference_route_authority=FragmentReferenceRouteAuthority(
+            reference_route=reference_route,
+            candidate_rewrite_anchor_ea=int(route.predicate_anchor_ea),
+        ),
+    )
+    value_id = f"rhad-flags@0x{route.condition_producer_ea:X}"
+    corridor = FragmentFlagCorridor(
+        corridor_id=route.flag_corridor_id,
+        producer=FragmentValueSite(
+            site_id=f"producer@0x{route.condition_producer_ea:X}",
+            block_id=route.source_block_id,
+            value_id=value_id,
+            instruction_ea=int(route.condition_producer_ea),
+        ),
+        consumer=FragmentValueSite(
+            site_id=f"consumer@0x{route.predicate_anchor_ea:X}",
+            block_id=route.source_block_id,
+            value_id=value_id,
+            instruction_ea=int(route.predicate_anchor_ea),
+        ),
+        block_path=(route.source_block_id,),
+        permitted_flag_write_eas=frozenset({int(route.condition_producer_ea)}),
+    )
+    return operation, corridor
+
+
 def compile_rhad_reference_fragment(
     ledger: RhadReferenceLedger,
     *,
@@ -734,6 +1125,13 @@ def compile_rhad_reference_fragment(
             corridors.append(corridor)
         elif isinstance(operation, RhadDirectRoute):
             operations.append(_compile_direct_route(ledger, operation))
+        elif isinstance(operation, RhadExistingConditionalRoute):
+            compiled_operation, corridor = _compile_existing_conditional_route(
+                ledger,
+                operation,
+            )
+            operations.append(compiled_operation)
+            corridors.append(corridor)
         else:
             raise RhadCompilerRejection(
                 f"Rhad operation type is unsupported: {type(operation).__name__}"
@@ -753,7 +1151,9 @@ __all__ = [
     "RhadCompilerRejection",
     "RhadConditionalRoute",
     "RhadDirectRoute",
+    "RhadExistingConditionalRoute",
     "RhadOperationCategory",
+    "RhadOperationVariant",
     "RhadReferenceLedger",
     "RhadReferenceOperation",
     "RhadReferencePhase",

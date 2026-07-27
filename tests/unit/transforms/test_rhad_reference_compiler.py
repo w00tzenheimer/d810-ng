@@ -18,9 +18,11 @@ from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentEdge,
+    FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
+    FragmentPlanRejected,
     FragmentPublicationPurpose,
     FragmentWorkItemScope,
     superseded_direct_transfer_carrier_block_ids,
@@ -632,3 +634,365 @@ def test_compiler_rejects_unknown_phase_dependency() -> None:
             replace(ledger, operations=(route,)),
             expected_evidence_generation=1,
         )
+
+
+def _third_shape_ledger():
+    compiler = _compiler_module()
+    mixed = _mixed_ledger()
+    base = mixed.base_plan
+    body = base.native_bodies[0]
+    body_id = body.body_id
+    added_ranges = (
+        (0x40A68C, 0x40A69A, (0x40A68C, 0x40A692, 0x40A698)),
+        (0x40A69A, 0x40A6A0, (0x40A69A,)),
+        (0x40A6A0, 0x40A6A6, (0x40A6A0, 0x40A6A2, 0x40A6A4)),
+        (0x40A6A4, 0x40A6A6, (0x40A6A4,)),
+        (0x40A6A6, 0x40A6BA, (0x40A6A6, 0x40A6AC, 0x40A6B2)),
+        (0x40A6BA, 0x40A6C0, (0x40A6BA, 0x40A6BC, 0x40A6BE)),
+        (0x40A6BE, 0x40A6C0, (0x40A6BE,)),
+        (0x40A800, 0x40A80E, (0x40A800, 0x40A806, 0x40A80C)),
+        (0x40A80E, 0x40A81A, (0x40A80E, 0x40A814, 0x40A818)),
+        (0x40A814, 0x40A81A, (0x40A814, 0x40A816, 0x40A818)),
+        (0x40A818, 0x40A81A, (0x40A818,)),
+    )
+    added_blocks = tuple(
+        FragmentBlock(
+            block_id=f"native@0x{start_ea:X}",
+            role=FragmentBlockRole.IMPORTED,
+            materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+            semantic_anchor_ea=start_ea,
+            stable_identity=_identity(start_ea, end_ea, *exact_eas),
+            native_body_id=body_id,
+        )
+        for start_ea, end_ea, exact_eas in added_ranges
+    )
+    dependency_id = "route:rhad-direct@0x40A68A"
+    selected_id = "rhad:route@0x40A6A4"
+    dependency = compiler.RhadDirectRoute(
+        operation_id=dependency_id,
+        source_block_id="native@0x40A680",
+        source_native_ea=0x40A613,
+        transfer_ea=0x40A68A,
+        owner_anchor_ea=0x40A680,
+        direct_target_block_id="native@0x40A68C",
+        owned_corridor_instruction_eas=(
+            0x40A613,
+            0x40A680,
+            0x40A686,
+            0x40A688,
+            0x40A68A,
+        ),
+        imported_closure_block_ids=(
+            "native@0x40A68C",
+            "native@0x40A69A",
+            "native@0x40A6A0",
+            "native@0x40A6A4",
+        ),
+        boundary_exit_eas=(0x40A800,),
+        phase=compiler.RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+        depends_on=(mixed.operations[0].operation_id,),
+    )
+    selected = compiler.RhadExistingConditionalRoute(
+        operation_id=selected_id,
+        reference_order=8,
+        operation_variant=(
+            compiler.RhadOperationVariant.EXISTING_CONDITIONAL_PLUS_INDIRECT
+        ),
+        reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
+        source_block_id="native@0x40A68C",
+        selected_value_block_id="native@0x40A69A",
+        join_block_id="native@0x40A6A0",
+        source_native_ea=0x40A68C,
+        source_block_anchor_ea=0x40A6A0,
+        transfer_ea=0x40A6A4,
+        condition_producer_ea=0x40A692,
+        predicate_anchor_ea=0x40A698,
+        normalization_start_ea=0x40A698,
+        source_branch_ea=0x40A698,
+        selected_value_ea=0x40A69A,
+        observed_predicate_kind=PredicateKind.SGE,
+        predicate_kind=PredicateKind.SLT,
+        true_target_block_id="native@0x40A6A6",
+        false_target_block_id="native@0x40A800",
+        comparison_constant=0x65203D55,
+        owned_corridor_instruction_eas=(
+            0x40A68C,
+            0x40A692,
+            0x40A698,
+            0x40A69A,
+            0x40A6A0,
+            0x40A6A2,
+            0x40A6A4,
+        ),
+        imported_closure_block_ids=(
+            "native@0x40A6A6",
+            "native@0x40A6BA",
+            "native@0x40A6BE",
+            "native@0x40A800",
+            "native@0x40A80E",
+            "native@0x40A814",
+            "native@0x40A818",
+        ),
+        boundary_exit_eas=(0x40A9A0,),
+        flag_corridor_id="flags-intact@0x40A692",
+        phase=compiler.RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+        depends_on=(dependency_id,),
+    )
+    placeholders = (
+        FragmentOperation(
+            operation_id=f"placeholder:{dependency_id}",
+            source_block_id=dependency.source_block_id,
+            edges=(
+                FragmentEdge(
+                    role=SemanticEdgeRole.DIRECT,
+                    target_block_id=dependency.direct_target_block_id,
+                ),
+            ),
+        ),
+        FragmentOperation(
+            operation_id=f"placeholder:{selected_id}",
+            source_block_id=selected.source_block_id,
+            predicate_anchor_ea=selected.predicate_anchor_ea,
+            edges=(
+                FragmentEdge(
+                    role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                    target_block_id=selected.true_target_block_id,
+                ),
+                FragmentEdge(
+                    role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                    target_block_id=selected.false_target_block_id,
+                ),
+            ),
+        ),
+    )
+    all_block_ids = body.block_ids + tuple(block.block_id for block in added_blocks)
+    operation_source_ids = {
+        "native@0x40A615",
+        dependency.source_block_id,
+        selected.source_block_id,
+    }
+    expanded_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=all_block_ids,
+        entry_block_ids=body.entry_block_ids
+        + (
+            "native@0x40A68C",
+            "native@0x40A6A6",
+            "native@0x40A6BE",
+            "native@0x40A800",
+            "native@0x40A818",
+        ),
+        terminal_block_ids=tuple(
+            block_id
+            for block_id in all_block_ids
+            if block_id not in operation_source_ids
+        ),
+        native_ranges=tuple(
+            sorted(
+                body.native_ranges
+                + (
+                    NativeEaInterval(0x40A68C, 0x40A6C0),
+                    NativeEaInterval(0x40A800, 0x40A81A),
+                ),
+                key=lambda interval: int(interval.start_ea),
+            )
+        ),
+        proof_ids=body.proof_ids + (dependency_id, selected_id),
+    )
+    plan = replace(
+        base,
+        blocks=base.blocks + added_blocks,
+        operations=base.operations + placeholders,
+        work_item_scope=replace(
+            base.work_item_scope,
+            selected_obligation_ids=tuple(
+                operation.operation_id
+                for operation in (*mixed.operations, dependency, selected)
+            ),
+        ),
+        native_bodies=(expanded_body,),
+    )
+    return compiler.RhadReferenceLedger(
+        ledger_id="rhad-generated-reference@0x40A560:g1",
+        function_ea=0x40A560,
+        evidence_generation=1,
+        base_plan=plan,
+        reference_oracle_run=_reference_run(),
+        operations=(*mixed.operations, dependency, selected),
+        required_boundary_exit_eas=(0x40A633, 0x40A74C, 0x40A9A0, 0x40B790),
+        reference_provenance={
+            "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+            "inventory_identity": "rhad-a560-indirect-jump-reference-inventory:v1",
+        },
+    )
+
+
+def test_compiler_emits_imported_existing_conditional_route() -> None:
+    compiler = _compiler_module()
+
+    plan = compiler.compile_rhad_reference_fragment(
+        _third_shape_ledger(),
+        expected_evidence_generation=1,
+    )
+
+    assert tuple(operation.operation_id for operation in plan.operations) == (
+        "rhad:route@0x40A605",
+        "route:rhad-direct@0x40A619",
+        "route:rhad-direct@0x40A68A",
+        "rhad:route@0x40A6A4",
+    )
+    operation = plan.operation("rhad:route@0x40A6A4")
+    assert operation.predicate_anchor_ea == 0x40A698
+    normalization = operation.computed_branch_normalization
+    assert normalization is not None
+    assert normalization.condition_producer_ea == 0x40A692
+    assert normalization.unresolved_transfer_ea == 0x40A6A4
+    assert normalization.predicate_kind is PredicateKind.SLT
+    assert isinstance(
+        normalization.conditional_select_envelope,
+        FragmentImportedConditionalSelectEnvelope,
+    )
+    envelope = normalization.conditional_select_envelope
+    assert envelope.source_branch_ea == 0x40A698
+    assert envelope.selected_value_ea == 0x40A69A
+    assert envelope.join_identity.native_ranges.contains(0x40A6A4)
+    assert operation.edges == (
+        FragmentEdge(
+            role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+            target_block_id="native@0x40A6A6",
+        ),
+        FragmentEdge(
+            role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            target_block_id="native@0x40A800",
+        ),
+    )
+    authority = operation.reference_route_authority
+    assert authority is not None
+    assert authority.reference_route.final_transfer_kind is (
+        SemanticTransferKind.CONDITIONAL
+    )
+    payload = json.loads(authority.reference_route.reference_ledger_json)
+    assert payload["reference_order"] == 8
+    assert payload["operation_variant"] == "existing_conditional_plus_indirect"
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
+    assert payload["source_native_ea"] == 0x40A68C
+    assert payload["source_block_anchor_ea"] == 0x40A6A0
+    assert payload["comparison_constant"] == 0x65203D55
+
+
+def test_frontend_imported_conditional_rejects_missing_reference_authority() -> None:
+    compiler = _compiler_module()
+    plan = compiler.compile_rhad_reference_fragment(
+        _third_shape_ledger(),
+        expected_evidence_generation=1,
+    )
+    selected = plan.operation("rhad:route@0x40A6A4")
+
+    with pytest.raises(FragmentPlanRejected, match="reference.*authority"):
+        replace(
+            plan,
+            operations=tuple(
+                replace(operation, reference_route_authority=None)
+                if operation is selected
+                else operation
+                for operation in plan.operations
+            ),
+        )
+
+
+def test_compiler_rejects_existing_conditional_incomplete_branch_arm() -> None:
+    compiler = _compiler_module()
+    ledger = _third_shape_ledger()
+    *dependencies, selected = ledger.operations
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="complete.*arms"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                operations=(
+                    *dependencies,
+                    replace(selected, true_target_block_id="native@0x40A607"),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_existing_conditional_predicate_orientation() -> None:
+    compiler = _compiler_module()
+    ledger = _third_shape_ledger()
+    selected = ledger.operations[-1]
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="orientation"):
+        replace(selected, observed_predicate_kind=PredicateKind.SLT)
+
+
+def test_compiler_rejects_existing_conditional_without_body_proof() -> None:
+    compiler = _compiler_module()
+    ledger = _third_shape_ledger()
+    body = ledger.base_plan.native_bodies[0]
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="operation proof"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                base_plan=replace(
+                    ledger.base_plan,
+                    native_bodies=(
+                        replace(
+                            body,
+                            proof_ids=body.proof_ids[:-1],
+                        ),
+                    ),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_existing_conditional_foreign_oracle_run() -> None:
+    compiler = _compiler_module()
+    ledger = _third_shape_ledger()
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="different inputs"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                reference_oracle_run=replace(
+                    ledger.reference_oracle_run,
+                    function_ea=0x40C8B0,
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_unselected_existing_conditional_obligation() -> None:
+    compiler = _compiler_module()
+    ledger = _third_shape_ledger()
+    scope = ledger.base_plan.work_item_scope
+    assert scope is not None
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="work-item authority"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                base_plan=replace(
+                    ledger.base_plan,
+                    work_item_scope=replace(
+                        scope,
+                        selected_obligation_ids=scope.selected_obligation_ids[:-1],
+                    ),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_existing_conditional_ambiguous_native_anchor() -> None:
+    compiler = _compiler_module()
+    ledger = _third_shape_ledger()
+    selected = ledger.operations[-1]
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="ambiguous.*corridor"):
+        replace(selected, source_branch_ea=0x40A697)
