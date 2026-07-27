@@ -156,7 +156,7 @@ def test_checksum_producer_compiles_four_serial_free_reference_shapes() -> None:
         0x40A633,
         0x40A794,
         0x40A9A0,
-        0x40ADCE,
+        0x40AD6E,
         0x40AEE6,
         0x40B1D0,
         0x40B790,
