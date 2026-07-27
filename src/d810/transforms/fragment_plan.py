@@ -2685,7 +2685,7 @@ class FragmentPlan:
                         for authority in reference_authorities
                     }
                 )
-                != len(reference_authorities)
+                != 1
             ):
                 raise FragmentPlanRejected(
                     "fragment reference oracle authority is incomplete or mismatched"

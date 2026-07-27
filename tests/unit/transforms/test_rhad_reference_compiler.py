@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from d810.core.semantic_route_oracle import RouteOracleRun
+from d810.core.semantic_route_oracle import RouteOracleRun, SemanticTransferKind
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
@@ -45,6 +45,18 @@ IMPORTED_RANGES = (
 )
 IMPORTED_BLOCK_IDS = tuple(f"native@0x{start_ea:X}" for start_ea, _ in IMPORTED_RANGES)
 BOUNDARY_EXIT_EAS = (0x40A61B, 0x40A68C, 0x40B790)
+DIRECT_IMPORTED_RANGES = (
+    (0x40A61B, 0x40A62D),
+    (0x40A62D, 0x40A633),
+    (0x40A631, 0x40A633),
+    (0x40A740, 0x40A74C),
+    (0x40A74A, 0x40A74C),
+)
+DIRECT_IMPORTED_BLOCK_IDS = tuple(
+    f"native@0x{start_ea:X}" for start_ea, _ in DIRECT_IMPORTED_RANGES
+)
+COMBINED_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS + DIRECT_IMPORTED_BLOCK_IDS
+COMBINED_BOUNDARY_EXIT_EAS = (0x40A633, 0x40A68C, 0x40A74C, 0x40B790)
 
 
 def _compiler_module():
@@ -222,6 +234,274 @@ def _ledger():
             "operation_shape": "cmovl_selected_indirect_transfer",
         },
     )
+
+
+def _mixed_ledger():
+    compiler = _compiler_module()
+    base = _base_plan()
+    body_id = base.native_bodies[0].body_id
+    direct_imported = tuple(
+        FragmentBlock(
+            block_id=block_id,
+            role=FragmentBlockRole.IMPORTED,
+            materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+            semantic_anchor_ea=start_ea,
+            stable_identity=_identity(start_ea, end_ea, start_ea),
+            native_body_id=body_id,
+        )
+        for block_id, (start_ea, end_ea) in zip(
+            DIRECT_IMPORTED_BLOCK_IDS,
+            DIRECT_IMPORTED_RANGES,
+            strict=True,
+        )
+    )
+    placeholder_direct = FragmentOperation(
+        operation_id="placeholder@0x40A619",
+        source_block_id="native@0x40A619",
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id="native@0x40A61B",
+            ),
+        ),
+    )
+    base = replace(
+        base,
+        blocks=base.blocks + direct_imported,
+        operations=base.operations + (placeholder_direct,),
+        work_item_scope=replace(
+            base.work_item_scope,
+            selected_obligation_ids=(
+                "rhad:route@0x40A605",
+                "route:rhad-direct@0x40A619",
+            ),
+        ),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id=body_id,
+                block_ids=COMBINED_IMPORTED_BLOCK_IDS,
+                entry_block_ids=(
+                    "native@0x40A607",
+                    "native@0x40A619",
+                    "native@0x40B6C0",
+                    "native@0x40A61B",
+                    "native@0x40A631",
+                    "native@0x40A74A",
+                ),
+                terminal_block_ids=tuple(
+                    block_id
+                    for block_id in COMBINED_IMPORTED_BLOCK_IDS
+                    if block_id != "native@0x40A619"
+                ),
+                native_ranges=(
+                    NativeEaInterval(0x40A607, 0x40A61B),
+                    NativeEaInterval(0x40A61B, 0x40A633),
+                    NativeEaInterval(0x40A680, 0x40A68C),
+                    NativeEaInterval(0x40A740, 0x40A74C),
+                    NativeEaInterval(0x40B6C0, 0x40B6D6),
+                ),
+                proof_ids=(
+                    "native-body@0x40A605",
+                    "route:rhad-direct@0x40A619",
+                ),
+            ),
+        ),
+    )
+    accepted_route = _ledger().operations[0]
+    direct_route = compiler.RhadDirectRoute(
+        operation_id="route:rhad-direct@0x40A619",
+        source_block_id="native@0x40A619",
+        transfer_ea=0x40A619,
+        owner_anchor_ea=0x40A619,
+        direct_target_block_id="native@0x40A61B",
+        owned_corridor_instruction_eas=(
+            0x40A607,
+            0x40A615,
+            0x40A617,
+            0x40A619,
+        ),
+        imported_closure_block_ids=DIRECT_IMPORTED_BLOCK_IDS,
+        boundary_exit_eas=(0x40A633, 0x40A74C),
+        phase=compiler.RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+        depends_on=(accepted_route.operation_id,),
+    )
+    return compiler.RhadReferenceLedger(
+        ledger_id="rhad-generated-reference@0x40A560:g1",
+        function_ea=0x40A560,
+        evidence_generation=1,
+        base_plan=base,
+        reference_oracle_run=_reference_run(),
+        operations=(accepted_route, direct_route),
+        required_boundary_exit_eas=COMBINED_BOUNDARY_EXIT_EAS,
+        reference_provenance={
+            "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+            "operation_shapes": (
+                "cmovl_selected_indirect_transfer",
+                "simple_indirect_jump",
+            ),
+        },
+    )
+
+
+def test_compiler_emits_distinct_direct_route_in_one_reference_batch() -> None:
+    compiler = _compiler_module()
+
+    plan = compiler.compile_rhad_reference_fragment(
+        _mixed_ledger(),
+        expected_evidence_generation=1,
+    )
+
+    assert tuple(operation.operation_id for operation in plan.operations) == (
+        "rhad:route@0x40A605",
+        "route:rhad-direct@0x40A619",
+    )
+    direct = plan.operation("route:rhad-direct@0x40A619")
+    assert direct.predicate_anchor_ea is None
+    assert direct.edges == (
+        FragmentEdge(
+            role=SemanticEdgeRole.DIRECT,
+            target_block_id="native@0x40A61B",
+        ),
+    )
+    rewrite = direct.direct_transfer_rewrite
+    assert rewrite is not None
+    assert rewrite.route_proof_id == "rhad-direct@0x40A619"
+    assert rewrite.owner_anchor_ea == 0x40A619
+    assert rewrite.rewrite_anchor_ea == 0x40A619
+    assert rewrite.delivery_region == NativeEaInterval(0x40A619, 0x40A61B)
+    assert rewrite.proof_corridor_instruction_eas == (
+        0x40A607,
+        0x40A615,
+        0x40A617,
+        0x40A619,
+    )
+    authority = direct.reference_route_authority
+    assert authority is not None
+    assert authority.reference_route.final_transfer_kind is SemanticTransferKind.DIRECT
+    assert authority.reference_route.direct_target_ea == 0x40A61B
+    payload = json.loads(authority.reference_route.reference_ledger_json)
+    assert payload["imported_closure_block_ids"] == list(DIRECT_IMPORTED_BLOCK_IDS)
+    assert payload["boundary_exit_eas"] == [0x40A633, 0x40A74C]
+    assert payload["direct_target_block_id"] == "native@0x40A61B"
+    assert len(plan.flag_corridors) == 1
+
+
+def test_compiler_rejects_direct_route_from_non_imported_source() -> None:
+    compiler = _compiler_module()
+    ledger = _mixed_ledger()
+    accepted, direct = ledger.operations
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="imported native-body"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                operations=(
+                    accepted,
+                    replace(direct, source_block_id="native@0x40A5F0"),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_direct_route_without_native_body_proof() -> None:
+    compiler = _compiler_module()
+    ledger = _mixed_ledger()
+    body = ledger.base_plan.native_bodies[0]
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="operation proof"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                base_plan=replace(
+                    ledger.base_plan,
+                    native_bodies=(replace(body, proof_ids=("native-body@0x40A605",)),),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_direct_corridor_outside_native_body() -> None:
+    compiler = _compiler_module()
+    ledger = _mixed_ledger()
+    accepted, direct = ledger.operations
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="corridor.*native body"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                operations=(
+                    accepted,
+                    replace(
+                        direct,
+                        owned_corridor_instruction_eas=(0x40A000, 0x40A619),
+                    ),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_direct_target_outside_operation_closure() -> None:
+    compiler = _compiler_module()
+    ledger = _mixed_ledger()
+    accepted, direct = ledger.operations
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="target.*closure"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                operations=(
+                    accepted,
+                    replace(
+                        direct,
+                        direct_target_block_id="native@0x40A607",
+                    ),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_incomplete_mixed_operation_closure_union() -> None:
+    compiler = _compiler_module()
+    ledger = _mixed_ledger()
+    accepted, direct = ledger.operations
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="closure union"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                operations=(
+                    accepted,
+                    replace(
+                        direct,
+                        imported_closure_block_ids=(
+                            direct.imported_closure_block_ids[:-1]
+                        ),
+                    ),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_mixed_boundary_that_keeps_internalized_exit() -> None:
+    compiler = _compiler_module()
+    ledger = _mixed_ledger()
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="derived batch"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                required_boundary_exit_eas=(
+                    0x40A61B,
+                    *COMBINED_BOUNDARY_EXIT_EAS,
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
 
 
 def test_a560_compiler_preserves_reference_semantics_and_exact_closure() -> None:
