@@ -610,6 +610,31 @@ class FragmentReferencedImportedConditionalSelectEnvelope(
 ):
     """Imported conditional-select whose admission requires reference authority."""
 
+    selected_value_block_id: str
+    join_block_id: str
+
+    def __post_init__(self) -> None:
+        FragmentImportedConditionalSelectEnvelope.__post_init__(self)
+        selected_value_block_id = _require_identifier(
+            self.selected_value_block_id,
+            "referenced imported conditional selected-value block",
+        )
+        join_block_id = _require_identifier(
+            self.join_block_id,
+            "referenced imported conditional join block",
+        )
+        if selected_value_block_id == join_block_id:
+            raise FragmentPlanRejected(
+                "referenced imported conditional requires distinct selected-value "
+                "and join blocks"
+            )
+        object.__setattr__(
+            self,
+            "selected_value_block_id",
+            selected_value_block_id,
+        )
+        object.__setattr__(self, "join_block_id", join_block_id)
+
 
 @dataclass(frozen=True, slots=True)
 class FragmentComputedBranchNormalization:
@@ -2233,23 +2258,38 @@ class FragmentPlan:
                     if isinstance(
                         envelope,
                         FragmentReferencedImportedConditionalSelectEnvelope,
-                    ) and not (
-                        self.publication_purpose
-                        is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
-                        and native_body is not None
-                        and operation.operation_id in native_body.proof_ids
-                        and isinstance(work_item_scope, FragmentWorkItemScope)
-                        and operation.operation_id
-                        in work_item_scope.selected_obligation_ids
-                        and operation.reference_route_authority is not None
-                        and self.reference_oracle_run is not None
                     ):
-                        raise FragmentPlanRejected(
-                            f"fragment operation {operation.operation_id!r} "
-                            "referenced imported conditional-select requires "
-                            "reference route authority, native-body proof, "
-                            "selected frontend scope, and RouteOracleRun"
+                        selected_block = block_by_id.get(
+                            envelope.selected_value_block_id
                         )
+                        join_block = block_by_id.get(envelope.join_block_id)
+                        if not (
+                            self.publication_purpose
+                            is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+                            and native_body is not None
+                            and operation.operation_id in native_body.proof_ids
+                            and isinstance(work_item_scope, FragmentWorkItemScope)
+                            and operation.operation_id
+                            in work_item_scope.selected_obligation_ids
+                            and operation.reference_route_authority is not None
+                            and self.reference_oracle_run is not None
+                            and selected_block is not None
+                            and selected_block.role is FragmentBlockRole.IMPORTED
+                            and selected_block.native_body_id == native_body.body_id
+                            and selected_block.stable_identity
+                            == envelope.selected_value_identity
+                            and join_block is not None
+                            and join_block.role is FragmentBlockRole.IMPORTED
+                            and join_block.native_body_id == native_body.body_id
+                            and join_block.stable_identity == envelope.join_identity
+                        ):
+                            raise FragmentPlanRejected(
+                                f"fragment operation {operation.operation_id!r} "
+                                "referenced imported conditional-select requires "
+                                "reference route authority, native-body proof, "
+                                "selected frontend scope, RouteOracleRun, and exact "
+                                "envelope block ownership"
+                            )
                     source_anchors = (
                         computed_normalization.normalization_start_ea,
                         computed_normalization.condition_producer_ea,
@@ -2381,17 +2421,33 @@ class FragmentPlan:
                     "staged operation edge"
                 )
         operation_source_ids = {operation.source_block_id for operation in operations}
+        operation_envelope_ids = {
+            block_id
+            for operation in operations
+            for normalization in (operation.computed_branch_normalization,)
+            if normalization is not None
+            for envelope in (normalization.conditional_select_envelope,)
+            if isinstance(
+                envelope,
+                FragmentReferencedImportedConditionalSelectEnvelope,
+            )
+            for block_id in (
+                envelope.selected_value_block_id,
+                envelope.join_block_id,
+            )
+        }
+        operation_topology_ids = operation_source_ids | operation_envelope_ids
         for native_body in native_bodies:
             terminal_ids = set(native_body.terminal_block_ids)
             preserved_native_transfer_ids = set(
                 native_body.preserved_native_transfer_block_ids
             )
-            if terminal_ids & operation_source_ids:
+            if terminal_ids & operation_topology_ids:
                 raise FragmentPlanRejected(
                     f"native body {native_body.body_id!r} terminal block "
                     "cannot also own an operation"
                 )
-            if preserved_native_transfer_ids & operation_source_ids:
+            if preserved_native_transfer_ids & operation_topology_ids:
                 raise FragmentPlanRejected(
                     f"native body {native_body.body_id!r} preserved native "
                     "transfer cannot also own an operation"
@@ -2399,7 +2455,7 @@ class FragmentPlan:
             missing_topology = (
                 set(native_body.block_ids)
                 - terminal_ids
-                - operation_source_ids
+                - operation_topology_ids
                 - preserved_native_transfer_ids
             )
             if missing_topology:

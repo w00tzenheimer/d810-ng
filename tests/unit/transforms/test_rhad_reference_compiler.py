@@ -855,6 +855,8 @@ def test_compiler_emits_imported_existing_conditional_route() -> None:
     envelope = normalization.conditional_select_envelope
     assert envelope.source_branch_ea == 0x40A698
     assert envelope.selected_value_ea == 0x40A69A
+    assert envelope.selected_value_block_id == "native@0x40A69A"
+    assert envelope.join_block_id == "native@0x40A6A0"
     assert envelope.join_identity.native_ranges.contains(0x40A6A4)
     assert operation.edges == (
         FragmentEdge(
