@@ -57,7 +57,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 83
+    assert len(IMPORTED_BLOCK_IDS) == 85
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
