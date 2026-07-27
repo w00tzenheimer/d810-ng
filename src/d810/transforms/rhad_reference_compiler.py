@@ -20,9 +20,11 @@ from d810.core.semantic_route_oracle import (
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
 from d810.transforms.fragment_plan import (
+    FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentComputedBranchNormalization,
     FragmentConditionalSelectEnvelope,
+    FragmentDirectTransferRewrite,
     FragmentEdge,
     FragmentFlagCorridor,
     FragmentOperation,
@@ -211,6 +213,81 @@ class RhadConditionalRoute:
 
 
 @dataclass(frozen=True, slots=True)
+class RhadDirectRoute:
+    """One reference direct route replacing an imported indirect transfer."""
+
+    operation_id: str
+    source_block_id: str
+    transfer_ea: int
+    owner_anchor_ea: int
+    direct_target_block_id: str
+    owned_corridor_instruction_eas: tuple[int, ...]
+    imported_closure_block_ids: tuple[str, ...]
+    boundary_exit_eas: tuple[int, ...]
+    phase: RhadReferencePhase
+    depends_on: tuple[str, ...] = ()
+    category: RhadOperationCategory = RhadOperationCategory.DIRECT_ROUTE
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "operation_id",
+            "source_block_id",
+            "direct_target_block_id",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _identifier(getattr(self, field_name), field_name.replace("_", " ")),
+            )
+        if not self.operation_id.startswith("route:"):
+            raise RhadCompilerRejection(
+                "Rhad direct operation id requires route-proof identity"
+            )
+        for field_name in ("transfer_ea", "owner_anchor_ea"):
+            object.__setattr__(
+                self,
+                field_name,
+                _native_ea(getattr(self, field_name), field_name.replace("_", " ")),
+            )
+        if not isinstance(self.phase, RhadReferencePhase):
+            raise TypeError("Rhad direct route requires a reference phase")
+        if self.category is not RhadOperationCategory.DIRECT_ROUTE:
+            raise RhadCompilerRejection(
+                "Rhad direct route requires its direct category"
+            )
+        corridor = _ordered_unique_eas(
+            tuple(self.owned_corridor_instruction_eas),
+            "Rhad owned corridor",
+        )
+        if corridor[-1] != int(self.transfer_ea) or int(self.owner_anchor_ea) != int(
+            self.transfer_ea
+        ):
+            raise RhadCompilerRejection(
+                "Rhad direct corridor must end at its owned indirect transfer"
+            )
+        closure = _unique_identifiers(
+            tuple(self.imported_closure_block_ids),
+            "Rhad imported closure",
+        )
+        boundaries = _ordered_unique_eas(
+            tuple(self.boundary_exit_eas),
+            "Rhad boundary exits",
+        )
+        dependencies = tuple(
+            _identifier(value, "Rhad dependency") for value in self.depends_on
+        )
+        if len(set(dependencies)) != len(dependencies):
+            raise RhadCompilerRejection("Rhad operation dependencies must be unique")
+        object.__setattr__(self, "owned_corridor_instruction_eas", corridor)
+        object.__setattr__(self, "imported_closure_block_ids", closure)
+        object.__setattr__(self, "boundary_exit_eas", boundaries)
+        object.__setattr__(self, "depends_on", dependencies)
+
+
+RhadReferenceOperation = RhadConditionalRoute | RhadDirectRoute
+
+
+@dataclass(frozen=True, slots=True)
 class RhadReferenceLedger:
     """Immutable compiler input for one reference-ordered fragment batch."""
 
@@ -219,7 +296,7 @@ class RhadReferenceLedger:
     evidence_generation: int
     base_plan: FragmentPlan
     reference_oracle_run: RouteOracleRun
-    operations: tuple[RhadConditionalRoute, ...]
+    operations: tuple[RhadReferenceOperation, ...]
     required_boundary_exit_eas: tuple[int, ...]
     reference_provenance: Mapping[str, object]
     unsupported_shape_ids: tuple[str, ...] = ()
@@ -236,7 +313,8 @@ class RhadReferenceLedger:
             raise TypeError("Rhad ledger requires a reference oracle run")
         operations = tuple(self.operations)
         if not operations or any(
-            not isinstance(operation, RhadConditionalRoute) for operation in operations
+            not isinstance(operation, (RhadConditionalRoute, RhadDirectRoute))
+            for operation in operations
         ):
             raise RhadCompilerRejection(
                 "Rhad ledger requires admitted reference operations"
@@ -313,28 +391,72 @@ def _validate_ledger(
         known_operations.add(operation.operation_id)
         last_phase_index = current_phase_index
 
+    imported_blocks = tuple(
+        block for block in plan.blocks if block.role is FragmentBlockRole.IMPORTED
+    )
+    imported_ids = {block.block_id for block in imported_blocks}
+    closure_ids = {
+        block_id
+        for operation in ledger.operations
+        for block_id in operation.imported_closure_block_ids
+    }
+    if closure_ids != imported_ids:
+        missing = tuple(sorted(imported_ids - closure_ids))
+        foreign = tuple(sorted(closure_ids - imported_ids))
+        raise RhadCompilerRejection(
+            "Rhad operation closure union differs from the portable base fragment: "
+            f"missing={missing!r} foreign={foreign!r}"
+        )
+    internalized_exit_eas = {int(block.semantic_anchor_ea) for block in imported_blocks}
+    derived_boundary_exit_eas = tuple(
+        sorted(
+            {
+                int(boundary_ea)
+                for operation in ledger.operations
+                for boundary_ea in operation.boundary_exit_eas
+            }
+            - internalized_exit_eas
+        )
+    )
+    if derived_boundary_exit_eas != ledger.required_boundary_exit_eas:
+        raise RhadCompilerRejection(
+            "Rhad boundary exits differ from derived batch authority"
+        )
+
 
 def _reference_payload(
     ledger: RhadReferenceLedger,
-    route: RhadConditionalRoute,
+    route: RhadReferenceOperation,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "boundary_exit_eas": list(route.boundary_exit_eas),
-        "comparison_constant": int(route.comparison_constant),
-        "condition_producer_ea": int(route.condition_producer_ea),
         "evidence_generation": int(ledger.evidence_generation),
-        "false_target_block_id": route.false_target_block_id,
         "function_ea": int(ledger.function_ea),
         "imported_closure_block_ids": list(route.imported_closure_block_ids),
         "operation_category": route.category.value,
         "operation_id": route.operation_id,
         "owned_corridor_instruction_eas": list(route.owned_corridor_instruction_eas),
-        "predicate_kind": route.predicate_kind.value,
         "reference_phase": route.phase.value,
         "reference_provenance": dict(ledger.reference_provenance),
         "transfer_ea": int(route.transfer_ea),
-        "true_target_block_id": route.true_target_block_id,
     }
+    if isinstance(route, RhadConditionalRoute):
+        payload.update(
+            {
+                "comparison_constant": int(route.comparison_constant),
+                "condition_producer_ea": int(route.condition_producer_ea),
+                "false_target_block_id": route.false_target_block_id,
+                "predicate_kind": route.predicate_kind.value,
+                "true_target_block_id": route.true_target_block_id,
+            }
+        )
+    elif isinstance(route, RhadDirectRoute):
+        payload["direct_target_block_id"] = route.direct_target_block_id
+    else:
+        raise RhadCompilerRejection(
+            f"Rhad operation type is unsupported: {type(route).__name__}"
+        )
+    return payload
 
 
 def _compile_conditional_route(
@@ -371,19 +493,9 @@ def _compile_conditional_route(
         raise RhadCompilerRejection(
             "Rhad route corridor lies outside its source identity"
         )
-    imported_ids = tuple(
-        block.block_id
-        for block in plan.blocks
-        if block.role is FragmentBlockRole.IMPORTED
-    )
-    if imported_ids != route.imported_closure_block_ids:
-        raise RhadCompilerRejection(
-            "Rhad imported closure differs from the portable base fragment"
-        )
-    if route.boundary_exit_eas != ledger.required_boundary_exit_eas:
-        raise RhadCompilerRejection("Rhad boundary exits differ from ledger authority")
     if any(
-        block_by_id[target_id].role is not FragmentBlockRole.IMPORTED
+        target_id not in route.imported_closure_block_ids
+        or block_by_id[target_id].role is not FragmentBlockRole.IMPORTED
         for target_id in (route.true_target_block_id, route.false_target_block_id)
     ):
         raise RhadCompilerRejection(
@@ -467,6 +579,122 @@ def _compile_conditional_route(
     return operation, flag_corridor
 
 
+def _compile_direct_route(
+    ledger: RhadReferenceLedger,
+    route: RhadDirectRoute,
+) -> FragmentOperation:
+    plan = ledger.base_plan
+    block_by_id = {block.block_id: block for block in plan.blocks}
+    required_block_ids = {
+        route.source_block_id,
+        route.direct_target_block_id,
+        *route.imported_closure_block_ids,
+    }
+    missing = tuple(sorted(required_block_ids - set(block_by_id)))
+    if missing:
+        raise RhadCompilerRejection(
+            "Rhad direct route block binding is incomplete: " + ", ".join(missing)
+        )
+    source = block_by_id[route.source_block_id]
+    if (
+        source.role is not FragmentBlockRole.IMPORTED
+        or source.materialization is not FragmentBlockMaterialization.IMPORT_NATIVE
+        or source.stable_identity is None
+        or source.native_body_id is None
+    ):
+        raise RhadCompilerRejection(
+            "Rhad direct route source must be an imported native-body identity"
+        )
+    native_body = next(
+        (body for body in plan.native_bodies if body.body_id == source.native_body_id),
+        None,
+    )
+    if native_body is None or route.operation_id not in native_body.proof_ids:
+        raise RhadCompilerRejection(
+            "Rhad direct route source lacks native-body operation proof"
+        )
+    if any(
+        not any(
+            int(native_range.start_ea) <= int(corridor_ea) < int(native_range.end_ea)
+            for native_range in native_body.native_ranges
+        )
+        for corridor_ea in route.owned_corridor_instruction_eas
+    ):
+        raise RhadCompilerRejection(
+            "Rhad direct route corridor lies outside its native body"
+        )
+    if (
+        plan.work_item_scope is None
+        or route.operation_id not in plan.work_item_scope.selected_obligation_ids
+    ):
+        raise RhadCompilerRejection(
+            "Rhad direct route is absent from frontend work-item authority"
+        )
+    if not source.stable_identity.native_ranges.contains(route.transfer_ea):
+        raise RhadCompilerRejection(
+            "Rhad direct transfer lies outside its imported source identity"
+        )
+    target = block_by_id[route.direct_target_block_id]
+    if (
+        route.direct_target_block_id not in route.imported_closure_block_ids
+        or target.role is not FragmentBlockRole.IMPORTED
+        or target.stable_identity is None
+    ):
+        raise RhadCompilerRejection(
+            "Rhad direct target must belong to its imported closure"
+        )
+    delivery_region = next(
+        interval
+        for interval in source.stable_identity.native_ranges.intervals
+        if int(interval.start_ea) <= int(route.transfer_ea) < int(interval.end_ea)
+    )
+    target_ea = int(target.semantic_anchor_ea)
+    payload = _reference_payload(ledger, route)
+    reference_route = ReferenceRouteRewrite(
+        route_id=route.operation_id,
+        function_ea=int(ledger.function_ea),
+        owner_ea=int(route.owner_anchor_ea),
+        rewrite_anchor_ea=int(route.transfer_ea),
+        corridor=tuple(
+            (int(interval.start_ea), int(interval.end_ea))
+            for interval in source.stable_identity.native_ranges.intervals
+        ),
+        reference_phase=route.phase.value,
+        original_transfer_kind=SemanticTransferKind.INDIRECT,
+        final_transfer_kind=SemanticTransferKind.DIRECT,
+        direct_target_ea=target_ea,
+        reference_ledger_identity=ledger.ledger_id,
+        reference_ledger_json=json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+    return FragmentOperation(
+        operation_id=route.operation_id,
+        source_block_id=route.source_block_id,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=route.direct_target_block_id,
+            ),
+        ),
+        direct_transfer_rewrite=FragmentDirectTransferRewrite(
+            route_proof_id=route.operation_id.removeprefix("route:"),
+            owner_identity=source.stable_identity,
+            owner_anchor_ea=int(route.owner_anchor_ea),
+            rewrite_anchor_ea=int(route.transfer_ea),
+            delivery_region=delivery_region,
+            proof_corridor_instruction_eas=route.owned_corridor_instruction_eas,
+            superseded_instruction_eas=(int(route.transfer_ea),),
+        ),
+        reference_route_authority=FragmentReferenceRouteAuthority(
+            reference_route=reference_route,
+            candidate_rewrite_anchor_ea=int(route.transfer_ea),
+        ),
+    )
+
+
 def compile_rhad_reference_fragment(
     ledger: RhadReferenceLedger,
     *,
@@ -479,17 +707,28 @@ def compile_rhad_reference_fragment(
         ledger,
         expected_evidence_generation=expected_evidence_generation,
     )
-    compiled = tuple(
-        _compile_conditional_route(ledger, operation) for operation in ledger.operations
-    )
-    operations = tuple(operation for operation, _corridor in compiled)
-    corridors = tuple(corridor for _operation, corridor in compiled)
+    operations: list[FragmentOperation] = []
+    corridors: list[FragmentFlagCorridor] = []
+    for operation in ledger.operations:
+        if isinstance(operation, RhadConditionalRoute):
+            compiled_operation, corridor = _compile_conditional_route(
+                ledger,
+                operation,
+            )
+            operations.append(compiled_operation)
+            corridors.append(corridor)
+        elif isinstance(operation, RhadDirectRoute):
+            operations.append(_compile_direct_route(ledger, operation))
+        else:
+            raise RhadCompilerRejection(
+                f"Rhad operation type is unsupported: {type(operation).__name__}"
+            )
     return replace(
         ledger.base_plan,
         plan_id=f"rhad-reference-compiler:{ledger.ledger_id}",
         atomic_group_id=ledger.ledger_id,
-        operations=operations,
-        flag_corridors=tuple(ledger.base_plan.flag_corridors) + corridors,
+        operations=tuple(operations),
+        flag_corridors=tuple(ledger.base_plan.flag_corridors) + tuple(corridors),
         reference_oracle_run=ledger.reference_oracle_run,
     )
 
@@ -498,6 +737,7 @@ __all__ = [
     "EXPECTED_REFERENCE_PHASE_ORDER",
     "RhadCompilerRejection",
     "RhadConditionalRoute",
+    "RhadDirectRoute",
     "RhadOperationCategory",
     "RhadReferenceLedger",
     "RhadReferencePhase",
