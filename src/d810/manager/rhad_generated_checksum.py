@@ -894,6 +894,8 @@ def observe_rhad_generated_reference_preparation(
         payload={
             "prepared": bool(prepared),
             "batch_id": batch.batch_id,
+            "aggregate_program_identity": batch.aggregate_program_identity,
+            "proof_artifact_identities": list(batch.proof_artifact_identities),
             "template_root_eas": list(batch.template_root_eas),
             "imported_ranges": [
                 [block.start_ea, block.end_ea] for block in batch.imported_blocks
@@ -1779,6 +1781,15 @@ def publish_rhad_generated_reference_batch(
             "batch_id": batch.batch_id,
             "plan_id": plan.plan_id,
             "atomic_group_id": plan.atomic_group_id,
+            "aggregate_program_identity": batch.aggregate_program_identity,
+            "proof_artifacts": [
+                {
+                    "content_identity": operation.table_proof_artifact.content_identity,
+                    "proof": operation.table_proof_artifact.proof_payload,
+                }
+                for operation in batch.operations
+                if isinstance(operation, RhadSetccIndexedTableRoute)
+            ],
             "operation_ids": [operation.operation_id for operation in plan.operations],
             "reference_operations": [
                 {
@@ -1826,6 +1837,8 @@ def publish_rhad_generated_reference_batch(
         payload={
             "plan_id": plan.plan_id,
             "mutation_batch_id": receipt.mutation_batch_id,
+            "aggregate_program_identity": batch.aggregate_program_identity,
+            "proof_artifact_identities": list(batch.proof_artifact_identities),
             "planned_operation_count": int(receipt.planned_operation_count),
             "applied_operation_count": int(receipt.operation_count),
             "root_publication_confirmed": bool(receipt.root_publication_confirmed),
