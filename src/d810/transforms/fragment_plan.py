@@ -3327,9 +3327,12 @@ def superseded_referenced_conditional_carrier_block_ids(
         for operation in plan.operations
         for normalization in (operation.computed_branch_normalization,)
         if normalization is not None
-        and isinstance(
-            normalization.conditional_select_envelope,
-            FragmentReferencedImportedConditionalSelectEnvelope,
+        and (
+            isinstance(
+                normalization.conditional_select_envelope,
+                FragmentReferencedImportedConditionalSelectEnvelope,
+            )
+            or isinstance(normalization, FragmentSetccIndexedTableNormalization)
         )
     }
     return frozenset(

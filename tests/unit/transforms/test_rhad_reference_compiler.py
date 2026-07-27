@@ -66,9 +66,9 @@ COMBINED_BOUNDARY_EXIT_EAS = (0x40A633, 0x40A68C, 0x40A74C, 0x40B790)
 
 def _compiler_module():
     module_name = "d810.transforms.rhad_reference_compiler"
-    assert importlib.util.find_spec(module_name) is not None, (
-        "the pure Rhad reference compiler is not implemented"
-    )
+    assert (
+        importlib.util.find_spec(module_name) is not None
+    ), "the pure Rhad reference compiler is not implemented"
     return importlib.import_module(module_name)
 
 
@@ -907,9 +907,11 @@ def test_frontend_imported_conditional_rejects_missing_reference_authority() -> 
         replace(
             plan,
             operations=tuple(
-                replace(operation, reference_route_authority=None)
-                if operation is selected
-                else operation
+                (
+                    replace(operation, reference_route_authority=None)
+                    if operation is selected
+                    else operation
+                )
                 for operation in plan.operations
             ),
         )
@@ -1138,9 +1140,9 @@ def _fourth_shape_ledger():
         phase=compiler.RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
         depends_on=(direct_id,),
     )
-    assert hasattr(compiler, "RhadSetccIndexedTableRoute"), (
-        "the compiler has no typed setcc-indexed-table operation"
-    )
+    assert hasattr(
+        compiler, "RhadSetccIndexedTableRoute"
+    ), "the compiler has no typed setcc-indexed-table operation"
     table_evidence = fragment_plan.FragmentSetccIndexedTableEvidence(
         table_identity="native-table@0x48B81C:stride-0x20:u32le:add-esi",
         zeroing_ea=0x40A766,
@@ -1419,3 +1421,15 @@ def test_compiler_rejects_unselected_setcc_route() -> None:
             ),
             expected_evidence_generation=1,
         )
+
+
+def test_setcc_split_transfer_carrier_is_superseded_creation_evidence() -> None:
+    compiler = _compiler_module()
+    plan = compiler.compile_rhad_reference_fragment(
+        _fourth_shape_ledger(),
+        expected_evidence_generation=1,
+    )
+
+    assert "native@0x40A77C" in superseded_referenced_conditional_carrier_block_ids(
+        plan
+    )
