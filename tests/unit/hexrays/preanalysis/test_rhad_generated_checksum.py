@@ -1078,6 +1078,11 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row23 = next(
         operation for operation in operations if operation["reference_order"] == 23
     )
+    row26 = next(
+        operation for operation in operations if operation["reference_order"] == 26
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
     row17_artifact = generated_reference.load_row17_table_proof_artifact()
 
@@ -1087,6 +1092,16 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         range(228)
     )
     assert len(row_keys) == 1
+    rows_by_operation_id = {row["operation_id"]: row for row in operations}
+    for operation in batch.operations:
+        reference_operation_id = getattr(
+            operation,
+            "reference_operation_id",
+            operation.operation_id,
+        )
+        assert rows_by_operation_id[reference_operation_id][
+            "current_generated_proof"
+        ]["status"] == "accepted_generated_c6"
     assert row11["operation_id"] == "rhad:route@0x40A6F2"
     assert row11["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
@@ -1193,6 +1208,23 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         0x40A8A7,
     ]
     assert row23["unavailable_closure_exit_eas"] == []
+    assert row26["operation_id"] == "rhad:route@0x40A8CD"
+    assert row26["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
+    assert row26["current_generated_proof"] == {
+        "accepted_commits": ["b4cce169c", "30b09eb5b", "1e14763f1"],
+        "status": "accepted_generated_c6",
+    }
+    assert row26["imported_closure_block_anchor_eas"] == [
+        0x40A8B5,
+        0x40A8CD,
+        0x40A8CF,
+        0x40A8E7,
+        0x40ACBF,
+        0x40ACD7,
+    ]
+    assert row26["unavailable_closure_exit_eas"] == []
     assert row16["operation_id"] == row16_artifact.operation_id
     assert row16["current_generated_proof"]["proof_artifact_identity"] == (
         row16_artifact.content_identity
@@ -1206,7 +1238,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     }
 
 
-def test_indirect_jump_coverage_summary_matches_committed_row23_batch() -> None:
+def test_indirect_jump_coverage_summary_matches_committed_row26_batch() -> None:
     summary = json.loads(
         (
             _REPO
@@ -1227,27 +1259,43 @@ def test_indirect_jump_coverage_summary_matches_committed_row23_batch() -> None:
         for row in summary["variants"]
         if row["operation_variant"] == "existing_conditional_plus_indirect"
     )
+    simple = next(
+        row
+        for row in summary["variants"]
+        if row["operation_variant"] == "simple_indirect_jump"
+    )
 
-    assert summary["accepted_code_sha"] == ("08914197ea7f079c0054a1df910a2d0a4fb6fde3")
+    assert summary["accepted_code_sha"] == ("1e14763f1aa82d5686f33efe81a214aa70a56759")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
-    accepted_operation_id_set = set(accepted_operation_ids)
     assert accepted_operation_ids == [
-        operation.operation_id
-        for operation in batch.operations
-        if operation.operation_id in accepted_operation_id_set
+        operation.operation_id for operation in batch.operations
     ]
+    assert simple == {
+        "operation_variant": "simple_indirect_jump",
+        "total_reference_operations": 64,
+        "compiler_supported_operations": 64,
+        "compiled_operation_instances": 5,
+        "vertically_proved_operations": 5,
+        "accepted_receipt_operations": 5,
+        "earliest_unproved_reference_order": 5,
+        "earliest_unproved_operation_id": "rhad:route@0x40A661",
+        "first_missing_typed_obligation": (
+            "instantiate the proved RhadDirectRoute vocabulary with exact "
+            "per-operation native-body proof and dependency closure"
+        ),
+    }
     assert existing == {
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 10,
-        "vertically_proved_operations": 10,
-        "accepted_receipt_operations": 10,
-        "earliest_unproved_reference_order": 26,
-        "earliest_unproved_operation_id": "rhad:route@0x40A8CD",
+        "compiled_operation_instances": 12,
+        "vertically_proved_operations": 12,
+        "accepted_receipt_operations": 12,
+        "earliest_unproved_reference_order": 27,
+        "earliest_unproved_operation_id": "rhad:route@0x40A8E7",
         "first_missing_typed_obligation": (
-            "instantiate the proved RhadExistingConditionalRoute vocabulary with "
-            "exact per-operation evidence and dependency closure"
+            "complete the unavailable 0x40A8E9 true-root closure with typed "
+            "evidence before mutation"
         ),
     }
     assert setcc == {

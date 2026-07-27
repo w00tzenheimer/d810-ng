@@ -184,9 +184,16 @@
         4236851,
         4237132
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "214ddf741",
+          "3e9395dfc",
+          "fc195e15b",
+          "6f7955e00",
+          "1e14763f1"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
@@ -248,9 +255,14 @@
         4236875,
         4237493
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "6f7955e00",
+          "30b09eb5b",
+          "1e14763f1"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
@@ -311,9 +323,14 @@
       "boundary_exit_eas": [
         4238527
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "6f7955e00",
+          "30b09eb5b",
+          "1e14763f1"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
@@ -491,9 +508,16 @@
       "boundary_exit_eas": [
         4237312
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "cd419a778",
+          "37176e6fe",
+          "8183a6793",
+          "6f7955e00",
+          "1e14763f1"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
@@ -552,9 +576,16 @@
       "boundary_exit_eas": [
         4237920
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "8560504ce",
+          "cd419a778",
+          "37176e6fe",
+          "8183a6793",
+          "1e14763f1"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
@@ -1097,9 +1128,16 @@
       "boundary_exit_eas": [
         4237790
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "ac052c033",
+          "61757881d",
+          "65ef9b419",
+          "6f7955e00",
+          "1e14763f1"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
@@ -1160,9 +1198,16 @@
         4238278,
         4238702
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "cac5412ab",
+          "28902412a",
+          "46d010c8b",
+          "65ef9b419",
+          "1e14763f1"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
@@ -2119,19 +2164,28 @@
     },
     {
       "boundary_exit_eas": [
+        4237545,
+    4239396,
         4239981
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "b4cce169c",
+          "30b09eb5b",
+          "1e14763f1"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
       "flag_producer_native_ea": 4237499,
       "imported_closure_block_anchor_eas": [
+        4237493,
+        4237517,
+        4237519,
+        4237543,
         4238527,
-        4238541,
-        4238547,
         4238551
       ],
       "operation_id": "rhad:route@0x40A8CD",
@@ -2161,14 +2215,24 @@
       "source_native_ea": 4237493,
       "target_rooted_closures": [
         {
-          "boundary_exit_eas": [],
-          "expected_generated_block_anchor_eas": [],
-          "owned_native_block_entry_eas": [],
+          "boundary_exit_eas": [
+            4237545,
+        4239396
+          ],
+          "expected_generated_block_anchor_eas": [
+            4237519,
+            4237533,
+            4237539,
+            4237543
+          ],
+          "owned_native_block_entry_eas": [
+            4237519,
+            4237533,
+            4237539
+          ],
           "root_ea": 4237519,
-          "status": "root_unavailable_in_current_portable_source_plan",
-          "unavailable_exit_eas": [
-            4237519
-          ]
+          "status": "complete",
+          "unavailable_exit_eas": []
         },
         {
           "boundary_exit_eas": [
@@ -2191,9 +2255,7 @@
         }
       ],
       "transfer_native_ea": 4237517,
-      "unavailable_closure_exit_eas": [
-        4237519
-      ]
+      "unavailable_closure_exit_eas": []
     },
     {
       "boundary_exit_eas": [
