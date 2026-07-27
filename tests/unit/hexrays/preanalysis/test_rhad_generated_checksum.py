@@ -1003,6 +1003,45 @@ def test_checksum_producer_compiles_row19_direct_route() -> None:
     )
 
 
+def test_checksum_producer_compiles_row25_direct_route() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    row25 = plan.operation("route:rhad-direct@0x40A8B3")
+    assert row25.direct_transfer_rewrite.rewrite_anchor_ea == 0x40A8B3
+    assert row25.edges[0].target_block_id == "native@0x40A64B"
+    payload = json.loads(
+        row25.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_operation_id"] == "rhad:route@0x40A8B3"
+    assert payload["reference_order"] == 25
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40A63F
+    assert payload["source_block_anchor_ea"] == 0x40A8A9
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40A63F,
+        0x40A8A9,
+        0x40A8AF,
+        0x40A8B1,
+        0x40A8B3,
+    ]
+    assert payload["imported_closure_block_ids"] == [
+        "native@0x40A64B",
+        "native@0x40A65D",
+        "native@0x40A661",
+        "native@0x40AAF1",
+        "native@0x40AAFB",
+    ]
+    assert payload["boundary_exit_eas"] == [0x40A663, 0x40AAFD]
+    operation_by_id = {operation.operation_id: operation for operation in batch.operations}
+    assert operation_by_id["route:rhad-direct@0x40A8B3"].depends_on == (
+        "route:rhad-direct@0x40A631",
+    )
+
+
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None

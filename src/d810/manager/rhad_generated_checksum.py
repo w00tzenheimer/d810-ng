@@ -450,6 +450,13 @@ ROW19_TARGET_IMPORTED_BLOCK_IDS = (
     "native@0x40B6D0",
     "native@0x40B6D4",
 )
+ROW25_TARGET_IMPORTED_BLOCK_IDS = (
+    "native@0x40A64B",
+    "native@0x40A65D",
+    "native@0x40A661",
+    "native@0x40AAF1",
+    "native@0x40AAFB",
+)
 ROW26_SOURCE_IMPORTED_BLOCK_IDS = tuple(
     f"native@0x{start_ea:X}"
     for start_ea, _end_ea, _exact_eas in ROW26_SOURCE_IMPORTED_LAYOUT
@@ -1441,6 +1448,30 @@ _ROW23_EXISTING_ROUTE = RhadExistingConditionalRoute(
     depends_on=(_ROW22_EXISTING_ROUTE.operation_id,),
 )
 
+_ROW25_DIRECT_ROUTE = RhadDirectRoute(
+    operation_id="route:rhad-direct@0x40A8B3",
+    reference_operation_id="rhad:route@0x40A8B3",
+    reference_order=25,
+    operation_variant=RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+    reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
+    source_block_id="native@0x40A8A9",
+    source_native_ea=0x40A63F,
+    transfer_ea=0x40A8B3,
+    owner_anchor_ea=0x40A8A9,
+    direct_target_block_id="native@0x40A64B",
+    owned_corridor_instruction_eas=(
+        0x40A63F,
+        0x40A8A9,
+        0x40A8AF,
+        0x40A8B1,
+        0x40A8B3,
+    ),
+    imported_closure_block_ids=ROW25_TARGET_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40A663, 0x40AAFD),
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_ROW3_DIRECT_ROUTE.operation_id,),
+)
+
 _ROW26_EXISTING_ROUTE = RhadExistingConditionalRoute(
     operation_id="rhad:route@0x40A8CD",
     reference_order=26,
@@ -1676,6 +1707,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW21_EXISTING_ROUTE.operation_id,
         _ROW22_EXISTING_ROUTE.operation_id,
         _ROW23_EXISTING_ROUTE.operation_id,
+        _ROW25_DIRECT_ROUTE.operation_id,
         _ROW26_EXISTING_ROUTE.operation_id,
     ),
     template_fragments=(
@@ -2315,6 +2347,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW21_EXISTING_ROUTE,
         _ROW22_EXISTING_ROUTE,
         _ROW23_EXISTING_ROUTE,
+        _ROW25_DIRECT_ROUTE,
         _ROW26_EXISTING_ROUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
