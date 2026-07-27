@@ -234,10 +234,7 @@ def test_direct_route_requires_exact_typed_reference_identity() -> None:
     assert route.operation_id == "route:rhad-direct@0x40A631"
     assert route.reference_operation_id == "rhad:route@0x40A631"
     assert route.reference_order == 3
-    assert (
-        route.operation_variant
-        is compiler.RhadOperationVariant.SIMPLE_INDIRECT_JUMP
-    )
+    assert route.operation_variant is compiler.RhadOperationVariant.SIMPLE_INDIRECT_JUMP
     assert route.reference_symbol == "JumpInliner._fixup_jmp_and_possible_jcc"
 
 
@@ -405,7 +402,12 @@ def _ledger():
     compiler = _compiler_module()
     route = compiler.RhadConditionalRoute(
         operation_id="rhad:route@0x40A605",
+        reference_order=1,
+        operation_variant=compiler.RhadOperationVariant.CMOV_SELECTED_INDIRECT,
+        reference_symbol="JumpInliner._fixup_cmov",
         source_block_id="native@0x40A5F0",
+        source_native_ea=0x40A5F0,
+        source_block_anchor_ea=0x40A5F0,
         transfer_ea=0x40A605,
         predicate_anchor_ea=0x40A5F6,
         normalization_start_ea=0x40A5F6,
@@ -417,6 +419,8 @@ def _ledger():
         predicate_kind=PredicateKind.SLT,
         true_target_block_id="native@0x40B6C0",
         false_target_block_id="native@0x40A607",
+        true_target_ea=0x40B6C0,
+        false_target_ea=0x40A607,
         comparison_constant=0x0BB2D365,
         owned_corridor_instruction_eas=(
             0x40A5F0,
