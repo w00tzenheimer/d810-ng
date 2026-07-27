@@ -1072,6 +1072,8 @@ def _compile_existing_conditional_route(
                     selected_value_ea=int(route.selected_value_ea),
                     selected_value_identity=selected.stable_identity,
                     join_identity=join.stable_identity,
+                    selected_value_block_id=route.selected_value_block_id,
+                    join_block_id=route.join_block_id,
                 )
             ),
         ),
@@ -1136,12 +1138,48 @@ def compile_rhad_reference_fragment(
             raise RhadCompilerRejection(
                 f"Rhad operation type is unsupported: {type(operation).__name__}"
             )
+    operation_topology_ids = {
+        block_id
+        for operation in operations
+        for block_id in (
+            operation.source_block_id,
+            *(
+                (
+                    operation.computed_branch_normalization.conditional_select_envelope.selected_value_block_id,
+                    operation.computed_branch_normalization.conditional_select_envelope.join_block_id,
+                )
+                if operation.computed_branch_normalization is not None
+                and isinstance(
+                    operation.computed_branch_normalization.conditional_select_envelope,
+                    FragmentReferencedImportedConditionalSelectEnvelope,
+                )
+                else ()
+            ),
+        )
+    }
+    native_bodies = tuple(
+        replace(
+            body,
+            terminal_block_ids=tuple(
+                block_id
+                for block_id in body.terminal_block_ids
+                if block_id not in operation_topology_ids
+            ),
+            preserved_native_transfer_block_ids=tuple(
+                block_id
+                for block_id in body.preserved_native_transfer_block_ids
+                if block_id not in operation_topology_ids
+            ),
+        )
+        for body in ledger.base_plan.native_bodies
+    )
     return replace(
         ledger.base_plan,
         plan_id=f"rhad-reference-compiler:{ledger.ledger_id}",
         atomic_group_id=ledger.ledger_id,
         operations=tuple(operations),
         flag_corridors=tuple(ledger.base_plan.flag_corridors) + tuple(corridors),
+        native_bodies=native_bodies,
         reference_oracle_run=ledger.reference_oracle_run,
     )
 
