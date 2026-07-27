@@ -7,6 +7,7 @@ import os
 import platform
 from copy import deepcopy
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -61,6 +62,9 @@ from d810.ir.storage_identity import (  # noqa: E402
     StorageIdentityKind,
 )
 from d810.manager.manager import D810Manager  # noqa: E402
+from d810.manager.rhad_generated_checksum import (  # noqa: E402
+    build_rhad_generated_reference_plan,
+)
 from d810.transforms.fragment_plan import (  # noqa: E402
     FragmentBlock,
     FragmentBlockMaterialization,
@@ -102,9 +106,11 @@ from d810.transforms.fragment_validation import (  # noqa: E402
 )
 from d810.transforms.fragment_to_patch import lower_fragment_plan  # noqa: E402
 from d810.transforms.plan import (  # noqa: E402
+    PatchFragmentOperation,
     PatchFragmentOperationNormalization,
     PatchPlan,
 )
+from d810.transforms.cfg_transaction import PlanBlockRef  # noqa: E402
 from d810.transforms.cfg_transaction import (  # noqa: E402
     BoundCfgTransaction,
     CfgGenerationPoisoned,
@@ -114,6 +120,7 @@ from d810.transforms.cfg_transaction import (  # noqa: E402
 from tests.system.runtime.mutation_gateway import (  # noqa: E402
     make_fragment_publication_gateway,
 )
+from tests.native_preanalysis import make_native_key  # noqa: E402
 
 
 def _fragment_gateway(mba):
@@ -2696,6 +2703,296 @@ def test_backend_does_not_realize_prepared_imported_direct_transfer_twice(
     gateway.abort(reason="prepared direct transfer staging cleanup")
 
 
+def test_generated_graph_free_realizer_binds_prepared_setcc_table_conditional(
+    monkeypatch,
+) -> None:
+    input_sha256 = "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=f"sha256:{input_sha256}",
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+    operation = plan.operation("rhad:route@0x40A77C")
+    source = _Block(0, start=0x40A766, block_type=ida_hexrays.BLT_NONE)
+    fallthrough = _Block(1, start=0x40ABC6, block_type=ida_hexrays.BLT_NONE)
+    taken = _Block(2, start=0x40A77E, block_type=ida_hexrays.BLT_NONE)
+    branch = _Instruction(ida_hexrays.m_jnz, 0x40A76E)
+    branch.l.make_reg(1, 1)
+    branch.r.make_number(0, 1, 0x40A76E)
+    source.head = source.tail = branch
+    _Mba((source, fallthrough, taken))
+
+    def binding(block_id: str, block: _Block):
+        return SimpleNamespace(
+            block_id=block_id,
+            block=block,
+            version=SimpleNamespace(handle=f"handle:{block_id}"),
+        )
+
+    bindings = {
+        operation.source_block_id: binding(operation.source_block_id, source),
+        "native@0x40A77E": binding("native@0x40A77E", taken),
+        "native@0x40ABC6": binding("native@0x40ABC6", fallthrough),
+    }
+    state = sfb.SemanticFragmentBackendState(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        bindings=bindings,
+        instruction_origins_by_block_id={
+            operation.source_block_id: {0x40A76E: 0x40A76E},
+        },
+    )
+    edge_records: list[tuple[str, str]] = []
+    gateway = SimpleNamespace(
+        active=True,
+        record_edge_redirect=lambda *, source, target: edge_records.append(
+            (source, target)
+        ),
+    )
+
+    def replace_source_suffix(
+        block,
+        *,
+        cut_index,
+        expected_ea,
+        expected_opcode,
+        replacement,
+        mark_dirty,
+    ) -> None:
+        assert block is source
+        assert cut_index == 0
+        assert expected_ea == 0x40A76E
+        assert expected_opcode == int(ida_hexrays.m_jnz)
+        assert mark_dirty is False
+        source.head = source.tail = replacement
+
+    def configure_block(block, *, block_type, flags) -> None:
+        block.type = int(block_type)
+        block.flags = int(flags)
+
+    modifier = SimpleNamespace(
+        _mutation_gateway=gateway,
+        replace_instruction_suffix_from_index_now=replace_source_suffix,
+        configure_block_now=configure_block,
+    )
+    step = PatchFragmentOperation(
+        source_ref=PlanBlockRef(plan.plan_id, operation.source_block_id),
+        target_refs=tuple(
+            PlanBlockRef(plan.plan_id, edge.target_block_id) for edge in operation.edges
+        ),
+        operation=operation,
+    )
+    monkeypatch.setattr(sfb.ida_hexrays, "minsn_t", deepcopy)
+    monkeypatch.setattr(
+        sfb,
+        "_live_block_for_binding",
+        lambda _modifier, runtime_binding: runtime_binding.block,
+    )
+
+    sfb._realize_generated_graph_free_operations(
+        modifier,
+        plan,
+        state,
+        (step,),
+    )
+
+    assert source.tail is not None
+    assert int(source.tail.opcode) == int(ida_hexrays.m_jnz)
+    assert int(source.tail.d.t) == int(ida_hexrays.mop_b)
+    assert int(source.tail.d.b) == int(taken.serial)
+    assert source.nextb is fallthrough
+    assert edge_records == [
+        ("handle:native@0x40A766", "handle:native@0x40A77E"),
+        ("handle:native@0x40A766", "handle:native@0x40ABC6"),
+    ]
+
+
+def test_generated_setcc_preflight_rejects_wrong_physical_fallthrough_before_write(
+    monkeypatch,
+) -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=(
+                "sha256:2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+            ),
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+    operation = plan.operation("rhad:route@0x40A77C")
+    source = _Block(0, start=0x40A766, block_type=ida_hexrays.BLT_NONE)
+    wrong_next = _Block(1, start=0x40A77E, block_type=ida_hexrays.BLT_NONE)
+    fallthrough = _Block(2, start=0x40ABC6, block_type=ida_hexrays.BLT_NONE)
+    branch = _Instruction(ida_hexrays.m_jnz, 0x40A76E)
+    branch.l.make_reg(1, 1)
+    branch.r.make_number(0, 1, 0x40A76E)
+    source.head = source.tail = branch
+    _Mba((source, wrong_next, fallthrough))
+
+    def binding(block_id: str, block: _Block):
+        return SimpleNamespace(
+            block_id=block_id,
+            block=block,
+            version=SimpleNamespace(handle=f"handle:{block_id}"),
+        )
+
+    state = sfb.SemanticFragmentBackendState(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        bindings={
+            operation.source_block_id: binding(operation.source_block_id, source),
+            "native@0x40A77E": binding("native@0x40A77E", wrong_next),
+            "native@0x40ABC6": binding("native@0x40ABC6", fallthrough),
+        },
+        instruction_origins_by_block_id={
+            operation.source_block_id: {0x40A76E: 0x40A76E},
+        },
+    )
+    edge_records: list[tuple[str, str]] = []
+    gateway = SimpleNamespace(
+        active=True,
+        record_edge_redirect=lambda *, source, target: edge_records.append(
+            (source, target)
+        ),
+    )
+    writes: list[str] = []
+    modifier = SimpleNamespace(
+        _mutation_gateway=gateway,
+        replace_instruction_suffix_from_index_now=lambda *_args, **_kwargs: (
+            writes.append("replace")
+        ),
+        configure_block_now=lambda *_args, **_kwargs: writes.append("configure"),
+    )
+    step = PatchFragmentOperation(
+        source_ref=PlanBlockRef(plan.plan_id, operation.source_block_id),
+        target_refs=tuple(
+            PlanBlockRef(plan.plan_id, edge.target_block_id) for edge in operation.edges
+        ),
+        operation=operation,
+    )
+    monkeypatch.setattr(sfb.ida_hexrays, "minsn_t", deepcopy)
+    monkeypatch.setattr(
+        sfb,
+        "_live_block_for_binding",
+        lambda _modifier, runtime_binding: runtime_binding.block,
+    )
+
+    with pytest.raises(
+        sfb.SemanticFragmentBackendRejected,
+        match="setcc.*false-target fallthrough",
+    ):
+        sfb._realize_generated_graph_free_operations(
+            modifier,
+            plan,
+            state,
+            (step,),
+        )
+
+    assert writes == []
+    assert edge_records == []
+    assert source.tail is branch
+
+
+def test_generated_graph_free_observer_accepts_published_setcc_table_route(
+    monkeypatch,
+) -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=(
+                "sha256:2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+            ),
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+    selected = plan.operation("rhad:route@0x40A77C")
+    authority = selected.reference_route_authority
+    assert authority is not None
+    operation = replace(
+        selected,
+        reference_route_authority=replace(
+            authority,
+            imported_closure_block_ids=(
+                "native@0x40A77E",
+                "native@0x40ABC6",
+            ),
+        ),
+    )
+    source = _Block(0, start=0x40A766, block_type=ida_hexrays.BLT_NONE)
+    fallthrough = _Block(1, start=0x40ABC6, block_type=ida_hexrays.BLT_NONE)
+    taken = _Block(2, start=0x40A77E, block_type=ida_hexrays.BLT_NONE)
+    branch = _Instruction(ida_hexrays.m_jnz, 0x40A76E)
+    branch.d.make_blkref(int(taken.serial))
+    source.head = source.tail = branch
+    _Mba((source, fallthrough, taken))
+
+    def binding(block_id: str, block: _Block):
+        return SimpleNamespace(
+            block_id=block_id,
+            block=block,
+            version=SimpleNamespace(handle=f"handle:{block_id}"),
+        )
+
+    state = sfb.SemanticFragmentBackendState(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        bindings={
+            operation.source_block_id: binding(operation.source_block_id, source),
+            "native@0x40A77E": binding("native@0x40A77E", taken),
+            "native@0x40ABC6": binding("native@0x40ABC6", fallthrough),
+        },
+        instruction_origins_by_block_id={
+            operation.source_block_id: {0x40A76E: 0x40A76E},
+        },
+        preflight_projection=object(),
+    )
+    plan_view = SimpleNamespace(
+        blocks=tuple(
+            plan.block(block_id)
+            for block_id in (
+                operation.source_block_id,
+                "native@0x40A77E",
+                "native@0x40ABC6",
+            )
+        ),
+        operations=(operation,),
+    )
+    monkeypatch.setattr(
+        sfb,
+        "_live_block_for_binding",
+        lambda _modifier, runtime_binding: runtime_binding.block,
+    )
+    monkeypatch.setattr(
+        sfb,
+        "superseded_direct_transfer_carrier_block_ids",
+        lambda _plan: frozenset(),
+    )
+    monkeypatch.setattr(
+        sfb,
+        "superseded_referenced_conditional_carrier_block_ids",
+        lambda _plan: frozenset(),
+    )
+    monkeypatch.setattr(
+        sfb,
+        "_generated_structural_serial_topology",
+        lambda _modifier: (
+            {},
+            {int(source.serial): (int(taken.serial), int(fallthrough.serial))},
+            {},
+        ),
+    )
+
+    observed = sfb._observe_generated_graph_free_fragment(
+        SimpleNamespace(),
+        plan_view,
+        state,
+    )
+
+    assert observed is state.preflight_projection
+
+
 def test_backend_prepares_all_native_bodies_before_live_staging(
     monkeypatch,
 ) -> None:
@@ -3197,13 +3494,15 @@ def _refined_published_identity_runtime_case(*, plan_end_ea: int):
     plan = replace(
         plan,
         blocks=tuple(
-            replace(
-                block,
-                semantic_anchor_ea=0x401021,
-                stable_identity=refined_identity,
+            (
+                replace(
+                    block,
+                    semantic_anchor_ea=0x401021,
+                    stable_identity=refined_identity,
+                )
+                if block.block_id == "target"
+                else block
             )
-            if block.block_id == "target"
-            else block
             for block in plan.blocks
         ),
     )

@@ -79,6 +79,7 @@ from d810.transforms.fragment_plan import (
     FragmentReferencedImportedConditionalSelectEnvelope,
     FragmentReturnCarrier,
     FragmentReturnSource,
+    FragmentSetccIndexedTableNormalization,
     superseded_direct_transfer_carrier_block_ids,
     superseded_referenced_conditional_carrier_block_ids,
     FragmentReturnSourceKind,
@@ -1728,6 +1729,176 @@ def _realize_operations(
         )
 
 
+def _realize_generated_setcc_indexed_table_operation(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    operation: FragmentOperation,
+    normalization: FragmentSetccIndexedTableNormalization,
+    *,
+    fallthrough_helper_ref: PlanBlockRef | None,
+) -> None:
+    """Bind one prepared setcc-table route without rebuilding the graph."""
+    evidence = normalization.table_evidence
+    edge_by_role = {edge.role: edge for edge in operation.edges}
+    taken_edge = edge_by_role.get(SemanticEdgeRole.CONDITIONAL_TAKEN)
+    fallthrough_edge = edge_by_role.get(SemanticEdgeRole.CONDITIONAL_FALLTHROUGH)
+    source_plan_block = plan.block(operation.source_block_id)
+    source_body = next(
+        (
+            body
+            for body in plan.native_bodies
+            if body.body_id == source_plan_block.native_body_id
+        ),
+        None,
+    )
+    reference_authority = operation.reference_route_authority
+    taken_binding = (
+        None if taken_edge is None else state.bindings.get(taken_edge.target_block_id)
+    )
+    fallthrough_binding = (
+        None
+        if fallthrough_edge is None
+        else state.bindings.get(fallthrough_edge.target_block_id)
+    )
+    source_binding = state.bindings.get(operation.source_block_id)
+    source = (
+        None
+        if source_binding is None
+        else _live_block_for_binding(modifier, source_binding)
+    )
+    taken = (
+        None
+        if taken_binding is None
+        else _live_block_for_binding(modifier, taken_binding)
+    )
+    fallthrough = (
+        None
+        if fallthrough_binding is None
+        else _live_block_for_binding(modifier, fallthrough_binding)
+    )
+    source_rows = () if source is None else tuple(_iter_block_instructions(source))
+    source_tail = None if source is None else source.tail
+    source_tail_live_ea = None if source_tail is None else int(source_tail.ea)
+    source_tail_native_ea = (
+        None
+        if source_tail_live_ea is None
+        else state.instruction_origins_by_block_id.get(
+            operation.source_block_id,
+            {},
+        ).get(source_tail_live_ea)
+    )
+    reference_targets = (
+        (None, None)
+        if reference_authority is None
+        else (
+            reference_authority.semantic_route.true_target_ea,
+            reference_authority.semantic_route.false_target_ea,
+        )
+    )
+    evidence_targets = (
+        evidence.true_entry.decoded_target_ea,
+        evidence.false_entry.decoded_target_ea,
+    )
+    delivery_targets = (
+        None
+        if taken_edge is None or fallthrough_edge is None
+        else (
+            plan.block(taken_edge.target_block_id).semantic_anchor_ea,
+            plan.block(fallthrough_edge.target_block_id).semantic_anchor_ea,
+        )
+    )
+    expected_opcode = (
+        int(ida_hexrays.m_jnz) if evidence.true_index == 1 else int(ida_hexrays.m_jz)
+    )
+    failed_obligations = tuple(
+        name
+        for name, passed in (
+            ("no_fallthrough_helper", fallthrough_helper_ref is None),
+            (
+                "source_imported_native_body",
+                source_plan_block.materialization
+                is FragmentBlockMaterialization.IMPORT_NATIVE
+                and source_body is not None,
+            ),
+            (
+                "source_body_operation_proof",
+                source_body is not None
+                and operation.operation_id in source_body.proof_ids,
+            ),
+            ("reference_authority_present", reference_authority is not None),
+            ("reference_targets_match_table", reference_targets == evidence_targets),
+            ("delivery_targets_match_table", delivery_targets == evidence_targets),
+            ("conditional_taken_edge_present", taken_edge is not None),
+            ("conditional_fallthrough_edge_present", fallthrough_edge is not None),
+            ("source_bound", source is not None),
+            ("taken_bound", taken is not None),
+            ("fallthrough_bound", fallthrough is not None),
+            ("source_tail_present", source_tail is not None),
+            (
+                "source_tail_conditional",
+                source_tail is not None
+                and ida_hexrays.is_mcode_jcond(int(source_tail.opcode)),
+            ),
+            (
+                "predicate_anchor_exact",
+                source_tail_native_ea == int(operation.predicate_anchor_ea),
+            ),
+            (
+                "predicate_orientation_exact",
+                source_tail is not None and int(source_tail.opcode) == expected_opcode,
+            ),
+            ("source_suffix_nonempty", bool(source_rows)),
+            (
+                "false-target fallthrough",
+                source is not None
+                and fallthrough is not None
+                and source.nextb is not None
+                and int(source.nextb.serial) == int(fallthrough.serial),
+            ),
+        )
+        if not passed
+    )
+    if failed_obligations:
+        raise SemanticFragmentBackendRejected(
+            "GENERATED setcc indexed-table false-target fallthrough preflight "
+            "failed before write; "
+            f"operation_id={operation.operation_id!r} "
+            f"failed_obligations={failed_obligations!r}"
+        )
+    assert source is not None
+    assert source_tail is not None
+    assert taken is not None
+    assert fallthrough is not None
+    assert source_binding is not None
+    assert taken_binding is not None
+    assert fallthrough_binding is not None
+    source_branch = ida_hexrays.minsn_t(source_tail)
+    source_branch.d.make_blkref(int(taken.serial))
+    modifier.replace_instruction_suffix_from_index_now(
+        source,
+        cut_index=len(source_rows) - 1,
+        expected_ea=int(source_tail.ea),
+        expected_opcode=int(source_tail.opcode),
+        replacement=source_branch,
+        mark_dirty=False,
+    )
+    modifier.configure_block_now(
+        source,
+        block_type=int(ida_hexrays.BLT_NONE),
+        flags=int(source.flags) | int(ida_hexrays.MBL_PROP),
+    )
+    gateway = _gateway(modifier)
+    gateway.record_edge_redirect(
+        source=source_binding.version.handle,
+        target=taken_binding.version.handle,
+    )
+    gateway.record_edge_redirect(
+        source=source_binding.version.handle,
+        target=fallthrough_binding.version.handle,
+    )
+
+
 def _realize_generated_graph_free_operations(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -1762,6 +1933,16 @@ def _realize_generated_graph_free_operations(
                 )
             continue
         normalization = operation.computed_branch_normalization
+        if isinstance(normalization, FragmentSetccIndexedTableNormalization):
+            _realize_generated_setcc_indexed_table_operation(
+                modifier,
+                plan,
+                state,
+                operation,
+                normalization,
+                fallthrough_helper_ref=step.fallthrough_helper_ref,
+            )
+            continue
         envelope = (
             None if normalization is None else normalization.conditional_select_envelope
         )
@@ -3374,88 +3555,135 @@ def _observe_generated_graph_free_fragment(
                 )
             continue
         normalization = operation.computed_branch_normalization
-        envelope = (
-            None if normalization is None else normalization.conditional_select_envelope
-        )
-        if not isinstance(
-            envelope,
-            (
-                FragmentConditionalSelectEnvelope,
-                FragmentReferencedImportedConditionalSelectEnvelope,
-            ),
-        ):
-            raise SemanticFragmentBackendRejected(
-                "GENERATED observation found an unsupported operation"
-            )
         edge_by_role = {edge.role: edge for edge in operation.edges}
         source = _live_block_for_binding(
             modifier,
             state.binding(operation.source_block_id),
         )
-        selected = _live_block_for_binding(
-            modifier,
-            state.binding(envelope.selected_value_block_id),
-        )
-        join = _live_block_for_binding(
-            modifier,
-            state.binding(envelope.join_block_id),
-        )
-        taken = _live_block_for_binding(
-            modifier,
-            state.binding(
-                edge_by_role[SemanticEdgeRole.CONDITIONAL_TAKEN].target_block_id
-            ),
-        )
-        fallthrough = _live_block_for_binding(
-            modifier,
-            state.binding(
-                edge_by_role[SemanticEdgeRole.CONDITIONAL_FALLTHROUGH].target_block_id
-            ),
-        )
-        source_predicate_live_ea = state.live_operation_predicate_ea(operation)
-        selected_value_native_ea = (
-            int(envelope.predicate_ea)
-            if isinstance(envelope, FragmentConditionalSelectEnvelope)
-            else int(envelope.selected_value_ea)
-        )
-        selected_value_live_ea = state.live_instruction_ea(
-            envelope.selected_value_block_id,
-            selected_value_native_ea,
-        )
-        join_transfer_live_ea = state.live_instruction_ea(
-            envelope.join_block_id,
-            int(normalization.unresolved_transfer_ea),
-        )
-        selected_rows = tuple(_iter_block_instructions(selected))
-        join_rows = tuple(_iter_block_instructions(join))
-        if (
-            source.tail is None
-            or not ida_hexrays.is_mcode_jcond(int(source.tail.opcode))
-            or int(source.tail.ea) != source_predicate_live_ea
-            or int(source.tail.d.t) != int(ida_hexrays.mop_b)
-            or int(source.tail.d.b) != int(taken.serial)
-            or source.nextb is None
-            or int(source.nextb.serial) != int(selected.serial)
-            or selected.nextb is None
-            or int(selected.nextb.serial) != int(join.serial)
-            or len(selected_rows) != 1
-            or int(selected_rows[0].ea) != selected_value_live_ea
-            or int(selected_rows[0].opcode) != int(ida_hexrays.m_goto)
-            or int(selected_rows[0].l.t) != int(ida_hexrays.mop_b)
-            or int(selected_rows[0].l.b) != int(fallthrough.serial)
-            or len(join_rows) != 1
-            or int(join_rows[0].ea) != join_transfer_live_ea
-            or int(join_rows[0].opcode) != int(ida_hexrays.m_goto)
-            or int(join_rows[0].l.t) != int(ida_hexrays.mop_b)
-            or int(join_rows[0].l.b) != int(taken.serial)
-            or any(
-                int(block.type) != int(ida_hexrays.BLT_NONE)
-                for block in (source, selected, join)
+        if isinstance(normalization, FragmentSetccIndexedTableNormalization):
+            if set(edge_by_role) != {
+                SemanticEdgeRole.CONDITIONAL_TAKEN,
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            }:
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED setcc route has invalid semantic edge roles"
+                )
+            taken = _live_block_for_binding(
+                modifier,
+                state.binding(
+                    edge_by_role[SemanticEdgeRole.CONDITIONAL_TAKEN].target_block_id
+                ),
             )
-        ):
-            raise SemanticFragmentBackendRejected(
-                "GENERATED conditional route failed exact live observation"
+            fallthrough = _live_block_for_binding(
+                modifier,
+                state.binding(
+                    edge_by_role[
+                        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+                    ].target_block_id
+                ),
             )
+            evidence = normalization.table_evidence
+            expected_opcode = (
+                int(ida_hexrays.m_jnz)
+                if evidence.true_index == 1
+                else int(ida_hexrays.m_jz)
+            )
+            source_predicate_live_ea = state.live_operation_predicate_ea(operation)
+            if (
+                source.tail is None
+                or int(source.tail.opcode) != expected_opcode
+                or int(source.tail.ea) != source_predicate_live_ea
+                or int(source.tail.d.t) != int(ida_hexrays.mop_b)
+                or int(source.tail.d.b) != int(taken.serial)
+                or source.nextb is None
+                or int(source.nextb.serial) != int(fallthrough.serial)
+                or int(source.type) != int(ida_hexrays.BLT_NONE)
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED setcc route failed exact live observation"
+                )
+        else:
+            envelope = (
+                None
+                if normalization is None
+                else normalization.conditional_select_envelope
+            )
+            if not isinstance(
+                envelope,
+                (
+                    FragmentConditionalSelectEnvelope,
+                    FragmentReferencedImportedConditionalSelectEnvelope,
+                ),
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED observation found an unsupported operation"
+                )
+            selected = _live_block_for_binding(
+                modifier,
+                state.binding(envelope.selected_value_block_id),
+            )
+            join = _live_block_for_binding(
+                modifier,
+                state.binding(envelope.join_block_id),
+            )
+            taken = _live_block_for_binding(
+                modifier,
+                state.binding(
+                    edge_by_role[SemanticEdgeRole.CONDITIONAL_TAKEN].target_block_id
+                ),
+            )
+            fallthrough = _live_block_for_binding(
+                modifier,
+                state.binding(
+                    edge_by_role[
+                        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+                    ].target_block_id
+                ),
+            )
+            source_predicate_live_ea = state.live_operation_predicate_ea(operation)
+            selected_value_native_ea = (
+                int(envelope.predicate_ea)
+                if isinstance(envelope, FragmentConditionalSelectEnvelope)
+                else int(envelope.selected_value_ea)
+            )
+            selected_value_live_ea = state.live_instruction_ea(
+                envelope.selected_value_block_id,
+                selected_value_native_ea,
+            )
+            join_transfer_live_ea = state.live_instruction_ea(
+                envelope.join_block_id,
+                int(normalization.unresolved_transfer_ea),
+            )
+            selected_rows = tuple(_iter_block_instructions(selected))
+            join_rows = tuple(_iter_block_instructions(join))
+            if (
+                source.tail is None
+                or not ida_hexrays.is_mcode_jcond(int(source.tail.opcode))
+                or int(source.tail.ea) != source_predicate_live_ea
+                or int(source.tail.d.t) != int(ida_hexrays.mop_b)
+                or int(source.tail.d.b) != int(taken.serial)
+                or source.nextb is None
+                or int(source.nextb.serial) != int(selected.serial)
+                or selected.nextb is None
+                or int(selected.nextb.serial) != int(join.serial)
+                or len(selected_rows) != 1
+                or int(selected_rows[0].ea) != selected_value_live_ea
+                or int(selected_rows[0].opcode) != int(ida_hexrays.m_goto)
+                or int(selected_rows[0].l.t) != int(ida_hexrays.mop_b)
+                or int(selected_rows[0].l.b) != int(fallthrough.serial)
+                or len(join_rows) != 1
+                or int(join_rows[0].ea) != join_transfer_live_ea
+                or int(join_rows[0].opcode) != int(ida_hexrays.m_goto)
+                or int(join_rows[0].l.t) != int(ida_hexrays.mop_b)
+                or int(join_rows[0].l.b) != int(taken.serial)
+                or any(
+                    int(block.type) != int(ida_hexrays.BLT_NONE)
+                    for block in (source, selected, join)
+                )
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "GENERATED conditional route failed exact live observation"
+                )
         _predecessors, successors, _kinds = _generated_structural_serial_topology(
             modifier
         )
