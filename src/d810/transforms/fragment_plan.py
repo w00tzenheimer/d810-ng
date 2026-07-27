@@ -605,6 +605,13 @@ class FragmentImportedConditionalSelectEnvelope:
 
 
 @dataclass(frozen=True, slots=True)
+class FragmentReferencedImportedConditionalSelectEnvelope(
+    FragmentImportedConditionalSelectEnvelope
+):
+    """Imported conditional-select whose admission requires reference authority."""
+
+
+@dataclass(frozen=True, slots=True)
 class FragmentComputedBranchNormalization:
     """Typed proof for replacing one unresolved imported computed branch."""
 
@@ -2223,6 +2230,26 @@ class FragmentPlan:
                             "imported conditional-select normalization requires "
                             "an imported source"
                         )
+                    if isinstance(
+                        envelope,
+                        FragmentReferencedImportedConditionalSelectEnvelope,
+                    ) and not (
+                        self.publication_purpose
+                        is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+                        and native_body is not None
+                        and operation.operation_id in native_body.proof_ids
+                        and isinstance(work_item_scope, FragmentWorkItemScope)
+                        and operation.operation_id
+                        in work_item_scope.selected_obligation_ids
+                        and operation.reference_route_authority is not None
+                        and self.reference_oracle_run is not None
+                    ):
+                        raise FragmentPlanRejected(
+                            f"fragment operation {operation.operation_id!r} "
+                            "referenced imported conditional-select requires "
+                            "reference route authority, native-body proof, "
+                            "selected frontend scope, and RouteOracleRun"
+                        )
                     source_anchors = (
                         computed_normalization.normalization_start_ea,
                         computed_normalization.condition_producer_ea,
@@ -2900,6 +2927,7 @@ __all__ = [
     "FragmentEdge",
     "FragmentFlagCorridor",
     "FragmentImportedConditionalSelectEnvelope",
+    "FragmentReferencedImportedConditionalSelectEnvelope",
     "FragmentNativeBody",
     "FragmentOperation",
     "FragmentPlan",
