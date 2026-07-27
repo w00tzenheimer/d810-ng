@@ -6517,7 +6517,7 @@ def capture_generated_reference_snippet_template(
     boundary_exit_eas: Collection[int] = (),
     owned_block_entry_eas: Collection[int],
     direct_boundary_routes: Collection[tuple[int, int, int]],
-    preserved_unresolved_transfer_eas: Collection[int],
+    preserved_unresolved_transfer_exits: Mapping[int, Collection[int]],
 ) -> bool:
     """Cache one target-rooted PREOPT body for GENERATED publication.
 
@@ -6562,6 +6562,17 @@ def capture_generated_reference_snippet_template(
         for source_block_ea, source_instruction_ea, route_target_ea in direct_boundary_routes
     )
     boundary_ports = normalize_detached_snippet_boundary_ports(direct_ports, ())
+    normalized_preserved_transfer_exits = {
+        int(transfer_ea): tuple(
+            sorted({int(exit_ea) for exit_ea in exit_eas if int(exit_ea) > 0})
+        )
+        for transfer_ea, exit_eas in preserved_unresolved_transfer_exits.items()
+        if int(transfer_ea) > 0
+    }
+    if len(normalized_preserved_transfer_exits) != len(
+        preserved_unresolved_transfer_exits
+    ):
+        return False
     captured = _capture_detached_snippet_template(
         int(function_ea),
         int(target_ea),
@@ -6575,7 +6586,7 @@ def capture_generated_reference_snippet_template(
         {},
         {},
         {},
-        preserved_unresolved_transfer_eas,
+        normalized_preserved_transfer_exits,
     )
     if not captured:
         return False
@@ -6584,7 +6595,7 @@ def capture_generated_reference_snippet_template(
     normalized_boundary_exit_eas = tuple(
         sorted({int(ea) for ea in boundary_exit_eas if int(ea) > 0})
     )
-    preserved_transfer_eas = {int(ea) for ea in preserved_unresolved_transfer_eas}
+    preserved_transfer_eas = set(normalized_preserved_transfer_exits)
     normalized_blocks: list[DetachedSnippetBlockTemplate] = []
     for block in template.blocks:
         tail = block.instructions[-1] if block.instructions else None
@@ -6592,10 +6603,15 @@ def capture_generated_reference_snippet_template(
             normalized_blocks.append(block)
             continue
         if int(block.native_entry_ea) in preserved_transfer_eas:
+            transfer_exits = normalized_preserved_transfer_exits.get(
+                int(block.native_entry_ea)
+            )
+            if transfer_exits is None:
+                return False
             normalized_blocks.append(
                 replace(
                     block,
-                    external_successor_eas=normalized_boundary_exit_eas,
+                    external_successor_eas=transfer_exits,
                 )
             )
             continue

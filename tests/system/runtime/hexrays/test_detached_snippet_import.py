@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from dataclasses import fields, replace
 from enum import Enum
+import inspect
 from types import SimpleNamespace
 
 import ida_hexrays
@@ -4078,6 +4079,80 @@ def test_generated_preserved_fake_transfer_retains_multi_exit_indirect_fact() ->
     assert successors == {"carrier": ()}
     assert terminators == {
         "carrier": (transfer_ea, InsnKind.INDIRECT_JUMP),
+    }
+
+
+def test_generated_capture_partitions_multiple_preserved_transfer_exits(
+    monkeypatch,
+) -> None:
+    parameter_names = inspect.signature(
+        detached_handler_island.capture_generated_reference_snippet_template
+    ).parameters
+    assert "preserved_unresolved_transfer_exits" in parameter_names
+    _install_runtime_fakes(monkeypatch)
+    generated_templates: dict[tuple[int, int], object] = {}
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_GENERATED_REFERENCE_SNIPPET_TEMPLATES",
+        generated_templates,
+    )
+    function_ea = 0x40A560
+    target_ea = 0x40A7AE
+    first_transfer_ea = 0x40A7EF
+    second_transfer_ea = 0x40B4EE
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+                (1, 3),
+            ),
+            _Block(
+                1,
+                0x40A7E5,
+                (
+                    _Instruction(ida_hexrays.m_nop, 0x40A7E5),
+                    _Instruction(ida_hexrays.m_icall, first_transfer_ea),
+                ),
+                (2,),
+            ),
+            _Block(2, first_transfer_ea, ()),
+            _Block(
+                3,
+                0x40B4E2,
+                (
+                    _Instruction(ida_hexrays.m_nop, 0x40B4E2),
+                    _Instruction(ida_hexrays.m_icall, second_transfer_ea),
+                ),
+                (4,),
+            ),
+            _Block(4, second_transfer_ea, ()),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    assert detached_handler_island.capture_generated_reference_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((0x40A7AE, 0x40A7F1), (0x40B4C5, 0x40B4F0)),
+        owned_block_entry_eas=(target_ea, 0x40A7E5, 0x40B4E2),
+        direct_boundary_routes=(),
+        preserved_unresolved_transfer_exits={
+            first_transfer_ea: (0x40B6C0,),
+            second_transfer_ea: (0x40A607,),
+        },
+    )
+    template = generated_templates[(function_ea, target_ea)]
+    preserved = {
+        block.native_entry_ea: block.external_successor_eas
+        for block in template.blocks
+        if block.native_entry_ea in {first_transfer_ea, second_transfer_ea}
+    }
+    assert preserved == {
+        first_transfer_ea: (0x40B6C0,),
+        second_transfer_ea: (0x40A607,),
     }
 
 
