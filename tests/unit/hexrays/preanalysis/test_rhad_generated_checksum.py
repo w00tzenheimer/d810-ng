@@ -70,7 +70,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 140
+    assert len(IMPORTED_BLOCK_IDS) == 142
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -78,6 +78,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40A633,
         0x40A64B,
         0x40A663,
+        0x40AE26,
         0x40A68C,
         0x40A6A6,
         0x40A6C0,
@@ -113,6 +114,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "route:rhad-direct@0x40A631",
         "route:rhad-direct@0x40A649",
         "route:rhad-direct@0x40A661",
+        "route:rhad-direct@0x40A679",
         "route:rhad-direct@0x40A68A",
         "rhad:route@0x40A6A4",
         "rhad:route@0x40A6BE",
@@ -303,7 +305,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40AD1E,
         0x40AD6E,
         0x40ADBE,
-        0x40AE26,
+        0x40AE3E,
         0x40B024,
         0x40B17F,
         0x40B1D0,
@@ -930,6 +932,35 @@ def test_checksum_producer_compiles_row5_direct_route() -> None:
     }
 
 
+def test_checksum_producer_compiles_row6_direct_route() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    row6 = plan.operation("route:rhad-direct@0x40A679")
+    assert row6.direct_transfer_rewrite.rewrite_anchor_ea == 0x40A679
+    assert row6.edges[0].target_block_id == "native@0x40AE26"
+    payload = json.loads(
+        row6.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_operation_id"] == "rhad:route@0x40A679"
+    assert payload["reference_order"] == 6
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    operation_by_id = {operation.operation_id: operation for operation in batch.operations}
+    assert operation_by_id["route:rhad-direct@0x40A679"].depends_on == (
+        "route:rhad-direct@0x40A661",
+    )
+    closure = next(
+        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40AE26
+    )
+    assert closure.owned_ranges == ((0x40AE26, 0x40AE3E),)
+    assert closure.preserved_transfer_exit_map == {
+        0x40AE3C: (0x40A5F0, 0x40AE3E),
+    }
+
+
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
@@ -1348,7 +1379,9 @@ def test_indirect_jump_coverage_summary_matches_committed_row5_batch() -> None:
     assert summary["accepted_code_sha"] == ("0e0c9ab2a9b680ef73384f85624c785e864d7998")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     assert accepted_operation_ids == [
-        operation.operation_id for operation in batch.operations
+        operation.operation_id
+        for operation in batch.operations
+        if operation.operation_id != "route:rhad-direct@0x40A679"
     ]
     assert simple == {
         "operation_variant": "simple_indirect_jump",
