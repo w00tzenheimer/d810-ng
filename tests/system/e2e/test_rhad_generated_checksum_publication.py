@@ -419,9 +419,9 @@ def _run_worker(binary: pathlib.Path) -> None:
                 0x40A77E,
                 0x40ABC6,
             }, selected_capture
-        assert {0x40A6B4, 0x40A800}.issubset(
-            captures["first_cfg"]["reachable_eas"]
-        ), captures["first_cfg"]
+        assert {0x40A6B4, 0x40A800}.issubset(captures["first_cfg"]["reachable_eas"]), (
+            captures["first_cfg"]
+        )
         assert captures["calls_count"] == 1
         assert captures["calls"]["indirect"] is False, captures["calls"]
         assert captures["calls"]["selected_indirect"] is False, captures["calls"]
@@ -536,6 +536,33 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         )
         assert all(bool(json.loads(row[3])["passed"]) for row in maturity_rows)
         compiled_payload = json.loads(lifecycle_rows[1][3])
+        artifact_identity = (
+            "sha256:cab149ee6cce29957798829cceba0a2da5e17bbf3fda4c6d55dad62d64ec3785"
+        )
+        assert compiled_payload["plan_id"].endswith(
+            compiled_payload["aggregate_program_identity"]
+        )
+        assert compiled_payload["proof_artifacts"] == [
+            {
+                "content_identity": artifact_identity,
+                "proof": {
+                    "artifact_type": "rhad_setcc_indexed_table_proof",
+                    "binding": {
+                        "function_ea": 0x40A560,
+                        "input_sha256": _EXPECTED_SHA256,
+                        "operation_id": "rhad:route@0x40A77C",
+                        "reference_commit": (
+                            "21b0d4783703bc4fb6910cfae51d92cd683d2c65"
+                        ),
+                        "reference_order": 16,
+                    },
+                    "schema_version": 1,
+                    "table_evidence": compiled_payload["proof_artifacts"][0]["proof"][
+                        "table_evidence"
+                    ],
+                },
+            }
+        ]
         assert tuple(compiled_payload["operation_ids"]) == _REFERENCE_OPERATION_IDS
         assert tuple(compiled_payload["imported_block_ids"]) == _IMPORTED_BLOCK_IDS
         assert compiled_payload["imported_block_count"] == len(_IMPORTED_BLOCK_IDS)
@@ -582,6 +609,20 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert setcc_reference["setcc_table"]["stride_bytes"] == 0x20
         assert setcc_reference["setcc_table"]["true_index"] == 1
         assert setcc_reference["setcc_table"]["false_index"] == 0
+        assert (
+            setcc_reference["proof_artifact"] == compiled_payload["proof_artifacts"][0]
+        )
+        assert (
+            setcc_reference["aggregate_program_identity"]
+            == (compiled_payload["aggregate_program_identity"])
+        )
+
+        published_payload = json.loads(lifecycle_rows[2][3])
+        assert (
+            published_payload["aggregate_program_identity"]
+            == (compiled_payload["aggregate_program_identity"])
+        )
+        assert published_payload["proof_artifact_identities"] == [artifact_identity]
 
         maturity_payloads = {row[1]: json.loads(row[3]) for row in maturity_rows}
         for maturity in ("MMAT_GENERATED", "MMAT_PREOPTIMIZED", "MMAT_LOCOPT"):
