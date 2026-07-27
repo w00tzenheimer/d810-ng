@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "d5fc37ba94a7d29e45076cac80d5e166db1a3ada",
+  "accepted_code_sha": "4e9059237b85e15447b5b67df462d698e4543eb1",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -13,6 +13,7 @@
     "rhad:route@0x40A6BE",
     "rhad:route@0x40A6D8",
     "rhad:route@0x40A6F2",
+    "rhad:route@0x40A70C",
     "route:rhad-direct@0x40A74A",
     "rhad:route@0x40A764",
     "rhad:route@0x40A77C",
@@ -46,11 +47,11 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 5,
-      "vertically_proved_operations": 5,
-      "accepted_receipt_operations": 5,
-      "earliest_unproved_reference_order": 12,
-      "earliest_unproved_operation_id": "rhad:route@0x40A70C",
+      "compiled_operation_instances": 6,
+      "vertically_proved_operations": 6,
+      "accepted_receipt_operations": 6,
+      "earliest_unproved_reference_order": 20,
+      "earliest_unproved_operation_id": "rhad:route@0x40A818",
       "first_missing_typed_obligation": "instantiate the proved RhadExistingConditionalRoute vocabulary with exact per-operation evidence and dependency closure"
     },
     {
