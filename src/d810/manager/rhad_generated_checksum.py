@@ -34,6 +34,8 @@ from d810.transforms.fragment_plan import (
 from d810.transforms.rhad_reference_compiler import (
     RhadConditionalRoute,
     RhadDirectRoute,
+    RhadExistingConditionalRoute,
+    RhadOperationVariant,
     RhadReferenceOperation,
     RhadReferenceLedger,
     RhadReferencePhase,
@@ -62,14 +64,40 @@ DIRECT_IMPORTED_RANGES = (
     (0x40A740, 0x40A74C),
     (0x40A74A, 0x40A74C),
 )
-IMPORTED_RANGES = ACCEPTED_IMPORTED_RANGES + DIRECT_IMPORTED_RANGES
+THIRD_SHAPE_IMPORTED_LAYOUT = (
+    (0x40A68C, 0x40A69A, (0x40A68C, 0x40A692, 0x40A698)),
+    (0x40A69A, 0x40A6A0, (0x40A69A,)),
+    (0x40A6A0, 0x40A6A6, (0x40A6A0, 0x40A6A2, 0x40A6A4)),
+    (0x40A6A4, 0x40A6A6, (0x40A6A4,)),
+    (0x40A6A6, 0x40A6BA, (0x40A6A6, 0x40A6AC, 0x40A6B2)),
+    (0x40A6BA, 0x40A6C0, (0x40A6BA, 0x40A6BC, 0x40A6BE)),
+    (0x40A6BE, 0x40A6C0, (0x40A6BE,)),
+    (0x40A800, 0x40A80E, (0x40A800, 0x40A806, 0x40A80C)),
+    (0x40A80E, 0x40A81A, (0x40A80E, 0x40A814, 0x40A818)),
+    (0x40A814, 0x40A81A, (0x40A814, 0x40A816, 0x40A818)),
+    (0x40A818, 0x40A81A, (0x40A818,)),
+)
+BASE_IMPORTED_LAYOUT = tuple(
+    (start_ea, end_ea, (start_ea,))
+    for start_ea, end_ea in ACCEPTED_IMPORTED_RANGES + DIRECT_IMPORTED_RANGES
+)
+IMPORTED_LAYOUT = BASE_IMPORTED_LAYOUT + THIRD_SHAPE_IMPORTED_LAYOUT
+IMPORTED_RANGES = tuple(
+    (start_ea, end_ea) for start_ea, end_ea, _exact_eas in IMPORTED_LAYOUT
+)
 IMPORTED_BLOCK_IDS = tuple(
     f"native@0x{start_ea:X}" for start_ea, _end_ea in IMPORTED_RANGES
 )
 ACCEPTED_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS[: len(ACCEPTED_IMPORTED_RANGES)]
-DIRECT_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS[len(ACCEPTED_IMPORTED_RANGES) :]
-BOUNDARY_EXIT_EAS = (0x40A633, 0x40A68C, 0x40A74C, 0x40B790)
-TEMPLATE_ROOT_EAS = (0x40A607, 0x40B6C0, 0x40A61B)
+DIRECT_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS[
+    len(ACCEPTED_IMPORTED_RANGES) : len(BASE_IMPORTED_LAYOUT)
+]
+DEPENDENCY_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS[
+    len(BASE_IMPORTED_LAYOUT) : len(BASE_IMPORTED_LAYOUT) + 4
+]
+SELECTED_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS[len(BASE_IMPORTED_LAYOUT) + 4 :]
+BOUNDARY_EXIT_EAS = (0x40A633, 0x40A74C, 0x40A9A0, 0x40B790)
+TEMPLATE_ROOT_EAS = (0x40A607, 0x40B6C0, 0x40A61B, 0x40A68C, 0x40A6A6, 0x40A800)
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,9 +153,9 @@ class RhadGeneratedReferenceBatch:
         if not set(self.native_body_proof_ids).issuperset(
             operation.operation_id
             for operation in self.operations
-            if isinstance(operation, RhadDirectRoute)
+            if isinstance(operation, (RhadDirectRoute, RhadExistingConditionalRoute))
         ):
-            raise ValueError("Rhad GENERATED direct routes require native-body proof")
+            raise ValueError("Rhad GENERATED imported routes require native-body proof")
 
 
 _ACCEPTED_ROUTE = RhadConditionalRoute(
@@ -172,6 +200,63 @@ _DIRECT_ROUTE = RhadDirectRoute(
     depends_on=(_ACCEPTED_ROUTE.operation_id,),
 )
 
+_DEPENDENCY_ROUTE = RhadDirectRoute(
+    operation_id="route:rhad-direct@0x40A68A",
+    source_block_id="native@0x40A680",
+    source_native_ea=0x40A613,
+    transfer_ea=0x40A68A,
+    owner_anchor_ea=0x40A680,
+    direct_target_block_id="native@0x40A68C",
+    owned_corridor_instruction_eas=(
+        0x40A613,
+        0x40A680,
+        0x40A686,
+        0x40A688,
+        0x40A68A,
+    ),
+    imported_closure_block_ids=DEPENDENCY_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40A800,),
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_ACCEPTED_ROUTE.operation_id,),
+)
+
+_SELECTED_ROUTE = RhadExistingConditionalRoute(
+    operation_id="rhad:route@0x40A6A4",
+    reference_order=8,
+    operation_variant=RhadOperationVariant.EXISTING_CONDITIONAL_PLUS_INDIRECT,
+    reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
+    source_block_id="native@0x40A68C",
+    selected_value_block_id="native@0x40A69A",
+    join_block_id="native@0x40A6A0",
+    source_native_ea=0x40A68C,
+    source_block_anchor_ea=0x40A6A0,
+    transfer_ea=0x40A6A4,
+    condition_producer_ea=0x40A692,
+    predicate_anchor_ea=0x40A698,
+    normalization_start_ea=0x40A698,
+    source_branch_ea=0x40A698,
+    selected_value_ea=0x40A69A,
+    observed_predicate_kind=PredicateKind.SGE,
+    predicate_kind=PredicateKind.SLT,
+    true_target_block_id="native@0x40A6A6",
+    false_target_block_id="native@0x40A800",
+    comparison_constant=0x65203D55,
+    owned_corridor_instruction_eas=(
+        0x40A68C,
+        0x40A692,
+        0x40A698,
+        0x40A69A,
+        0x40A6A0,
+        0x40A6A2,
+        0x40A6A4,
+    ),
+    imported_closure_block_ids=SELECTED_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40A9A0,),
+    flag_corridor_id="flags-intact@0x40A692",
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_DEPENDENCY_ROUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -210,11 +295,11 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             block_id=block_id,
             start_ea=start_ea,
             end_ea=end_ea,
-            exact_instruction_eas=(start_ea,),
+            exact_instruction_eas=exact_instruction_eas,
         )
-        for block_id, (start_ea, end_ea) in zip(
+        for block_id, (start_ea, end_ea, exact_instruction_eas) in zip(
             IMPORTED_BLOCK_IDS,
-            IMPORTED_RANGES,
+            IMPORTED_LAYOUT,
             strict=True,
         )
     ),
@@ -227,20 +312,35 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         "native@0x40A61B",
         "native@0x40A631",
         "native@0x40A74A",
+        "native@0x40A68C",
+        "native@0x40A6A4",
+        "native@0x40A6A6",
+        "native@0x40A6BE",
+        "native@0x40A800",
+        "native@0x40A818",
     ),
     native_body_ranges=(
         (0x40A607, 0x40A61B),
         (0x40A61B, 0x40A633),
         (0x40A680, 0x40A68C),
+        (0x40A68C, 0x40A6C0),
         (0x40A740, 0x40A74C),
+        (0x40A800, 0x40A81A),
         (0x40B6C0, 0x40B6D6),
     ),
     native_body_proof_ids=(
         "native-body@0x40A605",
         _DIRECT_ROUTE.operation_id,
+        _DEPENDENCY_ROUTE.operation_id,
+        _SELECTED_ROUTE.operation_id,
     ),
     template_root_eas=TEMPLATE_ROOT_EAS,
-    operations=(_ACCEPTED_ROUTE, _DIRECT_ROUTE),
+    operations=(
+        _ACCEPTED_ROUTE,
+        _DIRECT_ROUTE,
+        _DEPENDENCY_ROUTE,
+        _SELECTED_ROUTE,
+    ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
     reference_binary_sha256="1" * 64,
@@ -781,10 +881,11 @@ def build_rhad_generated_reference_plan(
         batch.source.end_ea,
         *batch.source.exact_instruction_eas,
     )
-    direct_source_ids = frozenset(
+    imported_operation_source_ids = frozenset(
         operation.source_block_id
         for operation in batch.operations
-        if isinstance(operation, RhadDirectRoute)
+        if operation.source_block_id
+        in {evidence.block_id for evidence in batch.imported_blocks}
     )
     blocks = (
         FragmentBlock(
@@ -855,7 +956,10 @@ def build_rhad_generated_reference_plan(
                     role=SemanticEdgeRole.DIRECT,
                     target_block_id=(
                         operation.false_target_block_id
-                        if isinstance(operation, RhadConditionalRoute)
+                        if isinstance(
+                            operation,
+                            (RhadConditionalRoute, RhadExistingConditionalRoute),
+                        )
                         else operation.direct_target_block_id
                     ),
                 ),
@@ -897,7 +1001,7 @@ def build_rhad_generated_reference_plan(
                 preserved_native_transfer_block_ids=tuple(
                     evidence.block_id
                     for evidence in batch.imported_blocks
-                    if evidence.block_id not in direct_source_ids
+                    if evidence.block_id not in imported_operation_source_ids
                 ),
             ),
         ),

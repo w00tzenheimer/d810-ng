@@ -13,6 +13,10 @@ from d810.manager.rhad_generated_checksum import (
     reference_batch_for_native_key,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.semantics import PredicateKind
+from d810.transforms.fragment_plan import (
+    FragmentReferencedImportedConditionalSelectEnvelope,
+)
 from tests.native_preanalysis import make_native_key
 
 
@@ -25,7 +29,7 @@ def _native_key():
     )
 
 
-def test_checksum_producer_compiles_two_serial_free_reference_shapes() -> None:
+def test_checksum_producer_compiles_three_serial_free_reference_shapes() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(),
         evidence_generation=7,
@@ -43,11 +47,20 @@ def test_checksum_producer_compiles_two_serial_free_reference_shapes() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 14
-    assert TEMPLATE_ROOT_EAS == (0x40A607, 0x40B6C0, 0x40A61B)
+    assert len(IMPORTED_BLOCK_IDS) == 25
+    assert TEMPLATE_ROOT_EAS == (
+        0x40A607,
+        0x40B6C0,
+        0x40A61B,
+        0x40A68C,
+        0x40A6A6,
+        0x40A800,
+    )
     assert tuple(operation.operation_id for operation in plan.operations) == (
         "rhad:route@0x40A605",
         "route:rhad-direct@0x40A619",
+        "route:rhad-direct@0x40A68A",
+        "rhad:route@0x40A6A4",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -63,19 +76,44 @@ def test_checksum_producer_compiles_two_serial_free_reference_shapes() -> None:
     assert direct.direct_transfer_rewrite.owner_anchor_ea == 0x40A615
     assert direct.edges[0].target_block_id == "native@0x40A61B"
     native_body = plan.native_bodies[0]
-    rewritten_sources = {
+    direct_sources = {
         candidate.source_block_id
         for candidate in plan.operations
         if candidate.direct_transfer_rewrite is not None
     }
-    preserved_sources = set(native_body.preserved_native_transfer_block_ids)
-    assert rewritten_sources.isdisjoint(preserved_sources)
-    assert rewritten_sources | preserved_sources == set(native_body.block_ids)
     direct_payload = json.loads(
         direct.reference_route_authority.reference_route.reference_ledger_json
     )
     assert tuple(direct_payload["boundary_exit_eas"]) == (0x40A633, 0x40A74C)
-    assert BOUNDARY_EXIT_EAS == (0x40A633, 0x40A68C, 0x40A74C, 0x40B790)
+    dependency = plan.operation("route:rhad-direct@0x40A68A")
+    assert dependency.direct_transfer_rewrite.rewrite_anchor_ea == 0x40A68A
+    assert dependency.edges[0].target_block_id == "native@0x40A68C"
+    selected = plan.operation("rhad:route@0x40A6A4")
+    assert selected.predicate_anchor_ea == 0x40A698
+    selected_normalization = selected.computed_branch_normalization
+    assert selected_normalization is not None
+    assert selected_normalization.predicate_kind is PredicateKind.SLT
+    assert selected_normalization.condition_producer_ea == 0x40A692
+    assert selected_normalization.unresolved_transfer_ea == 0x40A6A4
+    assert isinstance(
+        selected_normalization.conditional_select_envelope,
+        FragmentReferencedImportedConditionalSelectEnvelope,
+    )
+    selected_envelope = selected_normalization.conditional_select_envelope
+    operation_topology = direct_sources | {
+        selected.source_block_id,
+        selected_envelope.selected_value_block_id,
+        selected_envelope.join_block_id,
+    }
+    preserved_sources = set(native_body.preserved_native_transfer_block_ids)
+    assert operation_topology.isdisjoint(preserved_sources)
+    assert operation_topology | preserved_sources == set(native_body.block_ids)
+    assert {edge.role: edge.target_block_id for edge in selected.edges} == {
+        SemanticEdgeRole.CONDITIONAL_TAKEN: "native@0x40A6A6",
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A800",
+    }
+    assert selected.reference_route_authority is not None
+    assert BOUNDARY_EXIT_EAS == (0x40A633, 0x40A74C, 0x40A9A0, 0x40B790)
 
 
 def test_generated_batch_registry_selects_by_complete_native_identity() -> None:
