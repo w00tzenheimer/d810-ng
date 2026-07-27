@@ -675,6 +675,11 @@ class RhadGeneratedReferenceBatch:
     @property
     def aggregate_program_identity(self) -> str:
         payload = {
+            "direct_reference_identities": [
+                operation.reference_identity_payload
+                for operation in self.operations
+                if isinstance(operation, RhadDirectRoute)
+            ],
             "function_ea": int(self.function_ea),
             "input_sha256": self.input_sha256.lower(),
             "operation_ids": [operation.operation_id for operation in self.operations],
@@ -715,6 +720,10 @@ _ACCEPTED_ROUTE = RhadConditionalRoute(
 
 _DIRECT_ROUTE = RhadDirectRoute(
     operation_id="route:rhad-direct@0x40A619",
+    reference_operation_id="rhad:route@0x40A619",
+    reference_order=2,
+    operation_variant=RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+    reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
     source_block_id="native@0x40A615",
     source_native_ea=0x40A607,
     transfer_ea=0x40A619,
@@ -729,6 +738,10 @@ _DIRECT_ROUTE = RhadDirectRoute(
 
 _DEPENDENCY_ROUTE = RhadDirectRoute(
     operation_id="route:rhad-direct@0x40A68A",
+    reference_operation_id="rhad:route@0x40A68A",
+    reference_order=7,
+    operation_variant=RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+    reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
     source_block_id="native@0x40A680",
     source_native_ea=0x40A613,
     transfer_ea=0x40A68A,
@@ -944,6 +957,10 @@ _ROW12_EXISTING_ROUTE = RhadExistingConditionalRoute(
 
 _FOURTH_DIRECT_ROUTE = RhadDirectRoute(
     operation_id="route:rhad-direct@0x40A74A",
+    reference_operation_id="rhad:route@0x40A74A",
+    reference_order=14,
+    operation_variant=RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+    reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
     source_block_id="native@0x40A740",
     source_native_ea=0x40A607,
     transfer_ea=0x40A74A,

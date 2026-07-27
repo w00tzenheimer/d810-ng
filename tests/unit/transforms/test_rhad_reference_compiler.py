@@ -210,6 +210,37 @@ def _row17_table_proof_mapping() -> dict[str, object]:
     }
 
 
+def test_direct_route_requires_exact_typed_reference_identity() -> None:
+    compiler = _compiler_module()
+
+    route = compiler.RhadDirectRoute(
+        operation_id="route:rhad-direct@0x40A631",
+        reference_operation_id="rhad:route@0x40A631",
+        reference_order=3,
+        operation_variant=compiler.RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+        reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
+        source_block_id="native@0x40A62D",
+        source_native_ea=0x40A61B,
+        transfer_ea=0x40A631,
+        owner_anchor_ea=0x40A62D,
+        direct_target_block_id="native@0x40A633",
+        owned_corridor_instruction_eas=(0x40A61B, 0x40A62D, 0x40A62F, 0x40A631),
+        imported_closure_block_ids=("native@0x40A633",),
+        boundary_exit_eas=(0x40A64B, 0x40A8B5),
+        phase=compiler.RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+        depends_on=("route:rhad-direct@0x40A619",),
+    )
+
+    assert route.operation_id == "route:rhad-direct@0x40A631"
+    assert route.reference_operation_id == "rhad:route@0x40A631"
+    assert route.reference_order == 3
+    assert (
+        route.operation_variant
+        is compiler.RhadOperationVariant.SIMPLE_INDIRECT_JUMP
+    )
+    assert route.reference_symbol == "JumpInliner._fixup_jmp_and_possible_jcc"
+
+
 def test_row17_table_proof_artifact_persists_scaled_lookup() -> None:
     compiler = _compiler_module()
 
@@ -489,6 +520,10 @@ def _mixed_ledger():
     accepted_route = _ledger().operations[0]
     direct_route = compiler.RhadDirectRoute(
         operation_id="route:rhad-direct@0x40A619",
+        reference_operation_id="rhad:route@0x40A619",
+        reference_order=2,
+        operation_variant=compiler.RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+        reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
         source_block_id="native@0x40A615",
         source_native_ea=0x40A607,
         transfer_ea=0x40A619,
@@ -561,6 +596,10 @@ def test_compiler_emits_distinct_direct_route_in_one_reference_batch() -> None:
     assert authority.reference_route.final_transfer_kind is SemanticTransferKind.DIRECT
     assert authority.reference_route.direct_target_ea == 0x40A61B
     payload = json.loads(authority.reference_route.reference_ledger_json)
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["reference_operation_id"] == "rhad:route@0x40A619"
+    assert payload["reference_order"] == 2
+    assert payload["reference_symbol"] == "JumpInliner._fixup_jmp_and_possible_jcc"
     assert payload["imported_closure_block_ids"] == list(DIRECT_IMPORTED_BLOCK_IDS)
     assert payload["boundary_exit_eas"] == [0x40A633, 0x40A74C]
     assert payload["direct_target_block_id"] == "native@0x40A61B"
@@ -846,6 +885,10 @@ def _third_shape_ledger():
     selected_id = "rhad:route@0x40A6A4"
     dependency = compiler.RhadDirectRoute(
         operation_id=dependency_id,
+        reference_operation_id="rhad:route@0x40A68A",
+        reference_order=7,
+        operation_variant=compiler.RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+        reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
         source_block_id="native@0x40A680",
         source_native_ea=0x40A613,
         transfer_ea=0x40A68A,
@@ -1285,6 +1328,10 @@ def _fourth_shape_ledger():
     selected_id = "rhad:route@0x40A77C"
     direct = compiler.RhadDirectRoute(
         operation_id=direct_id,
+        reference_operation_id="rhad:route@0x40A74A",
+        reference_order=14,
+        operation_variant=compiler.RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+        reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
         source_block_id="native@0x40A740",
         source_native_ea=0x40A607,
         transfer_ea=0x40A74A,

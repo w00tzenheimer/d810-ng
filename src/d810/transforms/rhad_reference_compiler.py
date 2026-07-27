@@ -69,6 +69,7 @@ class RhadOperationCategory(str, Enum):
 class RhadOperationVariant(str, Enum):
     """Reference implementation shapes admitted by the portable compiler."""
 
+    SIMPLE_INDIRECT_JUMP = "simple_indirect_jump"
     EXISTING_CONDITIONAL_PLUS_INDIRECT = "existing_conditional_plus_indirect"
     SETCC_INDEXED_TABLE = "setcc_indexed_table"
 
@@ -573,6 +574,10 @@ class RhadDirectRoute:
     """One reference direct route replacing an imported indirect transfer."""
 
     operation_id: str
+    reference_operation_id: str
+    reference_order: int
+    operation_variant: RhadOperationVariant
+    reference_symbol: str
     source_block_id: str
     source_native_ea: int
     transfer_ea: int
@@ -588,6 +593,8 @@ class RhadDirectRoute:
     def __post_init__(self) -> None:
         for field_name in (
             "operation_id",
+            "reference_operation_id",
+            "reference_symbol",
             "source_block_id",
             "direct_target_block_id",
         ):
@@ -598,7 +605,20 @@ class RhadDirectRoute:
             )
         if not self.operation_id.startswith("route:"):
             raise RhadCompilerRejection(
-                "Rhad direct operation id requires route-proof identity"
+                "Rhad direct compiled operation id requires route-proof identity"
+            )
+        if not self.reference_operation_id.startswith("rhad:route@"):
+            raise RhadCompilerRejection(
+                "Rhad direct reference operation id requires exact ledger identity"
+            )
+        reference_order = int(self.reference_order)
+        if reference_order < 0:
+            raise RhadCompilerRejection(
+                "Rhad direct reference order must be non-negative"
+            )
+        if self.operation_variant is not RhadOperationVariant.SIMPLE_INDIRECT_JUMP:
+            raise RhadCompilerRejection(
+                "Rhad direct route requires its typed operation variant"
             )
         for field_name in ("source_native_ea", "transfer_ea", "owner_anchor_ea"):
             object.__setattr__(
@@ -642,6 +662,18 @@ class RhadDirectRoute:
         object.__setattr__(self, "imported_closure_block_ids", closure)
         object.__setattr__(self, "boundary_exit_eas", boundaries)
         object.__setattr__(self, "depends_on", dependencies)
+        object.__setattr__(self, "reference_order", reference_order)
+
+    @property
+    def reference_identity_payload(self) -> dict[str, object]:
+        """Canonical typed identity shared by producer and compiler hashes."""
+        return {
+            "compiled_operation_id": self.operation_id,
+            "operation_variant": self.operation_variant.value,
+            "reference_operation_id": self.reference_operation_id,
+            "reference_order": int(self.reference_order),
+            "reference_symbol": self.reference_symbol,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -1068,6 +1100,11 @@ class RhadReferenceLedger:
     @property
     def aggregate_program_identity(self) -> str:
         payload = {
+            "direct_reference_identities": [
+                operation.reference_identity_payload
+                for operation in self.operations
+                if isinstance(operation, RhadDirectRoute)
+            ],
             "function_ea": int(self.native_function_ea),
             "input_sha256": self.reference_oracle_run.candidate_binary_sha256.lower(),
             "operation_ids": [operation.operation_id for operation in self.operations],
@@ -1217,6 +1254,10 @@ def _reference_payload(
         payload.update(
             {
                 "direct_target_block_id": route.direct_target_block_id,
+                "operation_variant": route.operation_variant.value,
+                "reference_operation_id": route.reference_operation_id,
+                "reference_order": int(route.reference_order),
+                "reference_symbol": route.reference_symbol,
                 "source_block_anchor_ea": int(route.owner_anchor_ea),
                 "source_native_ea": int(route.source_native_ea),
             }
