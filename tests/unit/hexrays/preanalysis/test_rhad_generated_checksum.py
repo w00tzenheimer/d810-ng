@@ -70,7 +70,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 176
+    assert len(IMPORTED_BLOCK_IDS) == 178
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -1381,6 +1381,8 @@ def test_checksum_producer_compiles_row32_existing_conditional_reference() -> No
     assert operation_by_id["rhad:route@0x40A9AC"].depends_on == ("rhad:route@0x40A992",)
     assert {
         "native@0x40A9AE",
+        "native@0x40A9D5",
+        "native@0x40A9D8",
         "native@0x40A9DC",
     }.issubset(plan.native_bodies[0].block_ids)
 
