@@ -136,7 +136,8 @@ DEPENDENCY_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS[
     len(BASE_IMPORTED_LAYOUT) : len(BASE_IMPORTED_LAYOUT) + 4
 ]
 SELECTED_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS[
-    len(BASE_IMPORTED_LAYOUT) + 4 : len(BASE_IMPORTED_LAYOUT)
+    len(BASE_IMPORTED_LAYOUT)
+    + 4 : len(BASE_IMPORTED_LAYOUT)
     + len(THIRD_SHAPE_IMPORTED_LAYOUT)
 ]
 FOURTH_DIRECT_IMPORTED_BLOCK_IDS = (
@@ -205,6 +206,7 @@ class RhadGeneratedTemplateFragment:
     boundary_ranges: tuple[tuple[int, int], ...]
     boundary_exit_eas: tuple[int, ...]
     direct_boundary_routes: tuple[tuple[int, int, int], ...]
+    preserved_unresolved_transfer_eas: tuple[int, ...]
 
     def __post_init__(self) -> None:
         root_ea = int(self.root_ea)
@@ -220,6 +222,9 @@ class RhadGeneratedTemplateFragment:
             (int(source_ea), int(instruction_ea), int(target_ea))
             for source_ea, instruction_ea, target_ea in self.direct_boundary_routes
         )
+        preserved_unresolved_transfer_eas = tuple(
+            int(ea) for ea in self.preserved_unresolved_transfer_eas
+        )
         if (
             root_ea <= 0
             or not owned_ranges
@@ -227,7 +232,14 @@ class RhadGeneratedTemplateFragment:
             or any(start_ea >= end_ea for start_ea, end_ea in boundary_ranges)
             or root_ea not in owned_entries
             or len(set(owned_entries)) != len(owned_entries)
-            or len(boundary_ranges) != len(boundary_exits)
+            or (
+                len(boundary_ranges) != len(boundary_exits)
+                and not (
+                    not boundary_ranges
+                    and len(preserved_unresolved_transfer_eas) == 1
+                    and boundary_exits
+                )
+            )
             or len(set(boundary_exits)) != len(boundary_exits)
             or any(
                 source_ea <= 0 or instruction_ea <= 0 or target_ea <= 0
@@ -235,6 +247,12 @@ class RhadGeneratedTemplateFragment:
             )
             or len({instruction_ea for _, instruction_ea, _ in direct_boundary_routes})
             != len(direct_boundary_routes)
+            or len(set(preserved_unresolved_transfer_eas))
+            != len(preserved_unresolved_transfer_eas)
+            or any(
+                not any(start_ea <= ea < end_ea for start_ea, end_ea in owned_ranges)
+                for ea in preserved_unresolved_transfer_eas
+            )
         ):
             raise ValueError("Rhad GENERATED template fragment is incomplete")
         object.__setattr__(self, "root_ea", root_ea)
@@ -243,6 +261,11 @@ class RhadGeneratedTemplateFragment:
         object.__setattr__(self, "boundary_ranges", boundary_ranges)
         object.__setattr__(self, "boundary_exit_eas", boundary_exits)
         object.__setattr__(self, "direct_boundary_routes", direct_boundary_routes)
+        object.__setattr__(
+            self,
+            "preserved_unresolved_transfer_eas",
+            preserved_unresolved_transfer_eas,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -650,6 +673,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             ),
             boundary_exit_eas=(0x40A61B, 0x40A68C),
             direct_boundary_routes=(),
+            preserved_unresolved_transfer_eas=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40B6C0,
@@ -662,6 +686,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=((0x40B790, 0x40B79E),),
             boundary_exit_eas=(0x40B790,),
             direct_boundary_routes=(),
+            preserved_unresolved_transfer_eas=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A61B,
@@ -677,6 +702,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             ),
             boundary_exit_eas=(0x40A633, 0x40A74C),
             direct_boundary_routes=(),
+            preserved_unresolved_transfer_eas=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A68C,
@@ -689,6 +715,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=((0x40A800, 0x40A80E),),
             boundary_exit_eas=(0x40A800,),
             direct_boundary_routes=(),
+            preserved_unresolved_transfer_eas=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A6B4,
@@ -700,6 +727,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=(),
             boundary_exit_eas=(),
             direct_boundary_routes=((0x40A6BA, 0x40A6BE, 0x40A960),),
+            preserved_unresolved_transfer_eas=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A800,
@@ -712,6 +740,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=((0x40AA60, 0x40AA6E),),
             boundary_exit_eas=(0x40AA60,),
             direct_boundary_routes=(),
+            preserved_unresolved_transfer_eas=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A74C,
@@ -724,6 +753,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=(),
             boundary_exit_eas=(),
             direct_boundary_routes=(),
+            preserved_unresolved_transfer_eas=(0x40A764,),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A766,
@@ -732,6 +762,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=(),
             boundary_exit_eas=(),
             direct_boundary_routes=(),
+            preserved_unresolved_transfer_eas=(0x40A77C,),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A9DE,
@@ -742,16 +773,18 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             ),
             owned_block_entry_eas=(0x40A9DE, 0x40A9EC, 0x40A9F2),
             boundary_ranges=(),
-            boundary_exit_eas=(),
+            boundary_exit_eas=(0x40ADCE,),
             direct_boundary_routes=(),
+            preserved_unresolved_transfer_eas=(0x40A9F6,),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A77E,
             owned_ranges=((0x40A77E, 0x40A794),),
             owned_block_entry_eas=(0x40A77E,),
             boundary_ranges=(),
-            boundary_exit_eas=(),
+            boundary_exit_eas=(0x40A794, 0x40AEE6),
             direct_boundary_routes=(),
+            preserved_unresolved_transfer_eas=(0x40A792,),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40ABC6,
@@ -762,8 +795,9 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             ),
             owned_block_entry_eas=(0x40ABC6, 0x40ABD4, 0x40ABDA),
             boundary_ranges=(),
-            boundary_exit_eas=(),
+            boundary_exit_eas=(0x40B1D0,),
             direct_boundary_routes=(),
+            preserved_unresolved_transfer_eas=(0x40ABDE,),
         ),
     ),
     operations=(
@@ -911,6 +945,49 @@ def _reference_batch_observation(
             *batch.imported_blocks,
         )
     }
+    block_evidence_by_id = {
+        evidence.block_id: evidence
+        for evidence in (
+            batch.predecessor,
+            batch.source,
+            *batch.auxiliary_blocks,
+            *batch.imported_blocks,
+        )
+    }
+
+    def delivery_anchor(
+        block: object,
+        target_block_ids: tuple[str, ...],
+    ) -> int:
+        """Canonicalize an optimized live anchor through typed target ownership."""
+        live_anchor = _native_anchor(block, origins)
+        rooted_targets = tuple(
+            block_anchor_by_id[block_id]
+            for block_id in target_block_ids
+            for root_ea in (block_anchor_by_id[block_id],)
+            for fragment in batch.template_fragments
+            if int(fragment.root_ea) == int(root_ea)
+            and any(
+                int(start_ea) <= live_anchor < int(end_ea)
+                for start_ea, end_ea in fragment.owned_ranges
+            )
+        )
+        if not rooted_targets:
+            rooted_targets = tuple(
+                int(evidence.start_ea)
+                for block_id in target_block_ids
+                for evidence in (block_evidence_by_id[block_id],)
+                if int(evidence.start_ea) <= live_anchor < int(evidence.end_ea)
+            )
+        return int(rooted_targets[0]) if len(rooted_targets) == 1 else live_anchor
+
+    def delivery_targets_reachable(target_block_ids: tuple[str, ...]) -> bool:
+        expected = {block_anchor_by_id[block_id] for block_id in target_block_ids}
+        observed = {
+            delivery_anchor(blocks[serial], target_block_ids)
+            for serial in reachable_block_serials
+        }
+        return expected.issubset(observed)
 
     def reachable_serials() -> set[int]:
         reachable: set[int] = set()
@@ -1089,6 +1166,13 @@ def _reference_batch_observation(
         for operation in batch.operations
         if isinstance(operation, RhadExistingConditionalRoute)
     ):
+        conditional_target_block_ids = (
+            conditional_route.true_target_block_id,
+            conditional_route.false_target_block_id,
+        )
+        delivery_target_eas = {
+            block_anchor_by_id[block_id] for block_id in conditional_target_block_ids
+        }
         conditional_indirect = any(
             int(row.opcode) == int(ida_hexrays.m_ijmp)
             and int(origins.get(int(row.ea), int(row.ea)))
@@ -1126,7 +1210,9 @@ def _reference_batch_observation(
                     ):
                         successor_serial = int(tuple(target.succset)[0])
                         target = blocks[successor_serial]
-                    conditional_targets.add(_native_anchor(target, origins))
+                    conditional_targets.add(
+                        delivery_anchor(target, conditional_target_block_ids)
+                    )
             else:
                 corridor_blocks = [conditional_source]
                 if conditional_source.nextb is not None:
@@ -1144,12 +1230,11 @@ def _reference_batch_observation(
                     )
                     if int(operand.t) == int(ida_hexrays.mop_b):
                         conditional_targets.add(
-                            _native_anchor(blocks[int(operand.b)], origins)
+                            delivery_anchor(
+                                blocks[int(operand.b)],
+                                conditional_target_block_ids,
+                            )
                         )
-        delivery_target_eas = {
-            block_anchor_by_id[conditional_route.true_target_block_id],
-            block_anchor_by_id[conditional_route.false_target_block_id],
-        }
         source_topology_reachable = bool(
             conditional_source is not None
             and (
@@ -1163,7 +1248,7 @@ def _reference_batch_observation(
                 conditional_targets == delivery_target_eas
                 and (
                     int(mba.maturity) == int(ida_hexrays.MMAT_GENERATED)
-                    or delivery_target_eas.issubset(reachable)
+                    or delivery_targets_reachable(conditional_target_block_ids)
                 )
             )
         )
@@ -1187,6 +1272,114 @@ def _reference_batch_observation(
                 "semantic_targets_survive": semantic_targets_survive,
                 "boundary_exit_eas": sorted(conditional_route.boundary_exit_eas),
                 "passed": not conditional_indirect and semantic_targets_survive,
+            }
+        )
+
+    for setcc_route in (
+        operation
+        for operation in batch.operations
+        if isinstance(operation, RhadSetccIndexedTableRoute)
+    ):
+        setcc_target_block_ids = (
+            setcc_route.true_target_block_id,
+            setcc_route.false_target_block_id,
+        )
+        delivery_target_eas = {
+            block_anchor_by_id[block_id] for block_id in setcc_target_block_ids
+        }
+        setcc_indirect = any(
+            int(row.opcode)
+            in {
+                int(ida_hexrays.m_ijmp),
+                int(ida_hexrays.m_icall),
+            }
+            and int(origins.get(int(row.ea), int(row.ea)))
+            == int(setcc_route.transfer_ea)
+            for block in blocks.values()
+            for row in _instructions(block)
+        )
+        setcc_source = next(
+            (
+                block
+                for block in blocks.values()
+                if any(
+                    int(origins.get(int(row.ea), int(row.ea)))
+                    == int(setcc_route.predicate_anchor_ea)
+                    for row in _instructions(block)
+                )
+            ),
+            None,
+        )
+        setcc_targets: set[int] = set()
+        if setcc_source is not None:
+            source_successors = tuple(int(value) for value in setcc_source.succset)
+            if source_successors:
+                for successor_serial in source_successors:
+                    setcc_targets.add(
+                        delivery_anchor(
+                            blocks[successor_serial],
+                            setcc_target_block_ids,
+                        )
+                    )
+            else:
+                corridor_blocks = [setcc_source]
+                if setcc_source.nextb is not None:
+                    corridor_blocks.append(setcc_source.nextb)
+                    if setcc_source.nextb.nextb is not None:
+                        corridor_blocks.append(setcc_source.nextb.nextb)
+                for block in corridor_blocks:
+                    if block.tail is None:
+                        continue
+                    opcode = int(block.tail.opcode)
+                    operand = (
+                        block.tail.l
+                        if opcode == int(ida_hexrays.m_goto)
+                        else block.tail.d
+                    )
+                    if int(operand.t) == int(ida_hexrays.mop_b):
+                        setcc_targets.add(
+                            delivery_anchor(
+                                blocks[int(operand.b)],
+                                setcc_target_block_ids,
+                            )
+                        )
+        source_topology_reachable = bool(
+            setcc_source is not None
+            and (
+                int(mba.maturity) == int(ida_hexrays.MMAT_GENERATED)
+                or int(setcc_source.serial) in reachable_block_serials
+            )
+        )
+        semantic_targets_survive = bool(
+            not source_topology_reachable
+            or (
+                setcc_targets == delivery_target_eas
+                and (
+                    int(mba.maturity) == int(ida_hexrays.MMAT_GENERATED)
+                    or delivery_targets_reachable(setcc_target_block_ids)
+                )
+            )
+        )
+        operation_observations.append(
+            {
+                "operation_id": setcc_route.operation_id,
+                "operation_category": setcc_route.category.value,
+                "operation_variant": setcc_route.operation_variant.value,
+                "source_present": setcc_source is not None,
+                "source_topology_reachable": source_topology_reachable,
+                "source_topology_retired": not source_topology_reachable,
+                "indirect_transfer_present": setcc_indirect,
+                "target_eas": sorted(setcc_targets),
+                "semantic_target_eas": sorted(
+                    {
+                        int(setcc_route.true_target_ea),
+                        int(setcc_route.false_target_ea),
+                    }
+                ),
+                "delivery_target_eas": sorted(delivery_target_eas),
+                "semantic_targets_survive": semantic_targets_survive,
+                "boundary_exit_eas": sorted(setcc_route.boundary_exit_eas),
+                "passed": not setcc_indirect and semantic_targets_survive,
             }
         )
 
@@ -1320,6 +1513,9 @@ def prepare_rhad_generated_reference_templates(
                 boundary_exit_eas=fragment.boundary_exit_eas,
                 owned_block_entry_eas=fragment.owned_block_entry_eas,
                 direct_boundary_routes=fragment.direct_boundary_routes,
+                preserved_unresolved_transfer_eas=(
+                    fragment.preserved_unresolved_transfer_eas
+                ),
             )
             logger.info(
                 "GENERATED checksum template result: target=0x%X captured=%s",
