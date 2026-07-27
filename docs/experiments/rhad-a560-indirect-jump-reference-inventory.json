@@ -820,16 +820,25 @@
     },
     {
       "boundary_exit_eas": [
-        4236784
+        4236784,
+        4237070
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "37f43bd32",
+          "d5fc37ba9"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
       "flag_producer_native_ea": 4237024,
       "imported_closure_block_anchor_eas": [
+        4237044,
+        4237058,
+        4237064,
+        4237068,
         4238987,
         4239001,
         4239007,
@@ -862,14 +871,24 @@
       "source_native_ea": 4237018,
       "target_rooted_closures": [
         {
-          "boundary_exit_eas": [],
-          "expected_generated_block_anchor_eas": [],
-          "owned_native_block_entry_eas": [],
+          "boundary_exit_eas": [
+            4236784,
+            4237070
+          ],
+          "expected_generated_block_anchor_eas": [
+            4237044,
+            4237058,
+            4237064,
+            4237068
+          ],
+          "owned_native_block_entry_eas": [
+            4237044,
+            4237058,
+            4237064
+          ],
           "root_ea": 4237044,
-          "status": "root_unavailable_in_current_portable_source_plan",
-          "unavailable_exit_eas": [
-            4237044
-          ]
+          "status": "complete",
+          "unavailable_exit_eas": []
         },
         {
           "boundary_exit_eas": [
@@ -892,9 +911,7 @@
         }
       ],
       "transfer_native_ea": 4237042,
-      "unavailable_closure_exit_eas": [
-        4237044
-      ]
+      "unavailable_closure_exit_eas": []
     },
     {
       "boundary_exit_eas": [
