@@ -1,0 +1,53 @@
+{
+  "content_identity": "sha256:a67a3d2cc432df11ca627c90f06f3a854004a9463a529ee1d0cdf1f759406e67",
+  "proof": {
+    "artifact_type": "rhad_setcc_indexed_table_proof",
+    "binding": {
+      "function_ea": 4236640,
+      "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
+      "operation_id": "rhad:route@0x40A792",
+      "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+      "reference_order": 17
+    },
+    "schema_version": 2,
+    "table_evidence": {
+      "additive_key": 4260240513,
+      "additive_key_producer_ea": 4236733,
+      "byte_order": "little",
+      "decode_ea": 4237200,
+      "entries": [
+        {
+          "decoded_target_ea": 4237204,
+          "entry_ea": 4764920,
+          "index": 0,
+          "raw_value": 38963987
+        },
+        {
+          "decoded_target_ea": 4239078,
+          "entry_ea": 4764928,
+          "index": 1,
+          "raw_value": 38965861
+        }
+      ],
+      "entry_width_bytes": 4,
+      "extension_kind": "zero_extend_by_full_register_prezero",
+      "false_index": 0,
+      "index_scaling": {
+        "kind": "scaled_lookup",
+        "lookup_ea": 4237193,
+        "scale_bytes": 8
+      },
+      "index_width_bits": 32,
+      "interpretation": "add_constant_modulo_entry_width",
+      "lookup_ea": 4237193,
+      "setcc_destination_width_bits": 8,
+      "setcc_ea": 4237190,
+      "stride_bytes": 8,
+      "table_base_ea": 4764920,
+      "table_identity": "native-table@0x48B4F8:stride-8:u32le:add-esi",
+      "true_index": 1,
+      "zeroed_width_bits": 32,
+      "zeroing_ea": 4237182
+    }
+  }
+}
