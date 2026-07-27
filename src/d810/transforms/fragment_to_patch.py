@@ -86,6 +86,13 @@ class PatchTransactionLifecycle(Protocol):
     def fail(self, patch_plan: PatchPlan, error: Exception, phase: str) -> None: ...
 
 
+def _operation_fallthrough_helper_id(operation: FragmentOperation) -> str | None:
+    """Name a helper only when the typed operation cannot use physical adjacency."""
+    if operation.requires_fallthrough_helper:
+        return f"fallthrough-helper:{operation.operation_id}"
+    return None
+
+
 @dataclass(frozen=True)
 class PatchTransactionParticipant:
     """Participant for plans already expressed in the shared execution IR."""
@@ -234,16 +241,7 @@ def lower_fragment_plan(
             )
         )
     for operation in plan.operations:
-        fallthrough_helper_id = (
-            f"fallthrough-helper:{operation.operation_id}"
-            if operation.roles.intersection(
-                {
-                    SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
-                    SemanticEdgeRole.CALL_FALLTHROUGH,
-                }
-            )
-            else None
-        )
+        fallthrough_helper_id = _operation_fallthrough_helper_id(operation)
         steps.append(
             PatchFragmentOperation(
                 source_ref=refs[operation.source_block_id],

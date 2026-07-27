@@ -1487,6 +1487,22 @@ class FragmentOperation:
     def roles(self) -> frozenset[SemanticEdgeRole]:
         return frozenset(edge.role for edge in self.edges)
 
+    @property
+    def requires_fallthrough_helper(self) -> bool:
+        """Whether lowering must allocate a block to realize fallthrough."""
+        has_fallthrough = bool(
+            self.roles.intersection(
+                {
+                    SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                    SemanticEdgeRole.CALL_FALLTHROUGH,
+                }
+            )
+        )
+        return has_fallthrough and not isinstance(
+            self.computed_branch_normalization,
+            FragmentSetccIndexedTableNormalization,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class FragmentReturnSource:
