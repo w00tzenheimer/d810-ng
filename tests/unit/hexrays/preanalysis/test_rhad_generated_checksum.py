@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 import inspect
 import json
 from pathlib import Path
@@ -230,6 +231,61 @@ def test_generated_batch_registry_selects_by_complete_native_identity() -> None:
         )
         is None
     )
+
+
+def test_generated_template_partitions_each_preserved_transfer_boundary() -> None:
+    assert hasattr(generated_reference, "RhadGeneratedPreservedTransfer")
+    evidence_type = generated_reference.RhadGeneratedPreservedTransfer
+    fragment_type = generated_reference.RhadGeneratedTemplateFragment
+    first = evidence_type(
+        transfer_ea=0x40A7EF,
+        boundary_exit_eas=(0x40B6C0,),
+    )
+    second = evidence_type(
+        transfer_ea=0x40B4EE,
+        boundary_exit_eas=(0x40A607,),
+    )
+    fragment = fragment_type(
+        root_ea=0x40A7AE,
+        owned_ranges=((0x40A7AE, 0x40A7F1), (0x40B4C5, 0x40B4F0)),
+        owned_block_entry_eas=(
+            0x40A7AE,
+            0x40A7BA,
+            0x40A7CD,
+            0x40A7E5,
+            0x40B4C5,
+            0x40B4E2,
+        ),
+        boundary_ranges=(),
+        boundary_exit_eas=(0x40A607, 0x40B6C0),
+        direct_boundary_routes=(),
+        preserved_unresolved_transfers=(first, second),
+    )
+
+    assert fragment.preserved_unresolved_transfer_eas == (0x40A7EF, 0x40B4EE)
+    assert fragment.preserved_transfer_exit_map == {
+        0x40A7EF: (0x40B6C0,),
+        0x40B4EE: (0x40A607,),
+    }
+
+    with pytest.raises(ValueError, match="duplicate preserved transfer"):
+        replace(fragment, preserved_unresolved_transfers=(first, first))
+    with pytest.raises(ValueError, match="boundary ownership"):
+        replace(
+            fragment,
+            preserved_unresolved_transfers=(
+                replace(first, boundary_exit_eas=(0x40A607,)),
+                second,
+            ),
+        )
+    with pytest.raises(ValueError, match="owned native range"):
+        replace(
+            fragment,
+            preserved_unresolved_transfers=(
+                replace(first, transfer_ea=0x40C000),
+                second,
+            ),
+        )
     assert (
         reference_batch_for_native_key(
             make_native_key(

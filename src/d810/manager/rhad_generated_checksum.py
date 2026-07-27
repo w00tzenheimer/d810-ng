@@ -255,6 +255,31 @@ class RhadGeneratedBlockEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class RhadGeneratedPreservedTransfer:
+    """One unresolved native transfer and its exact semantic boundary exits."""
+
+    transfer_ea: int
+    boundary_exit_eas: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        transfer_ea = int(self.transfer_ea)
+        boundary_exit_eas = tuple(int(ea) for ea in self.boundary_exit_eas)
+        if transfer_ea <= 0:
+            raise ValueError("Rhad preserved transfer requires a native EA")
+        if (
+            any(ea <= 0 for ea in boundary_exit_eas)
+            or len(set(boundary_exit_eas)) != len(boundary_exit_eas)
+            or boundary_exit_eas != tuple(sorted(boundary_exit_eas))
+        ):
+            raise ValueError(
+                "Rhad preserved transfer boundary exits must be positive, unique, "
+                "and ordered"
+            )
+        object.__setattr__(self, "transfer_ea", transfer_ea)
+        object.__setattr__(self, "boundary_exit_eas", boundary_exit_eas)
+
+
+@dataclass(frozen=True, slots=True)
 class RhadGeneratedTemplateFragment:
     """Exact target-rooted native ranges translated for one batch body."""
 
@@ -264,7 +289,7 @@ class RhadGeneratedTemplateFragment:
     boundary_ranges: tuple[tuple[int, int], ...]
     boundary_exit_eas: tuple[int, ...]
     direct_boundary_routes: tuple[tuple[int, int, int], ...]
-    preserved_unresolved_transfer_eas: tuple[int, ...]
+    preserved_unresolved_transfers: tuple[RhadGeneratedPreservedTransfer, ...]
 
     def __post_init__(self) -> None:
         root_ea = int(self.root_ea)
@@ -280,9 +305,21 @@ class RhadGeneratedTemplateFragment:
             (int(source_ea), int(instruction_ea), int(target_ea))
             for source_ea, instruction_ea, target_ea in self.direct_boundary_routes
         )
+        preserved_unresolved_transfers = tuple(self.preserved_unresolved_transfers)
+        if any(
+            not isinstance(evidence, RhadGeneratedPreservedTransfer)
+            for evidence in preserved_unresolved_transfers
+        ):
+            raise TypeError("Rhad preserved transfer evidence must be typed")
         preserved_unresolved_transfer_eas = tuple(
-            int(ea) for ea in self.preserved_unresolved_transfer_eas
+            evidence.transfer_ea for evidence in preserved_unresolved_transfers
         )
+        preserved_boundary_exit_eas = {
+            ea
+            for evidence in preserved_unresolved_transfers
+            for ea in evidence.boundary_exit_eas
+        }
+        unowned_boundary_exit_eas = set(boundary_exits) - preserved_boundary_exit_eas
         if (
             root_ea <= 0
             or not owned_ranges
@@ -290,14 +327,8 @@ class RhadGeneratedTemplateFragment:
             or any(start_ea >= end_ea for start_ea, end_ea in boundary_ranges)
             or root_ea not in owned_entries
             or len(set(owned_entries)) != len(owned_entries)
-            or (
-                len(boundary_ranges) != len(boundary_exits)
-                and not (
-                    not boundary_ranges
-                    and len(preserved_unresolved_transfer_eas) == 1
-                    and boundary_exits
-                )
-            )
+            or not preserved_boundary_exit_eas.issubset(boundary_exits)
+            or len(boundary_ranges) != len(unowned_boundary_exit_eas)
             or len(set(boundary_exits)) != len(boundary_exits)
             or any(
                 source_ea <= 0 or instruction_ea <= 0 or target_ea <= 0
@@ -312,6 +343,27 @@ class RhadGeneratedTemplateFragment:
                 for ea in preserved_unresolved_transfer_eas
             )
         ):
+            if len(set(preserved_unresolved_transfer_eas)) != len(
+                preserved_unresolved_transfer_eas
+            ):
+                raise ValueError(
+                    "Rhad GENERATED template fragment has a duplicate preserved "
+                    "transfer"
+                )
+            if any(
+                not any(start_ea <= ea < end_ea for start_ea, end_ea in owned_ranges)
+                for ea in preserved_unresolved_transfer_eas
+            ):
+                raise ValueError(
+                    "Rhad preserved transfer is outside its owned native range"
+                )
+            if not preserved_boundary_exit_eas.issubset(boundary_exits) or len(
+                boundary_ranges
+            ) != len(unowned_boundary_exit_eas):
+                raise ValueError(
+                    "Rhad preserved transfer boundary ownership differs from the "
+                    "fragment exits"
+                )
             raise ValueError("Rhad GENERATED template fragment is incomplete")
         object.__setattr__(self, "root_ea", root_ea)
         object.__setattr__(self, "owned_ranges", owned_ranges)
@@ -321,9 +373,22 @@ class RhadGeneratedTemplateFragment:
         object.__setattr__(self, "direct_boundary_routes", direct_boundary_routes)
         object.__setattr__(
             self,
-            "preserved_unresolved_transfer_eas",
-            preserved_unresolved_transfer_eas,
+            "preserved_unresolved_transfers",
+            preserved_unresolved_transfers,
         )
+
+    @property
+    def preserved_unresolved_transfer_eas(self) -> tuple[int, ...]:
+        return tuple(
+            evidence.transfer_ea for evidence in self.preserved_unresolved_transfers
+        )
+
+    @property
+    def preserved_transfer_exit_map(self) -> dict[int, tuple[int, ...]]:
+        return {
+            evidence.transfer_ea: evidence.boundary_exit_eas
+            for evidence in self.preserved_unresolved_transfers
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -759,7 +824,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             ),
             boundary_exit_eas=(0x40A61B, 0x40A68C),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(),
+            preserved_unresolved_transfers=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40B6C0,
@@ -772,7 +837,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=((0x40B790, 0x40B79E),),
             boundary_exit_eas=(0x40B790,),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(),
+            preserved_unresolved_transfers=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A61B,
@@ -788,7 +853,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             ),
             boundary_exit_eas=(0x40A633, 0x40A74C),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(),
+            preserved_unresolved_transfers=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A68C,
@@ -801,7 +866,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=((0x40A800, 0x40A80E),),
             boundary_exit_eas=(0x40A800,),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(),
+            preserved_unresolved_transfers=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A6B4,
@@ -813,7 +878,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=(),
             boundary_exit_eas=(),
             direct_boundary_routes=((0x40A6BA, 0x40A6BE, 0x40A960),),
-            preserved_unresolved_transfer_eas=(),
+            preserved_unresolved_transfers=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A800,
@@ -826,7 +891,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=((0x40AA60, 0x40AA6E),),
             boundary_exit_eas=(0x40AA60,),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(),
+            preserved_unresolved_transfers=(),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A74C,
@@ -839,7 +904,12 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=(),
             boundary_exit_eas=(),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(0x40A764,),
+            preserved_unresolved_transfers=(
+                RhadGeneratedPreservedTransfer(
+                    transfer_ea=0x40A764,
+                    boundary_exit_eas=(),
+                ),
+            ),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A766,
@@ -848,7 +918,12 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=(),
             boundary_exit_eas=(),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(0x40A77C,),
+            preserved_unresolved_transfers=(
+                RhadGeneratedPreservedTransfer(
+                    transfer_ea=0x40A77C,
+                    boundary_exit_eas=(),
+                ),
+            ),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A9DE,
@@ -861,7 +936,12 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=(),
             boundary_exit_eas=(0x40AD6E,),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(0x40A9F6,),
+            preserved_unresolved_transfers=(
+                RhadGeneratedPreservedTransfer(
+                    transfer_ea=0x40A9F6,
+                    boundary_exit_eas=(0x40AD6E,),
+                ),
+            ),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A77E,
@@ -870,7 +950,12 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=(),
             boundary_exit_eas=(0x40A794, 0x40AEE6),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(0x40A792,),
+            preserved_unresolved_transfers=(
+                RhadGeneratedPreservedTransfer(
+                    transfer_ea=0x40A792,
+                    boundary_exit_eas=(0x40A794, 0x40AEE6),
+                ),
+            ),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40ABC6,
@@ -883,7 +968,12 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=(),
             boundary_exit_eas=(0x40B1D0,),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(0x40ABDE,),
+            preserved_unresolved_transfers=(
+                RhadGeneratedPreservedTransfer(
+                    transfer_ea=0x40ABDE,
+                    boundary_exit_eas=(0x40B1D0,),
+                ),
+            ),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40A794,
@@ -896,7 +986,12 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=(),
             boundary_exit_eas=(0x40A5F0,),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(0x40A7AC,),
+            preserved_unresolved_transfers=(
+                RhadGeneratedPreservedTransfer(
+                    transfer_ea=0x40A7AC,
+                    boundary_exit_eas=(0x40A5F0,),
+                ),
+            ),
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40AEE6,
@@ -909,7 +1004,12 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             boundary_ranges=(),
             boundary_exit_eas=(0x40A5F0,),
             direct_boundary_routes=(),
-            preserved_unresolved_transfer_eas=(0x40AEFE,),
+            preserved_unresolved_transfers=(
+                RhadGeneratedPreservedTransfer(
+                    transfer_ea=0x40AEFE,
+                    boundary_exit_eas=(0x40A5F0,),
+                ),
+            ),
         ),
     ),
     operations=(
@@ -1628,8 +1728,8 @@ def prepare_rhad_generated_reference_templates(
                 boundary_exit_eas=fragment.boundary_exit_eas,
                 owned_block_entry_eas=fragment.owned_block_entry_eas,
                 direct_boundary_routes=fragment.direct_boundary_routes,
-                preserved_unresolved_transfer_eas=(
-                    fragment.preserved_unresolved_transfer_eas
+                preserved_unresolved_transfer_exits=(
+                    fragment.preserved_transfer_exit_map
                 ),
             )
             logger.info(
