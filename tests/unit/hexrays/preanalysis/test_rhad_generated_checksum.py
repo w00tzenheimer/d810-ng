@@ -47,13 +47,13 @@ def test_checksum_producer_compiles_three_serial_free_reference_shapes() -> None
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 25
+    assert len(IMPORTED_BLOCK_IDS) == 24
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
         0x40A61B,
         0x40A68C,
-        0x40A6A6,
+        0x40A6B4,
         0x40A800,
     )
     assert tuple(operation.operation_id for operation in plan.operations) == (
@@ -109,10 +109,11 @@ def test_checksum_producer_compiles_three_serial_free_reference_shapes() -> None
     assert operation_topology.isdisjoint(preserved_sources)
     assert operation_topology | preserved_sources == set(native_body.block_ids)
     assert {edge.role: edge.target_block_id for edge in selected.edges} == {
-        SemanticEdgeRole.CONDITIONAL_TAKEN: "native@0x40A6A6",
+        SemanticEdgeRole.CONDITIONAL_TAKEN: "native@0x40A6B4",
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A800",
     }
     assert selected.reference_route_authority is not None
+    assert selected.reference_route_authority.reference_route.true_target_ea == 0x40A6A6
     assert BOUNDARY_EXIT_EAS == (0x40A633, 0x40A74C, 0x40A9A0, 0x40B790)
 
 
@@ -123,6 +124,22 @@ def test_generated_batch_registry_selects_by_complete_native_identity() -> None:
     assert selected.function_ea == 0x40A560
     assert selected.native_function_rva == 0xA560
     assert selected.template_root_eas == TEMPLATE_ROOT_EAS
+    nested_target = next(
+        fragment
+        for fragment in selected.template_fragments
+        if fragment.root_ea == 0x40A6B4
+    )
+    assert nested_target.owned_ranges == (
+        (0x40A6B4, 0x40A6BA),
+        (0x40A6BA, 0x40A6C0),
+    )
+    assert nested_target.boundary_exit_eas == ()
+    target_block = build_rhad_generated_reference_plan(
+        native_key=_native_key(),
+        evidence_generation=7,
+    ).block("native@0x40A6B4")
+    assert target_block.semantic_anchor_ea == 0x40A6B4
+    assert target_block.stable_identity.native_ranges.contains(0x40A6B4)
     assert (
         reference_batch_for_native_key(
             make_native_key(
