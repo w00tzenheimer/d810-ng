@@ -70,7 +70,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 142
+    assert len(IMPORTED_BLOCK_IDS) == 150
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -423,13 +423,17 @@ def test_checksum_producer_compiles_row9_existing_conditional_reference() -> Non
     }
     assert closure.issubset(plan.native_bodies[0].block_ids)
     true_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A6C0
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A6C0
     )
     assert true_template.preserved_transfer_exit_map == {
         0x40A6D8: (0x40A6DA, 0x40AB76),
     }
     false_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A960
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A960
     )
     assert false_template.preserved_transfer_exit_map == {
         0x40A978: (0x40AD1E,),
@@ -485,13 +489,17 @@ def test_checksum_producer_compiles_row10_existing_conditional_reference() -> No
     }
     assert closure.issubset(plan.native_bodies[0].block_ids)
     true_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A6DA
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A6DA
     )
     assert true_template.preserved_transfer_exit_map == {
         0x40A6F2: (0x40A6F4, 0x40AE8B),
     }
     false_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40AB76
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40AB76
     )
     assert false_template.preserved_transfer_exit_map == {
         0x40AB8E: (0x40B17F,),
@@ -543,13 +551,17 @@ def test_checksum_producer_compiles_row11_existing_conditional_reference() -> No
     }
     assert closure.issubset(plan.native_bodies[0].block_ids)
     true_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A6F4
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A6F4
     )
     assert true_template.preserved_transfer_exit_map == {
         0x40A70C: (0x40A5F0, 0x40A70E),
     }
     false_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40AE8B
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40AE8B
     )
     assert false_template.preserved_transfer_exit_map == {
         0x40AEA3: (0x40A5F0,),
@@ -593,7 +605,9 @@ def test_checksum_producer_compiles_row12_existing_conditional_reference() -> No
         plan.native_bodies[0].block_ids
     )
     true_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A70E
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A70E
     )
     assert true_template.preserved_transfer_exit_map == {
         0x40A73D: (0x40A607, 0x40B6C0),
@@ -640,13 +654,17 @@ def test_checksum_producer_compiles_row20_existing_conditional_reference() -> No
         "native@0x40AA78",
     }.issubset(plan.native_bodies[0].block_ids)
     true_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A81A
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A81A
     )
     assert true_template.preserved_transfer_exit_map == {
         0x40A832: (0x40A834, 0x40AC3D),
     }
     false_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40AA60
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40AA60
     )
     assert false_template.preserved_transfer_exit_map == {
         0x40AA78: (0x40ADBE,),
@@ -692,13 +710,17 @@ def test_checksum_producer_compiles_row21_existing_conditional_reference() -> No
         "native@0x40AC54",
     }.issubset(plan.native_bodies[0].block_ids)
     true_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A834
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A834
     )
     assert true_template.preserved_transfer_exit_map == {
         0x40A84C: (0x40A84E, 0x40AFDF),
     }
     false_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40AC3D
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40AC3D
     )
     assert false_template.preserved_transfer_exit_map == {
         0x40AC54: (0x40B21C,),
@@ -744,13 +766,17 @@ def test_checksum_producer_compiles_row22_existing_conditional_reference() -> No
         "native@0x40AFF7",
     }.issubset(plan.native_bodies[0].block_ids)
     true_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A84E
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A84E
     )
     assert true_template.preserved_transfer_exit_map == {
         0x40A866: (0x40A5F0, 0x40A868),
     }
     false_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40AFDF
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40AFDF
     )
     assert false_template.preserved_transfer_exit_map == {
         0x40AFF7: (0x40A5F0,),
@@ -794,11 +820,11 @@ def test_checksum_producer_compiles_row23_existing_conditional_reference() -> No
         "native@0x40A8A0",
         "native@0x40A8A3",
         "native@0x40A8A7",
-    }.issubset(
-        plan.native_bodies[0].block_ids
-    )
+    }.issubset(plan.native_bodies[0].block_ids)
     true_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A868
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A868
     )
     assert true_template.preserved_transfer_exit_map == {
         0x40A8A7: (0x40A607, 0x40B6C0),
@@ -844,7 +870,9 @@ def test_checksum_producer_compiles_row26_existing_conditional_reference() -> No
         "native@0x40ACD7",
     }.issubset(plan.native_bodies[0].block_ids)
     source_template = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A8B5
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A8B5
     )
     assert source_template.preserved_transfer_exit_map == {
         0x40A8CD: (0x40A8CF, 0x40ACBF),
@@ -874,7 +902,9 @@ def test_checksum_producer_compiles_row3_row4_direct_delivery_chain() -> None:
     assert row3_payload["reference_order"] == 3
     assert row4_payload["reference_operation_id"] == "rhad:route@0x40A649"
     assert row4_payload["reference_order"] == 4
-    operation_by_id = {operation.operation_id: operation for operation in batch.operations}
+    operation_by_id = {
+        operation.operation_id: operation for operation in batch.operations
+    }
     assert operation_by_id["route:rhad-direct@0x40A631"].depends_on == (
         "route:rhad-direct@0x40A619",
     )
@@ -885,7 +915,9 @@ def test_checksum_producer_compiles_row3_row4_direct_delivery_chain() -> None:
         "route:rhad-direct@0x40A649",
     )
     delivery = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A633
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A633
     )
     assert delivery.preserved_transfer_exit_map == {
         0x40A649: (0x40A8B5,),
@@ -909,12 +941,16 @@ def test_checksum_producer_compiles_row5_direct_route() -> None:
     assert payload["reference_operation_id"] == "rhad:route@0x40A661"
     assert payload["reference_order"] == 5
     assert payload["operation_variant"] == "simple_indirect_jump"
-    operation_by_id = {operation.operation_id: operation for operation in batch.operations}
+    operation_by_id = {
+        operation.operation_id: operation for operation in batch.operations
+    }
     assert operation_by_id["route:rhad-direct@0x40A661"].depends_on == (
         "route:rhad-direct@0x40A631",
     )
     source = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A64B
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A64B
     )
     assert source.owned_ranges == (
         (0x40A64B, 0x40A663),
@@ -922,7 +958,9 @@ def test_checksum_producer_compiles_row5_direct_route() -> None:
     )
     assert source.preserved_transfer_exit_map == {0x40AAFB: (0x40AAFD,)}
     closure = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A663
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A663
     )
     assert closure.owned_ranges == (
         (0x40A663, 0x40A67B),
@@ -950,12 +988,16 @@ def test_checksum_producer_compiles_row6_direct_route() -> None:
     assert payload["reference_operation_id"] == "rhad:route@0x40A679"
     assert payload["reference_order"] == 6
     assert payload["operation_variant"] == "simple_indirect_jump"
-    operation_by_id = {operation.operation_id: operation for operation in batch.operations}
+    operation_by_id = {
+        operation.operation_id: operation for operation in batch.operations
+    }
     assert operation_by_id["route:rhad-direct@0x40A679"].depends_on == (
         "route:rhad-direct@0x40A661",
     )
     closure = next(
-        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40AE26
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40AE26
     )
     assert closure.owned_ranges == ((0x40AE26, 0x40AE3E),)
     assert closure.preserved_transfer_exit_map == {
@@ -998,7 +1040,9 @@ def test_checksum_producer_compiles_row19_direct_route() -> None:
         "native@0x40B6D4",
     ]
     assert payload["boundary_exit_eas"] == [0x40B790]
-    operation_by_id = {operation.operation_id: operation for operation in batch.operations}
+    operation_by_id = {
+        operation.operation_id: operation for operation in batch.operations
+    }
     assert operation_by_id["route:rhad-direct@0x40A7EF"].depends_on == (
         "rhad:route@0x40A7AC",
     )
@@ -1037,10 +1081,61 @@ def test_checksum_producer_compiles_row25_direct_route() -> None:
         "native@0x40AAFB",
     ]
     assert payload["boundary_exit_eas"] == [0x40A663, 0x40AAFD]
-    operation_by_id = {operation.operation_id: operation for operation in batch.operations}
+    operation_by_id = {
+        operation.operation_id: operation for operation in batch.operations
+    }
     assert operation_by_id["route:rhad-direct@0x40A8B3"].depends_on == (
         "route:rhad-direct@0x40A631",
     )
+
+
+def test_checksum_producer_compiles_row27_existing_conditional_reference() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("rhad:route@0x40A8E7")
+    normalization = operation.computed_branch_normalization
+    assert normalization is not None
+    assert normalization.predicate_kind is PredicateKind.SLT
+    assert normalization.condition_producer_ea == 0x40A8D5
+    assert normalization.unresolved_transfer_ea == 0x40A8E7
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.CONDITIONAL_TAKEN: "native@0x40A8E9",
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40B024",
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_order"] == 27
+    assert payload["observed_predicate_kind"] == PredicateKind.SGE.value
+    assert payload["predicate_kind"] == PredicateKind.SLT.value
+    assert payload["comparison_constant"] == 0x0CDF90C9
+    assert payload["boundary_exit_eas"] == [0x40A5F0, 0x40A903]
+    operation_by_id = {
+        operation.operation_id: operation for operation in batch.operations
+    }
+    assert operation_by_id["rhad:route@0x40A8E7"].depends_on == ("rhad:route@0x40A8CD",)
+    assert {
+        "native@0x40A8E9",
+        "native@0x40A8F7",
+        "native@0x40A8FD",
+        "native@0x40A901",
+        "native@0x40B024",
+        "native@0x40B032",
+        "native@0x40B038",
+        "native@0x40B03C",
+    }.issubset(plan.native_bodies[0].block_ids)
+    true_template = next(
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40A8E9
+    )
+    assert true_template.preserved_transfer_exit_map == {
+        0x40A901: (0x40A5F0, 0x40A903),
+    }
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
@@ -1282,9 +1377,12 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
             "reference_operation_id",
             operation.operation_id,
         )
-        assert rows_by_operation_id[reference_operation_id][
-            "current_generated_proof"
-        ]["status"] == "accepted_generated_c6"
+        assert (
+            rows_by_operation_id[reference_operation_id]["current_generated_proof"][
+                "status"
+            ]
+            == "accepted_generated_c6"
+        )
     assert row5["operation_id"] == "rhad:route@0x40A661"
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
