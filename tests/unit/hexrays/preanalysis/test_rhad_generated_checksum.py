@@ -36,7 +36,7 @@ def _native_key():
     )
 
 
-def test_checksum_producer_compiles_four_serial_free_reference_shapes() -> None:
+def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(),
         evidence_generation=7,
@@ -56,7 +56,7 @@ def test_checksum_producer_compiles_four_serial_free_reference_shapes() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 40
+    assert len(IMPORTED_BLOCK_IDS) == 48
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -69,6 +69,8 @@ def test_checksum_producer_compiles_four_serial_free_reference_shapes() -> None:
         0x40A9DE,
         0x40A77E,
         0x40ABC6,
+        0x40A794,
+        0x40AEE6,
     )
     assert tuple(operation.operation_id for operation in plan.operations) == (
         "rhad:route@0x40A605",
@@ -78,6 +80,7 @@ def test_checksum_producer_compiles_four_serial_free_reference_shapes() -> None:
         "route:rhad-direct@0x40A74A",
         "rhad:route@0x40A764",
         "rhad:route@0x40A77C",
+        "rhad:route@0x40A792",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -130,6 +133,7 @@ def test_checksum_producer_compiles_four_serial_free_reference_shapes() -> None:
         fourth_existing_envelope.selected_value_block_id,
         fourth_existing_envelope.join_block_id,
         fourth.source_block_id,
+        "native@0x40A77E",
     }
     preserved_sources = set(native_body.preserved_native_transfer_block_ids)
     assert operation_topology.isdisjoint(preserved_sources)
@@ -160,6 +164,14 @@ def test_checksum_producer_compiles_four_serial_free_reference_shapes() -> None:
         fourth.computed_branch_normalization.table_evidence.false_entry.decoded_target_ea
         == 0x40ABC6
     )
+    fifth = plan.operation("rhad:route@0x40A792")
+    fifth_evidence = fifth.computed_branch_normalization.table_evidence
+    assert fifth.computed_branch_normalization.predicate_kind is PredicateKind.SGE
+    assert fifth_evidence.index_scaling.kind.value == "scaled_lookup"
+    assert fifth_evidence.index_scaling.lookup_ea == 0x40A789
+    assert fifth_evidence.index_scaling.scale_bytes == 8
+    assert fifth_evidence.true_entry.decoded_target_ea == 0x40AEE6
+    assert fifth_evidence.false_entry.decoded_target_ea == 0x40A794
     fourth_payload = json.loads(
         fourth.reference_route_authority.reference_route.reference_ledger_json
     )
@@ -177,11 +189,10 @@ def test_checksum_producer_compiles_four_serial_free_reference_shapes() -> None:
         "reference_order": 16,
     }
     assert BOUNDARY_EXIT_EAS == (
+        0x40A5F0,
         0x40A633,
-        0x40A794,
         0x40A9A0,
         0x40AD6E,
-        0x40AEE6,
         0x40B1D0,
         0x40B790,
     )
@@ -251,6 +262,27 @@ def test_row16_proof_artifact_is_required_and_content_addressed(
     mismatched_path.write_text(json.dumps(checked_in), encoding="utf-8")
     with pytest.raises(RhadCompilerRejection, match="content identity"):
         generated_reference.load_row16_table_proof_artifact(mismatched_path)
+
+
+def test_row17_proof_artifact_is_required_and_content_addressed(
+    tmp_path: Path,
+) -> None:
+    artifact = generated_reference.load_row17_table_proof_artifact()
+    checked_in = json.loads(
+        generated_reference.ROW17_TABLE_PROOF_PATH.read_text(encoding="utf-8")
+    )
+
+    assert artifact.content_identity == (
+        "sha256:a67a3d2cc432df11ca627c90f06f3a854004a9463a529ee1d0cdf1f759406e67"
+    )
+    assert artifact.proof_payload == checked_in["proof"]
+    assert artifact.operation_id == "rhad:route@0x40A792"
+    assert artifact.reference_order == 17
+
+    with pytest.raises(RhadCompilerRejection, match="artifact is unavailable"):
+        generated_reference.load_row17_table_proof_artifact(
+            tmp_path / "missing-row17-proof.json"
+        )
 
 
 def test_stable_228_row_inventory_references_required_row16_artifact() -> None:
