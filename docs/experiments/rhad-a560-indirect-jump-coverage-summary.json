@@ -4,10 +4,12 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "f507202735bf0ea0ff6dc16420cfe6c2d5121a18",
+  "accepted_code_sha": "37176e6fe831ddeb439ea7ccb59f241b1adf113a",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
-    "route:rhad-direct@0x40A619"
+    "route:rhad-direct@0x40A619",
+    "route:rhad-direct@0x40A68A",
+    "rhad:route@0x40A6A4"
   ],
   "variants": [
     {
@@ -35,13 +37,13 @@
     {
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
-      "compiler_supported_operations": 0,
-      "compiled_operation_instances": 0,
-      "vertically_proved_operations": 0,
-      "accepted_receipt_operations": 0,
-      "earliest_unproved_reference_order": 8,
-      "earliest_unproved_operation_id": "rhad:route@0x40A6A4",
-      "first_missing_typed_obligation": "complete the unavailable 0x40A6A6 true-arm closure, then compile an imported conditional-select route with exact predicate orientation, native-body ownership, and graph-free GENERATED realization"
+      "compiler_supported_operations": 117,
+      "compiled_operation_instances": 1,
+      "vertically_proved_operations": 1,
+      "accepted_receipt_operations": 1,
+      "earliest_unproved_reference_order": 9,
+      "earliest_unproved_operation_id": "rhad:route@0x40A6BE",
+      "first_missing_typed_obligation": "instantiate the proved RhadExistingConditionalRoute vocabulary with exact per-operation evidence and dependency closure"
     },
     {
       "operation_variant": "setcc_indexed_table",
@@ -79,14 +81,18 @@
       "0x40A6A4"
     ],
     "complete_imported_closure_anchors": [
+      "0x40A6B4",
+      "0x40A6BA",
       "0x40A800",
       "0x40A80E",
       "0x40A814",
       "0x40A818"
     ],
-    "unavailable_imported_closure_roots": [
-      "0x40A6A6"
-    ],
+    "unavailable_imported_closure_roots": [],
+    "semantic_target_delivery_bindings": {
+      "0x40A6A6": "0x40A6B4",
+      "0x40A800": "0x40A800"
+    },
     "boundary_exit_eas": [
       "0x40A9A0"
     ],
