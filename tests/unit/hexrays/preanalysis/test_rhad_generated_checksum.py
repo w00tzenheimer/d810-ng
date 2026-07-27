@@ -1639,7 +1639,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     }
 
 
-def test_indirect_jump_coverage_summary_matches_committed_row27_batch() -> None:
+def test_indirect_jump_coverage_summary_matches_committed_row28_batch() -> None:
     summary = json.loads(
         (
             _REPO
@@ -1666,7 +1666,7 @@ def test_indirect_jump_coverage_summary_matches_committed_row27_batch() -> None:
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("036514a62c1f69da5467ea43add83be69eca496d")
+    assert summary["accepted_code_sha"] == ("470e444036aaaa5bafe8dadf588426b62f91bcfe")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     assert accepted_operation_ids == [
         operation.operation_id for operation in batch.operations
@@ -1689,13 +1689,13 @@ def test_indirect_jump_coverage_summary_matches_committed_row27_batch() -> None:
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 13,
-        "vertically_proved_operations": 13,
-        "accepted_receipt_operations": 13,
-        "earliest_unproved_reference_order": 28,
-        "earliest_unproved_operation_id": "rhad:route@0x40A901",
+        "compiled_operation_instances": 14,
+        "vertically_proved_operations": 14,
+        "accepted_receipt_operations": 14,
+        "earliest_unproved_reference_order": 30,
+        "earliest_unproved_operation_id": "rhad:route@0x40A978",
         "first_missing_typed_obligation": (
-            "complete the unavailable 0x40A903 true-root closure with typed "
+            "complete the unavailable 0x40A97A true-root closure with typed "
             "evidence before mutation"
         ),
     }
