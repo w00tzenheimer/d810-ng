@@ -97,6 +97,8 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40A8B5,
         0x40A8CF,
         0x40ACBF,
+        0x40A8E9,
+        0x40B024,
         0x40AC3D,
         0x40AA60,
         0x40A74C,
@@ -133,6 +135,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40A866",
         "route:rhad-direct@0x40A8B3",
         "rhad:route@0x40A8CD",
+        "rhad:route@0x40A8E7",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -205,6 +208,8 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     row23_envelope = row23.computed_branch_normalization.conditional_select_envelope
     row26 = plan.operation("rhad:route@0x40A8CD")
     row26_envelope = row26.computed_branch_normalization.conditional_select_envelope
+    row27 = plan.operation("rhad:route@0x40A8E7")
+    row27_envelope = row27.computed_branch_normalization.conditional_select_envelope
     operation_topology = direct_sources | {
         selected.source_block_id,
         selected_envelope.selected_value_block_id,
@@ -244,6 +249,9 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         row26.source_block_id,
         row26_envelope.selected_value_block_id,
         row26_envelope.join_block_id,
+        row27.source_block_id,
+        row27_envelope.selected_value_block_id,
+        row27_envelope.join_block_id,
     }
     preserved_sources = set(native_body.preserved_native_transfer_block_ids)
     assert operation_topology.isdisjoint(preserved_sources)
@@ -301,14 +309,13 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     assert BOUNDARY_EXIT_EAS == (
         0x40A5CA,
         0x40A5F0,
-        0x40A8E9,
+        0x40A903,
         0x40A9A0,
         0x40AAFD,
         0x40AD1E,
         0x40AD6E,
         0x40ADBE,
         0x40AE3E,
-        0x40B024,
         0x40B17F,
         0x40B1D0,
         0x40B21C,
@@ -1576,7 +1583,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     }
 
 
-def test_indirect_jump_coverage_summary_matches_committed_row25_batch() -> None:
+def test_indirect_jump_coverage_summary_matches_committed_row27_batch() -> None:
     summary = json.loads(
         (
             _REPO
@@ -1603,7 +1610,7 @@ def test_indirect_jump_coverage_summary_matches_committed_row25_batch() -> None:
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("52e5a1162d3485823bea7368cadd746d22941d0d")
+    assert summary["accepted_code_sha"] == ("036514a62c1f69da5467ea43add83be69eca496d")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     assert accepted_operation_ids == [
         operation.operation_id for operation in batch.operations
@@ -1626,13 +1633,13 @@ def test_indirect_jump_coverage_summary_matches_committed_row25_batch() -> None:
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 12,
-        "vertically_proved_operations": 12,
-        "accepted_receipt_operations": 12,
-        "earliest_unproved_reference_order": 27,
-        "earliest_unproved_operation_id": "rhad:route@0x40A8E7",
+        "compiled_operation_instances": 13,
+        "vertically_proved_operations": 13,
+        "accepted_receipt_operations": 13,
+        "earliest_unproved_reference_order": 28,
+        "earliest_unproved_operation_id": "rhad:route@0x40A901",
         "first_missing_typed_obligation": (
-            "complete the unavailable 0x40A8E9 true-root closure with typed "
+            "complete the unavailable 0x40A903 true-root closure with typed "
             "evidence before mutation"
         ),
     }
