@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "54b49f87da79548a8824be40250aed13f4688708",
+  "accepted_code_sha": "294bdbb15fd5f73d9bd83b1e5c3a17a0e533f9da",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -32,7 +32,8 @@
     "rhad:route@0x40A8CD",
     "rhad:route@0x40A8E7",
     "rhad:route@0x40A901",
-    "route:rhad-direct@0x40A95E"
+    "route:rhad-direct@0x40A95E",
+    "rhad:route@0x40A978"
   ],
   "variants": [
     {
@@ -61,12 +62,12 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 14,
-      "vertically_proved_operations": 14,
-      "accepted_receipt_operations": 14,
-      "earliest_unproved_reference_order": 30,
-      "earliest_unproved_operation_id": "rhad:route@0x40A978",
-      "first_missing_typed_obligation": "complete the unavailable 0x40A97A true-root closure with typed evidence before mutation"
+      "compiled_operation_instances": 15,
+      "vertically_proved_operations": 15,
+      "accepted_receipt_operations": 15,
+      "earliest_unproved_reference_order": 31,
+      "earliest_unproved_operation_id": "rhad:route@0x40A992",
+      "first_missing_typed_obligation": "complete the unavailable 0x40A994 true-root closure with typed evidence before mutation"
     },
     {
       "operation_variant": "setcc_indexed_table",
