@@ -4156,6 +4156,64 @@ def test_generated_capture_partitions_multiple_preserved_transfer_exits(
     }
 
 
+def test_generated_capture_synthesizes_carrier_for_live_icall_fallthrough(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    generated_templates: dict[tuple[int, int], object] = {}
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_GENERATED_REFERENCE_SNIPPET_TEMPLATES",
+        generated_templates,
+    )
+    function_ea = 0x40A560
+    target_ea = 0x40A7AE
+    transfer_ea = 0x40A7EF
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+                (1,),
+            ),
+            _Block(
+                1,
+                0x40A7E5,
+                (
+                    _Instruction(ida_hexrays.m_nop, 0x40A7E5),
+                    _Instruction(ida_hexrays.m_icall, transfer_ea),
+                ),
+                (2,),
+            ),
+            _Block(
+                2,
+                transfer_ea,
+                (_Instruction(ida_hexrays.m_ret, transfer_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    assert detached_handler_island.capture_generated_reference_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((0x40A7AE, 0x40A7F1),),
+        owned_block_entry_eas=(target_ea, 0x40A7E5),
+        direct_boundary_routes=(),
+        preserved_unresolved_transfer_exits={transfer_ea: (0x40B6C0,)},
+    )
+    template = generated_templates[(function_ea, target_ea)]
+    carriers = tuple(
+        block for block in template.blocks if block.native_entry_ea == transfer_ea
+    )
+    assert len(carriers) == 1
+    carrier = carriers[0]
+    assert carrier.instructions[-1].opcode == ida_hexrays.m_ret
+    assert carrier.external_successor_eas == (0x40B6C0,)
+
+
 def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:
     _install_runtime_fakes(monkeypatch)
     function_ea = 0x40A560
