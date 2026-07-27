@@ -70,11 +70,12 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 125
+    assert len(IMPORTED_BLOCK_IDS) == 130
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
         0x40A61B,
+        0x40A633,
         0x40A68C,
         0x40A6A6,
         0x40A6C0,
@@ -107,6 +108,8 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     assert tuple(operation.operation_id for operation in plan.operations) == (
         "rhad:route@0x40A605",
         "route:rhad-direct@0x40A619",
+        "route:rhad-direct@0x40A631",
+        "route:rhad-direct@0x40A649",
         "route:rhad-direct@0x40A68A",
         "rhad:route@0x40A6A4",
         "rhad:route@0x40A6BE",
@@ -290,7 +293,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     }
     assert BOUNDARY_EXIT_EAS == (
         0x40A5F0,
-        0x40A633,
+        0x40A64B,
         0x40A8E9,
         0x40A9A0,
         0x40AD1E,
@@ -839,6 +842,48 @@ def test_checksum_producer_compiles_row26_existing_conditional_reference() -> No
     }
 
 
+def test_checksum_producer_compiles_row3_row4_direct_delivery_chain() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    row3 = plan.operation("route:rhad-direct@0x40A631")
+    row4 = plan.operation("route:rhad-direct@0x40A649")
+    assert row3.direct_transfer_rewrite.rewrite_anchor_ea == 0x40A631
+    assert row3.edges[0].target_block_id == "native@0x40A633"
+    assert row4.direct_transfer_rewrite.rewrite_anchor_ea == 0x40A649
+    assert row4.edges[0].target_block_id == "native@0x40A8B5"
+    row3_payload = json.loads(
+        row3.reference_route_authority.reference_route.reference_ledger_json
+    )
+    row4_payload = json.loads(
+        row4.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert row3_payload["reference_operation_id"] == "rhad:route@0x40A631"
+    assert row3_payload["reference_order"] == 3
+    assert row4_payload["reference_operation_id"] == "rhad:route@0x40A649"
+    assert row4_payload["reference_order"] == 4
+    operation_by_id = {operation.operation_id: operation for operation in batch.operations}
+    assert operation_by_id["route:rhad-direct@0x40A631"].depends_on == (
+        "route:rhad-direct@0x40A619",
+    )
+    assert operation_by_id["route:rhad-direct@0x40A649"].depends_on == (
+        "route:rhad-direct@0x40A631",
+    )
+    assert operation_by_id["rhad:route@0x40A8CD"].depends_on == (
+        "route:rhad-direct@0x40A649",
+    )
+    delivery = next(
+        fragment for fragment in batch.template_fragments if fragment.root_ea == 0x40A633
+    )
+    assert delivery.preserved_transfer_exit_map == {
+        0x40A649: (0x40A8B5,),
+        0x40A8B3: (0x40A64B,),
+    }
+
+
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
@@ -1185,9 +1230,11 @@ def test_indirect_jump_coverage_summary_matches_committed_row23_batch() -> None:
 
     assert summary["accepted_code_sha"] == ("08914197ea7f079c0054a1df910a2d0a4fb6fde3")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
+    accepted_operation_id_set = set(accepted_operation_ids)
     assert accepted_operation_ids == [
         operation.operation_id
-        for operation in batch.operations[: len(accepted_operation_ids)]
+        for operation in batch.operations
+        if operation.operation_id in accepted_operation_id_set
     ]
     assert existing == {
         "operation_variant": "existing_conditional_plus_indirect",
