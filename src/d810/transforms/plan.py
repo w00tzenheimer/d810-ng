@@ -1058,12 +1058,7 @@ def _validate_fragment_contract_steps(
     for step in operation_steps:
         expected_helper = (
             f"fallthrough-helper:{step.operation.operation_id}"
-            if step.operation.roles.intersection(
-                {
-                    SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
-                    SemanticEdgeRole.CALL_FALLTHROUGH,
-                }
-            )
+            if step.operation.requires_fallthrough_helper
             else None
         )
         if (

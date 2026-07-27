@@ -1384,12 +1384,7 @@ class MbaMutationGateway:
             )
         for operation in plan.operations:
             source = plan.block(operation.source_block_id)
-            if operation.roles.intersection(
-                {
-                    SemanticEdgeRole.CALL_FALLTHROUGH,
-                    SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
-                }
-            ):
+            if operation.requires_fallthrough_helper:
                 helper_target = None
                 normalization = operation.computed_branch_normalization
                 envelope = (
@@ -1623,14 +1618,7 @@ class MbaMutationGateway:
             + len(plan.terminal_returns)
             + (
                 sum(
-                    bool(
-                        operation.roles.intersection(
-                            {
-                                SemanticEdgeRole.CALL_FALLTHROUGH,
-                                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
-                            }
-                        )
-                    )
+                    operation.requires_fallthrough_helper
                     for operation in plan.operations
                 )
                 if publication_profile.graph_free

@@ -15,6 +15,10 @@ from d810.hexrays.mutation import detached_handler_island
 from d810.hexrays.mutation import cfg_verify
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
+from d810.manager.rhad_generated_checksum import (
+    INPUT_SHA256 as RHAD_INPUT_SHA256,
+    build_rhad_generated_reference_plan,
+)
 from d810.hexrays.mutation.semantic_fragment_preparation import (
     PreparedNativeBodyPayload,
     PreparedNativeBodyPreparation,
@@ -3809,6 +3813,149 @@ def test_preopt_native_body_normalizes_signed_flag_xor_before_staging(
         condition_producer_ea,
         predicate_ea,
     )
+
+
+def test_preopt_setcc_table_accepts_typed_artificial_transfer_suffix() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=f"sha256:{RHAD_INPUT_SHA256}",
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+    operation = plan.operation("rhad:route@0x40A77C")
+    normalization = operation.computed_branch_normalization
+    assert normalization is not None
+    native_body = next(
+        body for body in plan.native_bodies if operation.operation_id in body.proof_ids
+    )
+    overflow_result = _Operand(ida_hexrays.mop_r, register=60, size=1)
+    sign_result = _Operand(ida_hexrays.mop_r, register=61, size=1)
+    predicate_result = _Operand(ida_hexrays.mop_r, register=7, size=4)
+    predicate_expression = _Instruction(
+        ida_hexrays.m_xor,
+        0x40A76E,
+        left=sign_result,
+        right=overflow_result,
+    )
+    predicate = _Instruction(
+        ida_hexrays.m_xdu,
+        0x40A76E,
+        left=_Operand(
+            ida_hexrays.mop_d,
+            size=1,
+            nested=predicate_expression,
+        ),
+        dest=predicate_result,
+    )
+    instructions = (
+        _Instruction(
+            ida_hexrays.m_seto,
+            0x40A768,
+            dest=overflow_result,
+        ),
+        _Instruction(
+            ida_hexrays.m_sets,
+            0x40A768,
+            dest=sign_result,
+        ),
+        predicate,
+        _Instruction(
+            ida_hexrays.m_mul,
+            0x40A771,
+            left=predicate_result,
+            right=_Operand(ida_hexrays.mop_n, value=0x20, size=4),
+            dest=predicate_result,
+        ),
+        _Instruction(ida_hexrays.m_ldx, 0x40A774),
+        _Instruction(ida_hexrays.m_cfadd, 0x40A77A),
+        _Instruction(ida_hexrays.m_ofadd, 0x40A77A),
+        _Instruction(ida_hexrays.m_setz, 0x40A77A),
+        _Instruction(ida_hexrays.m_setp, 0x40A77A),
+        _Instruction(ida_hexrays.m_sets, 0x40A77A),
+        _Instruction(ida_hexrays.m_add, 0x40A77A),
+        _Instruction(
+            ida_hexrays.m_icall,
+            0x40A77C,
+            left=_Operand(ida_hexrays.mop_r, register=7, size=4),
+            right=_Operand(ida_hexrays.mop_r, register=7, size=4),
+            dest=_Operand(ida_hexrays.mop_z),
+        ),
+    )
+    template_block = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=0,
+        native_entry_ea=0x40A766,
+        native_end_ea=0x40A77E,
+        instructions=instructions,
+        block_type=ida_hexrays.BLT_1WAY,
+        block_flags=ida_hexrays.MBL_TCAL,
+        successor_serials=(1,),
+        external_successor_eas=(0,),
+    )
+
+    prepared = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._preflight_setcc_indexed_table_normalization(
+        template_block,
+        native_body,
+        operation,
+        normalization,
+    )
+
+    assert prepared.cut_index == 2
+    assert prepared.branch_opcode == ida_hexrays.m_jnz
+    assert prepared.branch_condition_template is not None
+
+    wrong_stride = replace(
+        template_block,
+        instructions=(
+            *instructions[:3],
+            _Instruction(
+                ida_hexrays.m_mul,
+                0x40A771,
+                left=predicate_result,
+                right=_Operand(ida_hexrays.mop_n, value=8, size=4),
+                dest=predicate_result,
+            ),
+            *instructions[4:],
+        ),
+    )
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="shift_stride_exact",
+    ):
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._preflight_setcc_indexed_table_normalization(
+            wrong_stride,
+            native_body,
+            operation,
+            normalization,
+        )
+
+
+def test_generated_preserved_fake_transfer_retains_multi_exit_indirect_fact() -> None:
+    transfer_ea = 0x40A792
+    carrier = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=1,
+        native_entry_ea=transfer_ea,
+        native_end_ea=transfer_ea + 2,
+        instructions=(_Instruction(ida_hexrays.m_ret, transfer_ea),),
+        block_type=ida_hexrays.BLT_STOP,
+        block_flags=ida_hexrays.MBL_FAKE,
+        successor_serials=(),
+        external_successor_eas=(0x40A794, 0x40AEE6),
+    )
+
+    successors, terminators = (
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._generated_preserved_transfer_authority(
+            matched={"carrier": carrier},
+            native_body=SimpleNamespace(
+                preserved_native_transfer_block_ids=("carrier",),
+            ),
+        )
+    )
+
+    assert successors == {"carrier": ()}
+    assert terminators == {
+        "carrier": (transfer_ea, InsnKind.INDIRECT_JUMP),
+    }
 
 
 def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:

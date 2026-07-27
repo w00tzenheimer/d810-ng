@@ -19,7 +19,12 @@ from d810.transforms.fragment_to_patch import (
     PatchFragmentOperation,
     PatchFragmentRootPublication,
     PatchTransactionParticipant,
+    _operation_fallthrough_helper_id,
     lower_fragment_plan,
+)
+from d810.manager.rhad_generated_checksum import (
+    INPUT_SHA256 as RHAD_INPUT_SHA256,
+    build_rhad_generated_reference_plan,
 )
 from d810.transforms.fragment_validation import validate_fragment_projection
 from tests.unit.transforms.test_fragment_validation import (
@@ -28,6 +33,7 @@ from tests.unit.transforms.test_fragment_validation import (
     _terminal_plan,
     _terminal_projection,
 )
+from tests.native_preanalysis import make_native_key
 
 
 def _prepared(plan, projection=None):
@@ -58,6 +64,23 @@ def _prepared(plan, projection=None):
         projection=projection,
         cfg_projection=cfg_projection,
         root_inventory=inventory,
+    )
+
+
+def test_setcc_table_lowering_uses_typed_physical_fallthrough() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=f"sha256:{RHAD_INPUT_SHA256}",
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+    selected = plan.operation("rhad:route@0x40A77C")
+    accepted = plan.operation("rhad:route@0x40A605")
+
+    assert _operation_fallthrough_helper_id(selected) is None
+    assert _operation_fallthrough_helper_id(accepted) == (
+        "fallthrough-helper:rhad:route@0x40A605"
     )
 
 

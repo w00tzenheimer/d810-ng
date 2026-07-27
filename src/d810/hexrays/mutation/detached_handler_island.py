@@ -79,8 +79,11 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentReferencedImportedConditionalSelectEnvelope,
+    FragmentSetccIndexedTableNormalization,
     FragmentStoragePredicateMaterialization,
     FragmentTerminalReturn,
+    superseded_direct_transfer_carrier_block_ids,
+    superseded_referenced_conditional_carrier_block_ids,
 )
 from d810.transforms.prepared_native_body import (
     PreparedNativeBodyFact,
@@ -2027,22 +2030,46 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             )
             if block_id in native_body.block_ids
         }
-        planned_operation_source_block_ids = planned_direct_transfer_block_ids | {
+        planned_setcc_operation_source_block_ids = {
             str(operation.source_block_id)
             for operation in plan.operations
-            if operation.source_block_id in planned_referenced_conditional_block_ids
+            if isinstance(
+                operation.computed_branch_normalization,
+                FragmentSetccIndexedTableNormalization,
+            )
+            and operation.source_block_id in native_body.block_ids
         }
+        planned_operation_source_block_ids = (
+            planned_direct_transfer_block_ids
+            | planned_setcc_operation_source_block_ids
+            | {
+                str(operation.source_block_id)
+                for operation in plan.operations
+                if operation.source_block_id in planned_referenced_conditional_block_ids
+            }
+        )
+        superseded_transfer_carrier_block_ids = (
+            superseded_direct_transfer_carrier_block_ids(plan)
+            | superseded_referenced_conditional_carrier_block_ids(plan)
+        ) & set(native_body.block_ids)
         if allow_unplanned_transfers:
             body_block_ids = set(native_body.block_ids)
             if (
                 preserved_native_transfer_block_ids & planned_direct_transfer_block_ids
                 or preserved_native_transfer_block_ids
                 & planned_referenced_conditional_block_ids
+                or preserved_native_transfer_block_ids
+                & planned_setcc_operation_source_block_ids
                 or planned_direct_transfer_block_ids
                 & planned_referenced_conditional_block_ids
+                or planned_direct_transfer_block_ids
+                & planned_setcc_operation_source_block_ids
+                or planned_referenced_conditional_block_ids
+                & planned_setcc_operation_source_block_ids
                 or preserved_native_transfer_block_ids
                 | planned_direct_transfer_block_ids
                 | planned_referenced_conditional_block_ids
+                | planned_setcc_operation_source_block_ids
                 != body_block_ids
             ):
                 raise SemanticFragmentBackendRejected(
@@ -2068,9 +2095,18 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     for ea in template_block.external_successor_eas
                     if int(ea) > 0
                 )
-                if terminal_block_ids or (
-                    has_terminal_return and len(external_targets) != 1
-                ):
+                terminal_return_is_bound = bool(
+                    not has_terminal_return
+                    or (
+                        block_id in superseded_transfer_carrier_block_ids
+                        and not external_targets
+                    )
+                    or (
+                        block_id in preserved_native_transfer_block_ids
+                        and bool(external_targets)
+                    )
+                )
+                if terminal_block_ids or not terminal_return_is_bound:
                     raise SemanticFragmentBackendRejected(
                         "GENERATED reference native body contains an unbound "
                         f"terminal return; block={block_id!r} "
@@ -2151,9 +2187,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 1
                 if allow_unplanned_transfers
                 and block_id in planned_operation_source_block_ids
-                else 0
-                if allow_unplanned_transfers or block_id in terminal_block_ids
-                else 1
+                else (
+                    0
+                    if allow_unplanned_transfers or block_id in terminal_block_ids
+                    else 1
+                )
             )
             conditional_tail = bool(
                 template_block.instructions
@@ -2212,7 +2250,17 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 elif computed_normalization is not None:
                     if not conditional_tail:
                         computed_normalizations[str(block_id)] = (
-                            self._preflight_computed_branch_normalization(
+                            self._preflight_setcc_indexed_table_normalization(
+                                template_block,
+                                native_body,
+                                operations[0],
+                                computed_normalization,
+                            )
+                            if isinstance(
+                                computed_normalization,
+                                FragmentSetccIndexedTableNormalization,
+                            )
+                            else self._preflight_computed_branch_normalization(
                                 template_block,
                                 native_body,
                                 operations[0],
@@ -2362,11 +2410,13 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 join_successor_labels[index],
                 None if successor is None else int(successor.block_type),
                 None if successor is None else f"0x{int(successor.block_flags):X}",
-                None
-                if successor is None
-                else tuple(
-                    (f"0x{int(instruction.ea):X}", int(instruction.opcode))
-                    for instruction in successor.instructions
+                (
+                    None
+                    if successor is None
+                    else tuple(
+                        (f"0x{int(instruction.ea):X}", int(instruction.opcode))
+                        for instruction in successor.instructions
+                    )
                 ),
             )
             for index, successor_serial in enumerate(
@@ -2808,6 +2858,142 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             cut_index=cut_index,
             predicate=predicate,
         )
+
+    @staticmethod
+    def _preflight_setcc_indexed_table_normalization(
+        template_block: DetachedSnippetBlockTemplate,
+        native_body: FragmentNativeBody,
+        operation: FragmentOperation,
+        normalization: FragmentSetccIndexedTableNormalization,
+    ) -> _ComputedBranchNormalizationPlan:
+        """Prove one typed setcc/table suffix before replacing it with a branch."""
+        evidence = normalization.table_evidence
+        instructions = tuple(template_block.instructions)
+        indexes_by_ea = {
+            ea: tuple(
+                index
+                for index, instruction in enumerate(instructions)
+                if int(instruction.ea) == int(ea)
+            )
+            for ea in (
+                normalization.condition_producer_ea,
+                evidence.setcc_ea,
+                evidence.shift_ea,
+                evidence.lookup_ea,
+                evidence.decode_ea,
+                normalization.unresolved_transfer_ea,
+            )
+        }
+        producer_indexes = indexes_by_ea[normalization.condition_producer_ea]
+        predicate_indexes = indexes_by_ea[evidence.setcc_ea]
+        shift_indexes = indexes_by_ea[evidence.shift_ea]
+        lookup_indexes = indexes_by_ea[evidence.lookup_ea]
+        decode_indexes = indexes_by_ea[evidence.decode_ea]
+        transfer_indexes = indexes_by_ea[normalization.unresolved_transfer_ea]
+        signed_plan = (
+            PreoptUnionSemanticNativeBodyMaterializer._preflight_signed_flag_xor(
+                instructions=instructions,
+                predicate_indexes=predicate_indexes,
+                operation=operation,
+                normalization=normalization,
+                predicate_anchor_ea=int(operation.predicate_anchor_ea),
+            )
+        )
+        shift = None if len(shift_indexes) != 1 else instructions[shift_indexes[0]]
+        shift_constants = (
+            ()
+            if shift is None
+            else tuple(
+                int(operand.nnn.value)
+                for operand in (shift.l, shift.r)
+                if int(operand.t) == int(ida_hexrays.mop_n)
+            )
+        )
+        lookup = None if len(lookup_indexes) != 1 else instructions[lookup_indexes[0]]
+        transfer = (
+            None
+            if transfer_indexes != (len(instructions) - 1,)
+            else instructions[transfer_indexes[0]]
+        )
+        expected_decode_opcodes = (
+            int(ida_hexrays.m_cfadd),
+            int(ida_hexrays.m_ofadd),
+            int(ida_hexrays.m_setz),
+            int(ida_hexrays.m_setp),
+            int(ida_hexrays.m_sets),
+            int(ida_hexrays.m_add),
+        )
+        expected_branch_opcode = (
+            int(ida_hexrays.m_jnz)
+            if int(evidence.true_index) == 1
+            else int(ida_hexrays.m_jz)
+        )
+        exact_index_partition = bool(
+            producer_indexes == (0, 1)
+            and predicate_indexes == (2,)
+            and shift_indexes == (3,)
+            and lookup_indexes == (4,)
+            and decode_indexes == tuple(range(5, 11))
+            and transfer_indexes == (11,)
+            and len(instructions) == 12
+        )
+        checks = (
+            (
+                "native_body_operation_proof",
+                operation.operation_id in native_body.proof_ids,
+            ),
+            (
+                "typed_predicate_anchor",
+                int(operation.predicate_anchor_ea)
+                == int(evidence.setcc_ea)
+                == int(normalization.normalization_start_ea),
+            ),
+            ("exact_typed_suffix_partition", exact_index_partition),
+            ("signed_flag_predicate_exact", signed_plan is not None),
+            (
+                "predicate_orientation_exact",
+                signed_plan is not None
+                and int(signed_plan.branch_opcode) == expected_branch_opcode,
+            ),
+            (
+                "shift_stride_exact",
+                shift is not None
+                and int(shift.opcode) == int(ida_hexrays.m_mul)
+                and shift_constants == (int(evidence.stride_bytes),),
+            ),
+            (
+                "lookup_opcode_exact",
+                lookup is not None and int(lookup.opcode) == int(ida_hexrays.m_ldx),
+            ),
+            (
+                "decode_opcode_sequence_exact",
+                tuple(int(instructions[index].opcode) for index in decode_indexes)
+                == expected_decode_opcodes,
+            ),
+            (
+                "artificial_transfer_exact",
+                transfer is not None
+                and int(transfer.opcode) == int(ida_hexrays.m_icall)
+                and int(transfer.l.t) == int(ida_hexrays.mop_r)
+                and int(transfer.r.t) == int(ida_hexrays.mop_r)
+                and int(transfer.d.t) == int(ida_hexrays.mop_z)
+                and int(template_block.block_type) == int(ida_hexrays.BLT_1WAY)
+                and bool(int(template_block.block_flags) & int(ida_hexrays.MBL_TCAL))
+                and len(template_block.successor_serials) == 1,
+            ),
+        )
+        failed_obligations = tuple(name for name, passed in checks if not passed)
+        if failed_obligations:
+            raise SemanticFragmentBackendRejected(
+                "PREOPT setcc indexed-table suffix failed typed immutable "
+                "preflight; "
+                f"operation={operation.operation_id!r} "
+                f"source=0x{int(template_block.native_entry_ea):X} "
+                f"failed_obligations={failed_obligations!r} "
+                f"instruction_shapes={tuple((f'0x{int(instruction.ea):X}', int(instruction.opcode), _diagnostic_operand_shape(instruction.l), _diagnostic_operand_shape(instruction.r), _diagnostic_operand_shape(instruction.d)) for instruction in instructions)!r}"
+            )
+        assert signed_plan is not None
+        return signed_plan
 
     @staticmethod
     def _preflight_computed_branch_normalization(
@@ -3367,12 +3553,12 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         matched: Mapping[str, DetachedSnippetBlockTemplate],
         prepared: Mapping[str, tuple[tuple[int, object], ...]],
         direct_transfer_operation_ids: tuple[str, ...],
-        preserved_successors_by_block_id: Mapping[
-            str, tuple[PreparedNativeEdgeFact, ...]
-        ]
-        | None = None,
-        preserved_terminators_by_block_id: Mapping[str, tuple[int, InsnKind]]
-        | None = None,
+        preserved_successors_by_block_id: (
+            Mapping[str, tuple[PreparedNativeEdgeFact, ...]] | None
+        ) = None,
+        preserved_terminators_by_block_id: (
+            Mapping[str, tuple[int, InsnKind]] | None
+        ) = None,
     ) -> PreparedNativeBodyPreparation:
         return build_prepared_native_body(
             plan=plan,
@@ -3464,15 +3650,31 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 int(ea) for ea in template_block.external_successor_eas if int(ea) > 0
             )
             if external_targets:
-                if len(external_targets) != 1 or tail is None:
+                unresolved_transfer_carrier = bool(
+                    tail is not None
+                    and int(tail.opcode) == int(ida_hexrays.m_ret)
+                    and int(tail.ea) == int(template_block.native_entry_ea)
+                    and int(template_block.block_type) == int(ida_hexrays.BLT_STOP)
+                    and bool(
+                        int(template_block.block_flags) & int(ida_hexrays.MBL_FAKE)
+                    )
+                    and not template_block.successor_serials
+                )
+                if unresolved_transfer_carrier:
+                    terminators_by_id[str(block_id)] = (
+                        int(tail.ea),
+                        InsnKind.INDIRECT_JUMP,
+                    )
+                elif len(external_targets) != 1 or tail is None:
                     raise SemanticFragmentBackendRejected(
                         "GENERATED preserved boundary transfer is ambiguous; "
                         f"block={block_id!r}"
                     )
-                terminators_by_id[str(block_id)] = (
-                    int(tail.ea),
-                    InsnKind.GOTO,
-                )
+                else:
+                    terminators_by_id[str(block_id)] = (
+                        int(tail.ea),
+                        InsnKind.GOTO,
+                    )
         return successors_by_id, terminators_by_id
 
     def prepare_native_body(
@@ -3664,6 +3866,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             for block in template.blocks
         }
         row_by_id = {row[0]: row for row in preparation.payload.rows}
+        fact_by_id = {block.block_id: block for block in preparation.fact.blocks}
         for block_id in native_body.block_ids:
             _row_id, block_flags, instruction_rows = row_by_id[block_id]
             clones: list[tuple[int, object]] = []
@@ -3681,15 +3884,23 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 int(ea) for ea in template_block.external_successor_eas if int(ea) > 0
             )
             if external_targets:
-                if len(external_targets) != 1 or not clones:
+                prepared_block = fact_by_id[block_id]
+                if prepared_block.terminator_kind is InsnKind.INDIRECT_JUMP:
+                    if not clones:
+                        raise SemanticFragmentBackendRejected(
+                            f"GENERATED unresolved boundary block {block_id!r} "
+                            "has no preserved carrier"
+                        )
+                elif len(external_targets) != 1 or not clones:
                     raise SemanticFragmentBackendRejected(
                         f"GENERATED boundary block {block_id!r} is ambiguous"
                     )
-                native_ea, _old_tail = clones[-1]
-                boundary = ida_hexrays.minsn_t(int(native_ea))
-                boundary.opcode = int(ida_hexrays.m_goto)
-                boundary.l.make_gvar(external_targets[0])
-                clones[-1] = (native_ea, boundary)
+                else:
+                    native_ea, _old_tail = clones[-1]
+                    boundary = ida_hexrays.minsn_t(int(native_ea))
+                    boundary.opcode = int(ida_hexrays.m_goto)
+                    boundary.l.make_gvar(external_targets[0])
+                    clones[-1] = (native_ea, boundary)
             context.populate_block(
                 block_id=block_id,
                 instructions=tuple(clones),
@@ -4886,9 +5097,11 @@ def _split_semantic_target_entry_blocks(
             )
             return None
         successor_serials = tuple(
-            target_serial
-            if int(successor) == previous_target_serial
-            else int(successor)
+            (
+                target_serial
+                if int(successor) == previous_target_serial
+                else int(successor)
+            )
             for successor in source.successor_serials
         )
         tail = source.instructions[-1] if source.instructions else None
@@ -5271,6 +5484,7 @@ def _capture_detached_snippet_template(
     resolver_proven_internal_successor_eas: Mapping[int, int],
     native_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]],
     authoritative_stack_frame_offsets_by_ea: Mapping[int, tuple[int, ...]],
+    preserved_unresolved_transfer_eas: Collection[int],
 ) -> bool:
     """Cache one explicit-range MBA and its optional stable frame identities."""
     normalized_ranges = tuple(
@@ -5288,7 +5502,15 @@ def _capture_detached_snippet_template(
         *(owned_entries or ()),
         *additional_owned_entries,
     }
-    terminal_return_entries = {int(ea) for ea in terminal_return_entry_eas}
+    preserved_unresolved_transfers = {
+        int(ea) for ea in preserved_unresolved_transfer_eas
+    }
+    terminal_return_entries = {
+        *(int(ea) for ea in terminal_return_entry_eas),
+        *preserved_unresolved_transfers,
+    }
+    observed_preserved_unresolved_transfers: set[int] = set()
+    preserved_synthetic_entry_by_serial: dict[int, int] = {}
     included: dict[int, object] = {}
     for serial in range(int(mba.qty)):
         block = mba.get_mblock(serial)
@@ -5327,6 +5549,26 @@ def _capture_detached_snippet_template(
             )
         ):
             included[int(block.serial)] = block
+    for source in tuple(included.values()):
+        tail = source.tail
+        if (
+            tail is None
+            or int(tail.opcode) != int(ida_hexrays.m_icall)
+            or int(tail.ea) not in preserved_unresolved_transfers
+            or int(source.nsucc()) != 1
+        ):
+            continue
+        successor_serial = int(tuple(source.succset)[0])
+        successor = mba.get_mblock(successor_serial)
+        if (
+            successor is None
+            or successor.head is not None
+            or int(successor.nsucc()) != 0
+        ):
+            continue
+        included[successor_serial] = successor
+        preserved_synthetic_entry_by_serial[successor_serial] = int(tail.ea)
+        observed_preserved_unresolved_transfers.add(int(tail.ea))
     roots = tuple(
         serial
         for serial, block in included.items()
@@ -5567,13 +5809,12 @@ def _capture_detached_snippet_template(
             exact_owned_entries,
             normalized_ranges,
         )
-        if (
-            native_entry is None
-            and block.head is None
-            and int(block.start) in terminal_return_entries
-            and int(block.nsucc()) == 0
-        ):
-            native_entry = int(block.start)
+        if native_entry is None and block.head is None and int(block.nsucc()) == 0:
+            synthetic_entry = preserved_synthetic_entry_by_serial.get(int(serial))
+            if synthetic_entry is not None:
+                native_entry = int(synthetic_entry)
+            elif int(block.start) in terminal_return_entries:
+                native_entry = int(block.start)
         if native_entry is None:
             logger.info(
                 "detached snippet capture abstained: target=0x%X "
@@ -5600,6 +5841,13 @@ def _capture_detached_snippet_template(
                 continue
             successor_block = mba.get_mblock(successor)
             if successor_block is not None and successor_block.head is None:
+                if (
+                    block.tail is not None
+                    and int(block.tail.opcode) == int(ida_hexrays.m_ijmp)
+                    and int(block.tail.ea) in preserved_unresolved_transfers
+                ):
+                    observed_preserved_unresolved_transfers.add(int(block.tail.ea))
+                    continue
                 successor_native_ea = _unique_block_native_ea(successor_block)
                 if (
                     successor_native_ea is None
@@ -5999,6 +6247,15 @@ def _capture_detached_snippet_template(
             int(target_ea),
         )
         return False
+    if observed_preserved_unresolved_transfers != preserved_unresolved_transfers:
+        logger.info(
+            "detached snippet capture abstained: target=0x%X "
+            "reason=preserved_unresolved_transfer_mismatch expected=%s observed=%s",
+            int(target_ea),
+            tuple(hex(ea) for ea in sorted(preserved_unresolved_transfers)),
+            tuple(hex(ea) for ea in sorted(observed_preserved_unresolved_transfers)),
+        )
+        return False
     template_cache[(int(function_ea), int(target_ea))] = DetachedSnippetTemplate(
         function_ea=int(function_ea),
         target_ea=int(target_ea),
@@ -6080,6 +6337,7 @@ def capture_detached_snippet_template(
             if authoritative_stack_frame_offsets_by_ea is None
             else authoritative_stack_frame_offsets_by_ea
         ),
+        (),
     )
 
 
@@ -6154,6 +6412,7 @@ def capture_preopt_union_snippet_template(
             if authoritative_stack_frame_offsets_by_ea is None
             else authoritative_stack_frame_offsets_by_ea
         ),
+        (),
     )
 
 
@@ -6167,6 +6426,7 @@ def capture_generated_reference_snippet_template(
     boundary_exit_eas: Collection[int] = (),
     owned_block_entry_eas: Collection[int],
     direct_boundary_routes: Collection[tuple[int, int, int]],
+    preserved_unresolved_transfer_eas: Collection[int],
 ) -> bool:
     """Cache one target-rooted PREOPT body for GENERATED publication.
 
@@ -6224,6 +6484,7 @@ def capture_generated_reference_snippet_template(
         {},
         {},
         {},
+        preserved_unresolved_transfer_eas,
     )
     if not captured:
         return False
@@ -6232,11 +6493,20 @@ def capture_generated_reference_snippet_template(
     normalized_boundary_exit_eas = tuple(
         sorted({int(ea) for ea in boundary_exit_eas if int(ea) > 0})
     )
+    preserved_transfer_eas = {int(ea) for ea in preserved_unresolved_transfer_eas}
     normalized_blocks: list[DetachedSnippetBlockTemplate] = []
     for block in template.blocks:
         tail = block.instructions[-1] if block.instructions else None
         if tail is None or int(tail.opcode) != int(ida_hexrays.m_ret):
             normalized_blocks.append(block)
+            continue
+        if int(block.native_entry_ea) in preserved_transfer_eas:
+            normalized_blocks.append(
+                replace(
+                    block,
+                    external_successor_eas=normalized_boundary_exit_eas,
+                )
+            )
             continue
         matches = tuple(
             ea
@@ -6378,6 +6648,7 @@ def capture_detached_replacement_snippet_template(
             if authoritative_stack_frame_offsets_by_ea is None
             else authoritative_stack_frame_offsets_by_ea
         ),
+        (),
     )
 
 
