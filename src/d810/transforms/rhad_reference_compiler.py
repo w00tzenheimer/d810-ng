@@ -1654,14 +1654,33 @@ def _compile_existing_conditional_route(
         raise RhadCompilerRejection(
             "Rhad existing conditional selected-value or join anchors are ambiguous"
         )
-    targets = (route.true_target_block_id, route.false_target_block_id)
+    targets = (
+        (route.true_target_block_id, route.true_target_ea),
+        (route.false_target_block_id, route.false_target_ea),
+    )
+
+    def _is_owned_branch_arm(target_id: str, target_ea: int) -> bool:
+        target = block_by_id[target_id]
+        if (
+            target_id in route.imported_closure_block_ids
+            and target.role is FragmentBlockRole.IMPORTED
+        ):
+            return True
+        return (
+            target_id in plan.roots
+            and target.role is FragmentBlockRole.REPLACEMENT
+            and target.materialization is FragmentBlockMaterialization.CLONE_PUBLISHED
+            and target.replaces_block_id in plan.owned_originals
+            and target.stable_identity is not None
+            and int(target.semantic_anchor_ea) == int(target_ea)
+        )
+
     if any(
-        target_id not in route.imported_closure_block_ids
-        or block_by_id[target_id].role is not FragmentBlockRole.IMPORTED
-        for target_id in targets
+        not _is_owned_branch_arm(target_id, target_ea)
+        for target_id, target_ea in targets
     ):
         raise RhadCompilerRejection(
-            "Rhad existing conditional requires complete imported branch arms"
+            "Rhad existing conditional requires complete owned branch arms"
         )
     true_target_ea = int(route.true_target_ea)
     false_target_ea = int(route.false_target_ea)

@@ -1071,6 +1071,44 @@ def test_compiler_emits_imported_existing_conditional_route() -> None:
     assert payload["comparison_constant"] == 0x65203D55
 
 
+def test_existing_conditional_may_target_the_owned_replacement_root() -> None:
+    compiler = _compiler_module()
+    ledger = _third_shape_ledger()
+    *dependencies, selected = ledger.operations
+    selected = replace(
+        selected,
+        false_target_block_id="native@0x40A5F0",
+        false_target_ea=0x40A5F0,
+    )
+
+    plan = compiler.compile_rhad_reference_fragment(
+        replace(ledger, operations=(*dependencies, selected)),
+        expected_evidence_generation=1,
+    )
+
+    assert plan.operation(selected.operation_id).edges[-1] == FragmentEdge(
+        role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        target_block_id="native@0x40A5F0",
+    )
+
+
+def test_existing_conditional_rejects_nonreplacement_nonimported_arm() -> None:
+    compiler = _compiler_module()
+    ledger = _third_shape_ledger()
+    *dependencies, selected = ledger.operations
+    selected = replace(
+        selected,
+        false_target_block_id="native-original@0x40A5F0",
+        false_target_ea=0x40A5F0,
+    )
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="owned branch arms"):
+        compiler.compile_rhad_reference_fragment(
+            replace(ledger, operations=(*dependencies, selected)),
+            expected_evidence_generation=1,
+        )
+
+
 def test_frontend_imported_conditional_rejects_missing_reference_authority() -> None:
     compiler = _compiler_module()
     plan = compiler.compile_rhad_reference_fragment(
