@@ -624,19 +624,26 @@ class D810Manager:
                 prepared_carriers = prepare_terminal_return_carrier_evidence(state)
                 prepared_snippets = prepare_detached_handler_snippets(state)
                 from d810.manager.rhad_generated_checksum import (
-                    FUNCTION_EA as RHAD_GENERATED_CHECKSUM_FUNCTION_EA,
-                    observe_a560_generated_checksum_preparation,
-                    prepare_a560_generated_checksum_templates,
+                    observe_rhad_generated_reference_preparation,
+                    prepare_rhad_generated_reference_templates,
+                    reference_batch_for_native_key,
                 )
 
+                generated_reference_batch = reference_batch_for_native_key(
+                    session.native_key
+                )
                 prepared_generated_checksum = (
-                    prepare_a560_generated_checksum_templates(state)
-                    if int(function_ea) == RHAD_GENERATED_CHECKSUM_FUNCTION_EA
+                    prepare_rhad_generated_reference_templates(
+                        state,
+                        generated_reference_batch,
+                    )
+                    if generated_reference_batch is not None
                     else False
                 )
-                if int(function_ea) == RHAD_GENERATED_CHECKSUM_FUNCTION_EA:
-                    observe_a560_generated_checksum_preparation(
+                if generated_reference_batch is not None:
+                    observe_rhad_generated_reference_preparation(
                         session,
+                        batch=generated_reference_batch,
                         prepared=prepared_generated_checksum,
                     )
                 # Snippet preparation publishes the portable transfer
@@ -1747,15 +1754,15 @@ class D810Manager:
         )
 
         from d810.manager.rhad_generated_checksum import (
-            observe_a560_generated_checksum_calls,
-            observe_a560_generated_checksum_locopt,
-            observe_a560_generated_checksum_preopt,
-            publish_a560_generated_checksum,
+            observe_rhad_generated_reference_calls,
+            observe_rhad_generated_reference_locopt,
+            observe_rhad_generated_reference_preopt,
+            publish_rhad_generated_reference_batch,
         )
 
         self.event_emitter.on(
             DecompilationEvent.HEXRAYS_GENERATED_READY,
-            publish_a560_generated_checksum,
+            publish_rhad_generated_reference_batch,
         )
 
         from d810.hexrays.preanalysis.flowchart_preanalysis import (
@@ -1781,7 +1788,7 @@ class D810Manager:
         )
         self.event_emitter.on(
             DecompilationEvent.HEXRAYS_PREOPT_READY,
-            observe_a560_generated_checksum_preopt,
+            observe_rhad_generated_reference_preopt,
         )
 
         from d810.hexrays.preanalysis.locopt_preanalysis import (
@@ -1794,7 +1801,7 @@ class D810Manager:
         )
         self.event_emitter.on(
             DecompilationEvent.HEXRAYS_LOCOPT_READY,
-            observe_a560_generated_checksum_locopt,
+            observe_rhad_generated_reference_locopt,
         )
 
         from d810.hexrays.preanalysis.callinfo_preanalysis import (
@@ -1825,7 +1832,7 @@ class D810Manager:
         )
         self.event_emitter.on(
             DecompilationEvent.HEXRAYS_CALLS_DONE,
-            observe_a560_generated_checksum_calls,
+            observe_rhad_generated_reference_calls,
         )
 
         self.event_emitter.on(

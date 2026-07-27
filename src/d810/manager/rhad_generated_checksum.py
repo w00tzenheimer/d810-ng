@@ -1,15 +1,18 @@
-"""Manager-owned single-route Rhad GENERATED checksum producer.
+"""Manager-owned typed Rhad GENERATED reference-batch producer.
 
-This is intentionally not a general A560 restoration path. It compiles the
-pinned ``cmovl`` checksum route and submits it to the shared fragment
-transaction backend at the actual GENERATED callback boundary.
+This remains intentionally narrower than full A560 restoration. Exact-input
+evidence selects an ordered operation batch, the portable compiler lowers it,
+and the manager submits one plan to the shared transaction backend at the
+actual GENERATED callback boundary.
 """
 
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import dataclass
 
 from d810.core.logging import getLogger
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.semantic_route_oracle import RouteOracleRun
 from d810.hexrays.mutation.semantic_fragment_profile import (
     SemanticFragmentPublicationProfile,
@@ -30,6 +33,8 @@ from d810.transforms.fragment_plan import (
 )
 from d810.transforms.rhad_reference_compiler import (
     RhadConditionalRoute,
+    RhadDirectRoute,
+    RhadReferenceOperation,
     RhadReferenceLedger,
     RhadReferencePhase,
     compile_rhad_reference_fragment,
@@ -38,11 +43,8 @@ from d810.transforms.rhad_reference_compiler import (
 
 logger = getLogger(__name__)
 
-FUNCTION_EA = 0x40A560
-SOURCE_EA = 0x40A5F0
-TRANSFER_EA = 0x40A605
 INPUT_SHA256 = "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
-IMPORTED_RANGES = (
+ACCEPTED_IMPORTED_RANGES = (
     (0x40A607, 0x40A615),
     (0x40A615, 0x40A61B),
     (0x40A619, 0x40A61B),
@@ -53,10 +55,220 @@ IMPORTED_RANGES = (
     (0x40B6D0, 0x40B6D6),
     (0x40B6D4, 0x40B6D6),
 )
+DIRECT_IMPORTED_RANGES = (
+    (0x40A61B, 0x40A62D),
+    (0x40A62D, 0x40A633),
+    (0x40A631, 0x40A633),
+    (0x40A740, 0x40A74C),
+    (0x40A74A, 0x40A74C),
+)
+IMPORTED_RANGES = ACCEPTED_IMPORTED_RANGES + DIRECT_IMPORTED_RANGES
 IMPORTED_BLOCK_IDS = tuple(
     f"native@0x{start_ea:X}" for start_ea, _end_ea in IMPORTED_RANGES
 )
-BOUNDARY_EXIT_EAS = (0x40A61B, 0x40A68C, 0x40B790)
+ACCEPTED_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS[: len(ACCEPTED_IMPORTED_RANGES)]
+DIRECT_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS[len(ACCEPTED_IMPORTED_RANGES) :]
+BOUNDARY_EXIT_EAS = (0x40A633, 0x40A68C, 0x40A74C, 0x40B790)
+TEMPLATE_ROOT_EAS = (0x40A607, 0x40B6C0, 0x40A61B)
+
+
+@dataclass(frozen=True, slots=True)
+class RhadGeneratedBlockEvidence:
+    """One stable native block identity required by a GENERATED batch."""
+
+    block_id: str
+    start_ea: int
+    end_ea: int
+    exact_instruction_eas: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RhadGeneratedReferenceBatch:
+    """Complete typed production evidence for one reference-operation batch."""
+
+    batch_id: str
+    input_sha256: str
+    function_ea: int
+    predecessor: RhadGeneratedBlockEvidence
+    source_original_id: str
+    source: RhadGeneratedBlockEvidence
+    auxiliary_blocks: tuple[RhadGeneratedBlockEvidence, ...]
+    native_body_id: str
+    imported_blocks: tuple[RhadGeneratedBlockEvidence, ...]
+    native_body_entry_block_ids: tuple[str, ...]
+    native_body_ranges: tuple[tuple[int, int], ...]
+    native_body_proof_ids: tuple[str, ...]
+    template_root_eas: tuple[int, ...]
+    operations: tuple[RhadReferenceOperation, ...]
+    required_boundary_exit_eas: tuple[int, ...]
+    reference_commit: str
+    reference_binary_sha256: str
+    runtime_image: str
+    runtime_image_id: str
+
+    def __post_init__(self) -> None:
+        if len(self.input_sha256) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in self.input_sha256.lower()
+        ):
+            raise ValueError("Rhad GENERATED batch requires a SHA-256 input identity")
+        if not self.operations or len(
+            {operation.operation_id for operation in self.operations}
+        ) != len(self.operations):
+            raise ValueError("Rhad GENERATED batch requires unique operations")
+        imported_ids = tuple(block.block_id for block in self.imported_blocks)
+        if len(set(imported_ids)) != len(imported_ids):
+            raise ValueError("Rhad GENERATED batch contains duplicate imported blocks")
+        if not set(self.native_body_entry_block_ids).issubset(imported_ids):
+            raise ValueError("Rhad GENERATED batch entries must be imported blocks")
+        if not set(self.native_body_proof_ids).issuperset(
+            operation.operation_id
+            for operation in self.operations
+            if isinstance(operation, RhadDirectRoute)
+        ):
+            raise ValueError("Rhad GENERATED direct routes require native-body proof")
+
+
+_ACCEPTED_ROUTE = RhadConditionalRoute(
+    operation_id="rhad:route@0x40A605",
+    source_block_id="native@0x40A5F0",
+    transfer_ea=0x40A605,
+    predicate_anchor_ea=0x40A5F6,
+    normalization_start_ea=0x40A5F6,
+    condition_producer_ea=0x40A5F0,
+    conditional_select_ea=0x40A5FE,
+    selected_value_block_id="native@0x40A5FE",
+    join_block_id="native@0x40A601",
+    observed_predicate_kind=PredicateKind.SGE,
+    predicate_kind=PredicateKind.SLT,
+    true_target_block_id="native@0x40B6C0",
+    false_target_block_id="native@0x40A607",
+    comparison_constant=0x0BB2D365,
+    owned_corridor_instruction_eas=(
+        0x40A5F0,
+        0x40A5F6,
+        0x40A5FE,
+        0x40A601,
+        0x40A605,
+    ),
+    imported_closure_block_ids=ACCEPTED_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40A61B, 0x40A68C, 0x40B790),
+    flag_corridor_id="flags-intact@0x40A5F0",
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+)
+
+_DIRECT_ROUTE = RhadDirectRoute(
+    operation_id="route:rhad-direct@0x40A619",
+    source_block_id="native@0x40A619",
+    transfer_ea=0x40A619,
+    owner_anchor_ea=0x40A619,
+    direct_target_block_id="native@0x40A61B",
+    owned_corridor_instruction_eas=(0x40A607, 0x40A615, 0x40A617, 0x40A619),
+    imported_closure_block_ids=DIRECT_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40A633, 0x40A74C),
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_ACCEPTED_ROUTE.operation_id,),
+)
+
+_A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
+    batch_id="rhad-generated-reference@0x40A560",
+    input_sha256=INPUT_SHA256,
+    function_ea=0x40A560,
+    predecessor=RhadGeneratedBlockEvidence(
+        block_id="native@0x40A5AE",
+        start_ea=0x40A5AE,
+        end_ea=0x40A5F0,
+        exact_instruction_eas=(0x40A5AE, 0x40A5C8),
+    ),
+    source_original_id="native-original@0x40A5F0",
+    source=RhadGeneratedBlockEvidence(
+        block_id="native@0x40A5F0",
+        start_ea=0x40A5F0,
+        end_ea=0x40A607,
+        exact_instruction_eas=(0x40A5F0, 0x40A5F6, 0x40A5FE, 0x40A601, 0x40A605),
+    ),
+    auxiliary_blocks=(
+        RhadGeneratedBlockEvidence(
+            block_id="native@0x40A5FE",
+            start_ea=0x40A5FE,
+            end_ea=0x40A601,
+            exact_instruction_eas=(0x40A5FE,),
+        ),
+        RhadGeneratedBlockEvidence(
+            block_id="native@0x40A601",
+            start_ea=0x40A601,
+            end_ea=0x40A607,
+            exact_instruction_eas=(0x40A601, 0x40A605),
+        ),
+    ),
+    native_body_id="rhad-a560-generated-native-body",
+    imported_blocks=tuple(
+        RhadGeneratedBlockEvidence(
+            block_id=block_id,
+            start_ea=start_ea,
+            end_ea=end_ea,
+            exact_instruction_eas=(start_ea,),
+        )
+        for block_id, (start_ea, end_ea) in zip(
+            IMPORTED_BLOCK_IDS,
+            IMPORTED_RANGES,
+            strict=True,
+        )
+    ),
+    native_body_entry_block_ids=(
+        "native@0x40A607",
+        "native@0x40A619",
+        "native@0x40A68A",
+        "native@0x40B6C0",
+        "native@0x40B6D4",
+        "native@0x40A61B",
+        "native@0x40A631",
+        "native@0x40A74A",
+    ),
+    native_body_ranges=(
+        (0x40A607, 0x40A61B),
+        (0x40A61B, 0x40A633),
+        (0x40A680, 0x40A68C),
+        (0x40A740, 0x40A74C),
+        (0x40B6C0, 0x40B6D6),
+    ),
+    native_body_proof_ids=(
+        "native-body@0x40A605",
+        _DIRECT_ROUTE.operation_id,
+    ),
+    template_root_eas=TEMPLATE_ROOT_EAS,
+    operations=(_ACCEPTED_ROUTE, _DIRECT_ROUTE),
+    required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
+    reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+    reference_binary_sha256="1" * 64,
+    runtime_image="d810-idapro-9.3-test-runtime:py313-v1",
+    runtime_image_id="sha256:360f91d9d4ac",
+)
+
+_GENERATED_REFERENCE_BATCHES = (_A560_GENERATED_REFERENCE_BATCH,)
+
+
+def reference_batch_for_native_key(
+    native_key: NativePreanalysisKey,
+) -> RhadGeneratedReferenceBatch | None:
+    """Select exact-input production evidence without sample-specific dispatch."""
+    if not isinstance(native_key, NativePreanalysisKey):
+        raise TypeError("Rhad GENERATED registry requires a native preanalysis key")
+    input_identity = str(native_key.input_identity).lower()
+    return next(
+        (
+            batch
+            for batch in _GENERATED_REFERENCE_BATCHES
+            if input_identity == f"sha256:{batch.input_sha256.lower()}"
+            and int(native_key.function_rva) == int(batch.function_ea)
+        ),
+        None,
+    )
+
+
+FUNCTION_EA = _A560_GENERATED_REFERENCE_BATCH.function_ea
+SOURCE_EA = _A560_GENERATED_REFERENCE_BATCH.source.start_ea
+TRANSFER_EA = _ACCEPTED_ROUTE.transfer_ea
 
 
 def _emit_checksum_lifecycle(
@@ -79,9 +291,7 @@ def _emit_checksum_lifecycle(
             provider="rhad_generated_checksum",
             maturity=str(maturity),
             phase=str(phase),
-            evidence_generation=int(
-                session.native_preanalysis.evidence_generation
-            ),
+            evidence_generation=int(session.native_preanalysis.evidence_generation),
             mba_generation_before=int(session.current_mba_generation),
             mba_generation_after=int(session.current_mba_generation),
             summary=str(summary),
@@ -90,14 +300,13 @@ def _emit_checksum_lifecycle(
     )
 
 
-def observe_a560_generated_checksum_preparation(
+def observe_rhad_generated_reference_preparation(
     session: object,
     *,
+    batch: RhadGeneratedReferenceBatch,
     prepared: bool,
 ) -> None:
     """Record the immutable target-template authority before publication."""
-    if int(session.function_ea) != FUNCTION_EA:
-        return
     _emit_checksum_lifecycle(
         session,
         event_kind="rhad_generated_checksum_preparation",
@@ -110,10 +319,13 @@ def observe_a560_generated_checksum_preparation(
         ),
         payload={
             "prepared": bool(prepared),
-            "template_root_eas": [0x40A607, 0x40B6C0],
-            "imported_ranges": [list(row) for row in IMPORTED_RANGES],
-            "imported_block_count": len(IMPORTED_BLOCK_IDS),
-            "boundary_exit_eas": list(BOUNDARY_EXIT_EAS),
+            "batch_id": batch.batch_id,
+            "template_root_eas": list(batch.template_root_eas),
+            "imported_ranges": [
+                [block.start_ea, block.end_ea] for block in batch.imported_blocks
+            ],
+            "imported_block_count": len(batch.imported_blocks),
+            "boundary_exit_eas": list(batch.required_boundary_exit_eas),
         },
     )
 
@@ -140,8 +352,11 @@ def _native_anchor(block: object, origins: dict[int, int]) -> int:
     )
 
 
-def _checksum_route_observation(mba: object) -> dict[str, object]:
-    """Observe the committed route without building or changing a live graph."""
+def _reference_batch_observation(
+    mba: object,
+    batch: RhadGeneratedReferenceBatch,
+) -> dict[str, object]:
+    """Observe every committed route without building or changing a live graph."""
     import ida_hexrays
 
     from d810.hexrays.mutation.detached_handler_island import (
@@ -149,8 +364,15 @@ def _checksum_route_observation(mba: object) -> dict[str, object]:
     )
 
     origins = dict(imported_detached_snippet_instruction_origins(mba))
-    blocks = {
-        serial: mba.get_mblock(serial) for serial in range(int(mba.qty))
+    blocks = {serial: mba.get_mblock(serial) for serial in range(int(mba.qty))}
+    block_anchor_by_id = {
+        evidence.block_id: int(evidence.start_ea)
+        for evidence in (
+            batch.predecessor,
+            batch.source,
+            *batch.auxiliary_blocks,
+            *batch.imported_blocks,
+        )
     }
 
     def reachable_anchors() -> tuple[int, ...]:
@@ -166,89 +388,169 @@ def _checksum_route_observation(mba: object) -> dict[str, object]:
             sorted({_native_anchor(blocks[serial], origins) for serial in reachable})
         )
 
-    transfer_indirect = any(
+    accepted_route = next(
+        operation
+        for operation in batch.operations
+        if isinstance(operation, RhadConditionalRoute)
+    )
+    accepted_indirect = any(
         int(row.opcode) == int(ida_hexrays.m_ijmp)
-        and int(origins.get(int(row.ea), int(row.ea))) == TRANSFER_EA
+        and int(origins.get(int(row.ea), int(row.ea))) == accepted_route.transfer_ea
         for block in blocks.values()
         for row in _instructions(block)
     )
-    source = next(
+    accepted_source = next(
         (
             block
             for block in blocks.values()
             if any(
-                int(origins.get(int(row.ea), int(row.ea))) == SOURCE_EA
+                int(origins.get(int(row.ea), int(row.ea)))
+                == accepted_route.condition_producer_ea
                 for row in _instructions(block)
             )
         ),
         None,
     )
-    if source is None:
-        reachable = reachable_anchors()
-        return {
-            "source_present": False,
-            "indirect_transfer_present": transfer_indirect,
-            "target_eas": [],
-            "reachable_eas": list(reachable),
-            "passed": not transfer_indirect and 0x40B6C0 in reachable,
-        }
-
-    target_eas: set[int] = set()
-    source_successors = tuple(int(value) for value in source.succset)
-    if source_successors:
-        for successor_serial in source_successors:
-            target = blocks[successor_serial]
-            while (
-                _native_anchor(target, origins) in {0x40A5FE, 0x40A601}
-                and len(tuple(target.succset)) == 1
-            ):
-                successor_serial = int(tuple(target.succset)[0])
-                target = blocks[successor_serial]
-            target_eas.add(_native_anchor(target, origins))
-    else:
-        if source.nextb is None or source.nextb.nextb is None:
-            return {
-                "source_present": True,
-                "indirect_transfer_present": transfer_indirect,
-                "target_eas": [],
-                "reachable_eas": [],
-                "passed": False,
-                "reason": "conditional-select physical corridor is absent",
-            }
-        route_rows = (
-            *(_instructions(source)[-1:]),
-            *(_instructions(source.nextb)[-1:]),
-            *(_instructions(source.nextb.nextb)[-1:]),
+    reachable = reachable_anchors()
+    if accepted_source is None:
+        accepted_targets: set[int] = set()
+        accepted_passed = (
+            not accepted_indirect
+            and block_anchor_by_id[accepted_route.true_target_block_id] in reachable
         )
-        for row in route_rows:
-            opcode = int(row.opcode)
-            operand = row.l if opcode == int(ida_hexrays.m_goto) else row.d
-            if int(operand.t) != int(ida_hexrays.mop_b):
-                continue
-            target_eas.add(_native_anchor(blocks[int(operand.b)], origins))
-    expected_targets = {0x40A607, 0x40B6C0}
+    else:
+        accepted_targets = set()
+        source_successors = tuple(int(value) for value in accepted_source.succset)
+        if source_successors:
+            for successor_serial in source_successors:
+                target = blocks[successor_serial]
+                while (
+                    _native_anchor(target, origins)
+                    in {
+                        accepted_route.conditional_select_ea,
+                        block_anchor_by_id[accepted_route.join_block_id],
+                    }
+                    and len(tuple(target.succset)) == 1
+                ):
+                    successor_serial = int(tuple(target.succset)[0])
+                    target = blocks[successor_serial]
+                accepted_targets.add(_native_anchor(target, origins))
+        else:
+            if (
+                accepted_source.nextb is not None
+                and accepted_source.nextb.nextb is not None
+            ):
+                route_rows = (
+                    *(_instructions(accepted_source)[-1:]),
+                    *(_instructions(accepted_source.nextb)[-1:]),
+                    *(_instructions(accepted_source.nextb.nextb)[-1:]),
+                )
+                for row in route_rows:
+                    opcode = int(row.opcode)
+                    operand = row.l if opcode == int(ida_hexrays.m_goto) else row.d
+                    if int(operand.t) != int(ida_hexrays.mop_b):
+                        continue
+                    accepted_targets.add(
+                        _native_anchor(blocks[int(operand.b)], origins)
+                    )
+        expected_accepted_targets = {
+            block_anchor_by_id[accepted_route.true_target_block_id],
+            block_anchor_by_id[accepted_route.false_target_block_id],
+        }
+        accepted_passed = (
+            not accepted_indirect and accepted_targets == expected_accepted_targets
+        )
+
+    operation_observations: list[dict[str, object]] = [
+        {
+            "operation_id": accepted_route.operation_id,
+            "operation_category": accepted_route.category.value,
+            "source_present": accepted_source is not None,
+            "indirect_transfer_present": accepted_indirect,
+            "target_eas": sorted(accepted_targets),
+            "passed": accepted_passed,
+        }
+    ]
+    for direct_route in (
+        operation
+        for operation in batch.operations
+        if isinstance(operation, RhadDirectRoute)
+    ):
+        direct_indirect = any(
+            int(row.opcode) == int(ida_hexrays.m_ijmp)
+            and int(origins.get(int(row.ea), int(row.ea)))
+            == int(direct_route.transfer_ea)
+            for block in blocks.values()
+            for row in _instructions(block)
+        )
+        direct_source = next(
+            (
+                block
+                for block in blocks.values()
+                if any(
+                    int(origins.get(int(row.ea), int(row.ea)))
+                    == int(direct_route.transfer_ea)
+                    for row in _instructions(block)
+                )
+            ),
+            None,
+        )
+        direct_targets: set[int] = set()
+        if direct_source is not None:
+            for successor_serial in tuple(
+                int(value) for value in direct_source.succset
+            ):
+                direct_targets.add(_native_anchor(blocks[successor_serial], origins))
+            if not direct_targets and direct_source.tail is not None:
+                tail = direct_source.tail
+                operand = (
+                    tail.l if int(tail.opcode) == int(ida_hexrays.m_goto) else tail.d
+                )
+                if int(operand.t) == int(ida_hexrays.mop_b):
+                    direct_targets.add(_native_anchor(blocks[int(operand.b)], origins))
+        direct_target_ea = block_anchor_by_id[direct_route.direct_target_block_id]
+        required_reachable_eas = set(direct_route.boundary_exit_eas)
+        direct_passed = not direct_indirect and (
+            direct_targets == {direct_target_ea}
+            if direct_source is not None
+            else required_reachable_eas.issubset(reachable)
+        )
+        operation_observations.append(
+            {
+                "operation_id": direct_route.operation_id,
+                "operation_category": direct_route.category.value,
+                "source_present": direct_source is not None,
+                "indirect_transfer_present": direct_indirect,
+                "target_eas": sorted(direct_targets),
+                "required_reachable_eas": sorted(required_reachable_eas),
+                "passed": direct_passed,
+            }
+        )
+
     return {
-        "source_present": True,
-        "indirect_transfer_present": transfer_indirect,
-        "target_eas": sorted(target_eas),
-        "reachable_eas": list(reachable_anchors()),
-        "passed": not transfer_indirect and target_eas == expected_targets,
+        "batch_id": batch.batch_id,
+        "operation_observations": operation_observations,
+        "reachable_eas": list(reachable),
+        "passed": all(bool(row["passed"]) for row in operation_observations),
     }
 
 
-def observe_a560_generated_checksum_maturity(
+def observe_rhad_generated_reference_maturity(
     *,
     function_ea: int,
     mba: object,
     decision: dict[str, object],
     maturity_override: str | None = None,
 ) -> None:
-    """Persist one deduplicated route-specific maturity observation."""
-    if int(function_ea) != FUNCTION_EA or int(mba.entry_ea) != FUNCTION_EA:
-        return
+    """Persist one deduplicated batch-specific maturity observation."""
     session = decision.get("session")
+    if session is None:
+        return
+    batch = reference_batch_for_native_key(session.native_key)
     if (
-        session is None
+        batch is None
+        or int(function_ea) != int(batch.function_ea)
+        or int(mba.entry_ea) != int(batch.function_ea)
         or not session.rhad_generated_checksum_committed_for_current_mba
     ):
         return
@@ -262,56 +564,51 @@ def observe_a560_generated_checksum_maturity(
     if maturity in session.rhad_generated_checksum_observed_maturities:
         return
     session.rhad_generated_checksum_observed_maturities.add(maturity)
-    observation = _checksum_route_observation(mba)
+    observation = _reference_batch_observation(mba, batch)
     _emit_checksum_lifecycle(
         session,
         event_kind="rhad_generated_checksum_maturity",
         maturity=maturity,
         phase="route_survival",
         summary=(
-            f"A560 GENERATED checksum route {'passed' if observation['passed'] else 'failed'} "
-            f"at {maturity}"
+            f"Rhad GENERATED reference batch "
+            f"{'passed' if observation['passed'] else 'failed'} at {maturity}"
         ),
-        payload={
-            **observation,
-            "comparison_constant": 0x0BB2D365,
-            "true_target_ea": 0x40B6C0,
-            "false_target_ea": 0x40A607,
-            "transfer_ea": TRANSFER_EA,
-        },
+        payload=observation,
     )
 
 
-def observe_a560_generated_checksum_preopt(**kwargs: object) -> None:
-    observe_a560_generated_checksum_maturity(
+def observe_rhad_generated_reference_preopt(**kwargs: object) -> None:
+    observe_rhad_generated_reference_maturity(
         **kwargs,
         maturity_override="MMAT_PREOPTIMIZED",
     )
 
 
-def observe_a560_generated_checksum_locopt(**kwargs: object) -> None:
-    observe_a560_generated_checksum_maturity(
+def observe_rhad_generated_reference_locopt(**kwargs: object) -> None:
+    observe_rhad_generated_reference_maturity(
         **kwargs,
         maturity_override="MMAT_LOCOPT",
     )
 
 
-def observe_a560_generated_checksum_calls(**kwargs: object) -> None:
+def observe_rhad_generated_reference_calls(**kwargs: object) -> None:
     # Hex-Rays invokes hxe_calls_done after call analysis while the live MBA's
     # numeric maturity still reports LOCOPT.  The callback boundary, not that
     # lagging field, is the authoritative CALLS observation label.
-    observe_a560_generated_checksum_maturity(
+    observe_rhad_generated_reference_maturity(
         **kwargs,
         maturity_override="MMAT_CALLS",
     )
 
 
-def prepare_a560_generated_checksum_templates(
+def prepare_rhad_generated_reference_templates(
     state: object,
+    batch: RhadGeneratedReferenceBatch,
 ) -> bool:
-    """Capture both target-rooted PREOPT bodies before the live MBA exists."""
+    """Capture every typed target-rooted PREOPT body before the live MBA exists."""
     resolution = state.portable_evidence.computed_goto_resolution
-    if resolution is None or int(resolution.function_ea) != FUNCTION_EA:
+    if resolution is None or int(resolution.function_ea) != int(batch.function_ea):
         return False
 
     import ida_hexrays
@@ -351,9 +648,7 @@ def prepare_a560_generated_checksum_templates(
                 continue
             block = source_plan.cfg.blocks_by_ea.get(entry_ea)
             if block is None:
-                raise ValueError(
-                    f"GENERATED checksum lost native block 0x{entry_ea:X}"
-                )
+                raise ValueError(f"GENERATED checksum lost native block 0x{entry_ea:X}")
             native_blocks[entry_ea] = block
             for edge in block.outgoing_edges:
                 if edge.target_ea is None:
@@ -388,7 +683,7 @@ def prepare_a560_generated_checksum_templates(
         )
 
     captured = 0
-    for target_ea in (0x40A607, 0x40B6C0):
+    for target_ea in batch.template_root_eas:
         (
             ranges,
             owned_entry_eas,
@@ -412,8 +707,7 @@ def prepare_a560_generated_checksum_templates(
             )
             if target_mba is None:
                 logger.info(
-                    "GENERATED checksum target capture failed: "
-                    "target=0x%X reason=%s",
+                    "GENERATED checksum target capture failed: target=0x%X reason=%s",
                     target_ea,
                     failure.desc(),
                 )
@@ -421,7 +715,7 @@ def prepare_a560_generated_checksum_templates(
             target_mba.build_graph()
             captured += int(
                 capture_generated_reference_snippet_template(
-                    FUNCTION_EA,
+                    batch.function_ea,
                     target_ea,
                     target_mba,
                     ranges,
@@ -436,7 +730,7 @@ def prepare_a560_generated_checksum_templates(
         "prepared GENERATED checksum target templates: captured=%d",
         captured,
     )
-    return captured == 2
+    return captured == len(batch.template_root_eas)
 
 
 def _identity(native_key, start_ea: int, end_ea: int, *eas: int):
@@ -447,204 +741,167 @@ def _identity(native_key, start_ea: int, end_ea: int, *eas: int):
     )
 
 
-def build_a560_generated_checksum_plan(
+def build_rhad_generated_reference_plan(
     *,
-    native_key: object,
+    native_key: NativePreanalysisKey,
     evidence_generation: int,
 ) -> FragmentPlan:
-    """Compile the one admitted checksum route without live-MBA access."""
+    """Compile the exact-input typed batch without live-MBA access."""
     generation = int(evidence_generation)
-    function_identity = int(native_key.function_rva)
-    input_identity = str(native_key.input_identity).lower()
-    if not input_identity.startswith("sha256:") or len(input_identity) != 71:
-        raise ValueError("A560 checksum requires a SHA-256 native input identity")
-    candidate_sha256 = input_identity.removeprefix("sha256:")
+    batch = reference_batch_for_native_key(native_key)
+    if batch is None:
+        raise ValueError("no Rhad GENERATED reference batch matches the native input")
+    candidate_sha256 = str(native_key.input_identity).lower().removeprefix("sha256:")
     source_identity = _identity(
         native_key,
-        SOURCE_EA,
-        TRANSFER_EA + 2,
-        0x40A5F0,
-        0x40A5F6,
-        0x40A5FE,
-        0x40A601,
-        0x40A605,
+        batch.source.start_ea,
+        batch.source.end_ea,
+        *batch.source.exact_instruction_eas,
     )
-    original_id = "native-original@0x40A5F0"
-    source_id = "native@0x40A5F0"
-    predecessor_id = "native@0x40A5AE"
-    body_id = "rhad-a560-generated-native-body"
+    direct_source_ids = frozenset(
+        operation.source_block_id
+        for operation in batch.operations
+        if isinstance(operation, RhadDirectRoute)
+    )
     blocks = (
         FragmentBlock(
-            block_id=predecessor_id,
+            block_id=batch.predecessor.block_id,
             role=FragmentBlockRole.EXTERNAL,
             materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
-            semantic_anchor_ea=0x40A5AE,
+            semantic_anchor_ea=batch.predecessor.start_ea,
             stable_identity=_identity(
                 native_key,
-                0x40A5AE,
-                SOURCE_EA,
-                0x40A5AE,
-                0x40A5C8,
+                batch.predecessor.start_ea,
+                batch.predecessor.end_ea,
+                *batch.predecessor.exact_instruction_eas,
             ),
         ),
         FragmentBlock(
-            block_id=original_id,
+            block_id=batch.source_original_id,
             role=FragmentBlockRole.ORIGINAL,
             materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
-            semantic_anchor_ea=SOURCE_EA,
+            semantic_anchor_ea=batch.source.start_ea,
             stable_identity=source_identity,
         ),
         FragmentBlock(
-            block_id=source_id,
+            block_id=batch.source.block_id,
             role=FragmentBlockRole.REPLACEMENT,
             materialization=FragmentBlockMaterialization.CLONE_PUBLISHED,
-            semantic_anchor_ea=SOURCE_EA,
+            semantic_anchor_ea=batch.source.start_ea,
             stable_identity=source_identity,
-            replaces_block_id=original_id,
-        ),
-        FragmentBlock(
-            block_id="native@0x40A5FE",
-            role=FragmentBlockRole.EXTERNAL,
-            materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
-            semantic_anchor_ea=0x40A5FE,
-            stable_identity=_identity(
-                native_key,
-                0x40A5FE,
-                0x40A601,
-                0x40A5FE,
-            ),
-        ),
-        FragmentBlock(
-            block_id="native@0x40A601",
-            role=FragmentBlockRole.EXTERNAL,
-            materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
-            semantic_anchor_ea=0x40A601,
-            stable_identity=_identity(
-                native_key,
-                0x40A601,
-                TRANSFER_EA + 2,
-                0x40A601,
-                TRANSFER_EA,
-            ),
+            replaces_block_id=batch.source_original_id,
         ),
         *(
             FragmentBlock(
-                block_id=block_id,
-                role=FragmentBlockRole.IMPORTED,
-                materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
-                semantic_anchor_ea=start_ea,
+                block_id=evidence.block_id,
+                role=FragmentBlockRole.EXTERNAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=evidence.start_ea,
                 stable_identity=_identity(
                     native_key,
-                    start_ea,
-                    end_ea,
-                    start_ea,
+                    evidence.start_ea,
+                    evidence.end_ea,
+                    *evidence.exact_instruction_eas,
                 ),
-                native_body_id=body_id,
             )
-            for block_id, (start_ea, end_ea) in zip(
-                IMPORTED_BLOCK_IDS,
-                IMPORTED_RANGES,
-                strict=True,
+            for evidence in batch.auxiliary_blocks
+        ),
+        *(
+            FragmentBlock(
+                block_id=evidence.block_id,
+                role=FragmentBlockRole.IMPORTED,
+                materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+                semantic_anchor_ea=evidence.start_ea,
+                stable_identity=_identity(
+                    native_key,
+                    evidence.start_ea,
+                    evidence.end_ea,
+                    *evidence.exact_instruction_eas,
+                ),
+                native_body_id=batch.native_body_id,
             )
+            for evidence in batch.imported_blocks
         ),
     )
-    base_plan = FragmentPlan(
-        plan_id="rhad-a560-generated-checksum-base",
-        atomic_group_id=f"rhad-a560-generated-checksum:g{generation}",
-        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
-        native_key=native_key,
-        blocks=blocks,
-        roots=(source_id,),
-        owned_originals=(original_id,),
-        prohibited_dispatcher_blocks=(),
-        operations=(
-            FragmentOperation(
-                operation_id="placeholder@0x40A605",
-                source_block_id=source_id,
-                edges=(
-                    FragmentEdge(
-                        role=SemanticEdgeRole.DIRECT,
-                        target_block_id="native@0x40A607",
+    placeholder_operations = tuple(
+        FragmentOperation(
+            operation_id=f"placeholder:{operation.operation_id}",
+            source_block_id=operation.source_block_id,
+            edges=(
+                FragmentEdge(
+                    role=SemanticEdgeRole.DIRECT,
+                    target_block_id=(
+                        operation.false_target_block_id
+                        if isinstance(operation, RhadConditionalRoute)
+                        else operation.direct_target_block_id
                     ),
                 ),
             ),
-        ),
+        )
+        for operation in batch.operations
+    )
+    base_plan = FragmentPlan(
+        plan_id=f"{batch.batch_id}-base",
+        atomic_group_id=f"{batch.batch_id}:g{generation}",
+        publication_purpose=FragmentPublicationPurpose.FRONTEND_NORMALIZATION,
+        native_key=native_key,
+        blocks=blocks,
+        roots=(batch.source.block_id,),
+        owned_originals=(batch.source_original_id,),
+        prohibited_dispatcher_blocks=(),
+        operations=placeholder_operations,
         work_item_scope=FragmentWorkItemScope(
-            work_item_id=f"rhad-generated-checksum@0x40A605:g{generation}",
-            selected_obligation_ids=("rhad:route@0x40A605",),
+            work_item_id=f"{batch.batch_id}:g{generation}",
+            selected_obligation_ids=tuple(
+                operation.operation_id for operation in batch.operations
+            ),
             remaining_obligation_ids=(),
             unreachable_obligation_ids=(),
         ),
         native_bodies=(
             FragmentNativeBody(
-                body_id=body_id,
-                block_ids=IMPORTED_BLOCK_IDS,
-                entry_block_ids=(
-                    "native@0x40A607",
-                    "native@0x40A619",
-                    "native@0x40A68A",
-                    "native@0x40B6C0",
-                    "native@0x40B6D4",
+                body_id=batch.native_body_id,
+                block_ids=tuple(
+                    evidence.block_id for evidence in batch.imported_blocks
                 ),
+                entry_block_ids=batch.native_body_entry_block_ids,
                 terminal_block_ids=(),
-                native_ranges=(
-                    NativeEaInterval(0x40A607, 0x40A61B),
-                    NativeEaInterval(0x40A680, 0x40A68C),
-                    NativeEaInterval(0x40B6C0, 0x40B6D6),
+                native_ranges=tuple(
+                    NativeEaInterval(start_ea, end_ea)
+                    for start_ea, end_ea in batch.native_body_ranges
                 ),
-                proof_ids=("native-body@0x40A605",),
-                preserved_native_transfer_block_ids=IMPORTED_BLOCK_IDS,
+                proof_ids=batch.native_body_proof_ids,
+                preserved_native_transfer_block_ids=tuple(
+                    evidence.block_id
+                    for evidence in batch.imported_blocks
+                    if evidence.block_id not in direct_source_ids
+                ),
             ),
         ),
     )
-    route = RhadConditionalRoute(
-        operation_id="rhad:route@0x40A605",
-        source_block_id=source_id,
-        transfer_ea=TRANSFER_EA,
-        predicate_anchor_ea=0x40A5F6,
-        normalization_start_ea=0x40A5F6,
-        condition_producer_ea=0x40A5F0,
-        conditional_select_ea=0x40A5FE,
-        selected_value_block_id="native@0x40A5FE",
-        join_block_id="native@0x40A601",
-        observed_predicate_kind=PredicateKind.SGE,
-        predicate_kind=PredicateKind.SLT,
-        true_target_block_id="native@0x40B6C0",
-        false_target_block_id="native@0x40A607",
-        comparison_constant=0x0BB2D365,
-        owned_corridor_instruction_eas=(
-            0x40A5F0,
-            0x40A5F6,
-            0x40A5FE,
-            0x40A601,
-            0x40A605,
-        ),
-        imported_closure_block_ids=IMPORTED_BLOCK_IDS,
-        boundary_exit_eas=BOUNDARY_EXIT_EAS,
-        flag_corridor_id="flags-intact@0x40A5F0",
-        phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
-    )
     ledger = RhadReferenceLedger(
-        ledger_id=f"rhad-generated-reference@0x40A560:g{generation}",
-        function_ea=function_identity,
+        ledger_id=f"{batch.batch_id}:g{generation}",
+        function_ea=batch.function_ea,
         evidence_generation=generation,
         base_plan=base_plan,
         reference_oracle_run=RouteOracleRun(
-            run_id="rhad-a560-generated-checksum",
-            function_ea=function_identity,
-            fixture_sha256=INPUT_SHA256,
-            reference_binary_sha256="1" * 64,
+            run_id=batch.batch_id,
+            function_ea=batch.function_ea,
+            fixture_sha256=batch.input_sha256,
+            reference_binary_sha256=batch.reference_binary_sha256,
             candidate_binary_sha256=candidate_sha256,
-            reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-            runtime_image="d810-idapro-9.3-test-runtime:py313-v1",
-            runtime_image_id="sha256:360f91d9d4ac",
+            reference_commit=batch.reference_commit,
+            runtime_image=batch.runtime_image,
+            runtime_image_id=batch.runtime_image_id,
             cache_disabled=True,
         ),
-        operations=(route,),
-        required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
+        operations=batch.operations,
+        required_boundary_exit_eas=batch.required_boundary_exit_eas,
         reference_provenance={
-            "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-            "operation_shape": "cmovl_selected_indirect_transfer",
+            "reference_commit": batch.reference_commit,
+            "operation_shapes": tuple(
+                operation.category.value for operation in batch.operations
+            ),
         },
     )
     return compile_rhad_reference_fragment(
@@ -653,26 +910,30 @@ def build_a560_generated_checksum_plan(
     )
 
 
-def publish_a560_generated_checksum(
+def publish_rhad_generated_reference_batch(
     *,
     function_ea: int,
     mba: object,
     decision: dict[str, object],
 ) -> None:
-    """Compile and submit the checksum through the sole live backend entry."""
-    if int(function_ea) != FUNCTION_EA or int(mba.entry_ea) != FUNCTION_EA:
-        return
+    """Compile and submit a selected batch through the sole live backend entry."""
     session = decision.get("session")
     gateway = decision.get("mutation_gateway")
     materializer = decision.get("semantic_native_body_materializer")
     logger.info(
-        "GENERATED checksum boundary observed: session=%s gateway=%s "
-        "materializer=%s",
+        "GENERATED checksum boundary observed: session=%s gateway=%s materializer=%s",
         session is not None,
         gateway is not None,
         materializer is not None,
     )
     if session is None or gateway is None or materializer is None:
+        return
+    batch = reference_batch_for_native_key(session.native_key)
+    if (
+        batch is None
+        or int(function_ea) != int(batch.function_ea)
+        or int(mba.entry_ea) != int(batch.function_ea)
+    ):
         return
     if session.rhad_generated_checksum_attempted_for_current_mba:
         logger.info("GENERATED checksum already attempted for current MBA")
@@ -684,7 +945,7 @@ def publish_a560_generated_checksum(
     session.rhad_generated_checksum_attempted_for_current_mba = True
     session.rhad_generated_checksum_committed_for_current_mba = False
     session.rhad_generated_checksum_observed_maturities.clear()
-    plan = build_a560_generated_checksum_plan(
+    plan = build_rhad_generated_reference_plan(
         native_key=session.native_key,
         evidence_generation=int(session.native_preanalysis.evidence_generation),
     )
@@ -693,18 +954,29 @@ def publish_a560_generated_checksum(
         event_kind="rhad_generated_checksum_compiled",
         maturity="MMAT_GENERATED",
         phase="reference_compilation",
-        summary="compiled one bounded A560 GENERATED reference route",
+        summary="compiled one bounded Rhad GENERATED reference batch",
         payload={
+            "batch_id": batch.batch_id,
             "plan_id": plan.plan_id,
             "atomic_group_id": plan.atomic_group_id,
             "operation_ids": [operation.operation_id for operation in plan.operations],
-            "imported_block_ids": list(IMPORTED_BLOCK_IDS),
-            "imported_block_count": len(IMPORTED_BLOCK_IDS),
-            "boundary_exit_eas": list(BOUNDARY_EXIT_EAS),
-            "comparison_constant": 0x0BB2D365,
-            "true_target_ea": 0x40B6C0,
-            "false_target_ea": 0x40A607,
-            "transfer_ea": TRANSFER_EA,
+            "reference_operations": [
+                {
+                    "operation_id": operation.operation_id,
+                    "reference_ledger_identity": (
+                        operation.reference_route_authority.reference_route.reference_ledger_identity
+                    ),
+                    "reference_ledger_json": (
+                        operation.reference_route_authority.reference_route.reference_ledger_json
+                    ),
+                }
+                for operation in plan.operations
+            ],
+            "imported_block_ids": [
+                evidence.block_id for evidence in batch.imported_blocks
+            ],
+            "imported_block_count": len(batch.imported_blocks),
+            "boundary_exit_eas": list(batch.required_boundary_exit_eas),
         },
     )
     from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
@@ -716,9 +988,7 @@ def publish_a560_generated_checksum(
     backend.apply(
         plan,
         mba,
-        publication_profile=(
-            SemanticFragmentPublicationProfile.GENERATED_GRAPH_FREE
-        ),
+        publication_profile=(SemanticFragmentPublicationProfile.GENERATED_GRAPH_FREE),
     )
     receipt = backend._committed_fragment_receipt
     if receipt is None:
@@ -747,7 +1017,7 @@ def publish_a560_generated_checksum(
             ),
         },
     )
-    observe_a560_generated_checksum_maturity(
+    observe_rhad_generated_reference_maturity(
         function_ea=function_ea,
         mba=mba,
         decision=decision,
@@ -761,14 +1031,19 @@ def publish_a560_generated_checksum(
 
 
 __all__ = [
+    "ACCEPTED_IMPORTED_BLOCK_IDS",
     "BOUNDARY_EXIT_EAS",
+    "DIRECT_IMPORTED_BLOCK_IDS",
     "FUNCTION_EA",
     "IMPORTED_BLOCK_IDS",
     "IMPORTED_RANGES",
     "INPUT_SHA256",
     "SOURCE_EA",
+    "TEMPLATE_ROOT_EAS",
     "TRANSFER_EA",
-    "build_a560_generated_checksum_plan",
-    "prepare_a560_generated_checksum_templates",
-    "publish_a560_generated_checksum",
+    "RhadGeneratedReferenceBatch",
+    "build_rhad_generated_reference_plan",
+    "prepare_rhad_generated_reference_templates",
+    "publish_rhad_generated_reference_batch",
+    "reference_batch_for_native_key",
 ]

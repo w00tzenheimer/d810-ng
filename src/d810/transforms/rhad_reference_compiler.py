@@ -740,6 +740,7 @@ __all__ = [
     "RhadDirectRoute",
     "RhadOperationCategory",
     "RhadReferenceLedger",
+    "RhadReferenceOperation",
     "RhadReferencePhase",
     "compile_rhad_reference_fragment",
 ]
