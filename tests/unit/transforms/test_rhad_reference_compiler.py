@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -66,9 +67,9 @@ COMBINED_BOUNDARY_EXIT_EAS = (0x40A633, 0x40A68C, 0x40A74C, 0x40B790)
 
 def _compiler_module():
     module_name = "d810.transforms.rhad_reference_compiler"
-    assert (
-        importlib.util.find_spec(module_name) is not None
-    ), "the pure Rhad reference compiler is not implemented"
+    assert importlib.util.find_spec(module_name) is not None, (
+        "the pure Rhad reference compiler is not implemented"
+    )
     return importlib.import_module(module_name)
 
 
@@ -96,6 +97,107 @@ def _reference_run() -> RouteOracleRun:
         runtime_image_id="sha256:360f91d9d4ac",
         cache_disabled=True,
     )
+
+
+def _row16_table_proof_mapping() -> dict[str, object]:
+    proof = {
+        "artifact_type": "rhad_setcc_indexed_table_proof",
+        "schema_version": 1,
+        "binding": {
+            "function_ea": 0x40A560,
+            "input_sha256": INPUT_SHA256,
+            "operation_id": "rhad:route@0x40A77C",
+            "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+            "reference_order": 16,
+        },
+        "table_evidence": {
+            "additive_key": 0xFDEE1C81,
+            "additive_key_producer_ea": 0x40A5BD,
+            "byte_order": "little",
+            "decode_ea": 0x40A77A,
+            "entries": [
+                {
+                    "decoded_target_ea": 0x40ABC6,
+                    "entry_ea": 0x48B81C,
+                    "index": 0,
+                    "raw_value": 0x02528F45,
+                },
+                {
+                    "decoded_target_ea": 0x40A77E,
+                    "entry_ea": 0x48B83C,
+                    "index": 1,
+                    "raw_value": 0x02528AFD,
+                },
+            ],
+            "entry_width_bytes": 4,
+            "extension_kind": "zero_extend_by_full_register_prezero",
+            "false_index": 0,
+            "index_width_bits": 32,
+            "interpretation": "add_constant_modulo_entry_width",
+            "lookup_ea": 0x40A774,
+            "setcc_destination_width_bits": 8,
+            "setcc_ea": 0x40A76E,
+            "shift_bits": 5,
+            "shift_ea": 0x40A771,
+            "stride_bytes": 32,
+            "table_base_ea": 0x48B81C,
+            "table_identity": "native-table@0x48B81C:stride-0x20:u32le:add-esi",
+            "true_index": 1,
+            "zeroed_width_bits": 32,
+            "zeroing_ea": 0x40A766,
+        },
+    }
+    canonical = json.dumps(proof, sort_keys=True, separators=(",", ":"))
+    return {
+        "content_identity": f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}",
+        "proof": proof,
+    }
+
+
+def _row16_table_proof_artifact(compiler):
+    return compiler.RhadSetccIndexedTableProofArtifact.from_mapping(
+        _row16_table_proof_mapping()
+    )
+
+
+def test_row16_table_proof_artifact_is_typed_canonical_and_bound() -> None:
+    compiler = _compiler_module()
+
+    artifact = compiler.RhadSetccIndexedTableProofArtifact.from_mapping(
+        _row16_table_proof_mapping()
+    )
+
+    assert artifact.input_sha256 == INPUT_SHA256
+    assert artifact.function_ea == 0x40A560
+    assert artifact.operation_id == "rhad:route@0x40A77C"
+    assert artifact.reference_order == 16
+    assert artifact.content_identity.startswith("sha256:")
+    assert artifact.table_evidence.true_entry.decoded_target_ea == 0x40A77E
+    assert artifact.table_evidence.false_entry.decoded_target_ea == 0x40ABC6
+    assert (
+        json.loads(artifact.canonical_proof_json)
+        == (_row16_table_proof_mapping()["proof"])
+    )
+
+
+def test_row16_table_proof_artifact_rejects_content_identity_mismatch() -> None:
+    compiler = _compiler_module()
+    mapping = _row16_table_proof_mapping()
+    mapping["content_identity"] = "sha256:" + ("0" * 64)
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="content identity"):
+        compiler.RhadSetccIndexedTableProofArtifact.from_mapping(mapping)
+
+
+def test_row16_table_proof_artifact_rejects_noncanonical_fields() -> None:
+    compiler = _compiler_module()
+    mapping = _row16_table_proof_mapping()
+    proof = mapping["proof"]
+    assert isinstance(proof, dict)
+    proof["compatibility_metadata"] = {}
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="exact typed fields"):
+        compiler.RhadSetccIndexedTableProofArtifact.from_mapping(mapping)
 
 
 def _base_plan() -> FragmentPlan:
@@ -229,6 +331,7 @@ def _ledger():
     return compiler.RhadReferenceLedger(
         ledger_id="rhad-generated-reference@0x40A560:g1",
         function_ea=0x40A560,
+        native_function_ea=0x40A560,
         evidence_generation=1,
         base_plan=_base_plan(),
         reference_oracle_run=_reference_run(),
@@ -334,6 +437,7 @@ def _mixed_ledger():
     return compiler.RhadReferenceLedger(
         ledger_id="rhad-generated-reference@0x40A560:g1",
         function_ea=0x40A560,
+        native_function_ea=0x40A560,
         evidence_generation=1,
         base_plan=base,
         reference_oracle_run=_reference_run(),
@@ -816,6 +920,7 @@ def _third_shape_ledger():
     return compiler.RhadReferenceLedger(
         ledger_id="rhad-generated-reference@0x40A560:g1",
         function_ea=0x40A560,
+        native_function_ea=0x40A560,
         evidence_generation=1,
         base_plan=plan,
         reference_oracle_run=_reference_run(),
@@ -1140,49 +1245,10 @@ def _fourth_shape_ledger():
         phase=compiler.RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
         depends_on=(direct_id,),
     )
-    assert hasattr(
-        compiler, "RhadSetccIndexedTableRoute"
-    ), "the compiler has no typed setcc-indexed-table operation"
-    table_evidence = fragment_plan.FragmentSetccIndexedTableEvidence(
-        table_identity="native-table@0x48B81C:stride-0x20:u32le:add-esi",
-        zeroing_ea=0x40A766,
-        zeroed_width_bits=32,
-        setcc_ea=0x40A76E,
-        setcc_destination_width_bits=8,
-        extension_kind=(
-            fragment_plan.FragmentSetccIndexExtensionKind.ZERO_EXTEND_BY_FULL_REGISTER_PREZERO
-        ),
-        index_width_bits=32,
-        shift_ea=0x40A771,
-        shift_bits=5,
-        lookup_ea=0x40A774,
-        table_base_ea=0x48B81C,
-        stride_bytes=32,
-        entry_width_bytes=4,
-        byte_order=fragment_plan.FragmentTableByteOrder.LITTLE,
-        interpretation=(
-            fragment_plan.FragmentTableEntryInterpretation.ADD_CONSTANT_MODULO_ENTRY_WIDTH
-        ),
-        decode_ea=0x40A77A,
-        additive_key_producer_ea=0x40A5BD,
-        additive_key=0xFDEE1C81,
-        true_index=1,
-        false_index=0,
-        entries=(
-            fragment_plan.FragmentSetccIndexedTableEntry(
-                index=0,
-                entry_ea=0x48B81C,
-                raw_value=0x02528F45,
-                decoded_target_ea=0x40ABC6,
-            ),
-            fragment_plan.FragmentSetccIndexedTableEntry(
-                index=1,
-                entry_ea=0x48B83C,
-                raw_value=0x02528AFD,
-                decoded_target_ea=0x40A77E,
-            ),
-        ),
+    assert hasattr(compiler, "RhadSetccIndexedTableRoute"), (
+        "the compiler has no typed setcc-indexed-table operation"
     )
+    table_proof_artifact = _row16_table_proof_artifact(compiler)
     selected = compiler.RhadSetccIndexedTableRoute(
         operation_id=selected_id,
         reference_order=16,
@@ -1199,7 +1265,7 @@ def _fourth_shape_ledger():
         false_target_block_id="native@0x40ABC6",
         true_target_ea=0x40A77E,
         false_target_ea=0x40ABC6,
-        table_evidence=table_evidence,
+        table_proof_artifact=table_proof_artifact,
         owned_corridor_instruction_eas=(
             0x40A766,
             0x40A768,
@@ -1295,6 +1361,7 @@ def _fourth_shape_ledger():
     return compiler.RhadReferenceLedger(
         ledger_id="rhad-generated-reference@0x40A560:g1",
         function_ea=0x40A560,
+        native_function_ea=0x40A560,
         evidence_generation=1,
         base_plan=plan,
         reference_oracle_run=_reference_run(),
@@ -1311,9 +1378,7 @@ def _fourth_shape_ledger():
         reference_provenance={
             "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
             "inventory_identity": "rhad-a560-indirect-jump-reference-inventory:v1",
-            "setcc_evidence_identity": (
-                "rhad-a560-setcc-indexed-table-row16-evidence:v1"
-            ),
+            "setcc_proof_artifact_identity": table_proof_artifact.content_identity,
         },
     )
 
@@ -1361,6 +1426,14 @@ def test_compiler_emits_typed_setcc_indexed_table_route() -> None:
     )
     assert payload["reference_order"] == 16
     assert payload["operation_variant"] == "setcc_indexed_table"
+    assert payload["proof_artifact"]["content_identity"] == (
+        _row16_table_proof_artifact(compiler).content_identity
+    )
+    assert payload["proof_artifact"]["proof"]["binding"]["reference_order"] == 16
+    assert payload["aggregate_program_identity"] == (
+        _fourth_shape_ledger().aggregate_program_identity
+    )
+    assert plan.plan_id.endswith(payload["aggregate_program_identity"])
     assert payload["setcc_table"]["table_base_ea"] == 0x48B81C
     assert payload["setcc_table"]["entries"][1]["decoded_target_ea"] == 0x40A77E
 
@@ -1396,6 +1469,78 @@ def test_compiler_rejects_setcc_route_with_mismatched_derived_target() -> None:
                     *dependencies,
                     replace(selected, true_target_ea=0x40A780),
                 ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_setcc_proof_artifact_bound_to_another_operation() -> None:
+    compiler = _compiler_module()
+    ledger = _fourth_shape_ledger()
+    *dependencies, selected = ledger.operations
+    mapping = _row16_table_proof_mapping()
+    proof = mapping["proof"]
+    assert isinstance(proof, dict)
+    binding = proof["binding"]
+    assert isinstance(binding, dict)
+    binding["operation_id"] = "rhad:route@0x40A792"
+    canonical = json.dumps(proof, sort_keys=True, separators=(",", ":"))
+    mapping["content_identity"] = (
+        f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
+    )
+    foreign_artifact = compiler.RhadSetccIndexedTableProofArtifact.from_mapping(mapping)
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="artifact binding"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                operations=(
+                    *dependencies,
+                    replace(selected, table_proof_artifact=foreign_artifact),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("binding_field", "foreign_value", "expected_rejection"),
+    (
+        ("input_sha256", "d" * 64, "artifact binding.*ledger"),
+        ("function_ea", 0x40C8B0, "artifact binding.*ledger"),
+        ("reference_commit", "f" * 40, "artifact binding.*ledger"),
+        ("reference_order", 17, "artifact binding.*route"),
+    ),
+)
+def test_compiler_rejects_row16_artifact_bound_to_foreign_authority(
+    binding_field: str,
+    foreign_value: object,
+    expected_rejection: str,
+) -> None:
+    compiler = _compiler_module()
+    ledger = _fourth_shape_ledger()
+    *dependencies, selected = ledger.operations
+    mapping = _row16_table_proof_mapping()
+    proof = mapping["proof"]
+    assert isinstance(proof, dict)
+    binding = proof["binding"]
+    assert isinstance(binding, dict)
+    binding[binding_field] = foreign_value
+    canonical = json.dumps(proof, sort_keys=True, separators=(",", ":"))
+    mapping["content_identity"] = (
+        f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
+    )
+    foreign_artifact = compiler.RhadSetccIndexedTableProofArtifact.from_mapping(mapping)
+
+    with pytest.raises(compiler.RhadCompilerRejection, match=expected_rejection):
+        foreign_route = replace(
+            selected,
+            table_proof_artifact=foreign_artifact,
+        )
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                operations=(*dependencies, foreign_route),
             ),
             expected_evidence_generation=1,
         )

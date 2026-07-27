@@ -9,6 +9,9 @@ actual GENERATED callback boundary.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
+from pathlib import Path
 
 from d810.core.logging import getLogger
 from d810.core.native_preanalysis_key import NativePreanalysisKey
@@ -28,14 +31,10 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentPublicationPurpose,
-    FragmentSetccIndexExtensionKind,
-    FragmentSetccIndexedTableEntry,
-    FragmentSetccIndexedTableEvidence,
-    FragmentTableByteOrder,
-    FragmentTableEntryInterpretation,
     FragmentWorkItemScope,
 )
 from d810.transforms.rhad_reference_compiler import (
+    RhadCompilerRejection,
     RhadConditionalRoute,
     RhadDirectRoute,
     RhadExistingConditionalRoute,
@@ -44,6 +43,7 @@ from d810.transforms.rhad_reference_compiler import (
     RhadReferenceLedger,
     RhadReferencePhase,
     RhadSetccIndexedTableRoute,
+    RhadSetccIndexedTableProofArtifact,
     compile_rhad_reference_fragment,
 )
 
@@ -51,6 +51,27 @@ from d810.transforms.rhad_reference_compiler import (
 logger = getLogger(__name__)
 
 INPUT_SHA256 = "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+ROW16_TABLE_PROOF_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "conf"
+    / "semantic_route_oracles"
+    / "rhad_a560_row16_setcc_table_proof.json"
+)
+
+
+def load_row16_table_proof_artifact(
+    path: Path = ROW16_TABLE_PROOF_PATH,
+) -> RhadSetccIndexedTableProofArtifact:
+    """Load the required canonical row-16 proof before any live mutation."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RhadCompilerRejection(
+            f"Rhad row-16 table proof artifact is unavailable: {error}"
+        ) from error
+    return RhadSetccIndexedTableProofArtifact.from_mapping(payload)
+
+
 ACCEPTED_IMPORTED_RANGES = (
     (0x40A607, 0x40A615),
     (0x40A615, 0x40A61B),
@@ -136,8 +157,7 @@ DEPENDENCY_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS[
     len(BASE_IMPORTED_LAYOUT) : len(BASE_IMPORTED_LAYOUT) + 4
 ]
 SELECTED_IMPORTED_BLOCK_IDS = IMPORTED_BLOCK_IDS[
-    len(BASE_IMPORTED_LAYOUT)
-    + 4 : len(BASE_IMPORTED_LAYOUT)
+    len(BASE_IMPORTED_LAYOUT) + 4 : len(BASE_IMPORTED_LAYOUT)
     + len(THIRD_SHAPE_IMPORTED_LAYOUT)
 ]
 FOURTH_DIRECT_IMPORTED_BLOCK_IDS = (
@@ -332,6 +352,26 @@ class RhadGeneratedReferenceBatch:
     def template_root_eas(self) -> tuple[int, ...]:
         return tuple(fragment.root_ea for fragment in self.template_fragments)
 
+    @property
+    def proof_artifact_identities(self) -> tuple[str, ...]:
+        return tuple(
+            operation.table_proof_artifact.content_identity
+            for operation in self.operations
+            if isinstance(operation, RhadSetccIndexedTableRoute)
+        )
+
+    @property
+    def aggregate_program_identity(self) -> str:
+        payload = {
+            "function_ea": int(self.function_ea),
+            "input_sha256": self.input_sha256.lower(),
+            "operation_ids": [operation.operation_id for operation in self.operations],
+            "proof_artifact_identities": list(self.proof_artifact_identities),
+            "reference_commit": self.reference_commit.lower(),
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 _ACCEPTED_ROUTE = RhadConditionalRoute(
     operation_id="rhad:route@0x40A605",
@@ -493,44 +533,7 @@ _FOURTH_EXISTING_ROUTE = RhadExistingConditionalRoute(
     depends_on=(_FOURTH_DIRECT_ROUTE.operation_id,),
 )
 
-_SETCC_TABLE_EVIDENCE = FragmentSetccIndexedTableEvidence(
-    table_identity="native-table@0x48B81C:stride-0x20:u32le:add-esi",
-    zeroing_ea=0x40A766,
-    zeroed_width_bits=32,
-    setcc_ea=0x40A76E,
-    setcc_destination_width_bits=8,
-    extension_kind=(
-        FragmentSetccIndexExtensionKind.ZERO_EXTEND_BY_FULL_REGISTER_PREZERO
-    ),
-    index_width_bits=32,
-    shift_ea=0x40A771,
-    shift_bits=5,
-    lookup_ea=0x40A774,
-    table_base_ea=0x48B81C,
-    stride_bytes=32,
-    entry_width_bytes=4,
-    byte_order=FragmentTableByteOrder.LITTLE,
-    interpretation=(FragmentTableEntryInterpretation.ADD_CONSTANT_MODULO_ENTRY_WIDTH),
-    decode_ea=0x40A77A,
-    additive_key_producer_ea=0x40A5BD,
-    additive_key=0xFDEE1C81,
-    true_index=1,
-    false_index=0,
-    entries=(
-        FragmentSetccIndexedTableEntry(
-            index=0,
-            entry_ea=0x48B81C,
-            raw_value=0x02528F45,
-            decoded_target_ea=0x40ABC6,
-        ),
-        FragmentSetccIndexedTableEntry(
-            index=1,
-            entry_ea=0x48B83C,
-            raw_value=0x02528AFD,
-            decoded_target_ea=0x40A77E,
-        ),
-    ),
-)
+_SETCC_TABLE_PROOF_ARTIFACT = load_row16_table_proof_artifact()
 
 _SETCC_ROUTE = RhadSetccIndexedTableRoute(
     operation_id="rhad:route@0x40A77C",
@@ -548,7 +551,7 @@ _SETCC_ROUTE = RhadSetccIndexedTableRoute(
     false_target_block_id="native@0x40ABC6",
     true_target_ea=0x40A77E,
     false_target_ea=0x40ABC6,
-    table_evidence=_SETCC_TABLE_EVIDENCE,
+    table_proof_artifact=_SETCC_TABLE_PROOF_ARTIFACT,
     owned_corridor_instruction_eas=(
         0x40A766,
         0x40A768,
@@ -1689,6 +1692,7 @@ def build_rhad_generated_reference_plan(
     ledger = RhadReferenceLedger(
         ledger_id=f"{batch.batch_id}:g{generation}",
         function_ea=batch.native_function_rva,
+        native_function_ea=batch.function_ea,
         evidence_generation=generation,
         base_plan=base_plan,
         reference_oracle_run=RouteOracleRun(
@@ -1711,10 +1715,19 @@ def build_rhad_generated_reference_plan(
             ),
         },
     )
-    return compile_rhad_reference_fragment(
+    if ledger.aggregate_program_identity != batch.aggregate_program_identity:
+        raise RhadCompilerRejection(
+            "Rhad aggregate program identity differs from its proof artifacts"
+        )
+    plan = compile_rhad_reference_fragment(
         ledger,
         expected_evidence_generation=generation,
     )
+    if not plan.plan_id.endswith(batch.aggregate_program_identity):
+        raise RhadCompilerRejection(
+            "Rhad compiled plan identity omits aggregate proof authority"
+        )
+    return plan
 
 
 def publish_rhad_generated_reference_batch(
@@ -1845,12 +1858,14 @@ __all__ = [
     "IMPORTED_BLOCK_IDS",
     "IMPORTED_RANGES",
     "INPUT_SHA256",
+    "ROW16_TABLE_PROOF_PATH",
     "SOURCE_EA",
     "TEMPLATE_ROOT_EAS",
     "TRANSFER_EA",
     "RhadGeneratedReferenceBatch",
     "build_rhad_generated_reference_plan",
     "prepare_rhad_generated_reference_templates",
+    "load_row16_table_proof_artifact",
     "publish_rhad_generated_reference_batch",
     "reference_batch_for_native_key",
 ]

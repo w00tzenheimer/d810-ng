@@ -3,8 +3,10 @@ from __future__ import annotations
 import ast
 import inspect
 import json
+from pathlib import Path
 
 import d810.manager.rhad_generated_checksum as generated_reference
+import pytest
 from d810.manager.rhad_generated_checksum import (
     BOUNDARY_EXIT_EAS,
     IMPORTED_BLOCK_IDS,
@@ -18,7 +20,11 @@ from d810.transforms.fragment_plan import (
     FragmentReferencedImportedConditionalSelectEnvelope,
     FragmentSetccIndexedTableNormalization,
 )
+from d810.transforms.rhad_reference_compiler import RhadCompilerRejection
 from tests.native_preanalysis import make_native_key
+
+
+_REPO = Path(__file__).resolve().parents[4]
 
 
 def _native_key():
@@ -37,7 +43,9 @@ def test_checksum_producer_compiles_four_serial_free_reference_shapes() -> None:
     )
 
     operation = plan.operation("rhad:route@0x40A605")
-    assert plan.plan_id.endswith("rhad-generated-reference@0x40A560:g7")
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+    assert plan.plan_id.endswith(batch.aggregate_program_identity)
     assert plan.block("native@0x40A5AE").semantic_anchor_ea == 0x40A5AE
     assert operation.predicate_anchor_ea == 0x40A5F6
     assert operation.computed_branch_normalization.condition_producer_ea == 0x40A5F0
@@ -152,6 +160,22 @@ def test_checksum_producer_compiles_four_serial_free_reference_shapes() -> None:
         fourth.computed_branch_normalization.table_evidence.false_entry.decoded_target_ea
         == 0x40ABC6
     )
+    fourth_payload = json.loads(
+        fourth.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert fourth_payload["aggregate_program_identity"] == (
+        batch.aggregate_program_identity
+    )
+    assert fourth_payload["proof_artifact"]["content_identity"] == (
+        "sha256:cab149ee6cce29957798829cceba0a2da5e17bbf3fda4c6d55dad62d64ec3785"
+    )
+    assert fourth_payload["proof_artifact"]["proof"]["binding"] == {
+        "function_ea": 0x40A560,
+        "input_sha256": generated_reference.INPUT_SHA256,
+        "operation_id": "rhad:route@0x40A77C",
+        "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+        "reference_order": 16,
+    }
     assert BOUNDARY_EXIT_EAS == (
         0x40A633,
         0x40A794,
@@ -203,6 +227,57 @@ def test_generated_batch_registry_selects_by_complete_native_identity() -> None:
             )
         )
         is None
+    )
+
+
+def test_row16_proof_artifact_is_required_and_content_addressed(
+    tmp_path: Path,
+) -> None:
+    artifact = generated_reference.load_row16_table_proof_artifact()
+    checked_in = json.loads(
+        generated_reference.ROW16_TABLE_PROOF_PATH.read_text(encoding="utf-8")
+    )
+
+    assert artifact.content_identity == checked_in["content_identity"]
+    assert artifact.proof_payload == checked_in["proof"]
+
+    with pytest.raises(RhadCompilerRejection, match="artifact is unavailable"):
+        generated_reference.load_row16_table_proof_artifact(
+            tmp_path / "missing-row16-proof.json"
+        )
+
+    mismatched_path = tmp_path / "mismatched-row16-proof.json"
+    checked_in["content_identity"] = "sha256:" + ("0" * 64)
+    mismatched_path.write_text(json.dumps(checked_in), encoding="utf-8")
+    with pytest.raises(RhadCompilerRejection, match="content identity"):
+        generated_reference.load_row16_table_proof_artifact(mismatched_path)
+
+
+def test_stable_228_row_inventory_references_required_row16_artifact() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    operations = inventory["operations"]
+    row_keys = {tuple(sorted(operation)) for operation in operations}
+    row16 = next(
+        operation for operation in operations if operation["reference_order"] == 16
+    )
+    artifact = generated_reference.load_row16_table_proof_artifact()
+
+    assert inventory["schema_version"] == 1
+    assert inventory["operation_count"] == len(operations) == 228
+    assert [operation["reference_order"] for operation in operations] == list(
+        range(228)
+    )
+    assert len(row_keys) == 1
+    assert row16["operation_id"] == artifact.operation_id
+    assert row16["current_generated_proof"]["proof_artifact_identity"] == (
+        artifact.content_identity
     )
 
 

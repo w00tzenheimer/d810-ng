@@ -1,0 +1,50 @@
+{
+  "content_identity": "sha256:cab149ee6cce29957798829cceba0a2da5e17bbf3fda4c6d55dad62d64ec3785",
+  "proof": {
+    "artifact_type": "rhad_setcc_indexed_table_proof",
+    "binding": {
+      "function_ea": 4236640,
+      "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
+      "operation_id": "rhad:route@0x40A77C",
+      "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+      "reference_order": 16
+    },
+    "schema_version": 1,
+    "table_evidence": {
+      "additive_key": 4260240513,
+      "additive_key_producer_ea": 4236733,
+      "byte_order": "little",
+      "decode_ea": 4237178,
+      "entries": [
+        {
+          "decoded_target_ea": 4238278,
+          "entry_ea": 4765724,
+          "index": 0,
+          "raw_value": 38965061
+        },
+        {
+          "decoded_target_ea": 4237182,
+          "entry_ea": 4765756,
+          "index": 1,
+          "raw_value": 38963965
+        }
+      ],
+      "entry_width_bytes": 4,
+      "extension_kind": "zero_extend_by_full_register_prezero",
+      "false_index": 0,
+      "index_width_bits": 32,
+      "interpretation": "add_constant_modulo_entry_width",
+      "lookup_ea": 4237172,
+      "setcc_destination_width_bits": 8,
+      "setcc_ea": 4237166,
+      "shift_bits": 5,
+      "shift_ea": 4237169,
+      "stride_bytes": 32,
+      "table_base_ea": 4765724,
+      "table_identity": "native-table@0x48B81C:stride-0x20:u32le:add-esi",
+      "true_index": 1,
+      "zeroed_width_bits": 32,
+      "zeroing_ea": 4237158
+    }
+  }
+}

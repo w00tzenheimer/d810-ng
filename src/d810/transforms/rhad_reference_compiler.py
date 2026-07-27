@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
+import hashlib
 import json
 
 from d810.core.semantic_route_oracle import (
@@ -31,8 +32,12 @@ from d810.transforms.fragment_plan import (
     FragmentPlan,
     FragmentReferenceRouteAuthority,
     FragmentReferencedImportedConditionalSelectEnvelope,
+    FragmentSetccIndexExtensionKind,
+    FragmentSetccIndexedTableEntry,
     FragmentSetccIndexedTableEvidence,
     FragmentSetccIndexedTableNormalization,
+    FragmentTableByteOrder,
+    FragmentTableEntryInterpretation,
     FragmentValueSite,
 )
 
@@ -73,6 +78,12 @@ EXPECTED_REFERENCE_PHASE_ORDER = (
 )
 
 
+class RhadReferenceProofArtifactType(str, Enum):
+    """Typed immutable proof artifacts admitted by the reference compiler."""
+
+    SETCC_INDEXED_TABLE = "rhad_setcc_indexed_table_proof"
+
+
 def _identifier(value: str, description: str) -> str:
     normalized = str(value).strip()
     if not normalized:
@@ -102,6 +113,273 @@ def _unique_identifiers(
     if not normalized or len(set(normalized)) != len(normalized):
         raise RhadCompilerRejection(f"{description} requires unique identities")
     return normalized
+
+
+def _require_sha256(value: str, description: str) -> str:
+    normalized = str(value).lower()
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise RhadCompilerRejection(f"{description} must be a SHA-256 digest")
+    return normalized
+
+
+def _require_git_commit(value: str, description: str) -> str:
+    normalized = str(value).lower()
+    if len(normalized) not in {40, 64} or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise RhadCompilerRejection(f"{description} must be a full commit identity")
+    return normalized
+
+
+def _require_mapping_keys(
+    value: object,
+    expected: frozenset[str],
+    description: str,
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != expected:
+        raise RhadCompilerRejection(
+            f"{description} requires exact typed fields: {sorted(expected)!r}"
+        )
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class RhadSetccIndexedTableProofArtifact:
+    """Canonical row-bound table proof required before reference compilation."""
+
+    content_identity: str
+    artifact_type: RhadReferenceProofArtifactType
+    schema_version: int
+    input_sha256: str
+    function_ea: int
+    reference_commit: str
+    operation_id: str
+    reference_order: int
+    table_evidence: FragmentSetccIndexedTableEvidence
+
+    def __post_init__(self) -> None:
+        if self.artifact_type is not RhadReferenceProofArtifactType.SETCC_INDEXED_TABLE:
+            raise RhadCompilerRejection(
+                "Rhad setcc proof artifact requires its typed artifact kind"
+            )
+        if int(self.schema_version) != 1:
+            raise RhadCompilerRejection(
+                "Rhad setcc proof artifact schema version is unsupported"
+            )
+        object.__setattr__(self, "schema_version", 1)
+        object.__setattr__(
+            self,
+            "input_sha256",
+            _require_sha256(self.input_sha256, "Rhad proof input identity"),
+        )
+        object.__setattr__(
+            self,
+            "function_ea",
+            _native_ea(self.function_ea, "Rhad proof function"),
+        )
+        object.__setattr__(
+            self,
+            "reference_commit",
+            _require_git_commit(self.reference_commit, "Rhad proof reference commit"),
+        )
+        object.__setattr__(
+            self,
+            "operation_id",
+            _identifier(self.operation_id, "Rhad proof operation id"),
+        )
+        reference_order = int(self.reference_order)
+        if reference_order < 0:
+            raise RhadCompilerRejection(
+                "Rhad proof reference order must be non-negative"
+            )
+        object.__setattr__(self, "reference_order", reference_order)
+        if not isinstance(self.table_evidence, FragmentSetccIndexedTableEvidence):
+            raise TypeError("Rhad setcc proof artifact requires typed table evidence")
+        declared_identity = str(self.content_identity).lower()
+        expected_identity = (
+            "sha256:"
+            + hashlib.sha256(self.canonical_proof_json.encode("utf-8")).hexdigest()
+        )
+        if declared_identity != expected_identity:
+            raise RhadCompilerRejection(
+                "Rhad setcc proof artifact content identity is mismatched"
+            )
+        object.__setattr__(self, "content_identity", expected_identity)
+
+    @property
+    def proof_payload(self) -> dict[str, object]:
+        evidence = self.table_evidence
+        return {
+            "artifact_type": self.artifact_type.value,
+            "schema_version": int(self.schema_version),
+            "binding": {
+                "function_ea": int(self.function_ea),
+                "input_sha256": self.input_sha256,
+                "operation_id": self.operation_id,
+                "reference_commit": self.reference_commit,
+                "reference_order": int(self.reference_order),
+            },
+            "table_evidence": {
+                "additive_key": int(evidence.additive_key),
+                "additive_key_producer_ea": int(evidence.additive_key_producer_ea),
+                "byte_order": evidence.byte_order.value,
+                "decode_ea": int(evidence.decode_ea),
+                "entries": [
+                    {
+                        "decoded_target_ea": int(entry.decoded_target_ea),
+                        "entry_ea": int(entry.entry_ea),
+                        "index": int(entry.index),
+                        "raw_value": int(entry.raw_value),
+                    }
+                    for entry in evidence.entries
+                ],
+                "entry_width_bytes": int(evidence.entry_width_bytes),
+                "extension_kind": evidence.extension_kind.value,
+                "false_index": int(evidence.false_index),
+                "index_width_bits": int(evidence.index_width_bits),
+                "interpretation": evidence.interpretation.value,
+                "lookup_ea": int(evidence.lookup_ea),
+                "setcc_destination_width_bits": int(
+                    evidence.setcc_destination_width_bits
+                ),
+                "setcc_ea": int(evidence.setcc_ea),
+                "shift_bits": int(evidence.shift_bits),
+                "shift_ea": int(evidence.shift_ea),
+                "stride_bytes": int(evidence.stride_bytes),
+                "table_base_ea": int(evidence.table_base_ea),
+                "table_identity": evidence.table_identity,
+                "true_index": int(evidence.true_index),
+                "zeroed_width_bits": int(evidence.zeroed_width_bits),
+                "zeroing_ea": int(evidence.zeroing_ea),
+            },
+        }
+
+    @property
+    def canonical_proof_json(self) -> str:
+        return json.dumps(
+            self.proof_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @classmethod
+    def from_mapping(
+        cls,
+        value: Mapping[str, object],
+    ) -> RhadSetccIndexedTableProofArtifact:
+        envelope = _require_mapping_keys(
+            value,
+            frozenset({"content_identity", "proof"}),
+            "Rhad setcc proof artifact envelope",
+        )
+        proof = _require_mapping_keys(
+            envelope["proof"],
+            frozenset({"artifact_type", "schema_version", "binding", "table_evidence"}),
+            "Rhad setcc proof artifact",
+        )
+        binding = _require_mapping_keys(
+            proof["binding"],
+            frozenset(
+                {
+                    "function_ea",
+                    "input_sha256",
+                    "operation_id",
+                    "reference_commit",
+                    "reference_order",
+                }
+            ),
+            "Rhad setcc proof binding",
+        )
+        table = _require_mapping_keys(
+            proof["table_evidence"],
+            frozenset(
+                {
+                    "additive_key",
+                    "additive_key_producer_ea",
+                    "byte_order",
+                    "decode_ea",
+                    "entries",
+                    "entry_width_bytes",
+                    "extension_kind",
+                    "false_index",
+                    "index_width_bits",
+                    "interpretation",
+                    "lookup_ea",
+                    "setcc_destination_width_bits",
+                    "setcc_ea",
+                    "shift_bits",
+                    "shift_ea",
+                    "stride_bytes",
+                    "table_base_ea",
+                    "table_identity",
+                    "true_index",
+                    "zeroed_width_bits",
+                    "zeroing_ea",
+                }
+            ),
+            "Rhad setcc table evidence",
+        )
+        raw_entries = table["entries"]
+        if not isinstance(raw_entries, list):
+            raise RhadCompilerRejection(
+                "Rhad setcc table proof entries require an ordered list"
+            )
+        entries = tuple(
+            FragmentSetccIndexedTableEntry(
+                **_require_mapping_keys(
+                    entry,
+                    frozenset({"decoded_target_ea", "entry_ea", "index", "raw_value"}),
+                    "Rhad setcc table proof entry",
+                )
+            )
+            for entry in raw_entries
+        )
+        try:
+            evidence = FragmentSetccIndexedTableEvidence(
+                table_identity=str(table["table_identity"]),
+                zeroing_ea=int(table["zeroing_ea"]),
+                zeroed_width_bits=int(table["zeroed_width_bits"]),
+                setcc_ea=int(table["setcc_ea"]),
+                setcc_destination_width_bits=int(table["setcc_destination_width_bits"]),
+                extension_kind=FragmentSetccIndexExtensionKind(
+                    str(table["extension_kind"])
+                ),
+                index_width_bits=int(table["index_width_bits"]),
+                shift_ea=int(table["shift_ea"]),
+                shift_bits=int(table["shift_bits"]),
+                lookup_ea=int(table["lookup_ea"]),
+                table_base_ea=int(table["table_base_ea"]),
+                stride_bytes=int(table["stride_bytes"]),
+                entry_width_bytes=int(table["entry_width_bytes"]),
+                byte_order=FragmentTableByteOrder(str(table["byte_order"])),
+                interpretation=FragmentTableEntryInterpretation(
+                    str(table["interpretation"])
+                ),
+                decode_ea=int(table["decode_ea"]),
+                additive_key_producer_ea=int(table["additive_key_producer_ea"]),
+                additive_key=int(table["additive_key"]),
+                true_index=int(table["true_index"]),
+                false_index=int(table["false_index"]),
+                entries=entries,
+            )
+            artifact_type = RhadReferenceProofArtifactType(str(proof["artifact_type"]))
+        except (TypeError, ValueError) as error:
+            raise RhadCompilerRejection(
+                f"Rhad setcc proof artifact is invalid: {error}"
+            ) from error
+        return cls(
+            content_identity=str(envelope["content_identity"]),
+            artifact_type=artifact_type,
+            schema_version=int(proof["schema_version"]),
+            input_sha256=str(binding["input_sha256"]),
+            function_ea=int(binding["function_ea"]),
+            reference_commit=str(binding["reference_commit"]),
+            operation_id=str(binding["operation_id"]),
+            reference_order=int(binding["reference_order"]),
+            table_evidence=evidence,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -491,7 +769,7 @@ class RhadSetccIndexedTableRoute:
     false_target_block_id: str
     true_target_ea: int
     false_target_ea: int
-    table_evidence: FragmentSetccIndexedTableEvidence
+    table_proof_artifact: RhadSetccIndexedTableProofArtifact
     owned_corridor_instruction_eas: tuple[int, ...]
     imported_closure_block_ids: tuple[str, ...]
     boundary_exit_eas: tuple[int, ...]
@@ -545,9 +823,17 @@ class RhadSetccIndexedTableRoute:
             )
         if not isinstance(self.predicate_kind, PredicateKind):
             raise TypeError("Rhad setcc table route requires a portable predicate")
-        table_evidence = self.table_evidence
-        if not isinstance(table_evidence, FragmentSetccIndexedTableEvidence):
-            raise TypeError("Rhad setcc table route requires typed table evidence")
+        artifact = self.table_proof_artifact
+        if not isinstance(artifact, RhadSetccIndexedTableProofArtifact):
+            raise TypeError("Rhad setcc table route requires a typed proof artifact")
+        if (
+            artifact.operation_id != self.operation_id
+            or int(artifact.reference_order) != reference_order
+        ):
+            raise RhadCompilerRejection(
+                "Rhad setcc table proof artifact binding differs from its route"
+            )
+        table_evidence = artifact.table_evidence
         corridor = _ordered_unique_eas(
             tuple(self.owned_corridor_instruction_eas),
             "Rhad setcc table corridor",
@@ -611,6 +897,10 @@ class RhadSetccIndexedTableRoute:
         object.__setattr__(self, "boundary_exit_eas", boundaries)
         object.__setattr__(self, "depends_on", dependencies)
 
+    @property
+    def table_evidence(self) -> FragmentSetccIndexedTableEvidence:
+        return self.table_proof_artifact.table_evidence
+
 
 RhadReferenceOperation = (
     RhadConditionalRoute
@@ -626,6 +916,7 @@ class RhadReferenceLedger:
 
     ledger_id: str
     function_ea: int
+    native_function_ea: int
     evidence_generation: int
     base_plan: FragmentPlan
     reference_oracle_run: RouteOracleRun
@@ -637,6 +928,10 @@ class RhadReferenceLedger:
     def __post_init__(self) -> None:
         ledger_id = _identifier(self.ledger_id, "Rhad ledger id")
         function_ea = _native_ea(self.function_ea, "Rhad function")
+        native_function_ea = _native_ea(
+            self.native_function_ea,
+            "Rhad native function",
+        )
         generation = int(self.evidence_generation)
         if generation < 0:
             raise RhadCompilerRejection("Rhad evidence generation must be non-negative")
@@ -676,11 +971,32 @@ class RhadReferenceLedger:
         )
         object.__setattr__(self, "ledger_id", ledger_id)
         object.__setattr__(self, "function_ea", function_ea)
+        object.__setattr__(self, "native_function_ea", native_function_ea)
         object.__setattr__(self, "evidence_generation", generation)
         object.__setattr__(self, "operations", operations)
         object.__setattr__(self, "required_boundary_exit_eas", boundaries)
         object.__setattr__(self, "reference_provenance", provenance)
         object.__setattr__(self, "unsupported_shape_ids", unsupported)
+
+    @property
+    def proof_artifact_identities(self) -> tuple[str, ...]:
+        return tuple(
+            operation.table_proof_artifact.content_identity
+            for operation in self.operations
+            if isinstance(operation, RhadSetccIndexedTableRoute)
+        )
+
+    @property
+    def aggregate_program_identity(self) -> str:
+        payload = {
+            "function_ea": int(self.native_function_ea),
+            "input_sha256": self.reference_oracle_run.candidate_binary_sha256.lower(),
+            "operation_ids": [operation.operation_id for operation in self.operations],
+            "proof_artifact_identities": list(self.proof_artifact_identities),
+            "reference_commit": self.reference_oracle_run.reference_commit.lower(),
+        }
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _validate_ledger(
@@ -716,6 +1032,18 @@ def _validate_ledger(
         phase: index for index, phase in enumerate(EXPECTED_REFERENCE_PHASE_ORDER)
     }
     for operation in ledger.operations:
+        if isinstance(operation, RhadSetccIndexedTableRoute):
+            artifact = operation.table_proof_artifact
+            if (
+                int(artifact.function_ea) != int(ledger.native_function_ea)
+                or artifact.input_sha256
+                != ledger.reference_oracle_run.candidate_binary_sha256.lower()
+                or artifact.reference_commit
+                != ledger.reference_oracle_run.reference_commit.lower()
+            ):
+                raise RhadCompilerRejection(
+                    "Rhad setcc table proof artifact binding differs from the ledger"
+                )
         missing_dependencies = tuple(
             dependency
             for dependency in operation.depends_on
@@ -821,6 +1149,7 @@ def _reference_payload(
         evidence = route.table_evidence
         payload.update(
             {
+                "aggregate_program_identity": ledger.aggregate_program_identity,
                 "condition_producer_ea": int(route.condition_producer_ea),
                 "false_target_block_id": route.false_target_block_id,
                 "false_target_ea": int(route.false_target_ea),
@@ -832,6 +1161,10 @@ def _reference_payload(
                 "source_native_ea": int(route.source_native_ea),
                 "true_target_block_id": route.true_target_block_id,
                 "true_target_ea": int(route.true_target_ea),
+                "proof_artifact": {
+                    "content_identity": route.table_proof_artifact.content_identity,
+                    "proof": route.table_proof_artifact.proof_payload,
+                },
                 "setcc_table": {
                     "additive_key": int(evidence.additive_key),
                     "additive_key_producer_ea": int(evidence.additive_key_producer_ea),
@@ -1543,7 +1876,12 @@ def compile_rhad_reference_fragment(
     )
     return replace(
         ledger.base_plan,
-        plan_id=f"rhad-reference-compiler:{ledger.ledger_id}",
+        plan_id=(
+            f"rhad-reference-compiler:{ledger.ledger_id}:"
+            f"{ledger.aggregate_program_identity}"
+            if ledger.proof_artifact_identities
+            else f"rhad-reference-compiler:{ledger.ledger_id}"
+        ),
         atomic_group_id=ledger.ledger_id,
         operations=tuple(operations),
         flag_corridors=tuple(ledger.base_plan.flag_corridors) + tuple(corridors),
@@ -1562,7 +1900,9 @@ __all__ = [
     "RhadOperationCategory",
     "RhadOperationVariant",
     "RhadReferenceLedger",
+    "RhadReferenceProofArtifactType",
     "RhadReferenceOperation",
+    "RhadSetccIndexedTableProofArtifact",
     "RhadReferencePhase",
     "compile_rhad_reference_fragment",
 ]
