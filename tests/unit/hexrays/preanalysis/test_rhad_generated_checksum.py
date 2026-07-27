@@ -959,6 +959,9 @@ def test_checksum_producer_compiles_row6_direct_route() -> None:
     assert closure.preserved_transfer_exit_map == {
         0x40AE3C: (0x40A5F0, 0x40AE3E),
     }
+    assert {"native@0x40AE26", "native@0x40AE3C"}.issubset(
+        batch.native_body_entry_block_ids
+    )
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
