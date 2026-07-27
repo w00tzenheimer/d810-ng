@@ -20,6 +20,7 @@ from d810.ir.semantics import PredicateKind
 from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
+    FragmentReferencedImportedConditionalSelectEnvelope,
     FragmentReferenceRouteAuthority,
 )
 from d810.transforms.fragment_validation import (
@@ -178,11 +179,38 @@ def _conditional_operation_semantically_matches(
         (SemanticEdgeRole.CONDITIONAL_TAKEN, int(route.true_target_ea)),
         (SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, int(route.false_target_ea)),
     )
+    normalization = operation.computed_branch_normalization
+    envelope = (
+        None if normalization is None else normalization.conditional_select_envelope
+    )
+    translated_targets = (
+        {}
+        if not isinstance(
+            envelope,
+            FragmentReferencedImportedConditionalSelectEnvelope,
+        )
+        else {
+            SemanticEdgeRole.CONDITIONAL_TAKEN: (
+                envelope.true_target_reference_ea,
+                envelope.true_target_delivery_ea,
+            ),
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: (
+                envelope.false_target_reference_ea,
+                envelope.false_target_delivery_ea,
+            ),
+        }
+    )
     return all(
         (edge := edge_by_role.get(role)) is not None
         and (target_identity := plan.block(edge.target_block_id).stable_identity)
         is not None
-        and target_identity.native_ranges.contains(target_ea)
+        and (
+            (translated_target := translated_targets.get(role)) is None
+            and target_identity.native_ranges.contains(target_ea)
+            or translated_target is not None
+            and int(translated_target[0]) == target_ea
+            and target_identity.native_ranges.contains(int(translated_target[1]))
+        )
         for role, target_ea in expected_targets
     )
 
@@ -396,6 +424,7 @@ def bind_fragment_reference_oracle(
                 reference_route_authority=FragmentReferenceRouteAuthority(
                     reference_route=route,
                     candidate_rewrite_anchor_ea=candidate_anchor_ea,
+                    imported_closure_block_ids=(),
                 ),
             )
         )
@@ -768,8 +797,24 @@ def _candidate_observation(
                 route,
                 f"route {route.route_id} has no exact semantic fallthrough",
             )
-        true_target_ea = int(plan.block(true_edge.target_block_id).semantic_anchor_ea)
-        false_target_ea = int(plan.block(false_edge.target_block_id).semantic_anchor_ea)
+        normalization = operation.computed_branch_normalization
+        envelope = (
+            None if normalization is None else normalization.conditional_select_envelope
+        )
+        if isinstance(
+            envelope,
+            FragmentReferencedImportedConditionalSelectEnvelope,
+        ):
+            true_target_ea = int(envelope.true_target_reference_ea)
+            false_target_ea = int(envelope.false_target_reference_ea)
+        else:
+            true_target_ea = int(
+                plan.block(true_edge.target_block_id).semantic_anchor_ea
+            )
+            false_target_ea = int(
+                plan.block(false_edge.target_block_id).semantic_anchor_ea
+            )
+        successor_eas = tuple(sorted((true_target_ea, false_target_ea)))
         physical_fallthrough_ea = false_target_ea
     owner_start_ea = min(
         int(interval.start_ea) for interval in owner_identity.native_ranges.intervals

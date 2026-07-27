@@ -184,6 +184,7 @@ def _plan() -> FragmentPlan:
                 reference_route_authority=FragmentReferenceRouteAuthority(
                     reference_route=_reference_route(),
                     candidate_rewrite_anchor_ea=_REWRITE_ANCHOR_EA,
+                    imported_closure_block_ids=(),
                 ),
                 edges=(
                     FragmentEdge(
@@ -714,6 +715,7 @@ def test_bind_fragment_reference_oracle_reports_identity_mismatch() -> None:
                     "target"
                 ).stable_identity.diagnostic_label(),
                 "reference_target_ea": "0x40AE3E",
+                "delivery_target_ea": "0x40AE3E",
                 "target_bound": True,
             },
         ),

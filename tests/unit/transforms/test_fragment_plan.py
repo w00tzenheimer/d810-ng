@@ -610,6 +610,7 @@ def _referenced_frontend_direct_plan() -> FragmentPlan:
         reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=reference_route,
             candidate_rewrite_anchor_ea=0x40A619,
+            imported_closure_block_ids=(),
         ),
     )
     return FragmentPlan(

@@ -319,6 +319,8 @@ class RhadExistingConditionalRoute:
     predicate_kind: PredicateKind
     true_target_block_id: str
     false_target_block_id: str
+    true_target_ea: int
+    false_target_ea: int
     comparison_constant: int
     owned_corridor_instruction_eas: tuple[int, ...]
     imported_closure_block_ids: tuple[str, ...]
@@ -373,6 +375,8 @@ class RhadExistingConditionalRoute:
             "normalization_start_ea",
             "source_branch_ea",
             "selected_value_ea",
+            "true_target_ea",
+            "false_target_ea",
         ):
             object.__setattr__(
                 self,
@@ -662,6 +666,8 @@ def _reference_payload(
                 "reference_symbol": route.reference_symbol,
                 "source_block_anchor_ea": int(route.source_block_anchor_ea),
                 "source_native_ea": int(route.source_native_ea),
+                "true_target_ea": int(route.true_target_ea),
+                "false_target_ea": int(route.false_target_ea),
                 "true_target_block_id": route.true_target_block_id,
             }
         )
@@ -769,6 +775,7 @@ def _compile_conditional_route(
         reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=reference_route,
             candidate_rewrite_anchor_ea=int(route.predicate_anchor_ea),
+            imported_closure_block_ids=route.imported_closure_block_ids,
         ),
     )
     value_id = f"rhad-flags@0x{route.condition_producer_ea:X}"
@@ -909,6 +916,7 @@ def _compile_direct_route(
         reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=reference_route,
             candidate_rewrite_anchor_ea=int(route.transfer_ea),
+            imported_closure_block_ids=route.imported_closure_block_ids,
         ),
     )
 
@@ -1016,8 +1024,8 @@ def _compile_existing_conditional_route(
         raise RhadCompilerRejection(
             "Rhad existing conditional requires complete imported branch arms"
         )
-    true_target_ea = int(block_by_id[route.true_target_block_id].semantic_anchor_ea)
-    false_target_ea = int(block_by_id[route.false_target_block_id].semantic_anchor_ea)
+    true_target_ea = int(route.true_target_ea)
+    false_target_ea = int(route.false_target_ea)
     payload = _reference_payload(ledger, route)
     corridor_identities = (
         source.stable_identity,
@@ -1074,12 +1082,21 @@ def _compile_existing_conditional_route(
                     join_identity=join.stable_identity,
                     selected_value_block_id=route.selected_value_block_id,
                     join_block_id=route.join_block_id,
+                    true_target_reference_ea=int(route.true_target_ea),
+                    false_target_reference_ea=int(route.false_target_ea),
+                    true_target_delivery_ea=int(
+                        block_by_id[route.true_target_block_id].semantic_anchor_ea
+                    ),
+                    false_target_delivery_ea=int(
+                        block_by_id[route.false_target_block_id].semantic_anchor_ea
+                    ),
                 )
             ),
         ),
         reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=reference_route,
             candidate_rewrite_anchor_ea=int(route.predicate_anchor_ea),
+            imported_closure_block_ids=route.imported_closure_block_ids,
         ),
     )
     value_id = f"rhad-flags@0x{route.condition_producer_ea:X}"

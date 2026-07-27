@@ -26,6 +26,7 @@ from d810.transforms.fragment_plan import (
     FragmentPublicationPurpose,
     FragmentWorkItemScope,
     superseded_direct_transfer_carrier_block_ids,
+    superseded_referenced_conditional_carrier_block_ids,
 )
 from tests.native_preanalysis import make_native_key
 
@@ -647,11 +648,10 @@ def _third_shape_ledger():
         (0x40A69A, 0x40A6A0, (0x40A69A,)),
         (0x40A6A0, 0x40A6A6, (0x40A6A0, 0x40A6A2, 0x40A6A4)),
         (0x40A6A4, 0x40A6A6, (0x40A6A4,)),
-        (0x40A6A6, 0x40A6BA, (0x40A6A6, 0x40A6AC, 0x40A6B2)),
+        (0x40A6B4, 0x40A6BA, (0x40A6B4,)),
         (0x40A6BA, 0x40A6C0, (0x40A6BA, 0x40A6BC, 0x40A6BE)),
-        (0x40A6BE, 0x40A6C0, (0x40A6BE,)),
         (0x40A800, 0x40A80E, (0x40A800, 0x40A806, 0x40A80C)),
-        (0x40A80E, 0x40A81A, (0x40A80E, 0x40A814, 0x40A818)),
+        (0x40A80E, 0x40A814, (0x40A80E,)),
         (0x40A814, 0x40A81A, (0x40A814, 0x40A816, 0x40A818)),
         (0x40A818, 0x40A81A, (0x40A818,)),
     )
@@ -712,8 +712,10 @@ def _third_shape_ledger():
         selected_value_ea=0x40A69A,
         observed_predicate_kind=PredicateKind.SGE,
         predicate_kind=PredicateKind.SLT,
-        true_target_block_id="native@0x40A6A6",
+        true_target_block_id="native@0x40A6B4",
         false_target_block_id="native@0x40A800",
+        true_target_ea=0x40A6A6,
+        false_target_ea=0x40A800,
         comparison_constant=0x65203D55,
         owned_corridor_instruction_eas=(
             0x40A68C,
@@ -725,9 +727,8 @@ def _third_shape_ledger():
             0x40A6A4,
         ),
         imported_closure_block_ids=(
-            "native@0x40A6A6",
+            "native@0x40A6B4",
             "native@0x40A6BA",
-            "native@0x40A6BE",
             "native@0x40A800",
             "native@0x40A80E",
             "native@0x40A814",
@@ -777,8 +778,7 @@ def _third_shape_ledger():
         entry_block_ids=body.entry_block_ids
         + (
             "native@0x40A68C",
-            "native@0x40A6A6",
-            "native@0x40A6BE",
+            "native@0x40A6B4",
             "native@0x40A800",
             "native@0x40A818",
         ),
@@ -861,7 +861,7 @@ def test_compiler_emits_imported_existing_conditional_route() -> None:
     assert operation.edges == (
         FragmentEdge(
             role=SemanticEdgeRole.CONDITIONAL_TAKEN,
-            target_block_id="native@0x40A6A6",
+            target_block_id="native@0x40A6B4",
         ),
         FragmentEdge(
             role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
@@ -872,6 +872,18 @@ def test_compiler_emits_imported_existing_conditional_route() -> None:
     assert authority is not None
     assert authority.reference_route.final_transfer_kind is (
         SemanticTransferKind.CONDITIONAL
+    )
+    assert authority.reference_route.true_target_ea == 0x40A6A6
+    assert authority.imported_closure_block_ids == (
+        "native@0x40A6B4",
+        "native@0x40A6BA",
+        "native@0x40A800",
+        "native@0x40A80E",
+        "native@0x40A814",
+        "native@0x40A818",
+    )
+    assert superseded_referenced_conditional_carrier_block_ids(plan) == frozenset(
+        {"native@0x40A69A", "native@0x40A6A0", "native@0x40A6A4"}
     )
     payload = json.loads(authority.reference_route.reference_ledger_json)
     assert payload["reference_order"] == 8
