@@ -37,6 +37,19 @@ def _native_key():
     )
 
 
+def test_aggregate_identity_binds_typed_direct_reference_evidence() -> None:
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+    direct = batch.operations[1]
+    changed = replace(direct, reference_order=direct.reference_order + 1)
+    changed_batch = replace(
+        batch,
+        operations=(batch.operations[0], changed, *batch.operations[2:]),
+    )
+
+    assert changed_batch.aggregate_program_identity != batch.aggregate_program_identity
+
+
 def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(),
@@ -132,6 +145,12 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     }
     direct_payload = json.loads(
         direct.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert direct_payload["reference_operation_id"] == "rhad:route@0x40A619"
+    assert direct_payload["reference_order"] == 2
+    assert direct_payload["operation_variant"] == "simple_indirect_jump"
+    assert direct_payload["reference_symbol"] == (
+        "JumpInliner._fixup_jmp_and_possible_jcc"
     )
     assert tuple(direct_payload["boundary_exit_eas"]) == (0x40A633, 0x40A74C)
     dependency = plan.operation("route:rhad-direct@0x40A68A")
