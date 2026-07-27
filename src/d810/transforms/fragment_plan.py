@@ -14,6 +14,7 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
 import json
 
+from d810.core.typing import Protocol
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.core.semantic_route_oracle import (
@@ -3231,6 +3232,13 @@ class FragmentPlan:
         raise KeyError(operation_id)
 
 
+class FragmentCarrierPlanView(Protocol):
+    """Typed inventory needed to identify superseded imported carriers."""
+
+    blocks: tuple[FragmentBlock, ...]
+    operations: tuple[FragmentOperation, ...]
+
+
 def _portable_fragment_json_value(value):
     """Convert one portable plan value into deterministic JSON data."""
     if isinstance(value, NativePreanalysisKey):
@@ -3279,7 +3287,7 @@ def fragment_plan_to_dict(plan: FragmentPlan) -> dict[str, object]:
 
 
 def superseded_direct_transfer_carrier_block_ids(
-    plan: FragmentPlan,
+    plan: FragmentCarrierPlanView,
 ) -> frozenset[str]:
     """Return imported evidence carriers retired by typed direct rewrites.
 
@@ -3288,8 +3296,6 @@ def superseded_direct_transfer_carrier_block_ids(
     the other imported block is immutable creation evidence, but the rewrite is
     permitted to disconnect it from published topology.
     """
-    if not isinstance(plan, FragmentPlan):
-        raise TypeError("superseded carrier discovery requires a FragmentPlan")
     direct_source_ids = {
         operation.source_block_id
         for operation in plan.operations
@@ -3316,13 +3322,9 @@ def superseded_direct_transfer_carrier_block_ids(
 
 
 def superseded_referenced_conditional_carrier_block_ids(
-    plan: FragmentPlan,
+    plan: FragmentCarrierPlanView,
 ) -> frozenset[str]:
     """Return imported corridor witnesses retired by referenced conditionals."""
-    if not isinstance(plan, FragmentPlan):
-        raise TypeError(
-            "superseded referenced conditional discovery requires a FragmentPlan"
-        )
     envelope_carrier_ids = {
         block_id
         for operation in plan.operations
@@ -3378,6 +3380,7 @@ __all__ = [
     "FragmentBlock",
     "FragmentBlockMaterialization",
     "FragmentBlockRole",
+    "FragmentCarrierPlanView",
     "FragmentBoundaryPort",
     "FragmentBoundaryPortKind",
     "FragmentConditionalSelectEnvelope",

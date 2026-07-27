@@ -529,6 +529,10 @@ class _NativeBodyPlan:
         self.operations = tuple(operations)
         self.terminal_returns = tuple(terminal_returns)
 
+    @property
+    def blocks(self) -> tuple[FragmentBlock, ...]:
+        return tuple(self._blocks.values())
+
     def block(self, block_id: str) -> FragmentBlock:
         return self._blocks[str(block_id)]
 
