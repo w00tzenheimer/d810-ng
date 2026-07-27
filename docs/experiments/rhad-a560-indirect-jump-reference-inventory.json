@@ -387,16 +387,27 @@
     {
       "boundary_exit_eas": [
         4236746,
+        4238077,
         4238886
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "fa02b0aa0",
+          "c9485af58",
+          "0e0c9ab2a"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
       "flag_producer_native_ea": null,
       "imported_closure_block_anchor_eas": [
+        4236875,
+        4236893,
+        4236897,
+        4238065,
+        4238075,
         4236899,
         4236917,
         4236921,
