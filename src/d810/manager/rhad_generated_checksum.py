@@ -1512,6 +1512,8 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         "native@0x40AAFB",
         "native@0x40AE1A",
         "native@0x40AE24",
+        "native@0x40AE26",
+        "native@0x40AE3C",
         "native@0x40A74A",
         "native@0x40A68C",
         "native@0x40A6A4",
