@@ -798,6 +798,7 @@ class FragmentDirectTransferRewrite:
     delivery_region: NativeEaInterval
     proof_corridor_instruction_eas: tuple[int, ...]
     superseded_instruction_eas: tuple[int, ...]
+    source_transfer_kind: SemanticTransferKind
     source_computed_branch_normalization: FragmentComputedBranchNormalization | None = (
         None
     )
@@ -829,6 +830,15 @@ class FragmentDirectTransferRewrite:
         delivery_region = self.delivery_region
         if not isinstance(delivery_region, NativeEaInterval):
             raise TypeError("direct transfer rewrite requires a delivery region")
+        source_transfer_kind = self.source_transfer_kind
+        if source_transfer_kind not in {
+            SemanticTransferKind.INDIRECT,
+            SemanticTransferKind.CONDITIONAL,
+        }:
+            raise FragmentPlanRejected(
+                "direct transfer rewrite requires an indirect-jump or conditional "
+                "source kind"
+            )
         if not (delivery_region.start_ea <= rewrite_anchor_ea < delivery_region.end_ea):
             raise FragmentPlanRejected(
                 "direct transfer rewrite anchor is outside its delivery region"
@@ -896,6 +906,11 @@ class FragmentDirectTransferRewrite:
                 raise TypeError(
                     "direct transfer source normalization has the wrong type"
                 )
+            if source_transfer_kind is not SemanticTransferKind.CONDITIONAL:
+                raise FragmentPlanRejected(
+                    "direct transfer conditional normalization requires a "
+                    "conditional source kind"
+                )
             source_predicate_anchor_ea = _require_native_ea(
                 source_predicate_anchor_ea,
                 "direct transfer source predicate",
@@ -919,6 +934,7 @@ class FragmentDirectTransferRewrite:
         object.__setattr__(self, "owner_anchor_ea", owner_anchor_ea)
         object.__setattr__(self, "rewrite_anchor_ea", rewrite_anchor_ea)
         object.__setattr__(self, "delivery_region", delivery_region)
+        object.__setattr__(self, "source_transfer_kind", source_transfer_kind)
         object.__setattr__(
             self,
             "proof_corridor_instruction_eas",
@@ -2824,6 +2840,43 @@ def fragment_plan_to_dict(plan: FragmentPlan) -> dict[str, object]:
     return payload
 
 
+def superseded_direct_transfer_carrier_block_ids(
+    plan: FragmentPlan,
+) -> frozenset[str]:
+    """Return imported evidence carriers retired by typed direct rewrites.
+
+    Native capture can split one transfer into both its semantic owner block and
+    an overlapping instruction carrier.  The owner remains the operation source;
+    the other imported block is immutable creation evidence, but the rewrite is
+    permitted to disconnect it from published topology.
+    """
+    if not isinstance(plan, FragmentPlan):
+        raise TypeError("superseded carrier discovery requires a FragmentPlan")
+    direct_source_ids = {
+        operation.source_block_id
+        for operation in plan.operations
+        if operation.direct_transfer_rewrite is not None
+    }
+    superseded_instruction_eas = {
+        int(ea)
+        for operation in plan.operations
+        if operation.direct_transfer_rewrite is not None
+        for ea in operation.direct_transfer_rewrite.superseded_instruction_eas
+    }
+    return frozenset(
+        block.block_id
+        for block in plan.blocks
+        if (
+            block.materialization is FragmentBlockMaterialization.IMPORT_NATIVE
+            and block.block_id not in direct_source_ids
+            and block.stable_identity is not None
+            and not block.stable_identity.exact_instruction_eas.isdisjoint(
+                superseded_instruction_eas
+            )
+        )
+    )
+
+
 def serialize_fragment_plan(plan: FragmentPlan) -> str:
     """Serialize every plan member deterministically for diagnostic replay."""
     return json.dumps(
@@ -2865,4 +2918,5 @@ __all__ = [
     "FragmentWorkItemScope",
     "fragment_plan_to_dict",
     "serialize_fragment_plan",
+    "superseded_direct_transfer_carrier_block_ids",
 ]

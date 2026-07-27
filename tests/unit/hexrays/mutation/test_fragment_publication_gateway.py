@@ -248,6 +248,7 @@ def _plan_with_reference_route() -> FragmentPlan:
             delivery_region=NativeEaInterval(0x401004, 0x401010),
             proof_corridor_instruction_eas=(0x401000, 0x401004),
             superseded_instruction_eas=(0x401004,),
+            source_transfer_kind=SemanticTransferKind.CONDITIONAL,
         ),
         reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=reference_route,

@@ -23,6 +23,7 @@ from d810.core.observability import (  # noqa: E402
     reset_diagnostic_bus,
 )
 from d810.core.observability_events import DiagnosticSessionObserved  # noqa: E402
+from d810.core.semantic_route_oracle import SemanticTransferKind  # noqa: E402
 from d810.hexrays.mutation import deferred_modifier as dm  # noqa: E402
 from d810.hexrays.mutation import detached_handler_island as dhi  # noqa: E402
 from d810.hexrays.mutation import semantic_fragment_backend as sfb  # noqa: E402
@@ -990,6 +991,7 @@ def _plan_with_prepared_imported_direct_transfer(
             ),
             proof_corridor_instruction_eas=(rewrite_anchor_ea,),
             superseded_instruction_eas=(rewrite_anchor_ea,),
+            source_transfer_kind=SemanticTransferKind.INDIRECT,
         ),
         edges=(
             FragmentEdge(
