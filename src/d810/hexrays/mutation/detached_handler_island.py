@@ -5602,6 +5602,7 @@ def _capture_detached_snippet_template(
     }
     observed_preserved_unresolved_transfers: set[int] = set()
     preserved_synthetic_entry_by_serial: dict[int, int] = {}
+    synthesized_preserved_carrier_by_source_serial: dict[int, tuple[int, int]] = {}
     included: dict[int, object] = {}
     for serial in range(int(mba.qty)):
         block = mba.get_mblock(serial)
@@ -5651,14 +5652,47 @@ def _capture_detached_snippet_template(
             continue
         successor_serial = int(tuple(source.succset)[0])
         successor = mba.get_mblock(successor_serial)
-        if (
+        if not (
             successor is None
             or successor.head is not None
             or int(successor.nsucc()) != 0
         ):
+            included[successor_serial] = successor
+            preserved_synthetic_entry_by_serial[successor_serial] = int(tail.ea)
+            observed_preserved_unresolved_transfers.add(int(tail.ea))
             continue
-        included[successor_serial] = successor
-        preserved_synthetic_entry_by_serial[successor_serial] = int(tail.ea)
+        if successor_serial in included:
+            successor_native_entry = _capture_block_native_entry_ea(
+                successor,
+                exact_owned_entries,
+                normalized_ranges,
+            )
+            if successor_native_entry == int(tail.ea):
+                included_predecessors = tuple(
+                    int(candidate.serial)
+                    for candidate in included.values()
+                    if successor_serial in candidate.succset
+                )
+                if included_predecessors != (int(source.serial),):
+                    logger.info(
+                        "detached snippet capture abstained: target=0x%X "
+                        "transfer=0x%X successor=blk%d@0x%X predecessors=%s "
+                        "reason=preserved_live_fallthrough_shared",
+                        int(target_ea),
+                        int(tail.ea),
+                        int(successor.serial),
+                        int(successor.start),
+                        included_predecessors,
+                    )
+                    return False
+                del included[successor_serial]
+        synthetic_serial = int(mba.qty) + len(
+            synthesized_preserved_carrier_by_source_serial
+        )
+        synthesized_preserved_carrier_by_source_serial[int(source.serial)] = (
+            synthetic_serial,
+            int(tail.ea),
+        )
         observed_preserved_unresolved_transfers.add(int(tail.ea))
     roots = tuple(
         serial
@@ -5915,7 +5949,15 @@ def _capture_detached_snippet_template(
                 int(block.start),
             )
             return False
-        for successor_serial in block.succset:
+        synthesized_carrier = synthesized_preserved_carrier_by_source_serial.get(
+            int(serial)
+        )
+        if synthesized_carrier is not None:
+            internal_successors.append(int(synthesized_carrier[0]))
+            external_successors.append(0)
+        for successor_serial in (
+            () if synthesized_carrier is not None else block.succset
+        ):
             successor = int(successor_serial)
             if successor in included:
                 internal_successors.append(successor)
@@ -6232,6 +6274,34 @@ def _capture_detached_snippet_template(
                 successor_serials=tuple(internal_successors),
                 external_successor_eas=tuple(external_successors),
             )
+        )
+
+    for source_serial, (carrier_serial, transfer_ea) in sorted(
+        synthesized_preserved_carrier_by_source_serial.items()
+    ):
+        source = included[source_serial]
+        terminal_return = ida_hexrays.minsn_t(int(transfer_ea))
+        terminal_return.opcode = int(ida_hexrays.m_ret)
+        templates.append(
+            DetachedSnippetBlockTemplate(
+                source_serial=int(carrier_serial),
+                native_entry_ea=int(transfer_ea),
+                native_end_ea=int(source.end),
+                instructions=(terminal_return,),
+                block_type=int(ida_hexrays.BLT_STOP),
+                block_flags=int(ida_hexrays.MBL_FAKE),
+                successor_serials=(),
+                external_successor_eas=(),
+            )
+        )
+        logger.info(
+            "detached snippet synthesized preserved native-jump carrier: "
+            "target=0x%X source=blk%d@0x%X carrier=blk%d@0x%X",
+            int(target_ea),
+            int(source.serial),
+            int(source.start),
+            int(carrier_serial),
+            int(transfer_ea),
         )
 
     owned_instruction_eas = {
