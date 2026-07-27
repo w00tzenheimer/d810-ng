@@ -107,17 +107,17 @@ commit `21b0d4783703bc4fb6910cfae51d92cd683d2c65`.
 - Modify: `src/d810/transforms/fragment_plan.py`
 - Modify: `src/d810/transforms/rhad_reference_compiler.py`
 
-- [ ] Write RED tests for a discriminated `explicit_shift` versus
+- [x] Write RED tests for a discriminated `explicit_shift` versus
   `scaled_lookup` index-scaling contract. Reject mismatched anchor order, scale,
   stride, index width, entry address, raw value, additive decode, target
   orientation, closure, proof selection, or dependency order.
-- [ ] Model the two scaling realizations as immutable typed alternatives; do not
+- [x] Model the two scaling realizations as immutable typed alternatives; do not
   retain optional `shift_ea`/`shift_bits` compatibility fields.
-- [ ] Compile row 17 literals: zero `0x40A77E`, compare `0x40A780`, `setge`
+- [x] Compile row 17 literals: zero `0x40A77E`, compare `0x40A780`, `setge`
   `0x40A786`, scaled lookup `0x40A789` at `0x48B4F8` stride 8, decode
   `0x40A790`, transfer `0x40A792`, false target `0x40A794`, true target
   `0x40AEE6`, and boundary exit `0x40A5F0`.
-- [ ] Run FragmentPlan/compiler tests GREEN and commit vocabulary separately.
+- [x] Run FragmentPlan/compiler tests GREEN and commit vocabulary separately.
 
 ### Task 1.2: Row-17 prepared realization and publication
 
@@ -130,18 +130,18 @@ commit `21b0d4783703bc4fb6910cfae51d92cd683d2c65`.
 - Modify: `src/d810/manager/rhad_generated_checksum.py`
 - Modify: `tests/system/e2e/test_rhad_generated_checksum_publication.py`
 
-- [ ] Capture the actual prepared row-17 microinstruction shape and write a RED
+- [x] Capture the actual prepared row-17 microinstruction shape and write a RED
   immutable-preflight test for scaled-address lookup, exact origins, signed
   predicate orientation, targets, and false-target adjacency.
-- [ ] Implement the minimum typed preflight/realization branch without changing
+- [x] Implement the minimum typed preflight/realization branch without changing
   producer, coordinator, transaction, gateway, or CALLS behavior.
-- [ ] Extend typed batch data with row 17 and its two dependency-closed imported
+- [x] Extend typed batch data with row 17 and its two dependency-closed imported
   closures; remove `0x40A792` from unresolved transfers and derive exits.
-- [ ] Write exact SQLite assertions for persisted reference/plan identity, one
+- [x] Write exact SQLite assertions for persisted reference/plan identity, one
   complete receipt, creation witnesses, transfer absence, target survival,
   legitimate topology retirement, no residual indirect transfer, no poison,
   rollback, redo, or INTERR, and `CMAT_FINAL`.
-- [ ] Run the accepted four-checksum regression and new row-17 checksum; commit
+- [x] Run the accepted four-checksum regression and new row-17 checksum; commit
   operation data, runtime support, diagnostics, and regression proof separately.
 
 ### Task 1.3: Data-first expansion through row 228
