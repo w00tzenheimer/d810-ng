@@ -624,7 +624,7 @@ def test_indirect_jump_coverage_summary_matches_committed_row17_batch() -> None:
         if row["operation_variant"] == "setcc_indexed_table"
     )
 
-    assert summary["accepted_code_sha"] == ("bba60321995b4e2b492c5509e1aa057bfb13cf5e")
+    assert summary["accepted_code_sha"] == ("4f782cbe3da444abd1828560e78104b4d3763989")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     assert accepted_operation_ids == [
         operation.operation_id
