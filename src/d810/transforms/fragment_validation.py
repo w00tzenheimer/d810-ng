@@ -29,6 +29,7 @@ from d810.transforms.fragment_plan import (
     FragmentReturnCarrier,
     FragmentTerminalReturn,
     FragmentValueSite,
+    superseded_direct_transfer_carrier_block_ids,
 )
 
 
@@ -1075,6 +1076,7 @@ def _validate_reachability(
             reason,
             *root_witness,
         )
+    superseded_carrier_block_ids = superseded_direct_transfer_carrier_block_ids(plan)
     for block in plan.blocks:
         if block.role not in {
             FragmentBlockRole.REPLACEMENT,
@@ -1082,17 +1084,22 @@ def _validate_reachability(
             FragmentBlockRole.IMPORTED,
         }:
             continue
-        passed = block.block_id in fragment_reachable
+        connected = block.block_id in fragment_reachable
+        superseded_carrier = block.block_id in superseded_carrier_block_ids
+        passed = connected or superseded_carrier
         _outcome(
             outcomes,
             FragmentValidationPostcondition.INTERNAL_CONNECTIVITY,
             block.block_id,
             passed,
-            f"staged fragment block is connected to {connectivity_authority}"
+            (
+                "staged fragment block is an evidence-only carrier for a typed "
+                "superseded direct transfer"
+                if superseded_carrier
+                else f"staged fragment block is connected to {connectivity_authority}"
+            )
             if passed
-            else (
-                f"staged fragment block is disconnected from {disconnected_authority}"
-            ),
+            else f"staged fragment block is disconnected from {disconnected_authority}",
             block.block_id,
         )
     for operation in plan.operations:

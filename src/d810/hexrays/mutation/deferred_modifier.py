@@ -3051,10 +3051,7 @@ class DeferredGraphModifier:
         if not 0 <= cut_index < len(instructions):
             raise ValueError("instruction suffix index is outside the live block")
         cut = instructions[cut_index]
-        if (
-            int(cut.ea) != int(expected_ea)
-            or int(cut.opcode) != int(expected_opcode)
-        ):
+        if int(cut.ea) != int(expected_ea) or int(cut.opcode) != int(expected_opcode):
             raise ValueError(
                 "instruction suffix index changed after semantic preflight; "
                 f"blk{int(block.serial)}@0x{int(block.start):X} "
@@ -4508,9 +4505,7 @@ class DeferredGraphModifier:
                 created.start = int(self.mba.entry_ea)
                 created.end = int(self.mba.entry_ea) + 1
                 created.type = int(ida_hexrays.BLT_NONE)
-                created.flags |= int(ida_hexrays.MBL_KEEP) | int(
-                    ida_hexrays.MBL_FAKE
-                )
+                created.flags |= int(ida_hexrays.MBL_KEEP) | int(ida_hexrays.MBL_FAKE)
         else:
             created = create_standalone_block(
                 ref_blk=reference,
@@ -4658,7 +4653,11 @@ class DeferredGraphModifier:
             raise SemanticFragmentBackendRejected(
                 "prepared direct transfer lost its active mutation gateway"
             )
-        if not self._apply_terminal_goto_change(source, int(target.serial)):
+        if self.semantic_fragment_publication_profile.graph_free:
+            tail.l.make_blkref(int(target.serial))
+            source.type = int(ida_hexrays.BLT_NONE)
+            source.flags |= int(ida_hexrays.MBL_PROP)
+        elif not self._apply_terminal_goto_change(source, int(target.serial)):
             raise SemanticFragmentBackendRejected(
                 "Hex-Rays rejected prepared direct transfer binding at "
                 f"0x{int(rewrite_anchor_ea):X}"
