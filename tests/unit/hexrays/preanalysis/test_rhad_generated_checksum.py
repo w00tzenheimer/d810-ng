@@ -650,6 +650,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row17 = next(
         operation for operation in operations if operation["reference_order"] == 17
     )
+    row11 = next(
+        operation for operation in operations if operation["reference_order"] == 11
+    )
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
     row17_artifact = generated_reference.load_row17_table_proof_artifact()
 
@@ -659,6 +662,25 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         range(228)
     )
     assert len(row_keys) == 1
+    assert row11["operation_id"] == "rhad:route@0x40A6F2"
+    assert row11["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
+    assert row11["current_generated_proof"] == {
+        "accepted_commits": ["37f43bd32", "d5fc37ba9"],
+        "status": "accepted_generated_c6",
+    }
+    assert row11["imported_closure_block_anchor_eas"] == [
+        0x40A6F4,
+        0x40A702,
+        0x40A708,
+        0x40A70C,
+        0x40AE8B,
+        0x40AE99,
+        0x40AE9F,
+        0x40AEA3,
+    ]
+    assert row11["unavailable_closure_exit_eas"] == []
     assert row16["operation_id"] == row16_artifact.operation_id
     assert row16["current_generated_proof"]["proof_artifact_identity"] == (
         row16_artifact.content_identity
@@ -672,7 +694,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     }
 
 
-def test_indirect_jump_coverage_summary_matches_committed_row17_batch() -> None:
+def test_indirect_jump_coverage_summary_matches_committed_row11_batch() -> None:
     summary = json.loads(
         (
             _REPO
@@ -688,13 +710,32 @@ def test_indirect_jump_coverage_summary_matches_committed_row17_batch() -> None:
         for row in summary["variants"]
         if row["operation_variant"] == "setcc_indexed_table"
     )
+    existing = next(
+        row
+        for row in summary["variants"]
+        if row["operation_variant"] == "existing_conditional_plus_indirect"
+    )
 
-    assert summary["accepted_code_sha"] == ("4f782cbe3da444abd1828560e78104b4d3763989")
+    assert summary["accepted_code_sha"] == ("d5fc37ba94a7d29e45076cac80d5e166db1a3ada")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     assert accepted_operation_ids == [
         operation.operation_id
         for operation in batch.operations[: len(accepted_operation_ids)]
     ]
+    assert existing == {
+        "operation_variant": "existing_conditional_plus_indirect",
+        "total_reference_operations": 117,
+        "compiler_supported_operations": 117,
+        "compiled_operation_instances": 5,
+        "vertically_proved_operations": 5,
+        "accepted_receipt_operations": 5,
+        "earliest_unproved_reference_order": 12,
+        "earliest_unproved_operation_id": "rhad:route@0x40A70C",
+        "first_missing_typed_obligation": (
+            "instantiate the proved RhadExistingConditionalRoute vocabulary with "
+            "exact per-operation evidence and dependency closure"
+        ),
+    }
     assert setcc == {
         "operation_variant": "setcc_indexed_table",
         "total_reference_operations": 8,
