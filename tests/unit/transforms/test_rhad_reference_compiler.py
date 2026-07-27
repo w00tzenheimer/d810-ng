@@ -160,6 +160,77 @@ def _row16_table_proof_artifact(compiler):
     )
 
 
+def _row17_table_proof_mapping() -> dict[str, object]:
+    row16 = _row16_table_proof_mapping()
+    proof = row16["proof"]
+    assert isinstance(proof, dict)
+    proof["schema_version"] = 2
+    binding = proof["binding"]
+    assert isinstance(binding, dict)
+    binding["operation_id"] = "rhad:route@0x40A792"
+    binding["reference_order"] = 17
+    table = proof["table_evidence"]
+    assert isinstance(table, dict)
+    table.update(
+        {
+            "decode_ea": 0x40A790,
+            "entries": [
+                {
+                    "decoded_target_ea": 0x40A794,
+                    "entry_ea": 0x48B4F8,
+                    "index": 0,
+                    "raw_value": 0x02528B13,
+                },
+                {
+                    "decoded_target_ea": 0x40AEE6,
+                    "entry_ea": 0x48B500,
+                    "index": 1,
+                    "raw_value": 0x02529265,
+                },
+            ],
+            "index_scaling": {
+                "kind": "scaled_lookup",
+                "lookup_ea": 0x40A789,
+                "scale_bytes": 8,
+            },
+            "lookup_ea": 0x40A789,
+            "setcc_ea": 0x40A786,
+            "stride_bytes": 8,
+            "table_base_ea": 0x48B4F8,
+            "table_identity": "native-table@0x48B4F8:stride-8:u32le:add-esi",
+            "zeroing_ea": 0x40A77E,
+        }
+    )
+    del table["shift_bits"]
+    del table["shift_ea"]
+    canonical = json.dumps(proof, sort_keys=True, separators=(",", ":"))
+    return {
+        "content_identity": f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}",
+        "proof": proof,
+    }
+
+
+def test_row17_table_proof_artifact_persists_scaled_lookup() -> None:
+    compiler = _compiler_module()
+
+    artifact = compiler.RhadSetccIndexedTableProofArtifact.from_mapping(
+        _row17_table_proof_mapping()
+    )
+
+    assert artifact.schema_version == 2
+    assert artifact.operation_id == "rhad:route@0x40A792"
+    assert artifact.reference_order == 17
+    assert isinstance(
+        artifact.table_evidence.index_scaling,
+        fragment_plan.FragmentSetccScaledLookupScaling,
+    )
+    assert artifact.table_evidence.index_scaling.scale_bytes == 8
+    assert (
+        json.loads(artifact.canonical_proof_json)
+        == (_row17_table_proof_mapping()["proof"])
+    )
+
+
 def test_row16_table_proof_artifact_is_typed_canonical_and_bound() -> None:
     compiler = _compiler_module()
 
@@ -1578,3 +1649,186 @@ def test_setcc_split_transfer_carrier_is_superseded_creation_evidence() -> None:
     assert "native@0x40A77C" in superseded_referenced_conditional_carrier_block_ids(
         plan
     )
+
+
+def _fifth_shape_ledger():
+    compiler = _compiler_module()
+    fourth = _fourth_shape_ledger()
+    base = fourth.base_plan
+    body = base.native_bodies[0]
+    body_id = body.body_id
+    added_ranges = (
+        (0x40A794, 0x40A7A2, (0x40A794, 0x40A79A, 0x40A7A0)),
+        (0x40A7A2, 0x40A7A8, (0x40A7A2,)),
+        (0x40A7A8, 0x40A7AE, (0x40A7A8, 0x40A7AA, 0x40A7AC)),
+        (0x40A7AC, 0x40A7AE, (0x40A7AC,)),
+        (0x40AEE6, 0x40AEF4, (0x40AEE6, 0x40AEEC, 0x40AEF2)),
+        (0x40AEF4, 0x40AEFA, (0x40AEF4,)),
+        (0x40AEFA, 0x40AF00, (0x40AEFA, 0x40AEFC, 0x40AEFE)),
+        (0x40AEFE, 0x40AF00, (0x40AEFE,)),
+    )
+    added_blocks = tuple(
+        FragmentBlock(
+            block_id=f"native@0x{start_ea:X}",
+            role=FragmentBlockRole.IMPORTED,
+            materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+            semantic_anchor_ea=start_ea,
+            stable_identity=_identity(start_ea, end_ea, *exact_eas),
+            native_body_id=body_id,
+        )
+        for start_ea, end_ea, exact_eas in added_ranges
+    )
+    selected_id = "rhad:route@0x40A792"
+    table_proof_artifact = compiler.RhadSetccIndexedTableProofArtifact.from_mapping(
+        _row17_table_proof_mapping()
+    )
+    selected = compiler.RhadSetccIndexedTableRoute(
+        operation_id=selected_id,
+        reference_order=17,
+        operation_variant=compiler.RhadOperationVariant.SETCC_INDEXED_TABLE,
+        reference_symbol="JumpInliner._fixup_index_access",
+        source_block_id="native@0x40A77E",
+        source_native_ea=0x40A77E,
+        source_block_anchor_ea=0x40A77E,
+        transfer_ea=0x40A792,
+        condition_producer_ea=0x40A780,
+        predicate_anchor_ea=0x40A786,
+        predicate_kind=PredicateKind.SGE,
+        true_target_block_id="native@0x40AEE6",
+        false_target_block_id="native@0x40A794",
+        true_target_ea=0x40AEE6,
+        false_target_ea=0x40A794,
+        table_proof_artifact=table_proof_artifact,
+        owned_corridor_instruction_eas=(
+            0x40A77E,
+            0x40A780,
+            0x40A786,
+            0x40A789,
+            0x40A790,
+            0x40A792,
+        ),
+        imported_closure_block_ids=tuple(block.block_id for block in added_blocks),
+        boundary_exit_eas=(0x40A5F0,),
+        flag_corridor_id="flags-intact@0x40A780",
+        phase=compiler.RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+        depends_on=(fourth.operations[-1].operation_id,),
+    )
+    all_block_ids = body.block_ids + tuple(block.block_id for block in added_blocks)
+    operation_source_ids = {
+        operation.source_block_id for operation in (*fourth.operations, selected)
+    }
+    expanded_body = FragmentNativeBody(
+        body_id=body_id,
+        block_ids=all_block_ids,
+        entry_block_ids=body.entry_block_ids
+        + tuple(block.block_id for block in added_blocks),
+        terminal_block_ids=tuple(
+            block_id
+            for block_id in all_block_ids
+            if block_id not in operation_source_ids
+        ),
+        native_ranges=tuple(
+            sorted(
+                body.native_ranges
+                + (
+                    NativeEaInterval(0x40A794, 0x40A7AE),
+                    NativeEaInterval(0x40AEE6, 0x40AF00),
+                ),
+                key=lambda interval: int(interval.start_ea),
+            )
+        ),
+        proof_ids=body.proof_ids + (selected_id,),
+    )
+    placeholder = FragmentOperation(
+        operation_id=f"placeholder:{selected_id}",
+        source_block_id=selected.source_block_id,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=selected.false_target_block_id,
+            ),
+        ),
+    )
+    plan = replace(
+        base,
+        blocks=base.blocks + added_blocks,
+        operations=base.operations + (placeholder,),
+        work_item_scope=replace(
+            base.work_item_scope,
+            selected_obligation_ids=tuple(
+                operation.operation_id for operation in (*fourth.operations, selected)
+            ),
+        ),
+        native_bodies=(expanded_body,),
+    )
+    return compiler.RhadReferenceLedger(
+        ledger_id="rhad-generated-reference@0x40A560:g1",
+        function_ea=0x40A560,
+        native_function_ea=0x40A560,
+        evidence_generation=1,
+        base_plan=plan,
+        reference_oracle_run=_reference_run(),
+        operations=(*fourth.operations, selected),
+        required_boundary_exit_eas=(
+            0x40A5F0,
+            0x40A633,
+            0x40A9A0,
+            0x40AD6E,
+            0x40B1D0,
+            0x40B790,
+        ),
+        reference_provenance={
+            "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
+            "inventory_identity": "rhad-a560-indirect-jump-reference-inventory:v1",
+            "setcc_proof_artifact_identities": (
+                fourth.operations[-1].table_proof_artifact.content_identity,
+                table_proof_artifact.content_identity,
+            ),
+        },
+    )
+
+
+def test_compiler_emits_scaled_lookup_setcc_route_for_row17() -> None:
+    compiler = _compiler_module()
+    ledger = _fifth_shape_ledger()
+
+    plan = compiler.compile_rhad_reference_fragment(
+        ledger,
+        expected_evidence_generation=1,
+    )
+
+    operation = plan.operation("rhad:route@0x40A792")
+    normalization = operation.computed_branch_normalization
+    assert isinstance(
+        normalization,
+        fragment_plan.FragmentSetccIndexedTableNormalization,
+    )
+    assert isinstance(
+        normalization.table_evidence.index_scaling,
+        fragment_plan.FragmentSetccScaledLookupScaling,
+    )
+    assert normalization.table_evidence.index_scaling.lookup_ea == 0x40A789
+    assert normalization.table_evidence.index_scaling.scale_bytes == 8
+    assert operation.edges == (
+        FragmentEdge(
+            role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+            target_block_id="native@0x40AEE6",
+        ),
+        FragmentEdge(
+            role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            target_block_id="native@0x40A794",
+        ),
+    )
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_order"] == 17
+    assert payload["proof_artifact"]["content_identity"] == (
+        "sha256:a67a3d2cc432df11ca627c90f06f3a854004a9463a529ee1d0cdf1f759406e67"
+    )
+    assert payload["setcc_table"]["index_scaling"] == {
+        "kind": "scaled_lookup",
+        "lookup_ea": 0x40A789,
+        "scale_bytes": 8,
+    }
+    assert plan.plan_id.endswith(ledger.aggregate_program_identity)

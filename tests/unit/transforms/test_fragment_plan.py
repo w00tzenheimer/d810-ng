@@ -786,6 +786,8 @@ def test_setcc_indexed_table_normalization_persists_exact_target_derivation() ->
         "setcc table routes require a dedicated normalization subtype"
     )
     assert hasattr(fragment_plan, "FragmentSetccIndexExtensionKind")
+    assert hasattr(fragment_plan, "FragmentSetccExplicitShiftScaling")
+    assert hasattr(fragment_plan, "FragmentSetccScaledLookupScaling")
     assert hasattr(fragment_plan, "FragmentTableByteOrder")
     assert hasattr(fragment_plan, "FragmentTableEntryInterpretation")
 
@@ -813,8 +815,10 @@ def test_setcc_indexed_table_normalization_persists_exact_target_derivation() ->
             fragment_plan.FragmentSetccIndexExtensionKind.ZERO_EXTEND_BY_FULL_REGISTER_PREZERO
         ),
         index_width_bits=32,
-        shift_ea=0x40A771,
-        shift_bits=5,
+        index_scaling=fragment_plan.FragmentSetccExplicitShiftScaling(
+            shift_ea=0x40A771,
+            shift_bits=5,
+        ),
         lookup_ea=0x40A774,
         table_base_ea=0x48B81C,
         stride_bytes=32,
@@ -846,7 +850,7 @@ def test_setcc_indexed_table_normalization_persists_exact_target_derivation() ->
 @pytest.mark.parametrize(
     ("field_name", "wrong_value", "message"),
     (
-        ("stride_bytes", 16, "shift.*stride"),
+        ("stride_bytes", 16, "scaling.*stride"),
         ("table_base_ea", 0x48B820, "entry address"),
         ("additive_key", 0xFDEE1C80, "decoded target"),
         ("true_index", 0, "distinct Boolean indices"),
@@ -882,8 +886,10 @@ def test_setcc_indexed_table_rejects_inconsistent_derivation(
             fragment_plan.FragmentSetccIndexExtensionKind.ZERO_EXTEND_BY_FULL_REGISTER_PREZERO
         ),
         "index_width_bits": 32,
-        "shift_ea": 0x40A771,
-        "shift_bits": 5,
+        "index_scaling": fragment_plan.FragmentSetccExplicitShiftScaling(
+            shift_ea=0x40A771,
+            shift_bits=5,
+        ),
         "lookup_ea": 0x40A774,
         "table_base_ea": 0x48B81C,
         "stride_bytes": 32,
@@ -903,6 +909,55 @@ def test_setcc_indexed_table_rejects_inconsistent_derivation(
 
     with pytest.raises(FragmentPlanRejected, match=message):
         fragment_plan.FragmentSetccIndexedTableEvidence(**kwargs)
+
+
+def test_setcc_scaled_lookup_persists_embedded_index_scale() -> None:
+    scaling = fragment_plan.FragmentSetccScaledLookupScaling(
+        lookup_ea=0x40A789,
+        scale_bytes=8,
+    )
+    evidence = fragment_plan.FragmentSetccIndexedTableEvidence(
+        table_identity="native-table@0x48B4F8:stride-8:u32le:add-esi",
+        zeroing_ea=0x40A77E,
+        zeroed_width_bits=32,
+        setcc_ea=0x40A786,
+        setcc_destination_width_bits=8,
+        extension_kind=(
+            fragment_plan.FragmentSetccIndexExtensionKind.ZERO_EXTEND_BY_FULL_REGISTER_PREZERO
+        ),
+        index_width_bits=32,
+        index_scaling=scaling,
+        lookup_ea=0x40A789,
+        table_base_ea=0x48B4F8,
+        stride_bytes=8,
+        entry_width_bytes=4,
+        byte_order=fragment_plan.FragmentTableByteOrder.LITTLE,
+        interpretation=(
+            fragment_plan.FragmentTableEntryInterpretation.ADD_CONSTANT_MODULO_ENTRY_WIDTH
+        ),
+        decode_ea=0x40A790,
+        additive_key_producer_ea=0x40A5BD,
+        additive_key=0xFDEE1C81,
+        true_index=1,
+        false_index=0,
+        entries=(
+            fragment_plan.FragmentSetccIndexedTableEntry(
+                index=0,
+                entry_ea=0x48B4F8,
+                raw_value=0x02528B13,
+                decoded_target_ea=0x40A794,
+            ),
+            fragment_plan.FragmentSetccIndexedTableEntry(
+                index=1,
+                entry_ea=0x48B500,
+                raw_value=0x02529265,
+                decoded_target_ea=0x40AEE6,
+            ),
+        ),
+    )
+
+    assert evidence.index_scaling is scaling
+    assert evidence.stride_bytes == scaling.scale_bytes == 8
 
 
 @pytest.mark.parametrize(

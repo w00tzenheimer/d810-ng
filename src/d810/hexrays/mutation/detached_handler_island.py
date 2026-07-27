@@ -79,7 +79,9 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentReferencedImportedConditionalSelectEnvelope,
+    FragmentSetccExplicitShiftScaling,
     FragmentSetccIndexedTableNormalization,
+    FragmentSetccScaledLookupScaling,
     FragmentStoragePredicateMaterialization,
     FragmentTerminalReturn,
     superseded_direct_transfer_carrier_block_ids,
@@ -2868,6 +2870,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
     ) -> _ComputedBranchNormalizationPlan:
         """Prove one typed setcc/table suffix before replacing it with a branch."""
         evidence = normalization.table_evidence
+        scaling = evidence.index_scaling
         instructions = tuple(template_block.instructions)
         indexes_by_ea = {
             ea: tuple(
@@ -2878,7 +2881,6 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             for ea in (
                 normalization.condition_producer_ea,
                 evidence.setcc_ea,
-                evidence.shift_ea,
                 evidence.lookup_ea,
                 evidence.decode_ea,
                 normalization.unresolved_transfer_ea,
@@ -2886,7 +2888,6 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         }
         producer_indexes = indexes_by_ea[normalization.condition_producer_ea]
         predicate_indexes = indexes_by_ea[evidence.setcc_ea]
-        shift_indexes = indexes_by_ea[evidence.shift_ea]
         lookup_indexes = indexes_by_ea[evidence.lookup_ea]
         decode_indexes = indexes_by_ea[evidence.decode_ea]
         transfer_indexes = indexes_by_ea[normalization.unresolved_transfer_ea]
@@ -2899,17 +2900,37 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 predicate_anchor_ea=int(operation.predicate_anchor_ea),
             )
         )
-        shift = None if len(shift_indexes) != 1 else instructions[shift_indexes[0]]
-        shift_constants = (
+        scaling_indexes = (
+            tuple(
+                index
+                for index, instruction in enumerate(instructions)
+                if int(instruction.ea) == int(scaling.shift_ea)
+            )
+            if isinstance(scaling, FragmentSetccExplicitShiftScaling)
+            else tuple(
+                index
+                for index in lookup_indexes
+                if int(instructions[index].opcode) == int(ida_hexrays.m_mul)
+            )
+        )
+        load_indexes = tuple(
+            index
+            for index in lookup_indexes
+            if int(instructions[index].opcode) == int(ida_hexrays.m_ldx)
+        )
+        scaling_instruction = (
+            None if len(scaling_indexes) != 1 else instructions[scaling_indexes[0]]
+        )
+        scaling_constants = (
             ()
-            if shift is None
+            if scaling_instruction is None
             else tuple(
                 int(operand.nnn.value)
-                for operand in (shift.l, shift.r)
+                for operand in (scaling_instruction.l, scaling_instruction.r)
                 if int(operand.t) == int(ida_hexrays.mop_n)
             )
         )
-        lookup = None if len(lookup_indexes) != 1 else instructions[lookup_indexes[0]]
+        lookup = None if len(load_indexes) != 1 else instructions[load_indexes[0]]
         transfer = (
             None
             if transfer_indexes != (len(instructions) - 1,)
@@ -2923,16 +2944,38 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             int(ida_hexrays.m_sets),
             int(ida_hexrays.m_add),
         )
-        expected_branch_opcode = (
+        predicate_true_opcode = (
             int(ida_hexrays.m_jnz)
-            if int(evidence.true_index) == 1
+            if normalization.predicate_kind is PredicateKind.SLT
             else int(ida_hexrays.m_jz)
+        )
+        expected_branch_opcode = (
+            predicate_true_opcode
+            if int(evidence.true_index) == 1
+            else (
+                int(ida_hexrays.m_jz)
+                if predicate_true_opcode == int(ida_hexrays.m_jnz)
+                else int(ida_hexrays.m_jnz)
+            )
+        )
+        exact_scaling_partition = bool(
+            (
+                isinstance(scaling, FragmentSetccExplicitShiftScaling)
+                and scaling_indexes == (3,)
+                and lookup_indexes == (4,)
+                and load_indexes == (4,)
+            )
+            or (
+                isinstance(scaling, FragmentSetccScaledLookupScaling)
+                and scaling_indexes == (3,)
+                and lookup_indexes == (3, 4)
+                and load_indexes == (4,)
+            )
         )
         exact_index_partition = bool(
             producer_indexes == (0, 1)
             and predicate_indexes == (2,)
-            and shift_indexes == (3,)
-            and lookup_indexes == (4,)
+            and exact_scaling_partition
             and decode_indexes == tuple(range(5, 11))
             and transfer_indexes == (11,)
             and len(instructions) == 12
@@ -2956,10 +2999,10 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 and int(signed_plan.branch_opcode) == expected_branch_opcode,
             ),
             (
-                "shift_stride_exact",
-                shift is not None
-                and int(shift.opcode) == int(ida_hexrays.m_mul)
-                and shift_constants == (int(evidence.stride_bytes),),
+                "scaling_stride_exact",
+                scaling_instruction is not None
+                and int(scaling_instruction.opcode) == int(ida_hexrays.m_mul)
+                and scaling_constants == (int(evidence.stride_bytes),),
             ),
             (
                 "lookup_opcode_exact",
