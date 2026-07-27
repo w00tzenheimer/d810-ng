@@ -1892,3 +1892,14 @@ def test_compiler_rejects_setcc_without_false_target_physical_adjacency() -> Non
             ),
             expected_evidence_generation=1,
         )
+
+
+def test_compiler_rejects_unsupported_setcc_predicate_kind() -> None:
+    compiler = _compiler_module()
+    ledger = _fifth_shape_ledger()
+    *dependencies, selected = ledger.operations
+
+    with pytest.raises(
+        compiler.RhadCompilerRejection, match="supported signed predicate"
+    ):
+        replace(selected, predicate_kind=PredicateKind.EQ)

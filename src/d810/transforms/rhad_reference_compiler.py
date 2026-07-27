@@ -891,6 +891,10 @@ class RhadSetccIndexedTableRoute:
             )
         if not isinstance(self.predicate_kind, PredicateKind):
             raise TypeError("Rhad setcc table route requires a portable predicate")
+        if self.predicate_kind not in {PredicateKind.SLT, PredicateKind.SGE}:
+            raise RhadCompilerRejection(
+                "Rhad setcc table route requires a supported signed predicate"
+            )
         artifact = self.table_proof_artifact
         if not isinstance(artifact, RhadSetccIndexedTableProofArtifact):
             raise TypeError("Rhad setcc table route requires a typed proof artifact")
