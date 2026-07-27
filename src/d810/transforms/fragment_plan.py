@@ -74,6 +74,24 @@ class FragmentPublicationPurpose(str, Enum):
     CANONICAL_SEMANTIC_LOWERING = "canonical_semantic_lowering"
 
 
+class FragmentSetccIndexExtensionKind(str, Enum):
+    """Typed partial-register extension used by one setcc table index."""
+
+    ZERO_EXTEND_BY_FULL_REGISTER_PREZERO = "zero_extend_by_full_register_prezero"
+
+
+class FragmentTableByteOrder(str, Enum):
+    """Byte order of one reference-owned native table entry."""
+
+    LITTLE = "little"
+
+
+class FragmentTableEntryInterpretation(str, Enum):
+    """Typed operation that converts one raw table entry to a target."""
+
+    ADD_CONSTANT_MODULO_ENTRY_WIDTH = "add_constant_modulo_entry_width"
+
+
 class FragmentBoundaryPortKind(str, Enum):
     """Explicit temporary attachment retained by a partial semantic fragment."""
 
@@ -664,6 +682,203 @@ class FragmentReferencedImportedConditionalSelectEnvelope(
 
 
 @dataclass(frozen=True, slots=True)
+class FragmentSetccIndexedTableEntry:
+    """One admitted Boolean table index and its independently derived target."""
+
+    index: int
+    entry_ea: int
+    raw_value: int
+    decoded_target_ea: int
+
+    def __post_init__(self) -> None:
+        index = int(self.index)
+        if index not in {0, 1}:
+            raise FragmentPlanRejected("setcc table entry requires a Boolean index")
+        object.__setattr__(self, "index", index)
+        object.__setattr__(
+            self,
+            "entry_ea",
+            _require_native_ea(self.entry_ea, "setcc table entry"),
+        )
+        raw_value = int(self.raw_value)
+        if raw_value < 0:
+            raise FragmentPlanRejected("setcc table raw entry must be unsigned")
+        object.__setattr__(self, "raw_value", raw_value)
+        object.__setattr__(
+            self,
+            "decoded_target_ea",
+            _require_native_ea(
+                self.decoded_target_ea,
+                "setcc table decoded target",
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FragmentSetccIndexedTableEvidence:
+    """Exact index, lookup, and decode proof for a setcc-selected table."""
+
+    table_identity: str
+    zeroing_ea: int
+    zeroed_width_bits: int
+    setcc_ea: int
+    setcc_destination_width_bits: int
+    extension_kind: FragmentSetccIndexExtensionKind
+    index_width_bits: int
+    shift_ea: int
+    shift_bits: int
+    lookup_ea: int
+    table_base_ea: int
+    stride_bytes: int
+    entry_width_bytes: int
+    byte_order: FragmentTableByteOrder
+    interpretation: FragmentTableEntryInterpretation
+    decode_ea: int
+    additive_key_producer_ea: int
+    additive_key: int
+    true_index: int
+    false_index: int
+    entries: tuple[FragmentSetccIndexedTableEntry, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "table_identity",
+            _require_identifier(self.table_identity, "setcc table identity"),
+        )
+        native_eas = {
+            field_name: _require_native_ea(
+                getattr(self, field_name),
+                field_name.replace("_", " "),
+            )
+            for field_name in (
+                "zeroing_ea",
+                "setcc_ea",
+                "shift_ea",
+                "lookup_ea",
+                "table_base_ea",
+                "decode_ea",
+                "additive_key_producer_ea",
+            )
+        }
+        for field_name, ea in native_eas.items():
+            object.__setattr__(self, field_name, ea)
+        if not (
+            native_eas["zeroing_ea"]
+            < native_eas["setcc_ea"]
+            < native_eas["shift_ea"]
+            < native_eas["lookup_ea"]
+            < native_eas["decode_ea"]
+        ):
+            raise FragmentPlanRejected(
+                "setcc table construction anchors are not strictly ordered"
+            )
+        zeroed_width_bits = int(self.zeroed_width_bits)
+        setcc_width_bits = int(self.setcc_destination_width_bits)
+        index_width_bits = int(self.index_width_bits)
+        if (
+            self.extension_kind
+            is not FragmentSetccIndexExtensionKind.ZERO_EXTEND_BY_FULL_REGISTER_PREZERO
+            or zeroed_width_bits != index_width_bits
+            or setcc_width_bits <= 0
+            or setcc_width_bits >= index_width_bits
+            or index_width_bits % 8
+            or setcc_width_bits % 8
+        ):
+            raise FragmentPlanRejected(
+                "setcc table index requires exact full-register prezero extension"
+            )
+        shift_bits = int(self.shift_bits)
+        stride_bytes = int(self.stride_bytes)
+        if shift_bits < 0 or stride_bytes != 1 << shift_bits:
+            raise FragmentPlanRejected("setcc table shift and stride disagree")
+        entry_width_bytes = int(self.entry_width_bytes)
+        if not 1 <= entry_width_bytes <= 8:
+            raise FragmentPlanRejected(
+                "setcc table entry width must be between 1 and 8 bytes"
+            )
+        if self.byte_order is not FragmentTableByteOrder.LITTLE:
+            raise FragmentPlanRejected(
+                "setcc table requires a typed little-endian entry interpretation"
+            )
+        if (
+            self.interpretation
+            is not FragmentTableEntryInterpretation.ADD_CONSTANT_MODULO_ENTRY_WIDTH
+        ):
+            raise FragmentPlanRejected(
+                "setcc table requires an additive modulo-entry-width interpretation"
+            )
+        true_index = int(self.true_index)
+        false_index = int(self.false_index)
+        if {true_index, false_index} != {0, 1} or true_index == false_index:
+            raise FragmentPlanRejected("setcc table requires distinct Boolean indices")
+        entries = tuple(self.entries)
+        if (
+            len(entries) != 2
+            or any(
+                not isinstance(entry, FragmentSetccIndexedTableEntry)
+                for entry in entries
+            )
+            or tuple(entry.index for entry in entries) != (0, 1)
+        ):
+            raise FragmentPlanRejected(
+                "setcc table requires ordered entries for indices 0 and 1"
+            )
+        modulus = 1 << (entry_width_bytes * 8)
+        additive_key = int(self.additive_key)
+        if not 0 <= additive_key < modulus:
+            raise FragmentPlanRejected(
+                "setcc table additive key must fit the entry width"
+            )
+        for entry in entries:
+            if entry.entry_ea != native_eas["table_base_ea"] + (
+                entry.index * stride_bytes
+            ):
+                raise FragmentPlanRejected(
+                    "setcc table entry address disagrees with its base and stride"
+                )
+            if not 0 <= entry.raw_value < modulus:
+                raise FragmentPlanRejected(
+                    "setcc table raw entry does not fit its entry width"
+                )
+            if (entry.raw_value + additive_key) % modulus != int(
+                entry.decoded_target_ea
+            ):
+                raise FragmentPlanRejected(
+                    "setcc table decoded target disagrees with its raw entry and key"
+                )
+        if (
+            entries[true_index].decoded_target_ea
+            == entries[false_index].decoded_target_ea
+        ):
+            raise FragmentPlanRejected(
+                "setcc table requires distinct decoded semantic targets"
+            )
+        object.__setattr__(self, "zeroed_width_bits", zeroed_width_bits)
+        object.__setattr__(
+            self,
+            "setcc_destination_width_bits",
+            setcc_width_bits,
+        )
+        object.__setattr__(self, "index_width_bits", index_width_bits)
+        object.__setattr__(self, "shift_bits", shift_bits)
+        object.__setattr__(self, "stride_bytes", stride_bytes)
+        object.__setattr__(self, "entry_width_bytes", entry_width_bytes)
+        object.__setattr__(self, "additive_key", additive_key)
+        object.__setattr__(self, "true_index", true_index)
+        object.__setattr__(self, "false_index", false_index)
+        object.__setattr__(self, "entries", entries)
+
+    @property
+    def true_entry(self) -> FragmentSetccIndexedTableEntry:
+        return self.entries[self.true_index]
+
+    @property
+    def false_entry(self) -> FragmentSetccIndexedTableEntry:
+        return self.entries[self.false_index]
+
+
+@dataclass(frozen=True, slots=True)
 class FragmentComputedBranchNormalization:
     """Typed proof for replacing one unresolved imported computed branch."""
 
@@ -744,6 +959,36 @@ class FragmentComputedBranchNormalization:
             "relocated_instruction_eas",
             relocated_instruction_eas,
         )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FragmentSetccIndexedTableNormalization(FragmentComputedBranchNormalization):
+    """Computed-branch normalization owned by exact setcc table evidence."""
+
+    table_evidence: FragmentSetccIndexedTableEvidence
+
+    def __post_init__(self) -> None:
+        FragmentComputedBranchNormalization.__post_init__(self)
+        evidence = self.table_evidence
+        if not isinstance(evidence, FragmentSetccIndexedTableEvidence):
+            raise TypeError(
+                "setcc indexed-table normalization requires typed table evidence"
+            )
+        if (
+            self.conditional_select_envelope is not None
+            or self.relocated_instruction_eas
+        ):
+            raise FragmentPlanRejected(
+                "setcc indexed-table normalization owns one unsplit source block"
+            )
+        if (
+            int(self.normalization_start_ea) != int(evidence.setcc_ea)
+            or not int(self.condition_producer_ea) < int(evidence.setcc_ea)
+            or not int(evidence.decode_ea) < int(self.unresolved_transfer_ea)
+        ):
+            raise FragmentPlanRejected(
+                "setcc indexed-table normalization anchors disagree with its evidence"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3133,6 +3378,12 @@ __all__ = [
     "FragmentRangeAssumption",
     "FragmentRangeObservation",
     "FragmentReferenceRouteAuthority",
+    "FragmentSetccIndexExtensionKind",
+    "FragmentSetccIndexedTableEntry",
+    "FragmentSetccIndexedTableEvidence",
+    "FragmentSetccIndexedTableNormalization",
+    "FragmentTableByteOrder",
+    "FragmentTableEntryInterpretation",
     "FragmentReturnCarrier",
     "FragmentReturnSource",
     "FragmentReturnSourceKind",
