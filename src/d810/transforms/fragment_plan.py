@@ -612,6 +612,10 @@ class FragmentReferencedImportedConditionalSelectEnvelope(
 
     selected_value_block_id: str
     join_block_id: str
+    true_target_reference_ea: int
+    false_target_reference_ea: int
+    true_target_delivery_ea: int
+    false_target_delivery_ea: int
 
     def __post_init__(self) -> None:
         FragmentImportedConditionalSelectEnvelope.__post_init__(self)
@@ -628,12 +632,35 @@ class FragmentReferencedImportedConditionalSelectEnvelope(
                 "referenced imported conditional requires distinct selected-value "
                 "and join blocks"
             )
+        target_eas = {
+            field_name: _require_native_ea(
+                getattr(self, field_name),
+                field_name.replace("_", " "),
+            )
+            for field_name in (
+                "true_target_reference_ea",
+                "false_target_reference_ea",
+                "true_target_delivery_ea",
+                "false_target_delivery_ea",
+            )
+        }
+        if (
+            target_eas["true_target_reference_ea"]
+            == target_eas["false_target_reference_ea"]
+            or target_eas["true_target_delivery_ea"]
+            == target_eas["false_target_delivery_ea"]
+        ):
+            raise FragmentPlanRejected(
+                "referenced imported conditional requires distinct target bindings"
+            )
         object.__setattr__(
             self,
             "selected_value_block_id",
             selected_value_block_id,
         )
         object.__setattr__(self, "join_block_id", join_block_id)
+        for field_name, ea in target_eas.items():
+            object.__setattr__(self, field_name, ea)
 
 
 @dataclass(frozen=True, slots=True)
@@ -776,6 +803,7 @@ class FragmentReferenceRouteAuthority:
 
     reference_route: ReferenceRouteRewrite
     candidate_rewrite_anchor_ea: int
+    imported_closure_block_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
         route = self.reference_route
@@ -798,10 +826,23 @@ class FragmentReferenceRouteAuthority:
                     "reference_patch_anchor_ea": f"0x{route.rewrite_anchor_ea:X}",
                 },
             )
+        imported_closure_block_ids = tuple(
+            _require_identifier(block_id, "reference route imported closure block")
+            for block_id in self.imported_closure_block_ids
+        )
+        if len(set(imported_closure_block_ids)) != len(imported_closure_block_ids):
+            raise FragmentPlanRejected(
+                "fragment reference route imported closure contains duplicate blocks"
+            )
         object.__setattr__(
             self,
             "candidate_rewrite_anchor_ea",
             candidate_anchor_ea,
+        )
+        object.__setattr__(
+            self,
+            "imported_closure_block_ids",
+            imported_closure_block_ids,
         )
 
     @property
@@ -1978,6 +2019,15 @@ class FragmentPlan:
                     )
             reference_authority = operation.reference_route_authority
             if reference_authority is not None:
+                unknown_closure_block_ids = set(
+                    reference_authority.imported_closure_block_ids
+                ) - set(block_by_id)
+                if unknown_closure_block_ids:
+                    raise FragmentPlanRejected(
+                        f"fragment operation {operation.operation_id!r} reference "
+                        "route closure contains unknown blocks: "
+                        f"{tuple(sorted(unknown_closure_block_ids))!r}"
+                    )
                 reference_route = reference_authority.reference_route
                 source_identity = source.stable_identity
                 operation_owner_identity = (
@@ -2013,6 +2063,30 @@ class FragmentPlan:
                         ),
                     )
                 )
+                normalization = operation.computed_branch_normalization
+                referenced_envelope = (
+                    None
+                    if normalization is None
+                    or not isinstance(
+                        normalization.conditional_select_envelope,
+                        FragmentReferencedImportedConditionalSelectEnvelope,
+                    )
+                    else normalization.conditional_select_envelope
+                )
+                translated_targets = (
+                    {}
+                    if referenced_envelope is None
+                    else {
+                        SemanticEdgeRole.CONDITIONAL_TAKEN: (
+                            referenced_envelope.true_target_reference_ea,
+                            referenced_envelope.true_target_delivery_ea,
+                        ),
+                        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: (
+                            referenced_envelope.false_target_reference_ea,
+                            referenced_envelope.false_target_delivery_ea,
+                        ),
+                    }
+                )
                 edge_by_role = {edge.role: edge for edge in operation.edges}
                 for role, target_ea in expected_targets:
                     edge = edge_by_role.get(role)
@@ -2020,10 +2094,19 @@ class FragmentPlan:
                         None if edge is None else block_by_id.get(edge.target_block_id)
                     )
                     target_identity = None if target is None else target.stable_identity
+                    translated_target = translated_targets.get(role)
+                    delivery_target_ea = (
+                        target_ea if translated_target is None else translated_target[1]
+                    )
                     target_bound = bool(
                         target_identity is not None
                         and target_ea is not None
-                        and target_identity.native_ranges.contains(target_ea)
+                        and delivery_target_ea is not None
+                        and (
+                            translated_target is None
+                            or int(translated_target[0]) == int(target_ea)
+                        )
+                        and target_identity.native_ranges.contains(delivery_target_ea)
                     )
                     target_rows.append(
                         {
@@ -2038,6 +2121,11 @@ class FragmentPlan:
                             ),
                             "reference_target_ea": (
                                 None if target_ea is None else f"0x{target_ea:X}"
+                            ),
+                            "delivery_target_ea": (
+                                None
+                                if delivery_target_ea is None
+                                else f"0x{delivery_target_ea:X}"
                             ),
                             "target_bound": target_bound,
                         }
@@ -2272,6 +2360,12 @@ class FragmentPlan:
                             and operation.operation_id
                             in work_item_scope.selected_obligation_ids
                             and operation.reference_route_authority is not None
+                            and bool(
+                                operation.reference_route_authority.imported_closure_block_ids
+                            )
+                            and set(
+                                operation.reference_route_authority.imported_closure_block_ids
+                            ).issubset(native_body.block_ids)
                             and self.reference_oracle_run is not None
                             and selected_block is not None
                             and selected_block.role is FragmentBlockRole.IMPORTED
@@ -2960,6 +3054,53 @@ def superseded_direct_transfer_carrier_block_ids(
     )
 
 
+def superseded_referenced_conditional_carrier_block_ids(
+    plan: FragmentPlan,
+) -> frozenset[str]:
+    """Return imported corridor witnesses retired by referenced conditionals."""
+    if not isinstance(plan, FragmentPlan):
+        raise TypeError(
+            "superseded referenced conditional discovery requires a FragmentPlan"
+        )
+    envelope_carrier_ids = {
+        block_id
+        for operation in plan.operations
+        for normalization in (operation.computed_branch_normalization,)
+        if normalization is not None
+        for envelope in (normalization.conditional_select_envelope,)
+        if isinstance(
+            envelope,
+            FragmentReferencedImportedConditionalSelectEnvelope,
+        )
+        for block_id in (
+            envelope.selected_value_block_id,
+            envelope.join_block_id,
+        )
+    }
+    superseded_transfer_eas = {
+        int(normalization.unresolved_transfer_ea)
+        for operation in plan.operations
+        for normalization in (operation.computed_branch_normalization,)
+        if normalization is not None
+        and isinstance(
+            normalization.conditional_select_envelope,
+            FragmentReferencedImportedConditionalSelectEnvelope,
+        )
+    }
+    return frozenset(
+        block.block_id
+        for block in plan.blocks
+        if block.materialization is FragmentBlockMaterialization.IMPORT_NATIVE
+        and (
+            block.block_id in envelope_carrier_ids
+            or block.stable_identity is not None
+            and not block.stable_identity.exact_instruction_eas.isdisjoint(
+                superseded_transfer_eas
+            )
+        )
+    )
+
+
 def serialize_fragment_plan(plan: FragmentPlan) -> str:
     """Serialize every plan member deterministically for diagnostic replay."""
     return json.dumps(
@@ -3003,4 +3144,5 @@ __all__ = [
     "fragment_plan_to_dict",
     "serialize_fragment_plan",
     "superseded_direct_transfer_carrier_block_ids",
+    "superseded_referenced_conditional_carrier_block_ids",
 ]

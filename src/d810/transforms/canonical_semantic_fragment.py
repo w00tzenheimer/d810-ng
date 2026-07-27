@@ -1726,6 +1726,7 @@ def plan_detached_reference_direct_route(
         reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=reference_route,
             candidate_rewrite_anchor_ea=int(direct_rewrite.rewrite_anchor_ea),
+            imported_closure_block_ids=tuple(corridor_block_ids),
         ),
     )
     return DetachedDirectRoutePlan(

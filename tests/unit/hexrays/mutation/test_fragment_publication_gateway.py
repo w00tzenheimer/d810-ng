@@ -253,6 +253,7 @@ def _plan_with_reference_route() -> FragmentPlan:
         reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=reference_route,
             candidate_rewrite_anchor_ea=0x401004,
+            imported_closure_block_ids=(),
         ),
         edges=(
             FragmentEdge(
@@ -1146,6 +1147,7 @@ def test_route_oracle_inventory_preserves_mixed_operation_order() -> None:
         reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=conditional_route,
             candidate_rewrite_anchor_ea=0x404000,
+            imported_closure_block_ids=(),
         ),
     )
     plan = SimpleNamespace(operations=(direct_operation, conditional_operation))
