@@ -1143,6 +1143,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row5 = next(
         operation for operation in operations if operation["reference_order"] == 5
     )
+    row6 = next(
+        operation for operation in operations if operation["reference_order"] == 6
+    )
     row11 = next(
         operation for operation in operations if operation["reference_order"] == 11
     )
@@ -1215,6 +1218,17 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         0x40A679,
         0x40AE1A,
         0x40AE24,
+    ]
+    assert row6["operation_id"] == "rhad:route@0x40A679"
+    assert row6["current_compiler_support"] == "typed_simple_indirect_jump"
+    assert row6["current_generated_proof"] == {
+        "accepted_commits": ["5b813d0d6", "c93634ba6", "d0cc04417"],
+        "status": "accepted_generated_c6",
+    }
+    assert row6["boundary_exit_eas"] == [0x40A5F0, 0x40AE3E]
+    assert row6["imported_closure_block_anchor_eas"] == [
+        0x40AE26,
+        0x40AE3C,
     ]
     assert row11["operation_id"] == "rhad:route@0x40A6F2"
     assert row11["current_compiler_support"] == (
@@ -1352,7 +1366,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     }
 
 
-def test_indirect_jump_coverage_summary_matches_committed_row5_batch() -> None:
+def test_indirect_jump_coverage_summary_matches_committed_row6_batch() -> None:
     summary = json.loads(
         (
             _REPO
@@ -1379,22 +1393,20 @@ def test_indirect_jump_coverage_summary_matches_committed_row5_batch() -> None:
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("0e0c9ab2a9b680ef73384f85624c785e864d7998")
+    assert summary["accepted_code_sha"] == ("d0cc044175f54907b8afeb8b06f36ef35e74a2b7")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     assert accepted_operation_ids == [
-        operation.operation_id
-        for operation in batch.operations
-        if operation.operation_id != "route:rhad-direct@0x40A679"
+        operation.operation_id for operation in batch.operations
     ]
     assert simple == {
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 6,
-        "vertically_proved_operations": 6,
-        "accepted_receipt_operations": 6,
-        "earliest_unproved_reference_order": 6,
-        "earliest_unproved_operation_id": "rhad:route@0x40A679",
+        "compiled_operation_instances": 7,
+        "vertically_proved_operations": 7,
+        "accepted_receipt_operations": 7,
+        "earliest_unproved_reference_order": 19,
+        "earliest_unproved_operation_id": "rhad:route@0x40A7EF",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadDirectRoute vocabulary with exact "
             "per-operation native-body proof and dependency closure"
