@@ -62,19 +62,19 @@ commit `21b0d4783703bc4fb6910cfae51d92cd683d2c65`.
   relationships, accepted commits, fixture hash, and current SQLite authority.
 - [x] Select row 17 `rhad:route@0x40A792`; record its evidence and first unmet
   typed scaled-lookup obligation in `lrea-t5gy`.
-- [ ] Create one canonical, immutable row-16 table-proof artifact and reference
+- [x] Create one canonical, immutable row-16 table-proof artifact and reference
   its content identity from the existing row-16 inventory proof field without
   changing the stable 228-row ledger schema. The artifact must be typed,
   canonicalized deterministically, serial-free, and bind the input SHA-256,
   function `0x40A560`, pinned reference commit, operation ID
   `rhad:route@0x40A77C`, reference order 16, exact native/table evidence, and
   decoded targets. It is required compiler input, not an optional sidecar.
-- [ ] Write RED tests proving compilation rejects a missing artifact, wrong
+- [x] Write RED tests proving compilation rejects a missing artifact, wrong
   content hash, noncanonical content, wrong fixture/function/reference commit,
   wrong operation/order, or row/artifact disagreement before live mutation.
   Carry the artifact content identity into the row-16 compiled operation,
   compiled-plan identity, and aggregate reference-program identity.
-- [ ] Persist the complete artifact and its content identity in SQLite compiled
+- [x] Persist the complete artifact and its content identity in SQLite compiled
   and published lifecycle diagnostics, and assert diagnostic reconstruction
   matches the checked-in artifact exactly.
 - [ ] Make the checked-in 228-row indirect inventory reproducible from the
@@ -89,7 +89,7 @@ commit `21b0d4783703bc4fb6910cfae51d92cd683d2c65`.
 - [ ] Emit one deterministic manifest with literal phase counts and a content
   hash that includes every required proof-artifact identity; fail generation if
   source/reference/hash/order/closure/artifact authority differs.
-- [ ] Persist a fresh accepted four-checksum SQLite database under a stable
+- [x] Persist a fresh accepted four-checksum SQLite database under a stable
   `.tmp/logs/d810_logs` path before row-17 publication. Assert its 55/55 receipt,
   seven matched route comparisons, complete witnesses, no poison/rollback/redo,
   maturity through CALLS, and `CMAT_FINAL`.
