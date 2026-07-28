@@ -145,7 +145,6 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40AAFD,
         0x40AB31,
         0x40AB90,
-        0x40ABAA,
         0x40B17F,
         0x40B0F2,
         0x40ADBE,
@@ -2202,12 +2201,13 @@ def test_checksum_producer_compiles_row47_existing_conditional_reference() -> No
         if operation.operation_id == "rhad:route@0x40ABA8"
     ).depends_on == ("rhad:route@0x40AB8E",)
 
-    true_source = next(
+    row47_source = next(
         fragment
         for fragment in batch.template_fragments
-        if fragment.root_ea == 0x40ABAA
+        if fragment.root_ea == 0x40AB90
     )
-    assert true_source.preserved_transfer_exit_map == {
+    assert row47_source.preserved_transfer_exit_map == {
+        0x40ABA8: (0x40A5F0, 0x40ABAA),
         0x40ABC4: (0x40A607, 0x40B6C0),
     }
     imported_by_id = {block.block_id: block for block in batch.imported_blocks}
