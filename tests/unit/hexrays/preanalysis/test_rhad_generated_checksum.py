@@ -94,7 +94,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 436
+    assert len(IMPORTED_BLOCK_IDS) == 438
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -6028,6 +6028,8 @@ def test_row99_inventory_corridor_includes_flag_producer() -> None:
         0x40A5F0,
         0x40A605,
         0x40B3B0,
+        0x40B3DC,
+        0x40B3DF,
         0x40B3E3,
     ]
     assert row99["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -6217,6 +6219,8 @@ def test_checksum_producer_compiles_row99_existing_conditional_dependency() -> N
     ]
     assert payload["imported_closure_block_ids"] == [
         "native@0x40B3B0",
+        "native@0x40B3DC",
+        "native@0x40B3DF",
         "native@0x40B3E3",
     ]
     assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]

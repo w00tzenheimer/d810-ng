@@ -8804,6 +8804,8 @@
         4236784,
         4236805,
         4240304,
+        4240348,
+        4240351,
         4240355
       ],
       "operation_id": "rhad:route@0x40B3AE",
@@ -8840,6 +8842,8 @@
           ],
           "expected_generated_block_anchor_eas": [
             4240304,
+            4240348,
+            4240351,
             4240355
           ],
           "owned_native_block_entry_eas": [
