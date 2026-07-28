@@ -2933,7 +2933,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     assert row40["unavailable_closure_exit_eas"] == []
 
 
-def test_indirect_jump_coverage_summary_matches_committed_row46_batch() -> None:
+def test_indirect_jump_coverage_summary_matches_committed_row47_batch() -> None:
     summary = json.loads(
         (
             _REPO
@@ -2965,7 +2965,7 @@ def test_indirect_jump_coverage_summary_matches_committed_row46_batch() -> None:
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("ee16bf28398705e0c4e0d2010119c2cec52280ff")
+    assert summary["accepted_code_sha"] == ("ccc1df2c83ced80261b5a111f8f22b0b58629551")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     assert accepted_operation_ids == [
         operation.operation_id for operation in batch.operations
@@ -3002,15 +3002,15 @@ def test_indirect_jump_coverage_summary_matches_committed_row46_batch() -> None:
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 26,
-        "vertically_proved_operations": 26,
-        "accepted_receipt_operations": 26,
-        "earliest_unproved_reference_order": 47,
-        "earliest_unproved_operation_id": "rhad:route@0x40ABA8",
+        "compiled_operation_instances": 27,
+        "vertically_proved_operations": 27,
+        "accepted_receipt_operations": 27,
+        "earliest_unproved_reference_order": 49,
+        "earliest_unproved_operation_id": "rhad:route@0x40ABDE",
         "first_missing_typed_obligation": (
-            "instantiate the proved RhadExistingConditionalRoute vocabulary with "
-            "exact row47 reference evidence, native-body proof, and row46 "
-            "dependency closure"
+            "import the typed 0x40ABE0 true-target closure into the portable "
+            "source plan before instantiating the proved "
+            "RhadExistingConditionalRoute vocabulary"
         ),
     }
     assert setcc == {
