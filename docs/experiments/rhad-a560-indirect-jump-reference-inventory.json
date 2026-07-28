@@ -7990,7 +7990,8 @@
         4236805,
         4239926,
         4239938,
-        4239979
+        4239972,
+        4239975
       ],
       "operation_id": "rhad:route@0x40B234",
       "operation_variant": "existing_conditional_plus_indirect",
@@ -8027,11 +8028,14 @@
           "expected_generated_block_anchor_eas": [
             4239926,
             4239938,
-            4239979
+            4239972,
+            4239975
           ],
           "owned_native_block_entry_eas": [
             4239926,
-            4239938
+            4239938,
+            4239972,
+            4239975
           ],
           "root_ea": 4239926,
           "status": "complete",
