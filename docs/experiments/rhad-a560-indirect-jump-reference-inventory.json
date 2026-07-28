@@ -9252,7 +9252,13 @@
       ],
       "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "5a49b0c29",
+          "9a3507e23",
+          "805b62663",
+          "e136d7b04"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
