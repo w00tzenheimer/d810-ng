@@ -252,6 +252,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40AFF7",
         "route:rhad-direct@0x40B022",
         "rhad:route@0x40B03C",
+        "route:rhad-direct@0x40B06F",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -4085,6 +4086,52 @@ def test_checksum_producer_compiles_row76_existing_conditional_dependency() -> N
         for operation in batch.operations
         if operation.operation_id == "rhad:route@0x40B03C"
     ).depends_on == ("route:rhad-direct@0x40B022",)
+
+
+def test_checksum_producer_compiles_row77_simple_indirect_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("route:rhad-direct@0x40B06F")
+    rewrite = operation.direct_transfer_rewrite
+    assert rewrite is not None
+    assert operation.source_block_id == "native@0x40B06B"
+    assert rewrite.owner_anchor_ea == 0x40B06B
+    assert rewrite.rewrite_anchor_ea == 0x40B06F
+    assert rewrite.proof_corridor_instruction_eas == (
+        0x40B059,
+        0x40B06B,
+        0x40B06D,
+        0x40B06F,
+    )
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.DIRECT: "native@0x40B6C0",
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_operation_id"] == "rhad:route@0x40B06F"
+    assert payload["reference_order"] == 77
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40B059
+    assert payload["source_block_anchor_ea"] == 0x40B06B
+    assert payload["transfer_ea"] == 0x40B06F
+    assert payload["direct_target_block_id"] == "native@0x40B6C0"
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40B059,
+        0x40B06B,
+        0x40B06D,
+        0x40B06F,
+    ]
+    assert payload["boundary_exit_eas"] == [0x40B790]
+    assert next(
+        operation
+        for operation in batch.operations
+        if operation.operation_id == "route:rhad-direct@0x40B06F"
+    ).depends_on == ("rhad:route@0x40B03C",)
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
