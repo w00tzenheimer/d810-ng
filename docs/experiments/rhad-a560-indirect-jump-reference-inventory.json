@@ -7900,6 +7900,7 @@
       "operation_variant": "cmov_selected_indirect",
       "owned_corridor_instruction_eas": [
         4239866,
+        4239877,
         4239883,
         4239885,
         4239891,
