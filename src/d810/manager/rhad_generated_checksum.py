@@ -1071,6 +1071,71 @@ ROW99_TARGET_IMPORTED_LAYOUT = (
     (0x40B3DF, 0x40B3E5, (0x40B3DF, 0x40B3E1, 0x40B3E3)),
     (0x40B3E3, 0x40B3E5, (0x40B3E3,)),
 )
+ROW101_TARGET_IMPORTED_LAYOUT = (
+    (
+        0x40B3FF,
+        0x40B4A4,
+        (
+            0x40B3FF,
+            0x40B405,
+            0x40B40A,
+            0x40B40C,
+            0x40B410,
+            0x40B416,
+            0x40B41B,
+            0x40B41D,
+            0x40B421,
+            0x40B427,
+            0x40B42C,
+            0x40B42E,
+            0x40B432,
+            0x40B438,
+            0x40B43D,
+            0x40B43F,
+            0x40B443,
+            0x40B449,
+            0x40B44E,
+            0x40B450,
+            0x40B456,
+            0x40B45B,
+            0x40B45D,
+            0x40B462,
+            0x40B467,
+            0x40B469,
+            0x40B46E,
+            0x40B475,
+            0x40B476,
+            0x40B47C,
+            0x40B47F,
+            0x40B481,
+            0x40B485,
+            0x40B486,
+            0x40B487,
+            0x40B488,
+            0x40B48C,
+            0x40B490,
+            0x40B495,
+            0x40B49A,
+            0x40B49E,
+        ),
+    ),
+    (
+        0x40B4A4,
+        0x40B4C5,
+        (
+            0x40B4A4,
+            0x40B4AA,
+            0x40B4B0,
+            0x40B4B4,
+            0x40B4BA,
+            0x40B4BC,
+            0x40B4BF,
+            0x40B4C1,
+            0x40B4C3,
+        ),
+    ),
+    (0x40B4C3, 0x40B4C5, (0x40B4C3,)),
+)
 BASE_IMPORTED_LAYOUT = tuple(
     (start_ea, end_ea, (start_ea,))
     for start_ea, end_ea in ACCEPTED_IMPORTED_RANGES + DIRECT_IMPORTED_RANGES
@@ -1143,6 +1208,7 @@ IMPORTED_LAYOUT = (
     + ROW96_TARGET_IMPORTED_LAYOUT
     + ROW98_TARGET_IMPORTED_LAYOUT
     + ROW99_TARGET_IMPORTED_LAYOUT
+    + ROW101_TARGET_IMPORTED_LAYOUT
     + FOURTH_SHAPE_IMPORTED_LAYOUT[-1:]
 )
 IMPORTED_RANGES = tuple(
@@ -1453,10 +1519,13 @@ ROW99_TARGET_IMPORTED_BLOCK_IDS = tuple(
     f"native@0x{start_ea:X}"
     for start_ea, _end_ea, _exact_eas in ROW99_TARGET_IMPORTED_LAYOUT
 )
+ROW101_TARGET_IMPORTED_BLOCK_IDS = tuple(
+    f"native@0x{start_ea:X}"
+    for start_ea, _end_ea, _exact_eas in ROW101_TARGET_IMPORTED_LAYOUT
+)
 BOUNDARY_EXIT_EAS = (
     0x40A5F0,
     0x40A9A0,
-    0x40B3FF,
     0x40B55B,
     0x40B790,
     0x40C898,
@@ -1545,6 +1614,7 @@ TEMPLATE_ROOT_EAS = (
     0x40B396,
     0x40B3E5,
     0x40B3B0,
+    0x40B3FF,
     0x40ADF2,
     0x40A77E,
     0x40ABC6,
@@ -5183,6 +5253,46 @@ _ROW100_CMOV_ROUTE = RhadConditionalRoute(
     depends_on=(_ROW99_EXISTING_ROUTE.operation_id,),
 )
 
+_ROW101_EXISTING_ROUTE = RhadExistingConditionalRoute(
+    operation_id="rhad:route@0x40B3FD",
+    reference_order=101,
+    operation_variant=RhadOperationVariant.EXISTING_CONDITIONAL_PLUS_INDIRECT,
+    reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
+    source_block_id="native@0x40B3E5",
+    selected_value_block_id="native@0x40B3F3",
+    join_block_id="native@0x40B3F9",
+    source_native_ea=0x40B3E5,
+    source_block_anchor_ea=0x40B3F9,
+    join_ea=0x40B3F9,
+    transfer_ea=0x40B3FD,
+    condition_producer_ea=0x40B3EB,
+    predicate_anchor_ea=0x40B3F1,
+    normalization_start_ea=0x40B3F1,
+    source_branch_ea=0x40B3F1,
+    selected_value_ea=0x40B3F3,
+    observed_predicate_kind=PredicateKind.EQ,
+    predicate_kind=PredicateKind.NE,
+    true_target_block_id="native@0x40B3FF",
+    false_target_block_id="native@0x40A5F0",
+    true_target_ea=0x40B3FF,
+    false_target_ea=0x40A5F0,
+    comparison_constant=0x7F9D6412,
+    owned_corridor_instruction_eas=(
+        0x40B3E5,
+        0x40B3EB,
+        0x40B3F1,
+        0x40B3F3,
+        0x40B3F9,
+        0x40B3FB,
+        0x40B3FD,
+    ),
+    imported_closure_block_ids=ROW101_TARGET_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40A607, 0x40B6C0),
+    flag_corridor_id="flags-intact@0x40B3EB",
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_ROW100_CMOV_ROUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -5668,6 +5778,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         (0x40B396, 0x40B3B0),
         (0x40B3B0, 0x40B3E5),
         (0x40B3E5, 0x40B3FF),
+        (0x40B3FF, 0x40B4C5),
         (0x40B4C5, 0x40B4F0),
         (0x40B4F0, 0x40B51B),
         (0x40B51B, 0x40B542),
@@ -5780,6 +5891,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW98_EXISTING_ROUTE.operation_id,
         _ROW99_EXISTING_ROUTE.operation_id,
         _ROW100_CMOV_ROUTE.operation_id,
+        _ROW101_EXISTING_ROUTE.operation_id,
     ),
     template_fragments=(
         RhadGeneratedTemplateFragment(
@@ -7285,6 +7397,24 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
             ),
         ),
         RhadGeneratedTemplateFragment(
+            root_ea=0x40B3FF,
+            owned_ranges=(
+                (0x40B3FF, 0x40B4A4),
+                (0x40B4A4, 0x40B4C3),
+                (0x40B4C3, 0x40B4C5),
+            ),
+            owned_block_entry_eas=(0x40B3FF, 0x40B4A4, 0x40B4C3),
+            boundary_ranges=(),
+            boundary_exit_eas=(0x40A607, 0x40B6C0),
+            direct_boundary_routes=(),
+            preserved_unresolved_transfers=(
+                RhadGeneratedPreservedTransfer(
+                    transfer_ea=0x40B4C3,
+                    boundary_exit_eas=(0x40A607, 0x40B6C0),
+                ),
+            ),
+        ),
+        RhadGeneratedTemplateFragment(
             root_ea=0x40ADF2,
             owned_ranges=((0x40ADF2, 0x40AE1A),),
             owned_block_entry_eas=(0x40ADF2, 0x40AE05, 0x40AE08, 0x40AE18),
@@ -7620,6 +7750,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW98_EXISTING_ROUTE,
         _ROW99_EXISTING_ROUTE,
         _ROW100_CMOV_ROUTE,
+        _ROW101_EXISTING_ROUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
