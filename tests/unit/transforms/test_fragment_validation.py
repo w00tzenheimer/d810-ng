@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
+import d810.transforms.fragment_validation as fragment_validation
 from d810.core.semantic_route_oracle import SemanticTransferKind
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.expressions import ValueOpKind
@@ -46,6 +48,7 @@ from d810.transforms.fragment_projection import (
 )
 from d810.transforms.fragment_validation import (
     FragmentBindingState,
+    FragmentValidationOutcome,
     FragmentValidationPostcondition,
     PublishedFragmentObservation,
     ProjectedDataFlowRelation,
@@ -1927,6 +1930,40 @@ def test_postpublication_rejects_missing_semantic_postcondition() -> None:
     assert FragmentValidationPostcondition.POSTVALIDATION_COVERAGE in {
         outcome.postcondition for outcome in result.failures
     }
+
+
+def test_postpublication_coverage_lookup_scales_linearly(monkeypatch) -> None:
+    plan = _plan()
+    projection = _projection(plan)
+    observation = _published_observation(plan)
+    postcondition = FragmentValidationPostcondition.IDENTITY_OWNERSHIP
+    bulk_count = 10_000
+    bulk_outcomes = tuple(
+        FragmentValidationOutcome(
+            postcondition=postcondition,
+            subject_id=f"bulk-{index}",
+            passed=True,
+            reason="synthetic coverage scaling witness",
+        )
+        for index in range(bulk_count)
+    )
+    observation = replace(
+        observation,
+        semantic_outcomes=(*observation.semantic_outcomes, *bulk_outcomes),
+    )
+    required = tuple((postcondition, f"bulk-{index}") for index in range(bulk_count))
+    monkeypatch.setattr(
+        fragment_validation,
+        "_required_postpublication_outcomes",
+        lambda _plan, _projection: required,
+    )
+
+    started = time.perf_counter()
+    result = validate_published_fragment_observation(plan, observation, projection)
+    elapsed = time.perf_counter() - started
+
+    assert result.passed, result.failures
+    assert elapsed < 1.0, f"coverage lookup took {elapsed:.3f}s"
 
 
 def test_postpublication_rejects_missing_root_authority() -> None:
