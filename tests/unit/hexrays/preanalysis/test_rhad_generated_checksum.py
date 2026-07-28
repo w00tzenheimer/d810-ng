@@ -410,9 +410,9 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40AA94,
         0x40AAFD,
         0x40AE3E,
+        0x40B0F2,
         0x40B17F,
         0x40B1D0,
-        0x40B1F2,
         0x40B21C,
         0x40B26D,
         0x40B32C,
@@ -1667,7 +1667,7 @@ def test_checksum_producer_compiles_row38_existing_conditional_reference() -> No
         "native@0x40ADD2",
         "native@0x40ADD6",
     ]
-    assert payload["boundary_exit_eas"] == [0x40AA94, 0x40B1F2, 0x40B21C]
+    assert payload["boundary_exit_eas"] == [0x40AA94, 0x40B0F2, 0x40B21C]
     operation_by_id = {
         operation.operation_id: operation for operation in batch.operations
     }
@@ -1678,7 +1678,7 @@ def test_checksum_producer_compiles_row38_existing_conditional_reference() -> No
         if fragment.root_ea == 0x40AA88
     )
     assert true_template.preserved_transfer_exit_map == {
-        0x40AA92: (0x40AA94, 0x40B1F2),
+        0x40AA92: (0x40AA94, 0x40B0F2),
     }
     false_template = next(
         fragment
