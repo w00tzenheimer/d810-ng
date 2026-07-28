@@ -5993,6 +5993,46 @@ def test_row98_inventory_owns_flag_producer_and_complete_target_closures() -> No
     ]
 
 
+def test_row99_inventory_corridor_includes_flag_producer() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row99 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 99
+    )
+
+    assert row99["flag_producer_native_ea"] == 0x40B39C
+    assert row99["owned_corridor_instruction_eas"] == [
+        0x40B396,
+        0x40B39C,
+        0x40B3A2,
+        0x40B3A4,
+        0x40B3AA,
+        0x40B3AC,
+        0x40B3AE,
+    ]
+    assert row99["imported_closure_block_anchor_eas"] == [
+        0x40A5F0,
+        0x40A605,
+        0x40B3B0,
+        0x40B3E3,
+    ]
+    assert row99["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+    assert row99["unavailable_closure_exit_eas"] == []
+    assert all(
+        closure["status"] == "complete"
+        and closure["unavailable_exit_eas"] == []
+        for closure in row99["target_rooted_closures"]
+    )
+
+
 def test_checksum_producer_compiles_row97_cmov_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
