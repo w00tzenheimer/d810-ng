@@ -71,6 +71,12 @@ ROW68_TABLE_PROOF_PATH = (
     / "semantic_route_oracles"
     / "rhad_a560_row68_setcc_table_proof.json"
 )
+ROW96_TABLE_PROOF_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "conf"
+    / "semantic_route_oracles"
+    / "rhad_a560_row96_setcc_table_proof.json"
+)
 
 
 def load_row16_table_proof_artifact(
@@ -108,6 +114,19 @@ def load_row68_table_proof_artifact(
     except (OSError, json.JSONDecodeError) as error:
         raise RhadCompilerRejection(
             f"Rhad row-68 table proof artifact is unavailable: {error}"
+        ) from error
+    return RhadSetccIndexedTableProofArtifact.from_mapping(payload)
+
+
+def load_row96_table_proof_artifact(
+    path: Path = ROW96_TABLE_PROOF_PATH,
+) -> RhadSetccIndexedTableProofArtifact:
+    """Load the required canonical row-96 proof before any live mutation."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RhadCompilerRejection(
+            f"Rhad row-96 table proof artifact is unavailable: {error}"
         ) from error
     return RhadSetccIndexedTableProofArtifact.from_mapping(payload)
 
@@ -8378,6 +8397,8 @@ __all__ = [
     "prepare_rhad_generated_reference_templates",
     "load_row16_table_proof_artifact",
     "load_row17_table_proof_artifact",
+    "load_row68_table_proof_artifact",
+    "load_row96_table_proof_artifact",
     "publish_rhad_generated_reference_batch",
     "reference_batch_for_native_key",
 ]
