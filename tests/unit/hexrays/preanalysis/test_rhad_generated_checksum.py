@@ -5851,8 +5851,13 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     ]
     assert row77["unavailable_closure_exit_eas"] == []
     assert row78["operation_id"] == "rhad:route@0x40B089"
-    assert row78["current_compiler_support"] == "unsupported_typed_shape"
-    assert row78["current_generated_proof"] == {"status": "unproved"}
+    assert row78["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
+    assert row78["current_generated_proof"] == {
+        "accepted_commits": ["3e8bff3ae", "941e9dc24", "f562849db"],
+        "status": "accepted_generated_c6",
+    }
     assert row78["owned_corridor_instruction_eas"] == [
         0x40B071,
         0x40B077,
@@ -5909,7 +5914,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("b3425897538ffe8871b2b60d0a71b5d0a658195c")
+    assert summary["accepted_code_sha"] == ("f562849db429e354f512b2158dc40585f5c63fe0")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
     assert (
@@ -5947,11 +5952,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 43,
-        "vertically_proved_operations": 43,
-        "accepted_receipt_operations": 43,
-        "earliest_unproved_reference_order": 78,
-        "earliest_unproved_operation_id": "rhad:route@0x40B089",
+        "compiled_operation_instances": 44,
+        "vertically_proved_operations": 44,
+        "accepted_receipt_operations": 44,
+        "earliest_unproved_reference_order": 80,
+        "earliest_unproved_operation_id": "rhad:route@0x40B0D4",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadExistingConditionalRoute vocabulary with "
             "exact per-operation native-body proof and dependency closure"
