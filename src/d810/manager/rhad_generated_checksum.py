@@ -4980,6 +4980,45 @@ _ROW96_SETCC_ROUTE = RhadSetccIndexedTableRoute(
     depends_on=(_ROW95_DIRECT_ROUTE.operation_id,),
 )
 
+_ROW97_CMOV_ROUTE = RhadConditionalRoute(
+    operation_id="rhad:route@0x40B37A",
+    reference_order=97,
+    operation_variant=RhadOperationVariant.CMOV_SELECTED_INDIRECT,
+    reference_symbol="JumpInliner._fixup_cmov",
+    source_block_id="native@0x40B354",
+    source_native_ea=0x40B35A,
+    source_block_anchor_ea=0x40B354,
+    transfer_ea=0x40B37A,
+    predicate_anchor_ea=0x40B373,
+    normalization_start_ea=0x40B373,
+    condition_producer_ea=0x40B365,
+    conditional_select_ea=0x40B373,
+    selected_value_block_id="native@0x40B373",
+    join_block_id="native@0x40B376",
+    observed_predicate_kind=PredicateKind.SGE,
+    predicate_kind=PredicateKind.SLT,
+    true_target_block_id="native@0x40B6C0",
+    false_target_block_id="native@0x40A607",
+    true_target_ea=0x40B6C0,
+    false_target_ea=0x40A607,
+    comparison_constant=0x0BB2D365,
+    owned_corridor_instruction_eas=(
+        0x40B35A,
+        0x40B365,
+        0x40B36B,
+        0x40B36D,
+        0x40B373,
+        0x40B376,
+        0x40B378,
+        0x40B37A,
+    ),
+    imported_closure_block_ids=ACCEPTED_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40A61B, 0x40A68C, 0x40B790),
+    flag_corridor_id="flags-intact@0x40B365",
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_ROW96_SETCC_ROUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -5567,6 +5606,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW94_EXISTING_ROUTE.operation_id,
         _ROW95_DIRECT_ROUTE.operation_id,
         _ROW96_SETCC_ROUTE.operation_id,
+        _ROW97_CMOV_ROUTE.operation_id,
     ),
     template_fragments=(
         RhadGeneratedTemplateFragment(
@@ -7348,6 +7388,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW94_EXISTING_ROUTE,
         _ROW95_DIRECT_ROUTE,
         _ROW96_SETCC_ROUTE,
+        _ROW97_CMOV_ROUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
