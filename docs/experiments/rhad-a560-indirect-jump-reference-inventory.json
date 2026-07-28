@@ -3314,16 +3314,18 @@
     {
       "boundary_exit_eas": [
         4237972,
-        4239858,
+        4239602,
         4239900
       ],
       "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
-        "accepted_commits": [
-          "76232a390",
-          "52c9e0f87",
-          "6c2bff534"
-        ],
+      "accepted_commits": [
+        "76232a390",
+        "52c9e0f87",
+        "6c2bff534",
+        "b6d0322d4",
+        "9312086c4"
+      ],
         "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
@@ -3368,7 +3370,7 @@
         {
           "boundary_exit_eas": [
             4237972,
-            4239858
+            4239602
           ],
           "expected_generated_block_anchor_eas": [
             4237960,
