@@ -5946,15 +5946,21 @@
         4236784,
         4245656
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "fb320e8d0",
+          "6ea3a9cb6"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
       "flag_producer_native_ea": null,
       "imported_closure_block_anchor_eas": [
         4236746,
+        4236764,
+        4236767,
         4236771
       ],
       "operation_id": "rhad:route@0x40AE24",
@@ -5985,10 +5991,14 @@
           ],
           "expected_generated_block_anchor_eas": [
             4236746,
+            4236764,
+            4236767,
             4236771
           ],
           "owned_native_block_entry_eas": [
-            4236746
+            4236746,
+            4236764,
+            4236767
           ],
           "root_ea": 4236746,
           "status": "complete",
