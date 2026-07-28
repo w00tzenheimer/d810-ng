@@ -563,6 +563,37 @@ def _mixed_ledger():
     )
 
 
+def test_conditional_flag_producer_may_precede_the_owned_rewrite_corridor() -> None:
+    compiler = _compiler_module()
+    ledger = _ledger()
+    route = replace(
+        ledger.operations[0],
+        owned_corridor_instruction_eas=(
+            0x40A5F6,
+            0x40A5FE,
+            0x40A601,
+            0x40A605,
+        ),
+    )
+
+    plan = compiler.compile_rhad_reference_fragment(
+        replace(ledger, operations=(route,)),
+        expected_evidence_generation=1,
+    )
+
+    operation = plan.operation(route.operation_id)
+    assert operation.computed_branch_normalization.condition_producer_ea == 0x40A5F0
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40A5F6,
+        0x40A5FE,
+        0x40A601,
+        0x40A605,
+    ]
+
+
 def test_compiler_emits_distinct_direct_route_in_one_reference_batch() -> None:
     compiler = _compiler_module()
 
