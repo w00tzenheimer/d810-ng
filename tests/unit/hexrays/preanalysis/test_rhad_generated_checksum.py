@@ -93,7 +93,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 238
+    assert len(IMPORTED_BLOCK_IDS) == 255
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -144,6 +144,10 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40AAA2,
         0x40AAFD,
         0x40AB31,
+        0x40AB90,
+        0x40ABAA,
+        0x40B17F,
+        0x40B199,
         0x40B0F2,
         0x40ADBE,
         0x40A77E,
@@ -195,6 +199,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40AB15",
         "rhad:route@0x40AB2F",
         "route:rhad-direct@0x40AB74",
+        "rhad:route@0x40AB8E",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -297,6 +302,8 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     row43_envelope = row43.computed_branch_normalization.conditional_select_envelope
     row44 = plan.operation("rhad:route@0x40AB2F")
     row44_envelope = row44.computed_branch_normalization.conditional_select_envelope
+    row46 = plan.operation("rhad:route@0x40AB8E")
+    row46_envelope = row46.computed_branch_normalization.conditional_select_envelope
     operation_topology = direct_sources | {
         selected.source_block_id,
         selected_envelope.selected_value_block_id,
@@ -381,6 +388,9 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         row44.source_block_id,
         row44_envelope.selected_value_block_id,
         row44_envelope.join_block_id,
+        row46.source_block_id,
+        row46_envelope.selected_value_block_id,
+        row46_envelope.join_block_id,
     }
     preserved_sources = set(native_body.preserved_native_transfer_block_ids)
     assert operation_topology.isdisjoint(preserved_sources)
@@ -440,7 +450,6 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40A5F0,
         0x40A9A0,
         0x40AE3E,
-        0x40B17F,
         0x40B1D0,
         0x40B21C,
         0x40B26D,
@@ -2061,6 +2070,106 @@ def test_checksum_producer_compiles_row45_direct_dependency() -> None:
         for operation in batch.operations
         if operation.operation_id == "route:rhad-direct@0x40AB74"
     ).depends_on == ("rhad:route@0x40AB2F",)
+
+
+def test_checksum_producer_compiles_row46_existing_conditional_reference() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("rhad:route@0x40AB8E")
+    normalization = operation.computed_branch_normalization
+    assert normalization is not None
+    assert normalization.predicate_kind is PredicateKind.SLT
+    assert normalization.condition_producer_ea == 0x40AB7C
+    assert normalization.unresolved_transfer_ea == 0x40AB8E
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.CONDITIONAL_TAKEN: "native@0x40AB90",
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40B17F",
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_order"] == 46
+    assert payload["operation_variant"] == "existing_conditional_plus_indirect"
+    assert payload["source_native_ea"] == 0x40AB76
+    assert payload["source_block_anchor_ea"] == 0x40AB84
+    assert payload["join_ea"] == 0x40AB8A
+    assert payload["observed_predicate_kind"] == PredicateKind.SGE.value
+    assert payload["predicate_kind"] == PredicateKind.SLT.value
+    assert payload["comparison_constant"] == 0x456A4274
+    assert payload["true_target_ea"] == 0x40AB90
+    assert payload["false_target_ea"] == 0x40B17F
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40AB76,
+        0x40AB7C,
+        0x40AB82,
+        0x40AB84,
+        0x40AB8A,
+        0x40AB8C,
+        0x40AB8E,
+    ]
+    assert payload["imported_closure_block_ids"] == [
+        "native@0x40AB90",
+        "native@0x40AB9E",
+        "native@0x40ABA4",
+        "native@0x40ABA8",
+        "native@0x40ABAA",
+        "native@0x40ABC4",
+        "native@0x40B17F",
+        "native@0x40B18D",
+        "native@0x40B193",
+        "native@0x40B197",
+        "native@0x40B199",
+        "native@0x40B1B6",
+        "native@0x40B1CA",
+        "native@0x40B1CE",
+        "native@0x40B647",
+        "native@0x40B660",
+        "native@0x40B666",
+    ]
+    assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+    assert next(
+        operation
+        for operation in batch.operations
+        if operation.operation_id == "rhad:route@0x40AB8E"
+    ).depends_on == ("rhad:route@0x40A6D8",)
+
+    true_source = next(
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40AB90
+    )
+    assert true_source.preserved_transfer_exit_map == {
+        0x40ABA8: (0x40A5F0, 0x40ABAA),
+    }
+    true_closure = next(
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40ABAA
+    )
+    assert true_closure.preserved_transfer_exit_map == {
+        0x40ABC4: (0x40A607, 0x40B6C0),
+    }
+    false_source = next(
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40B17F
+    )
+    assert false_source.preserved_transfer_exit_map == {
+        0x40B197: (0x40A5F0, 0x40B199),
+    }
+    false_closure = next(
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40B199
+    )
+    assert false_closure.preserved_transfer_exit_map == {
+        0x40B1CE: (0x40B6C0,),
+        0x40B666: (0x40A607,),
+    }
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
