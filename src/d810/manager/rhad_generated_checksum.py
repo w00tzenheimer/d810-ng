@@ -45,6 +45,7 @@ from d810.transforms.rhad_reference_compiler import (
     RhadSetccIndexedTableRoute,
     RhadSetccIndexedTableProofArtifact,
     compile_rhad_reference_fragment,
+    rhad_reference_operation_identity_payload,
 )
 
 
@@ -933,10 +934,9 @@ class RhadGeneratedReferenceBatch:
     @property
     def aggregate_program_identity(self) -> str:
         payload = {
-            "direct_reference_identities": [
-                operation.reference_identity_payload
+            "operation_reference_identities": [
+                rhad_reference_operation_identity_payload(operation)
                 for operation in self.operations
-                if isinstance(operation, RhadDirectRoute)
             ],
             "function_ea": int(self.function_ea),
             "input_sha256": self.input_sha256.lower(),
