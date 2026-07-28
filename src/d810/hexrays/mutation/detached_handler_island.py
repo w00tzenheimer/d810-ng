@@ -5804,8 +5804,24 @@ def _capture_detached_snippet_template(
         tail = source.tail
         if (
             tail is None
-            or int(tail.opcode) != int(ida_hexrays.m_icall)
             or int(tail.ea) not in preserved_unresolved_transfers
+        ):
+            continue
+        if (
+            int(tail.opcode) == int(ida_hexrays.m_ijmp)
+            and int(source.nsucc()) == 0
+        ):
+            synthetic_serial = int(mba.qty) + len(
+                synthesized_preserved_carrier_by_source_serial
+            )
+            synthesized_preserved_carrier_by_source_serial[int(source.serial)] = (
+                synthetic_serial,
+                int(tail.ea),
+            )
+            observed_preserved_unresolved_transfers.add(int(tail.ea))
+            continue
+        if (
+            int(tail.opcode) != int(ida_hexrays.m_icall)
             or int(source.nsucc()) != 1
         ):
             continue
@@ -6222,6 +6238,8 @@ def _capture_detached_snippet_template(
 
         template_block_type = int(block.type)
         template_block_flags = int(block.flags)
+        if synthesized_carrier is not None:
+            template_block_type = int(ida_hexrays.BLT_1WAY)
         if proven_internal_target_serial is not None:
             tail = instructions[-1] if instructions else None
             explicit_resolver_fallthrough_indexes = (

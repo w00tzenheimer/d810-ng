@@ -4577,6 +4577,64 @@ def test_generated_capture_synthesizes_carrier_for_live_icall_fallthrough(
     assert carrier.external_successor_eas == (0x40B6C0,)
 
 
+def test_generated_capture_synthesizes_carrier_for_zero_successor_ijmp(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    generated_templates: dict[tuple[int, int], object] = {}
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_GENERATED_REFERENCE_SNIPPET_TEMPLATES",
+        generated_templates,
+    )
+    function_ea = 0x40A560
+    target_ea = 0x40AE3E
+    transfer_ea = 0x40AE89
+    source = _MBA(
+        (
+            _Block(
+                0,
+                target_ea,
+                (_Instruction(ida_hexrays.m_nop, target_ea),),
+                (1,),
+            ),
+            _Block(
+                1,
+                0x40AE85,
+                (
+                    _Instruction(ida_hexrays.m_nop, 0x40AE85),
+                    _Instruction(ida_hexrays.m_ijmp, transfer_ea),
+                ),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    assert detached_handler_island.capture_generated_reference_snippet_template(
+        function_ea,
+        target_ea,
+        source,
+        ((target_ea, 0x40AE8B),),
+        owned_block_entry_eas=(target_ea, 0x40AE85, transfer_ea),
+        direct_boundary_routes=(),
+        preserved_unresolved_transfer_exits={
+            transfer_ea: (0x40A607, 0x40B6C0),
+        },
+    )
+    template = generated_templates[(function_ea, target_ea)]
+    source_block = next(
+        block for block in template.blocks if block.native_entry_ea == 0x40AE85
+    )
+    carrier = next(
+        block for block in template.blocks if block.native_entry_ea == transfer_ea
+    )
+    assert source_block.block_type == ida_hexrays.BLT_1WAY
+    assert source_block.successor_serials == (carrier.source_serial,)
+    assert source_block.external_successor_eas == (0,)
+    assert carrier.instructions[-1].opcode == ida_hexrays.m_ret
+    assert carrier.external_successor_eas == (0x40A607, 0x40B6C0)
+
+
 def test_recursively_rebases_all_stack_operand_shapes(monkeypatch) -> None:
     _install_runtime_fakes(monkeypatch)
     function_ea = 0x40A560
