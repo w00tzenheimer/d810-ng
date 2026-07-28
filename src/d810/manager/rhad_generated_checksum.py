@@ -3816,14 +3816,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40AB90,
-            owned_ranges=(
-                (0x40AB90, 0x40AB9E),
-                (0x40AB9E, 0x40ABA4),
-                (0x40ABA4, 0x40ABAA),
-                (0x40ABAA, 0x40ABC0),
-                (0x40ABBD, 0x40ABC0),
-                (0x40ABC0, 0x40ABC6),
-            ),
+            owned_ranges=((0x40AB90, 0x40ABC6),),
             owned_block_entry_eas=(
                 0x40AB90,
                 0x40AB9E,
