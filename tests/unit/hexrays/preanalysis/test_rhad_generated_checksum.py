@@ -94,7 +94,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 424
+    assert len(IMPORTED_BLOCK_IDS) == 426
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -5869,6 +5869,8 @@ def test_checksum_producer_compiles_row96_setcc_table_dependency() -> None:
     assert payload["imported_closure_block_ids"] == [
         "native@0x40B342",
         "native@0x40B354",
+        "native@0x40B373",
+        "native@0x40B376",
         "native@0x40B37A",
     ]
     assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
