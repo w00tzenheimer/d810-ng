@@ -4876,6 +4876,33 @@ def test_row86_inventory_corridor_includes_flag_producer() -> None:
     ]
 
 
+def test_row88_inventory_corridor_includes_flag_producer() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row88 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 88
+    )
+
+    assert row88["flag_producer_native_ea"] == 0x40B1D6
+    assert row88["owned_corridor_instruction_eas"] == [
+        0x40B1D0,
+        0x40B1D6,
+        0x40B1DC,
+        0x40B1DE,
+        0x40B1E4,
+        0x40B1E6,
+        0x40B1E8,
+    ]
+
+
 def test_checksum_producer_compiles_row86_existing_conditional_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
