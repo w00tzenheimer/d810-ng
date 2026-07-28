@@ -6542,6 +6542,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row97 = next(
         operation for operation in operations if operation["reference_order"] == 97
     )
+    row98 = next(
+        operation for operation in operations if operation["reference_order"] == 98
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -8166,6 +8169,14 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "accepted_commits": ["9e648564f", "9bc350b73", "850518a72"],
         "status": "accepted_generated_c6",
     }
+    assert row98["operation_id"] == "rhad:route@0x40B394"
+    assert row98["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
+    assert row98["current_generated_proof"] == {
+        "accepted_commits": ["c4551f857", "b1ee2cfd7", "47fae218d"],
+        "status": "accepted_generated_c6",
+    }
 
 
 def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() -> None:
@@ -8200,7 +8211,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("850518a72fcbf9aa3d12f3eb16e5368a01e111be")
+    assert summary["accepted_code_sha"] == ("47fae218d2aa69c5f07c49df62a972ddbeb405f8")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
     assert (
@@ -8238,11 +8249,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 52,
-        "vertically_proved_operations": 52,
-        "accepted_receipt_operations": 52,
-        "earliest_unproved_reference_order": 98,
-        "earliest_unproved_operation_id": "rhad:route@0x40B394",
+        "compiled_operation_instances": 53,
+        "vertically_proved_operations": 53,
+        "accepted_receipt_operations": 53,
+        "earliest_unproved_reference_order": 99,
+        "earliest_unproved_operation_id": "rhad:route@0x40B3AE",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadExistingConditionalRoute vocabulary with "
             "exact per-operation native-body proof and dependency closure"
