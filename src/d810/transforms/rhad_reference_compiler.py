@@ -966,6 +966,7 @@ class RhadSetccIndexedTableRoute:
             raise TypeError("Rhad setcc table route requires a portable predicate")
         if self.predicate_kind not in {
             PredicateKind.EQ,
+            PredicateKind.NE,
             PredicateKind.SLT,
             PredicateKind.SGE,
         }:

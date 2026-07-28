@@ -2093,6 +2093,23 @@ def test_compiler_accepts_typed_setcc_planned_helper_without_adjacency() -> None
     )
 
 
+def test_compiler_accepts_setcc_not_equal_predicate_kind() -> None:
+    compiler = _compiler_module()
+    ledger = _fifth_shape_ledger()
+    *dependencies, selected = ledger.operations
+    selected = replace(selected, predicate_kind=PredicateKind.NE)
+
+    plan = compiler.compile_rhad_reference_fragment(
+        replace(ledger, operations=(*dependencies, selected)),
+        expected_evidence_generation=1,
+    )
+
+    assert (
+        plan.operation(selected.operation_id).computed_branch_normalization.predicate_kind
+        is PredicateKind.NE
+    )
+
+
 def test_compiler_rejects_unsupported_setcc_predicate_kind() -> None:
     compiler = _compiler_module()
     ledger = _fifth_shape_ledger()
@@ -2101,4 +2118,4 @@ def test_compiler_rejects_unsupported_setcc_predicate_kind() -> None:
     with pytest.raises(
         compiler.RhadCompilerRejection, match="supported typed predicate"
     ):
-        replace(selected, predicate_kind=PredicateKind.NE)
+        replace(selected, predicate_kind=PredicateKind.ULT)
