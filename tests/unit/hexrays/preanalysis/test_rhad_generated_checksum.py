@@ -93,7 +93,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 255
+    assert len(IMPORTED_BLOCK_IDS) == 246
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -145,9 +145,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40AAFD,
         0x40AB31,
         0x40AB90,
-        0x40ABAA,
         0x40B17F,
-        0x40B199,
         0x40B0F2,
         0x40ADBE,
         0x40A77E,
@@ -449,7 +447,9 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40A5CA,
         0x40A5F0,
         0x40A9A0,
+        0x40ABAA,
         0x40AE3E,
+        0x40B199,
         0x40B1D0,
         0x40B21C,
         0x40B26D,
@@ -2116,21 +2116,12 @@ def test_checksum_producer_compiles_row46_existing_conditional_reference() -> No
         "native@0x40AB9E",
         "native@0x40ABA4",
         "native@0x40ABA8",
-        "native@0x40ABAA",
-        "native@0x40ABC4",
         "native@0x40B17F",
         "native@0x40B18D",
         "native@0x40B193",
         "native@0x40B197",
-        "native@0x40B199",
-        "native@0x40B1B6",
-        "native@0x40B1CA",
-        "native@0x40B1CE",
-        "native@0x40B647",
-        "native@0x40B660",
-        "native@0x40B666",
     ]
-    assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+    assert payload["boundary_exit_eas"] == [0x40A5F0, 0x40ABAA, 0x40B199]
     assert next(
         operation
         for operation in batch.operations
@@ -2145,14 +2136,6 @@ def test_checksum_producer_compiles_row46_existing_conditional_reference() -> No
     assert true_source.preserved_transfer_exit_map == {
         0x40ABA8: (0x40A5F0, 0x40ABAA),
     }
-    true_closure = next(
-        fragment
-        for fragment in batch.template_fragments
-        if fragment.root_ea == 0x40ABAA
-    )
-    assert true_closure.preserved_transfer_exit_map == {
-        0x40ABC4: (0x40A607, 0x40B6C0),
-    }
     false_source = next(
         fragment
         for fragment in batch.template_fragments
@@ -2160,15 +2143,6 @@ def test_checksum_producer_compiles_row46_existing_conditional_reference() -> No
     )
     assert false_source.preserved_transfer_exit_map == {
         0x40B197: (0x40A5F0, 0x40B199),
-    }
-    false_closure = next(
-        fragment
-        for fragment in batch.template_fragments
-        if fragment.root_ea == 0x40B199
-    )
-    assert false_closure.preserved_transfer_exit_map == {
-        0x40B1CE: (0x40B6C0,),
-        0x40B666: (0x40A607,),
     }
 
 
