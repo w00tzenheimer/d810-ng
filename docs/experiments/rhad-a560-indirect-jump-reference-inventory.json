@@ -2374,8 +2374,7 @@
         }
       ],
       "transfer_native_ea": 4237543,
-      "unavailable_closure_exit_eas": [
-      ]
+      "unavailable_closure_exit_eas": []
     },
     {
       "boundary_exit_eas": [
@@ -4566,16 +4565,25 @@
     },
     {
       "boundary_exit_eas": [
-        4236784
+        4236784,
+        4238448
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "31d88d834",
+          "5ae27b590"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
       "flag_producer_native_ea": 4238402,
       "imported_closure_block_anchor_eas": [
+        4238422,
+        4238436,
+        4238442,
+        4238446,
         4239900,
         4239914,
         4239920,
@@ -4585,6 +4593,7 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "owned_corridor_instruction_eas": [
         4238397,
+        4238402,
         4238408,
         4238410,
         4238416,
@@ -4608,14 +4617,24 @@
       "source_native_ea": 4238397,
       "target_rooted_closures": [
         {
-          "boundary_exit_eas": [],
-          "expected_generated_block_anchor_eas": [],
-          "owned_native_block_entry_eas": [],
+          "boundary_exit_eas": [
+            4236784,
+            4238448
+          ],
+          "expected_generated_block_anchor_eas": [
+            4238422,
+            4238436,
+            4238442,
+            4238446
+          ],
+          "owned_native_block_entry_eas": [
+            4238422,
+            4238436,
+            4238442
+          ],
           "root_ea": 4238422,
-          "status": "root_unavailable_in_current_portable_source_plan",
-          "unavailable_exit_eas": [
-            4238422
-          ]
+          "status": "complete",
+          "unavailable_exit_eas": []
         },
         {
           "boundary_exit_eas": [
@@ -4639,7 +4658,6 @@
       ],
       "transfer_native_ea": 4238420,
       "unavailable_closure_exit_eas": [
-        4238422
       ]
     },
     {
