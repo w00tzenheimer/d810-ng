@@ -3082,6 +3082,10 @@ def test_checksum_producer_compiles_row61_existing_conditional_dependency() -> N
         "native@0x40B340",
     ]
     assert payload["boundary_exit_eas"] == [0x40A5F0, 0x40ADA2, 0x40B342]
+    assert {
+        "native@0x40AD88",
+        "native@0x40B32C",
+    }.issubset(batch.native_body_entry_block_ids)
     assert next(
         operation
         for operation in batch.operations
