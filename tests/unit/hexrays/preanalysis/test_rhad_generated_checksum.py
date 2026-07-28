@@ -5631,8 +5631,13 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     ]
     assert row75["unavailable_closure_exit_eas"] == []
     assert row76["operation_id"] == "rhad:route@0x40B03C"
-    assert row76["current_compiler_support"] == "unsupported_typed_shape"
-    assert row76["current_generated_proof"] == {"status": "unproved"}
+    assert row76["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
+    assert row76["current_generated_proof"] == {
+        "accepted_commits": ["fe16d3911", "e04ef319c"],
+        "status": "accepted_generated_c6",
+    }
     assert row76["owned_corridor_instruction_eas"] == [
         0x40B024,
         0x40B02A,
@@ -5705,7 +5710,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("5c55016042c9d625635a7e3400354846f018b896")
+    assert summary["accepted_code_sha"] == ("e04ef319c4d1ce50870ef482751448e0404d8ff4")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
     assert (
@@ -5743,11 +5748,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 42,
-        "vertically_proved_operations": 42,
-        "accepted_receipt_operations": 42,
-        "earliest_unproved_reference_order": 76,
-        "earliest_unproved_operation_id": "rhad:route@0x40B03C",
+        "compiled_operation_instances": 43,
+        "vertically_proved_operations": 43,
+        "accepted_receipt_operations": 43,
+        "earliest_unproved_reference_order": 78,
+        "earliest_unproved_operation_id": "rhad:route@0x40B089",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadExistingConditionalRoute vocabulary with "
             "exact per-operation native-body proof and dependency closure"
