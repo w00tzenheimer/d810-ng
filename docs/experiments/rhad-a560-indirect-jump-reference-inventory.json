@@ -8275,9 +8275,13 @@
       "boundary_exit_eas": [
         4241296
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "bc129ece5",
+          "cb775189a"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
