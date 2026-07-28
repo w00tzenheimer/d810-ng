@@ -2851,6 +2851,156 @@ def test_generated_graph_free_realizer_binds_prepared_setcc_table_conditional(
     ]
 
 
+def test_generated_setcc_branch_opcode_accepts_typed_equality_evidence() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=(
+                "sha256:2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+            ),
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+    operation = plan.operation("rhad:route@0x40AE3C")
+    normalization = operation.computed_branch_normalization
+
+    assert normalization is not None
+    assert normalization.predicate_kind is PredicateKind.EQ
+    assert sfb._setcc_indexed_table_branch_opcode(normalization) == int(
+        ida_hexrays.m_jnz
+    )
+
+
+def test_generated_setcc_planned_fallthrough_uses_shared_semantic_edge_participant(
+    monkeypatch,
+) -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=(
+                "sha256:2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+            ),
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+    operation = plan.operation("rhad:route@0x40AE3C")
+    edge_by_role = {edge.role: edge for edge in operation.edges}
+    taken_id = edge_by_role[SemanticEdgeRole.CONDITIONAL_TAKEN].target_block_id
+    fallthrough_id = edge_by_role[
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+    ].target_block_id
+    source = _Block(0, start=0x40AE26, block_type=ida_hexrays.BLT_NONE)
+    unrelated_next = _Block(1, start=0x40AE63, block_type=ida_hexrays.BLT_NONE)
+    taken = _Block(2, start=0x40AE3E, block_type=ida_hexrays.BLT_NONE)
+    fallthrough = _Block(3, start=0x40A5F0, block_type=ida_hexrays.BLT_NONE)
+    branch = _Instruction(ida_hexrays.m_jnz, 0x40AE2E)
+    branch.l.make_reg(1, 1)
+    branch.r.make_number(0, 1, 0x40AE2E)
+    source.head = source.tail = branch
+    _Mba((source, unrelated_next, taken, fallthrough))
+
+    proxies = {
+        block_id: sfb.LogicalBlockProxy(
+            proxy_token=f"proxy:{block_id}",
+            session_id="setcc-planned-helper-test",
+            stable_identity=None,
+            provenance=BlockHandleProvenance.CREATED_SYNTHETIC,
+            generation=0,
+            published=None,
+        )
+        for block_id in (
+            operation.source_block_id,
+            taken_id,
+            fallthrough_id,
+            f"fallthrough-helper:{operation.operation_id}",
+        )
+    }
+
+    def binding(block_id: str, block: _Block):
+        return SimpleNamespace(
+            block_id=block_id,
+            block=block,
+            proxy=proxies[block_id],
+            version=SimpleNamespace(handle=f"handle:{block_id}"),
+        )
+
+    state = sfb.SemanticFragmentBackendState(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        bindings={
+            operation.source_block_id: binding(operation.source_block_id, source),
+            taken_id: binding(taken_id, taken),
+            fallthrough_id: binding(fallthrough_id, fallthrough),
+        },
+        instruction_origins_by_block_id={
+            operation.source_block_id: {0x40AE2E: 0x40AE2E},
+        },
+    )
+    helper_id = f"fallthrough-helper:{operation.operation_id}"
+    helper_ref = PlanBlockRef(plan.plan_id, helper_id)
+    helper_version = SimpleNamespace(handle="handle:planned-helper")
+    realized: list[tuple[object, object]] = []
+    identity_index = SimpleNamespace(
+        logical_proxy_for_handle=lambda handle: (
+            proxies[helper_id]
+            if handle == helper_version.handle
+            else None
+        )
+    )
+    gateway = SimpleNamespace(active=True, identity_index=identity_index)
+
+    def realize_semantic_edge(logical_operation, *, helper_plan_ref=None):
+        realized.append((logical_operation, helper_plan_ref))
+        return helper_version
+
+    modifier = SimpleNamespace(
+        _mutation_gateway=gateway,
+        _realize_semantic_edge_operation=realize_semantic_edge,
+    )
+    step = PatchFragmentOperation(
+        source_ref=PlanBlockRef(plan.plan_id, operation.source_block_id),
+        target_refs=tuple(
+            PlanBlockRef(plan.plan_id, edge.target_block_id) for edge in operation.edges
+        ),
+        operation=operation,
+        fallthrough_helper_id=helper_id,
+        fallthrough_helper_ref=helper_ref,
+    )
+    monkeypatch.setattr(
+        sfb,
+        "_live_block_for_binding",
+        lambda _modifier, runtime_binding: runtime_binding.block,
+    )
+
+    sfb._realize_generated_graph_free_operations(
+        modifier,
+        plan,
+        state,
+        (step,),
+    )
+
+    assert len(realized) == 1
+    logical_operation, actual_helper_ref = realized[0]
+    assert actual_helper_ref == helper_ref
+    assert logical_operation.source is proxies[operation.source_block_id]
+    assert logical_operation.predicate_anchor_ea == 0x40AE2E
+    assert tuple((edge.role, edge.target) for edge in logical_operation.edges) == (
+        (SemanticEdgeRole.CONDITIONAL_TAKEN, proxies[taken_id]),
+        (SemanticEdgeRole.CONDITIONAL_FALLTHROUGH, proxies[fallthrough_id]),
+    )
+    assert state.binding(helper_id).version is helper_version
+    assert state.staged_block_ids == [helper_id]
+    assert state.fallthrough_helpers == [
+        sfb.ProjectedFallthroughHelper(
+            helper_block_id=helper_id,
+            operation_id=operation.operation_id,
+            source_block_id=operation.source_block_id,
+            semantic_target_block_id=fallthrough_id,
+        )
+    ]
+    assert source.nextb is unrelated_next
+
+
 def test_generated_setcc_preflight_rejects_wrong_physical_fallthrough_before_write(
     monkeypatch,
 ) -> None:
@@ -3000,6 +3150,7 @@ def test_generated_graph_free_observer_accepts_published_setcc_table_route(
             )
         ),
         operations=(operation,),
+        native_bodies=(),
     )
     monkeypatch.setattr(
         sfb,
