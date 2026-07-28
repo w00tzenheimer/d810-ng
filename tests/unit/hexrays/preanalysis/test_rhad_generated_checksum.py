@@ -4485,6 +4485,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row77 = next(
         operation for operation in operations if operation["reference_order"] == 77
     )
+    row78 = next(
+        operation for operation in operations if operation["reference_order"] == 78
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -5748,6 +5751,29 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         0x40B6D4,
     ]
     assert row77["unavailable_closure_exit_eas"] == []
+    assert row78["operation_id"] == "rhad:route@0x40B089"
+    assert row78["current_compiler_support"] == "unsupported_typed_shape"
+    assert row78["current_generated_proof"] == {"status": "unproved"}
+    assert row78["owned_corridor_instruction_eas"] == [
+        0x40B071,
+        0x40B077,
+        0x40B07D,
+        0x40B07F,
+        0x40B085,
+        0x40B087,
+        0x40B089,
+    ]
+    assert row78["source_block_anchor_ea"] == 0x40B085
+    assert row78["flag_producer_native_ea"] == 0x40B077
+    assert row78["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+    assert row78["imported_closure_block_anchor_eas"] == [
+        0x40A5F0,
+        0x40A605,
+        0x40B08B,
+        0x40B094,
+        0x40B0BA,
+    ]
+    assert row78["unavailable_closure_exit_eas"] == []
 
 
 def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() -> None:
