@@ -51,6 +51,55 @@ def test_aggregate_identity_binds_typed_direct_reference_evidence() -> None:
     assert changed_batch.aggregate_program_identity != batch.aggregate_program_identity
 
 
+def test_direct_route_maturity_payload_persists_semantic_target_contract() -> None:
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+    route = next(
+        operation
+        for operation in batch.operations
+        if operation.operation_id == "route:rhad-direct@0x40B519"
+    )
+
+    live = generated_reference._direct_route_maturity_payload(
+        route=route,
+        direct_target_ea=0x40A607,
+        direct_indirect=False,
+        direct_source_present=True,
+        source_topology_reachable=True,
+        direct_targets={0x40A607},
+    )
+    retired = generated_reference._direct_route_maturity_payload(
+        route=route,
+        direct_target_ea=0x40A607,
+        direct_indirect=False,
+        direct_source_present=False,
+        source_topology_reachable=False,
+        direct_targets=set(),
+    )
+
+    assert live == {
+        "operation_id": "route:rhad-direct@0x40B519",
+        "operation_category": "direct_route",
+        "operation_variant": "simple_indirect_jump",
+        "source_present": True,
+        "source_topology_reachable": True,
+        "source_topology_retired": False,
+        "indirect_transfer_present": False,
+        "target_eas": [0x40A607],
+        "semantic_target_eas": [0x40A607],
+        "delivery_target_eas": [0x40A607],
+        "semantic_targets_survive": True,
+        "boundary_exit_eas": [0x40A61B, 0x40A68C],
+        "passed": True,
+    }
+    assert retired["source_topology_retired"] is True
+    assert retired["target_eas"] == []
+    assert retired["semantic_target_eas"] == [0x40A607]
+    assert retired["delivery_target_eas"] == [0x40A607]
+    assert retired["semantic_targets_survive"] is True
+    assert retired["passed"] is True
+
+
 def test_aggregate_identity_binds_conditional_boundary_evidence() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None

@@ -8042,6 +8042,37 @@ def _typed_delivery_block_closure(
     return tuple(closure)
 
 
+def _direct_route_maturity_payload(
+    *,
+    route: RhadDirectRoute,
+    direct_target_ea: int,
+    direct_indirect: bool,
+    direct_source_present: bool,
+    source_topology_reachable: bool,
+    direct_targets: set[int],
+) -> dict[str, object]:
+    """Persist the complete typed semantic contract for one direct route."""
+    expected_targets = {int(direct_target_ea)}
+    semantic_targets_survive = bool(
+        not source_topology_reachable or direct_targets == expected_targets
+    )
+    return {
+        "operation_id": route.operation_id,
+        "operation_category": route.category.value,
+        "operation_variant": route.operation_variant.value,
+        "source_present": bool(direct_source_present),
+        "source_topology_reachable": bool(source_topology_reachable),
+        "source_topology_retired": not source_topology_reachable,
+        "indirect_transfer_present": bool(direct_indirect),
+        "target_eas": sorted(direct_targets),
+        "semantic_target_eas": sorted(expected_targets),
+        "delivery_target_eas": sorted(expected_targets),
+        "semantic_targets_survive": semantic_targets_survive,
+        "boundary_exit_eas": sorted(route.boundary_exit_eas),
+        "passed": not direct_indirect and semantic_targets_survive,
+    }
+
+
 def _reference_batch_observation(
     mba: object,
     batch: RhadGeneratedReferenceBatch,
@@ -8269,21 +8300,15 @@ def _reference_batch_observation(
                 or int(direct_source.serial) in reachable_block_serials
             )
         )
-        direct_passed = not direct_indirect and (
-            direct_targets == {direct_target_ea} if source_topology_reachable else True
-        )
         operation_observations.append(
-            {
-                "operation_id": direct_route.operation_id,
-                "operation_category": direct_route.category.value,
-                "source_present": direct_source is not None,
-                "source_topology_reachable": source_topology_reachable,
-                "source_topology_retired": not source_topology_reachable,
-                "indirect_transfer_present": direct_indirect,
-                "target_eas": sorted(direct_targets),
-                "boundary_exit_eas": sorted(direct_route.boundary_exit_eas),
-                "passed": direct_passed,
-            }
+            _direct_route_maturity_payload(
+                route=direct_route,
+                direct_target_ea=direct_target_ea,
+                direct_indirect=direct_indirect,
+                direct_source_present=direct_source is not None,
+                source_topology_reachable=source_topology_reachable,
+                direct_targets=direct_targets,
+            )
         )
 
     for conditional_route in (
