@@ -8095,6 +8095,7 @@
       "operation_variant": "cmov_selected_indirect",
       "owned_corridor_instruction_eas": [
         4239944,
+        4239958,
         4239964,
         4239966,
         4239972,
