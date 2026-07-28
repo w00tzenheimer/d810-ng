@@ -1,5 +1,9 @@
 # Rhad A560 Whole-Function GENERATED Restoration Plan
 
+> **For agentic workers:** Execute this plan inline in the existing worktree;
+> do not delegate it because each accepted row mutates the same ordered program
+> and acceptance ledger. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
 > **Execution:** Continue inline in the existing
 > `/Users/mahmoud/src/idapro/d810/.worktrees/lrea-portable-cfg-integration`
 > worktree. Track every checkpoint in `lrea-t5gy`; do not restart, replace, or
@@ -9,20 +13,24 @@
 at actual `MMAT_GENERATED`, reach `CMAT_FINAL`, and prove exact C6 semantics in
 one all-or-nothing transaction through the accepted producer and coordinator.
 
-**Architecture:** A deterministic, serial-free reference-program manifest owns
-all 228 indirect-jump rewrites, constant materializations, and dispatcher-state
-elimination in that order. The pure reference compiler lowers dependency-closed
-manifest operations to immutable `FragmentPlan` and current `PatchPlan`
-obligations. The accepted PREOPT template preparation, final GENERATED binding,
-`MbaMutationGateway`, and shared transaction coordinator publish the complete
-program once. SQLite is the primary proof authority from reference identity
-through committed receipt, maturity observations, and `CMAT_FINAL`.
+**Architecture:** A deterministic, serial-free Rhad GENERATED manifest owns
+every Rhad-compiled operation exactly once. A separate whole-function semantic-
+obligation ledger owns every reference effect exactly once, including effects
+discharged by native Hex-Rays, existing D810 instruction optimizers, the
+existing D810 state-machine unflattener, or a new typed residual contract when
+an exact remaining failure proves one necessary. The pure reference compiler
+lowers dependency-closed Rhad operations to immutable `FragmentPlan` and current
+`PatchPlan` obligations. The accepted PREOPT template preparation, final
+GENERATED binding, `MbaMutationGateway`, and shared transaction coordinator
+publish the Rhad program. SQLite is the primary proof authority from both
+identities through committed receipts, maturity observations, existing-pass
+discharge evidence, and `CMAT_FINAL`.
 
 **Tech stack:** Python 3.13, pytest, IDA/Hex-Rays 9.3, SQLite diagnostics,
 ast-grep, import-linter, graphify, tk, and the pinned Rhad reference checkout at
 commit `21b0d4783703bc4fb6910cfae51d92cd683d2c65`.
 
-## Non-negotiable boundaries
+## Global Constraints
 
 - Scope is only exact whole-function A560 C6. Do not begin C8B0, CDA0, D200,
   four-function integration, or complete architecture cleanup.
@@ -41,6 +49,14 @@ commit `21b0d4783703bc4fb6910cfae51d92cd683d2c65`.
   continuation after poison.
 - Every unsupported or ambiguous operation rejects before live mutation with a
   typed first failed obligation.
+- Preserve reference phase order: indirect-jump reconstruction, constant
+  materialization, then dispatcher-state elimination. Dependencies may point
+  only within the same or an earlier phase.
+- Do not claim whole-function parity from the Rhad GENERATED manifest alone.
+  Exact A560 C6 requires exact discharge parity in the separate semantic ledger.
+- Existing Hex-Rays and configured D810 passes receive first right of refusal
+  for constant materialization and dispatcher elimination. Do not duplicate an
+  exactly discharged effect in the Rhad GENERATED producer.
 - Use SQLite before log grep. Every block serial in evidence must carry an EA
   anchor. Commit each logical vocabulary, operation-data, runtime, diagnostic,
   regression, and proof slice separately.
@@ -154,6 +170,19 @@ commit `21b0d4783703bc4fb6910cfae51d92cd683d2c65`.
 - Modify: `tests/system/e2e/test_rhad_generated_checksum_publication.py`
 - Modify: `docs/experiments/rhad-a560-indirect-jump-coverage-summary.json`
 
+- [x] Preserve the accepted prefix through row 103: 99/228 compiled and
+  published operations, aggregate identity
+  `sha256:9febc67b5c58404355f1ecf929ffcdf15a8fc040c39825cb9b49b949d1133db2`,
+  accepted DB
+  `.tmp/logs/000000000040a560_accepted_271_row103_direct.diag.sqlite3`, and
+  permanent `0x40A605` regression.
+- [ ] Compile row 104 `rhad:route@0x40B519` as the next data-only
+  `RhadDirectRoute`: source `0x40A936`, owner `0x40B50D`, transfer `0x40B519`,
+  target `0x40A607`, exact nine-instruction split corridor, five-block imported
+  closure, exits `0x40A61B`/`0x40A68C`, and dependency row 103. First prove its
+  complete corridor is owned by the already accepted native body rooted at
+  `0x40A903`; add no new producer, coordinator, gateway, transaction, template,
+  or import path unless RED evidence proves a typed contract is missing.
 - [ ] Apply each proved shape data-first to consecutive reference rows, never
   skipping an unmet dependency. At every distinct realization subshape, stop,
   write a focused RED contract test, add only the missing typed discriminator,
@@ -167,51 +196,71 @@ commit `21b0d4783703bc4fb6910cfae51d92cd683d2c65`.
 - [ ] Commit each distinct vocabulary slice separately from bulk operation data
   and its diagnostic receipt.
 
-## Phase 2: Constant materialization
+## Phase 2: Constant-materialization discharge
 
 **Files:**
 
-- Modify: `src/d810/transforms/fragment_plan.py`
-- Modify: `src/d810/transforms/rhad_reference_compiler.py`
-- Modify: `src/d810/manager/rhad_generated_checksum.py`
+- Create: deterministic constant-obligation inventory and semantic-ledger data
+- Modify only if an exact residual failure requires it:
+  `src/d810/transforms/fragment_plan.py`
+- Modify only if an exact residual failure requires it:
+  `src/d810/transforms/rhad_reference_compiler.py`
+- Modify only if an exact residual failure requires it:
+  `src/d810/manager/rhad_generated_checksum.py`
 - Modify focused unit/runtime/E2E tests
 - Modify: `docs/experiments/rhad-a560-reference-program-summary.json`
 
-- [ ] Add immutable typed evidence for every manifest constant shape in pinned
-  reference order: `mov`, `movzx`, `add`, `sub`, `sbb`, and `xor` absolute-memory
-  loads, with exact width, byte order, source address, native value, destination,
-  operation semantics, ownership, and dependencies.
-- [ ] For each distinct shape, observe RED, implement the portable compiler
-  contract, prove zero-write rejection for unsupported width/opcode/aliasing, and
-  realize it only through the current plan/preflight/coordinator path.
-- [ ] Publish constants after all 228 indirect routes in the same program
-  transaction. Persist compiled identities and receipts; prove exact constant
-  effects against native/reference evaluation.
-- [ ] Finish only when every constant operation in the generated manifest is
-  compiled, published, observed, and semantically matched. Commit vocabulary,
-  data, runtime, and proof separately.
+- [ ] Inventory every reference `mov`, `movzx`, `add`, `sub`, `sbb`, and `xor`
+  constant operation in pinned reference order. Persist the instruction and
+  operand path, source-memory identity, source/result widths, extension or
+  truncation, immediate value, carry input, flag equivalence, dependencies, and
+  exact semantic oracle.
+- [ ] Run a cache-disabled integrated A560 canary with normal configured
+  instruction optimization rules. Record whether native Hex-Rays or an existing
+  D810 constant/subtree-folding pass discharges each obligation, with before and
+  after semantic identities and the maturity of discharge.
+- [ ] Mark an exactly discharged obligation once in the semantic ledger and do
+  not add it to the Rhad GENERATED manifest. Reject duplicate responsibility.
+- [ ] For each remaining exact failure, record the typed first failed
+  obligation, prove configuration/ordering is not the cause, then use TDD to add
+  the smallest typed residual contract with strict mismatch rejection and proof
+  through its legitimately owned maturity and `CMAT_FINAL`.
+- [ ] Finish only when reference/discharged counts match exactly, no obligation
+  is unsupported, and no effect has duplicate realizations. Commit inventory,
+  existing-pass evidence, residual vocabulary/runtime, and proof separately.
 
-## Phase 3: Dispatcher-state elimination
+## Phase 3: Dispatcher-elimination discharge
 
 **Files:**
 
-- Modify: `src/d810/transforms/fragment_plan.py`
-- Modify: `src/d810/transforms/rhad_reference_compiler.py`
-- Modify: `src/d810/manager/rhad_generated_checksum.py`
+- Create: deterministic dispatcher-obligation inventory and semantic-ledger data
+- Modify only if an exact residual failure requires it:
+  `src/d810/transforms/fragment_plan.py`
+- Modify only if an exact residual failure requires it:
+  `src/d810/transforms/rhad_reference_compiler.py`
+- Modify only if an exact residual failure requires it:
+  `src/d810/manager/rhad_generated_checksum.py`
 - Modify focused unit/runtime/E2E tests
 - Modify: `docs/experiments/rhad-a560-reference-program-summary.json`
 
-- [ ] Add typed reference operations for simple state routes, cmov-selected
-  state, prior-branch state, and stack-memory-derived state predicates. Persist
-  producer/consumer/corridor/targets/ownership/dependencies and exact state
-  semantics; do not infer intent from live MBA topology.
-- [ ] Prove fragment-atomic rejection for any non-state use-def severance while
-  allowing expected dispatcher state-slot plumbing.
-- [ ] Compile and publish manifest operations in order after indirect routes and
-  constants. Preserve profile scope and never apply OLLVM guards to Rhad.
-- [ ] Prove dispatcher entry/state blocks are superseded, required side-effect
-  and return topology remains reachable, and no dispatcher stub or `JUMPOUT`
-  survives. Commit each vocabulary/runtime/data/proof slice separately.
+- [ ] Inventory every immediate, cmov-selected, earlier-conditional, and memory-
+  derived state route plus dispatcher entry/egress, cleanup, terminal, and return
+  obligation in pinned reference order. Persist state-storage identity/value/
+  width, predicate orientation, semantic targets, dependencies, selected family,
+  recovered transitions, maturity observations, and exact semantic oracle.
+- [ ] Run a separate integrated A560 canary with normal configured flow rules;
+  keep the isolated GENERATED checksum on `NoFlowRules`. Test the existing state-
+  machine unflattener before adding Rhad behavior.
+- [ ] Mark each exactly discharged existing-pass effect once in the semantic
+  ledger. Preserve profile scope, fragment-atomic non-state severance vetoes,
+  expected state-slot plumbing, and the existing coordinator boundaries.
+- [ ] Add a typed residual contract only after an exact remaining failure proves
+  it necessary. Do not chase the two known broader dispatcher DSL failures
+  unless one blocks a required A560 obligation or protected-family gate.
+- [ ] Finish only with exact reference/discharged parity, no residual reference
+  dispatcher loop or `JUMPOUT`, no omitted cleanup/terminal/return effect, and no
+  duplicate realization. Commit inventory, existing-pass evidence, residual
+  vocabulary/runtime, and proof separately.
 
 ## Phase 4: Full-program all-or-nothing acceptance
 
@@ -236,6 +285,10 @@ commit `21b0d4783703bc4fb6910cfae51d92cd683d2c65`.
   required semantics reachable for as long as source topology exists, legitimate
   retirement handled, dispatcher eliminated, no residual direct/indirect escape,
   and CALLS observation-only.
+- [ ] Prove the whole-function semantic-obligation ledger contains every
+  reference effect exactly once and names its responsible Rhad operation, native
+  Hex-Rays behavior, existing D810 pass, or typed residual contract. Persist both
+  the semantic-ledger identity and Rhad GENERATED program identity in SQLite.
 - [ ] Prove exact A560 side effects, return behavior, and control-flow canaries
   against the native/reference oracle, then assert `ctree_captured` at
   `CMAT_FINAL` with no poison, rollback, redo, alternate path, or numeric INTERR.
