@@ -8695,9 +8695,14 @@
         4240304,
         4240383
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "c4551f857",
+          "b1ee2cfd7",
+          "47fae218d"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
