@@ -3313,16 +3313,26 @@
     },
     {
       "boundary_exit_eas": [
-        4240252
+        4237972,
+        4239858,
+        4239900
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "76232a390",
+          "52c9e0f87",
+          "6c2bff534"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
       "flag_producer_native_ea": 4237926,
       "imported_closure_block_anchor_eas": [
+        4237960,
+        4237966,
+        4237970,
         4238782,
         4238796,
         4238802,
@@ -3332,6 +3342,7 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "owned_corridor_instruction_eas": [
         4237920,
+        4237926,
         4237932,
         4237934,
         4237940,
@@ -3355,18 +3366,26 @@
       "source_native_ea": 4237920,
       "target_rooted_closures": [
         {
-          "boundary_exit_eas": [],
-          "expected_generated_block_anchor_eas": [],
-          "owned_native_block_entry_eas": [],
+          "boundary_exit_eas": [
+            4237972,
+            4239858
+          ],
+          "expected_generated_block_anchor_eas": [
+            4237960,
+            4237966,
+            4237970
+          ],
+          "owned_native_block_entry_eas": [
+            4237960,
+            4237966
+          ],
           "root_ea": 4237946,
-          "status": "root_unavailable_in_current_portable_source_plan",
-          "unavailable_exit_eas": [
-            4237946
-          ]
+          "status": "complete",
+          "unavailable_exit_eas": []
         },
         {
           "boundary_exit_eas": [
-            4240252
+            4239900
           ],
           "expected_generated_block_anchor_eas": [
             4238782,
@@ -3385,9 +3404,7 @@
         }
       ],
       "transfer_native_ea": 4237944,
-      "unavailable_closure_exit_eas": [
-        4237946
-      ]
+      "unavailable_closure_exit_eas": []
     },
     {
       "boundary_exit_eas": [

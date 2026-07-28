@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "aff6b8a33df42156838f930db0741e83ca7f5ffa",
+  "accepted_code_sha": "6c2bff534f8236911d8bad9d1ebdd78e7d83d78d",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -40,7 +40,8 @@
     "rhad:route@0x40A9F6",
     "rhad:route@0x40AA10",
     "rhad:route@0x40AA2A",
-    "rhad:route@0x40AA5E"
+    "rhad:route@0x40AA5E",
+    "rhad:route@0x40AA78"
   ],
   "variants": [
     {
@@ -69,12 +70,12 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 20,
-      "vertically_proved_operations": 20,
-      "accepted_receipt_operations": 20,
-      "earliest_unproved_reference_order": 38,
-      "earliest_unproved_operation_id": "rhad:route@0x40AA78",
-      "first_missing_typed_obligation": "complete the unavailable 0x40AA7A target-rooted closure with exact typed native-body evidence before mutation"
+      "compiled_operation_instances": 21,
+      "vertically_proved_operations": 21,
+      "accepted_receipt_operations": 21,
+      "earliest_unproved_reference_order": 39,
+      "earliest_unproved_operation_id": "rhad:route@0x40AA92",
+      "first_missing_typed_obligation": "complete the unavailable 0x40AA94 target-rooted closure with exact typed native-body evidence before mutation"
     },
     {
       "operation_variant": "setcc_indexed_table",
