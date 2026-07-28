@@ -942,6 +942,27 @@ ROW88_TARGET_IMPORTED_LAYOUT = (
     ),
     (0x40B21A, 0x40B21C, (0x40B21A,)),
 )
+ROW90_TARGET_IMPORTED_LAYOUT = (
+    (0x40B236, 0x40B242, (0x40B236, 0x40B23D)),
+    (
+        0x40B242,
+        0x40B26D,
+        (
+            0x40B242,
+            0x40B248,
+            0x40B24E,
+            0x40B251,
+            0x40B256,
+            0x40B25C,
+            0x40B25E,
+            0x40B264,
+            0x40B267,
+            0x40B269,
+            0x40B26B,
+        ),
+    ),
+    (0x40B26B, 0x40B26D, (0x40B26B,)),
+)
 BASE_IMPORTED_LAYOUT = tuple(
     (start_ea, end_ea, (start_ea,))
     for start_ea, end_ea in ACCEPTED_IMPORTED_RANGES + DIRECT_IMPORTED_RANGES
@@ -1008,6 +1029,7 @@ IMPORTED_LAYOUT = (
     + ROW84_TARGET_IMPORTED_LAYOUT
     + ROW86_TARGET_IMPORTED_LAYOUT
     + ROW88_TARGET_IMPORTED_LAYOUT
+    + ROW90_TARGET_IMPORTED_LAYOUT
     + FOURTH_SHAPE_IMPORTED_LAYOUT[-1:]
 )
 IMPORTED_RANGES = tuple(
@@ -1294,6 +1316,10 @@ ROW88_TARGET_IMPORTED_BLOCK_IDS = tuple(
     f"native@0x{start_ea:X}"
     for start_ea, _end_ea, _exact_eas in ROW88_TARGET_IMPORTED_LAYOUT
 )
+ROW90_TARGET_IMPORTED_BLOCK_IDS = tuple(
+    f"native@0x{start_ea:X}"
+    for start_ea, _end_ea, _exact_eas in ROW90_TARGET_IMPORTED_LAYOUT
+)
 BOUNDARY_EXIT_EAS = (
     0x40A5F0,
     0x40A9A0,
@@ -1353,6 +1379,7 @@ TEMPLATE_ROOT_EAS = (
     0x40AC56,
     0x40AC70,
     0x40B21C,
+    0x40B236,
     0x40AA60,
     0x40A74C,
     0x40A766,
@@ -4620,6 +4647,46 @@ _ROW89_CMOV_ROUTE = RhadConditionalRoute(
     depends_on=(_ROW88_EXISTING_ROUTE.operation_id,),
 )
 
+_ROW90_EXISTING_ROUTE = RhadExistingConditionalRoute(
+    operation_id="rhad:route@0x40B234",
+    reference_order=90,
+    operation_variant=RhadOperationVariant.EXISTING_CONDITIONAL_PLUS_INDIRECT,
+    reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
+    source_block_id="native@0x40B21C",
+    selected_value_block_id="native@0x40B22A",
+    join_block_id="native@0x40B230",
+    source_native_ea=0x40B21C,
+    source_block_anchor_ea=0x40B230,
+    join_ea=0x40B230,
+    transfer_ea=0x40B234,
+    condition_producer_ea=0x40B222,
+    predicate_anchor_ea=0x40B228,
+    normalization_start_ea=0x40B228,
+    source_branch_ea=0x40B228,
+    selected_value_ea=0x40B22A,
+    observed_predicate_kind=PredicateKind.EQ,
+    predicate_kind=PredicateKind.NE,
+    true_target_block_id="native@0x40B236",
+    false_target_block_id="native@0x40A5F0",
+    true_target_ea=0x40B236,
+    false_target_ea=0x40A5F0,
+    comparison_constant=0x7278AB7F,
+    owned_corridor_instruction_eas=(
+        0x40B21C,
+        0x40B222,
+        0x40B228,
+        0x40B22A,
+        0x40B230,
+        0x40B232,
+        0x40B234,
+    ),
+    imported_closure_block_ids=ROW90_TARGET_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40A607, 0x40B6C0),
+    flag_corridor_id="flags-intact@0x40B222",
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_ROW89_CMOV_ROUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -5064,6 +5131,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         (0x40B1D0, 0x40B1EA),
         (0x40B1EA, 0x40B21C),
         (0x40B21C, 0x40B236),
+        (0x40B236, 0x40B26D),
         (0x40B26D, 0x40B287),
         (0x40B2DB, 0x40B2F5),
         (0x40B32C, 0x40B342),
@@ -5167,6 +5235,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW87_DIRECT_ROUTE.operation_id,
         _ROW88_EXISTING_ROUTE.operation_id,
         _ROW89_CMOV_ROUTE.operation_id,
+        _ROW90_EXISTING_ROUTE.operation_id,
     ),
     template_fragments=(
         RhadGeneratedTemplateFragment(
@@ -6006,6 +6075,20 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
                 RhadGeneratedPreservedTransfer(
                     transfer_ea=0x40B234,
                     boundary_exit_eas=(0x40A5F0,),
+                ),
+            ),
+        ),
+        RhadGeneratedTemplateFragment(
+            root_ea=0x40B236,
+            owned_ranges=((0x40B236, 0x40B26D),),
+            owned_block_entry_eas=(0x40B236, 0x40B242, 0x40B26B),
+            boundary_ranges=(),
+            boundary_exit_eas=(0x40A607, 0x40B6C0),
+            direct_boundary_routes=(),
+            preserved_unresolved_transfers=(
+                RhadGeneratedPreservedTransfer(
+                    transfer_ea=0x40B26B,
+                    boundary_exit_eas=(0x40A607, 0x40B6C0),
                 ),
             ),
         ),
@@ -6854,6 +6937,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW87_DIRECT_ROUTE,
         _ROW88_EXISTING_ROUTE,
         _ROW89_CMOV_ROUTE,
+        _ROW90_EXISTING_ROUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
