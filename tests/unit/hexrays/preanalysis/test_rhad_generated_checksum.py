@@ -2723,7 +2723,7 @@ def test_indirect_jump_coverage_summary_matches_committed_row40_batch() -> None:
     )
 
     assert summary["accepted_code_sha"] == (
-        "7f7296027a956a76fb1c1dfde5c8b9d257ab4d5a"
+        "17b9ac85b826d7f7795952cde6d406b42ee402ce"
     )
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     assert accepted_operation_ids == [
@@ -2747,11 +2747,11 @@ def test_indirect_jump_coverage_summary_matches_committed_row40_batch() -> None:
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 10,
-        "vertically_proved_operations": 10,
-        "accepted_receipt_operations": 10,
-        "earliest_unproved_reference_order": 42,
-        "earliest_unproved_operation_id": "rhad:route@0x40AAFB",
+        "compiled_operation_instances": 11,
+        "vertically_proved_operations": 11,
+        "accepted_receipt_operations": 11,
+        "earliest_unproved_reference_order": 45,
+        "earliest_unproved_operation_id": "rhad:route@0x40AB74",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadDirectRoute vocabulary with exact "
             "per-operation native-body proof and dependency closure"
@@ -2761,14 +2761,14 @@ def test_indirect_jump_coverage_summary_matches_committed_row40_batch() -> None:
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 23,
-        "vertically_proved_operations": 23,
-        "accepted_receipt_operations": 23,
-        "earliest_unproved_reference_order": 43,
-        "earliest_unproved_operation_id": "rhad:route@0x40AB15",
+        "compiled_operation_instances": 24,
+        "vertically_proved_operations": 24,
+        "accepted_receipt_operations": 24,
+        "earliest_unproved_reference_order": 44,
+        "earliest_unproved_operation_id": "rhad:route@0x40AB2F",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadExistingConditionalRoute vocabulary with "
-            "exact row43 reference evidence, native-body proof, and dependency "
+            "exact row44 reference evidence, native-body proof, and dependency "
             "closure"
         ),
     }
