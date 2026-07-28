@@ -48,6 +48,8 @@ from d810.transforms.fragment_plan import (
     FragmentConditionalSelectEnvelope,
     FragmentPlan,
     FragmentReferencedImportedConditionalSelectEnvelope,
+    FragmentSetccFallthroughDelivery,
+    FragmentSetccIndexedTableNormalization,
     serialize_fragment_plan,
 )
 from d810.transforms.detached_route_oracle import DetachedRouteOracleResult
@@ -1400,6 +1402,28 @@ class MbaMutationGateway:
                     ),
                 ):
                     helper_target = plan.block(envelope.selected_value_block_id)
+                elif (
+                    publication_profile.graph_free
+                    and isinstance(
+                        normalization,
+                        FragmentSetccIndexedTableNormalization,
+                    )
+                    and normalization.fallthrough_delivery
+                    is FragmentSetccFallthroughDelivery.PLANNED_HELPER
+                ):
+                    fallthrough_edges = tuple(
+                        edge
+                        for edge in operation.edges
+                        if edge.role
+                        is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+                    )
+                    if len(fallthrough_edges) != 1:
+                        raise ValueError(
+                            "planned setcc fallthrough helper requires one typed arm"
+                        )
+                    helper_target = plan.block(
+                        fallthrough_edges[0].target_block_id
+                    )
                 items.append(
                     MbaMutationPlanItem(
                         item_index=len(items),
@@ -1544,16 +1568,25 @@ class MbaMutationGateway:
 
         if publication_profile is None:
             publication_profile = SemanticFragmentPublicationProfile.CFG_READY
-        helper_refs = tuple(
-            step.fallthrough_helper_ref
-            for step in patch_plan.steps
-            if isinstance(
+        helper_refs: list[PlanBlockRef] = []
+        for step in patch_plan.steps:
+            if not isinstance(
                 step,
                 (PatchFragmentOperation, PatchFragmentRootPublication),
-            )
-            and step.fallthrough_helper_ref is not None
-            and not publication_profile.graph_free
-        )
+            ) or step.fallthrough_helper_ref is None:
+                continue
+            if not publication_profile.graph_free:
+                helper_refs.append(step.fallthrough_helper_ref)
+                continue
+            if not isinstance(step, PatchFragmentOperation):
+                continue
+            normalization = step.operation.computed_branch_normalization
+            if (
+                isinstance(normalization, FragmentSetccIndexedTableNormalization)
+                and normalization.fallthrough_delivery
+                is FragmentSetccFallthroughDelivery.PLANNED_HELPER
+            ):
+                helper_refs.append(step.fallthrough_helper_ref)
         self._cfg_plan_refs = tuple(
             dict.fromkeys(
                 (
@@ -1561,7 +1594,7 @@ class MbaMutationGateway:
                         PlanBlockRef(plan.plan_id, block.block_id)
                         for block in plan.blocks
                     ),
-                    *helper_refs,
+                    *tuple(helper_refs),
                 )
             )
         )

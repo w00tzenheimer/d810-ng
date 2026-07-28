@@ -79,6 +79,7 @@ from d810.transforms.fragment_plan import (
     FragmentReferencedImportedConditionalSelectEnvelope,
     FragmentReturnCarrier,
     FragmentReturnSource,
+    FragmentSetccFallthroughDelivery,
     FragmentSetccIndexedTableNormalization,
     superseded_direct_transfer_carrier_block_ids,
     superseded_referenced_conditional_carrier_block_ids,
@@ -169,7 +170,11 @@ def _setcc_indexed_table_branch_opcode(
     normalization: FragmentSetccIndexedTableNormalization,
 ) -> int:
     """Return the exact boolean branch selected by typed predicate evidence."""
-    if normalization.predicate_kind not in {PredicateKind.SLT, PredicateKind.SGE}:
+    if normalization.predicate_kind not in {
+        PredicateKind.EQ,
+        PredicateKind.SLT,
+        PredicateKind.SGE,
+    }:
         raise SemanticFragmentBackendRejected(
             "setcc indexed-table normalization has an unsupported predicate",
             reason_code="setcc_indexed_table_predicate_unsupported",
@@ -178,7 +183,7 @@ def _setcc_indexed_table_branch_opcode(
         )
     predicate_true_opcode = (
         int(ida_hexrays.m_jnz)
-        if normalization.predicate_kind is PredicateKind.SLT
+        if normalization.predicate_kind in {PredicateKind.EQ, PredicateKind.SLT}
         else int(ida_hexrays.m_jz)
     )
     if int(normalization.table_evidence.true_index) == 1:
@@ -1703,55 +1708,80 @@ def _realize_operations(
             ),
             helper_plan_ref=helper_plan_ref,
         )
-        helper_edges = tuple(
-            edge
-            for edge in operation.edges
-            if edge.role
-            in {
-                SemanticEdgeRole.CALL_FALLTHROUGH,
-                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
-            }
+        _register_operation_fallthrough_helper(
+            modifier,
+            state,
+            operation,
+            helper_plan_ref=helper_plan_ref,
+            helper_version=helper_version,
         )
-        if not helper_edges:
-            if helper_version is not None:
-                raise SemanticFragmentBackendRejected(
-                    "semantic fragment operation unexpectedly created a helper"
-                )
-            continue
-        if len(helper_edges) != 1 or helper_version is None:
+
+
+def _register_operation_fallthrough_helper(
+    modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
+    operation: FragmentOperation,
+    *,
+    helper_plan_ref: PlanBlockRef | None,
+    helper_version: LogicalBlockVersion | None,
+) -> None:
+    """Bind one helper created by the existing semantic-edge participant."""
+    helper_edges = tuple(
+        edge
+        for edge in operation.edges
+        if edge.role
+        in {
+            SemanticEdgeRole.CALL_FALLTHROUGH,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        }
+    )
+    if not helper_edges:
+        if helper_version is not None:
             raise SemanticFragmentBackendRejected(
-                "semantic fallthrough operation did not create exactly one helper"
+                "semantic fragment operation unexpectedly created a helper"
             )
-        helper_block_id = f"fallthrough-helper:{operation.operation_id}"
-        if helper_block_id in state.bindings:
-            raise SemanticFragmentBackendRejected(
-                f"semantic fallthrough helper id collision: {helper_block_id!r}"
-            )
-        gateway = _gateway(modifier)
-        helper_proxy = gateway.identity_index.logical_proxy_for_handle(
-            helper_version.handle
+        return
+    if (
+        len(helper_edges) != 1
+        or helper_plan_ref is None
+        or helper_version is None
+    ):
+        raise SemanticFragmentBackendRejected(
+            "semantic fallthrough operation did not create exactly one planned helper"
         )
-        if helper_proxy is None:
-            raise SemanticFragmentBackendRejected(
-                "semantic fallthrough helper has no logical proxy"
-            )
-        state.bindings[helper_block_id] = SemanticFragmentRuntimeBinding(
-            block_id=helper_block_id,
-            proxy=helper_proxy,
-            version=helper_version,
-            state=FragmentBindingState.STAGED,
-            creation_ref=helper_plan_ref,
+    helper_block_id = f"fallthrough-helper:{operation.operation_id}"
+    if helper_plan_ref.local_block_id != helper_block_id:
+        raise SemanticFragmentBackendRejected(
+            "semantic fallthrough helper plan authority does not match its operation"
         )
-        state.staged_block_ids.append(helper_block_id)
-        fallthrough_target = helper_edges[0].target_block_id
-        state.fallthrough_helpers.append(
-            ProjectedFallthroughHelper(
-                helper_block_id=helper_block_id,
-                operation_id=operation.operation_id,
-                source_block_id=operation.source_block_id,
-                semantic_target_block_id=fallthrough_target,
-            )
+    if helper_block_id in state.bindings:
+        raise SemanticFragmentBackendRejected(
+            f"semantic fallthrough helper id collision: {helper_block_id!r}"
         )
+    gateway = _gateway(modifier)
+    helper_proxy = gateway.identity_index.logical_proxy_for_handle(
+        helper_version.handle
+    )
+    if helper_proxy is None:
+        raise SemanticFragmentBackendRejected(
+            "semantic fallthrough helper has no logical proxy"
+        )
+    state.bindings[helper_block_id] = SemanticFragmentRuntimeBinding(
+        block_id=helper_block_id,
+        proxy=helper_proxy,
+        version=helper_version,
+        state=FragmentBindingState.STAGED,
+        creation_ref=helper_plan_ref,
+    )
+    state.staged_block_ids.append(helper_block_id)
+    state.fallthrough_helpers.append(
+        ProjectedFallthroughHelper(
+            helper_block_id=helper_block_id,
+            operation_id=operation.operation_id,
+            source_block_id=operation.source_block_id,
+            semantic_target_block_id=helper_edges[0].target_block_id,
+        )
+    )
 
 
 def _realize_generated_setcc_indexed_table_operation(
@@ -1834,10 +1864,25 @@ def _realize_generated_setcc_indexed_table_operation(
         )
     )
     expected_opcode = _setcc_indexed_table_branch_opcode(normalization)
+    fallthrough_delivery = normalization.fallthrough_delivery
+    physical_fallthrough = (
+        fallthrough_delivery is FragmentSetccFallthroughDelivery.PHYSICAL_ADJACENCY
+    )
+    planned_fallthrough = (
+        fallthrough_delivery is FragmentSetccFallthroughDelivery.PLANNED_HELPER
+    )
     failed_obligations = tuple(
         name
         for name, passed in (
-            ("no_fallthrough_helper", fallthrough_helper_ref is None),
+            (
+                "typed_fallthrough_delivery",
+                physical_fallthrough or planned_fallthrough,
+            ),
+            (
+                "fallthrough_helper_authority",
+                (physical_fallthrough and fallthrough_helper_ref is None)
+                or (planned_fallthrough and fallthrough_helper_ref is not None),
+            ),
             (
                 "source_imported_native_body",
                 source_plan_block.materialization
@@ -1874,10 +1919,13 @@ def _realize_generated_setcc_indexed_table_operation(
             ("source_suffix_nonempty", bool(source_rows)),
             (
                 "false-target fallthrough",
-                source is not None
-                and fallthrough is not None
-                and source.nextb is not None
-                and int(source.nextb.serial) == int(fallthrough.serial),
+                not physical_fallthrough
+                or (
+                    source is not None
+                    and fallthrough is not None
+                    and source.nextb is not None
+                    and int(source.nextb.serial) == int(fallthrough.serial)
+                ),
             ),
         )
         if not passed
@@ -1896,6 +1944,34 @@ def _realize_generated_setcc_indexed_table_operation(
     assert source_binding is not None
     assert taken_binding is not None
     assert fallthrough_binding is not None
+    if planned_fallthrough:
+        assert fallthrough_helper_ref is not None
+        helper_version = modifier._realize_semantic_edge_operation(
+            LogicalSemanticEdgeOperation(
+                source=source_binding.proxy,
+                edges=(
+                    LogicalSemanticEdge(
+                        role=taken_edge.role,
+                        target=taken_binding.proxy,
+                    ),
+                    LogicalSemanticEdge(
+                        role=fallthrough_edge.role,
+                        target=fallthrough_binding.proxy,
+                    ),
+                ),
+                predicate_anchor_ea=state.live_operation_predicate_ea(operation),
+                description=f"fragment operation {operation.operation_id}",
+            ),
+            helper_plan_ref=fallthrough_helper_ref,
+        )
+        _register_operation_fallthrough_helper(
+            modifier,
+            state,
+            operation,
+            helper_plan_ref=fallthrough_helper_ref,
+            helper_version=helper_version,
+        )
+        return
     source_branch = ida_hexrays.minsn_t(source_tail)
     source_branch.d.make_blkref(int(taken.serial))
     modifier.replace_instruction_suffix_from_index_now(
@@ -3484,8 +3560,29 @@ def _observe_generated_graph_free_fragment(
     superseded_carrier_ids = superseded_direct_transfer_carrier_block_ids(
         plan
     ) | superseded_referenced_conditional_carrier_block_ids(plan)
+    planned_setcc_graph_block_ids = {
+        block_id
+        for operation in plan.operations
+        if (
+            isinstance(
+                operation.computed_branch_normalization,
+                FragmentSetccIndexedTableNormalization,
+            )
+            and operation.computed_branch_normalization.fallthrough_delivery
+            is FragmentSetccFallthroughDelivery.PLANNED_HELPER
+        )
+        for block_id in (
+            operation.source_block_id,
+            *(edge.target_block_id for edge in operation.edges),
+        )
+    }
     imported_serials_by_block_id: dict[str, int] = {}
     superseded_carrier_serials: set[int] = set()
+    preserved_native_transfer_block_ids = {
+        block_id
+        for native_body in plan.native_bodies
+        for block_id in native_body.preserved_native_transfer_block_ids
+    }
     for block in plan.blocks:
         binding = state.bindings.get(block.block_id)
         if binding is None:
@@ -3494,10 +3591,16 @@ def _observe_generated_graph_free_fragment(
         if block.materialization is FragmentBlockMaterialization.IMPORT_NATIVE:
             origins = state.instruction_origins_by_block_id.get(block.block_id, {})
             live_rows = tuple(_iter_block_instructions(live))
+            graph_shape_owned = block.block_id in planned_setcc_graph_block_ids
             if block.block_id not in superseded_carrier_ids and (
-                int(live.type) != int(ida_hexrays.BLT_NONE)
-                or tuple(int(value) for value in live.succset)
-                or tuple(int(value) for value in live.predset)
+                (
+                    not graph_shape_owned
+                    and (
+                        int(live.type) != int(ida_hexrays.BLT_NONE)
+                        or tuple(int(value) for value in live.succset)
+                        or tuple(int(value) for value in live.predset)
+                    )
+                )
                 or len(origins) != len(live_rows)
                 or set(origins) != {int(row.ea) for row in live_rows}
             ):
@@ -3607,18 +3710,129 @@ def _observe_generated_graph_free_fragment(
             )
             expected_opcode = _setcc_indexed_table_branch_opcode(normalization)
             source_predicate_live_ea = state.live_operation_predicate_ea(operation)
+            common_failed_obligations = tuple(
+                name
+                for name, passed in (
+                    ("source_tail_present", source.tail is not None),
+                    (
+                        "predicate_orientation_exact",
+                        source.tail is not None
+                        and int(source.tail.opcode) == expected_opcode,
+                    ),
+                    (
+                        "predicate_anchor_exact",
+                        source.tail is not None
+                        and int(source.tail.ea) == source_predicate_live_ea,
+                    ),
+                    (
+                        "taken_operand_block_ref",
+                        source.tail is not None
+                        and int(source.tail.d.t) == int(ida_hexrays.mop_b),
+                    ),
+                    (
+                        "taken_operand_exact",
+                        source.tail is not None
+                        and int(source.tail.d.b) == int(taken.serial),
+                    ),
+                )
+                if not passed
+            )
+            delivery_failed_obligations: tuple[str, ...]
             if (
-                source.tail is None
-                or int(source.tail.opcode) != expected_opcode
-                or int(source.tail.ea) != source_predicate_live_ea
-                or int(source.tail.d.t) != int(ida_hexrays.mop_b)
-                or int(source.tail.d.b) != int(taken.serial)
-                or source.nextb is None
-                or int(source.nextb.serial) != int(fallthrough.serial)
-                or int(source.type) != int(ida_hexrays.BLT_NONE)
+                normalization.fallthrough_delivery
+                is FragmentSetccFallthroughDelivery.PHYSICAL_ADJACENCY
             ):
+                delivery_failed_obligations = tuple(
+                    name
+                    for name, passed in (
+                        (
+                            "physical_false_target",
+                            source.nextb is not None
+                            and int(source.nextb.serial) == int(fallthrough.serial),
+                        ),
+                        (
+                            "graph_free_source_type",
+                            int(source.type) == int(ida_hexrays.BLT_NONE),
+                        ),
+                    )
+                    if not passed
+                )
+            else:
+                helper_id = f"fallthrough-helper:{operation.operation_id}"
+                helper_binding = state.bindings.get(helper_id)
+                helper = (
+                    None
+                    if helper_binding is None
+                    else _live_block_for_binding(modifier, helper_binding)
+                )
+                helper_tail = None if helper is None else helper.tail
+                delivery_failed_obligations = tuple(
+                    name
+                    for name, passed in (
+                        ("planned_helper_bound", helper is not None),
+                        (
+                            "planned_helper_adjacent",
+                            helper is not None
+                            and source.nextb is not None
+                            and int(source.nextb.serial) == int(helper.serial),
+                        ),
+                        (
+                            "planned_source_two_way",
+                            int(source.type) == int(ida_hexrays.BLT_2WAY),
+                        ),
+                        (
+                            "planned_source_successors",
+                            helper is not None
+                            and tuple(int(value) for value in source.succset)
+                            == (int(helper.serial), int(taken.serial)),
+                        ),
+                        (
+                            "planned_helper_one_way",
+                            helper is not None
+                            and int(helper.type) == int(ida_hexrays.BLT_1WAY),
+                        ),
+                        (
+                            "planned_helper_goto",
+                            helper_tail is not None
+                            and int(helper_tail.opcode) == int(ida_hexrays.m_goto)
+                            and int(helper_tail.l.t) == int(ida_hexrays.mop_b)
+                            and int(helper_tail.l.b) == int(fallthrough.serial),
+                        ),
+                        (
+                            "planned_helper_successor",
+                            helper is not None
+                            and tuple(int(value) for value in helper.succset)
+                            == (int(fallthrough.serial),),
+                        ),
+                        (
+                            "planned_helper_predecessor",
+                            helper is not None
+                            and tuple(int(value) for value in helper.predset)
+                            == (int(source.serial),),
+                        ),
+                        (
+                            "planned_taken_predecessor",
+                            tuple(int(value) for value in taken.predset)
+                            == (int(source.serial),),
+                        ),
+                        (
+                            "planned_fallthrough_predecessor",
+                            helper is not None
+                            and tuple(int(value) for value in fallthrough.predset)
+                            == (int(helper.serial),),
+                        ),
+                    )
+                    if not passed
+                )
+            failed_obligations = (
+                *common_failed_obligations,
+                *delivery_failed_obligations,
+            )
+            if failed_obligations:
                 raise SemanticFragmentBackendRejected(
-                    "GENERATED setcc route failed exact live observation"
+                    "GENERATED setcc route failed exact live observation; "
+                    f"operation_id={operation.operation_id!r} "
+                    f"failed_obligations={failed_obligations!r}"
                 )
         else:
             envelope = (
@@ -3732,7 +3946,11 @@ def _observe_generated_graph_free_fragment(
             )
         required_reachable_serials = {
             imported_serials_by_block_id[block_id] for block_id in closure_block_ids
-        } - superseded_carrier_serials
+        } - superseded_carrier_serials - {
+            imported_serials_by_block_id[block_id]
+            for block_id in closure_block_ids
+            if block_id in preserved_native_transfer_block_ids
+        }
         if not required_reachable_serials.issubset(reachable):
             missing = tuple(sorted(required_reachable_serials - reachable))
             raise SemanticFragmentBackendRejected(
