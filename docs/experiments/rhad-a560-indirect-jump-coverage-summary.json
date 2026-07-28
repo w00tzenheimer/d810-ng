@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "f8fcf3ba83bddd1b0d421bf0492ab00ee40bbc36",
+  "accepted_code_sha": "e136d7b0476fa87e95993b88e5741baae8aae863",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -104,7 +104,8 @@
     "rhad:route@0x40B3E3",
     "rhad:route@0x40B3FD",
     "rhad:route@0x40B4C3",
-    "route:rhad-direct@0x40B4EE"
+    "route:rhad-direct@0x40B4EE",
+    "route:rhad-direct@0x40B519"
   ],
   "variants": [
     {
@@ -123,11 +124,11 @@
       "total_reference_operations": 64,
       "compiler_supported_operations": 64,
       "compiled_operation_instances": 25,
-      "vertically_proved_operations": 24,
-      "accepted_receipt_operations": 24,
-      "earliest_unproved_reference_order": 104,
-      "earliest_unproved_operation_id": "rhad:route@0x40B519",
-      "first_missing_typed_obligation": "complete the fresh CALLS and CMAT_FINAL publication proof and persist the accepted diagnostic receipt"
+      "vertically_proved_operations": 25,
+      "accepted_receipt_operations": 25,
+      "earliest_unproved_reference_order": 105,
+      "earliest_unproved_operation_id": "rhad:route@0x40B540",
+      "first_missing_typed_obligation": "instantiate the proved RhadDirectRoute vocabulary with exact per-operation native-body proof and dependency closure"
     },
     {
       "operation_variant": "existing_conditional_plus_indirect",
