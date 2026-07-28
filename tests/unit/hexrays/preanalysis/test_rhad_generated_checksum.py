@@ -7803,7 +7803,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("cb775189a078b02c9f5aac8889619c2054db9017")
+    assert summary["accepted_code_sha"] == ("8ca01275c70bbec64579677923acf1b699bdb503")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
     assert (
@@ -7841,11 +7841,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 51,
-        "vertically_proved_operations": 51,
-        "accepted_receipt_operations": 51,
-        "earliest_unproved_reference_order": 94,
-        "earliest_unproved_operation_id": "rhad:route@0x40B2F3",
+        "compiled_operation_instances": 52,
+        "vertically_proved_operations": 52,
+        "accepted_receipt_operations": 52,
+        "earliest_unproved_reference_order": 98,
+        "earliest_unproved_operation_id": "rhad:route@0x40B394",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadExistingConditionalRoute vocabulary with "
             "exact per-operation native-body proof and dependency closure"
