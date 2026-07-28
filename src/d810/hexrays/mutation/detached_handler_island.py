@@ -3043,8 +3043,14 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         lookup_indexes = indexes_by_ea[evidence.lookup_ea]
         decode_indexes = indexes_by_ea[evidence.decode_ea]
         transfer_indexes = indexes_by_ea[normalization.unresolved_transfer_ea]
-        signed_plan = (
-            PreoptUnionSemanticNativeBodyMaterializer._preflight_signed_flag_xor(
+        predicate_plan = (
+            PreoptUnionSemanticNativeBodyMaterializer._preflight_equality_setcc(
+                instructions=instructions,
+                predicate_indexes=predicate_indexes,
+                operation=operation,
+                normalization=normalization,
+            )
+            or PreoptUnionSemanticNativeBodyMaterializer._preflight_signed_flag_xor(
                 instructions=instructions,
                 predicate_indexes=predicate_indexes,
                 operation=operation,
@@ -3111,7 +3117,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         predicate_true_opcode = (
             int(ida_hexrays.m_jnz)
-            if normalization.predicate_kind is PredicateKind.SLT
+            if normalization.predicate_kind
+            in {PredicateKind.EQ, PredicateKind.SLT}
             else int(ida_hexrays.m_jz)
         )
         expected_branch_opcode = (
@@ -3127,9 +3134,22 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             None if not predicate_indexes else int(predicate_indexes[-1])
         )
         exact_predicate_partition = bool(
-            predicate_indexes in {(2,), (2, 3)}
-            and signed_plan is not None
-            and int(signed_plan.cut_index) == 2
+            predicate_plan is not None
+            and (
+                (
+                    normalization.predicate_kind is PredicateKind.EQ
+                    and producer_indexes == (0,)
+                    and predicate_indexes == (1,)
+                    and int(predicate_plan.cut_index) == 1
+                )
+                or (
+                    normalization.predicate_kind
+                    in {PredicateKind.SLT, PredicateKind.SGE}
+                    and producer_indexes == (0, 1)
+                    and predicate_indexes in {(2,), (2, 3)}
+                    and int(predicate_plan.cut_index) == 2
+                )
+            )
         )
         exact_scaling_partition = bool(
             (
@@ -3154,8 +3174,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             else tuple(range(lookup_index + 1, lookup_index + 7))
         )
         exact_index_partition = bool(
-            producer_indexes == (0, 1)
-            and exact_predicate_partition
+            exact_predicate_partition
             and exact_scaling_partition
             and decode_indexes == expected_decode_indexes
             and transfer_indexes == (len(instructions) - 1,)
@@ -3175,11 +3194,11 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 == int(normalization.normalization_start_ea),
             ),
             ("exact_typed_suffix_partition", exact_index_partition),
-            ("signed_flag_predicate_exact", signed_plan is not None),
+            ("typed_predicate_exact", predicate_plan is not None),
             (
                 "predicate_orientation_exact",
-                signed_plan is not None
-                and int(signed_plan.branch_opcode) == expected_branch_opcode,
+                predicate_plan is not None
+                and int(predicate_plan.branch_opcode) == expected_branch_opcode,
             ),
             (
                 "scaling_stride_exact",
@@ -3218,8 +3237,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 f"failed_obligations={failed_obligations!r} "
                 f"instruction_shapes={tuple((f'0x{int(instruction.ea):X}', int(instruction.opcode), _diagnostic_operand_shape(instruction.l), _diagnostic_operand_shape(instruction.r), _diagnostic_operand_shape(instruction.d)) for instruction in instructions)!r}"
             )
-        assert signed_plan is not None
-        return signed_plan
+        assert predicate_plan is not None
+        return predicate_plan
 
     @staticmethod
     def _preflight_computed_branch_normalization(
@@ -3458,6 +3477,53 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             result_instruction_index=None,
             branch_opcode=int(ida_hexrays.m_jnz),
             branch_condition_template=tail.l.d.l,
+        )
+
+    @staticmethod
+    def _preflight_equality_setcc(
+        *,
+        instructions: tuple[object, ...],
+        predicate_indexes: tuple[int, ...],
+        operation: FragmentOperation,
+        normalization: FragmentComputedBranchNormalization,
+    ) -> _ComputedBranchNormalizationPlan | None:
+        """Recognize exact ``EQ`` materialization copied through zero extension."""
+        if (
+            normalization.predicate_kind is not PredicateKind.EQ
+            or predicate_indexes != (1,)
+        ):
+            return None
+        producers = (
+            PreoptUnionSemanticNativeBodyMaterializer._oriented_predicate_producers(
+                instructions=instructions,
+                normalization=normalization,
+            )
+        )
+        if len(producers) != 1:
+            return None
+        producer_index, producer, branch_opcode = producers[0]
+        predicate = instructions[predicate_indexes[0]]
+        compare_flags = int(ida_hexrays.EQ_IGNSIZE)
+        if (
+            int(producer_index) != 0
+            or int(branch_opcode) != int(ida_hexrays.m_jnz)
+            or value_op_from_opcode(int(predicate.opcode)) is not ValueOpKind.ZEXT
+            or int(predicate.r.t) != int(ida_hexrays.mop_z)
+            or not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                producer
+            )
+            or not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
+                predicate
+            )
+            or not predicate.l.equal_mops(producer.d, compare_flags)
+            or int(predicate.d.size) <= int(predicate.l.size)
+        ):
+            return None
+        return _ComputedBranchNormalizationPlan(
+            operation=operation,
+            cut_index=1,
+            result_instruction_index=0,
+            branch_opcode=int(branch_opcode),
         )
 
     @staticmethod
