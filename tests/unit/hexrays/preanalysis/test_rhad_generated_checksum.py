@@ -2855,7 +2855,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     assert row40["unavailable_closure_exit_eas"] == []
 
 
-def test_indirect_jump_coverage_summary_matches_committed_row40_batch() -> None:
+def test_indirect_jump_coverage_summary_matches_committed_row46_batch() -> None:
     summary = json.loads(
         (
             _REPO
@@ -2888,7 +2888,7 @@ def test_indirect_jump_coverage_summary_matches_committed_row40_batch() -> None:
     )
 
     assert summary["accepted_code_sha"] == (
-        "b4c8e6aa7bae13b61502188a1495e6c4f6ed55f5"
+        "ee16bf28398705e0c4e0d2010119c2cec52280ff"
     )
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     assert accepted_operation_ids == [
@@ -2926,15 +2926,15 @@ def test_indirect_jump_coverage_summary_matches_committed_row40_batch() -> None:
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 25,
-        "vertically_proved_operations": 25,
-        "accepted_receipt_operations": 25,
-        "earliest_unproved_reference_order": 46,
-        "earliest_unproved_operation_id": "rhad:route@0x40AB8E",
+        "compiled_operation_instances": 26,
+        "vertically_proved_operations": 26,
+        "accepted_receipt_operations": 26,
+        "earliest_unproved_reference_order": 47,
+        "earliest_unproved_operation_id": "rhad:route@0x40ABA8",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadExistingConditionalRoute vocabulary with "
-            "exact row46 reference evidence, native-body proof, and dependency "
-            "closure"
+            "exact row47 reference evidence, native-body proof, and row46 "
+            "dependency closure"
         ),
     }
     assert setcc == {
