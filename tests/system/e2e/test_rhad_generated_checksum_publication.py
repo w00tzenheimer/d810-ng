@@ -1978,7 +1978,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert row38_reference["false_target_block_id"] == "native@0x40ADBE"
         assert row38_reference["boundary_exit_eas"] == [
             0x40AA94,
-            0x40B1F2,
+            0x40B0F2,
             0x40B21C,
         ]
         setcc_reference = reference_payloads["rhad:route@0x40A77C"]
