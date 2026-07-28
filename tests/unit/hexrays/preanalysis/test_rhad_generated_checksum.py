@@ -210,6 +210,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "route:rhad-direct@0x40AC3B",
         "rhad:route@0x40AC54",
         "rhad:route@0x40AC6E",
+        "route:rhad-direct@0x40ACBD",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -2601,6 +2602,42 @@ def test_checksum_producer_compiles_row53_existing_conditional_reference() -> No
         0x40ACBD: (0x40B6C0,),
         0x40B596: (0x40A607,),
     }
+
+
+def test_checksum_producer_compiles_row54_direct_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("route:rhad-direct@0x40ACBD")
+    assert operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x40ACBD
+    assert operation.direct_transfer_rewrite.owner_anchor_ea == 0x40ACB3
+    assert operation.edges[0].target_block_id == "native@0x40B6C0"
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_operation_id"] == "rhad:route@0x40ACBD"
+    assert payload["reference_order"] == 54
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40AC9B
+    assert payload["source_block_anchor_ea"] == 0x40ACB3
+    assert payload["transfer_ea"] == 0x40ACBD
+    assert payload["direct_target_block_id"] == "native@0x40B6C0"
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40AC9B,
+        0x40ACB3,
+        0x40ACB5,
+        0x40ACB7,
+        0x40ACBD,
+    ]
+    assert payload["boundary_exit_eas"] == [0x40B790]
+    assert next(
+        operation
+        for operation in batch.operations
+        if operation.operation_id == "route:rhad-direct@0x40ACBD"
+    ).depends_on == ("rhad:route@0x40AC6E",)
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
