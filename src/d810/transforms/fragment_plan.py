@@ -88,6 +88,13 @@ class FragmentSetccIndexScalingKind(str, Enum):
     SCALED_LOOKUP = "scaled_lookup"
 
 
+class FragmentSetccFallthroughDelivery(str, Enum):
+    """Typed realization strategy for the setcc false arm."""
+
+    PHYSICAL_ADJACENCY = "physical_adjacency"
+    PLANNED_HELPER = "planned_helper"
+
+
 @dataclass(frozen=True, slots=True)
 class FragmentSetccExplicitShiftScaling:
     """A standalone native shift/multiply before the table lookup."""
@@ -1048,6 +1055,7 @@ class FragmentSetccIndexedTableNormalization(FragmentComputedBranchNormalization
     """Computed-branch normalization owned by exact setcc table evidence."""
 
     table_evidence: FragmentSetccIndexedTableEvidence
+    fallthrough_delivery: FragmentSetccFallthroughDelivery
 
     def __post_init__(self) -> None:
         FragmentComputedBranchNormalization.__post_init__(self)
@@ -1055,6 +1063,13 @@ class FragmentSetccIndexedTableNormalization(FragmentComputedBranchNormalization
         if not isinstance(evidence, FragmentSetccIndexedTableEvidence):
             raise TypeError(
                 "setcc indexed-table normalization requires typed table evidence"
+            )
+        if not isinstance(
+            self.fallthrough_delivery,
+            FragmentSetccFallthroughDelivery,
+        ):
+            raise TypeError(
+                "setcc indexed-table normalization requires typed fallthrough delivery"
             )
         if (
             self.conditional_select_envelope is not None
@@ -1580,10 +1595,13 @@ class FragmentOperation:
                 }
             )
         )
-        return has_fallthrough and not isinstance(
-            self.computed_branch_normalization,
-            FragmentSetccIndexedTableNormalization,
-        )
+        normalization = self.computed_branch_normalization
+        if isinstance(normalization, FragmentSetccIndexedTableNormalization):
+            return has_fallthrough and (
+                normalization.fallthrough_delivery
+                is FragmentSetccFallthroughDelivery.PLANNED_HELPER
+            )
+        return has_fallthrough
 
 
 @dataclass(frozen=True, slots=True)
@@ -3481,6 +3499,7 @@ __all__ = [
     "FragmentRangeAssumption",
     "FragmentRangeObservation",
     "FragmentReferenceRouteAuthority",
+    "FragmentSetccFallthroughDelivery",
     "FragmentSetccIndexExtensionKind",
     "FragmentSetccIndexScaling",
     "FragmentSetccIndexScalingKind",
