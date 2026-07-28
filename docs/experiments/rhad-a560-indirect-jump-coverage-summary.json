@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "ee16bf28398705e0c4e0d2010119c2cec52280ff",
+  "accepted_code_sha": "ccc1df2c83ced80261b5a111f8f22b0b58629551",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -48,7 +48,8 @@
     "rhad:route@0x40AB15",
     "rhad:route@0x40AB2F",
     "route:rhad-direct@0x40AB74",
-    "rhad:route@0x40AB8E"
+    "rhad:route@0x40AB8E",
+    "rhad:route@0x40ABA8"
   ],
   "variants": [
     {
@@ -77,12 +78,12 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 26,
-      "vertically_proved_operations": 26,
-      "accepted_receipt_operations": 26,
-      "earliest_unproved_reference_order": 47,
-      "earliest_unproved_operation_id": "rhad:route@0x40ABA8",
-      "first_missing_typed_obligation": "instantiate the proved RhadExistingConditionalRoute vocabulary with exact row47 reference evidence, native-body proof, and row46 dependency closure"
+      "compiled_operation_instances": 27,
+      "vertically_proved_operations": 27,
+      "accepted_receipt_operations": 27,
+      "earliest_unproved_reference_order": 49,
+      "earliest_unproved_operation_id": "rhad:route@0x40ABDE",
+      "first_missing_typed_obligation": "import the typed 0x40ABE0 true-target closure into the portable source plan before instantiating the proved RhadExistingConditionalRoute vocabulary"
     },
     {
       "operation_variant": "setcc_indexed_table",
