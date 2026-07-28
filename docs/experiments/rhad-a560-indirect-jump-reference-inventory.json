@@ -7978,9 +7978,15 @@
         4236807,
         4241088
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "7803ce91d",
+          "6bb5cc4f9",
+          "1868749f6",
+          "bac25ed68"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
