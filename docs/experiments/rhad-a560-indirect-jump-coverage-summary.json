@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "eaf5869876f5739e781ef78d6ad2c8158c85dc61",
+  "accepted_code_sha": "b5119ff9dfcf67d1673786654108e036956ccec7",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -100,16 +100,17 @@
     "rhad:route@0x40B340",
     "rhad:route@0x40B37A",
     "rhad:route@0x40B394",
-    "rhad:route@0x40B3AE"
+    "rhad:route@0x40B3AE",
+    "rhad:route@0x40B3E3"
   ],
   "variants": [
     {
       "operation_variant": "cmov_selected_indirect",
       "total_reference_operations": 39,
       "compiler_supported_operations": 39,
-      "compiled_operation_instances": 14,
-      "vertically_proved_operations": 14,
-      "accepted_receipt_operations": 14,
+      "compiled_operation_instances": 15,
+      "vertically_proved_operations": 15,
+      "accepted_receipt_operations": 15,
       "earliest_unproved_reference_order": 0,
       "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
       "first_missing_typed_obligation": "instantiate existing RhadConditionalRoute vocabulary with exact per-operation evidence and dependency closure"
