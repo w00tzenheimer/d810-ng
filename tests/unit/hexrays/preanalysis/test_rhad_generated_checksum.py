@@ -70,7 +70,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 207
+    assert len(IMPORTED_BLOCK_IDS) == 206
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -115,7 +115,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40AA12,
         0x40B0BC,
         0x40AA2C,
-        0x40AA7A,
+        0x40AA88,
         0x40ADBE,
         0x40A77E,
         0x40ABC6,
@@ -1619,7 +1619,7 @@ def test_checksum_producer_compiles_row38_existing_conditional_reference() -> No
     assert normalization.condition_producer_ea == 0x40AA66
     assert normalization.unresolved_transfer_ea == 0x40AA78
     assert {edge.role: edge.target_block_id for edge in operation.edges} == {
-        SemanticEdgeRole.CONDITIONAL_TAKEN: "native@0x40AA7A",
+        SemanticEdgeRole.CONDITIONAL_TAKEN: "native@0x40AA88",
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40ADBE",
     }
     payload = json.loads(
@@ -1636,7 +1636,6 @@ def test_checksum_producer_compiles_row38_existing_conditional_reference() -> No
     assert payload["true_target_ea"] == 0x40AA7A
     assert payload["false_target_ea"] == 0x40ADBE
     assert payload["imported_closure_block_ids"] == [
-        "native@0x40AA7A",
         "native@0x40AA88",
         "native@0x40AA8E",
         "native@0x40AA92",
@@ -1653,7 +1652,7 @@ def test_checksum_producer_compiles_row38_existing_conditional_reference() -> No
     true_template = next(
         fragment
         for fragment in batch.template_fragments
-        if fragment.root_ea == 0x40AA7A
+        if fragment.root_ea == 0x40AA88
     )
     assert true_template.preserved_transfer_exit_map == {
         0x40AA92: (0x40AA94, 0x40B1F2),
@@ -1666,6 +1665,9 @@ def test_checksum_producer_compiles_row38_existing_conditional_reference() -> No
     assert false_template.preserved_transfer_exit_map == {
         0x40ADD6: (0x40B21C,),
     }
+    assert {"native@0x40AA88", "native@0x40ADBE"}.issubset(
+        batch.native_body_entry_block_ids
+    )
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
