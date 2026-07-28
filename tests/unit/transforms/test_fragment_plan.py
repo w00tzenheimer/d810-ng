@@ -840,6 +840,9 @@ def test_setcc_indexed_table_normalization_persists_exact_target_derivation() ->
         condition_producer_ea=0x40A768,
         unresolved_transfer_ea=0x40A77C,
         table_evidence=evidence,
+        fallthrough_delivery=(
+            fragment_plan.FragmentSetccFallthroughDelivery.PHYSICAL_ADJACENCY
+        ),
     )
 
     assert normalization.table_evidence.entries == entries

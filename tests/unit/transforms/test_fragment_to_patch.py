@@ -76,9 +76,13 @@ def test_setcc_table_lowering_uses_typed_physical_fallthrough() -> None:
         evidence_generation=1,
     )
     selected = plan.operation("rhad:route@0x40A77C")
+    planned = plan.operation("rhad:route@0x40AE3C")
     accepted = plan.operation("rhad:route@0x40A605")
 
     assert _operation_fallthrough_helper_id(selected) is None
+    assert _operation_fallthrough_helper_id(planned) == (
+        "fallthrough-helper:rhad:route@0x40AE3C"
+    )
     assert _operation_fallthrough_helper_id(accepted) == (
         "fallthrough-helper:rhad:route@0x40A605"
     )

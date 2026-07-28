@@ -1455,6 +1455,9 @@ def _fourth_shape_ledger():
         condition_producer_ea=0x40A768,
         predicate_anchor_ea=0x40A76E,
         predicate_kind=PredicateKind.SLT,
+        fallthrough_delivery=(
+            compiler.FragmentSetccFallthroughDelivery.PHYSICAL_ADJACENCY
+        ),
         true_target_block_id="native@0x40A77E",
         false_target_block_id="native@0x40ABC6",
         true_target_ea=0x40A77E,
@@ -1870,6 +1873,9 @@ def _fifth_shape_ledger():
         condition_producer_ea=0x40A780,
         predicate_anchor_ea=0x40A786,
         predicate_kind=PredicateKind.SGE,
+        fallthrough_delivery=(
+            compiler.FragmentSetccFallthroughDelivery.PHYSICAL_ADJACENCY
+        ),
         true_target_block_id="native@0x40AEE6",
         false_target_block_id="native@0x40A794",
         true_target_ea=0x40AEE6,
@@ -2050,12 +2056,49 @@ def test_compiler_rejects_setcc_without_false_target_physical_adjacency() -> Non
         )
 
 
+def test_compiler_accepts_typed_setcc_planned_helper_without_adjacency() -> None:
+    compiler = _compiler_module()
+    ledger = _fifth_shape_ledger()
+    blocks = list(ledger.base_plan.blocks)
+    source_index = next(
+        index
+        for index, block in enumerate(blocks)
+        if block.block_id == "native@0x40A77E"
+    )
+    false_target = blocks.pop(source_index + 1)
+    blocks.append(false_target)
+    *dependencies, selected = ledger.operations
+    helper_selected = replace(
+        selected,
+        fallthrough_delivery=(
+            compiler.FragmentSetccFallthroughDelivery.PLANNED_HELPER
+        ),
+    )
+    helper_ledger = replace(
+        ledger,
+        base_plan=replace(ledger.base_plan, blocks=tuple(blocks)),
+        operations=(*dependencies, helper_selected),
+    )
+
+    plan = compiler.compile_rhad_reference_fragment(
+        helper_ledger,
+        expected_evidence_generation=1,
+    )
+
+    operation = plan.operation(helper_selected.operation_id)
+    assert operation.requires_fallthrough_helper is True
+    assert (
+        operation.computed_branch_normalization.fallthrough_delivery
+        is compiler.FragmentSetccFallthroughDelivery.PLANNED_HELPER
+    )
+
+
 def test_compiler_rejects_unsupported_setcc_predicate_kind() -> None:
     compiler = _compiler_module()
     ledger = _fifth_shape_ledger()
     *dependencies, selected = ledger.operations
 
     with pytest.raises(
-        compiler.RhadCompilerRejection, match="supported signed predicate"
+        compiler.RhadCompilerRejection, match="supported typed predicate"
     ):
-        replace(selected, predicate_kind=PredicateKind.EQ)
+        replace(selected, predicate_kind=PredicateKind.NE)

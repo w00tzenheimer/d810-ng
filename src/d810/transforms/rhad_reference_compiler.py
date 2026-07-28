@@ -33,6 +33,7 @@ from d810.transforms.fragment_plan import (
     FragmentReferenceRouteAuthority,
     FragmentReferencedImportedConditionalSelectEnvelope,
     FragmentSetccExplicitShiftScaling,
+    FragmentSetccFallthroughDelivery,
     FragmentSetccIndexExtensionKind,
     FragmentSetccIndexedTableEntry,
     FragmentSetccIndexedTableEvidence,
@@ -904,6 +905,7 @@ class RhadSetccIndexedTableRoute:
     condition_producer_ea: int
     predicate_anchor_ea: int
     predicate_kind: PredicateKind
+    fallthrough_delivery: FragmentSetccFallthroughDelivery
     true_target_block_id: str
     false_target_block_id: str
     true_target_ea: int
@@ -962,10 +964,19 @@ class RhadSetccIndexedTableRoute:
             )
         if not isinstance(self.predicate_kind, PredicateKind):
             raise TypeError("Rhad setcc table route requires a portable predicate")
-        if self.predicate_kind not in {PredicateKind.SLT, PredicateKind.SGE}:
+        if self.predicate_kind not in {
+            PredicateKind.EQ,
+            PredicateKind.SLT,
+            PredicateKind.SGE,
+        }:
             raise RhadCompilerRejection(
-                "Rhad setcc table route requires a supported signed predicate"
+                "Rhad setcc table route requires a supported typed predicate"
             )
+        if not isinstance(
+            self.fallthrough_delivery,
+            FragmentSetccFallthroughDelivery,
+        ):
+            raise TypeError("Rhad setcc table route requires typed fallthrough delivery")
         artifact = self.table_proof_artifact
         if not isinstance(artifact, RhadSetccIndexedTableProofArtifact):
             raise TypeError("Rhad setcc table route requires a typed proof artifact")
@@ -1273,7 +1284,9 @@ def _validate_ledger(
             continue
         source_position = block_positions.get(operation.source_block_id)
         false_position = block_positions.get(operation.false_target_block_id)
-        if (
+        if operation.fallthrough_delivery is (
+            FragmentSetccFallthroughDelivery.PHYSICAL_ADJACENCY
+        ) and (
             source_position is None
             or false_position is None
             or false_position != source_position + 1
@@ -1404,6 +1417,7 @@ def _reference_payload(
                 "condition_producer_ea": int(route.condition_producer_ea),
                 "false_target_block_id": route.false_target_block_id,
                 "false_target_ea": int(route.false_target_ea),
+                "fallthrough_delivery": route.fallthrough_delivery.value,
                 "operation_variant": route.operation_variant.value,
                 "predicate_anchor_ea": int(route.predicate_anchor_ea),
                 "predicate_kind": route.predicate_kind.value,
@@ -2083,14 +2097,26 @@ def _compile_setcc_indexed_table_route(
             "Rhad setcc table source anchors are ambiguous or out of corridor ownership"
         )
     targets = (route.true_target_block_id, route.false_target_block_id)
-    if any(
-        target_id not in route.imported_closure_block_ids
-        or block_by_id[target_id].role is not FragmentBlockRole.IMPORTED
-        or block_by_id[target_id].stable_identity is None
-        for target_id in targets
+    target_blocks = tuple(block_by_id[target_id] for target_id in targets)
+    imported_target_ids = {
+        target.block_id
+        for target in target_blocks
+        if target.role is FragmentBlockRole.IMPORTED
+    }
+    if (
+        any(target.stable_identity is None for target in target_blocks)
+        or not imported_target_ids.issubset(route.imported_closure_block_ids)
+        or (
+            route.fallthrough_delivery
+            is FragmentSetccFallthroughDelivery.PHYSICAL_ADJACENCY
+            and any(
+                target.role is not FragmentBlockRole.IMPORTED
+                for target in target_blocks
+            )
+        )
     ):
         raise RhadCompilerRejection(
-            "Rhad setcc table requires complete imported branch arms"
+            "Rhad setcc table requires complete typed branch-arm delivery"
         )
     if int(block_by_id[route.true_target_block_id].semantic_anchor_ea) != int(
         route.true_target_ea
@@ -2143,6 +2169,7 @@ def _compile_setcc_indexed_table_route(
             condition_producer_ea=int(route.condition_producer_ea),
             unresolved_transfer_ea=int(route.transfer_ea),
             table_evidence=route.table_evidence,
+            fallthrough_delivery=route.fallthrough_delivery,
         ),
         reference_route_authority=FragmentReferenceRouteAuthority(
             reference_route=reference_route,
