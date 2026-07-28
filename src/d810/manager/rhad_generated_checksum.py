@@ -801,7 +801,10 @@ class RhadGeneratedTemplateFragment:
             or len(set(preserved_unresolved_transfer_eas))
             != len(preserved_unresolved_transfer_eas)
             or any(
-                not any(start_ea <= ea < end_ea for start_ea, end_ea in owned_ranges)
+                not any(
+                    start_ea <= ea < end_ea
+                    for start_ea, end_ea in (*owned_ranges, *boundary_ranges)
+                )
                 for ea in preserved_unresolved_transfer_eas
             )
         ):
@@ -813,11 +816,14 @@ class RhadGeneratedTemplateFragment:
                     "transfer"
                 )
             if any(
-                not any(start_ea <= ea < end_ea for start_ea, end_ea in owned_ranges)
+                not any(
+                    start_ea <= ea < end_ea
+                    for start_ea, end_ea in (*owned_ranges, *boundary_ranges)
+                )
                 for ea in preserved_unresolved_transfer_eas
             ):
                 raise ValueError(
-                    "Rhad preserved transfer is outside its owned native range"
+                    "Rhad preserved transfer is outside its captured native range"
                 )
             if not preserved_boundary_exit_eas.issubset(boundary_exits) or len(
                 boundary_ranges
@@ -1107,6 +1113,7 @@ _SELECTED_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A6A0",
     source_native_ea=0x40A68C,
     source_block_anchor_ea=0x40A6A0,
+    join_ea=0x40A6A0,
     transfer_ea=0x40A6A4,
     condition_producer_ea=0x40A692,
     predicate_anchor_ea=0x40A698,
@@ -1146,6 +1153,7 @@ _ROW9_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A6BA",
     source_native_ea=0x40A6A6,
     source_block_anchor_ea=0x40A6BA,
+    join_ea=0x40A6BA,
     transfer_ea=0x40A6BE,
     condition_producer_ea=0x40A6AC,
     predicate_anchor_ea=0x40A6B2,
@@ -1185,6 +1193,7 @@ _ROW10_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A6D4",
     source_native_ea=0x40A6C0,
     source_block_anchor_ea=0x40A6D4,
+    join_ea=0x40A6D4,
     transfer_ea=0x40A6D8,
     condition_producer_ea=0x40A6C6,
     predicate_anchor_ea=0x40A6CC,
@@ -1224,6 +1233,7 @@ _ROW11_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A6EE",
     source_native_ea=0x40A6DA,
     source_block_anchor_ea=0x40A6EE,
+    join_ea=0x40A6EE,
     transfer_ea=0x40A6F2,
     condition_producer_ea=0x40A6E0,
     predicate_anchor_ea=0x40A6E6,
@@ -1263,6 +1273,7 @@ _ROW12_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A708",
     source_native_ea=0x40A6F4,
     source_block_anchor_ea=0x40A708,
+    join_ea=0x40A708,
     transfer_ea=0x40A70C,
     condition_producer_ea=0x40A6FA,
     predicate_anchor_ea=0x40A700,
@@ -1326,6 +1337,7 @@ _FOURTH_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A760",
     source_native_ea=0x40A74C,
     source_block_anchor_ea=0x40A760,
+    join_ea=0x40A760,
     transfer_ea=0x40A764,
     condition_producer_ea=0x40A752,
     predicate_anchor_ea=0x40A758,
@@ -1434,6 +1446,7 @@ _SIXTH_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A7A8",
     source_native_ea=0x40A794,
     source_block_anchor_ea=0x40A7A8,
+    join_ea=0x40A7A8,
     transfer_ea=0x40A7AC,
     condition_producer_ea=0x40A79A,
     predicate_anchor_ea=0x40A7A0,
@@ -1497,6 +1510,7 @@ _ROW20_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A814",
     source_native_ea=0x40A800,
     source_block_anchor_ea=0x40A814,
+    join_ea=0x40A814,
     transfer_ea=0x40A818,
     condition_producer_ea=0x40A806,
     predicate_anchor_ea=0x40A80C,
@@ -1536,6 +1550,7 @@ _ROW21_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A82E",
     source_native_ea=0x40A81A,
     source_block_anchor_ea=0x40A82E,
+    join_ea=0x40A82E,
     transfer_ea=0x40A832,
     condition_producer_ea=0x40A820,
     predicate_anchor_ea=0x40A826,
@@ -1575,6 +1590,7 @@ _ROW22_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A848",
     source_native_ea=0x40A834,
     source_block_anchor_ea=0x40A848,
+    join_ea=0x40A848,
     transfer_ea=0x40A84C,
     condition_producer_ea=0x40A83A,
     predicate_anchor_ea=0x40A840,
@@ -1614,6 +1630,7 @@ _ROW23_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A862",
     source_native_ea=0x40A84E,
     source_block_anchor_ea=0x40A862,
+    join_ea=0x40A862,
     transfer_ea=0x40A866,
     condition_producer_ea=0x40A854,
     predicate_anchor_ea=0x40A85A,
@@ -1677,6 +1694,7 @@ _ROW26_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A8C9",
     source_native_ea=0x40A8B5,
     source_block_anchor_ea=0x40A8C9,
+    join_ea=0x40A8C9,
     transfer_ea=0x40A8CD,
     condition_producer_ea=0x40A8BB,
     predicate_anchor_ea=0x40A8C1,
@@ -1716,6 +1734,7 @@ _ROW27_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A8E3",
     source_native_ea=0x40A8CF,
     source_block_anchor_ea=0x40A8E3,
+    join_ea=0x40A8E3,
     transfer_ea=0x40A8E7,
     condition_producer_ea=0x40A8D5,
     predicate_anchor_ea=0x40A8DB,
@@ -1755,6 +1774,7 @@ _ROW28_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A8FD",
     source_native_ea=0x40A8E9,
     source_block_anchor_ea=0x40A8FD,
+    join_ea=0x40A8FD,
     transfer_ea=0x40A901,
     condition_producer_ea=0x40A8EF,
     predicate_anchor_ea=0x40A8F5,
@@ -1818,6 +1838,7 @@ _ROW30_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A974",
     source_native_ea=0x40A960,
     source_block_anchor_ea=0x40A974,
+    join_ea=0x40A974,
     transfer_ea=0x40A978,
     condition_producer_ea=0x40A966,
     predicate_anchor_ea=0x40A96C,
@@ -1857,6 +1878,7 @@ _ROW31_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A98E",
     source_native_ea=0x40A97A,
     source_block_anchor_ea=0x40A98E,
+    join_ea=0x40A98E,
     transfer_ea=0x40A992,
     condition_producer_ea=0x40A980,
     predicate_anchor_ea=0x40A986,
@@ -1896,6 +1918,7 @@ _ROW32_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A9A8",
     source_native_ea=0x40A994,
     source_block_anchor_ea=0x40A9A8,
+    join_ea=0x40A9A8,
     transfer_ea=0x40A9AC,
     condition_producer_ea=0x40A99A,
     predicate_anchor_ea=0x40A9A0,
@@ -1974,6 +1997,7 @@ _ROW34_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40A9F2",
     source_native_ea=0x40A9DE,
     source_block_anchor_ea=0x40A9F2,
+    join_ea=0x40A9F2,
     transfer_ea=0x40A9F6,
     condition_producer_ea=0x40A9E4,
     predicate_anchor_ea=0x40A9EA,
@@ -2013,6 +2037,7 @@ _ROW35_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40AA0C",
     source_native_ea=0x40A9F8,
     source_block_anchor_ea=0x40AA0C,
+    join_ea=0x40AA0C,
     transfer_ea=0x40AA10,
     condition_producer_ea=0x40A9FE,
     predicate_anchor_ea=0x40AA04,
@@ -2052,6 +2077,7 @@ _ROW36_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40AA26",
     source_native_ea=0x40AA12,
     source_block_anchor_ea=0x40AA26,
+    join_ea=0x40AA26,
     transfer_ea=0x40AA2A,
     condition_producer_ea=0x40AA18,
     predicate_anchor_ea=0x40AA1E,
@@ -2130,6 +2156,7 @@ _ROW38_EXISTING_ROUTE = RhadExistingConditionalRoute(
     join_block_id="native@0x40AA74",
     source_native_ea=0x40AA60,
     source_block_anchor_ea=0x40AA74,
+    join_ea=0x40AA74,
     transfer_ea=0x40AA78,
     condition_producer_ea=0x40AA66,
     predicate_anchor_ea=0x40AA6C,

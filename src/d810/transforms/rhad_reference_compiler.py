@@ -726,6 +726,7 @@ class RhadExistingConditionalRoute:
     join_block_id: str
     source_native_ea: int
     source_block_anchor_ea: int
+    join_ea: int
     transfer_ea: int
     condition_producer_ea: int
     predicate_anchor_ea: int
@@ -786,6 +787,7 @@ class RhadExistingConditionalRoute:
         for field_name in (
             "source_native_ea",
             "source_block_anchor_ea",
+            "join_ea",
             "transfer_ea",
             "condition_producer_ea",
             "predicate_anchor_ea",
@@ -844,6 +846,7 @@ class RhadExistingConditionalRoute:
                 < self.predicate_anchor_ea
                 < self.selected_value_ea
                 <= self.source_block_anchor_ea
+                <= self.join_ea
                 < self.transfer_ea
             )
         ):
@@ -1292,7 +1295,25 @@ def _validate_ledger(
             "Rhad operation closure union differs from the portable base fragment: "
             f"missing={missing!r} foreign={foreign!r}"
         )
-    internalized_exit_eas = {int(block.semantic_anchor_ea) for block in imported_blocks}
+    internalized_exit_eas = {
+        int(block.semantic_anchor_ea) for block in imported_blocks
+    } | {
+        int(target_ea)
+        for operation in ledger.operations
+        if isinstance(
+            operation,
+            (
+                RhadConditionalRoute,
+                RhadExistingConditionalRoute,
+                RhadSetccIndexedTableRoute,
+            ),
+        )
+        for target_block_id, target_ea in (
+            (operation.true_target_block_id, operation.true_target_ea),
+            (operation.false_target_block_id, operation.false_target_ea),
+        )
+        if target_block_id in imported_ids
+    }
     derived_boundary_exit_eas = tuple(
         sorted(
             {
@@ -1369,6 +1390,7 @@ def _reference_payload(
                 "reference_order": int(route.reference_order),
                 "reference_symbol": route.reference_symbol,
                 "source_block_anchor_ea": int(route.source_block_anchor_ea),
+                "join_ea": int(route.join_ea),
                 "source_native_ea": int(route.source_native_ea),
                 "true_target_ea": int(route.true_target_ea),
                 "false_target_ea": int(route.false_target_ea),
@@ -1871,7 +1893,7 @@ def _compile_existing_conditional_route(
     if (
         not selected.stable_identity.native_ranges.contains(route.selected_value_ea)
         or route.selected_value_ea not in selected.stable_identity.exact_instruction_eas
-        or not join.stable_identity.native_ranges.contains(route.source_block_anchor_ea)
+        or not join.stable_identity.native_ranges.contains(route.join_ea)
         or not join.stable_identity.native_ranges.contains(route.transfer_ea)
         or route.transfer_ea not in join.stable_identity.exact_instruction_eas
     ):
