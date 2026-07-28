@@ -172,6 +172,7 @@ def _setcc_indexed_table_branch_opcode(
     """Return the exact boolean branch selected by typed predicate evidence."""
     if normalization.predicate_kind not in {
         PredicateKind.EQ,
+        PredicateKind.NE,
         PredicateKind.SLT,
         PredicateKind.SGE,
     }:
@@ -193,6 +194,22 @@ def _setcc_indexed_table_branch_opcode(
         if predicate_true_opcode == int(ida_hexrays.m_jnz)
         else int(ida_hexrays.m_jnz)
     )
+
+
+def _preflight_generated_operation_vocabulary(plan: FragmentPlan) -> None:
+    """Reject unsupported graph-free operations before live mutation opens."""
+    for operation in plan.operations:
+        normalization = operation.computed_branch_normalization
+        if not isinstance(normalization, FragmentSetccIndexedTableNormalization):
+            continue
+        try:
+            _setcc_indexed_table_branch_opcode(normalization)
+        except SemanticFragmentBackendRejected as exc:
+            raise FragmentProjectionFailure(
+                FragmentValidationPostcondition.OPERATION_TOPOLOGY,
+                operation.operation_id,
+                str(exc),
+            ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -4836,6 +4853,8 @@ def snapshot_semantic_fragment_inputs(
         raise SemanticFragmentBackendRejected(
             "semantic fragment snapshots require an idle mutation gateway"
         )
+
+    _preflight_generated_operation_vocabulary(plan)
 
     try:
         preparations = _prepare_native_bodies(modifier, plan)
