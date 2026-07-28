@@ -2340,15 +2340,21 @@ def validate_published_fragment_observation(
     )
 
     semantic_outcomes = observation.semantic_outcomes
+    semantic_outcomes_by_identity: dict[
+        tuple[FragmentValidationPostcondition, str],
+        list[FragmentValidationOutcome],
+    ] = {}
+    for outcome in semantic_outcomes:
+        semantic_outcomes_by_identity.setdefault(
+            (outcome.postcondition, outcome.subject_id),
+            [],
+        ).append(outcome)
     for postcondition, subject_id in _required_postpublication_outcomes(
         plan,
         prepublication_projection,
     ):
         matching = tuple(
-            outcome
-            for outcome in semantic_outcomes
-            if outcome.postcondition is postcondition
-            and outcome.subject_id == subject_id
+            semantic_outcomes_by_identity.get((postcondition, subject_id), ())
         )
         passed = len(matching) == 1 and matching[0].passed
         _outcome(
