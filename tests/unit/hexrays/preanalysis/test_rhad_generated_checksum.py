@@ -8214,6 +8214,8 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
     assert summary["accepted_code_sha"] == ("47fae218d2aa69c5f07c49df62a972ddbeb405f8")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
+    assert len(accepted_operation_ids) == 94
+    assert accepted_operation_ids[-1] == "rhad:route@0x40B394"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
