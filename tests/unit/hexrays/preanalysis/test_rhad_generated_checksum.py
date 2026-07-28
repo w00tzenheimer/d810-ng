@@ -6397,6 +6397,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row96 = next(
         operation for operation in operations if operation["reference_order"] == 96
     )
+    row97 = next(
+        operation for operation in operations if operation["reference_order"] == 97
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -8015,6 +8018,12 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "proof_artifact_identity": row96_artifact.content_identity,
         "status": "accepted_generated_c6",
     }
+    assert row97["operation_id"] == "rhad:route@0x40B37A"
+    assert row97["current_compiler_support"] == "typed_cmov_selected_indirect"
+    assert row97["current_generated_proof"] == {
+        "accepted_commits": ["9e648564f", "9bc350b73", "850518a72"],
+        "status": "accepted_generated_c6",
+    }
 
 
 def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() -> None:
@@ -8049,7 +8058,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("c90b885434839c6a1612250346960b97085c0482")
+    assert summary["accepted_code_sha"] == ("850518a72fcbf9aa3d12f3eb16e5368a01e111be")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
     assert (
@@ -8059,9 +8068,9 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 13,
-        "vertically_proved_operations": 13,
-        "accepted_receipt_operations": 13,
+        "compiled_operation_instances": 14,
+        "vertically_proved_operations": 14,
+        "accepted_receipt_operations": 14,
         "earliest_unproved_reference_order": 0,
         "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
         "first_missing_typed_obligation": (
