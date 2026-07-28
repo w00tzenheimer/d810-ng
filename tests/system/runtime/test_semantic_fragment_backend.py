@@ -2871,6 +2871,61 @@ def test_generated_setcc_branch_opcode_accepts_typed_equality_evidence() -> None
     )
 
 
+def test_generated_setcc_branch_opcode_accepts_typed_inequality_evidence() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=(
+                "sha256:2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+            ),
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+    operation = plan.operation("rhad:route@0x40B340")
+    normalization = operation.computed_branch_normalization
+
+    assert normalization is not None
+    assert normalization.predicate_kind is PredicateKind.NE
+    assert sfb._setcc_indexed_table_branch_opcode(normalization) == int(
+        ida_hexrays.m_jz
+    )
+
+
+def test_generated_setcc_unsupported_predicate_rejects_during_preflight() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=(
+                "sha256:2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+            ),
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+    operation = plan.operation("rhad:route@0x40B340")
+    normalization = operation.computed_branch_normalization
+    assert normalization is not None
+    unsupported = replace(
+        operation,
+        computed_branch_normalization=replace(
+            normalization,
+            predicate_kind=PredicateKind.ULT,
+        ),
+    )
+    unsupported_plan = replace(
+        plan,
+        operations=tuple(
+            unsupported if item.operation_id == operation.operation_id else item
+            for item in plan.operations
+        ),
+    )
+
+    with pytest.raises(
+        sfb.FragmentProjectionFailure,
+        match="unsupported predicate",
+    ):
+        sfb._preflight_generated_operation_vocabulary(unsupported_plan)
+
+
 def test_generated_setcc_planned_fallthrough_uses_shared_semantic_edge_participant(
     monkeypatch,
 ) -> None:
