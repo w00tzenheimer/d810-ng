@@ -8,7 +8,7 @@ live binding and mutation remain backend responsibilities.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import Enum
 import hashlib
 import json
@@ -1058,6 +1058,55 @@ RhadReferenceOperation = (
 )
 
 
+def _canonical_typed_reference_value(value: object) -> object:
+    """Return deterministic JSON data for portable typed reference evidence."""
+    if isinstance(value, Enum):
+        return value.value
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: _canonical_typed_reference_value(getattr(value, field.name))
+            for field in fields(value)
+        }
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise RhadCompilerRejection(
+                "Rhad typed reference identity requires string mapping keys"
+            )
+        return {
+            key: _canonical_typed_reference_value(value[key]) for key in sorted(value)
+        }
+    if isinstance(value, (tuple, list)):
+        return [_canonical_typed_reference_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    raise RhadCompilerRejection(
+        "Rhad typed reference identity contains unsupported portable value "
+        f"{type(value).__name__}"
+    )
+
+
+def rhad_reference_operation_identity_payload(
+    operation: RhadReferenceOperation,
+) -> dict[str, object]:
+    """Bind every serial-free typed operation field into program identity."""
+    if not isinstance(
+        operation,
+        (
+            RhadConditionalRoute,
+            RhadDirectRoute,
+            RhadExistingConditionalRoute,
+            RhadSetccIndexedTableRoute,
+        ),
+    ):
+        raise TypeError("Rhad reference identity requires an admitted operation")
+    payload = _canonical_typed_reference_value(operation)
+    if not isinstance(payload, dict):
+        raise RhadCompilerRejection(
+            "Rhad typed reference operation identity must be a mapping"
+        )
+    return payload
+
+
 @dataclass(frozen=True, slots=True)
 class RhadReferenceLedger:
     """Immutable compiler input for one reference-ordered fragment batch."""
@@ -1137,10 +1186,9 @@ class RhadReferenceLedger:
     @property
     def aggregate_program_identity(self) -> str:
         payload = {
-            "direct_reference_identities": [
-                operation.reference_identity_payload
+            "operation_reference_identities": [
+                rhad_reference_operation_identity_payload(operation)
                 for operation in self.operations
-                if isinstance(operation, RhadDirectRoute)
             ],
             "function_ea": int(self.native_function_ea),
             "input_sha256": self.reference_oracle_run.candidate_binary_sha256.lower(),

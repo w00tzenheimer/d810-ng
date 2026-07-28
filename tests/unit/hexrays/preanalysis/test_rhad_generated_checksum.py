@@ -50,6 +50,29 @@ def test_aggregate_identity_binds_typed_direct_reference_evidence() -> None:
     assert changed_batch.aggregate_program_identity != batch.aggregate_program_identity
 
 
+def test_aggregate_identity_binds_conditional_boundary_evidence() -> None:
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+    row38 = next(
+        operation
+        for operation in batch.operations
+        if operation.operation_id == "rhad:route@0x40AA78"
+    )
+    changed = replace(
+        row38,
+        boundary_exit_eas=(0x40AA94, 0x40B0F4, 0x40B21C),
+    )
+    changed_batch = replace(
+        batch,
+        operations=tuple(
+            changed if operation is row38 else operation
+            for operation in batch.operations
+        ),
+    )
+
+    assert changed_batch.aggregate_program_identity != batch.aggregate_program_identity
+
+
 def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(),

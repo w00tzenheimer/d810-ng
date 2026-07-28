@@ -1618,6 +1618,39 @@ def test_compiler_emits_typed_setcc_indexed_table_route() -> None:
     assert payload["setcc_table"]["entries"][1]["decoded_target_ea"] == 0x40A77E
 
 
+def test_aggregate_identity_binds_existing_conditional_boundary_evidence() -> None:
+    ledger = _fourth_shape_ledger()
+    operation = next(
+        operation
+        for operation in ledger.operations
+        if operation.operation_id == "rhad:route@0x40A764"
+    )
+    changed_operation = replace(
+        operation,
+        boundary_exit_eas=(0x40A78E, 0x40AB48, 0x40B1D2),
+    )
+    changed_ledger = replace(
+        ledger,
+        operations=tuple(
+            changed_operation if candidate is operation else candidate
+            for candidate in ledger.operations
+        ),
+        required_boundary_exit_eas=(
+            0x40A633,
+            0x40A794,
+            0x40A9A0,
+            0x40AD6E,
+            0x40AEE6,
+            0x40B1D2,
+            0x40B790,
+        ),
+    )
+
+    assert (
+        changed_ledger.aggregate_program_identity != ledger.aggregate_program_identity
+    )
+
+
 def test_compiler_rejects_setcc_route_without_native_body_proof() -> None:
     compiler = _compiler_module()
     ledger = _fourth_shape_ledger()
