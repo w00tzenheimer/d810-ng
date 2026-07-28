@@ -1444,6 +1444,66 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 merged[key] = row
         return tuple(merged[key] for key in sorted(merged))
 
+    @staticmethod
+    def _merge_generated_reference_stack_rows(
+        templates: tuple[DetachedSnippetTemplate, ...],
+        attribute: str,
+    ) -> tuple[tuple[int, ...], ...]:
+        """Merge template-wide stack identities without conflating local VDs.
+
+        A detached component may reuse the same source VD for a different IDA
+        frame slot.  Such an alias has no valid composite-wide identity and is
+        omitted only when every concrete stack use is covered by exact
+        ``(instruction EA, source VD, IDA offset)`` evidence.  Otherwise the
+        composition still rejects before mutation.
+        """
+        if attribute not in {"stack_vd_to_ida", "stable_stack_vd_to_ida"}:
+            raise ValueError("GENERATED stack merge requires a typed stack map")
+        grouped: dict[
+            tuple[int, ...],
+            list[tuple[DetachedSnippetTemplate, tuple[int, ...]]],
+        ] = {}
+        for template in templates:
+            for raw_row in getattr(template, attribute):
+                row = tuple(int(value) for value in raw_row)
+                grouped.setdefault(row[:1], []).append((template, row))
+
+        merged: list[tuple[int, ...]] = []
+        for key in sorted(grouped):
+            records = grouped[key]
+            rows = {row for _template, row in records}
+            if len(rows) == 1:
+                merged.append(next(iter(rows)))
+                continue
+            source_vd = int(key[0])
+            for template, row in records:
+                ida_offset = int(row[1])
+                use_eas = {
+                    int(instruction.ea)
+                    for block in template.blocks
+                    for instruction in block.instructions
+                    if any(
+                        int(operand.t) == int(ida_hexrays.mop_S)
+                        and int(operand.s.off) == source_vd
+                        for operand in _instruction_operands(instruction)
+                    )
+                }
+                scoped_eas = {
+                    int(instruction_ea)
+                    for instruction_ea, scoped_vd, scoped_ida_offset in (
+                        template.instruction_stack_vd_to_ida
+                    )
+                    if int(scoped_vd) == source_vd
+                    and int(scoped_ida_offset) == ida_offset
+                }
+                if not use_eas or not use_eas.issubset(scoped_eas):
+                    raise SemanticFragmentBackendRejected(
+                        "GENERATED reference templates disagree on "
+                        f"{attribute} key {key!r} without complete "
+                        "instruction-scoped stack identity"
+                    )
+        return tuple(merged)
+
     def _compose_generated_reference_templates(
         self,
         entry_anchors: set[int],
@@ -1682,13 +1742,13 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             maturity=int(ida_hexrays.MMAT_PREOPTIMIZED),
             root_source_serial=int(root_serial),
             blocks=tuple(rebased_blocks),
-            stack_vd_to_ida=self._merge_generated_reference_rows(
-                components, "stack_vd_to_ida", key_width=1
+            stack_vd_to_ida=self._merge_generated_reference_stack_rows(
+                components, "stack_vd_to_ida"
             ),
             owned_ranges=tuple((start, end) for start, end in owned_ranges),
             call_result_carriers=tuple(carriers),
-            stable_stack_vd_to_ida=self._merge_generated_reference_rows(
-                components, "stable_stack_vd_to_ida", key_width=1
+            stable_stack_vd_to_ida=self._merge_generated_reference_stack_rows(
+                components, "stable_stack_vd_to_ida"
             ),
             instruction_stack_vd_to_ida=self._merge_generated_reference_rows(
                 components, "instruction_stack_vd_to_ida", key_width=2

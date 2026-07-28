@@ -4237,6 +4237,125 @@ def test_generated_composition_stitches_typed_external_exit_to_imported_root(
     assert source_block.external_successor_eas == ()
 
 
+def test_generated_composition_uses_instruction_scoped_stack_identity_for_aliases(
+    monkeypatch,
+) -> None:
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x40A560
+    source_vd = 88
+    components = (
+        (0x40A70E, 44),
+        (0x40AAA2, 12),
+    )
+    templates = {}
+    for serial, (target_ea, ida_offset) in enumerate(components, start=7):
+        instruction = _Instruction(
+            ida_hexrays.m_mov,
+            target_ea,
+            left=_Operand(ida_hexrays.mop_S, stack_offset=source_vd),
+            dest=_Operand(ida_hexrays.mop_r, register=1),
+        )
+        block = detached_handler_island.DetachedSnippetBlockTemplate(
+            source_serial=serial,
+            native_entry_ea=target_ea,
+            native_end_ea=target_ea + 2,
+            instructions=(instruction,),
+            block_type=ida_hexrays.BLT_0WAY,
+            block_flags=0,
+            successor_serials=(),
+            external_successor_eas=(),
+        )
+        templates[(function_ea, target_ea)] = (
+            detached_handler_island.DetachedSnippetTemplate(
+                function_ea=function_ea,
+                target_ea=target_ea,
+                maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+                root_source_serial=serial,
+                blocks=(block,),
+                stack_vd_to_ida=((source_vd, ida_offset),),
+                stable_stack_vd_to_ida=((source_vd, ida_offset),),
+                instruction_stack_vd_to_ida=(
+                    (target_ea, source_vd, ida_offset),
+                ),
+                owned_ranges=((target_ea, target_ea + 2),),
+            )
+        )
+    monkeypatch.setattr(
+        detached_handler_island,
+        "_GENERATED_REFERENCE_SNIPPET_TEMPLATES",
+        templates,
+    )
+    destination = _MBA(
+        (_Block(0, function_ea, (_Instruction(ida_hexrays.m_nop, function_ea),)),)
+    )
+    materializer = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=destination,
+        function_ea=function_ea,
+    )
+
+    composed = materializer._compose_generated_reference_templates(
+        {target_ea for target_ea, _ida_offset in components}
+    )
+
+    assert composed.stack_vd_to_ida == ()
+    assert composed.stable_stack_vd_to_ida == ()
+    assert composed.instruction_stack_vd_to_ida == (
+        (0x40A70E, source_vd, 44),
+        (0x40AAA2, source_vd, 12),
+    )
+
+
+def test_generated_stack_alias_rejects_without_instruction_scoped_identity() -> None:
+    source_vd = 88
+    templates = tuple(
+        detached_handler_island.DetachedSnippetTemplate(
+            function_ea=0x40A560,
+            target_ea=target_ea,
+            maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+            root_source_serial=index,
+            blocks=(
+                detached_handler_island.DetachedSnippetBlockTemplate(
+                    source_serial=index,
+                    native_entry_ea=target_ea,
+                    native_end_ea=target_ea + 2,
+                    instructions=(
+                        _Instruction(
+                            ida_hexrays.m_mov,
+                            target_ea,
+                            left=_Operand(
+                                ida_hexrays.mop_S,
+                                stack_offset=source_vd,
+                            ),
+                        ),
+                    ),
+                    block_type=ida_hexrays.BLT_0WAY,
+                    block_flags=0,
+                    successor_serials=(),
+                    external_successor_eas=(),
+                ),
+            ),
+            stack_vd_to_ida=((source_vd, ida_offset),),
+            owned_ranges=((target_ea, target_ea + 2),),
+            instruction_stack_vd_to_ida=(
+                ((target_ea, source_vd, ida_offset),) if index == 1 else ()
+            ),
+        )
+        for index, (target_ea, ida_offset) in enumerate(
+            ((0x40A70E, 44), (0x40AAA2, 12)),
+            start=1,
+        )
+    )
+
+    with pytest.raises(
+        detached_handler_island.SemanticFragmentBackendRejected,
+        match="without complete instruction-scoped stack identity",
+    ):
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._merge_generated_reference_stack_rows(
+            templates,
+            "stack_vd_to_ida",
+        )
+
+
 def test_generated_composition_keeps_unresolved_multi_exit_external(
     monkeypatch,
 ) -> None:
