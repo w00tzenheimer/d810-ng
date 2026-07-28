@@ -94,7 +94,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 405
+    assert len(IMPORTED_BLOCK_IDS) == 406
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -4975,6 +4975,31 @@ def test_row90_inventory_corridor_includes_flag_producer() -> None:
         0x40B232,
         0x40B234,
     ]
+    assert row90["imported_closure_block_anchor_eas"] == [
+        0x40A5F0,
+        0x40A605,
+        0x40B236,
+        0x40B242,
+        0x40B264,
+        0x40B267,
+    ]
+    target_closure = next(
+        closure
+        for closure in row90["target_rooted_closures"]
+        if closure["root_ea"] == 0x40B236
+    )
+    assert target_closure["expected_generated_block_anchor_eas"] == [
+        0x40B236,
+        0x40B242,
+        0x40B264,
+        0x40B267,
+    ]
+    assert target_closure["owned_native_block_entry_eas"] == [
+        0x40B236,
+        0x40B242,
+        0x40B264,
+        0x40B267,
+    ]
 
 
 def test_checksum_producer_compiles_row86_existing_conditional_dependency() -> None:
@@ -5259,7 +5284,8 @@ def test_checksum_producer_compiles_row90_existing_conditional_dependency() -> N
     assert payload["imported_closure_block_ids"] == [
         "native@0x40B236",
         "native@0x40B242",
-        "native@0x40B26B",
+        "native@0x40B264",
+        "native@0x40B267",
     ]
     assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
     assert next(
@@ -5267,6 +5293,44 @@ def test_checksum_producer_compiles_row90_existing_conditional_dependency() -> N
         for operation in batch.operations
         if operation.operation_id == "rhad:route@0x40B234"
     ).depends_on == ("rhad:route@0x40B21A",)
+    target_template = next(
+        fragment
+        for fragment in batch.template_fragments
+        if fragment.root_ea == 0x40B236
+    )
+    assert target_template.owned_block_entry_eas == (
+        0x40B236,
+        0x40B242,
+        0x40B264,
+        0x40B267,
+    )
+    assert {
+        "native@0x40B236",
+        "native@0x40B242",
+        "native@0x40B264",
+        "native@0x40B267",
+    }.issubset(batch.native_body_entry_block_ids)
+    assert plan.block(
+        "native@0x40B242"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {
+            0x40B242,
+            0x40B248,
+            0x40B251,
+            0x40B256,
+            0x40B25C,
+            0x40B25E,
+            0x40B264,
+        }
+    )
+    assert plan.block(
+        "native@0x40B264"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40B264})
+    assert plan.block(
+        "native@0x40B267"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40B267, 0x40B269, 0x40B26B}
+    )
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
