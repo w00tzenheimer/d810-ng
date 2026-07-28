@@ -4922,6 +4922,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row81 = next(
         operation for operation in operations if operation["reference_order"] == 81
     )
+    row82 = next(
+        operation for operation in operations if operation["reference_order"] == 82
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -6302,6 +6305,35 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         0x40B6D4,
     ]
     assert row81["unavailable_closure_exit_eas"] == []
+    assert row82["operation_id"] == "rhad:route@0x40B10A"
+    assert row82["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
+    assert row82["current_generated_proof"] == {
+        "accepted_commits": ["5ec600932", "bc100d02c", "b85939d65"],
+        "status": "accepted_generated_c6",
+    }
+    assert row82["owned_corridor_instruction_eas"] == [
+        0x40B0F2,
+        0x40B0F8,
+        0x40B0FE,
+        0x40B100,
+        0x40B106,
+        0x40B108,
+        0x40B10A,
+    ]
+    assert row82["source_block_anchor_ea"] == 0x40B106
+    assert row82["flag_producer_native_ea"] == 0x40B0F8
+    assert row82["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+    assert row82["imported_closure_block_anchor_eas"] == [
+        0x40A5F0,
+        0x40A605,
+        0x40B10C,
+        0x40B11A,
+        0x40B121,
+        0x40B147,
+    ]
+    assert row82["unavailable_closure_exit_eas"] == []
 
 
 def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() -> None:
@@ -6336,7 +6368,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("5d88a6dd6fce0e5c15b644e6ca8ccaf1841e3e30")
+    assert summary["accepted_code_sha"] == ("b85939d658ef11c0e75b3fe95471285a7090c936")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
     assert (
@@ -6374,11 +6406,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 45,
-        "vertically_proved_operations": 45,
-        "accepted_receipt_operations": 45,
-        "earliest_unproved_reference_order": 82,
-        "earliest_unproved_operation_id": "rhad:route@0x40B10A",
+        "compiled_operation_instances": 46,
+        "vertically_proved_operations": 46,
+        "accepted_receipt_operations": 46,
+        "earliest_unproved_reference_order": 84,
+        "earliest_unproved_operation_id": "rhad:route@0x40B161",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadExistingConditionalRoute vocabulary with "
             "exact per-operation native-body proof and dependency closure"
