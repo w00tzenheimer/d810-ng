@@ -410,9 +410,9 @@ def persist_mutation_plan(
         ),
         snapshot_id=None,
     )
-    for item in event.items:
-        conn.execute(
-            "INSERT INTO mutation_plan_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    conn.executemany(
+        "INSERT INTO mutation_plan_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
             (
                 event_id,
                 event.mutation_batch_id,
@@ -428,8 +428,10 @@ def persist_mutation_plan(
                 item.target_identity_json,
                 item.disposition,
                 item.reason,
-            ),
-        )
+            )
+            for item in event.items
+        ),
+    )
     if event.fragment_plan_id:
         conn.execute(
             "INSERT INTO semantic_fragment_transactions "
