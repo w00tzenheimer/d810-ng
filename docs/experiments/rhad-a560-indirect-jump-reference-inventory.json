@@ -9177,9 +9177,13 @@
         4236827,
         4236940
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "403b3ceff",
+          "f8fcf3ba8"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,

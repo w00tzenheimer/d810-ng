@@ -7006,6 +7006,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row102 = next(
         operation for operation in operations if operation["reference_order"] == 102
     )
+    row103 = next(
+        operation for operation in operations if operation["reference_order"] == 103
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -8681,6 +8684,12 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         ],
         "status": "accepted_generated_c6",
     }
+    assert row103["operation_id"] == "rhad:route@0x40B4EE"
+    assert row103["current_compiler_support"] == "typed_simple_indirect_jump"
+    assert row103["current_generated_proof"] == {
+        "accepted_commits": ["403b3ceff", "f8fcf3ba8"],
+        "status": "accepted_generated_c6",
+    }
 
 
 def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() -> None:
@@ -8715,11 +8724,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("cd770cbeadd94075789ed12b268f3979c7e5b037")
+    assert summary["accepted_code_sha"] == ("f8fcf3ba83bddd1b0d421bf0492ab00ee40bbc36")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 98
-    assert accepted_operation_ids[-1] == "rhad:route@0x40B4C3"
+    assert len(accepted_operation_ids) == 99
+    assert accepted_operation_ids[-1] == "route:rhad-direct@0x40B4EE"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -8741,11 +8750,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 23,
-        "vertically_proved_operations": 23,
-        "accepted_receipt_operations": 23,
-        "earliest_unproved_reference_order": 103,
-        "earliest_unproved_operation_id": "rhad:route@0x40B4EE",
+        "compiled_operation_instances": 24,
+        "vertically_proved_operations": 24,
+        "accepted_receipt_operations": 24,
+        "earliest_unproved_reference_order": 104,
+        "earliest_unproved_operation_id": "rhad:route@0x40B519",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadDirectRoute vocabulary with exact "
             "per-operation native-body proof and dependency closure"
