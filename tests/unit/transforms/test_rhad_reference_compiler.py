@@ -406,6 +406,7 @@ def _ledger():
         operation_variant=compiler.RhadOperationVariant.CMOV_SELECTED_INDIRECT,
         reference_symbol="JumpInliner._fixup_cmov",
         source_block_id="native@0x40A5F0",
+        source_value_block_id="native@0x40A5F0",
         source_native_ea=0x40A5F0,
         source_block_anchor_ea=0x40A5F0,
         transfer_ea=0x40A605,
@@ -592,6 +593,25 @@ def test_conditional_flag_producer_may_precede_the_owned_rewrite_corridor() -> N
         0x40A601,
         0x40A605,
     ]
+    assert payload["source_value_block_id"] == "native@0x40A5F0"
+
+
+def test_compiler_rejects_missing_conditional_source_value_binding() -> None:
+    compiler = _compiler_module()
+    ledger = _ledger()
+    route = replace(
+        ledger.operations[0],
+        source_value_block_id="native@0x40A5BD",
+    )
+
+    with pytest.raises(
+        compiler.RhadCompilerRejection,
+        match="block binding is incomplete.*native@0x40A5BD",
+    ):
+        compiler.compile_rhad_reference_fragment(
+            replace(ledger, operations=(route,)),
+            expected_evidence_generation=1,
+        )
 
 
 def test_compiler_emits_distinct_direct_route_in_one_reference_batch() -> None:

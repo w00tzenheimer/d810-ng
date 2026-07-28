@@ -462,6 +462,7 @@ class RhadConditionalRoute:
     operation_variant: RhadOperationVariant
     reference_symbol: str
     source_block_id: str
+    source_value_block_id: str
     source_native_ea: int
     source_block_anchor_ea: int
     transfer_ea: int
@@ -491,6 +492,7 @@ class RhadConditionalRoute:
             "operation_id",
             "reference_symbol",
             "source_block_id",
+            "source_value_block_id",
             "selected_value_block_id",
             "join_block_id",
             "true_target_block_id",
@@ -1373,6 +1375,7 @@ def _reference_payload(
                 "reference_order": int(route.reference_order),
                 "reference_symbol": route.reference_symbol,
                 "source_block_anchor_ea": int(route.source_block_anchor_ea),
+                "source_value_block_id": route.source_value_block_id,
                 "source_native_ea": int(route.source_native_ea),
                 "true_target_block_id": route.true_target_block_id,
                 "true_target_ea": int(route.true_target_ea),
@@ -1496,6 +1499,7 @@ def _compile_conditional_route(
     block_by_id = {block.block_id: block for block in plan.blocks}
     required_block_ids = {
         route.source_block_id,
+        route.source_value_block_id,
         route.selected_value_block_id,
         route.join_block_id,
         route.true_target_block_id,
@@ -1508,10 +1512,12 @@ def _compile_conditional_route(
             "Rhad route block binding is incomplete: " + ", ".join(missing)
         )
     source = block_by_id[route.source_block_id]
+    source_value = block_by_id[route.source_value_block_id]
     selected = block_by_id[route.selected_value_block_id]
     join = block_by_id[route.join_block_id]
     if (
         source.stable_identity is None
+        or source_value.stable_identity is None
         or selected.stable_identity is None
         or join.stable_identity is None
     ):
@@ -1544,16 +1550,29 @@ def _compile_conditional_route(
             or route.operation_id not in plan.work_item_scope.selected_obligation_ids
             or selected.role is not FragmentBlockRole.IMPORTED
             or join.role is not FragmentBlockRole.IMPORTED
+            or source_value.role is not FragmentBlockRole.IMPORTED
+            or source_value.materialization
+            is not FragmentBlockMaterialization.IMPORT_NATIVE
+            or source_value.native_body_id != native_body.body_id
             or selected.native_body_id != native_body.body_id
             or join.native_body_id != native_body.body_id
         ):
             raise RhadCompilerRejection(
                 "Rhad imported conditional source lacks native-body operation proof"
             )
-    corridor_identities = (
-        source.stable_identity,
-        selected.stable_identity,
-        join.stable_identity,
+    corridor_blocks = tuple(
+        block_by_id[block_id]
+        for block_id in dict.fromkeys(
+            (
+                route.source_value_block_id,
+                route.source_block_id,
+                route.selected_value_block_id,
+                route.join_block_id,
+            )
+        )
+    )
+    corridor_identities = tuple(
+        block.stable_identity for block in corridor_blocks if block.stable_identity
     )
     if any(
         not any(identity.native_ranges.contains(ea) for identity in corridor_identities)
@@ -1573,7 +1592,7 @@ def _compile_conditional_route(
         )
         or (
             imported_source
-            and not source.stable_identity.native_ranges.contains(
+            and not source_value.stable_identity.native_ranges.contains(
                 route.source_native_ea
             )
         )
