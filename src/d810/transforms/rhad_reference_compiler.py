@@ -557,14 +557,13 @@ class RhadConditionalRoute:
             "Rhad owned corridor",
         )
         required_corridor_eas = {
-            int(self.condition_producer_ea),
             int(self.predicate_anchor_ea),
             int(self.conditional_select_ea),
             int(self.transfer_ea),
         }
         if not required_corridor_eas.issubset(corridor):
             raise RhadCompilerRejection(
-                "Rhad owned corridor lost its producer, predicate, select, or transfer"
+                "Rhad owned corridor lost its predicate, select, or transfer"
             )
         if not (
             corridor[-1] == int(self.transfer_ea)
