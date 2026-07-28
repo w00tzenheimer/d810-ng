@@ -4129,6 +4129,110 @@ def test_preopt_setcc_table_accepts_exact_equality_suffix() -> None:
     assert prepared.branch_condition_template is None
 
 
+def test_preopt_setcc_table_accepts_exact_complemented_equality_suffix() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=f"sha256:{RHAD_INPUT_SHA256}",
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+    native_body = plan.native_bodies[0]
+    operation = plan.operation("rhad:route@0x40B340")
+    normalization = operation.computed_branch_normalization
+    assert isinstance(normalization, FragmentSetccIndexedTableNormalization)
+    equality_result = _Operand(ida_hexrays.mop_r, register=1, size=1)
+    index_result = _Operand(ida_hexrays.mop_r, register=8, size=4)
+    complemented_equality = _Operand(
+        ida_hexrays.mop_d,
+        size=1,
+        nested=_Instruction(
+            ida_hexrays.m_lnot,
+            0x40B334,
+            left=equality_result,
+            right=_Operand(ida_hexrays.mop_z),
+            dest=_Operand(ida_hexrays.mop_z, size=1),
+        ),
+    )
+    scaling = _Instruction(
+        ida_hexrays.m_mul,
+        0x40B337,
+        left=_Operand(ida_hexrays.mop_n, value=4, size=4),
+        right=index_result,
+    )
+    lookup = _Instruction(
+        ida_hexrays.m_ldx,
+        0x40B337,
+        right=_Operand(
+            ida_hexrays.mop_d,
+            size=4,
+            nested=_Instruction(
+                ida_hexrays.m_add,
+                0x40B337,
+                left=_Operand(ida_hexrays.mop_v, target_ea=0x48B618, size=4),
+                right=_Operand(
+                    ida_hexrays.mop_d,
+                    size=4,
+                    nested=scaling,
+                ),
+            ),
+        ),
+        dest=index_result,
+    )
+    instructions = (
+        _Instruction(
+            ida_hexrays.m_setz,
+            0x40B32E,
+            left=_Operand(ida_hexrays.mop_r, register=20, size=4),
+            right=_Operand(ida_hexrays.mop_n, value=0x304E8694, size=4),
+            dest=equality_result,
+        ),
+        _Instruction(
+            ida_hexrays.m_xdu,
+            0x40B334,
+            left=complemented_equality,
+            right=_Operand(ida_hexrays.mop_z),
+            dest=index_result,
+        ),
+        lookup,
+        _Instruction(ida_hexrays.m_cfadd, 0x40B33E),
+        _Instruction(ida_hexrays.m_ofadd, 0x40B33E),
+        _Instruction(ida_hexrays.m_setz, 0x40B33E),
+        _Instruction(ida_hexrays.m_setp, 0x40B33E),
+        _Instruction(ida_hexrays.m_sets, 0x40B33E),
+        _Instruction(ida_hexrays.m_add, 0x40B33E),
+        _Instruction(
+            ida_hexrays.m_icall,
+            0x40B340,
+            left=_Operand(ida_hexrays.mop_r, register=96, size=2),
+            right=index_result,
+            dest=_Operand(ida_hexrays.mop_z),
+        ),
+    )
+    template_block = detached_handler_island.DetachedSnippetBlockTemplate(
+        source_serial=0,
+        native_entry_ea=0x40B32C,
+        native_end_ea=0x40B342,
+        instructions=instructions,
+        block_type=ida_hexrays.BLT_1WAY,
+        block_flags=ida_hexrays.MBL_TCAL,
+        successor_serials=(1,),
+        external_successor_eas=(0,),
+    )
+
+    prepared = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._preflight_setcc_indexed_table_normalization(
+        template_block,
+        native_body,
+        operation,
+        normalization,
+    )
+
+    assert prepared.cut_index == 1
+    assert prepared.result_instruction_index == 0
+    assert prepared.branch_opcode == ida_hexrays.m_jz
+    assert prepared.branch_condition_template is None
+
+
 def test_generated_preserved_fake_transfer_retains_multi_exit_indirect_fact() -> None:
     transfer_ea = 0x40A792
     carrier = detached_handler_island.DetachedSnippetBlockTemplate(
