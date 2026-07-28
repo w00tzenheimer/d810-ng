@@ -212,6 +212,31 @@ def _preflight_generated_operation_vocabulary(plan: FragmentPlan) -> None:
             ) from exc
 
 
+def _generated_setcc_predecessor_block_ids(
+    plan: FragmentPlan,
+    target_block_id: str,
+) -> tuple[str, ...]:
+    """Return every typed setcc graph owner that reaches one target."""
+    predecessors: list[str] = []
+    for operation in plan.operations:
+        normalization = operation.computed_branch_normalization
+        if not isinstance(normalization, FragmentSetccIndexedTableNormalization):
+            continue
+        for edge in operation.edges:
+            if edge.target_block_id != target_block_id:
+                continue
+            predecessor_id = operation.source_block_id
+            if (
+                edge.role is SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+                and normalization.fallthrough_delivery
+                is FragmentSetccFallthroughDelivery.PLANNED_HELPER
+            ):
+                predecessor_id = f"fallthrough-helper:{operation.operation_id}"
+            if predecessor_id not in predecessors:
+                predecessors.append(predecessor_id)
+    return tuple(predecessors)
+
+
 @dataclass(frozen=True, slots=True)
 class SemanticFragmentRuntimeBinding:
     """One exact logical version used by a live fragment transaction."""
@@ -3783,6 +3808,38 @@ def _observe_generated_graph_free_fragment(
                     else _live_block_for_binding(modifier, helper_binding)
                 )
                 helper_tail = None if helper is None else helper.tail
+                taken_predecessor_ids = _generated_setcc_predecessor_block_ids(
+                    plan,
+                    edge_by_role[
+                        SemanticEdgeRole.CONDITIONAL_TAKEN
+                    ].target_block_id,
+                )
+                fallthrough_predecessor_ids = (
+                    _generated_setcc_predecessor_block_ids(
+                        plan,
+                        edge_by_role[
+                            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH
+                        ].target_block_id,
+                    )
+                )
+                taken_predecessor_serials = tuple(
+                    int(
+                        _live_block_for_binding(
+                            modifier,
+                            state.binding(block_id),
+                        ).serial
+                    )
+                    for block_id in taken_predecessor_ids
+                )
+                fallthrough_predecessor_serials = tuple(
+                    int(
+                        _live_block_for_binding(
+                            modifier,
+                            state.binding(block_id),
+                        ).serial
+                    )
+                    for block_id in fallthrough_predecessor_ids
+                )
                 delivery_failed_obligations = tuple(
                     name
                     for name, passed in (
@@ -3829,14 +3886,16 @@ def _observe_generated_graph_free_fragment(
                         ),
                         (
                             "planned_taken_predecessor",
-                            tuple(int(value) for value in taken.predset)
-                            == (int(source.serial),),
+                            tuple(sorted(int(value) for value in taken.predset))
+                            == tuple(sorted(taken_predecessor_serials)),
                         ),
                         (
                             "planned_fallthrough_predecessor",
                             helper is not None
-                            and tuple(int(value) for value in fallthrough.predset)
-                            == (int(helper.serial),),
+                            and tuple(
+                                sorted(int(value) for value in fallthrough.predset)
+                            )
+                            == tuple(sorted(fallthrough_predecessor_serials)),
                         ),
                     )
                     if not passed

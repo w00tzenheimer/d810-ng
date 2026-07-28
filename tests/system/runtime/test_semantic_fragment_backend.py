@@ -2926,6 +2926,30 @@ def test_generated_setcc_unsupported_predicate_rejects_during_preflight() -> Non
         sfb._preflight_generated_operation_vocabulary(unsupported_plan)
 
 
+def test_generated_setcc_shared_target_predecessors_are_plan_derived() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=make_native_key(
+            input_identity=(
+                "sha256:2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+            ),
+            function_rva=0xA560,
+        ),
+        evidence_generation=1,
+    )
+
+    assert sfb._generated_setcc_predecessor_block_ids(
+        plan,
+        "native@0x40A5F0",
+    ) == (
+        "fallthrough-helper:rhad:route@0x40AE3C",
+        "native@0x40B32C",
+    )
+    assert sfb._generated_setcc_predecessor_block_ids(
+        plan,
+        "native@0x40B342",
+    ) == ("fallthrough-helper:rhad:route@0x40B340",)
+
+
 def test_generated_setcc_planned_fallthrough_uses_shared_semantic_edge_participant(
     monkeypatch,
 ) -> None:
