@@ -167,6 +167,86 @@ def test_timeline_is_ordered_and_event_native(lifecycle_db_path: Path) -> None:
     db.close()
 
 
+def test_mutation_plan_items_use_one_ordered_bulk_insert() -> None:
+    db = create_diag_database(":memory:")
+    conn = db.connection()
+    persist_diagnostic_session(
+        conn,
+        DiagnosticSessionObserved(
+            "bulk-plan-session",
+            0x40A560,
+            1,
+            "{}",
+            "active",
+        ),
+    )
+
+    class RecordingConnection:
+        def __init__(self, wrapped) -> None:
+            self.wrapped = wrapped
+            self.single_item_inserts = 0
+            self.bulk_item_inserts = 0
+
+        def execute(self, sql, parameters=()):
+            if sql.startswith("INSERT INTO mutation_plan_items"):
+                self.single_item_inserts += 1
+            return self.wrapped.execute(sql, parameters)
+
+        def executemany(self, sql, parameters):
+            if sql.startswith("INSERT INTO mutation_plan_items"):
+                self.bulk_item_inserts += 1
+            return self.wrapped.executemany(sql, parameters)
+
+    recording = RecordingConnection(conn)
+    items = tuple(
+        MutationPlanItemObserved(
+            item_index=index,
+            mutation_kind="fragment_publication",
+            source_serial=None,
+            source_anchor_ea=0x40A560 + index,
+            source_identity_json=f'{{"item":{index}}}',
+            target_serial=None,
+            target_anchor_ea=0x40B000 + index,
+            target_identity_json=f'{{"target":{index}}}',
+            disposition="planned",
+            reason=f"route:{index}",
+        )
+        for index in range(692)
+    )
+
+    persist_mutation_plan(
+        recording,
+        MutationPlanObserved(
+            session_id="bulk-plan-session",
+            func_ea=0x40A560,
+            mutation_batch_id="bulk-plan-batch",
+            mutation_kind="fragment_publication",
+            planned_operation_count=len(items),
+            mba_generation=1,
+            evidence_generation=1,
+            maturity="MMAT_GENERATED",
+            description="persist one ordered generated plan",
+            items=items,
+            fragment_plan_id="bulk-fragment-plan",
+            fragment_atomic_group_id="bulk-fragment-group",
+            fragment_plan_json=(
+                '{"atomic_group_id":"bulk-fragment-group",'
+                '"plan_id":"bulk-fragment-plan"}'
+            ),
+            root_publication_groups=(_root_group(published=False),),
+        ),
+    )
+
+    assert recording.single_item_inserts == 0
+    assert recording.bulk_item_inserts == 1
+    assert conn.execute(
+        "SELECT COUNT(*),MIN(item_index),MAX(item_index) "
+        "FROM mutation_plan_items WHERE mutation_batch_id=?",
+        ("bulk-plan-batch",),
+    ).fetchone() == (692, 0, 691)
+    db.close()
+
+
 def test_mutation_batch_correlates_plan_items_and_receipt(
     lifecycle_db_path: Path,
 ) -> None:
