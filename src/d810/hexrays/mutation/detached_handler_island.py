@@ -3137,7 +3137,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             predicate_plan is not None
             and (
                 (
-                    normalization.predicate_kind is PredicateKind.EQ
+                    normalization.predicate_kind
+                    in {PredicateKind.EQ, PredicateKind.NE}
                     and producer_indexes == (0,)
                     and predicate_indexes == (1,)
                     and int(predicate_plan.cut_index) == 1
@@ -3487,9 +3488,9 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         operation: FragmentOperation,
         normalization: FragmentComputedBranchNormalization,
     ) -> _ComputedBranchNormalizationPlan | None:
-        """Recognize exact ``EQ`` materialization copied through zero extension."""
+        """Recognize exact equality materialization and its typed complement."""
         if (
-            normalization.predicate_kind is not PredicateKind.EQ
+            normalization.predicate_kind not in {PredicateKind.EQ, PredicateKind.NE}
             or predicate_indexes != (1,)
         ):
             return None
@@ -3504,9 +3505,28 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         producer_index, producer, branch_opcode = producers[0]
         predicate = instructions[predicate_indexes[0]]
         compare_flags = int(ida_hexrays.EQ_IGNSIZE)
+        direct_equality = bool(
+            normalization.predicate_kind is PredicateKind.EQ
+            and predicate.l.equal_mops(producer.d, compare_flags)
+        )
+        complemented_equality = bool(
+            normalization.predicate_kind is PredicateKind.NE
+            and int(predicate.l.t) == int(ida_hexrays.mop_d)
+            and value_op_from_opcode(int(predicate.l.d.opcode)) is ValueOpKind.LNOT
+            and int(predicate.l.d.r.t) == int(ida_hexrays.mop_z)
+            and int(predicate.l.d.d.t) == int(ida_hexrays.mop_z)
+            and int(predicate.l.d.l.size) == int(producer.d.size)
+            and int(predicate.l.d.d.size) == int(producer.d.size)
+            and predicate.l.d.l.equal_mops(producer.d, compare_flags)
+        )
+        expected_branch_opcode = (
+            int(ida_hexrays.m_jnz)
+            if normalization.predicate_kind is PredicateKind.EQ
+            else int(ida_hexrays.m_jz)
+        )
         if (
             int(producer_index) != 0
-            or int(branch_opcode) != int(ida_hexrays.m_jnz)
+            or int(branch_opcode) != expected_branch_opcode
             or value_op_from_opcode(int(predicate.opcode)) is not ValueOpKind.ZEXT
             or int(predicate.r.t) != int(ida_hexrays.mop_z)
             or not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
@@ -3515,7 +3535,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             or not PreoptUnionSemanticNativeBodyMaterializer._has_result_operand(
                 predicate
             )
-            or not predicate.l.equal_mops(producer.d, compare_flags)
+            or not (direct_equality or complemented_equality)
             or int(predicate.d.size) <= int(predicate.l.size)
         ):
             return None
