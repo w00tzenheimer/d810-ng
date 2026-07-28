@@ -276,6 +276,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40B234",
         "rhad:route@0x40B26B",
         "rhad:route@0x40B285",
+        "route:rhad-direct@0x40B2D9",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -5582,6 +5583,48 @@ def test_checksum_producer_compiles_row92_existing_conditional_dependency() -> N
     assert plan.block(
         "native@0x40B691"
     ).stable_identity.exact_instruction_eas == frozenset({0x40B691})
+
+
+def test_checksum_producer_compiles_row93_simple_indirect_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("route:rhad-direct@0x40B2D9")
+    assert operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x40B2D9
+    assert operation.direct_transfer_rewrite.owner_anchor_ea == 0x40B2CF
+    assert operation.edges[0].target_block_id == "native@0x40B6C0"
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_operation_id"] == "rhad:route@0x40B2D9"
+    assert payload["reference_order"] == 93
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40B2B7
+    assert payload["source_block_anchor_ea"] == 0x40B2CF
+    assert payload["transfer_ea"] == 0x40B2D9
+    assert payload["direct_target_block_id"] == "native@0x40B6C0"
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40B2B7,
+        0x40B2CF,
+        0x40B2D1,
+        0x40B2D3,
+        0x40B2D9,
+    ]
+    assert payload["imported_closure_block_ids"] == [
+        "native@0x40B6C0",
+        "native@0x40B6CA",
+        "native@0x40B6D0",
+        "native@0x40B6D4",
+    ]
+    assert payload["boundary_exit_eas"] == [0x40B790]
+    assert next(
+        operation
+        for operation in batch.operations
+        if operation.operation_id == "route:rhad-direct@0x40B2D9"
+    ).depends_on == ("rhad:route@0x40B285",)
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
