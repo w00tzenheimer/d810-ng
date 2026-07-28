@@ -6299,11 +6299,15 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row89 = next(
         operation for operation in operations if operation["reference_order"] == 89
     )
+    row96 = next(
+        operation for operation in operations if operation["reference_order"] == 96
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
     row17_artifact = generated_reference.load_row17_table_proof_artifact()
     row68_artifact = generated_reference.load_row68_table_proof_artifact()
+    row96_artifact = generated_reference.load_row96_table_proof_artifact()
 
     assert inventory["schema_version"] == 1
     assert inventory["operation_count"] == len(operations) == 228
@@ -7909,6 +7913,13 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         0x40B6D4,
     ]
     assert row89["unavailable_closure_exit_eas"] == []
+    assert row96["operation_id"] == row96_artifact.operation_id
+    assert row96["current_compiler_support"] == "typed_setcc_indexed_table"
+    assert row96["current_generated_proof"] == {
+        "accepted_commits": ["518467c9f", "749f3db59", "c90b88543"],
+        "proof_artifact_identity": row96_artifact.content_identity,
+        "status": "accepted_generated_c6",
+    }
 
 
 def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() -> None:
@@ -7943,7 +7954,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("6221c53eb38122d6c0ddfc491787c7ea94aeb201")
+    assert summary["accepted_code_sha"] == ("c90b885434839c6a1612250346960b97085c0482")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
     assert (
@@ -7995,11 +8006,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "setcc_indexed_table",
         "total_reference_operations": 8,
         "compiler_supported_operations": 8,
-        "compiled_operation_instances": 3,
-        "vertically_proved_operations": 3,
-        "accepted_receipt_operations": 3,
-        "earliest_unproved_reference_order": 96,
-        "earliest_unproved_operation_id": "rhad:route@0x40B340",
+        "compiled_operation_instances": 4,
+        "vertically_proved_operations": 4,
+        "accepted_receipt_operations": 4,
+        "earliest_unproved_reference_order": 126,
+        "earliest_unproved_operation_id": "rhad:route@0x40B7F4",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadSetccIndexedTableRoute vocabulary with "
             "exact per-operation proof artifact and dependency closure"
