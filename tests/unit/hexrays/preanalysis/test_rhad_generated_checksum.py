@@ -2210,6 +2210,16 @@ def test_checksum_producer_compiles_row47_existing_conditional_reference() -> No
     assert true_source.preserved_transfer_exit_map == {
         0x40ABC4: (0x40A607, 0x40B6C0),
     }
+    imported_by_id = {block.block_id: block for block in batch.imported_blocks}
+    assert imported_by_id["native@0x40ABAA"].end_ea == 0x40ABC0
+    assert imported_by_id["native@0x40ABAA"].exact_instruction_eas == (
+        0x40ABAA,
+        0x40ABAF,
+        0x40ABB5,
+        0x40ABB7,
+        0x40ABBD,
+    )
+    assert imported_by_id["native@0x40ABBD"].end_ea == 0x40ABC0
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
