@@ -7458,7 +7458,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("bac25ed68b4c4c2d3c140afc70bf13488301351b")
+    assert summary["accepted_code_sha"] == ("ba483a76f5d417b99881ca0d2bf0270df6601941")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
     assert (
@@ -7468,9 +7468,9 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 12,
-        "vertically_proved_operations": 12,
-        "accepted_receipt_operations": 12,
+        "compiled_operation_instances": 13,
+        "vertically_proved_operations": 13,
+        "accepted_receipt_operations": 13,
         "earliest_unproved_reference_order": 0,
         "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
         "first_missing_typed_obligation": (
