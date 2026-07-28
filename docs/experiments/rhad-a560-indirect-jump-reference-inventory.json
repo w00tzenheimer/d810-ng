@@ -5185,9 +5185,13 @@
         4236807,
         4241088
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "404c49cc7",
+          "0dd17a23f"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
@@ -5196,6 +5200,8 @@
         4236784,
         4236805,
         4238674,
+        4238693,
+        4238696,
         4238700
       ],
       "operation_id": "rhad:route@0x40AD50",
@@ -5231,10 +5237,14 @@
           ],
           "expected_generated_block_anchor_eas": [
             4238674,
+            4238693,
+            4238696,
             4238700
           ],
           "owned_native_block_entry_eas": [
-            4238674
+            4238674,
+            4238693,
+            4238696
           ],
           "root_ea": 4238674,
           "status": "complete",
