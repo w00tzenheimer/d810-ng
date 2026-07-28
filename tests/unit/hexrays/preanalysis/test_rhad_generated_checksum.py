@@ -4653,6 +4653,33 @@ def test_checksum_producer_compiles_row83_cmov_dependency() -> None:
     ).depends_on == ("rhad:route@0x40B10A",)
 
 
+def test_row84_inventory_corridor_includes_flag_producer() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row84 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 84
+    )
+
+    assert row84["flag_producer_native_ea"] == 0x40B14F
+    assert row84["owned_corridor_instruction_eas"] == [
+        0x40B149,
+        0x40B14F,
+        0x40B155,
+        0x40B157,
+        0x40B15D,
+        0x40B15F,
+        0x40B161,
+    ]
+
+
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
