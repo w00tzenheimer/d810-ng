@@ -6004,6 +6004,34 @@ def test_row68_proof_artifact_is_required_and_content_addressed(
         generated_reference.load_row68_table_proof_artifact(mismatched_path)
 
 
+def test_row96_proof_artifact_is_required_and_content_addressed(
+    tmp_path: Path,
+) -> None:
+    artifact = generated_reference.load_row96_table_proof_artifact()
+    checked_in = json.loads(
+        generated_reference.ROW96_TABLE_PROOF_PATH.read_text(encoding="utf-8")
+    )
+
+    assert artifact.content_identity == checked_in["content_identity"]
+    assert artifact.content_identity == (
+        "sha256:84e0228bce62ddd78ae00141b1f07db44216ad30418cc82f4039613591d02e50"
+    )
+    assert artifact.proof_payload == checked_in["proof"]
+    assert artifact.operation_id == "rhad:route@0x40B340"
+    assert artifact.reference_order == 96
+
+    with pytest.raises(RhadCompilerRejection, match="artifact is unavailable"):
+        generated_reference.load_row96_table_proof_artifact(
+            tmp_path / "missing-row96-proof.json"
+        )
+
+    mismatched_path = tmp_path / "mismatched-row96-proof.json"
+    checked_in["content_identity"] = "sha256:" + ("0" * 64)
+    mismatched_path.write_text(json.dumps(checked_in), encoding="utf-8")
+    with pytest.raises(RhadCompilerRejection, match="content identity"):
+        generated_reference.load_row96_table_proof_artifact(mismatched_path)
+
+
 def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     inventory = json.loads(
         (
