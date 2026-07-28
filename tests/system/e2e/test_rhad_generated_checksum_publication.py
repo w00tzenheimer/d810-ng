@@ -65,6 +65,7 @@ _REFERENCE_OPERATION_IDS = (
     "route:rhad-direct@0x40AAFB",
     "rhad:route@0x40AB15",
     "rhad:route@0x40AB2F",
+    "route:rhad-direct@0x40AB74",
 )
 _IMPORTED_BLOCK_IDS = (
     "native@0x40A607",
@@ -914,6 +915,13 @@ def _route_snapshot(mba: object) -> dict[str, object]:
             sorted(row44_semantic_anchor(ea) for ea in row44_live_targets)
         ),
     }
+    row45_source = source_at(0x40AB6A)
+    row45_live_targets = route_targets(row45_source, set())
+    row45_snapshot = {
+        "row45_source_present": row45_source is not None,
+        "row45_indirect": exact_indirect(0x40AB74),
+        "row45_target_eas": tuple(sorted(row45_live_targets)),
+    }
     if source is None:
         return {
             "maturity": int(mba.maturity),
@@ -956,6 +964,7 @@ def _route_snapshot(mba: object) -> dict[str, object]:
             **row42_snapshot,
             **row43_snapshot,
             **row44_snapshot,
+            **row45_snapshot,
         }
     target_eas: set[int] = set()
     indirect = False
@@ -1043,6 +1052,7 @@ def _route_snapshot(mba: object) -> dict[str, object]:
         **row42_snapshot,
         **row43_snapshot,
         **row44_snapshot,
+        **row45_snapshot,
     }
 
 
@@ -1125,7 +1135,7 @@ def _run_worker(binary: pathlib.Path) -> None:
             str(receipt.fragment_plan_id) for receipt in receipts
         )
         receipt = matching[0]
-        assert receipt.operation_count == receipt.planned_operation_count == 338, (
+        assert receipt.operation_count == receipt.planned_operation_count == 339, (
             receipt.operation_count,
             receipt.planned_operation_count,
         )
@@ -1353,6 +1363,15 @@ def _run_worker(binary: pathlib.Path) -> None:
                 0x40A5F0,
                 0x40AB31,
             }, selected_capture
+            assert selected_capture["row45_source_present"] is True
+            assert selected_capture["row45_indirect"] is False
+            assert set(selected_capture["row45_target_eas"]) == {
+                0x40B6C0,
+                *({0x40AB6A} if capture_name == "preopt" else set()),
+            }, (
+                capture_name,
+                selected_capture["row45_target_eas"],
+            )
         assert {0x40A6B4, 0x40A800}.issubset(captures["first_cfg"]["reachable_eas"]), (
             captures["first_cfg"]
         )
@@ -1432,6 +1451,9 @@ def _run_worker(binary: pathlib.Path) -> None:
         assert captures["calls"]["row44_indirect"] is False, captures["calls"]
         assert captures["calls"]["row44_source_present"] is False, captures["calls"]
         assert captures["calls"]["row44_target_eas"] == (), captures["calls"]
+        assert captures["calls"]["row45_indirect"] is False, captures["calls"]
+        assert captures["calls"]["row45_source_present"] is False, captures["calls"]
+        assert captures["calls"]["row45_target_eas"] == (), captures["calls"]
         assert captures["calls"]["setcc_indirect"] is False, captures["calls"]
         assert captures["calls"]["setcc_source_present"] is True, captures["calls"]
         assert captures["calls"]["scaled_setcc_indirect"] is False, captures["calls"]
@@ -3135,7 +3157,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT planned_operation_count, applied_operation_count, outcome "
             "FROM mutation_receipts"
-        ).fetchall() == [(338, 338, "committed")]
+        ).fetchall() == [(339, 339, "committed")]
         assert connection.execute(
             "SELECT current_phase, mutation_started, poisoned, interr_code "
             "FROM cfg_transaction_attempts"
@@ -3148,7 +3170,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT COUNT(*) FROM semantic_fragment_route_oracle_comparisons "
             "WHERE outcome='matched'"
-        ).fetchone() == (41,)
+        ).fetchone() == (42,)
         committed_witnesses = connection.execute(
             "SELECT local_block_id, provenance, logical_proxy_token, "
             "logical_version, logical_generation, insertion_quantity_before, "
