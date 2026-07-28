@@ -93,7 +93,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 331
+    assert len(IMPORTED_BLOCK_IDS) == 335
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -101,6 +101,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40A633,
         0x40A64B,
         0x40A663,
+        0x40A5CA,
         0x40AE26,
         0x40A68C,
         0x40A6A6,
@@ -235,6 +236,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40ADD6",
         "rhad:route@0x40ADF0",
         "rhad:route@0x40AE18",
+        "route:rhad-direct@0x40AE24",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -561,7 +563,6 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "reference_order": 16,
     }
     assert BOUNDARY_EXIT_EAS == (
-        0x40A5CA,
         0x40A5F0,
         0x40A9A0,
         0x40AE3E,
@@ -572,6 +573,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40B3E5,
         0x40B55B,
         0x40B790,
+        0x40C898,
     )
 
 
@@ -3440,6 +3442,63 @@ def test_checksum_producer_compiles_row66_cmov_selected_dependency() -> None:
         for operation in batch.operations
         if operation.operation_id == "rhad:route@0x40AE18"
     ).depends_on == ("rhad:route@0x40ADF0",)
+
+
+def test_checksum_producer_compiles_row67_simple_indirect_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("route:rhad-direct@0x40AE24")
+    rewrite = operation.direct_transfer_rewrite
+    assert rewrite is not None
+    assert operation.source_block_id == "native@0x40AE1A"
+    assert rewrite.owner_anchor_ea == 0x40AE1A
+    assert rewrite.rewrite_anchor_ea == 0x40AE24
+    assert rewrite.proof_corridor_instruction_eas == (
+        0x40A66F,
+        0x40AE1A,
+        0x40AE20,
+        0x40AE22,
+        0x40AE24,
+    )
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.DIRECT: "native@0x40A5CA",
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_operation_id"] == "rhad:route@0x40AE24"
+    assert payload["reference_order"] == 67
+    assert payload["reference_symbol"] == (
+        "JumpInliner._fixup_jmp_and_possible_jcc"
+    )
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40A66F
+    assert payload["source_block_anchor_ea"] == 0x40AE1A
+    assert payload["transfer_ea"] == 0x40AE24
+    assert payload["direct_target_block_id"] == "native@0x40A5CA"
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40A66F,
+        0x40AE1A,
+        0x40AE20,
+        0x40AE22,
+        0x40AE24,
+    ]
+    assert payload["imported_closure_block_ids"] == [
+        "native@0x40A5CA",
+        "native@0x40A5DC",
+        "native@0x40A5DF",
+        "native@0x40A5E3",
+    ]
+    assert payload["boundary_exit_eas"] == [0x40A5F0, 0x40C898]
+    assert next(
+        operation
+        for operation in batch.operations
+        if operation.operation_id == "route:rhad-direct@0x40AE24"
+    ).depends_on == ("rhad:route@0x40AE18",)
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
