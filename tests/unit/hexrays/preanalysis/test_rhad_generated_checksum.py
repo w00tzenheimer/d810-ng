@@ -1638,7 +1638,12 @@ def test_checksum_producer_compiles_row34_existing_conditional_reference() -> No
     assert payload["comparison_constant"] == 0x2B8162DC
     assert payload["true_target_ea"] == 0x40A9F8
     assert payload["false_target_ea"] == 0x40AD6E
-    assert payload["boundary_exit_eas"] == [0x40AA12, 0x40B0BC, 0x40B32C]
+    assert payload["boundary_exit_eas"] == [
+        0x40AA12,
+        0x40AD88,
+        0x40B0BC,
+        0x40B32C,
+    ]
 
 
 def test_checksum_producer_compiles_row35_existing_conditional_reference() -> None:

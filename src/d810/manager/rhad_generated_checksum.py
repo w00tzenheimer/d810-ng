@@ -2325,7 +2325,7 @@ _ROW34_EXISTING_ROUTE = RhadExistingConditionalRoute(
         0x40A9F6,
     ),
     imported_closure_block_ids=ROW34_TARGET_IMPORTED_BLOCK_IDS,
-    boundary_exit_eas=(0x40AA12, 0x40B0BC, 0x40B32C),
+    boundary_exit_eas=(0x40AA12, 0x40AD88, 0x40B0BC, 0x40B32C),
     flag_corridor_id="flags-intact@0x40A9E4",
     phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
     depends_on=(_SETCC_ROUTE.operation_id,),
