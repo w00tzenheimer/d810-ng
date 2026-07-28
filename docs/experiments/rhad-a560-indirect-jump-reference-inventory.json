@@ -6013,20 +6013,28 @@
         4236807,
         4241088
       ],
-      "current_compiler_support": "unsupported_typed_shape",
-      "current_generated_proof": {
-        "status": "unproved"
-      },
+  "current_compiler_support": "typed_setcc_indexed_table",
+  "current_generated_proof": {
+    "accepted_commits": [
+      "5cbd276d8",
+      "79a5ad4dc",
+      "77e02c991",
+      "4a0a640f0",
+      "bae7580a7"
+    ],
+    "proof_artifact_identity": "sha256:9eb674af190cee8d9b391605feb930a59bcf708c9fbb519f2d8bd26cac27fdd0",
+    "status": "accepted_generated_c6"
+  },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
       "flag_producer_native_ea": 4238888,
-      "imported_closure_block_anchor_eas": [
-        4236784,
-        4236805,
-        4238910,
-        4238947,
-        4238985
-      ],
+  "imported_closure_block_anchor_eas": [
+    4238910,
+    4238947,
+    4238978,
+    4238981,
+    4238985
+  ],
       "operation_id": "rhad:route@0x40AE3C",
       "operation_variant": "setcc_indexed_table",
       "owned_corridor_instruction_eas": [

@@ -3901,10 +3901,14 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row67 = next(
         operation for operation in operations if operation["reference_order"] == 67
     )
+    row68 = next(
+        operation for operation in operations if operation["reference_order"] == 68
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
     row17_artifact = generated_reference.load_row17_table_proof_artifact()
+    row68_artifact = generated_reference.load_row68_table_proof_artifact()
 
     assert inventory["schema_version"] == 1
     assert inventory["operation_count"] == len(operations) == 228
@@ -4819,6 +4823,36 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         0x40A5E3,
     ]
     assert row67["unavailable_closure_exit_eas"] == []
+    assert row68["operation_id"] == row68_artifact.operation_id
+    assert row68["current_compiler_support"] == "typed_setcc_indexed_table"
+    assert row68["current_generated_proof"] == {
+        "accepted_commits": [
+            "5cbd276d8",
+            "79a5ad4dc",
+            "77e02c991",
+            "4a0a640f0",
+            "bae7580a7",
+        ],
+        "proof_artifact_identity": row68_artifact.content_identity,
+        "status": "accepted_generated_c6",
+    }
+    assert row68["owned_corridor_instruction_eas"] == [
+        0x40AE26,
+        0x40AE2E,
+        0x40AE31,
+        0x40AE34,
+        0x40AE3A,
+        0x40AE3C,
+    ]
+    assert row68["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+    assert row68["imported_closure_block_anchor_eas"] == [
+        0x40AE3E,
+        0x40AE63,
+        0x40AE82,
+        0x40AE85,
+        0x40AE89,
+    ]
+    assert row68["unavailable_closure_exit_eas"] == []
 
 
 def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() -> None:
@@ -4853,7 +4887,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("6ea3a9cb6eb354984942e454c1336d29245a68a5")
+    assert summary["accepted_code_sha"] == ("bae7580a71a1d6d11d59fdfa80d3c96deb2a3a0d")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
     assert (
@@ -4905,11 +4939,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "setcc_indexed_table",
         "total_reference_operations": 8,
         "compiler_supported_operations": 8,
-        "compiled_operation_instances": 2,
-        "vertically_proved_operations": 2,
-        "accepted_receipt_operations": 2,
-        "earliest_unproved_reference_order": 68,
-        "earliest_unproved_operation_id": "rhad:route@0x40AE3C",
+        "compiled_operation_instances": 3,
+        "vertically_proved_operations": 3,
+        "accepted_receipt_operations": 3,
+        "earliest_unproved_reference_order": 96,
+        "earliest_unproved_operation_id": "rhad:route@0x40B340",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadSetccIndexedTableRoute vocabulary with "
             "exact per-operation proof artifact and dependency closure"
