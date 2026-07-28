@@ -1789,7 +1789,7 @@ def test_generated_template_partitions_each_preserved_transfer_boundary() -> Non
                 second,
             ),
         )
-    with pytest.raises(ValueError, match="owned native range"):
+    with pytest.raises(ValueError, match="captured native range"):
         replace(
             fragment,
             preserved_unresolved_transfers=(

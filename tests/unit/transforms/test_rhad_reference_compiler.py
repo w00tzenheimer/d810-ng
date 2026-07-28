@@ -927,6 +927,7 @@ def _third_shape_ledger():
         join_block_id="native@0x40A6A0",
         source_native_ea=0x40A68C,
         source_block_anchor_ea=0x40A6A0,
+        join_ea=0x40A6A0,
         transfer_ea=0x40A6A4,
         condition_producer_ea=0x40A692,
         predicate_anchor_ea=0x40A698,
@@ -1115,6 +1116,7 @@ def test_compiler_emits_imported_existing_conditional_route() -> None:
     assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["source_native_ea"] == 0x40A68C
     assert payload["source_block_anchor_ea"] == 0x40A6A0
+    assert payload["join_ea"] == 0x40A6A0
     assert payload["comparison_constant"] == 0x65203D55
 
 
@@ -1370,6 +1372,7 @@ def _fourth_shape_ledger():
         join_block_id="native@0x40A760",
         source_native_ea=0x40A74C,
         source_block_anchor_ea=0x40A760,
+        join_ea=0x40A760,
         transfer_ea=0x40A764,
         condition_producer_ea=0x40A752,
         predicate_anchor_ea=0x40A758,
