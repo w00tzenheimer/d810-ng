@@ -2138,6 +2138,7 @@ def test_checksum_producer_compiles_row46_existing_conditional_reference() -> No
     )
     assert true_source.preserved_transfer_exit_map == {
         0x40ABA8: (0x40A5F0, 0x40ABAA),
+        0x40ABC4: (0x40A607, 0x40B6C0),
     }
     false_source = next(
         fragment
