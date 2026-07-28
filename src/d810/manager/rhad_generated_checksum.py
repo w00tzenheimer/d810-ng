@@ -739,7 +739,7 @@ ROW68_TARGET_IMPORTED_LAYOUT = (
     ),
     (
         0x40AE63,
-        0x40AE8B,
+        0x40AE85,
         (
             0x40AE63,
             0x40AE69,
@@ -748,11 +748,10 @@ ROW68_TARGET_IMPORTED_LAYOUT = (
             0x40AE7A,
             0x40AE7C,
             0x40AE82,
-            0x40AE85,
-            0x40AE87,
-            0x40AE89,
         ),
     ),
+    (0x40AE82, 0x40AE85, (0x40AE82,)),
+    (0x40AE85, 0x40AE8B, (0x40AE85, 0x40AE87, 0x40AE89)),
     (0x40AE89, 0x40AE8B, (0x40AE89,)),
 )
 BASE_IMPORTED_LAYOUT = tuple(
@@ -4235,7 +4234,13 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         RhadGeneratedTemplateFragment(
             root_ea=0x40AE3E,
             owned_ranges=((0x40AE3E, 0x40AE8B),),
-            owned_block_entry_eas=(0x40AE3E, 0x40AE63, 0x40AE89),
+            owned_block_entry_eas=(
+                0x40AE3E,
+                0x40AE63,
+                0x40AE82,
+                0x40AE85,
+                0x40AE89,
+            ),
             boundary_ranges=(),
             boundary_exit_eas=(0x40A607, 0x40B6C0),
             direct_boundary_routes=(),
@@ -6091,9 +6096,19 @@ def _reference_batch_observation(
             source_successors = tuple(int(value) for value in setcc_source.succset)
             if source_successors:
                 for successor_serial in source_successors:
+                    target = blocks[successor_serial]
+                    while (
+                        setcc_route.fallthrough_delivery
+                        is FragmentSetccFallthroughDelivery.PLANNED_HELPER
+                        and delivery_anchor(target, setcc_target_block_ids)
+                        not in delivery_target_eas
+                        and len(tuple(target.succset)) == 1
+                    ):
+                        successor_serial = int(tuple(target.succset)[0])
+                        target = blocks[successor_serial]
                     setcc_targets.add(
                         delivery_anchor(
-                            blocks[successor_serial],
+                            target,
                             setcc_target_block_ids,
                         )
                     )
@@ -6121,6 +6136,7 @@ def _reference_batch_observation(
                         )
         source_topology_reachable = bool(
             setcc_source is not None
+            and setcc_targets == delivery_target_eas
             and (
                 int(mba.maturity) == int(ida_hexrays.MMAT_GENERATED)
                 or int(setcc_source.serial) in reachable_block_serials
