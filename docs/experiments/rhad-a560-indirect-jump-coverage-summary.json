@@ -131,12 +131,12 @@
       "operation_variant": "simple_indirect_jump",
       "total_reference_operations": 64,
       "compiler_supported_operations": 64,
-      "compiled_operation_instances": 33,
+      "compiled_operation_instances": 34,
       "vertically_proved_operations": 33,
       "accepted_receipt_operations": 33,
       "earliest_unproved_reference_order": 113,
       "earliest_unproved_operation_id": "rhad:route@0x40B666",
-      "first_missing_typed_obligation": "instantiate the proved RhadDirectRoute vocabulary with exact per-operation native-body proof and dependency closure"
+      "first_missing_typed_obligation": "complete the fresh GENERATED, PREOPT, authoritative-CFG, CALLS, and CMAT_FINAL publication proof and persist the accepted diagnostic receipt"
     },
     {
       "operation_variant": "existing_conditional_plus_indirect",
