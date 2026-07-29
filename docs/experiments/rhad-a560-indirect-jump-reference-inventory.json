@@ -11332,8 +11332,13 @@
       ],
       "current_compiler_support": "typed_setcc_indexed_table",
       "current_generated_proof": {
+        "accepted_commits": [
+          "27901637a",
+          "72e9b8cae",
+          "bbe9965b1"
+        ],
         "proof_artifact_identity": "sha256:3745b3fb2322c74b0a635166a5a90f2aca25e7cf8703f98f74480c93a21c3655",
-        "status": "unproved"
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
