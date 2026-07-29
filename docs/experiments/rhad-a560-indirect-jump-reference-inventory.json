@@ -12456,6 +12456,8 @@
         4236784,
         4236805,
         4242371,
+        4242390,
+        4242393,
         4242397
       ],
       "operation_id": "rhad:route@0x40BBC1",
@@ -12492,6 +12494,8 @@
           ],
           "expected_generated_block_anchor_eas": [
             4242371,
+            4242390,
+            4242393,
             4242397
           ],
           "owned_native_block_entry_eas": [
