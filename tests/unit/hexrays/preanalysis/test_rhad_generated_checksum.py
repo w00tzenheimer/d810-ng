@@ -9377,7 +9377,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         0x40B879,
     ]
     assert row127["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
-    assert row127["current_compiler_support"] == "unsupported_typed_shape"
+    assert row127["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row127["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
@@ -11095,14 +11097,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 64,
+        "compiled_operation_instances": 65,
         "vertically_proved_operations": 64,
         "accepted_receipt_operations": 64,
         "earliest_unproved_reference_order": 127,
         "earliest_unproved_operation_id": "rhad:route@0x40B80E",
         "first_missing_typed_obligation": (
-            "instantiate the proved RhadExistingConditionalRoute vocabulary with "
-            "exact per-operation native-body proof and dependency closure"
+            "publish the compiled operation at actual MMAT_GENERATED with one "
+            "committed receipt and authoritative maturity proof"
         ),
     }
     assert setcc == {
