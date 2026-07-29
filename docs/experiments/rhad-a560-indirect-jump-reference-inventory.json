@@ -1394,7 +1394,9 @@
     },
     {
       "boundary_exit_eas": [
-        4236784
+        4236784,
+        4241424,
+        4243818
       ],
       "current_compiler_support": "typed_setcc_indexed_table",
       "current_generated_proof": {
@@ -11062,6 +11064,7 @@
       "operation_variant": "setcc_indexed_table",
       "owned_corridor_instruction_eas": [
         4241374,
+        4241376,
         4241382,
         4241385,
         4241388,
@@ -11086,7 +11089,8 @@
       "target_rooted_closures": [
         {
           "boundary_exit_eas": [
-            4236784
+            4236784,
+            4243818
           ],
           "expected_generated_block_anchor_eas": [
             4243792,
@@ -11105,7 +11109,8 @@
         },
         {
           "boundary_exit_eas": [
-            4236784
+            4236784,
+            4241424
           ],
           "expected_generated_block_anchor_eas": [
             4241398,
