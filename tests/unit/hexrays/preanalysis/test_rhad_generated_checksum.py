@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 516
+    assert len(IMPORTED_BLOCK_IDS) == 518
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -263,6 +263,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40BE2F,
         0x40B7F6,
         0x40C150,
+        0x40B810,
     )
     assert tuple(operation.operation_id for operation in plan.operations) == (
         "rhad:route@0x40A605",
@@ -387,6 +388,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40B7C2",
         "rhad:route@0x40B7DC",
         "rhad:route@0x40B7F4",
+        "rhad:route@0x40B80E",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -596,6 +598,8 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     row125 = plan.operation("rhad:route@0x40B7DC")
     row125_envelope = row125.computed_branch_normalization.conditional_select_envelope
     row126 = plan.operation("rhad:route@0x40B7F4")
+    row127 = plan.operation("rhad:route@0x40B80E")
+    row127_envelope = row127.computed_branch_normalization.conditional_select_envelope
     operation_topology = direct_sources | {
         selected.source_block_id,
         selected_envelope.selected_value_block_id,
@@ -839,6 +843,9 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         row125_envelope.selected_value_block_id,
         row125_envelope.join_block_id,
         row126.source_block_id,
+        row127.source_block_id,
+        row127_envelope.selected_value_block_id,
+        row127_envelope.join_block_id,
     }
     preserved_sources = set(native_body.preserved_native_transfer_block_ids)
     assert operation_topology.isdisjoint(preserved_sources)
@@ -897,7 +904,6 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40A5F0,
         0x40A9A0,
         0x40B55B,
-        0x40B810,
         0x40B898,
         0x40B958,
         0x40BB8F,
@@ -8194,6 +8200,62 @@ def test_checksum_producer_compiles_row126_setcc_table_dependency() -> None:
     ).depends_on == ("rhad:route@0x40B7DC",)
 
 
+def test_checksum_producer_compiles_row127_existing_conditional_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("rhad:route@0x40B80E")
+    normalization = operation.computed_branch_normalization
+    assert normalization.predicate_kind is PredicateKind.NE
+    assert normalization.condition_producer_ea == 0x40B7FC
+    assert normalization.unresolved_transfer_ea == 0x40B80E
+    envelope = normalization.conditional_select_envelope
+    assert isinstance(envelope, FragmentReferencedImportedConditionalSelectEnvelope)
+    assert envelope.selected_value_block_id == "native@0x40B804"
+    assert envelope.join_block_id == "native@0x40B80A"
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.CONDITIONAL_TAKEN: "native@0x40B810",
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A5F0",
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_order"] == 127
+    assert payload["operation_variant"] == "existing_conditional_plus_indirect"
+    assert payload["source_native_ea"] == 0x40B7F6
+    assert payload["source_block_anchor_ea"] == 0x40B804
+    assert payload["condition_producer_ea"] == 0x40B7FC
+    assert payload["predicate_anchor_ea"] == 0x40B802
+    assert payload["observed_predicate_kind"] == "eq"
+    assert payload["predicate_kind"] == "ne"
+    assert payload["comparison_constant"] == 0xCB1F8618
+    assert payload["transfer_ea"] == 0x40B80E
+    assert payload["true_target_ea"] == 0x40B810
+    assert payload["false_target_ea"] == 0x40A5F0
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40B7F6,
+        0x40B7FC,
+        0x40B802,
+        0x40B804,
+        0x40B80A,
+        0x40B80C,
+        0x40B80E,
+    ]
+    assert payload["imported_closure_block_ids"] == [
+        "native@0x40B810",
+        "native@0x40B879",
+    ]
+    assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+    assert next(
+        candidate
+        for candidate in batch.operations
+        if candidate.operation_id == "rhad:route@0x40B80E"
+    ).depends_on == ("rhad:route@0x40B7F4",)
+
+
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
@@ -8226,6 +8288,7 @@ def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
         "native@0x40C150",
         "native@0x40B7F6",
         "native@0x40B758",
+        "native@0x40B810",
     )
 
 
