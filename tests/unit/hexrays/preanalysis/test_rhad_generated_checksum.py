@@ -9162,7 +9162,10 @@ def test_row142_inventory_corridor_includes_flag_producer() -> None:
 
     assert row142["flag_producer_native_ea"] == 0x40BBC8
     assert row142["current_compiler_support"] == "typed_cmov_selected_indirect"
-    assert row142["current_generated_proof"] == {"status": "unproved"}
+    assert row142["current_generated_proof"] == {
+        "accepted_commits": ["cc6968a63", "b35faf00c", "7bed7479f"],
+        "status": "accepted_generated_c6",
+    }
     assert row142["owned_corridor_instruction_eas"] == [
         0x40BBC8,
         0x40BBCE,
@@ -12751,11 +12754,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("e092ebf4445713c2e90ac2587a503f33831892b2")
+    assert summary["accepted_code_sha"] == ("7bed7479f571b686a59a1318cf2d0c4b445f7312")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 137
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BBC1"
+    assert len(accepted_operation_ids) == 138
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BBDD"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -12764,8 +12767,8 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
         "compiled_operation_instances": 18,
-        "vertically_proved_operations": 17,
-        "accepted_receipt_operations": 17,
+        "vertically_proved_operations": 18,
+        "accepted_receipt_operations": 18,
         "earliest_unproved_reference_order": 0,
         "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
         "first_missing_typed_obligation": (
