@@ -8778,6 +8778,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row127 = next(
         operation for operation in operations if operation["reference_order"] == 127
     )
+    row128 = next(
+        operation for operation in operations if operation["reference_order"] == 128
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -9388,6 +9391,27 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "accepted_commits": ["256a7ccb2", "c876a645a"],
         "status": "accepted_generated_c6",
     }
+    assert row128["operation_id"] == "rhad:route@0x40B879"
+    assert row128["flag_producer_native_ea"] == 0x40B864
+    assert row128["owned_corridor_instruction_eas"] == [
+        0x40B83F,
+        0x40B864,
+        0x40B86A,
+        0x40B86C,
+        0x40B872,
+        0x40B875,
+        0x40B877,
+        0x40B879,
+    ]
+    assert row128["semantic_targets"] == [
+        {"ea": 0x40B6C0, "role": "conditional_taken"},
+        {"ea": 0x40A607, "role": "conditional_fallthrough"},
+    ]
+    assert row128["boundary_exit_eas"] == [0x40A61B, 0x40A68C, 0x40B790]
+    assert row128["current_compiler_support"] == (
+        "conditional_vocabulary_present_operation_uninstantiated"
+    )
+    assert row128["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
