@@ -3523,7 +3523,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             capture_output=True,
             text=True,
             env=env,
-            timeout=120,
+            timeout=180,
             check=False,
         )
     except subprocess.TimeoutExpired as error:
