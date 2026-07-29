@@ -10487,7 +10487,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     ]
     assert row137["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
     assert row137["unavailable_closure_exit_eas"] == []
-    assert row137["current_compiler_support"] == "unsupported_typed_shape"
+    assert row137["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row137["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
@@ -12205,14 +12207,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 70,
+        "compiled_operation_instances": 71,
         "vertically_proved_operations": 70,
         "accepted_receipt_operations": 70,
         "earliest_unproved_reference_order": 137,
         "earliest_unproved_operation_id": "rhad:route@0x40B9A4",
         "first_missing_typed_obligation": (
-            "correct the producer-inclusive row137 evidence and instantiate the "
-            "accepted conditional-route vocabulary before live mutation"
+            "publish the compiled row137 operation at actual MMAT_GENERATED and "
+            "prove one committed receipt through CMAT_FINAL"
         ),
     }
     assert setcc == {
