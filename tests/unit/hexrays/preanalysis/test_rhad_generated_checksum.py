@@ -22,7 +22,10 @@ from d810.transforms.fragment_plan import (
     FragmentSetccFallthroughDelivery,
     FragmentSetccIndexedTableNormalization,
 )
-from d810.transforms.rhad_reference_compiler import RhadCompilerRejection
+from d810.transforms.rhad_reference_compiler import (
+    RhadCompilerRejection,
+    RhadSetccIndexedTableProofArtifact,
+)
 from tests.native_preanalysis import make_native_key
 
 
@@ -8607,6 +8610,18 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row17_artifact = generated_reference.load_row17_table_proof_artifact()
     row68_artifact = generated_reference.load_row68_table_proof_artifact()
     row96_artifact = generated_reference.load_row96_table_proof_artifact()
+    row126_artifact = RhadSetccIndexedTableProofArtifact.from_mapping(
+        json.loads(
+            (
+                _REPO
+                / "src"
+                / "d810"
+                / "conf"
+                / "semantic_route_oracles"
+                / "rhad_a560_row126_setcc_table_proof.json"
+            ).read_text(encoding="utf-8")
+        )
+    )
 
     assert inventory["schema_version"] == 1
     assert inventory["operation_count"] == len(operations) == 228
@@ -9161,6 +9176,14 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     assert row125["current_generated_proof"] == {
         "accepted_commits": ["12f0f7c2d", "a854c8467"],
         "status": "accepted_generated_c6",
+    }
+    row126 = next(
+        operation for operation in operations if operation["reference_order"] == 126
+    )
+    assert row126["operation_id"] == "rhad:route@0x40B7F4"
+    assert row126["current_generated_proof"] == {
+        "proof_artifact_identity": row126_artifact.content_identity,
+        "status": "unproved",
     }
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
