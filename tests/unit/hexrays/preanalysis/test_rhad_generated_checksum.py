@@ -9286,6 +9286,9 @@ def test_row144_inventory_owns_producer_and_complete_target_closures() -> None:
 
     assert row144["operation_id"] == "rhad:route@0x40BC11"
     assert row144["flag_producer_native_ea"] == 0x40BBFF
+    assert row144["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row144["owned_corridor_instruction_eas"] == [
         0x40BBF9,
         0x40BBFF,
@@ -13068,15 +13071,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 75,
+        "compiled_operation_instances": 76,
         "vertically_proved_operations": 75,
         "accepted_receipt_operations": 75,
         "earliest_unproved_reference_order": 144,
         "earliest_unproved_operation_id": "rhad:route@0x40BC11",
         "first_missing_typed_obligation": (
-            "add producer-inclusive typed existing-conditional evidence and derive "
-            "the unavailable 0x40BC13 target-root closure for row144 before "
-            "compiler instantiation or live mutation"
+            "prove immutable preflight and actual MMAT_GENERATED publication for "
+            "row144 through the shared coordinator before accepting its receipt"
         ),
     }
     assert setcc == {
