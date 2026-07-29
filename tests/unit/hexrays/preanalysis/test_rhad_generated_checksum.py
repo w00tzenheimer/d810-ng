@@ -8490,6 +8490,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row123 = next(
         operation for operation in operations if operation["reference_order"] == 123
     )
+    row124 = next(
+        operation for operation in operations if operation["reference_order"] == 124
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -8971,6 +8974,51 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "accepted_commits": ["eb648a197", "418742c18"],
         "status": "accepted_generated_c6",
     }
+    assert row124["operation_id"] == "rhad:route@0x40B7C2"
+    assert row124["flag_producer_native_ea"] == 0x40B7B0
+    assert row124["owned_corridor_instruction_eas"] == [
+        0x40B7AA,
+        0x40B7B0,
+        0x40B7B6,
+        0x40B7B8,
+        0x40B7BE,
+        0x40B7C0,
+        0x40B7C2,
+    ]
+    assert row124["imported_closure_block_anchor_eas"] == [
+        0x40B7C4,
+        0x40B7D2,
+        0x40B7D8,
+        0x40B7DC,
+        0x40BBDF,
+        0x40BBED,
+        0x40BBF3,
+        0x40BBF7,
+    ]
+    assert row124["boundary_exit_eas"] == [
+        0x40B7DE,
+        0x40BBF9,
+        0x40BE2F,
+        0x40BFDA,
+    ]
+    assert row124["target_rooted_closures"][0] == {
+        "boundary_exit_eas": [0x40B7DE, 0x40BE2F],
+        "expected_generated_block_anchor_eas": [
+            0x40B7C4,
+            0x40B7D2,
+            0x40B7D8,
+            0x40B7DC,
+        ],
+        "owned_native_block_entry_eas": [0x40B7C4, 0x40B7D2, 0x40B7D8],
+        "root_ea": 0x40B7C4,
+        "status": "complete",
+        "unavailable_exit_eas": [],
+    }
+    assert row124["target_rooted_closures"][1]["boundary_exit_eas"] == [
+        0x40BBF9,
+        0x40BFDA,
+    ]
+    assert row124["unavailable_closure_exit_eas"] == []
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
