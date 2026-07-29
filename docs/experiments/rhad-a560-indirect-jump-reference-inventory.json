@@ -12946,6 +12946,7 @@
       "operation_variant": "cmov_selected_indirect",
       "owned_corridor_instruction_eas": [
         4242492,
+        4242506,
         4242512,
         4242514,
         4242520,
