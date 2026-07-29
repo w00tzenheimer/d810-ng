@@ -11786,7 +11786,7 @@
         4243175,
         4243616
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_setcc_indexed_table",
       "current_generated_proof": {
         "proof_artifact_identity": "sha256:eb95d87e5fcd4823c1eddbd92e869603aee8558a3953cb2e9272ce9b8b1e493d",
         "status": "unproved"
