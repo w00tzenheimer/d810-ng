@@ -12835,7 +12835,13 @@
       ],
       "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "7cfadd93f",
+          "9aa09f7ff",
+          "da6858f80",
+          "41dca15a8"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
