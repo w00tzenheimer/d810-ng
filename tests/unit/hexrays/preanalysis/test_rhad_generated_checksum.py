@@ -10973,7 +10973,15 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     assert row141["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
-    assert row141["current_generated_proof"] == {"status": "unproved"}
+    assert row141["current_generated_proof"] == {
+        "accepted_commits": [
+            "2a887b0de",
+            "59bd6614a",
+            "7ce81b4c5",
+            "e092ebf44",
+        ],
+        "status": "accepted_generated_c6",
+    }
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
@@ -12650,11 +12658,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("f204272422c29293a794999025a845bcb3d50585")
+    assert summary["accepted_code_sha"] == ("e092ebf4445713c2e90ac2587a503f33831892b2")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 136
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BBA7"
+    assert len(accepted_operation_ids) == 137
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BBC1"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -12691,14 +12699,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 74,
-        "vertically_proved_operations": 73,
-        "accepted_receipt_operations": 73,
-        "earliest_unproved_reference_order": 141,
-        "earliest_unproved_operation_id": "rhad:route@0x40BBC1",
+        "vertically_proved_operations": 74,
+        "accepted_receipt_operations": 74,
+        "earliest_unproved_reference_order": 143,
+        "earliest_unproved_operation_id": "rhad:route@0x40BBF7",
         "first_missing_typed_obligation": (
-            "complete immutable preflight and actual MMAT_GENERATED publication "
-            "for row141 through the shared coordinator before claiming a committed "
-            "receipt"
+            "add producer-inclusive typed existing-conditional compiler evidence "
+            "for row143 before live mutation"
         ),
     }
     assert setcc == {
