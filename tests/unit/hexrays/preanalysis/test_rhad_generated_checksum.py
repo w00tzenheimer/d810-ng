@@ -413,6 +413,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40B970",
         "rhad:route@0x40B98A",
         "rhad:route@0x40B9A4",
+        "route:rhad-direct@0x40BB73",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -8670,6 +8671,51 @@ def test_checksum_producer_compiles_row133_simple_indirect_dependency() -> None:
     ).depends_on == ("rhad:route@0x40B8E4",)
 
 
+def test_checksum_producer_compiles_row138_simple_indirect_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("route:rhad-direct@0x40BB73")
+    rewrite = operation.direct_transfer_rewrite
+    assert rewrite is not None
+    assert operation.source_block_id == "native@0x40BB69"
+    assert rewrite.rewrite_anchor_ea == 0x40BB73
+    assert rewrite.owner_anchor_ea == 0x40BB69
+    assert operation.edges[0].target_block_id == "native@0x40B6C0"
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_operation_id"] == "rhad:route@0x40BB73"
+    assert payload["reference_order"] == 138
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40BB51
+    assert payload["source_block_anchor_ea"] == 0x40BB69
+    assert payload["transfer_ea"] == 0x40BB73
+    assert payload["direct_target_block_id"] == "native@0x40B6C0"
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40BB51,
+        0x40BB69,
+        0x40BB6B,
+        0x40BB6D,
+        0x40BB73,
+    ]
+    assert payload["imported_closure_block_ids"] == [
+        "native@0x40B6C0",
+        "native@0x40B6CA",
+        "native@0x40B6D0",
+        "native@0x40B6D4",
+    ]
+    assert payload["boundary_exit_eas"] == [0x40B790]
+    assert next(
+        candidate
+        for candidate in batch.operations
+        if candidate.operation_id == "route:rhad-direct@0x40BB73"
+    ).depends_on == ("rhad:route@0x40B9A4",)
+
+
 def test_checksum_producer_compiles_row134_setcc_table_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
@@ -9527,6 +9573,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     )
     row137 = next(
         operation for operation in operations if operation["reference_order"] == 137
+    )
+    row138 = next(
+        operation for operation in operations if operation["reference_order"] == 138
     )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
@@ -10511,6 +10560,29 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         ],
         "status": "accepted_generated_c6",
     }
+    assert row138["operation_id"] == "rhad:route@0x40BB73"
+    assert row138["operation_variant"] == "simple_indirect_jump"
+    assert row138["source_native_ea"] == 0x40BB51
+    assert row138["source_block_anchor_ea"] == 0x40BB69
+    assert row138["transfer_native_ea"] == 0x40BB73
+    assert row138["owned_corridor_instruction_eas"] == [
+        0x40BB51,
+        0x40BB69,
+        0x40BB6B,
+        0x40BB6D,
+        0x40BB73,
+    ]
+    assert row138["semantic_targets"] == [{"ea": 0x40B6C0, "role": "direct"}]
+    assert row138["imported_closure_block_anchor_eas"] == [
+        0x40B6C0,
+        0x40B6CA,
+        0x40B6D0,
+        0x40B6D4,
+    ]
+    assert row138["boundary_exit_eas"] == [0x40B790]
+    assert row138["unavailable_closure_exit_eas"] == []
+    assert row138["current_compiler_support"] == "typed_simple_indirect_jump"
+    assert row138["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
@@ -12213,14 +12285,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 38,
+        "compiled_operation_instances": 39,
         "vertically_proved_operations": 38,
         "accepted_receipt_operations": 38,
         "earliest_unproved_reference_order": 138,
         "earliest_unproved_operation_id": "rhad:route@0x40BB73",
         "first_missing_typed_obligation": (
-            "add typed simple-indirect compiler evidence for row138 before live "
-            "mutation"
+            "publish the compiled row138 operation at actual MMAT_GENERATED and "
+            "prove one committed receipt through CMAT_FINAL"
         ),
     }
     assert existing == {
