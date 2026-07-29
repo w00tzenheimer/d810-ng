@@ -8415,6 +8415,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row121 = next(
         operation for operation in operations if operation["reference_order"] == 121
     )
+    row122 = next(
+        operation for operation in operations if operation["reference_order"] == 122
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -8834,6 +8837,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "accepted_commits": ["4a676420b", "b777e0167"],
         "status": "accepted_generated_c6",
     }
+    assert row122["operation_id"] == "rhad:route@0x40B781"
+    assert row122["current_compiler_support"] == "typed_simple_indirect_jump"
+    assert row122["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
@@ -10536,14 +10542,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 36,
+        "compiled_operation_instances": 37,
         "vertically_proved_operations": 36,
         "accepted_receipt_operations": 36,
         "earliest_unproved_reference_order": 122,
         "earliest_unproved_operation_id": "rhad:route@0x40B781",
         "first_missing_typed_obligation": (
-            "instantiate the proved RhadDirectRoute vocabulary with exact "
-            "per-operation native-body proof and dependency closure"
+            "publish the compiled operation at actual MMAT_GENERATED with one "
+            "committed receipt and authoritative maturity proof"
         ),
     }
     assert existing == {
