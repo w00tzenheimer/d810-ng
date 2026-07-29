@@ -9835,7 +9835,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         },
     ]
     assert row131["unavailable_closure_exit_eas"] == []
-    assert row131["current_compiler_support"] == "unsupported_typed_shape"
+    assert row131["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row131["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
@@ -11553,14 +11555,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 66,
+        "compiled_operation_instances": 67,
         "vertically_proved_operations": 66,
         "accepted_receipt_operations": 66,
         "earliest_unproved_reference_order": 131,
         "earliest_unproved_operation_id": "rhad:route@0x40B8CA",
         "first_missing_typed_obligation": (
-            "correct the producer-inclusive corridor and complete target-rooted "
-            "closure before typed compilation"
+            "publish the compiled row131 operation at actual MMAT_GENERATED and "
+            "prove one committed receipt through CMAT_FINAL"
         ),
     }
     assert setcc == {
