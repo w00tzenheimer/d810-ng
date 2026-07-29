@@ -346,6 +346,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "route:rhad-direct@0x40B540",
         "route:rhad-direct@0x40B56B",
         "route:rhad-direct@0x40B596",
+        "route:rhad-direct@0x40B5B5",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -6879,6 +6880,67 @@ def test_checksum_producer_compiles_row107_direct_dependency() -> None:
         "native@0x40B56D",
         "native@0x40B58A",
         "native@0x40B596",
+    }.issubset(plan.native_bodies[0].block_ids)
+
+
+def test_checksum_producer_compiles_row108_direct_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("route:rhad-direct@0x40B5B5")
+    assert operation.source_block_id == "native@0x40B5AF"
+    rewrite = operation.direct_transfer_rewrite
+    assert rewrite is not None
+    assert rewrite.rewrite_anchor_ea == 0x40B5B5
+    assert rewrite.owner_anchor_ea == 0x40B5AF
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.DIRECT: "native@0x40A607",
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_operation_id"] == "rhad:route@0x40B5B5"
+    assert payload["reference_order"] == 108
+    assert payload["reference_symbol"] == (
+        "JumpInliner._fixup_jmp_and_possible_jcc"
+    )
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40AD00
+    assert payload["source_block_anchor_ea"] == 0x40B5AF
+    assert payload["transfer_ea"] == 0x40B5B5
+    assert payload["direct_target_block_id"] == "native@0x40A607"
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40AD00,
+        0x40AD12,
+        0x40B5AF,
+        0x40B5B1,
+        0x40B5B3,
+        0x40B5B5,
+    ]
+    assert payload["imported_closure_block_ids"] == [
+        "native@0x40A607",
+        "native@0x40A615",
+        "native@0x40A619",
+        "native@0x40A680",
+        "native@0x40A68A",
+    ]
+    assert payload["boundary_exit_eas"] == [0x40A61B, 0x40A68C]
+    assert next(
+        candidate
+        for candidate in batch.operations
+        if candidate.operation_id == "route:rhad-direct@0x40B5B5"
+    ).depends_on == ("route:rhad-direct@0x40B596",)
+    assert {
+        "native@0x40ACF3",
+        "native@0x40AD06",
+        "native@0x40AD18",
+        "native@0x40AD1C",
+        "native@0x40B598",
+        "native@0x40B5AF",
+        "native@0x40B5B5",
     }.issubset(plan.native_bodies[0].block_ids)
 
 
