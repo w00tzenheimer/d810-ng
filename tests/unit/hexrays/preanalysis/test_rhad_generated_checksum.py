@@ -9261,6 +9261,74 @@ def test_row143_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row143["unavailable_closure_exit_eas"] == []
 
 
+def test_row144_inventory_owns_producer_and_complete_target_closures() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row144 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 144
+    )
+
+    assert row144["operation_id"] == "rhad:route@0x40BC11"
+    assert row144["flag_producer_native_ea"] == 0x40BBFF
+    assert row144["owned_corridor_instruction_eas"] == [
+        0x40BBF9,
+        0x40BBFF,
+        0x40BC05,
+        0x40BC07,
+        0x40BC0D,
+        0x40BC0F,
+        0x40BC11,
+    ]
+    assert row144["imported_closure_block_anchor_eas"] == [
+        0x40BC13,
+        0x40BC21,
+        0x40BC27,
+        0x40BC2B,
+        0x40C2FB,
+        0x40C309,
+        0x40C30F,
+        0x40C313,
+    ]
+    assert row144["boundary_exit_eas"] == [0x40A5F0, 0x40BC2D, 0x40C315]
+    assert row144["target_rooted_closures"] == [
+        {
+            "boundary_exit_eas": [0x40A5F0, 0x40BC2D],
+            "expected_generated_block_anchor_eas": [
+                0x40BC13,
+                0x40BC21,
+                0x40BC27,
+                0x40BC2B,
+            ],
+            "owned_native_block_entry_eas": [0x40BC13, 0x40BC21, 0x40BC27],
+            "root_ea": 0x40BC13,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        },
+        {
+            "boundary_exit_eas": [0x40A5F0, 0x40C315],
+            "expected_generated_block_anchor_eas": [
+                0x40C2FB,
+                0x40C309,
+                0x40C30F,
+                0x40C313,
+            ],
+            "owned_native_block_entry_eas": [0x40C2FB, 0x40C309, 0x40C30F],
+            "root_ea": 0x40C2FB,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        },
+    ]
+    assert row144["unavailable_closure_exit_eas"] == []
+
+
 def test_checksum_producer_compiles_row142_cmov_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
