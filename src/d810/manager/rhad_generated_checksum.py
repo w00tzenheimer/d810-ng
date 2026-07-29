@@ -8698,10 +8698,6 @@ def _reference_batch_observation(
     )
     if accepted_source is None:
         accepted_targets: set[int] = set()
-        accepted_passed = (
-            not accepted_indirect
-            and block_anchor_by_id[accepted_route.true_target_block_id] in reachable
-        )
     else:
         accepted_targets = set()
         source_successors = tuple(int(value) for value in accepted_source.succset)
@@ -8737,21 +8733,50 @@ def _reference_batch_observation(
                     accepted_targets.add(
                         _native_anchor(blocks[int(operand.b)], origins)
                     )
-        expected_accepted_targets = {
-            block_anchor_by_id[accepted_route.true_target_block_id],
-            block_anchor_by_id[accepted_route.false_target_block_id],
-        }
-        accepted_passed = (
-            not accepted_indirect and accepted_targets == expected_accepted_targets
+    accepted_target_block_ids = (
+        accepted_route.true_target_block_id,
+        accepted_route.false_target_block_id,
+    )
+    expected_accepted_targets = {
+        block_anchor_by_id[block_id] for block_id in accepted_target_block_ids
+    }
+    accepted_source_topology_reachable = bool(
+        accepted_source is not None
+        and accepted_targets == expected_accepted_targets
+        and (
+            int(mba.maturity) == int(ida_hexrays.MMAT_GENERATED)
+            or int(accepted_source.serial) in reachable_block_serials
         )
+    )
+    accepted_semantic_targets_survive = bool(
+        (
+            accepted_source_topology_reachable
+            and (
+                int(mba.maturity) == int(ida_hexrays.MMAT_GENERATED)
+                or delivery_targets_reachable(accepted_target_block_ids)
+            )
+        )
+        or (
+            not accepted_source_topology_reachable
+            and delivery_targets_reachable((accepted_route.true_target_block_id,))
+        )
+    )
+    accepted_passed = bool(not accepted_indirect and accepted_semantic_targets_survive)
 
     operation_observations: list[dict[str, object]] = [
         {
             "operation_id": accepted_route.operation_id,
             "operation_category": accepted_route.category.value,
+            "operation_variant": accepted_route.operation_variant.value,
             "source_present": accepted_source is not None,
+            "source_topology_reachable": accepted_source_topology_reachable,
+            "source_topology_retired": not accepted_source_topology_reachable,
             "indirect_transfer_present": accepted_indirect,
             "target_eas": sorted(accepted_targets),
+            "semantic_target_eas": sorted(expected_accepted_targets),
+            "delivery_target_eas": sorted(expected_accepted_targets),
+            "semantic_targets_survive": accepted_semantic_targets_survive,
+            "boundary_exit_eas": sorted(accepted_route.boundary_exit_eas),
             "passed": accepted_passed,
         }
     ]
