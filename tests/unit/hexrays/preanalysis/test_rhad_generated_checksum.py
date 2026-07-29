@@ -9374,6 +9374,8 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         0x40A5F0,
         0x40A605,
         0x40B810,
+        0x40B872,
+        0x40B875,
         0x40B879,
     ]
     assert row127["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
