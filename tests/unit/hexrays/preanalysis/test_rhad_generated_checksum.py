@@ -8522,6 +8522,9 @@ def test_checksum_producer_compiles_row131_existing_dependency() -> None:
         for candidate in batch.operations
         if candidate.operation_id == "rhad:route@0x40B8CA"
     ).depends_on == ("rhad:route@0x40B8B0",)
+    assert {"native@0x40B8CC", "native@0x40C186"}.issubset(
+        batch.native_body_entry_block_ids
+    )
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
