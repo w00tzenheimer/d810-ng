@@ -83,6 +83,12 @@ ROW126_TABLE_PROOF_PATH = (
     / "semantic_route_oracles"
     / "rhad_a560_row126_setcc_table_proof.json"
 )
+ROW129_TABLE_PROOF_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "conf"
+    / "semantic_route_oracles"
+    / "rhad_a560_row129_setcc_table_proof.json"
+)
 
 
 def load_row16_table_proof_artifact(
@@ -146,6 +152,19 @@ def load_row126_table_proof_artifact(
     except (OSError, json.JSONDecodeError) as error:
         raise RhadCompilerRejection(
             f"Rhad row-126 table proof artifact is unavailable: {error}"
+        ) from error
+    return RhadSetccIndexedTableProofArtifact.from_mapping(payload)
+
+
+def load_row129_table_proof_artifact(
+    path: Path = ROW129_TABLE_PROOF_PATH,
+) -> RhadSetccIndexedTableProofArtifact:
+    """Load the required canonical row-129 proof before any live mutation."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RhadCompilerRejection(
+            f"Rhad row-129 table proof artifact is unavailable: {error}"
         ) from error
     return RhadSetccIndexedTableProofArtifact.from_mapping(payload)
 
@@ -1294,6 +1313,16 @@ ROW127_TARGET_IMPORTED_LAYOUT = (
     (0x40B875, 0x40B87B, (0x40B875, 0x40B877, 0x40B879)),
     (0x40B879, 0x40B87B, (0x40B879,)),
 )
+ROW129_TARGET_IMPORTED_LAYOUT = (
+    (0x40B898, 0x40B8A6, (0x40B898, 0x40B89E, 0x40B8A4)),
+    (0x40B8A6, 0x40B8AC, (0x40B8A6,)),
+    (0x40B8AC, 0x40B8B2, (0x40B8AC, 0x40B8AE, 0x40B8B0)),
+    (0x40B8B0, 0x40B8B2, (0x40B8B0,)),
+    (0x40BC61, 0x40BC6F, (0x40BC61, 0x40BC67, 0x40BC6D)),
+    (0x40BC6F, 0x40BC75, (0x40BC6F,)),
+    (0x40BC75, 0x40BC7B, (0x40BC75, 0x40BC77, 0x40BC79)),
+    (0x40BC79, 0x40BC7B, (0x40BC79,)),
+)
 BASE_IMPORTED_LAYOUT = (
     (0x40A607, 0x40A615, (0x40A607,)),
     (0x40A615, 0x40A61B, (0x40A615,)),
@@ -1386,6 +1415,7 @@ IMPORTED_LAYOUT = (
     + ROW125_TARGET_IMPORTED_LAYOUT
     + ROW126_TARGET_IMPORTED_LAYOUT
     + ROW127_TARGET_IMPORTED_LAYOUT
+    + ROW129_TARGET_IMPORTED_LAYOUT
     + FOURTH_SHAPE_IMPORTED_LAYOUT[-1:]
 )
 IMPORTED_RANGES = tuple(
@@ -1835,19 +1865,23 @@ ROW127_TARGET_IMPORTED_BLOCK_IDS = tuple(
     f"native@0x{start_ea:X}"
     for start_ea, _end_ea, _exact_eas in ROW127_TARGET_IMPORTED_LAYOUT
 )
+ROW129_TARGET_IMPORTED_BLOCK_IDS = tuple(
+    f"native@0x{start_ea:X}"
+    for start_ea, _end_ea, _exact_eas in ROW129_TARGET_IMPORTED_LAYOUT
+)
 BOUNDARY_EXIT_EAS = (
     0x40A5F0,
     0x40A9A0,
     0x40B55B,
-    0x40B898,
     0x40B958,
     0x40BB8F,
     0x40BBF9,
-    0x40BC61,
     0x40BCCB,
     0x40BD6A,
+    0x40BE98,
     0x40BF8C,
     0x40BFDA,
+    0x40C041,
     0x40C10A,
     0x40C16A,
     0x40C3D9,
@@ -1971,6 +2005,8 @@ TEMPLATE_ROOT_EAS = (
     0x40B7F6,
     0x40C150,
     0x40B810,
+    0x40B898,
+    0x40BC61,
 )
 
 
@@ -6548,6 +6584,42 @@ _ROW128_CMOV_ROUTE = RhadConditionalRoute(
     depends_on=(_ROW127_EXISTING_ROUTE.operation_id,),
 )
 
+_ROW129_SETCC_TABLE_PROOF_ARTIFACT = load_row129_table_proof_artifact()
+
+_ROW129_SETCC_ROUTE = RhadSetccIndexedTableRoute(
+    operation_id="rhad:route@0x40B896",
+    reference_order=129,
+    operation_variant=RhadOperationVariant.SETCC_INDEXED_TABLE,
+    reference_symbol="JumpInliner._fixup_index_access",
+    source_block_id="native@0x40B880",
+    source_native_ea=0x40B880,
+    source_block_anchor_ea=0x40B880,
+    transfer_ea=0x40B896,
+    condition_producer_ea=0x40B882,
+    predicate_anchor_ea=0x40B888,
+    predicate_kind=PredicateKind.SLT,
+    fallthrough_delivery=FragmentSetccFallthroughDelivery.PLANNED_HELPER,
+    true_target_block_id="native@0x40B898",
+    false_target_block_id="native@0x40BC61",
+    true_target_ea=0x40B898,
+    false_target_ea=0x40BC61,
+    table_proof_artifact=_ROW129_SETCC_TABLE_PROOF_ARTIFACT,
+    owned_corridor_instruction_eas=(
+        0x40B880,
+        0x40B882,
+        0x40B888,
+        0x40B88B,
+        0x40B88E,
+        0x40B894,
+        0x40B896,
+    ),
+    imported_closure_block_ids=ROW129_TARGET_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40BE98, 0x40C041),
+    flag_corridor_id="flags-intact@0x40B882",
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_ROW128_CMOV_ROUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -6955,6 +7027,8 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         "native@0x40B7F6",
         "native@0x40C150",
         "native@0x40B810",
+        "native@0x40B898",
+        "native@0x40BC61",
     ),
     native_body_ranges=(
         (0x40A5CA, 0x40A5E5),
@@ -7082,9 +7156,11 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         (0x40B7F6, 0x40B810),
         (0x40B810, 0x40B87B),
         (0x40B880, 0x40B898),
+        (0x40B898, 0x40B8B2),
         (0x40B940, 0x40B958),
         (0x40BB75, 0x40BB8F),
         (0x40BBDF, 0x40BBF9),
+        (0x40BC61, 0x40BC7B),
         (0x40BD50, 0x40BD6A),
         (0x40BE2F, 0x40BE49),
         (0x40C0F0, 0x40C10A),
@@ -7216,6 +7292,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW126_SETCC_ROUTE.operation_id,
         _ROW127_EXISTING_ROUTE.operation_id,
         _ROW128_CMOV_ROUTE.operation_id,
+        _ROW129_SETCC_ROUTE.operation_id,
     ),
     template_fragments=(
         RhadGeneratedTemplateFragment(
@@ -9338,6 +9415,42 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
                 ),
             ),
         ),
+        RhadGeneratedTemplateFragment(
+            root_ea=0x40B898,
+            owned_ranges=(
+                (0x40B898, 0x40B8A6),
+                (0x40B8A6, 0x40B8AC),
+                (0x40B8AC, 0x40B8B2),
+            ),
+            owned_block_entry_eas=(0x40B898, 0x40B8A6, 0x40B8AC),
+            boundary_ranges=(),
+            boundary_exit_eas=(0x40BE98,),
+            direct_boundary_routes=(),
+            preserved_unresolved_transfers=(
+                RhadGeneratedPreservedTransfer(
+                    transfer_ea=0x40B8B0,
+                    boundary_exit_eas=(0x40BE98,),
+                ),
+            ),
+        ),
+        RhadGeneratedTemplateFragment(
+            root_ea=0x40BC61,
+            owned_ranges=(
+                (0x40BC61, 0x40BC6F),
+                (0x40BC6F, 0x40BC75),
+                (0x40BC75, 0x40BC7B),
+            ),
+            owned_block_entry_eas=(0x40BC61, 0x40BC6F, 0x40BC75),
+            boundary_ranges=(),
+            boundary_exit_eas=(0x40C041,),
+            direct_boundary_routes=(),
+            preserved_unresolved_transfers=(
+                RhadGeneratedPreservedTransfer(
+                    transfer_ea=0x40BC79,
+                    boundary_exit_eas=(0x40C041,),
+                ),
+            ),
+        ),
     ),
     operations=(
         _ACCEPTED_ROUTE,
@@ -9464,6 +9577,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW126_SETCC_ROUTE,
         _ROW127_EXISTING_ROUTE,
         _ROW128_CMOV_ROUTE,
+        _ROW129_SETCC_ROUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
@@ -10643,6 +10757,7 @@ __all__ = [
     "ROW16_TABLE_PROOF_PATH",
     "ROW17_TABLE_PROOF_PATH",
     "ROW126_TABLE_PROOF_PATH",
+    "ROW129_TABLE_PROOF_PATH",
     "SOURCE_EA",
     "TEMPLATE_ROOT_EAS",
     "TRANSFER_EA",
@@ -10654,6 +10769,7 @@ __all__ = [
     "load_row68_table_proof_artifact",
     "load_row96_table_proof_artifact",
     "load_row126_table_proof_artifact",
+    "load_row129_table_proof_artifact",
     "publish_rhad_generated_reference_batch",
     "reference_batch_for_native_key",
 ]
