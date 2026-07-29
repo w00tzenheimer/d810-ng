@@ -143,7 +143,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 443
+    assert len(IMPORTED_BLOCK_IDS) == 451
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -241,6 +241,8 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40AEE6,
         0x40B03E,
         0x40B08B,
+        0x40B6D6,
+        0x40B790,
     )
     assert tuple(operation.operation_id for operation in plan.operations) == (
         "rhad:route@0x40A605",
@@ -354,6 +356,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "route:rhad-direct@0x40B666",
         "route:rhad-direct@0x40B691",
         "route:rhad-direct@0x40B6B2",
+        "rhad:route@0x40B6D4",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -544,6 +547,8 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     row101_envelope = row101.computed_branch_normalization.conditional_select_envelope
     row102 = plan.operation("rhad:route@0x40B4C3")
     row102_envelope = row102.computed_branch_normalization.conditional_select_envelope
+    row116 = plan.operation("rhad:route@0x40B6D4")
+    row116_envelope = row116.computed_branch_normalization.conditional_select_envelope
     operation_topology = direct_sources | {
         selected.source_block_id,
         selected_envelope.selected_value_block_id,
@@ -759,6 +764,9 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         row102.source_block_id,
         row102_envelope.selected_value_block_id,
         row102_envelope.join_block_id,
+        row116.source_block_id,
+        row116_envelope.selected_value_block_id,
+        row116_envelope.join_block_id,
     }
     preserved_sources = set(native_body.preserved_native_transfer_block_ids)
     assert operation_topology.isdisjoint(preserved_sources)
@@ -817,7 +825,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40A5F0,
         0x40A9A0,
         0x40B55B,
-        0x40B790,
+        0x40B940,
         0x40C898,
     )
 
@@ -5454,9 +5462,7 @@ def test_checksum_producer_compiles_row90_existing_conditional_dependency() -> N
     ).stable_identity.exact_instruction_eas == frozenset({0x40B264})
     assert plan.block(
         "native@0x40B267"
-    ).stable_identity.exact_instruction_eas == frozenset(
-        {0x40B267, 0x40B269, 0x40B26B}
-    )
+    ).stable_identity.exact_instruction_eas == frozenset({0x40B267, 0x40B269, 0x40B26B})
 
 
 def test_row91_inventory_corridor_includes_flag_producer() -> None:
@@ -5869,9 +5875,7 @@ def test_checksum_producer_compiles_row94_existing_conditional_dependency() -> N
     )
     assert plan.block(
         "native@0x40B326"
-    ).stable_identity.exact_instruction_eas == frozenset(
-        {0x40B326, 0x40B328, 0x40B32A}
-    )
+    ).stable_identity.exact_instruction_eas == frozenset({0x40B326, 0x40B328, 0x40B32A})
     assert plan.block(
         "native@0x40B6B2"
     ).stable_identity.exact_instruction_eas == frozenset({0x40B6B2})
@@ -6116,8 +6120,7 @@ def test_row99_inventory_corridor_includes_flag_producer() -> None:
     assert row99["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
     assert row99["unavailable_closure_exit_eas"] == []
     assert all(
-        closure["status"] == "complete"
-        and closure["unavailable_exit_eas"] == []
+        closure["status"] == "complete" and closure["unavailable_exit_eas"] == []
         for closure in row99["target_rooted_closures"]
     )
 
@@ -6597,9 +6600,7 @@ def test_checksum_producer_compiles_row103_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B4EE"
     assert payload["reference_order"] == 103
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40A7C7
     assert payload["source_block_anchor_ea"] == 0x40B4E2
@@ -6652,9 +6653,7 @@ def test_checksum_producer_compiles_row104_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B519"
     assert payload["reference_order"] == 104
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40A936
     assert payload["source_block_anchor_ea"] == 0x40B50D
@@ -6717,9 +6716,7 @@ def test_checksum_producer_compiles_row105_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B540"
     assert payload["reference_order"] == 105
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40AB31
     assert payload["source_block_anchor_ea"] == 0x40B534
@@ -6782,9 +6779,7 @@ def test_checksum_producer_compiles_row106_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B56B"
     assert payload["reference_order"] == 106
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40AC13
     assert payload["source_block_anchor_ea"] == 0x40B55F
@@ -6847,9 +6842,7 @@ def test_checksum_producer_compiles_row107_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B596"
     assert payload["reference_order"] == 107
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40AC95
     assert payload["source_block_anchor_ea"] == 0x40B58A
@@ -6911,9 +6904,7 @@ def test_checksum_producer_compiles_row108_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B5B5"
     assert payload["reference_order"] == 108
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40AD00
     assert payload["source_block_anchor_ea"] == 0x40B5AF
@@ -6972,9 +6963,7 @@ def test_checksum_producer_compiles_row109_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B5DC"
     assert payload["reference_order"] == 109
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40AEA5
     assert payload["source_block_anchor_ea"] == 0x40B5D0
@@ -7037,9 +7026,7 @@ def test_checksum_producer_compiles_row110_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B607"
     assert payload["reference_order"] == 110
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40AFB5
     assert payload["source_block_anchor_ea"] == 0x40B5FB
@@ -7104,9 +7091,7 @@ def test_checksum_producer_compiles_row111_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B626"
     assert payload["reference_order"] == 111
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40B006
     assert payload["source_block_anchor_ea"] == 0x40B620
@@ -7165,9 +7150,7 @@ def test_checksum_producer_compiles_row112_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B645"
     assert payload["reference_order"] == 112
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40B053
     assert payload["source_block_anchor_ea"] == 0x40B63F
@@ -7226,9 +7209,7 @@ def test_checksum_producer_compiles_row113_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B666"
     assert payload["reference_order"] == 113
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40B199
     assert payload["source_block_anchor_ea"] == 0x40B660
@@ -7290,9 +7271,7 @@ def test_checksum_producer_compiles_row114_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B691"
     assert payload["reference_order"] == 114
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40B2B1
     assert payload["source_block_anchor_ea"] == 0x40B685
@@ -7355,9 +7334,7 @@ def test_checksum_producer_compiles_row115_direct_dependency() -> None:
     )
     assert payload["reference_operation_id"] == "rhad:route@0x40B6B2"
     assert payload["reference_order"] == 115
-    assert payload["reference_symbol"] == (
-        "JumpInliner._fixup_jmp_and_possible_jcc"
-    )
+    assert payload["reference_symbol"] == ("JumpInliner._fixup_jmp_and_possible_jcc")
     assert payload["operation_variant"] == "simple_indirect_jump"
     assert payload["source_native_ea"] == 0x40B2F5
     assert payload["source_block_anchor_ea"] == 0x40B6AC
@@ -7398,6 +7375,82 @@ def test_checksum_producer_compiles_row115_direct_dependency() -> None:
     }.issubset(plan.native_bodies[0].block_ids)
 
 
+def test_checksum_producer_compiles_row116_existing_conditional_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("rhad:route@0x40B6D4")
+    normalization = operation.computed_branch_normalization
+    assert normalization is not None
+    assert normalization.predicate_kind is PredicateKind.SLT
+    assert normalization.condition_producer_ea == 0x40B6C2
+    assert normalization.unresolved_transfer_ea == 0x40B6D4
+    assert isinstance(
+        normalization.conditional_select_envelope,
+        FragmentReferencedImportedConditionalSelectEnvelope,
+    )
+    envelope = normalization.conditional_select_envelope
+    assert envelope.selected_value_block_id == "native@0x40B6CA"
+    assert envelope.join_block_id == "native@0x40B6D0"
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.CONDITIONAL_TAKEN: "native@0x40B6D6",
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40B790",
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_order"] == 116
+    assert payload["operation_variant"] == "existing_conditional_plus_indirect"
+    assert payload["source_native_ea"] == 0x40B6C0
+    assert payload["source_block_anchor_ea"] == 0x40B6D0
+    assert payload["condition_producer_ea"] == 0x40B6C2
+    assert payload["predicate_anchor_ea"] == 0x40B6C8
+    assert payload["predicate_kind"] == PredicateKind.SLT.value
+    assert payload["observed_predicate_kind"] == PredicateKind.SGE.value
+    assert payload["comparison_constant"] == 0xCB1F8618
+    assert payload["transfer_ea"] == 0x40B6D4
+    assert payload["true_target_ea"] == 0x40B6D6
+    assert payload["false_target_ea"] == 0x40B790
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40B6C0,
+        0x40B6C2,
+        0x40B6C8,
+        0x40B6CA,
+        0x40B6D0,
+        0x40B6D2,
+        0x40B6D4,
+    ]
+    assert payload["imported_closure_block_ids"] == [
+        "native@0x40B6D6",
+        "native@0x40B6E4",
+        "native@0x40B6EA",
+        "native@0x40B6EE",
+        "native@0x40B790",
+        "native@0x40B79E",
+        "native@0x40B7A4",
+        "native@0x40B7A8",
+    ]
+    assert payload["boundary_exit_eas"] == [0x40B940]
+    assert next(
+        candidate
+        for candidate in batch.operations
+        if candidate.operation_id == "rhad:route@0x40B6D4"
+    ).depends_on == ("route:rhad-direct@0x40B6B2",)
+    assert {
+        "native@0x40B6D6",
+        "native@0x40B6E4",
+        "native@0x40B6EA",
+        "native@0x40B6EE",
+        "native@0x40B790",
+        "native@0x40B79E",
+        "native@0x40B7A4",
+        "native@0x40B7A8",
+    }.issubset(plan.native_bodies[0].block_ids)
+
+
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
@@ -7411,6 +7464,8 @@ def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
         "native@0x40A5F0",
         "native@0x40B6C0",
         "native@0x40A607",
+        "native@0x40B6D6",
+        "native@0x40B790",
     )
 
 
