@@ -9161,6 +9161,8 @@ def test_row142_inventory_corridor_includes_flag_producer() -> None:
     )
 
     assert row142["flag_producer_native_ea"] == 0x40BBC8
+    assert row142["current_compiler_support"] == "typed_cmov_selected_indirect"
+    assert row142["current_generated_proof"] == {"status": "unproved"}
     assert row142["owned_corridor_instruction_eas"] == [
         0x40BBC8,
         0x40BBCE,
@@ -12761,7 +12763,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 17,
+        "compiled_operation_instances": 18,
         "vertically_proved_operations": 17,
         "accepted_receipt_operations": 17,
         "earliest_unproved_reference_order": 0,
