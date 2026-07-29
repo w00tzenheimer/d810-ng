@@ -8846,6 +8846,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row128 = next(
         operation for operation in operations if operation["reference_order"] == 128
     )
+    row129 = next(
+        operation for operation in operations if operation["reference_order"] == 129
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -8861,6 +8864,18 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
                 / "conf"
                 / "semantic_route_oracles"
                 / "rhad_a560_row126_setcc_table_proof.json"
+            ).read_text(encoding="utf-8")
+        )
+    )
+    row129_artifact = RhadSetccIndexedTableProofArtifact.from_mapping(
+        json.loads(
+            (
+                _REPO
+                / "src"
+                / "d810"
+                / "conf"
+                / "semantic_route_oracles"
+                / "rhad_a560_row129_setcc_table_proof.json"
             ).read_text(encoding="utf-8")
         )
     )
@@ -9478,6 +9493,21 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "accepted_commits": ["6e605a491", "3416afed5"],
         "status": "accepted_generated_c6",
     }
+    assert row129["operation_id"] == "rhad:route@0x40B896"
+    assert row129["current_compiler_support"] == "unsupported_typed_shape"
+    assert row129["current_generated_proof"] == {
+        "proof_artifact_identity": row129_artifact.content_identity,
+        "status": "unproved",
+    }
+    assert row129_artifact.proof_payload["binding"] == {
+        "function_ea": 0x40A560,
+        "input_sha256": inventory["input_sha256"],
+        "operation_id": row129["operation_id"],
+        "reference_commit": inventory["reference_commit"],
+        "reference_order": 129,
+    }
+    assert row129_artifact.table_evidence.true_entry.decoded_target_ea == 0x40B898
+    assert row129_artifact.table_evidence.false_entry.decoded_target_ea == 0x40BC61
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
