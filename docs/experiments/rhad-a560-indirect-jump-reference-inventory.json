@@ -9615,7 +9615,7 @@
         4236827,
         4236940
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
         "status": "unproved"
       },
