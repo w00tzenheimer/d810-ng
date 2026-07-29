@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "b777e01675076e9053a5a8a7b9d2316c8ed3b2f2",
+  "accepted_code_sha": "fe70e3bb3482cd4af2e397739eaca64a3dc89edc",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -122,7 +122,8 @@
     "rhad:route@0x40B708",
     "rhad:route@0x40B722",
     "rhad:route@0x40B73C",
-    "rhad:route@0x40B756"
+    "rhad:route@0x40B756",
+    "route:rhad-direct@0x40B781"
   ],
   "variants": [
     {
@@ -141,11 +142,11 @@
       "total_reference_operations": 64,
       "compiler_supported_operations": 64,
       "compiled_operation_instances": 37,
-      "vertically_proved_operations": 36,
-      "accepted_receipt_operations": 36,
-      "earliest_unproved_reference_order": 122,
-      "earliest_unproved_operation_id": "rhad:route@0x40B781",
-      "first_missing_typed_obligation": "publish the compiled operation at actual MMAT_GENERATED with one committed receipt and authoritative maturity proof"
+      "vertically_proved_operations": 37,
+      "accepted_receipt_operations": 37,
+      "earliest_unproved_reference_order": 133,
+      "earliest_unproved_operation_id": "rhad:route@0x40B931",
+      "first_missing_typed_obligation": "instantiate the proved RhadDirectRoute vocabulary with exact per-operation native-body proof and dependency closure"
     },
     {
       "operation_variant": "existing_conditional_plus_indirect",
