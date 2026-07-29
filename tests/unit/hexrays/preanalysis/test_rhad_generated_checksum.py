@@ -9370,6 +9370,15 @@ def test_row145_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row145["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
+    assert row145["current_generated_proof"] == {
+        "accepted_commits": [
+            "7cfadd93f",
+            "9aa09f7ff",
+            "da6858f80",
+            "41dca15a8",
+        ],
+        "status": "accepted_generated_c6",
+    }
     assert row145["owned_corridor_instruction_eas"] == [
         0x40BC13,
         0x40BC19,
@@ -13156,11 +13165,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("ee0c2e9534f790b0d56ce43b851efba41b550959")
+    assert summary["accepted_code_sha"] == ("41dca15a889a40402be65752ca5f091b361a073e")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 140
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BC11"
+    assert len(accepted_operation_ids) == 141
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BC2B"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -13197,13 +13206,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 77,
-        "vertically_proved_operations": 76,
-        "accepted_receipt_operations": 76,
-        "earliest_unproved_reference_order": 145,
-        "earliest_unproved_operation_id": "rhad:route@0x40BC2B",
+        "vertically_proved_operations": 77,
+        "accepted_receipt_operations": 77,
+        "earliest_unproved_reference_order": 147,
+        "earliest_unproved_operation_id": "rhad:route@0x40BC79",
         "first_missing_typed_obligation": (
-            "prove immutable preflight and actual MMAT_GENERATED publication for "
-            "row145 through the shared coordinator before accepting its receipt"
+            "add compare producer 0x40BC67 to row147 ownership and derive the "
+            "unavailable 0x40BC7B target-root closure before compiler "
+            "instantiation or live mutation"
         ),
     }
     assert setcc == {
