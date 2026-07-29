@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 602
+    assert len(IMPORTED_BLOCK_IDS) == 604
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -9126,6 +9126,8 @@ def test_checksum_producer_compiles_row141_existing_dependency() -> None:
     ]
     assert payload["imported_closure_block_ids"] == [
         "native@0x40BBC3",
+        "native@0x40BBD6",
+        "native@0x40BBD9",
         "native@0x40BBDD",
     ]
     assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -10939,13 +10941,20 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         0x40A5F0,
         0x40A605,
         0x40BBC3,
+        0x40BBD6,
+        0x40BBD9,
         0x40BBDD,
     ]
     assert row141["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
     assert row141["target_rooted_closures"] == [
         {
             "boundary_exit_eas": [0x40A607, 0x40B6C0],
-            "expected_generated_block_anchor_eas": [0x40BBC3, 0x40BBDD],
+            "expected_generated_block_anchor_eas": [
+                0x40BBC3,
+                0x40BBD6,
+                0x40BBD9,
+                0x40BBDD,
+            ],
             "owned_native_block_entry_eas": [0x40BBC3],
             "root_ea": 0x40BBC3,
             "status": "complete",

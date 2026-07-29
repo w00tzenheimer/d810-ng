@@ -1531,18 +1531,17 @@ ROW140_TARGET_IMPORTED_LAYOUT = (
 ROW141_TARGET_IMPORTED_LAYOUT = (
     (
         0x40BBC3,
-        0x40BBDF,
+        0x40BBD9,
         (
             0x40BBC3,
             0x40BBC8,
             0x40BBCE,
             0x40BBD0,
             0x40BBD6,
-            0x40BBD9,
-            0x40BBDB,
-            0x40BBDD,
         ),
     ),
+    (0x40BBD6, 0x40BBD9, (0x40BBD6,)),
+    (0x40BBD9, 0x40BBDF, (0x40BBD9, 0x40BBDB, 0x40BBDD)),
     (0x40BBDD, 0x40BBDF, (0x40BBDD,)),
 )
 BASE_IMPORTED_LAYOUT = (
