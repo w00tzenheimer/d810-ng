@@ -9552,11 +9552,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("411ba981e2cb25951484effa5af7b33e8282d1e8")
+    assert summary["accepted_code_sha"] == ("c5a8e93061c307b21821ab6dfdac6f32e1a06410")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 110
-    assert accepted_operation_ids[-1] == "route:rhad-direct@0x40B691"
+    assert len(accepted_operation_ids) == 111
+    assert accepted_operation_ids[-1] == "route:rhad-direct@0x40B6B2"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -9579,14 +9579,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
         "compiled_operation_instances": 36,
-        "vertically_proved_operations": 35,
-        "accepted_receipt_operations": 35,
-        "earliest_unproved_reference_order": 115,
-        "earliest_unproved_operation_id": "rhad:route@0x40B6B2",
+        "vertically_proved_operations": 36,
+        "accepted_receipt_operations": 36,
+        "earliest_unproved_reference_order": 122,
+        "earliest_unproved_operation_id": "rhad:route@0x40B781",
         "first_missing_typed_obligation": (
-            "complete the fresh GENERATED, PREOPT, authoritative-CFG, CALLS, and "
-            "CMAT_FINAL publication proof and persist the accepted diagnostic "
-            "receipt"
+            "instantiate the proved RhadDirectRoute vocabulary with exact "
+            "per-operation native-body proof and dependency closure"
         ),
     }
     assert existing == {
