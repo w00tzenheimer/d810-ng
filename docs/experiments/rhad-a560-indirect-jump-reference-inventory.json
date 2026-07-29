@@ -12926,7 +12926,12 @@
       ],
       "current_compiler_support": "typed_cmov_selected_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "f718e966e",
+          "b725bdb9f",
+          "3c0a97344"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,

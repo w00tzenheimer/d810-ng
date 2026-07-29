@@ -9451,7 +9451,10 @@ def test_row146_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row146["predicate_native_ea"] == 0x40BC58
     assert row146["transfer_native_ea"] == 0x40BC5F
     assert row146["current_compiler_support"] == "typed_cmov_selected_indirect"
-    assert row146["current_generated_proof"] == {"status": "unproved"}
+    assert row146["current_generated_proof"] == {
+        "accepted_commits": ["f718e966e", "b725bdb9f", "3c0a97344"],
+        "status": "accepted_generated_c6",
+    }
     assert row146["owned_corridor_instruction_eas"] == [
         0x40BC3C,
         0x40BC4A,
@@ -13280,11 +13283,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("41dca15a889a40402be65752ca5f091b361a073e")
+    assert summary["accepted_code_sha"] == ("3c0a97344cfd40b5ad1dacd1cdc1437a1108504e")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 141
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BC2B"
+    assert len(accepted_operation_ids) == 142
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BC5F"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -13293,8 +13296,8 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
         "compiled_operation_instances": 19,
-        "vertically_proved_operations": 18,
-        "accepted_receipt_operations": 18,
+        "vertically_proved_operations": 19,
+        "accepted_receipt_operations": 19,
         "earliest_unproved_reference_order": 0,
         "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
         "first_missing_typed_obligation": (
