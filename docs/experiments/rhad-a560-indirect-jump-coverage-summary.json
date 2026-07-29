@@ -170,12 +170,12 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 73,
+      "compiled_operation_instances": 74,
       "vertically_proved_operations": 73,
       "accepted_receipt_operations": 73,
       "earliest_unproved_reference_order": 141,
       "earliest_unproved_operation_id": "rhad:route@0x40BBC1",
-      "first_missing_typed_obligation": "add compare producer 0x40BBAF to row141 ownership and correct its join/source anchor to 0x40BBBD before compiler instantiation or live mutation"
+      "first_missing_typed_obligation": "complete immutable preflight and actual MMAT_GENERATED publication for row141 through the shared coordinator before claiming a committed receipt"
     },
     {
       "operation_variant": "setcc_indexed_table",
