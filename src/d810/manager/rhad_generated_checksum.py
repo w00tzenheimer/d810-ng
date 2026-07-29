@@ -1288,11 +1288,10 @@ ROW127_TARGET_IMPORTED_LAYOUT = (
             0x40B86A,
             0x40B86C,
             0x40B872,
-            0x40B875,
-            0x40B877,
-            0x40B879,
         ),
     ),
+    (0x40B872, 0x40B875, (0x40B872,)),
+    (0x40B875, 0x40B87B, (0x40B875, 0x40B877, 0x40B879)),
     (0x40B879, 0x40B87B, (0x40B879,)),
 )
 BASE_IMPORTED_LAYOUT = (
