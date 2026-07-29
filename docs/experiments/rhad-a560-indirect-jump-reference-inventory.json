@@ -12251,7 +12251,9 @@
     },
     {
       "boundary_exit_eas": [
+        4242345,
         4243364,
+        4244051,
         4244700
       ],
       "current_compiler_support": "unsupported_typed_shape",
@@ -12262,6 +12264,10 @@
       "flag_interference_safe_reorder": null,
       "flag_producer_native_ea": 4242299,
       "imported_closure_block_anchor_eas": [
+        4242319,
+        4242333,
+        4242339,
+        4242343,
         4243340,
         4243362
       ],
@@ -12269,6 +12275,7 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "owned_corridor_instruction_eas": [
         4242293,
+        4242299,
         4242305,
         4242307,
         4242313,
@@ -12292,14 +12299,24 @@
       "source_native_ea": 4242293,
       "target_rooted_closures": [
         {
-          "boundary_exit_eas": [],
-          "expected_generated_block_anchor_eas": [],
-          "owned_native_block_entry_eas": [],
+          "boundary_exit_eas": [
+            4242345,
+            4244051
+          ],
+          "expected_generated_block_anchor_eas": [
+            4242319,
+            4242333,
+            4242339,
+            4242343
+          ],
+          "owned_native_block_entry_eas": [
+            4242319,
+            4242333,
+            4242339
+          ],
           "root_ea": 4242319,
-          "status": "root_unavailable_in_current_portable_source_plan",
-          "unavailable_exit_eas": [
-            4242319
-          ]
+          "status": "complete",
+          "unavailable_exit_eas": []
         },
         {
           "boundary_exit_eas": [
@@ -12319,9 +12336,7 @@
         }
       ],
       "transfer_native_ea": 4242317,
-      "unavailable_closure_exit_eas": [
-        4242319
-      ]
+      "unavailable_closure_exit_eas": []
     },
     {
       "boundary_exit_eas": [
