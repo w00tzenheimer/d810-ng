@@ -9289,6 +9289,10 @@ def test_row144_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row144["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
+    assert row144["current_generated_proof"] == {
+        "accepted_commits": ["ff2308f04", "210e57f33", "ee0c2e953"],
+        "status": "accepted_generated_c6",
+    }
     assert row144["owned_corridor_instruction_eas"] == [
         0x40BBF9,
         0x40BBFF,
@@ -13031,11 +13035,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("4dcc374078e56c4ea0357d2c68f9f947cd5add4c")
+    assert summary["accepted_code_sha"] == ("ee0c2e9534f790b0d56ce43b851efba41b550959")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 139
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BBF7"
+    assert len(accepted_operation_ids) == 140
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BC11"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -13072,13 +13076,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 76,
-        "vertically_proved_operations": 75,
-        "accepted_receipt_operations": 75,
-        "earliest_unproved_reference_order": 144,
-        "earliest_unproved_operation_id": "rhad:route@0x40BC11",
+        "vertically_proved_operations": 76,
+        "accepted_receipt_operations": 76,
+        "earliest_unproved_reference_order": 145,
+        "earliest_unproved_operation_id": "rhad:route@0x40BC2B",
         "first_missing_typed_obligation": (
-            "prove immutable preflight and actual MMAT_GENERATED publication for "
-            "row144 through the shared coordinator before accepting its receipt"
+            "add compare producer 0x40BC19 to row145 ownership and instantiate "
+            "typed existing-conditional compiler evidence before live mutation"
         ),
     }
     assert setcc == {

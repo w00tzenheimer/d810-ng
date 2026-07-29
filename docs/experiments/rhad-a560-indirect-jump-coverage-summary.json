@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "4dcc374078e56c4ea0357d2c68f9f947cd5add4c",
+  "accepted_code_sha": "ee0c2e9534f790b0d56ce43b851efba41b550959",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -144,7 +144,8 @@
     "rhad:route@0x40BBA7",
     "rhad:route@0x40BBC1",
     "rhad:route@0x40BBDD",
-    "rhad:route@0x40BBF7"
+    "rhad:route@0x40BBF7",
+    "rhad:route@0x40BC11"
   ],
   "variants": [
     {
@@ -174,11 +175,11 @@
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
       "compiled_operation_instances": 76,
-      "vertically_proved_operations": 75,
-      "accepted_receipt_operations": 75,
-      "earliest_unproved_reference_order": 144,
-      "earliest_unproved_operation_id": "rhad:route@0x40BC11",
-      "first_missing_typed_obligation": "prove immutable preflight and actual MMAT_GENERATED publication for row144 through the shared coordinator before accepting its receipt"
+      "vertically_proved_operations": 76,
+      "accepted_receipt_operations": 76,
+      "earliest_unproved_reference_order": 145,
+      "earliest_unproved_operation_id": "rhad:route@0x40BC2B",
+      "first_missing_typed_obligation": "add compare producer 0x40BC19 to row145 ownership and instantiate typed existing-conditional compiler evidence before live mutation"
     },
     {
       "operation_variant": "setcc_indexed_table",
