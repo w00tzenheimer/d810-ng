@@ -9670,14 +9670,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 55,
+        "compiled_operation_instances": 56,
         "vertically_proved_operations": 55,
         "accepted_receipt_operations": 55,
         "earliest_unproved_reference_order": 116,
         "earliest_unproved_operation_id": "rhad:route@0x40B6D4",
         "first_missing_typed_obligation": (
-            "instantiate the proved RhadExistingConditionalRoute vocabulary with "
-            "exact per-operation native-body proof and dependency closure"
+            "complete the fresh GENERATED, PREOPT, authoritative-CFG, CALLS, and "
+            "CMAT_FINAL publication proof and persist the accepted diagnostic receipt"
         ),
     }
     assert setcc == {
