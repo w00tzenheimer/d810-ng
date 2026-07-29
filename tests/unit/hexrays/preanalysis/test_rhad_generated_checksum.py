@@ -9206,6 +9206,10 @@ def test_row143_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row143["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
+    assert row143["current_generated_proof"] == {
+        "accepted_commits": ["00ec151ea", "f323f022f", "4dcc37407"],
+        "status": "accepted_generated_c6",
+    }
     assert row143["owned_corridor_instruction_eas"] == [
         0x40BBDF,
         0x40BBE5,
@@ -12891,11 +12895,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("7bed7479f571b686a59a1318cf2d0c4b445f7312")
+    assert summary["accepted_code_sha"] == ("4dcc374078e56c4ea0357d2c68f9f947cd5add4c")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 138
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BBDD"
+    assert len(accepted_operation_ids) == 139
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BBF7"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -12932,13 +12936,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 75,
-        "vertically_proved_operations": 74,
-        "accepted_receipt_operations": 74,
-        "earliest_unproved_reference_order": 143,
-        "earliest_unproved_operation_id": "rhad:route@0x40BBF7",
+        "vertically_proved_operations": 75,
+        "accepted_receipt_operations": 75,
+        "earliest_unproved_reference_order": 144,
+        "earliest_unproved_operation_id": "rhad:route@0x40BC11",
         "first_missing_typed_obligation": (
-            "prove immutable preflight and actual MMAT_GENERATED publication for "
-            "row143 through the shared coordinator before accepting its receipt"
+            "add producer-inclusive typed existing-conditional evidence and derive "
+            "the unavailable 0x40BC13 target-root closure for row144 before "
+            "compiler instantiation or live mutation"
         ),
     }
     assert setcc == {
