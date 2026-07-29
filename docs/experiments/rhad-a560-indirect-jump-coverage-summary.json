@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "a0bb1a3a0096928e8f2710b6b71ba20bd6234f7a",
+  "accepted_code_sha": "90caa6501e4b6b36246c1a3d11f781f063dac000",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -108,7 +108,8 @@
     "route:rhad-direct@0x40B519",
     "route:rhad-direct@0x40B540",
     "route:rhad-direct@0x40B56B",
-    "route:rhad-direct@0x40B596"
+    "route:rhad-direct@0x40B596",
+    "route:rhad-direct@0x40B5B5"
   ],
   "variants": [
     {
@@ -127,11 +128,11 @@
       "total_reference_operations": 64,
       "compiler_supported_operations": 64,
       "compiled_operation_instances": 29,
-      "vertically_proved_operations": 28,
-      "accepted_receipt_operations": 28,
-      "earliest_unproved_reference_order": 108,
-      "earliest_unproved_operation_id": "rhad:route@0x40B5B5",
-      "first_missing_typed_obligation": "complete the fresh GENERATED, PREOPT, authoritative-CFG, CALLS, and CMAT_FINAL publication proof and persist the accepted diagnostic receipt"
+      "vertically_proved_operations": 29,
+      "accepted_receipt_operations": 29,
+      "earliest_unproved_reference_order": 109,
+      "earliest_unproved_operation_id": "rhad:route@0x40B5DC",
+      "first_missing_typed_obligation": "instantiate the proved RhadDirectRoute vocabulary with exact per-operation native-body proof and dependency closure"
     },
     {
       "operation_variant": "existing_conditional_plus_indirect",
