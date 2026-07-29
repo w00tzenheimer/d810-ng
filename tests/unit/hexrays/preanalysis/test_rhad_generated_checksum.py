@@ -9139,6 +9139,33 @@ def test_checksum_producer_compiles_row141_existing_dependency() -> None:
     assert "native@0x40BBC3" in batch.native_body_entry_block_ids
 
 
+def test_row142_inventory_corridor_includes_flag_producer() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row142 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 142
+    )
+
+    assert row142["flag_producer_native_ea"] == 0x40BBC8
+    assert row142["owned_corridor_instruction_eas"] == [
+        0x40BBC8,
+        0x40BBCE,
+        0x40BBD0,
+        0x40BBD6,
+        0x40BBD9,
+        0x40BBDB,
+        0x40BBDD,
+    ]
+
+
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
