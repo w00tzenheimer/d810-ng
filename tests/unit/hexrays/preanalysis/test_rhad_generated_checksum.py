@@ -8954,6 +8954,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row129 = next(
         operation for operation in operations if operation["reference_order"] == 129
     )
+    row130 = next(
+        operation for operation in operations if operation["reference_order"] == 130
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -9614,6 +9617,32 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     }
     assert row129_artifact.table_evidence.true_entry.decoded_target_ea == 0x40B898
     assert row129_artifact.table_evidence.false_entry.decoded_target_ea == 0x40BC61
+    assert row130["owned_corridor_instruction_eas"] == [
+        0x40B898,
+        0x40B89E,
+        0x40B8A4,
+        0x40B8A6,
+        0x40B8AC,
+        0x40B8AE,
+        0x40B8B0,
+    ]
+    assert row130["imported_closure_block_anchor_eas"] == [
+        0x40B8B2,
+        0x40B8C0,
+        0x40B8C6,
+        0x40B8CA,
+        0x40BE98,
+        0x40BEA6,
+        0x40BEAC,
+        0x40BEB0,
+    ]
+    assert row130["boundary_exit_eas"] == [
+        0x40B8CC,
+        0x40BEB2,
+        0x40C186,
+        0x40C464,
+    ]
+    assert row130["unavailable_closure_exit_eas"] == []
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
