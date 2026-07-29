@@ -6247,6 +6247,8 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         "native@0x40B0B3",
         "native@0x40B0B6",
         "native@0x40B0BA",
+        "native@0x40B6D6",
+        "native@0x40B790",
     ),
     native_body_ranges=(
         (0x40A5CA, 0x40A5E5),
