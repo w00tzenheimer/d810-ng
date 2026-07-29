@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "d3fa44bf2beb5a10a9c182caea0f949ad95892d6",
+  "accepted_code_sha": "93e5f1bd59cd09833e6a748753c2fd8497669b35",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -138,7 +138,8 @@
     "rhad:route@0x40B956",
     "rhad:route@0x40B970",
     "rhad:route@0x40B98A",
-    "rhad:route@0x40B9A4"
+    "rhad:route@0x40B9A4",
+    "route:rhad-direct@0x40BB73"
   ],
   "variants": [
     {
@@ -157,11 +158,11 @@
       "total_reference_operations": 64,
       "compiler_supported_operations": 64,
       "compiled_operation_instances": 39,
-      "vertically_proved_operations": 38,
-      "accepted_receipt_operations": 38,
-      "earliest_unproved_reference_order": 138,
-      "earliest_unproved_operation_id": "rhad:route@0x40BB73",
-      "first_missing_typed_obligation": "publish the compiled row138 operation at actual MMAT_GENERATED and prove one committed receipt through CMAT_FINAL"
+      "vertically_proved_operations": 39,
+      "accepted_receipt_operations": 39,
+      "earliest_unproved_reference_order": 166,
+      "earliest_unproved_operation_id": "rhad:route@0x40BF8A",
+      "first_missing_typed_obligation": "add typed simple-indirect compiler evidence for row166 before live mutation"
     },
     {
       "operation_variant": "existing_conditional_plus_indirect",
