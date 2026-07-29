@@ -8710,6 +8710,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row125 = next(
         operation for operation in operations if operation["reference_order"] == 125
     )
+    row127 = next(
+        operation for operation in operations if operation["reference_order"] == 127
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -9293,6 +9296,26 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "proof_artifact_identity": row126_artifact.content_identity,
         "status": "accepted_generated_c6",
     }
+    assert row127["operation_id"] == "rhad:route@0x40B80E"
+    assert row127["flag_producer_native_ea"] == 0x40B7FC
+    assert row127["owned_corridor_instruction_eas"] == [
+        0x40B7F6,
+        0x40B7FC,
+        0x40B802,
+        0x40B804,
+        0x40B80A,
+        0x40B80C,
+        0x40B80E,
+    ]
+    assert row127["imported_closure_block_anchor_eas"] == [
+        0x40A5F0,
+        0x40A605,
+        0x40B810,
+        0x40B879,
+    ]
+    assert row127["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+    assert row127["current_compiler_support"] == "unsupported_typed_shape"
+    assert row127["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
