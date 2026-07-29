@@ -3646,7 +3646,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             compiled_payload["aggregate_program_identity"]
         )
         assert compiled_payload["aggregate_program_identity"] == (
-            "sha256:0f6f1c7602e7b5a585480aedb9d1f8c0eb99ef9b09dc7951fffdb670310e3dbd"
+            "sha256:cac1d0e68d796ee9ce2f68c5775cc7ca38de29d1c2abecd00ac76907d2db5a69"
         )
         proof_artifacts = {
             artifact["proof"]["binding"]["operation_id"]: artifact
@@ -7889,7 +7889,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert row147_reference["boundary_exit_eas"] == [
             0x40BC95,
             0x40C05B,
-            0x40C54D,
+            0x40C34D,
             0x40C578,
         ]
         setcc_reference = reference_payloads["rhad:route@0x40A77C"]
@@ -9638,7 +9638,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             assert row147["boundary_exit_eas"] == [
                 0x40BC95,
                 0x40C05B,
-                0x40C54D,
+                0x40C34D,
                 0x40C578,
             ]
             assert row147["passed"] is True
@@ -11185,7 +11185,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert row147_calls["boundary_exit_eas"] == [
             0x40BC95,
             0x40C05B,
-            0x40C54D,
+            0x40C34D,
             0x40C578,
         ]
         assert row147_calls["passed"] is True

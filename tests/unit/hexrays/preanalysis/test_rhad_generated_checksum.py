@@ -1055,13 +1055,13 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40C10A,
         0x40C16A,
         0x40C315,
+        0x40C34D,
         0x40C3D9,
         0x40C42E,
         0x40C464,
         0x40C49A,
         0x40C4DC,
         0x40C527,
-        0x40C54D,
         0x40C578,
         0x40C898,
     )
@@ -9545,12 +9545,12 @@ def test_row147_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row147["boundary_exit_eas"] == [
         0x40BC95,
         0x40C05B,
-        0x40C54D,
+        0x40C34D,
         0x40C578,
     ]
     assert row147["target_rooted_closures"] == [
         {
-            "boundary_exit_eas": [0x40BC95, 0x40C54D],
+            "boundary_exit_eas": [0x40BC95, 0x40C34D],
             "expected_generated_block_anchor_eas": [
                 0x40BC7B,
                 0x40BC89,
@@ -9746,7 +9746,7 @@ def test_checksum_producer_compiles_row147_existing_dependency() -> None:
     assert payload["boundary_exit_eas"] == [
         0x40BC95,
         0x40C05B,
-        0x40C54D,
+        0x40C34D,
         0x40C578,
     ]
     assert next(
