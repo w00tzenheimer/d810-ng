@@ -9599,7 +9599,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "status": "accepted_generated_c6",
     }
     assert row129["operation_id"] == "rhad:route@0x40B896"
-    assert row129["current_compiler_support"] == "unsupported_typed_shape"
+    assert row129["current_compiler_support"] == "typed_setcc_indexed_table"
     assert row129["current_generated_proof"] == {
         "proof_artifact_identity": row129_artifact.content_identity,
         "status": "unproved",
@@ -11343,7 +11343,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "setcc_indexed_table",
         "total_reference_operations": 8,
         "compiler_supported_operations": 8,
-        "compiled_operation_instances": 5,
+        "compiled_operation_instances": 6,
         "vertically_proved_operations": 5,
         "accepted_receipt_operations": 5,
         "earliest_unproved_reference_order": 129,

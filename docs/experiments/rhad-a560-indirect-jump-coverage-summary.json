@@ -169,7 +169,7 @@
       "operation_variant": "setcc_indexed_table",
       "total_reference_operations": 8,
       "compiler_supported_operations": 8,
-      "compiled_operation_instances": 5,
+      "compiled_operation_instances": 6,
       "vertically_proved_operations": 5,
       "accepted_receipt_operations": 5,
       "earliest_unproved_reference_order": 129,
