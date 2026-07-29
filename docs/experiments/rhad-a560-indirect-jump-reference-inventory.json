@@ -1394,9 +1394,7 @@
     },
     {
       "boundary_exit_eas": [
-        4236784,
-        4241424,
-        4243818
+        4236784
       ],
       "current_compiler_support": "typed_setcc_indexed_table",
       "current_generated_proof": {
@@ -11040,7 +11038,9 @@
     },
     {
       "boundary_exit_eas": [
-        4236784
+        4236784,
+        4241424,
+        4243818
       ],
       "current_compiler_support": "unsupported_typed_shape",
       "current_generated_proof": {
