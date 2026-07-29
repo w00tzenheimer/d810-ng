@@ -8418,6 +8418,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row122 = next(
         operation for operation in operations if operation["reference_order"] == 122
     )
+    row123 = next(
+        operation for operation in operations if operation["reference_order"] == 123
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -8843,6 +8846,55 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "accepted_commits": ["e3588eea7", "fe70e3bb3"],
         "status": "accepted_generated_c6",
     }
+    assert row123["operation_id"] == "rhad:route@0x40B7A8"
+    assert row123["flag_producer_native_ea"] == 0x40B796
+    assert row123["owned_corridor_instruction_eas"] == [
+        0x40B790,
+        0x40B796,
+        0x40B79C,
+        0x40B79E,
+        0x40B7A4,
+        0x40B7A6,
+        0x40B7A8,
+    ]
+    assert row123["imported_closure_block_anchor_eas"] == [
+        0x40B7AA,
+        0x40B7B8,
+        0x40B7BE,
+        0x40B7C2,
+        0x40B940,
+        0x40B956,
+    ]
+    assert row123["boundary_exit_eas"] == [
+        0x40B7C4,
+        0x40B958,
+        0x40BBDF,
+        0x40BCCB,
+    ]
+    assert row123["target_rooted_closures"] == [
+        {
+            "boundary_exit_eas": [0x40B7C4, 0x40BBDF],
+            "expected_generated_block_anchor_eas": [
+                0x40B7AA,
+                0x40B7B8,
+                0x40B7BE,
+                0x40B7C2,
+            ],
+            "owned_native_block_entry_eas": [0x40B7AA, 0x40B7B8, 0x40B7BE],
+            "root_ea": 0x40B7AA,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        },
+        {
+            "boundary_exit_eas": [0x40B958, 0x40BCCB],
+            "expected_generated_block_anchor_eas": [0x40B940, 0x40B956],
+            "owned_native_block_entry_eas": [0x40B940],
+            "root_ea": 0x40B940,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        },
+    ]
+    assert row123["unavailable_closure_exit_eas"] == []
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
