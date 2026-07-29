@@ -640,6 +640,18 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     row136_envelope = row136.computed_branch_normalization.conditional_select_envelope
     row137 = plan.operation("rhad:route@0x40B9A4")
     row137_envelope = row137.computed_branch_normalization.conditional_select_envelope
+    row137_bb69_owner = plan.block("native@0x40BB69").stable_identity
+    assert row137_bb69_owner.native_ranges.contains(0x40BB73)
+    assert 0x40BB73 in row137_bb69_owner.exact_instruction_eas
+    assert plan.block(
+        "native@0x40BB73"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40BB73})
+    row137_c6f7_owner = plan.block("native@0x40C6F7").stable_identity
+    assert row137_c6f7_owner.native_ranges.contains(0x40C703)
+    assert 0x40C703 in row137_c6f7_owner.exact_instruction_eas
+    assert plan.block(
+        "native@0x40C703"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40C703})
     operation_topology = direct_sources | {
         selected.source_block_id,
         selected_envelope.selected_value_block_id,
