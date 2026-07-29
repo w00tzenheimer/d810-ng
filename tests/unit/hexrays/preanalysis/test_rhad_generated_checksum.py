@@ -7995,6 +7995,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row117 = next(
         operation for operation in operations if operation["reference_order"] == 117
     )
+    row118 = next(
+        operation for operation in operations if operation["reference_order"] == 118
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -8131,6 +8134,73 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "accepted_commits": ["28954ea93", "1e5c5f0be"],
         "status": "accepted_generated_c6",
     }
+    assert row118["operation_id"] == "rhad:route@0x40B708"
+    assert row118["operation_variant"] == "existing_conditional_plus_indirect"
+    assert row118["source_native_ea"] == 0x40B6F0
+    assert row118["flag_producer_native_ea"] == 0x40B6F6
+    assert row118["predicate_native_ea"] == 0x40B6FC
+    assert row118["source_block_anchor_ea"] == 0x40B6FE
+    assert row118["transfer_native_ea"] == 0x40B708
+    assert row118["owned_corridor_instruction_eas"] == [
+        0x40B6F0,
+        0x40B6F6,
+        0x40B6FC,
+        0x40B6FE,
+        0x40B704,
+        0x40B706,
+        0x40B708,
+    ]
+    assert row118["semantic_targets"] == [
+        {"ea": 0x40B70A, "role": "conditional_taken"},
+        {"ea": 0x40BB75, "role": "conditional_fallthrough"},
+    ]
+    assert row118["imported_closure_block_anchor_eas"] == [
+        0x40B70A,
+        0x40B718,
+        0x40B71E,
+        0x40B722,
+        0x40BB75,
+        0x40BB83,
+        0x40BB89,
+        0x40BB8D,
+    ]
+    assert row118["boundary_exit_eas"] == [
+        0x40B724,
+        0x40BB8F,
+        0x40BD50,
+        0x40BF8C,
+    ]
+    assert row118["target_rooted_closures"] == [
+        {
+            "boundary_exit_eas": [0x40B724, 0x40BD50],
+            "expected_generated_block_anchor_eas": [
+                0x40B70A,
+                0x40B718,
+                0x40B71E,
+                0x40B722,
+            ],
+            "owned_native_block_entry_eas": [0x40B70A, 0x40B718, 0x40B71E],
+            "root_ea": 0x40B70A,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        },
+        {
+            "boundary_exit_eas": [0x40BB8F, 0x40BF8C],
+            "expected_generated_block_anchor_eas": [
+                0x40BB75,
+                0x40BB83,
+                0x40BB89,
+                0x40BB8D,
+            ],
+            "owned_native_block_entry_eas": [0x40BB75, 0x40BB83, 0x40BB89],
+            "root_ea": 0x40BB75,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        },
+    ]
+    assert row118["unavailable_closure_exit_eas"] == []
+    assert row118["current_compiler_support"] == "unsupported_typed_shape"
+    assert row118["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
