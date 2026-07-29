@@ -156,12 +156,12 @@
       "operation_variant": "simple_indirect_jump",
       "total_reference_operations": 64,
       "compiler_supported_operations": 64,
-      "compiled_operation_instances": 38,
+      "compiled_operation_instances": 39,
       "vertically_proved_operations": 38,
       "accepted_receipt_operations": 38,
       "earliest_unproved_reference_order": 138,
       "earliest_unproved_operation_id": "rhad:route@0x40BB73",
-      "first_missing_typed_obligation": "add typed simple-indirect compiler evidence for row138 before live mutation"
+      "first_missing_typed_obligation": "publish the compiled row138 operation at actual MMAT_GENERATED and prove one committed receipt through CMAT_FINAL"
     },
     {
       "operation_variant": "existing_conditional_plus_indirect",
