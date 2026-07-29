@@ -9344,6 +9344,65 @@ def test_row144_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row144["unavailable_closure_exit_eas"] == []
 
 
+def test_row145_inventory_owns_producer_and_complete_target_closures() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row145 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 145
+    )
+
+    assert row145["operation_id"] == "rhad:route@0x40BC2B"
+    assert row145["flag_producer_native_ea"] == 0x40BC19
+    assert row145["owned_corridor_instruction_eas"] == [
+        0x40BC13,
+        0x40BC19,
+        0x40BC1F,
+        0x40BC21,
+        0x40BC27,
+        0x40BC29,
+        0x40BC2B,
+    ]
+    assert row145["imported_closure_block_anchor_eas"] == [
+        0x40A5F0,
+        0x40A605,
+        0x40BC2D,
+        0x40BC36,
+        0x40BC5F,
+    ]
+    assert row145["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+    assert row145["target_rooted_closures"] == [
+        {
+            "boundary_exit_eas": [0x40A607, 0x40B6C0],
+            "expected_generated_block_anchor_eas": [
+                0x40BC2D,
+                0x40BC36,
+                0x40BC5F,
+            ],
+            "owned_native_block_entry_eas": [0x40BC2D, 0x40BC36],
+            "root_ea": 0x40BC2D,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        },
+        {
+            "boundary_exit_eas": [0x40A607, 0x40B6C0],
+            "expected_generated_block_anchor_eas": [0x40A5F0, 0x40A605],
+            "owned_native_block_entry_eas": [0x40A5F0],
+            "root_ea": 0x40A5F0,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        },
+    ]
+    assert row145["unavailable_closure_exit_eas"] == []
+
+
 def test_checksum_producer_compiles_row142_cmov_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
