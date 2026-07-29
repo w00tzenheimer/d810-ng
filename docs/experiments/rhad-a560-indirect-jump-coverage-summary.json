@@ -172,12 +172,12 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 74,
+      "compiled_operation_instances": 75,
       "vertically_proved_operations": 74,
       "accepted_receipt_operations": 74,
       "earliest_unproved_reference_order": 143,
       "earliest_unproved_operation_id": "rhad:route@0x40BBF7",
-      "first_missing_typed_obligation": "add producer-inclusive typed existing-conditional compiler evidence for row143 before live mutation"
+      "first_missing_typed_obligation": "prove immutable preflight and actual MMAT_GENERATED publication for row143 through the shared coordinator before accepting its receipt"
     },
     {
       "operation_variant": "setcc_indexed_table",
