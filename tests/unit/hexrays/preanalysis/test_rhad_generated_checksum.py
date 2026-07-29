@@ -9287,6 +9287,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         operation for operation in operations if operation["reference_order"] == 126
     )
     assert row126["operation_id"] == "rhad:route@0x40B7F4"
+    assert row126["current_compiler_support"] == "typed_setcc_indexed_table"
     assert row126["current_generated_proof"] == {
         "proof_artifact_identity": row126_artifact.content_identity,
         "status": "unproved",
@@ -11021,14 +11022,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "setcc_indexed_table",
         "total_reference_operations": 8,
         "compiler_supported_operations": 8,
-        "compiled_operation_instances": 4,
+        "compiled_operation_instances": 5,
         "vertically_proved_operations": 4,
         "accepted_receipt_operations": 4,
         "earliest_unproved_reference_order": 126,
         "earliest_unproved_operation_id": "rhad:route@0x40B7F4",
         "first_missing_typed_obligation": (
-            "instantiate the proved RhadSetccIndexedTableRoute vocabulary with "
-            "exact per-operation proof artifact and dependency closure"
+            "publish the compiled operation at actual MMAT_GENERATED with one "
+            "committed receipt and authoritative maturity proof"
         ),
     }
 
