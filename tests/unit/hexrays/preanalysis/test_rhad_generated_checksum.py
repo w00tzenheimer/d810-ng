@@ -9601,8 +9601,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     assert row129["operation_id"] == "rhad:route@0x40B896"
     assert row129["current_compiler_support"] == "typed_setcc_indexed_table"
     assert row129["current_generated_proof"] == {
+        "accepted_commits": ["27901637a", "72e9b8cae", "bbe9965b1"],
         "proof_artifact_identity": row129_artifact.content_identity,
-        "status": "unproved",
+        "status": "accepted_generated_c6",
     }
     assert row129_artifact.proof_payload["binding"] == {
         "function_ea": 0x40A560,
@@ -11289,11 +11290,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("3416afed56111a715331fc497397a3ffd12aa8e4")
+    assert summary["accepted_code_sha"] == ("bbe9965b181427496a3e71a2dc6a5c1a2778af79")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 124
-    assert accepted_operation_ids[-1] == "rhad:route@0x40B879"
+    assert len(accepted_operation_ids) == 125
+    assert accepted_operation_ids[-1] == "rhad:route@0x40B896"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -11344,10 +11345,10 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 8,
         "compiler_supported_operations": 8,
         "compiled_operation_instances": 6,
-        "vertically_proved_operations": 5,
-        "accepted_receipt_operations": 5,
-        "earliest_unproved_reference_order": 129,
-        "earliest_unproved_operation_id": "rhad:route@0x40B896",
+        "vertically_proved_operations": 6,
+        "accepted_receipt_operations": 6,
+        "earliest_unproved_reference_order": 134,
+        "earliest_unproved_operation_id": "rhad:route@0x40B956",
         "first_missing_typed_obligation": (
             "instantiate the proved RhadSetccIndexedTableRoute vocabulary with "
             "exact per-operation proof artifact and dependency closure"
