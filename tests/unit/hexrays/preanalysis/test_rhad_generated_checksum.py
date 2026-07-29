@@ -10851,7 +10851,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         },
     ]
     assert row140["unavailable_closure_exit_eas"] == []
-    assert row140["current_compiler_support"] == "unsupported_typed_shape"
+    assert row140["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row140["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
@@ -12569,14 +12571,15 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 72,
+        "compiled_operation_instances": 73,
         "vertically_proved_operations": 72,
         "accepted_receipt_operations": 72,
         "earliest_unproved_reference_order": 140,
         "earliest_unproved_operation_id": "rhad:route@0x40BBA7",
         "first_missing_typed_obligation": (
-            "add producer 0x40BB95 to row140 ownership and derive the unavailable "
-            "0x40BBA9 target-root closure before compilation or live mutation"
+            "complete immutable preflight and actual MMAT_GENERATED publication "
+            "for row140 through the shared coordinator before claiming a committed "
+            "receipt"
         ),
     }
     assert setcc == {
