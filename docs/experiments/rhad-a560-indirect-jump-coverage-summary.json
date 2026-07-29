@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "bbe9965b181427496a3e71a2dc6a5c1a2778af79",
+  "accepted_code_sha": "31b6db5bb61073da5d7cca7c936ea9ee72aab445",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -130,7 +130,8 @@
     "rhad:route@0x40B7F4",
     "rhad:route@0x40B80E",
     "rhad:route@0x40B879",
-    "rhad:route@0x40B896"
+    "rhad:route@0x40B896",
+    "rhad:route@0x40B8B0"
   ],
   "variants": [
     {
@@ -160,11 +161,11 @@
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
       "compiled_operation_instances": 66,
-      "vertically_proved_operations": 65,
-      "accepted_receipt_operations": 65,
-      "earliest_unproved_reference_order": 130,
-      "earliest_unproved_operation_id": "rhad:route@0x40B8B0",
-      "first_missing_typed_obligation": "instantiate the proved RhadExistingConditionalRoute vocabulary with exact per-operation native-body proof and dependency closure"
+      "vertically_proved_operations": 66,
+      "accepted_receipt_operations": 66,
+      "earliest_unproved_reference_order": 131,
+      "earliest_unproved_operation_id": "rhad:route@0x40B8CA",
+      "first_missing_typed_obligation": "correct the producer-inclusive corridor and complete target-rooted closure before typed compilation"
     },
     {
       "operation_variant": "setcc_indexed_table",
