@@ -154,12 +154,12 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 63,
+      "compiled_operation_instances": 64,
       "vertically_proved_operations": 63,
       "accepted_receipt_operations": 63,
       "earliest_unproved_reference_order": 125,
       "earliest_unproved_operation_id": "rhad:route@0x40B7DC",
-      "first_missing_typed_obligation": "instantiate the proved RhadExistingConditionalRoute vocabulary with exact per-operation native-body proof and dependency closure"
+      "first_missing_typed_obligation": "publish the compiled operation at actual MMAT_GENERATED with one committed receipt and authoritative maturity proof"
     },
     {
       "operation_variant": "setcc_indexed_table",
