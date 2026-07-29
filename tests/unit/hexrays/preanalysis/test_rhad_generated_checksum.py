@@ -9520,7 +9520,12 @@ def test_row147_inventory_owns_producer_and_complete_target_closures() -> None:
         "typed_existing_conditional_plus_indirect"
     )
     assert row147["current_generated_proof"] == {
-        "accepted_commits": ["fafbff674", "7654c6186", "851df1fbc"],
+        "accepted_commits": [
+            "fafbff674",
+            "7654c6186",
+            "851df1fbc",
+            "0d7af822e",
+        ],
         "status": "accepted_generated_c6",
     }
     assert row147["owned_corridor_instruction_eas"] == [
@@ -13444,7 +13449,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("851df1fbc1cd8a3fc093e076663067f29f2ce386")
+    assert summary["accepted_code_sha"] == ("0d7af822e7f2b626a551bd15a5ea16926923f860")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
     assert len(accepted_operation_ids) == 143
