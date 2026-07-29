@@ -9473,9 +9473,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         {"ea": 0x40A607, "role": "conditional_fallthrough"},
     ]
     assert row128["boundary_exit_eas"] == [0x40A61B, 0x40A68C, 0x40B790]
-    assert row128["current_compiler_support"] == (
-        "conditional_vocabulary_present_operation_uninstantiated"
-    )
+    assert row128["current_compiler_support"] == "typed_cmov_selected_indirect"
     assert row128["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
@@ -11165,7 +11163,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 16,
+        "compiled_operation_instances": 17,
         "vertically_proved_operations": 16,
         "accepted_receipt_operations": 16,
         "earliest_unproved_reference_order": 0,
