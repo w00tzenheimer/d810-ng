@@ -9450,6 +9450,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row136 = next(
         operation for operation in operations if operation["reference_order"] == 136
     )
+    row137 = next(
+        operation for operation in operations if operation["reference_order"] == 137
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -10384,6 +10387,45 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "accepted_commits": ["8509230b3", "31d63c36b", "b6f680cbb"],
         "status": "accepted_generated_c6",
     }
+    assert row137["operation_id"] == "rhad:route@0x40B9A4"
+    assert row137["operation_variant"] == "existing_conditional_plus_indirect"
+    assert row137["source_native_ea"] == 0x40B98C
+    assert row137["flag_producer_native_ea"] == 0x40B992
+    assert row137["predicate_native_ea"] == 0x40B998
+    assert row137["source_block_anchor_ea"] == 0x40B99A
+    assert row137["transfer_native_ea"] == 0x40B9A4
+    assert row137["owned_corridor_instruction_eas"] == [
+        0x40B98C,
+        0x40B992,
+        0x40B998,
+        0x40B99A,
+        0x40B9A0,
+        0x40B9A2,
+        0x40B9A4,
+    ]
+    assert row137["semantic_targets"] == [
+        {"ea": 0x40B9A6, "role": "conditional_taken"},
+        {"ea": 0x40A5F0, "role": "conditional_fallthrough"},
+    ]
+    assert row137["imported_closure_block_anchor_eas"] == [
+        0x40A5F0,
+        0x40A605,
+        0x40B9A6,
+        0x40BA5C,
+        0x40BA78,
+        0x40BA92,
+        0x40BB3A,
+        0x40BB51,
+        0x40BB69,
+        0x40BB73,
+        0x40C6DA,
+        0x40C6F7,
+        0x40C703,
+    ]
+    assert row137["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+    assert row137["unavailable_closure_exit_eas"] == []
+    assert row137["current_compiler_support"] == "unsupported_typed_shape"
+    assert row137["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
