@@ -9200,6 +9200,9 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
     row132 = next(
         operation for operation in operations if operation["reference_order"] == 132
     )
+    row133 = next(
+        operation for operation in operations if operation["reference_order"] == 133
+    )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
     row16_artifact = generated_reference.load_row16_table_proof_artifact()
@@ -9977,6 +9980,22 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "accepted_commits": ["ec45f411d", "d9178248c"],
         "status": "accepted_generated_c6",
     }
+    assert row133["operation_id"] == "rhad:route@0x40B931"
+    assert row133["operation_variant"] == "simple_indirect_jump"
+    assert row133["source_native_ea"] == 0x40B915
+    assert row133["source_block_anchor_ea"] == 0x40B927
+    assert row133["transfer_native_ea"] == 0x40B931
+    assert row133["owned_corridor_instruction_eas"] == [
+        0x40B915,
+        0x40B927,
+        0x40B929,
+        0x40B92B,
+        0x40B931,
+    ]
+    assert row133["semantic_targets"] == [{"ea": 0x40B6C0, "role": "direct"}]
+    assert row133["boundary_exit_eas"] == [0x40B790]
+    assert row133["current_compiler_support"] == "typed_simple_indirect_jump"
+    assert row133["current_generated_proof"] == {"status": "unproved"}
     assert row5["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row5["current_generated_proof"] == {
         "accepted_commits": ["fa02b0aa0", "c9485af58", "0e0c9ab2a"],
@@ -11679,14 +11698,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 37,
+        "compiled_operation_instances": 38,
         "vertically_proved_operations": 37,
         "accepted_receipt_operations": 37,
         "earliest_unproved_reference_order": 133,
         "earliest_unproved_operation_id": "rhad:route@0x40B931",
         "first_missing_typed_obligation": (
-            "instantiate the proved RhadDirectRoute vocabulary with exact "
-            "per-operation native-body proof and dependency closure"
+            "publish the compiled row133 operation at actual MMAT_GENERATED and "
+            "prove one committed receipt through CMAT_FINAL"
         ),
     }
     assert existing == {
