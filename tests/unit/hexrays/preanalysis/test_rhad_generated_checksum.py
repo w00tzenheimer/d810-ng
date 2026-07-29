@@ -7449,6 +7449,9 @@ def test_checksum_producer_compiles_row116_existing_conditional_dependency() -> 
         "native@0x40B7A4",
         "native@0x40B7A8",
     }.issubset(plan.native_bodies[0].block_ids)
+    assert {"native@0x40B6D6", "native@0x40B790"}.issubset(
+        batch.native_body_entry_block_ids
+    )
 
 
 def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
