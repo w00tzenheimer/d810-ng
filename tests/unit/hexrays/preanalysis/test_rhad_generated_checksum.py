@@ -8997,14 +8997,15 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 26,
+        "compiled_operation_instances": 27,
         "vertically_proved_operations": 26,
         "accepted_receipt_operations": 26,
         "earliest_unproved_reference_order": 106,
         "earliest_unproved_operation_id": "rhad:route@0x40B56B",
         "first_missing_typed_obligation": (
-            "instantiate the proved RhadDirectRoute vocabulary with exact "
-            "per-operation native-body proof and dependency closure"
+            "complete the fresh GENERATED, PREOPT, authoritative-CFG, CALLS, and "
+            "CMAT_FINAL publication proof and persist the accepted diagnostic "
+            "receipt"
         ),
     }
     assert existing == {
