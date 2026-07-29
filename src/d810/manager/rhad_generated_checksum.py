@@ -1568,21 +1568,19 @@ ROW145_TARGET_IMPORTED_LAYOUT = (
     (0x40BC2D, 0x40BC36, (0x40BC2D, 0x40BC31)),
     (
         0x40BC36,
-        0x40BC61,
+        0x40BC5B,
         (
             0x40BC36,
             0x40BC3C,
-            0x40BC42,
             0x40BC45,
             0x40BC4A,
             0x40BC50,
             0x40BC52,
             0x40BC58,
-            0x40BC5B,
-            0x40BC5D,
-            0x40BC5F,
         ),
     ),
+    (0x40BC58, 0x40BC5B, (0x40BC58,)),
+    (0x40BC5B, 0x40BC61, (0x40BC5B, 0x40BC5D, 0x40BC5F)),
     (0x40BC5F, 0x40BC61, (0x40BC5F,)),
 )
 BASE_IMPORTED_LAYOUT = (
