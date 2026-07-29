@@ -10122,7 +10122,7 @@ def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
         "status": "accepted_generated_c6",
     }
     assert row134["operation_id"] == "rhad:route@0x40B956"
-    assert row134["current_compiler_support"] == "unsupported_typed_shape"
+    assert row134["current_compiler_support"] == "typed_setcc_indexed_table"
     assert row134["current_generated_proof"] == {
         "proof_artifact_identity": row134_artifact.content_identity,
         "status": "unproved",
@@ -11867,14 +11867,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "setcc_indexed_table",
         "total_reference_operations": 8,
         "compiler_supported_operations": 8,
-        "compiled_operation_instances": 6,
+        "compiled_operation_instances": 7,
         "vertically_proved_operations": 6,
         "accepted_receipt_operations": 6,
         "earliest_unproved_reference_order": 134,
         "earliest_unproved_operation_id": "rhad:route@0x40B956",
         "first_missing_typed_obligation": (
-            "instantiate the proved RhadSetccIndexedTableRoute vocabulary with "
-            "exact per-operation proof artifact and dependency closure"
+            "publish the compiled row134 operation at actual MMAT_GENERATED and "
+            "prove one committed receipt through CMAT_FINAL"
         ),
     }
 
