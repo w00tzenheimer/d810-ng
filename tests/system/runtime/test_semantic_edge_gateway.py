@@ -353,7 +353,7 @@ def test_gateway_materializes_folded_direct_edge_at_rewrite_anchor(
     assert tuple(target.predset) == (1,)
 
 
-def test_gateway_materializes_call_fallthrough_through_adjacent_helper(
+def test_gateway_rejects_unplanned_call_fallthrough_helper(
     monkeypatch,
 ) -> None:
     source = _Block(1, start=0x401010)
@@ -365,33 +365,27 @@ def test_gateway_materializes_call_fallthrough_through_adjacent_helper(
     gateway = make_mutation_gateway(mba)
     _install_helper_builder(monkeypatch)
 
-    receipt = _apply(
-        gateway,
-        mba,
-        _operation(
+    with pytest.raises(
+        SemanticEdgeOperationRejected,
+        match="call fallthrough requires PlanBlockRef helper authority",
+    ):
+        _apply(
             gateway,
-            source=1,
-            role=SemanticEdgeRole.CALL_FALLTHROUGH,
-            target=3,
-        ),
-    )
+            mba,
+            _operation(
+                gateway,
+                source=1,
+                role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                target=3,
+            ),
+        )
 
-    assert receipt is not None
-    live_source = mba.get_mblock(1)
-    helper = mba.get_mblock(2)
-    live_target = mba.get_mblock(4)
-    assert live_source.tail is call
-    assert int(live_source.tail.opcode) == int(ida_hexrays.m_call)
-    assert tuple(live_source.succset) == (2,)
-    assert live_source.nextb is helper
-    assert tuple(helper.succset) == (int(live_target.serial),)
-    assert tuple(helper.predset) == (int(live_source.serial),)
-    assert tuple(live_target.predset) == (int(helper.serial),)
-    assert receipt.operation_count == 2
-    assert receipt.planned_operation_count == 2
+    assert mba.qty == 4
+    assert tuple(source.succset) == ()
+    assert gateway.receipts == ()
 
 
-def test_gateway_materializes_analyzed_call_owner_fallthrough(
+def test_gateway_rejects_unplanned_analyzed_call_owner_helper(
     monkeypatch,
 ) -> None:
     source = _Block(1, start=0x401010)
@@ -403,32 +397,24 @@ def test_gateway_materializes_analyzed_call_owner_fallthrough(
     gateway = make_mutation_gateway(mba)
     _install_helper_builder(monkeypatch)
 
-    receipt = _apply(
-        gateway,
-        mba,
-        _operation(
+    with pytest.raises(
+        SemanticEdgeOperationRejected,
+        match="call fallthrough requires PlanBlockRef helper authority",
+    ):
+        _apply(
             gateway,
-            source=1,
-            role=SemanticEdgeRole.CALL_FALLTHROUGH,
-            target=3,
-        ),
-    )
+            mba,
+            _operation(
+                gateway,
+                source=1,
+                role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                target=3,
+            ),
+        )
 
-    assert receipt is not None
-    live_source = mba.get_mblock(1)
-    helper = mba.get_mblock(2)
-    live_target = mba.get_mblock(4)
-    assert live_source.tail is owner
-    assert int(live_source.tail.opcode) == int(ida_hexrays.m_mov)
-    assert int(live_source.tail.l.t) == int(ida_hexrays.mop_d)
-    assert int(live_source.tail.l.d.opcode) == int(ida_hexrays.m_call)
-    assert tuple(live_source.succset) == (2,)
-    assert live_source.nextb is helper
-    assert tuple(helper.succset) == (int(live_target.serial),)
-    assert tuple(helper.predset) == (int(live_source.serial),)
-    assert tuple(live_target.predset) == (int(helper.serial),)
-    assert receipt.operation_count == 2
-    assert receipt.planned_operation_count == 2
+    assert mba.qty == 4
+    assert tuple(source.succset) == ()
+    assert gateway.receipts == ()
 
 
 def test_gateway_rejects_call_fallthrough_for_non_call_before_helper_creation(
@@ -454,7 +440,7 @@ def test_gateway_rejects_call_fallthrough_for_non_call_before_helper_creation(
 
     with pytest.raises(
         SemanticEdgeOperationRejected,
-        match="block-closing call",
+        match="call fallthrough requires PlanBlockRef helper authority",
     ):
         _apply(
             gateway,
@@ -472,7 +458,7 @@ def test_gateway_rejects_call_fallthrough_for_non_call_before_helper_creation(
     assert gateway.receipts == ()
 
 
-def test_gateway_reports_portable_call_fallthrough_shape_diagnostic(
+def test_gateway_reports_unplanned_call_fallthrough_obligation(
     monkeypatch,
 ) -> None:
     source = _Block(1, start=0x401010)
@@ -511,18 +497,7 @@ def test_gateway_reports_portable_call_fallthrough_shape_diagnostic(
     with pytest.raises(SemanticEdgeOperationRejected) as error:
         _apply(gateway, mba, operation)
 
-    message = str(error.value)
-    assert "operation='fragment operation native-body-edge@0x401010'" in message
-    assert "stable_identity=" in message
-    assert "exact-ea=[0x401011]" in message
-    assert "live=blk1@0x401010" in message
-    assert "block_type=" in message
-    assert "nsucc=1" in message
-    assert "successors=[blk2@0x401020]" in message
-    assert "tail_ea=0x401011" in message
-    assert "tail_opcode=m_call(" in message
-    assert "tail_dest_type=" in message
-    assert "expected=zero-way block-closing m_call or m_icall owner" in message
+    assert str(error.value) == "call fallthrough requires PlanBlockRef helper authority"
     assert helper_calls == 0
     assert gateway.receipts == ()
 
@@ -590,7 +565,7 @@ def test_gateway_redirects_explicit_conditional_taken_arm(monkeypatch) -> None:
     assert tuple(new_taken.predset) == (1,)
 
 
-def test_gateway_routes_physical_fallthrough_through_adjacent_helper(
+def test_gateway_rejects_unplanned_conditional_fallthrough_helper(
     monkeypatch,
 ) -> None:
     source = _Block(1, start=0x401010)
@@ -613,23 +588,18 @@ def test_gateway_routes_physical_fallthrough_through_adjacent_helper(
     )
     _install_helper_builder(monkeypatch)
 
-    receipt = _apply(gateway, mba, operation)
+    with pytest.raises(
+        SemanticEdgeOperationRejected,
+        match="conditional fallthrough requires PlanBlockRef helper authority",
+    ):
+        _apply(gateway, mba, operation)
 
-    assert receipt is not None
-    helper = mba.get_mblock(2)
-    live_source = mba.get_mblock(1)
-    live_taken = mba.get_mblock(4)
-    live_old_fallthrough = mba.get_mblock(3)
-    live_new_fallthrough = mba.get_mblock(5)
-    assert helper is not None
-    assert tuple(live_source.succset) == (2, int(live_taken.serial))
-    assert tuple(helper.succset) == (int(live_new_fallthrough.serial),)
-    assert tuple(live_old_fallthrough.predset) == ()
-    assert tuple(helper.predset) == (1,)
-    assert receipt.operation_count == 2
+    assert tuple(source.succset) == (2, 3)
+    assert tuple(old_fallthrough.predset) == (1,)
+    assert gateway.receipts == ()
 
 
-def test_gateway_reconstructs_predicate_and_both_destinations_atomically(
+def test_gateway_rejects_unplanned_conditional_reconstruction_helper(
     monkeypatch,
 ) -> None:
     source = _Block(1, start=0x401010)
@@ -655,20 +625,14 @@ def test_gateway_reconstructs_predicate_and_both_destinations_atomically(
     )
     _install_helper_builder(monkeypatch)
 
-    receipt = _apply(gateway, mba, operation)
+    with pytest.raises(
+        SemanticEdgeOperationRejected,
+        match="conditional reconstruction requires PlanBlockRef helper authority",
+    ):
+        _apply(gateway, mba, operation)
 
-    assert receipt is not None
-    live_source = mba.get_mblock(1)
-    helper = mba.get_mblock(2)
-    live_taken = mba.get_mblock(4)
-    live_fallthrough = mba.get_mblock(5)
-    assert int(live_source.type) == int(ida_hexrays.BLT_2WAY)
-    assert int(live_source.tail.ea) == 0x401011
-    assert int(live_source.tail.d.b) == int(live_taken.serial)
-    assert tuple(live_source.succset) == (2, int(live_taken.serial))
-    assert tuple(helper.succset) == (int(live_fallthrough.serial),)
-    assert receipt.operation_count == 3
-    assert receipt.planned_operation_count == 3
+    assert tuple(source.succset) == ()
+    assert gateway.receipts == ()
 
 
 def test_gateway_rejects_wrong_arm_without_mutating_or_committing() -> None:
@@ -716,7 +680,7 @@ def test_gateway_rejects_wrong_arm_without_mutating_or_committing() -> None:
     assert aborted and "requires a two-way conditional" in aborted[-1].reason
 
 
-def test_conditional_predicate_rejection_names_logical_operation_and_native_source() -> (
+def test_conditional_reconstruction_rejects_before_predicate_without_plan_ref() -> (
     None
 ):
     source = _Block(1, start=0x401010)
@@ -747,12 +711,7 @@ def test_conditional_predicate_rejection_names_logical_operation_and_native_sour
 
     with pytest.raises(
         SemanticEdgeOperationRejected,
-        match=(
-            r"native-indirect-transfer@0x40A5E3.*"
-            r"blk1@0x401010.*native@0x401010.*"
-            r"expected_predicate=0x401011.*"
-            r"observed_tail=ea=0x401019"
-        ),
+        match="conditional reconstruction requires PlanBlockRef helper authority",
     ):
         _apply(gateway, mba, operation)
 
@@ -760,7 +719,7 @@ def test_conditional_predicate_rejection_names_logical_operation_and_native_sour
     assert gateway.generation == 0
 
 
-def test_gateway_rejects_stale_expected_fallthrough_before_helper_creation(
+def test_gateway_rejects_unplanned_fallthrough_before_stale_edge_check(
     monkeypatch,
 ) -> None:
     source = _Block(1, start=0x401010)
@@ -788,7 +747,10 @@ def test_gateway_rejects_stale_expected_fallthrough_before_helper_creation(
         _unexpected_helper,
     )
 
-    with pytest.raises(SemanticEdgeOperationRejected, match="expected fallthrough"):
+    with pytest.raises(
+        SemanticEdgeOperationRejected,
+        match="conditional fallthrough requires PlanBlockRef helper authority",
+    ):
         _apply(
             gateway,
             mba,
@@ -831,7 +793,7 @@ def test_gateway_rejects_foreign_proxy_before_opening_a_batch() -> None:
     assert gateway.receipts == ()
 
 
-def test_gateway_aborts_when_adjacent_fallthrough_helper_cannot_be_built(
+def test_gateway_rejects_unplanned_helper_before_builder_invocation(
     monkeypatch,
 ) -> None:
     source = _Block(1, start=0x401010)
@@ -863,7 +825,10 @@ def test_gateway_aborts_when_adjacent_fallthrough_helper_cannot_be_built(
         lambda *_args, **_kwargs: None,
     )
 
-    with pytest.raises(SemanticEdgeOperationRejected, match="fallthrough helper"):
+    with pytest.raises(
+        SemanticEdgeOperationRejected,
+        match="conditional fallthrough requires PlanBlockRef helper authority",
+    ):
         _apply(
             gateway,
             mba,
@@ -878,4 +843,4 @@ def test_gateway_aborts_when_adjacent_fallthrough_helper_cannot_be_built(
 
     assert tuple(source.succset) == (2, 3)
     assert gateway.generation == 0
-    assert aborted and "fallthrough helper" in aborted[-1].reason
+    assert aborted and "PlanBlockRef helper authority" in aborted[-1].reason

@@ -43,7 +43,12 @@ def _seed_current_serials(
         )
     )
     for expected_serial, current_serial in bindings.items():
-        modifier._record_realized_serial(expected_serial, current_serial)
+        gateway = modifier._mutation_gateway
+        assert gateway is not None
+        gateway.record_realized_serial(
+            expected_serial=expected_serial,
+            returned_serial=current_serial,
+        )
 
 
 class _FakeEdgeSet:
@@ -125,6 +130,10 @@ class _FakeMBA:
 
     def get_mblock(self, serial: int):
         return self.blocks.get(serial)
+
+    @staticmethod
+    def map_fict_ea(ea: int) -> int:
+        return int(ea)
 
     def mark_chains_dirty(self):
         self.marked_dirty += 1
@@ -559,13 +568,13 @@ def test_apply_aborts_on_first_failed_modification_and_cleans(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.INSN_REMOVE, block_serial=0, insn_ea=0x1001
         ),
     ]
@@ -606,7 +615,7 @@ def test_apply_orders_conditional_block_insertions_by_descending_source(
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
             block_serial=10,
             new_target=25,
@@ -615,7 +624,7 @@ def test_apply_orders_conditional_block_insertions_by_descending_source(
             true_target=25,
             rewrite_from_ea=0x40DD38,
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
             block_serial=20,
             new_target=27,
@@ -652,13 +661,13 @@ def test_apply_transactional_rolls_back_when_mid_batch_aborts(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.INSN_REMOVE, block_serial=0, insn_ea=0x1001
         ),
     ]
@@ -704,10 +713,10 @@ def test_apply_transactional_returns_full_count_when_all_mods_succeed(monkeypatc
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000
         ),
     ]
@@ -752,10 +761,10 @@ def test_apply_transactional_rejects_batch_with_contradictory_redirects(monkeypa
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=2
         ),
     ]
@@ -798,7 +807,7 @@ def test_detect_transactional_batch_conflicts_direct():
 
     # No conflict: single graph mod.
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
         ),
     ]
@@ -806,10 +815,10 @@ def test_detect_transactional_batch_conflicts_direct():
 
     # No conflict: graph mod + instruction mod on same block.
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.INSN_NOP, block_serial=76, insn_ea=0x1000
         ),
     ]
@@ -817,10 +826,10 @@ def test_detect_transactional_batch_conflicts_direct():
 
     # Conflict: two graph mods on blk[76] pointing at different targets.
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=2
         ),
     ]
@@ -831,10 +840,10 @@ def test_detect_transactional_batch_conflicts_direct():
 
     # No conflict: same block, same target (redundant but consistent).
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=76, new_target=11
         ),
     ]
@@ -852,10 +861,10 @@ def test_apply_transactional_marks_verify_failed_when_rollback_itself_fails(
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.INSN_NOP, block_serial=0, insn_ea=0x1000
         ),
     ]
@@ -892,7 +901,7 @@ def test_apply_transactional_rolls_back_alias_scalarization_verify_failure(monke
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.INSN_SCALARIZE_LOCAL_ALIAS_ACCESS,
             block_serial=0,
             insn_ea=0x1000,
@@ -1074,7 +1083,7 @@ def test_apply_tolerates_queued_mod_logging_introspection_failure(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=0,
             new_target=0,
@@ -1100,7 +1109,7 @@ def test_apply_tolerates_queued_mod_logging_introspection_failure(monkeypatch):
     assert applied == 1
 
 
-def test_block_target_change_rewrites_fallthrough_via_helper_and_remaps_later_targets(
+def test_block_target_change_rejects_unplanned_fallthrough_helper_before_mutation(
     monkeypatch,
 ):
     mba = _FakeMBA()
@@ -1155,34 +1164,26 @@ def test_block_target_change_rewrites_fallthrough_via_helper_and_remaps_later_ta
         planned_operation_count=2,
     )
 
-    ok_fallthrough = modifier._apply_single(
-        dm.GraphModification(
-            dm.ModificationType.BLOCK_TARGET_CHANGE,
-            block_serial=15,
-            new_target=66,
-            old_target=16,
+    with pytest.raises(
+        RuntimeError,
+        match="fallthrough branch rewrite lacks reserved PlanBlockRef helper",
+    ):
+        modifier._apply_single(
+            dm.QueuedModification(
+                dm.ModificationType.BLOCK_TARGET_CHANGE,
+                block_serial=15,
+                new_target=66,
+                old_target=16,
+            )
         )
-    )
-    ok_conditional = modifier._apply_single(
-        dm.GraphModification(
-            dm.ModificationType.BLOCK_TARGET_CHANGE,
-            block_serial=15,
-            new_target=202,
-            old_target=17,
-        )
-    )
 
-    assert ok_fallthrough is True
-    assert ok_conditional is True
-    assert helper_targets == [(16, 67)]
-    assert conditional_targets == [(15, 203, 18)]
-    assert modifier.current_serial_for_planned(16) == 17
-    assert modifier.current_serial_for_planned(17) == 18
-    assert modifier.current_serial_for_planned(202) == 203
-    modifier._mutation_gateway.commit()
+    assert helper_targets == []
+    assert conditional_targets == []
+    assert mba.qty == 300
+    modifier._mutation_gateway.abort()
 
 
-def test_block_target_change_fallthrough_helper_preserves_target_ea_after_serial_drift(
+def test_block_target_change_rejects_unplanned_helper_after_serial_drift(
     monkeypatch,
 ):
     """A remapped serial must not retarget the handler to its fallthrough."""
@@ -1227,15 +1228,20 @@ def test_block_target_change_fallthrough_helper_preserves_target_ea_after_serial
         lambda _helper, target, verify=False: rewritten_targets.append(target) or True,
     )
 
-    assert modifier._apply_single(
-        dm.GraphModification(
-            dm.ModificationType.BLOCK_TARGET_CHANGE,
-            block_serial=226,
-            new_target=50,
-            old_target=227,
+    with pytest.raises(
+        RuntimeError,
+        match="fallthrough branch rewrite lacks reserved PlanBlockRef helper",
+    ):
+        modifier._apply_single(
+            dm.QueuedModification(
+                dm.ModificationType.BLOCK_TARGET_CHANGE,
+                block_serial=226,
+                new_target=50,
+                old_target=227,
+            )
         )
-    )
-    assert int(mba.get_mblock(rewritten_targets[0]).start) == int(handler.start)
+    assert rewritten_targets == []
+    modifier._mutation_gateway.abort()
 
 
 def test_conditional_lowering_helper_remaps_later_branch_targets(monkeypatch):
@@ -1282,12 +1288,12 @@ def test_conditional_lowering_helper_remaps_later_branch_targets(monkeypatch):
     monkeypatch.setattr(
         modifier,
         "_apply_target_change",
-        lambda _blk, new_target, old_target=None: (
+        lambda _blk, new_target, old_target=None, **_kwargs: (
             captured.append((new_target, old_target)) or True
         ),
     )
     assert modifier._apply_single(
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_TARGET_CHANGE,
             block_serial=5,
             new_target=20,
@@ -1716,7 +1722,7 @@ def test_conditional_lowering_resolves_dispatcher_serial_once(monkeypatch):
     )
 
     assert modifier._apply_single(
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
             block_serial=86,
             new_target=245,
@@ -1812,7 +1818,7 @@ def test_apply_pre_rejects_create_and_redirect_from_entry_block(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_CREATE_WITH_REDIRECT,
             block_serial=0,
             new_target=0,
@@ -1846,7 +1852,7 @@ def test_coalesce_resolves_mixed_terminal_conflicts():
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_CREATE_WITH_REDIRECT,
             block_serial=7,
             new_target=11,
@@ -1854,7 +1860,7 @@ def test_coalesce_resolves_mixed_terminal_conflicts():
             instructions_to_copy=[SimpleNamespace(opcode=ida_hexrays.m_mov)],
             rule_priority=0,
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=7,
             new_target=22,
@@ -1876,7 +1882,7 @@ def test_apply_runs_conservative_cleanup_without_optimize_local(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
         ),
     ]
@@ -1908,7 +1914,7 @@ def test_apply_attempts_verify_recovery(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
         ),
     ]
@@ -1942,7 +1948,7 @@ def test_apply_attempts_verify_recovery_on_non_runtime_preapply_exception(monkey
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
         ),
     ]
@@ -1976,7 +1982,7 @@ def test_apply_executes_post_apply_hook(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
         ),
     ]
@@ -2013,7 +2019,7 @@ def test_apply_pre_rejects_illegal_edge_split_trampoline_and_continues(monkeypat
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.EDGE_SPLIT_TRAMPOLINE,
             block_serial=0,
             new_target=1,
@@ -2024,7 +2030,7 @@ def test_apply_pre_rejects_illegal_edge_split_trampoline_and_continues(monkeypat
             priority=5,
             description="bad trampoline",
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.INSN_NOP,
             block_serial=0,
             insn_ea=0x1000,
@@ -2059,7 +2065,7 @@ def test_apply_pre_rejects_illegal_edge_split_trampoline_and_continues(monkeypat
     assert calls == [dm.ModificationType.INSN_NOP]
 
 
-def test_create_conditional_redirect_records_serial_drift_remap_and_continues(
+def test_create_conditional_redirect_rejects_unowned_planned_creation(
     monkeypatch, request
 ):
     import logging
@@ -2133,21 +2139,16 @@ def test_create_conditional_redirect_records_serial_drift_remap_and_continues(
         expected_fallthrough_serial=12,
     )
 
-    assert ok is True
-    assert cond_calls["count"] == 1
-    assert ft_calls["count"] == 1
-    assert src_calls["count"] == 1
-    assert cond_targets == [13]
-    assert ft_targets == [14]
-    assert src_targets == [7]
-    assert modifier.current_serial_for_planned(9) == 7
-    assert modifier.current_serial_for_planned(12) == 8
+    assert ok is False
+    assert cond_calls["count"] == 0
+    assert ft_calls["count"] == 0
+    assert src_calls["count"] == 0
+    assert cond_targets == []
+    assert ft_targets == []
+    assert src_targets == []
     messages = [record.getMessage() for record in records]
     assert any(
-        "created conditional blk[7], expected blk[9]" in message for message in messages
-    )
-    assert any(
-        "created fallthrough blk[8], expected blk[12]" in message
+        "patch creation lacks typed attempt authority" in message
         for message in messages
     )
 
@@ -2185,7 +2186,7 @@ def test_create_conditional_redirect_rejects_stale_source_edge_before_cloning(
     assert duplicate_calls["count"] == 0
 
 
-def test_duplicate_block_records_serial_drift_remap_and_continues(monkeypatch):
+def test_duplicate_block_rejects_unowned_planned_creation(monkeypatch):
     mba = _FakeMBA()
     source = _FakeBlock(5)
     pred = _FakeBlock(7)
@@ -2226,8 +2227,8 @@ def test_duplicate_block_records_serial_drift_remap_and_continues(monkeypatch):
         expected_serial=225,
     )
 
-    assert ok is True
-    assert modifier.current_serial_for_planned(225) == 223
+    assert ok is False
+    assert mba.qty == 3
 
 
 def test_duplicate_replay_queue_records_single_composite_modification():
@@ -2305,7 +2306,7 @@ def _clone_as_goto_fixture():
     return mba, source, pred, clone
 
 
-def test_clone_conditional_as_goto_records_serial_drift_remap_and_replays_shape(
+def test_clone_conditional_as_goto_rejects_unowned_planned_creation(
     monkeypatch,
 ):
     mba, source, pred, clone = _clone_as_goto_fixture()
@@ -2334,13 +2335,9 @@ def test_clone_conditional_as_goto_records_serial_drift_remap_and_replays_shape(
         expected_serial=9,
     )
 
-    assert ok is True
-    assert modifier.current_serial_for_planned(9) == 7
-    assert list(clone.predset) == []
-    assert trace == [
-        ("convert", 7, 30),
-        ("redirect", 6, 5, 7),
-    ]
+    assert ok is False
+    assert list(clone.predset) == [6, 9]
+    assert trace == []
 
 
 def _clone_as_goto_from_arm_fixture():
@@ -2405,7 +2402,9 @@ def _clone_as_goto_from_arm_fixture():
     return mba, source, pred, clone
 
 
-def test_clone_conditional_as_goto_from_branch_arm_applies_2way_rewire(monkeypatch):
+def test_clone_conditional_as_goto_from_branch_arm_rejects_unowned_creation(
+    monkeypatch,
+):
     mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
     modifier = dm.DeferredGraphModifier(
         mba, mutation_gateway=make_mutation_gateway(mba)
@@ -2440,18 +2439,12 @@ def test_clone_conditional_as_goto_from_branch_arm_applies_2way_rewire(monkeypat
         expected_serial=9,
     )
 
-    assert ok is True
-    assert modifier.current_serial_for_planned(9) == 7
-    assert list(clone.predset) == []
-    # The clone gets converted to a goto, then the 2-way predecessor's
-    # explicit branch arm is rewired to the clone via the 2-way helper.
-    assert trace == [
-        ("convert", 7, 30),
-        ("rewire_branch", 6, 5, 7, 5),
-    ]
+    assert ok is False
+    assert list(clone.predset) == [6, 9]
+    assert trace == []
 
 
-def test_clone_conditional_as_goto_from_branch_arm_applies_fallthrough_rewire(
+def test_clone_conditional_as_goto_from_fallthrough_rejects_unowned_creation(
     monkeypatch,
 ):
     mba, source, pred, clone = _clone_as_goto_from_arm_fixture()
@@ -2511,13 +2504,9 @@ def test_clone_conditional_as_goto_from_branch_arm_applies_fallthrough_rewire(
         expected_serial=9,
     )
 
-    assert ok is True
-    assert modifier.current_serial_for_planned(9) == 8
-    assert list(clone.predset) == []
-    assert trace == [
-        ("rewire_fallthrough", 7, 0, 8),
-        ("convert", 8, 31),
-    ]
+    assert ok is False
+    assert list(clone.predset) == [6, 9]
+    assert trace == []
 
 
 def test_clone_conditional_as_goto_from_branch_arm_refuses_one_way_predecessor(
@@ -2660,7 +2649,7 @@ def test_apply_pre_rejects_duplicate_block_with_fallthrough_predecessor(monkeypa
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_DUPLICATE_AND_REDIRECT,
             block_serial=5,
             via_pred=6,
@@ -2829,7 +2818,7 @@ def test_apply_marks_verify_failed_on_post_apply_hook_exception(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
         ),
     ]
@@ -2859,7 +2848,7 @@ def test_apply_skips_post_native_verify_after_contract_failure(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
         ),
     ]
@@ -2906,7 +2895,7 @@ def test_apply_rolls_back_snapshot_after_contract_failure(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE, block_serial=0, new_target=1
         ),
     ]
@@ -2964,13 +2953,13 @@ def test_apply_rolls_back_failed_mod_and_continues(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=0,
             new_target=1,
             description="first",
         ),
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=1,
             new_target=2,
@@ -3033,7 +3022,7 @@ def test_apply_sets_verify_failed_if_rollback_cannot_recover(monkeypatch):
         mba, mutation_gateway=make_mutation_gateway(mba)
     )
     modifier.modifications = [
-        dm.GraphModification(
+        dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=0,
             new_target=1,
@@ -3846,13 +3835,13 @@ class TestStagedAtomicApply:
             mutation_gateway=make_mutation_gateway(mba),
         )
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=10,
                 new_target=20,
                 description="target route",
             ),
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=5,
                 new_target=10,
@@ -3969,7 +3958,7 @@ class TestStagedAtomicApply:
             "_apply_lower_conditional_state_transition",
             _lower,
         )
-        modification = dm.GraphModification(
+        modification = dm.QueuedModification(
             dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
             block_serial=5,
             old_target=20,
@@ -4010,7 +3999,7 @@ class TestStagedAtomicApply:
         gateway = make_mutation_gateway(mba)
         modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=5,
                 new_target=30,
@@ -4094,7 +4083,7 @@ class TestStagedAtomicApply:
             _redirect_fallthrough,
         )
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=5,
                 new_target=30,
@@ -4135,7 +4124,7 @@ class TestStagedAtomicApply:
         gateway = make_mutation_gateway(mba)
         modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_TERMINAL_GOTO_CHANGE,
                 block_serial=5,
                 new_target=20,
@@ -4175,7 +4164,7 @@ class TestStagedAtomicApply:
             mba, mutation_gateway=make_mutation_gateway(mba)
         )
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.INSN_NOP,
                 block_serial=5,
                 insn_ea=0x1234,
@@ -4210,7 +4199,7 @@ class TestStagedAtomicApply:
             mba, mutation_gateway=make_mutation_gateway(mba)
         )
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=0,
                 new_target=1,
@@ -4253,7 +4242,7 @@ class TestStagedAtomicApply:
             mba, mutation_gateway=make_mutation_gateway(mba)
         )
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=5,
                 new_target=30,
@@ -4315,13 +4304,13 @@ class TestStagedAtomicApply:
         gateway = make_mutation_gateway(mba)
         modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=5,
                 new_target=30,
                 description="stageable sibling",
             ),
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.LOWER_CONDITIONAL_STATE_TRANSITION,
                 block_serial=0,
                 old_target=5,
@@ -4376,13 +4365,13 @@ class TestStagedAtomicApply:
             mba, mutation_gateway=make_mutation_gateway(mba)
         )
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=5,
                 new_target=30,
                 description="destructive",
             ),
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.INSN_NOP,
                 block_serial=7,
                 insn_ea=0x5678,
@@ -4435,7 +4424,7 @@ class TestStagedAtomicApply:
             mba, mutation_gateway=make_mutation_gateway(mba)
         )
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=5,
                 new_target=30,
@@ -4527,7 +4516,7 @@ class TestStagedAtomicApply:
             mba, mutation_gateway=make_mutation_gateway(mba)
         )
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=5,
                 new_target=30,
@@ -4629,7 +4618,7 @@ class TestStagedAtomicEaIdentity:
         modifier = dm.DeferredGraphModifier(
             mba, mutation_gateway=make_mutation_gateway(mba)
         )
-        mod = dm.GraphModification(
+        mod = dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=5,
             new_target=30,
@@ -4676,7 +4665,7 @@ class TestStagedAtomicEaIdentity:
             mba,
             mutation_gateway=make_mutation_gateway(mba),
         )
-        modification = dm.GraphModification(
+        modification = dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=5,
             new_target=30,
@@ -4727,7 +4716,7 @@ class TestStagedAtomicEaIdentity:
             mba, mutation_gateway=make_mutation_gateway(mba)
         )
         _seed_current_serials(modifier, {100: 101})
-        mod = dm.GraphModification(
+        mod = dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=100,
             new_target=102,
@@ -4760,7 +4749,7 @@ class TestStagedAtomicEaIdentity:
         modifier = dm.DeferredGraphModifier(
             mba, mutation_gateway=make_mutation_gateway(mba)
         )
-        mod = dm.GraphModification(
+        mod = dm.QueuedModification(
             dm.ModificationType.BLOCK_GOTO_CHANGE,
             block_serial=5,
             new_target=30,
@@ -4842,7 +4831,7 @@ class TestStagedAtomicEaIdentity:
             mba, mutation_gateway=make_mutation_gateway(mba)
         )
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=5,
                 new_target=30,
@@ -4915,13 +4904,13 @@ class TestStagedAtomicEaIdentity:
             mba, mutation_gateway=make_mutation_gateway(mba)
         )
         modifier.modifications = [
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=5,
                 new_target=30,
                 description="destructive A",
             ),
-            dm.GraphModification(
+            dm.QueuedModification(
                 dm.ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=6,
                 new_target=31,
