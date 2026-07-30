@@ -14333,7 +14333,9 @@ def test_row177_inventory_has_producer_inclusive_exact_target_closures() -> None
     assert len(inventory["operations"]) == 228
     assert row177["operation_id"] == "rhad:route@0x40C0D2"
     assert row177["operation_variant"] == "existing_conditional_plus_indirect"
-    assert row177["current_compiler_support"] == "unsupported_typed_shape"
+    assert row177["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row177["current_generated_proof"] == {"status": "unproved"}
     assert row177["flag_producer_native_ea"] == 0x40C0C0
     assert row177["predicate_native_ea"] == 0x40C0C6
@@ -18401,14 +18403,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 97,
+        "compiled_operation_instances": 98,
         "vertically_proved_operations": 97,
         "accepted_receipt_operations": 97,
         "earliest_unproved_reference_order": 177,
         "earliest_unproved_operation_id": "rhad:route@0x40C0D2",
         "first_missing_typed_obligation": (
-            "add producer-inclusive typed existing-conditional evidence and exact "
-            "row176 dependency and target closures for row177 before live mutation"
+            "publish compiled row177 through immutable preflight and exact "
+            "actual-MMAT_GENERATED transaction evidence before acceptance"
         ),
     }
     assert setcc == {
