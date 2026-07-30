@@ -16639,7 +16639,7 @@
         4236807,
         4241088
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
         "status": "unproved"
       },
@@ -16661,6 +16661,7 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "owned_corridor_instruction_eas": [
         4243954,
+        4243960,
         4243966,
         4243968,
         4243974,
