@@ -10527,7 +10527,16 @@ def test_row159_inventory_owns_producer_join_and_complete_targets() -> None:
     assert row159["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
-    assert row159["current_generated_proof"] == {"status": "unproved"}
+    assert row159["current_generated_proof"] == {
+        "accepted_commits": [
+            "9e47ef2cf",
+            "aa353d88e",
+            "925031799",
+            "d5899d770",
+            "85ed5766e",
+        ],
+        "status": "accepted_generated_c6",
+    }
     assert row159["owned_corridor_instruction_eas"] == [
         0x40BE49,
         0x40BE4F,
@@ -15291,12 +15300,12 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
     )
 
     assert summary["accepted_code_sha"] == (
-        "5f15dd5388ef76f11f4d1f8e6ef37703d70a31cd"
+        "85ed5766ed9f788b92f4dd7b66dddff872a88055"
     )
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 154
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BE47"
+    assert len(accepted_operation_ids) == 155
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BE61"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -15333,13 +15342,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 87,
-        "vertically_proved_operations": 86,
-        "accepted_receipt_operations": 86,
-        "earliest_unproved_reference_order": 159,
-        "earliest_unproved_operation_id": "rhad:route@0x40BE61",
+        "vertically_proved_operations": 87,
+        "accepted_receipt_operations": 87,
+        "earliest_unproved_reference_order": 161,
+        "earliest_unproved_operation_id": "rhad:route@0x40BEB0",
         "first_missing_typed_obligation": (
-            "prove immutable preflight and actual-MMAT_GENERATED publication for "
-            "compiled row159"
+            "add typed existing-conditional compiler evidence for row161 before "
+            "live mutation"
         ),
     }
     assert setcc == {
