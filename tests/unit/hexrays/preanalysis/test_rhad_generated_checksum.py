@@ -13236,6 +13236,9 @@ def test_row170_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row170["flag_producer_native_ea"] == 0x40BFE0
     assert row170["predicate_native_ea"] == 0x40BFE6
     assert row170["transfer_native_ea"] == 0x40BFF2
+    assert row170["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row170["owned_corridor_instruction_eas"] == [
         0x40BFDA,
         0x40BFE0,
@@ -17173,7 +17176,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 92,
+        "compiled_operation_instances": 93,
         "vertically_proved_operations": 92,
         "accepted_receipt_operations": 92,
         "earliest_unproved_reference_order": 170,
