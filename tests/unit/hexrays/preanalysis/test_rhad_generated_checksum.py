@@ -16504,6 +16504,39 @@ def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
     )
 
 
+def test_delivery_closure_indexes_reference_operations_once() -> None:
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    class CountingOperations:
+        def __init__(self, operations: tuple[object, ...]) -> None:
+            self._operations = operations
+            self.iteration_count = 0
+
+        def __iter__(self):
+            self.iteration_count += 1
+            return iter(self._operations)
+
+    class BatchView:
+        def __init__(self, operations: CountingOperations) -> None:
+            self.operations = operations
+
+    operations = CountingOperations(batch.operations)
+    closure = generated_reference._typed_delivery_block_closure(
+        BatchView(operations),
+        "native@0x40A794",
+    )
+
+    assert closure[:5] == (
+        "native@0x40A794",
+        "native@0x40A7AE",
+        "native@0x40A5F0",
+        "native@0x40B6C0",
+        "native@0x40A607",
+    )
+    assert operations.iteration_count == 1
+
+
 def test_generated_batch_registry_selects_by_complete_native_identity() -> None:
     selected = reference_batch_for_native_key(_native_key())
 

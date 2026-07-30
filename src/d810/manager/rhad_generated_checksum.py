@@ -14382,6 +14382,28 @@ def _typed_delivery_block_closure(
     root_block_id: str,
 ) -> tuple[str, ...]:
     """Expand one semantic target through typed downstream operations."""
+    targets_by_source: dict[str, list[str]] = {}
+    for operation in batch.operations:
+        if isinstance(operation, RhadDirectRoute):
+            targets = (operation.direct_target_block_id,)
+        elif isinstance(
+            operation,
+            (
+                RhadConditionalRoute,
+                RhadExistingConditionalRoute,
+                RhadSetccIndexedTableRoute,
+            ),
+        ):
+            targets = (
+                operation.true_target_block_id,
+                operation.false_target_block_id,
+            )
+        else:
+            continue
+        targets_by_source.setdefault(str(operation.source_block_id), []).extend(
+            str(target) for target in targets
+        )
+
     pending = [str(root_block_id)]
     closure: list[str] = []
     seen: set[str] = set()
@@ -14391,26 +14413,11 @@ def _typed_delivery_block_closure(
             continue
         seen.add(block_id)
         closure.append(block_id)
-        for operation in batch.operations:
-            if operation.source_block_id != block_id:
-                continue
-            if isinstance(operation, RhadDirectRoute):
-                targets = (operation.direct_target_block_id,)
-            elif isinstance(
-                operation,
-                (
-                    RhadConditionalRoute,
-                    RhadExistingConditionalRoute,
-                    RhadSetccIndexedTableRoute,
-                ),
-            ):
-                targets = (
-                    operation.true_target_block_id,
-                    operation.false_target_block_id,
-                )
-            else:
-                continue
-            pending.extend(str(target) for target in targets if str(target) not in seen)
+        pending.extend(
+            target
+            for target in targets_by_source.get(block_id, ())
+            if target not in seen
+        )
     return tuple(closure)
 
 
