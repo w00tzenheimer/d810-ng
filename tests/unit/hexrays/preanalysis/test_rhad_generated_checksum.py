@@ -10704,6 +10704,15 @@ def test_row161_inventory_owns_producer_and_complete_targets() -> None:
     assert row161["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
+    assert row161["current_generated_proof"] == {
+        "accepted_commits": [
+            "99af7f17c",
+            "2207e6f2b",
+            "6306b30e1",
+            "11f8388b4",
+        ],
+        "status": "accepted_generated_c6",
+    }
     assert row161["owned_corridor_instruction_eas"] == [
         0x40BE98,
         0x40BE9E,
@@ -15627,12 +15636,12 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
     )
 
     assert summary["accepted_code_sha"] == (
-        "b9b2138424c5c3fd49e87182272566ae4a5344a8"
+        "11f8388b42c47f95bfe730b3a8c30798f92dbee1"
     )
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 156
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BE96"
+    assert len(accepted_operation_ids) == 157
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BEB0"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -15668,13 +15677,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 87,
-        "vertically_proved_operations": 87,
-        "accepted_receipt_operations": 87,
-        "earliest_unproved_reference_order": 161,
-        "earliest_unproved_operation_id": "rhad:route@0x40BEB0",
+        "compiled_operation_instances": 88,
+        "vertically_proved_operations": 88,
+        "accepted_receipt_operations": 88,
+        "earliest_unproved_reference_order": 162,
+        "earliest_unproved_operation_id": "rhad:route@0x40BECA",
         "first_missing_typed_obligation": (
-            "add typed existing-conditional compiler evidence for row161 before "
+            "add typed existing-conditional compiler evidence for row162 before "
             "live mutation"
         ),
     }
