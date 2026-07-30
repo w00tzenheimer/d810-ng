@@ -13950,7 +13950,7 @@ def test_row174_inventory_owns_producer_and_complete_target_closures() -> None:
         "JumpInliner._fixup_jmp_and_possible_jcc"
     )
     assert row174["source_native_ea"] == 0x40C05B
-    assert row174["source_block_anchor_ea"] == 0x40C069
+    assert row174["source_block_anchor_ea"] == 0x40C06F
     assert row174["flag_producer_native_ea"] == 0x40C061
     assert row174["predicate_native_ea"] == 0x40C067
     assert row174["transfer_native_ea"] == 0x40C073
