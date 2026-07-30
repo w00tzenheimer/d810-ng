@@ -10701,6 +10701,9 @@ def test_row161_inventory_owns_producer_and_complete_targets() -> None:
     assert row161["flag_producer_native_ea"] == 0x40BE9E
     assert row161["predicate_native_ea"] == 0x40BEA4
     assert row161["transfer_native_ea"] == 0x40BEB0
+    assert row161["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row161["owned_corridor_instruction_eas"] == [
         0x40BE98,
         0x40BE9E,
