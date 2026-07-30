@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "44003e57257555f1c9bf95f461068caa4631358d",
+  "accepted_code_sha": "13cba41e89c65d99e0baf8f277c7312ac032d1c1",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -173,7 +173,8 @@
     "rhad:route@0x40BFD8",
     "rhad:route@0x40BFF2",
     "rhad:route@0x40C00C",
-    "route:rhad-direct@0x40C03F"
+    "route:rhad-direct@0x40C03F",
+    "rhad:route@0x40C059"
   ],
   "variants": [
     {
@@ -203,11 +204,11 @@
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
       "compiled_operation_instances": 95,
-      "vertically_proved_operations": 94,
-      "accepted_receipt_operations": 94,
-      "earliest_unproved_reference_order": 173,
-      "earliest_unproved_operation_id": "rhad:route@0x40C059",
-      "first_missing_typed_obligation": "publish row173 through the accepted GENERATED coordinator and prove its committed receipt and maturity semantics"
+      "vertically_proved_operations": 95,
+      "accepted_receipt_operations": 95,
+      "earliest_unproved_reference_order": 174,
+      "earliest_unproved_operation_id": "rhad:route@0x40C073",
+      "first_missing_typed_obligation": "add producer-inclusive typed existing-conditional evidence and exact target closures for row174 before live mutation"
     },
     {
       "operation_variant": "setcc_indexed_table",

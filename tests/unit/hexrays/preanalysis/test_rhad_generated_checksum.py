@@ -13744,7 +13744,15 @@ def test_row173_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row173["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
-    assert row173["current_generated_proof"] == {"status": "unproved"}
+    assert row173["current_generated_proof"] == {
+        "accepted_commits": [
+            "61214cb90",
+            "099f1b2a7",
+            "4ce828730",
+            "13cba41e8",
+        ],
+        "status": "accepted_generated_c6",
+    }
     assert row173["owned_corridor_instruction_eas"] == [
         0x40C041,
         0x40C047,
@@ -17664,11 +17672,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("44003e57257555f1c9bf95f461068caa4631358d")
+    assert summary["accepted_code_sha"] == ("13cba41e89c65d99e0baf8f277c7312ac032d1c1")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 168
-    assert accepted_operation_ids[-1] == "route:rhad-direct@0x40C03F"
+    assert len(accepted_operation_ids) == 169
+    assert accepted_operation_ids[-1] == "rhad:route@0x40C059"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -17705,13 +17713,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 95,
-        "vertically_proved_operations": 94,
-        "accepted_receipt_operations": 94,
-        "earliest_unproved_reference_order": 173,
-        "earliest_unproved_operation_id": "rhad:route@0x40C059",
+        "vertically_proved_operations": 95,
+        "accepted_receipt_operations": 95,
+        "earliest_unproved_reference_order": 174,
+        "earliest_unproved_operation_id": "rhad:route@0x40C073",
         "first_missing_typed_obligation": (
-            "publish row173 through the accepted GENERATED coordinator and prove "
-            "its committed receipt and maturity semantics"
+            "add producer-inclusive typed existing-conditional evidence and exact "
+            "target closures for row174 before live mutation"
         ),
     }
     assert setcc == {
