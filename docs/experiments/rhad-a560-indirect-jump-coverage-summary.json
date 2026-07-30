@@ -161,7 +161,7 @@
       "operation_variant": "cmov_selected_indirect",
       "total_reference_operations": 39,
       "compiler_supported_operations": 39,
-      "compiled_operation_instances": 20,
+      "compiled_operation_instances": 21,
       "vertically_proved_operations": 20,
       "accepted_receipt_operations": 20,
       "earliest_unproved_reference_order": 0,
