@@ -10669,6 +10669,101 @@ def test_row160_inventory_owns_cmov_producer_helper_and_complete_targets() -> No
     ]
 
 
+def test_row161_inventory_owns_producer_and_complete_targets() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row161 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 161
+    )
+
+    assert row161["operation_id"] == "rhad:route@0x40BEB0"
+    assert row161["operation_variant"] == "existing_conditional_plus_indirect"
+    assert row161["reference_symbol"] == (
+        "JumpInliner._fixup_jmp_and_possible_jcc"
+    )
+    assert row161["source_native_ea"] == 0x40BE98
+    assert row161["source_block_anchor_ea"] == 0x40BEAC
+    assert row161["flag_producer_native_ea"] == 0x40BE9E
+    assert row161["predicate_native_ea"] == 0x40BEA4
+    assert row161["transfer_native_ea"] == 0x40BEB0
+    assert row161["owned_corridor_instruction_eas"] == [
+        0x40BE98,
+        0x40BE9E,
+        0x40BEA4,
+        0x40BEA6,
+        0x40BEAC,
+        0x40BEAE,
+        0x40BEB0,
+    ]
+    assert row161["imported_closure_block_anchor_eas"] == [
+        0x40A5F0,
+        0x40A605,
+        0x40BEB2,
+        0x40BEC0,
+        0x40BEC6,
+        0x40BECA,
+        0x40BECC,
+        0x40BEDE,
+        0x40BEE1,
+        0x40BEE5,
+        0x40C464,
+        0x40C472,
+        0x40C478,
+        0x40C47C,
+    ]
+    assert row161["boundary_exit_eas"] == [0x40A5F0, 0x40A607, 0x40B6C0]
+    assert row161["unavailable_closure_exit_eas"] == []
+    assert row161["target_rooted_closures"] == [
+        {
+            "boundary_exit_eas": [0x40A607, 0x40B6C0],
+            "expected_generated_block_anchor_eas": [
+                0x40BEB2,
+                0x40BEC0,
+                0x40BEC6,
+                0x40BECA,
+                0x40BECC,
+                0x40BEDE,
+                0x40BEE1,
+                0x40BEE5,
+                0x40A5F0,
+                0x40A605,
+            ],
+            "owned_native_block_entry_eas": [
+                0x40BEB2,
+                0x40BEC0,
+                0x40BEC6,
+                0x40BECC,
+                0x40BEE1,
+                0x40A5F0,
+            ],
+            "root_ea": 0x40BEB2,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        },
+        {
+            "boundary_exit_eas": [0x40A5F0],
+            "expected_generated_block_anchor_eas": [
+                0x40C464,
+                0x40C472,
+                0x40C478,
+                0x40C47C,
+            ],
+            "owned_native_block_entry_eas": [0x40C464, 0x40C472, 0x40C478],
+            "root_ea": 0x40C464,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        },
+    ]
+
+
 def test_checksum_producer_compiles_row146_cmov_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
