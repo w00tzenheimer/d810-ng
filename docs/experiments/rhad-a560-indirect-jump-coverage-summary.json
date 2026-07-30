@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "9a496bae5290b6675c35082449a94bad3d1f4ddf",
+  "accepted_code_sha": "e46616cb7522aa2823b9d84aa4bc80c142c24260",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -170,7 +170,8 @@
     "route:rhad-direct@0x40BF8A",
     "rhad:route@0x40BFA2",
     "rhad:route@0x40BFBC",
-    "rhad:route@0x40BFD8"
+    "rhad:route@0x40BFD8",
+    "rhad:route@0x40BFF2"
   ],
   "variants": [
     {
@@ -200,11 +201,11 @@
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
       "compiled_operation_instances": 93,
-      "vertically_proved_operations": 92,
-      "accepted_receipt_operations": 92,
-      "earliest_unproved_reference_order": 170,
-      "earliest_unproved_operation_id": "rhad:route@0x40BFF2",
-      "first_missing_typed_obligation": "add producer-inclusive typed existing-conditional evidence and exact target closures for row170 before live mutation"
+      "vertically_proved_operations": 93,
+      "accepted_receipt_operations": 93,
+      "earliest_unproved_reference_order": 171,
+      "earliest_unproved_operation_id": "rhad:route@0x40C00C",
+      "first_missing_typed_obligation": "add producer-inclusive typed existing-conditional evidence and exact target closures for row171 before live mutation"
     },
     {
       "operation_variant": "setcc_indexed_table",

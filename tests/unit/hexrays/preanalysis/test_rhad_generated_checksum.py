@@ -13239,6 +13239,15 @@ def test_row170_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row170["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
+    assert row170["current_generated_proof"] == {
+        "accepted_commits": [
+            "ea12ec8f5",
+            "59c860305",
+            "ddba71c7c",
+            "e46616cb7",
+        ],
+        "status": "accepted_generated_c6",
+    }
     assert row170["owned_corridor_instruction_eas"] == [
         0x40BFDA,
         0x40BFE0,
@@ -17146,11 +17155,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("9a496bae5290b6675c35082449a94bad3d1f4ddf")
+    assert summary["accepted_code_sha"] == ("e46616cb7522aa2823b9d84aa4bc80c142c24260")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 165
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BFD8"
+    assert len(accepted_operation_ids) == 166
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BFF2"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -17187,13 +17196,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 93,
-        "vertically_proved_operations": 92,
-        "accepted_receipt_operations": 92,
-        "earliest_unproved_reference_order": 170,
-        "earliest_unproved_operation_id": "rhad:route@0x40BFF2",
+        "vertically_proved_operations": 93,
+        "accepted_receipt_operations": 93,
+        "earliest_unproved_reference_order": 171,
+        "earliest_unproved_operation_id": "rhad:route@0x40C00C",
         "first_missing_typed_obligation": (
             "add producer-inclusive typed existing-conditional evidence and exact "
-            "target closures for row170 before live mutation"
+            "target closures for row171 before live mutation"
         ),
     }
     assert setcc == {
