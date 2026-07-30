@@ -10019,6 +10019,8 @@ def test_row153_inventory_owns_producer_join_and_both_target_fragments() -> None
         0x40A605,
         0x40BD19,
         0x40BD25,
+        0x40BD47,
+        0x40BD4A,
         0x40BD4E,
     ]
     assert row153["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -10029,9 +10031,11 @@ def test_row153_inventory_owns_producer_join_and_both_target_fragments() -> None
             "expected_generated_block_anchor_eas": [
                 0x40BD19,
                 0x40BD25,
+                0x40BD47,
+                0x40BD4A,
                 0x40BD4E,
             ],
-            "owned_native_block_entry_eas": [0x40BD19, 0x40BD25],
+            "owned_native_block_entry_eas": [0x40BD19, 0x40BD25, 0x40BD4A],
             "root_ea": 0x40BD19,
             "status": "complete",
             "unavailable_exit_eas": [],
