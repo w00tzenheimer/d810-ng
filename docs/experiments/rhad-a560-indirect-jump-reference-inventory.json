@@ -14976,6 +14976,7 @@
       ],
       "current_compiler_support": "unsupported_typed_shape",
       "current_generated_proof": {
+        "proof_artifact_identity": "sha256:fafc420031c9e89a7c8de87bf6932b836a12b8f1a2376eeb21e9f057956e3be8",
         "status": "unproved"
       },
       "flag_interference_native_ea": null,

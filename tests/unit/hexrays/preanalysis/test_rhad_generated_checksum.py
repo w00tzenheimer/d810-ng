@@ -11170,6 +11170,80 @@ def test_row166_inventory_owns_direct_transfer_and_complete_target() -> None:
     ]
 
 
+def test_row167_inventory_references_exact_typed_table_proof() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row167 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 167
+    )
+    artifact_path = (
+        _REPO
+        / "src"
+        / "d810"
+        / "conf"
+        / "semantic_route_oracles"
+        / "rhad_a560_row167_setcc_table_proof.json"
+    )
+    checked_in = json.loads(artifact_path.read_text(encoding="utf-8"))
+    artifact = RhadSetccIndexedTableProofArtifact.from_mapping(checked_in)
+
+    assert len(inventory["operations"]) == 228
+    assert row167["operation_id"] == "rhad:route@0x40BFA2"
+    assert row167["operation_variant"] == "setcc_indexed_table"
+    assert row167["reference_symbol"] == "JumpInliner._fixup_index_access"
+    assert row167["source_native_ea"] == 0x40BF8C
+    assert row167["source_block_anchor_ea"] == 0x40BF8C
+    assert row167["flag_producer_native_ea"] == 0x40BF8E
+    assert row167["predicate_native_ea"] == 0x40BF94
+    assert row167["transfer_native_ea"] == 0x40BFA2
+    assert row167["current_compiler_support"] == "unsupported_typed_shape"
+    assert row167["current_generated_proof"] == {
+        "proof_artifact_identity": (
+            "sha256:fafc420031c9e89a7c8de87bf6932b836a12b8f1a2376eeb21e9f057956e3be8"
+        ),
+        "status": "unproved",
+    }
+    assert row167["owned_corridor_instruction_eas"] == [
+        0x40BF8C,
+        0x40BF94,
+        0x40BF97,
+        0x40BF9A,
+        0x40BFA0,
+        0x40BFA2,
+    ]
+    assert row167["semantic_targets"] == [
+        {"ea": 0x40C4DC, "role": "conditional_taken"},
+        {"ea": 0x40BFA4, "role": "conditional_fallthrough"},
+    ]
+    assert row167["boundary_exit_eas"] == [0x40A5F0]
+    assert row167["unavailable_closure_exit_eas"] == []
+    assert artifact.content_identity == checked_in["content_identity"]
+    assert artifact.content_identity == (
+        "sha256:fafc420031c9e89a7c8de87bf6932b836a12b8f1a2376eeb21e9f057956e3be8"
+    )
+    assert artifact.operation_id == row167["operation_id"]
+    assert artifact.reference_order == row167["reference_order"]
+    assert artifact.input_sha256 == inventory["input_sha256"]
+    assert artifact.function_ea == inventory["function_ea"]
+    assert artifact.reference_commit == inventory["reference_commit"]
+    assert artifact.proof_payload == checked_in["proof"]
+    assert [
+        (entry.index, entry.entry_ea, entry.raw_value, entry.decoded_target_ea)
+        for entry in artifact.table_evidence.entries
+    ] == [
+        (0, 0x48B4D4, 0x0252A323, 0x40BFA4),
+        (1, 0x48B4F4, 0x0252A85B, 0x40C4DC),
+    ]
+
+
 def test_checksum_producer_compiles_row146_cmov_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
