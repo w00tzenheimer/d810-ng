@@ -11132,7 +11132,7 @@ def test_row166_inventory_owns_direct_transfer_and_complete_target() -> None:
     assert row166["flag_producer_native_ea"] is None
     assert row166["predicate_native_ea"] is None
     assert row166["transfer_native_ea"] == 0x40BF8A
-    assert row166["current_compiler_support"] == "unsupported_typed_shape"
+    assert row166["current_compiler_support"] == "typed_simple_indirect_jump"
     assert row166["current_generated_proof"] == {"status": "unproved"}
     assert row166["owned_corridor_instruction_eas"] == [
         0x40BF68,
