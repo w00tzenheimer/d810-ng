@@ -13804,7 +13804,9 @@
     },
     {
       "boundary_exit_eas": [
-        4236784
+        4236784,
+        4242820,
+        4244467
       ],
       "current_compiler_support": "unsupported_typed_shape",
       "current_generated_proof": {
@@ -13814,6 +13816,10 @@
       "flag_interference_safe_reorder": null,
       "flag_producer_native_ea": 4242774,
       "imported_closure_block_anchor_eas": [
+        4242794,
+        4242808,
+        4242814,
+        4242818,
         4244441,
         4244455,
         4244461,
@@ -13823,6 +13829,7 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "owned_corridor_instruction_eas": [
         4242768,
+        4242774,
         4242780,
         4242782,
         4242788,
@@ -13846,18 +13853,29 @@
       "source_native_ea": 4242768,
       "target_rooted_closures": [
         {
-          "boundary_exit_eas": [],
-          "expected_generated_block_anchor_eas": [],
-          "owned_native_block_entry_eas": [],
+          "boundary_exit_eas": [
+            4236784,
+            4242820
+          ],
+          "expected_generated_block_anchor_eas": [
+            4242794,
+            4242808,
+            4242814,
+            4242818
+          ],
+          "owned_native_block_entry_eas": [
+            4242794,
+            4242808,
+            4242814
+          ],
           "root_ea": 4242794,
-          "status": "root_unavailable_in_current_portable_source_plan",
-          "unavailable_exit_eas": [
-            4242794
-          ]
+          "status": "complete",
+          "unavailable_exit_eas": []
         },
         {
           "boundary_exit_eas": [
-            4236784
+            4236784,
+            4244467
           ],
           "expected_generated_block_anchor_eas": [
             4244441,
@@ -13876,9 +13894,7 @@
         }
       ],
       "transfer_native_ea": 4242792,
-      "unavailable_closure_exit_eas": [
-        4242794
-      ]
+      "unavailable_closure_exit_eas": []
     },
     {
       "boundary_exit_eas": [
