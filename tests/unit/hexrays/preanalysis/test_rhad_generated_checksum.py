@@ -13100,6 +13100,7 @@ def test_row169_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row169["flag_producer_native_ea"] == 0x40BFC3
     assert row169["predicate_native_ea"] == 0x40BFD1
     assert row169["transfer_native_ea"] == 0x40BFD8
+    assert row169["current_compiler_support"] == "typed_cmov_selected_indirect"
     assert row169["owned_corridor_instruction_eas"] == [
         0x40BFC3,
         0x40BFC9,
@@ -16943,7 +16944,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 24,
+        "compiled_operation_instances": 25,
         "vertically_proved_operations": 24,
         "accepted_receipt_operations": 24,
         "earliest_unproved_reference_order": 0,
