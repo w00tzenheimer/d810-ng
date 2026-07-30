@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 679
+    assert len(IMPORTED_BLOCK_IDS) == 680
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -10261,6 +10261,7 @@ def test_row156_inventory_owns_producer_join_and_both_target_fragments() -> None
         0x40BDBD,
         0x40BDD5,
         0x40BE0A,
+        0x40BE29,
         0x40BE2D,
     ]
     assert row156["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -11105,6 +11106,7 @@ def test_checksum_producer_compiles_row156_existing_dependency() -> None:
         if candidate.operation_id == "rhad:route@0x40BD82"
     ).depends_on == ("rhad:route@0x40BD68",)
     assert "native@0x40BD84" in batch.native_body_entry_block_ids
+    assert "native@0x40BE29" in payload["imported_closure_block_ids"]
     assert "rhad:route@0x40BD82" in batch.native_body_proof_ids
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
     assert templates[0x40BD84].preserved_unresolved_transfers == (

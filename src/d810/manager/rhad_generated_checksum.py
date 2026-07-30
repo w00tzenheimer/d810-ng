@@ -1710,20 +1710,17 @@ ROW156_TARGET_IMPORTED_LAYOUT = (
     ),
     (
         0x40BE0A,
-        0x40BE2F,
+        0x40BE29,
         (
             0x40BE0A,
             0x40BE10,
-            0x40BE16,
             0x40BE19,
             0x40BE1E,
             0x40BE24,
             0x40BE26,
-            0x40BE29,
-            0x40BE2B,
-            0x40BE2D,
         ),
     ),
+    (0x40BE29, 0x40BE2F, (0x40BE29, 0x40BE2B, 0x40BE2D)),
     (0x40BE2D, 0x40BE2F, (0x40BE2D,)),
 )
 BASE_IMPORTED_LAYOUT = (
@@ -11820,7 +11817,13 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
                 (0x40BDD5, 0x40BE0A),
                 (0x40BE0A, 0x40BE2F),
             ),
-            owned_block_entry_eas=(0x40BD84, 0x40BDBD, 0x40BDD5, 0x40BE0A),
+            owned_block_entry_eas=(
+                0x40BD84,
+                0x40BDBD,
+                0x40BDD5,
+                0x40BE0A,
+                0x40BE29,
+            ),
             boundary_ranges=(),
             boundary_exit_eas=(0x40A607, 0x40B6C0),
             direct_boundary_routes=(),
