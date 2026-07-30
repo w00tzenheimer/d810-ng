@@ -1762,10 +1762,6 @@ ROW161_TARGET_IMPORTED_LAYOUT = (
     (0x40BEC0, 0x40BEC6, (0x40BEC0,)),
     (0x40BEC6, 0x40BECC, (0x40BEC6, 0x40BEC8, 0x40BECA)),
     (0x40BECA, 0x40BECC, (0x40BECA,)),
-    (0x40BECC, 0x40BEE1, (0x40BECC, 0x40BED0, 0x40BED6, 0x40BED8, 0x40BEDE)),
-    (0x40BEDE, 0x40BEE1, (0x40BEDE,)),
-    (0x40BEE1, 0x40BEE7, (0x40BEE1, 0x40BEE3, 0x40BEE5)),
-    (0x40BEE5, 0x40BEE7, (0x40BEE5,)),
     (0x40C464, 0x40C472, (0x40C464, 0x40C46A, 0x40C470)),
     (0x40C472, 0x40C478, (0x40C472,)),
     (0x40C478, 0x40C47E, (0x40C478, 0x40C47A, 0x40C47C)),
@@ -2444,6 +2440,7 @@ BOUNDARY_EXIT_EAS = (
     0x40A5F0,
     0x40A9A0,
     0x40B55B,
+    0x40BECC,
     0x40BFA4,
     0x40C05B,
     0x40C10A,
@@ -2616,7 +2613,6 @@ TEMPLATE_ROOT_EAS = (
     0x40C42E,
     0x40BE63,
     0x40BEB2,
-    0x40BECC,
     0x40C464,
 )
 
@@ -8467,7 +8463,7 @@ _ROW161_EXISTING_ROUTE = RhadExistingConditionalRoute(
         0x40BEB0,
     ),
     imported_closure_block_ids=ROW161_TARGET_IMPORTED_BLOCK_IDS,
-    boundary_exit_eas=(0x40A5F0, 0x40A607, 0x40B6C0),
+    boundary_exit_eas=(0x40A5F0, 0x40BECC),
     flag_corridor_id="flags-intact@0x40BE9E",
     phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
     depends_on=(_ROW160_CMOV_ROUTE.operation_id,),
@@ -8963,7 +8959,6 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         "native@0x40BE63",
         "native@0x40BE92",
         "native@0x40BEB2",
-        "native@0x40BECC",
         "native@0x40C464",
     ),
     native_body_ranges=(
@@ -9125,7 +9120,6 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         (0x40BE63, 0x40BE98),
         (0x40BE98, 0x40BEB2),
         (0x40BEB2, 0x40BECC),
-        (0x40BECC, 0x40BEE7),
         (0x40BEE7, 0x40BF01),
         (0x40BF8C, 0x40BFA4),
         (0x40BFDA, 0x40BFF4),
@@ -12183,20 +12177,6 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
                 RhadGeneratedPreservedTransfer(
                     transfer_ea=0x40BECA,
                     boundary_exit_eas=(0x40A5F0, 0x40BECC),
-                ),
-            ),
-        ),
-        RhadGeneratedTemplateFragment(
-            root_ea=0x40BECC,
-            owned_ranges=((0x40BECC, 0x40BEE1), (0x40BEE1, 0x40BEE7)),
-            owned_block_entry_eas=(0x40BECC, 0x40BEE1),
-            boundary_ranges=(),
-            boundary_exit_eas=(0x40A607, 0x40B6C0),
-            direct_boundary_routes=(),
-            preserved_unresolved_transfers=(
-                RhadGeneratedPreservedTransfer(
-                    transfer_ea=0x40BEE5,
-                    boundary_exit_eas=(0x40A607, 0x40B6C0),
                 ),
             ),
         ),
