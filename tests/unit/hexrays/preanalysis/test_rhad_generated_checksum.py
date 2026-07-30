@@ -11133,7 +11133,10 @@ def test_row166_inventory_owns_direct_transfer_and_complete_target() -> None:
     assert row166["predicate_native_ea"] is None
     assert row166["transfer_native_ea"] == 0x40BF8A
     assert row166["current_compiler_support"] == "typed_simple_indirect_jump"
-    assert row166["current_generated_proof"] == {"status": "unproved"}
+    assert row166["current_generated_proof"] == {
+        "accepted_commits": ["26fd3e942", "b3f567765", "9e008adda"],
+        "status": "accepted_generated_c6",
+    }
     assert row166["owned_corridor_instruction_eas"] == [
         0x40BF68,
         0x40BF80,
@@ -16420,11 +16423,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("427f64ed805e1e52de33e308db1c689e7fab8ae4")
+    assert summary["accepted_code_sha"] == ("9e008addab72ef414ac54488e9fe2dedebbe983a")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 161
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BF19"
+    assert len(accepted_operation_ids) == 162
+    assert accepted_operation_ids[-1] == "route:rhad-direct@0x40BF8A"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -16446,13 +16449,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 39,
-        "vertically_proved_operations": 39,
-        "accepted_receipt_operations": 39,
-        "earliest_unproved_reference_order": 166,
-        "earliest_unproved_operation_id": "rhad:route@0x40BF8A",
+        "compiled_operation_instances": 40,
+        "vertically_proved_operations": 40,
+        "accepted_receipt_operations": 40,
+        "earliest_unproved_reference_order": 172,
+        "earliest_unproved_operation_id": "rhad:route@0x40C03F",
         "first_missing_typed_obligation": (
-            "add typed simple-indirect compiler evidence for row166 before live "
+            "add typed simple-indirect compiler evidence for row172 before live "
             "mutation"
         ),
     }
