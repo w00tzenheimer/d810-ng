@@ -14516,12 +14516,15 @@
         4236784,
         4236805,
         4243148,
+        4243166,
+        4243169,
         4243173
       ],
       "operation_id": "rhad:route@0x40BECA",
       "operation_variant": "existing_conditional_plus_indirect",
       "owned_corridor_instruction_eas": [
         4243122,
+        4243128,
         4243134,
         4243136,
         4243142,
@@ -14541,7 +14544,7 @@
           "role": "conditional_fallthrough"
         }
       ],
-      "source_block_anchor_ea": 4243136,
+      "source_block_anchor_ea": 4243142,
       "source_native_ea": 4243122,
       "target_rooted_closures": [
         {
@@ -14551,10 +14554,13 @@
           ],
           "expected_generated_block_anchor_eas": [
             4243148,
+            4243166,
+            4243169,
             4243173
           ],
           "owned_native_block_entry_eas": [
-            4243148
+            4243148,
+            4243169
           ],
           "root_ea": 4243148,
           "status": "complete",
