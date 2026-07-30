@@ -1606,18 +1606,17 @@ ROW148_TARGET_IMPORTED_LAYOUT = (
 ROW149_TARGET_IMPORTED_LAYOUT = (
     (
         0x40BCAF,
-        0x40BCCB,
+        0x40BCC5,
         (
             0x40BCAF,
             0x40BCB4,
             0x40BCBA,
             0x40BCBC,
             0x40BCC2,
-            0x40BCC5,
-            0x40BCC7,
-            0x40BCC9,
         ),
     ),
+    (0x40BCC2, 0x40BCC5, (0x40BCC2,)),
+    (0x40BCC5, 0x40BCCB, (0x40BCC5, 0x40BCC7, 0x40BCC9)),
     (0x40BCC9, 0x40BCCB, (0x40BCC9,)),
 )
 BASE_IMPORTED_LAYOUT = (
@@ -11225,7 +11224,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         RhadGeneratedTemplateFragment(
             root_ea=0x40BCAF,
             owned_ranges=((0x40BCAF, 0x40BCCB),),
-            owned_block_entry_eas=(0x40BCAF,),
+            owned_block_entry_eas=(0x40BCAF, 0x40BCC5),
             boundary_ranges=(),
             boundary_exit_eas=(0x40A607, 0x40B6C0),
             direct_boundary_routes=(),
