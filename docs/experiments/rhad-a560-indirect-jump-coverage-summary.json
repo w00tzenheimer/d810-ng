@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "6500e7b3845025143bfb9686cc0b8fd848acf08a",
+  "accepted_code_sha": "c21c2fdae651745b4ef434a28176e6c7251713dd",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -153,7 +153,8 @@
     "rhad:route@0x40BCAD",
     "rhad:route@0x40BCC9",
     "rhad:route@0x40BCE3",
-    "rhad:route@0x40BCFD"
+    "rhad:route@0x40BCFD",
+    "rhad:route@0x40BD17"
   ],
   "variants": [
     {
@@ -183,11 +184,11 @@
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
       "compiled_operation_instances": 83,
-      "vertically_proved_operations": 82,
-      "accepted_receipt_operations": 82,
-      "earliest_unproved_reference_order": 153,
-      "earliest_unproved_operation_id": "rhad:route@0x40BD17",
-      "first_missing_typed_obligation": "prove immutable preflight and actual-MMAT_GENERATED publication for compiled row153"
+      "vertically_proved_operations": 83,
+      "accepted_receipt_operations": 83,
+      "earliest_unproved_reference_order": 155,
+      "earliest_unproved_operation_id": "rhad:route@0x40BD68",
+      "first_missing_typed_obligation": "add typed existing-conditional compiler evidence for row155 before live mutation"
     },
     {
       "operation_variant": "setcc_indexed_table",
