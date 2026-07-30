@@ -14492,7 +14492,9 @@ def test_row179_inventory_has_producer_inclusive_exact_target_closures() -> None
     assert row179["reference_symbol"] == (
         "JumpInliner._fixup_jmp_and_possible_jcc"
     )
-    assert row179["current_compiler_support"] == "unsupported_typed_shape"
+    assert row179["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row179["current_generated_proof"] == {"status": "unproved"}
     assert row179["flag_producer_native_ea"] == 0x40C0F6
     assert row179["predicate_native_ea"] == 0x40C0FC
@@ -18795,15 +18797,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 98,
+        "compiled_operation_instances": 99,
         "vertically_proved_operations": 98,
         "accepted_receipt_operations": 98,
         "earliest_unproved_reference_order": 179,
         "earliest_unproved_operation_id": "rhad:route@0x40C108",
         "first_missing_typed_obligation": (
-            "instantiate the accepted RhadExistingConditionalRoute vocabulary "
-            "with producer-inclusive row179 evidence and exact row178 dependency "
-            "closure before live mutation"
+            "execute immutable preflight and exact actual-MMAT_GENERATED publication "
+            "through the shared coordinator before acceptance"
         ),
     }
     assert setcc == {
