@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "c0424acd4eae6695b9dfdb8bd1c1387ff2cb5656",
+  "accepted_code_sha": "9b3aa623d0e902b1d0b9689460c1191b6a541633",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
