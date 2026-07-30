@@ -14241,6 +14241,10 @@ def test_row176_inventory_has_producer_inclusive_exact_target_closures() -> None
     assert len(inventory["operations"]) == 228
     assert row176["operation_id"] == "rhad:route@0x40C0B8"
     assert row176["operation_variant"] == "existing_conditional_plus_indirect"
+    assert row176["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
+    assert row176["current_generated_proof"] == {"status": "unproved"}
     assert row176["flag_producer_native_ea"] == 0x40C0A6
     assert row176["predicate_native_ea"] == 0x40C0AC
     assert row176["source_native_ea"] == 0x40C0A0
@@ -18220,14 +18224,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 96,
+        "compiled_operation_instances": 97,
         "vertically_proved_operations": 96,
         "accepted_receipt_operations": 96,
         "earliest_unproved_reference_order": 176,
         "earliest_unproved_operation_id": "rhad:route@0x40C0B8",
         "first_missing_typed_obligation": (
-            "add producer-inclusive typed existing-conditional evidence and exact "
-            "target closures for row176 before live mutation"
+            "prove row176 immutable preflight and actual-MMAT_GENERATED publication "
+            "through one committed receipt and CMAT_FINAL"
         ),
     }
     assert setcc == {
