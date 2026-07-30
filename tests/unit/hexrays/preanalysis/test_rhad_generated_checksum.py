@@ -13620,6 +13620,54 @@ def test_checksum_producer_compiles_row171_existing_dependency() -> None:
     )
 
 
+def test_checksum_producer_compiles_row172_simple_indirect_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("route:rhad-direct@0x40C03F")
+    rewrite = operation.direct_transfer_rewrite
+    assert rewrite is not None
+    assert operation.source_block_id == "native@0x40C03B"
+    assert rewrite.rewrite_anchor_ea == 0x40C03F
+    assert rewrite.owner_anchor_ea == 0x40C03B
+    assert operation.edges[0].target_block_id == "native@0x40B6C0"
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_operation_id"] == "rhad:route@0x40C03F"
+    assert payload["reference_order"] == 172
+    assert payload["reference_symbol"] == (
+        "JumpInliner._fixup_jmp_and_possible_jcc"
+    )
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40C027
+    assert payload["source_block_anchor_ea"] == 0x40C03B
+    assert payload["transfer_ea"] == 0x40C03F
+    assert payload["direct_target_block_id"] == "native@0x40B6C0"
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40C027,
+        0x40C03B,
+        0x40C03D,
+        0x40C03F,
+    ]
+    assert payload["imported_closure_block_ids"] == [
+        "native@0x40B6C0",
+        "native@0x40B6CA",
+        "native@0x40B6D0",
+        "native@0x40B6D4",
+    ]
+    assert payload["boundary_exit_eas"] == [0x40B790]
+    assert next(
+        candidate
+        for candidate in batch.operations
+        if candidate.operation_id == "route:rhad-direct@0x40C03F"
+    ).depends_on == ("rhad:route@0x40C00C",)
+    assert "route:rhad-direct@0x40C03F" in batch.native_body_proof_ids
+
+
 def test_checksum_producer_compiles_row143_existing_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
