@@ -1255,6 +1255,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             tuple[DetachedSnippetTemplate, dict[str, DetachedSnippetBlockTemplate]]
         ] = []
         candidate_diagnostics: list[tuple[int, int, str]] = []
+        generated_composition_failure: str | None = None
+        generated_composite_mismatch: str | None = None
         for (owner_ea, target_ea), template in _PREOPT_UNION_SNIPPET_TEMPLATES.items():
             if int(owner_ea) != int(self.function_ea):
                 continue
@@ -1278,6 +1280,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             try:
                 composite = self._compose_generated_reference_templates(entry_anchors)
             except SemanticFragmentBackendRejected as exc:
+                generated_composition_failure = str(exc)
                 candidate_diagnostics.append(
                     (-1, int(ida_hexrays.MMAT_PREOPTIMIZED), str(exc))
                 )
@@ -1289,6 +1292,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     required_ranges=required_ranges,
                 )
                 if matched is None:
+                    generated_composite_mismatch = str(mismatch)
                     candidate_diagnostics.append(
                         (
                             int(composite.target_ea),
@@ -1302,6 +1306,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             raise SemanticFragmentBackendRejected(
                 f"native body {native_body.body_id!r} requires exactly one "
                 f"PREOPT union template, observed {len(candidates)}; "
+                f"generated_composition_failure={generated_composition_failure!r} "
+                f"generated_composite_mismatch={generated_composite_mismatch!r} "
                 f"entry_anchors={tuple(hex(ea) for ea in sorted(entry_anchors))!r} "
                 f"required_ranges={tuple((hex(start), hex(end)) for start, end in required_ranges)!r} "
                 f"candidates={tuple(candidate_diagnostics)!r}"
@@ -1382,12 +1388,23 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             if exact_entry_matches:
                 matches = exact_entry_matches
             if len(matches) != 1:
+                nearby_template_blocks = tuple(
+                    template_block
+                    for template_block in template.blocks
+                    if abs(
+                        int(template_block.native_entry_ea)
+                        - int(plan_block.semantic_anchor_ea)
+                    )
+                    <= 0x40
+                )
                 return (
                     None,
                     (
                         f"block@0x{int(plan_block.semantic_anchor_ea):X}:"
-                        f"matches={len(matches)}:template_entries="
-                        f"{tuple((hex(int(block.native_entry_ea)), hex(int(block.native_end_ea)), tuple(hex(int(instruction.ea)) for instruction in block.instructions)) for block in template.blocks)!r}"
+                        f"matches={len(matches)}:identity="
+                        f"{None if identity is None else (identity.native_ranges.diagnostic_label(), tuple(hex(ea) for ea in sorted(identity.exact_instruction_eas)))!r}:"
+                        f"nearby_template_entries="
+                        f"{tuple((hex(int(block.native_entry_ea)), hex(int(block.native_end_ea)), tuple(hex(int(instruction.ea)) for instruction in block.instructions)) for block in nearby_template_blocks)!r}"
                     ),
                 )
             matched[str(block_id)] = matches[0]
