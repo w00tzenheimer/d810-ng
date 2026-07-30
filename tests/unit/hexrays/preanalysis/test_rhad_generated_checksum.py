@@ -10611,7 +10611,10 @@ def test_row160_inventory_owns_cmov_producer_helper_and_complete_targets() -> No
     assert row160["predicate_native_ea"] == 0x40BE8F
     assert row160["transfer_native_ea"] == 0x40BE96
     assert row160["current_compiler_support"] == "typed_cmov_selected_indirect"
-    assert row160["current_generated_proof"] == {"status": "unproved"}
+    assert row160["current_generated_proof"] == {
+        "accepted_commits": ["1dd60d82c", "b97b0e3d3", "b9b213842"],
+        "status": "accepted_generated_c6",
+    }
     assert row160["owned_corridor_instruction_eas"] == [
         0x40BE68,
         0x40BE81,
@@ -15450,12 +15453,12 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
     )
 
     assert summary["accepted_code_sha"] == (
-        "85ed5766ed9f788b92f4dd7b66dddff872a88055"
+        "b9b2138424c5c3fd49e87182272566ae4a5344a8"
     )
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 155
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BE61"
+    assert len(accepted_operation_ids) == 156
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BE96"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -15463,9 +15466,9 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 22,
-        "vertically_proved_operations": 22,
-        "accepted_receipt_operations": 22,
+        "compiled_operation_instances": 23,
+        "vertically_proved_operations": 23,
+        "accepted_receipt_operations": 23,
         "earliest_unproved_reference_order": 0,
         "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
         "first_missing_typed_obligation": (
