@@ -10368,7 +10368,15 @@ def test_row157_inventory_owns_cmov_producer_and_complete_targets() -> None:
     assert row157["predicate_native_ea"] == 0x40BE26
     assert row157["transfer_native_ea"] == 0x40BE2D
     assert row157["current_compiler_support"] == "typed_cmov_selected_indirect"
-    assert row157["current_generated_proof"] == {"status": "unproved"}
+    assert row157["current_generated_proof"] == {
+        "accepted_commits": [
+            "504260c64",
+            "64388e2bf",
+            "54768c0a9",
+            "be4ef0067",
+        ],
+        "status": "accepted_generated_c6",
+    }
     assert row157["owned_corridor_instruction_eas"] == [
         0x40BDFC,
         0x40BE10,
@@ -14946,12 +14954,12 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
     )
 
     assert summary["accepted_code_sha"] == (
-        "243de5d8ebdeeb988f5e02a1346b75214bc68aaf"
+        "be4ef006748b0eed6e2ad1aefcbf8fd5baac1e63"
     )
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 152
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BD82"
+    assert len(accepted_operation_ids) == 153
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BE2D"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -14960,8 +14968,8 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
         "compiled_operation_instances": 22,
-        "vertically_proved_operations": 21,
-        "accepted_receipt_operations": 21,
+        "vertically_proved_operations": 22,
+        "accepted_receipt_operations": 22,
         "earliest_unproved_reference_order": 0,
         "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
         "first_missing_typed_obligation": (
