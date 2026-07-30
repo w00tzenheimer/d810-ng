@@ -13363,11 +13363,21 @@ def test_checksum_producer_compiles_row170_existing_dependency() -> None:
     ).depends_on == ("rhad:route@0x40BFD8",)
     assert "native@0x40BFF4" in batch.native_body_entry_block_ids
     assert plan.block(
+        "native@0x40BFF4"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40BFF4, 0x40BFFA, 0x40C000}
+    )
+    assert plan.block(
         "native@0x40C00C"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C00C})
     assert plan.block(
         "native@0x40C53F"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C53F})
+    assert plan.block(
+        "native@0x40C527"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C527, 0x40C52D, 0x40C533}
+    )
     assert "rhad:route@0x40BFF2" in batch.native_body_proof_ids
 
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
