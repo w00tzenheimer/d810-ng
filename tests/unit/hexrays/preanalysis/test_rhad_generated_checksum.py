@@ -10288,6 +10288,8 @@ def test_checksum_producer_compiles_row142_cmov_dependency() -> None:
     normalization = operation.computed_branch_normalization
     assert normalization is not None
     assert normalization.predicate_kind is PredicateKind.SGE
+
+
     assert normalization.condition_producer_ea == 0x40BBC8
     assert normalization.unresolved_transfer_ea == 0x40BBDD
     envelope = normalization.conditional_select_envelope
@@ -10333,6 +10335,58 @@ def test_checksum_producer_compiles_row142_cmov_dependency() -> None:
         for candidate in batch.operations
         if candidate.operation_id == "rhad:route@0x40BBDD"
     ).depends_on == ("rhad:route@0x40BBC1",)
+
+
+def test_row157_inventory_owns_cmov_producer_and_complete_targets() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row157 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 157
+    )
+
+    assert row157["operation_id"] == "rhad:route@0x40BE2D"
+    assert row157["operation_variant"] == "cmov_selected_indirect"
+    assert row157["reference_symbol"] == "JumpInliner._fixup_cmov"
+    assert row157["source_native_ea"] == 0x40BDFC
+    assert row157["source_block_anchor_ea"] == 0x40BE0A
+    assert row157["flag_producer_native_ea"] == 0x40BE1E
+    assert row157["predicate_native_ea"] == 0x40BE26
+    assert row157["transfer_native_ea"] == 0x40BE2D
+    assert row157["current_compiler_support"] == (
+        "conditional_vocabulary_present_operation_uninstantiated"
+    )
+    assert row157["current_generated_proof"] == {"status": "unproved"}
+    assert row157["owned_corridor_instruction_eas"] == [
+        0x40BDFC,
+        0x40BE10,
+        0x40BE1E,
+        0x40BE24,
+        0x40BE26,
+        0x40BE29,
+        0x40BE2B,
+        0x40BE2D,
+    ]
+    assert row157["imported_closure_block_anchor_eas"] == [
+        0x40A607,
+        0x40A615,
+        0x40A619,
+        0x40A680,
+        0x40A68A,
+        0x40B6C0,
+        0x40B6CA,
+        0x40B6D0,
+        0x40B6D4,
+    ]
+    assert row157["boundary_exit_eas"] == [0x40A61B, 0x40A68C, 0x40B790]
+    assert row157["unavailable_closure_exit_eas"] == []
 
 
 def test_checksum_producer_compiles_row146_cmov_dependency() -> None:
