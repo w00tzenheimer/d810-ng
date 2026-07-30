@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "11f8388b42c47f95bfe730b3a8c30798f92dbee1",
+  "accepted_code_sha": "9062ff034c6636f77254e0cf99e1be811bcf540c",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -162,7 +162,8 @@
     "rhad:route@0x40BE47",
     "rhad:route@0x40BE61",
     "rhad:route@0x40BE96",
-    "rhad:route@0x40BEB0"
+    "rhad:route@0x40BEB0",
+    "rhad:route@0x40BECA"
   ],
   "variants": [
     {
@@ -191,12 +192,12 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 88,
-      "vertically_proved_operations": 88,
-      "accepted_receipt_operations": 88,
-      "earliest_unproved_reference_order": 162,
-      "earliest_unproved_operation_id": "rhad:route@0x40BECA",
-      "first_missing_typed_obligation": "add typed existing-conditional compiler evidence for row162 before live mutation"
+      "compiled_operation_instances": 89,
+      "vertically_proved_operations": 89,
+      "accepted_receipt_operations": 89,
+      "earliest_unproved_reference_order": 164,
+      "earliest_unproved_operation_id": "rhad:route@0x40BEFF",
+      "first_missing_typed_obligation": "add typed existing-conditional compiler evidence for row164 before live mutation"
     },
     {
       "operation_variant": "setcc_indexed_table",
