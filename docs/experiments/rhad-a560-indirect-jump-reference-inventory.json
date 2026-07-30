@@ -13628,6 +13628,7 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "owned_corridor_instruction_eas": [
         4242687,
+        4242693,
         4242699,
         4242701,
         4242707,
@@ -13647,7 +13648,7 @@
           "role": "conditional_fallthrough"
         }
       ],
-      "source_block_anchor_ea": 4242701,
+      "source_block_anchor_ea": 4242707,
       "source_native_ea": 4242687,
       "target_rooted_closures": [
         {
