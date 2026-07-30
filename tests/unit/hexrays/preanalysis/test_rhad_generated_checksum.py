@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 664
+    assert len(IMPORTED_BLOCK_IDS) == 666
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -10629,6 +10629,44 @@ def test_checksum_producer_compiles_row153_existing_dependency() -> None:
     assert payload["imported_closure_block_ids"] == list(
         generated_reference.ROW153_TARGET_IMPORTED_BLOCK_IDS
     )
+    assert generated_reference.ROW153_TARGET_IMPORTED_BLOCK_IDS == (
+        "native@0x40BD19",
+        "native@0x40BD25",
+        "native@0x40BD47",
+        "native@0x40BD4A",
+        "native@0x40BD4E",
+    )
+    assert tuple(
+        (
+            tuple(
+                (native_range.start_ea, native_range.end_ea)
+                for native_range in plan.block(
+                    block_id
+                ).stable_identity.native_ranges.intervals
+            ),
+            plan.block(block_id).stable_identity.exact_instruction_eas,
+        )
+        for block_id in generated_reference.ROW153_TARGET_IMPORTED_BLOCK_IDS
+    ) == (
+        (((0x40BD19, 0x40BD25),), frozenset((0x40BD19, 0x40BD20))),
+        (
+            ((0x40BD25, 0x40BD4A),),
+            frozenset(
+                (
+                    0x40BD25,
+                    0x40BD2B,
+                    0x40BD34,
+                    0x40BD39,
+                    0x40BD3F,
+                    0x40BD41,
+                    0x40BD47,
+                )
+            ),
+        ),
+        (((0x40BD47, 0x40BD4A),), frozenset((0x40BD47,))),
+        (((0x40BD4A, 0x40BD50),), frozenset((0x40BD4A, 0x40BD4C, 0x40BD4E))),
+        (((0x40BD4E, 0x40BD50),), frozenset((0x40BD4E,))),
+    )
     assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
     assert next(
         candidate
@@ -10641,9 +10679,14 @@ def test_checksum_producer_compiles_row153_existing_dependency() -> None:
     assert templates[0x40BCFF].boundary_exit_eas == (0x40A5F0, 0x40BD19)
     assert templates[0x40BD19].owned_ranges == (
         (0x40BD19, 0x40BD25),
-        (0x40BD25, 0x40BD50),
+        (0x40BD25, 0x40BD4A),
+        (0x40BD4A, 0x40BD50),
     )
-    assert templates[0x40BD19].owned_block_entry_eas == (0x40BD19, 0x40BD25)
+    assert templates[0x40BD19].owned_block_entry_eas == (
+        0x40BD19,
+        0x40BD25,
+        0x40BD4A,
+    )
     assert templates[0x40BD19].boundary_exit_eas == (0x40A607, 0x40B6C0)
     assert templates[0x40BD19].preserved_unresolved_transfers == (
         generated_reference.RhadGeneratedPreservedTransfer(
