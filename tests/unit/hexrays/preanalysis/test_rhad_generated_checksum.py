@@ -10610,9 +10610,7 @@ def test_row160_inventory_owns_cmov_producer_helper_and_complete_targets() -> No
     assert row160["flag_producer_native_ea"] == 0x40BE81
     assert row160["predicate_native_ea"] == 0x40BE8F
     assert row160["transfer_native_ea"] == 0x40BE96
-    assert row160["current_compiler_support"] == (
-        "conditional_vocabulary_present_operation_uninstantiated"
-    )
+    assert row160["current_compiler_support"] == "typed_cmov_selected_indirect"
     assert row160["current_generated_proof"] == {"status": "unproved"}
     assert row160["owned_corridor_instruction_eas"] == [
         0x40BE68,
