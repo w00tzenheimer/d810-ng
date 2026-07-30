@@ -14697,7 +14697,7 @@
         4243227,
         4244660
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
         "status": "unproved"
       },
