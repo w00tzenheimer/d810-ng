@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "79857c9d52211dbbf036bc006d323b440a8110c5",
+  "accepted_code_sha": "da1873393607bd1624492ae18179393c59f59822",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -175,7 +175,8 @@
     "rhad:route@0x40C00C",
     "route:rhad-direct@0x40C03F",
     "rhad:route@0x40C059",
-    "rhad:route@0x40C073"
+    "rhad:route@0x40C073",
+    "route:rhad-direct@0x40C09E"
   ],
   "variants": [
     {
@@ -194,11 +195,11 @@
       "total_reference_operations": 64,
       "compiler_supported_operations": 64,
       "compiled_operation_instances": 42,
-      "vertically_proved_operations": 41,
-      "accepted_receipt_operations": 41,
-      "earliest_unproved_reference_order": 175,
-      "earliest_unproved_operation_id": "rhad:route@0x40C09E",
-      "first_missing_typed_obligation": "prove row175 immutable preflight and actual-MMAT_GENERATED publication through one committed receipt and CMAT_FINAL"
+      "vertically_proved_operations": 42,
+      "accepted_receipt_operations": 42,
+      "earliest_unproved_reference_order": 180,
+      "earliest_unproved_operation_id": "rhad:route@0x40C14E",
+      "first_missing_typed_obligation": "instantiate the accepted RhadDirectRoute vocabulary with exact row179 dependency and target-closure evidence before live mutation"
     },
     {
       "operation_variant": "existing_conditional_plus_indirect",
