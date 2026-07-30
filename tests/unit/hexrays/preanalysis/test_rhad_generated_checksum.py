@@ -10804,7 +10804,9 @@ def test_row162_inventory_owns_producer_join_and_exact_target_split() -> None:
     assert row162["flag_producer_native_ea"] == 0x40BEB8
     assert row162["predicate_native_ea"] == 0x40BEBE
     assert row162["transfer_native_ea"] == 0x40BECA
-    assert row162["current_compiler_support"] == "unsupported_typed_shape"
+    assert row162["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row162["current_generated_proof"] == {"status": "unproved"}
     assert row162["owned_corridor_instruction_eas"] == [
         0x40BEB2,
