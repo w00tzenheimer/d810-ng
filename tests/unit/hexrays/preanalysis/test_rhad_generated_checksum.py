@@ -10855,6 +10855,57 @@ def test_row162_inventory_owns_producer_join_and_exact_target_split() -> None:
     ]
 
 
+def test_row163_inventory_owns_cmov_producer_and_complete_targets() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row163 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 163
+    )
+
+    assert row163["operation_id"] == "rhad:route@0x40BEE5"
+    assert row163["operation_variant"] == "cmov_selected_indirect"
+    assert row163["reference_symbol"] == "JumpInliner._fixup_cmov"
+    assert row163["source_native_ea"] == 0x40BED6
+    assert row163["source_block_anchor_ea"] == 0x40BECC
+    assert row163["flag_producer_native_ea"] == 0x40BED0
+    assert row163["predicate_native_ea"] == 0x40BEDE
+    assert row163["transfer_native_ea"] == 0x40BEE5
+    assert row163["current_compiler_support"] == (
+        "conditional_vocabulary_present_operation_uninstantiated"
+    )
+    assert row163["current_generated_proof"] == {"status": "unproved"}
+    assert row163["owned_corridor_instruction_eas"] == [
+        0x40BED0,
+        0x40BED6,
+        0x40BED8,
+        0x40BEDE,
+        0x40BEE1,
+        0x40BEE3,
+        0x40BEE5,
+    ]
+    assert row163["imported_closure_block_anchor_eas"] == [
+        0x40A607,
+        0x40A615,
+        0x40A619,
+        0x40A680,
+        0x40A68A,
+        0x40B6C0,
+        0x40B6CA,
+        0x40B6D0,
+        0x40B6D4,
+    ]
+    assert row163["boundary_exit_eas"] == [0x40A61B, 0x40A68C, 0x40B790]
+    assert row163["unavailable_closure_exit_eas"] == []
+
+
 def test_checksum_producer_compiles_row146_cmov_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
