@@ -515,6 +515,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40C26B",
         "route:rhad-direct@0x40C2F9",
         "rhad:route@0x40C313",
+        "route:rhad-direct@0x40C34B",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -15978,12 +15979,12 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:12f80c69a23a3d08a5a1791638e957fe990be28f6cb0bf0d5fa932c25feee1b5"
+        "sha256:9036c93c62dfa5c7e01cb812c823c60433219cf1d24bc184aa05fefb02d795a2"
     )
-    assert len(batch.operations) == 185
+    assert len(batch.operations) == 186
     assert len(batch.imported_blocks) == 815
     assert len(batch.template_fragments) == 180
-    assert len(batch.native_body_proof_ids) == 185
+    assert len(batch.native_body_proof_ids) == 186
     assert len(batch.native_body_entry_block_ids) == 524
     assert len(plan.blocks) == 820
     normalization = operation.computed_branch_normalization
@@ -16601,6 +16602,75 @@ def test_checksum_producer_compiles_row189_existing_dependency() -> None:
         0x40C7FC,
     )
     assert templates[0x40C315].boundary_exit_eas == (0x40A607, 0x40B6C0)
+
+
+def test_checksum_producer_compiles_row190_direct_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("route:rhad-direct@0x40C34B")
+    assert operation.computed_branch_normalization is None
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.DIRECT: "native@0x40B6C0"
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_order"] == 190
+    assert payload["reference_operation_id"] == "rhad:route@0x40C34B"
+    assert payload["reference_symbol"] == "JumpInliner._fixup_jmp_and_possible_jcc"
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40C335
+    assert payload["source_block_anchor_ea"] == 0x40C347
+    assert payload["transfer_ea"] == 0x40C34B
+    assert payload["direct_target_block_id"] == "native@0x40B6C0"
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40C335,
+        0x40C347,
+        0x40C349,
+        0x40C34B,
+    ]
+    assert payload["imported_closure_block_ids"] == list(
+        generated_reference.ROW19_TARGET_IMPORTED_BLOCK_IDS
+    )
+    assert payload["boundary_exit_eas"] == [0x40B790]
+    assert next(
+        candidate
+        for candidate in batch.operations
+        if candidate.operation_id == "route:rhad-direct@0x40C34B"
+    ).depends_on == ("rhad:route@0x40C313",)
+    assert {"native@0x40C335", "native@0x40C347", "native@0x40B6C0"}.issubset(
+        batch.native_body_entry_block_ids
+    )
+    assert "route:rhad-direct@0x40C34B" in batch.native_body_proof_ids
+    assert plan.block(
+        "native@0x40C335"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C335, 0x40C33B, 0x40C341}
+    )
+    assert plan.block(
+        "native@0x40C347"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C347, 0x40C349, 0x40C34B}
+    )
+    assert plan.block(
+        "native@0x40C34B"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40C34B})
+
+    templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
+    assert templates[0x40C315].preserved_unresolved_transfers == (
+        generated_reference.RhadGeneratedPreservedTransfer(
+            transfer_ea=0x40C34B,
+            boundary_exit_eas=(0x40B6C0,),
+        ),
+        generated_reference.RhadGeneratedPreservedTransfer(
+            transfer_ea=0x40C802,
+            boundary_exit_eas=(0x40A607,),
+        ),
+    )
 
 
 def test_checksum_producer_compiles_row143_existing_dependency() -> None:
