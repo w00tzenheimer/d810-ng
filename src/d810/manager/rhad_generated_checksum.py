@@ -14377,48 +14377,66 @@ def _native_anchor(block: object, origins: dict[int, int]) -> int:
     )
 
 
+class _TypedDeliveryClosureIndex:
+    """Immutable typed route adjacency reused by one maturity observation."""
+
+    def __init__(self, batch: RhadGeneratedReferenceBatch) -> None:
+        targets_by_source: dict[str, list[str]] = {}
+        for operation in batch.operations:
+            if isinstance(operation, RhadDirectRoute):
+                targets = (operation.direct_target_block_id,)
+            elif isinstance(
+                operation,
+                (
+                    RhadConditionalRoute,
+                    RhadExistingConditionalRoute,
+                    RhadSetccIndexedTableRoute,
+                ),
+            ):
+                targets = (
+                    operation.true_target_block_id,
+                    operation.false_target_block_id,
+                )
+            else:
+                continue
+            targets_by_source.setdefault(str(operation.source_block_id), []).extend(
+                str(target) for target in targets
+            )
+        self._targets_by_source = {
+            source: tuple(targets) for source, targets in targets_by_source.items()
+        }
+        self._closure_by_root: dict[str, tuple[str, ...]] = {}
+
+    def closure(self, root_block_id: str) -> tuple[str, ...]:
+        root_block_id = str(root_block_id)
+        cached = self._closure_by_root.get(root_block_id)
+        if cached is not None:
+            return cached
+        pending = [root_block_id]
+        closure: list[str] = []
+        seen: set[str] = set()
+        while pending:
+            block_id = pending.pop(0)
+            if block_id in seen:
+                continue
+            seen.add(block_id)
+            closure.append(block_id)
+            pending.extend(
+                target
+                for target in self._targets_by_source.get(block_id, ())
+                if target not in seen
+            )
+        result = tuple(closure)
+        self._closure_by_root[root_block_id] = result
+        return result
+
+
 def _typed_delivery_block_closure(
     batch: RhadGeneratedReferenceBatch,
     root_block_id: str,
 ) -> tuple[str, ...]:
     """Expand one semantic target through typed downstream operations."""
-    targets_by_source: dict[str, list[str]] = {}
-    for operation in batch.operations:
-        if isinstance(operation, RhadDirectRoute):
-            targets = (operation.direct_target_block_id,)
-        elif isinstance(
-            operation,
-            (
-                RhadConditionalRoute,
-                RhadExistingConditionalRoute,
-                RhadSetccIndexedTableRoute,
-            ),
-        ):
-            targets = (
-                operation.true_target_block_id,
-                operation.false_target_block_id,
-            )
-        else:
-            continue
-        targets_by_source.setdefault(str(operation.source_block_id), []).extend(
-            str(target) for target in targets
-        )
-
-    pending = [str(root_block_id)]
-    closure: list[str] = []
-    seen: set[str] = set()
-    while pending:
-        block_id = pending.pop(0)
-        if block_id in seen:
-            continue
-        seen.add(block_id)
-        closure.append(block_id)
-        pending.extend(
-            target
-            for target in targets_by_source.get(block_id, ())
-            if target not in seen
-        )
-    return tuple(closure)
+    return _TypedDeliveryClosureIndex(batch).closure(root_block_id)
 
 
 def _direct_route_maturity_payload(
@@ -14483,24 +14501,48 @@ def _reference_batch_observation(
             *batch.imported_blocks,
         )
     }
+    delivery_closure_index = _TypedDeliveryClosureIndex(batch)
+    template_ranges_by_root_ea: dict[
+        int,
+        list[tuple[tuple[int, int], ...]],
+    ] = {}
+    for fragment in batch.template_fragments:
+        template_ranges_by_root_ea.setdefault(int(fragment.root_ea), []).append(
+            tuple(fragment.owned_ranges)
+        )
+    native_anchor_by_serial: dict[int, int] = {}
+    delivery_anchor_cache: dict[tuple[int, tuple[str, ...]], int] = {}
+    delivery_reachability_cache: dict[tuple[str, ...], bool] = {}
+
+    def native_anchor(block: object) -> int:
+        serial = int(block.serial)
+        cached = native_anchor_by_serial.get(serial)
+        if cached is not None:
+            return cached
+        anchor = _native_anchor(block, origins)
+        native_anchor_by_serial[serial] = anchor
+        return anchor
 
     def delivery_anchor(
         block: object,
         target_block_ids: tuple[str, ...],
     ) -> int:
         """Canonicalize an optimized live anchor through typed target ownership."""
-        live_anchor = _native_anchor(block, origins)
+        live_anchor = native_anchor(block)
+        cache_key = (live_anchor, target_block_ids)
+        cached = delivery_anchor_cache.get(cache_key)
+        if cached is not None:
+            return cached
         rooted_targets = tuple(
             dict.fromkeys(
                 block_anchor_by_id[block_id]
                 for block_id in target_block_ids
-                for owned_block_id in _typed_delivery_block_closure(batch, block_id)
+                for owned_block_id in delivery_closure_index.closure(block_id)
                 for root_ea in (block_anchor_by_id[owned_block_id],)
-                for fragment in batch.template_fragments
-                if int(fragment.root_ea) == int(root_ea)
-                and any(
+                for owned_ranges in template_ranges_by_root_ea.get(root_ea, ())
+                if any(
                     int(start_ea) <= live_anchor < int(end_ea)
-                    for start_ea, end_ea in fragment.owned_ranges
+                    for start_ea, end_ea in owned_ranges
                 )
             )
         )
@@ -14509,20 +14551,27 @@ def _reference_batch_observation(
                 dict.fromkeys(
                     block_anchor_by_id[block_id]
                     for block_id in target_block_ids
-                    for owned_block_id in _typed_delivery_block_closure(batch, block_id)
+                    for owned_block_id in delivery_closure_index.closure(block_id)
                     for evidence in (block_evidence_by_id[owned_block_id],)
                     if int(evidence.start_ea) <= live_anchor < int(evidence.end_ea)
                 )
             )
-        return int(rooted_targets[0]) if len(rooted_targets) == 1 else live_anchor
+        result = int(rooted_targets[0]) if len(rooted_targets) == 1 else live_anchor
+        delivery_anchor_cache[cache_key] = result
+        return result
 
     def delivery_targets_reachable(target_block_ids: tuple[str, ...]) -> bool:
+        cached = delivery_reachability_cache.get(target_block_ids)
+        if cached is not None:
+            return cached
         expected = {block_anchor_by_id[block_id] for block_id in target_block_ids}
         observed = {
             delivery_anchor(blocks[serial], target_block_ids)
             for serial in reachable_block_serials
         }
-        return expected.issubset(observed)
+        result = expected.issubset(observed)
+        delivery_reachability_cache[target_block_ids] = result
+        return result
 
     def reachable_serials() -> set[int]:
         reachable: set[int] = set()
@@ -14561,12 +14610,7 @@ def _reference_batch_observation(
         None,
     )
     reachable = tuple(
-        sorted(
-            {
-                _native_anchor(blocks[serial], origins)
-                for serial in reachable_block_serials
-            }
-        )
+        sorted({native_anchor(blocks[serial]) for serial in reachable_block_serials})
     )
     if accepted_source is None:
         accepted_targets: set[int] = set()
@@ -14577,7 +14621,7 @@ def _reference_batch_observation(
             for successor_serial in source_successors:
                 target = blocks[successor_serial]
                 while (
-                    _native_anchor(target, origins)
+                    native_anchor(target)
                     in {
                         accepted_route.conditional_select_ea,
                         block_anchor_by_id[accepted_route.join_block_id],
@@ -14586,7 +14630,7 @@ def _reference_batch_observation(
                 ):
                     successor_serial = int(tuple(target.succset)[0])
                     target = blocks[successor_serial]
-                accepted_targets.add(_native_anchor(target, origins))
+                accepted_targets.add(native_anchor(target))
         else:
             if (
                 accepted_source.nextb is not None
@@ -14602,9 +14646,7 @@ def _reference_batch_observation(
                     operand = row.l if opcode == int(ida_hexrays.m_goto) else row.d
                     if int(operand.t) != int(ida_hexrays.mop_b):
                         continue
-                    accepted_targets.add(
-                        _native_anchor(blocks[int(operand.b)], origins)
-                    )
+                    accepted_targets.add(native_anchor(blocks[int(operand.b)]))
     accepted_target_block_ids = (
         accepted_route.true_target_block_id,
         accepted_route.false_target_block_id,
@@ -14673,14 +14715,14 @@ def _reference_batch_observation(
         def direct_targets_for(block: object) -> set[int]:
             target_eas: set[int] = set()
             for successor_serial in tuple(int(value) for value in block.succset):
-                target_eas.add(_native_anchor(blocks[successor_serial], origins))
+                target_eas.add(native_anchor(blocks[successor_serial]))
             if not target_eas and block.tail is not None:
                 tail = block.tail
                 operand = (
                     tail.l if int(tail.opcode) == int(ida_hexrays.m_goto) else tail.d
                 )
                 if int(operand.t) == int(ida_hexrays.mop_b):
-                    target_eas.add(_native_anchor(blocks[int(operand.b)], origins))
+                    target_eas.add(native_anchor(blocks[int(operand.b)]))
             return target_eas
 
         direct_source = next(
@@ -14759,7 +14801,7 @@ def _reference_batch_observation(
                 for successor_serial in source_successors:
                     target = blocks[successor_serial]
                     while (
-                        _native_anchor(target, origins)
+                        native_anchor(target)
                         in {
                             int(
                                 conditional_route.conditional_select_ea

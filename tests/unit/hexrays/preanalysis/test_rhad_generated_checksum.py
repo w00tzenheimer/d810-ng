@@ -16537,6 +16537,44 @@ def test_delivery_closure_indexes_reference_operations_once() -> None:
     assert operations.iteration_count == 1
 
 
+def test_delivery_closure_index_reuses_one_typed_adjacency() -> None:
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    class CountingOperations:
+        def __init__(self, operations: tuple[object, ...]) -> None:
+            self._operations = operations
+            self.iteration_count = 0
+
+        def __iter__(self):
+            self.iteration_count += 1
+            return iter(self._operations)
+
+    class BatchView:
+        def __init__(self, operations: CountingOperations) -> None:
+            self.operations = operations
+
+    index_type = getattr(generated_reference, "_TypedDeliveryClosureIndex", None)
+    assert index_type is not None
+    operations = CountingOperations(batch.operations)
+    index = index_type(BatchView(operations))
+
+    assert index.closure("native@0x40A794")[:5] == (
+        "native@0x40A794",
+        "native@0x40A7AE",
+        "native@0x40A5F0",
+        "native@0x40B6C0",
+        "native@0x40A607",
+    )
+    assert index.closure("native@0x40C253")[:3] == (
+        "native@0x40C253",
+        "native@0x40C26D",
+        "native@0x40A5F0",
+    )
+    assert index.closure("native@0x40A794")[:1] == ("native@0x40A794",)
+    assert operations.iteration_count == 1
+
+
 def test_generated_batch_registry_selects_by_complete_native_identity() -> None:
     selected = reference_batch_for_native_key(_native_key())
 
