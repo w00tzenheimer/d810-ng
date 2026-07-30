@@ -10367,9 +10367,7 @@ def test_row157_inventory_owns_cmov_producer_and_complete_targets() -> None:
     assert row157["flag_producer_native_ea"] == 0x40BE1E
     assert row157["predicate_native_ea"] == 0x40BE26
     assert row157["transfer_native_ea"] == 0x40BE2D
-    assert row157["current_compiler_support"] == (
-        "conditional_vocabulary_present_operation_uninstantiated"
-    )
+    assert row157["current_compiler_support"] == "typed_cmov_selected_indirect"
     assert row157["current_generated_proof"] == {"status": "unproved"}
     assert row157["owned_corridor_instruction_eas"] == [
         0x40BDFC,
@@ -14961,7 +14959,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 21,
+        "compiled_operation_instances": 22,
         "vertically_proved_operations": 21,
         "accepted_receipt_operations": 21,
         "earliest_unproved_reference_order": 0,
