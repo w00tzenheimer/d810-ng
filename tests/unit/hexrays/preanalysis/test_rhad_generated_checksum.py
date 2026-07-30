@@ -14398,6 +14398,66 @@ def test_row177_inventory_has_producer_inclusive_exact_target_closures() -> None
     ]
 
 
+def test_row178_inventory_has_producer_inclusive_exact_target_closures() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row178 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 178
+    )
+
+    assert len(inventory["operations"]) == 228
+    assert row178["operation_id"] == "rhad:route@0x40C0EE"
+    assert row178["operation_variant"] == "cmov_selected_indirect"
+    assert row178["reference_symbol"] == "JumpInliner._fixup_cmov"
+    assert row178["current_compiler_support"] == (
+        "conditional_vocabulary_present_operation_uninstantiated"
+    )
+    assert row178["current_generated_proof"] == {"status": "unproved"}
+    assert row178["flag_producer_native_ea"] == 0x40C0D9
+    assert row178["predicate_native_ea"] == 0x40C0E7
+    assert row178["source_native_ea"] == 0x40C0DF
+    assert row178["source_block_anchor_ea"] == 0x40C0D4
+    assert row178["transfer_native_ea"] == 0x40C0EE
+    assert row178["owned_corridor_instruction_eas"] == [
+        0x40C0D9,
+        0x40C0DF,
+        0x40C0E1,
+        0x40C0E7,
+        0x40C0EA,
+        0x40C0EC,
+        0x40C0EE,
+    ]
+    assert row178["semantic_targets"] == [
+        {"ea": 0x40B6C0, "role": "conditional_taken"},
+        {"ea": 0x40A607, "role": "conditional_fallthrough"},
+    ]
+    assert row178["imported_closure_block_anchor_eas"] == [
+        0x40A607,
+        0x40A615,
+        0x40A619,
+        0x40A680,
+        0x40A68A,
+        0x40B6C0,
+        0x40B6CA,
+        0x40B6D0,
+        0x40B6D4,
+    ]
+    assert row178["boundary_exit_eas"] == [0x40A61B, 0x40A68C, 0x40B790]
+    assert row178["unavailable_closure_exit_eas"] == []
+    assert all(
+        closure["status"] == "complete" and closure["unavailable_exit_eas"] == []
+        for closure in row178["target_rooted_closures"]
+    )
+
+
 def test_checksum_producer_compiles_row176_existing_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
