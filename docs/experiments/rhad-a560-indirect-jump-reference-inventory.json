@@ -14693,7 +14693,9 @@
     },
     {
       "boundary_exit_eas": [
-        4236784
+        4236784,
+        4243227,
+        4244660
       ],
       "current_compiler_support": "unsupported_typed_shape",
       "current_generated_proof": {
@@ -14703,6 +14705,12 @@
       "flag_interference_safe_reorder": null,
       "flag_producer_native_ea": 4243181,
       "imported_closure_block_anchor_eas": [
+        4236784,
+        4236805,
+        4243201,
+        4243215,
+        4243221,
+        4243225,
         4244634,
         4244648,
         4244654,
@@ -14712,6 +14720,7 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "owned_corridor_instruction_eas": [
         4243175,
+        4243181,
         4243187,
         4243189,
         4243195,
@@ -14735,29 +14744,46 @@
       "source_native_ea": 4243175,
       "target_rooted_closures": [
         {
-          "boundary_exit_eas": [],
-          "expected_generated_block_anchor_eas": [],
-          "owned_native_block_entry_eas": [],
+          "boundary_exit_eas": [
+            4236784,
+            4243227
+          ],
+          "expected_generated_block_anchor_eas": [
+            4243201,
+            4243215,
+            4243221,
+            4243225,
+            4236784,
+            4236805
+          ],
+          "owned_native_block_entry_eas": [
+            4243201,
+            4243215,
+            4243221,
+            4236784
+          ],
           "root_ea": 4243201,
-          "status": "root_unavailable_in_current_portable_source_plan",
-          "unavailable_exit_eas": [
-            4243201
-          ]
+          "status": "complete",
+          "unavailable_exit_eas": []
         },
         {
           "boundary_exit_eas": [
-            4236784
+            4236784,
+            4244660
           ],
           "expected_generated_block_anchor_eas": [
             4244634,
             4244648,
             4244654,
-            4244658
+            4244658,
+            4236784,
+            4236805
           ],
           "owned_native_block_entry_eas": [
             4244634,
             4244648,
-            4244654
+            4244654,
+            4236784
           ],
           "root_ea": 4244634,
           "status": "complete",
@@ -14765,9 +14791,7 @@
         }
       ],
       "transfer_native_ea": 4243199,
-      "unavailable_closure_exit_eas": [
-        4243201
-      ]
+      "unavailable_closure_exit_eas": []
     },
     {
       "boundary_exit_eas": [
