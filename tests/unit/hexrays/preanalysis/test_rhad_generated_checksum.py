@@ -20033,15 +20033,15 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 102,
+        "compiled_operation_instances": 103,
         "vertically_proved_operations": 102,
         "accepted_receipt_operations": 102,
         "earliest_unproved_reference_order": 187,
         "earliest_unproved_operation_id": "rhad:route@0x40C26B",
         "first_missing_typed_obligation": (
-            "instantiate the accepted RhadExistingConditionalRoute vocabulary "
-            "with exact row186 dependency and target-closure evidence before "
-            "live mutation"
+            "bind the compiled row187 RhadExistingConditionalRoute through "
+            "immutable preflight and actual GENERATED publication before live "
+            "mutation"
         ),
     }
     assert setcc == {
