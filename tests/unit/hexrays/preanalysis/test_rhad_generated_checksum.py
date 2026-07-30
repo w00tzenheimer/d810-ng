@@ -13449,7 +13449,10 @@ def test_row171_inventory_owns_producer_join_and_complete_target_closures() -> N
     assert row171["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
-    assert row171["current_generated_proof"] == {"status": "unproved"}
+    assert row171["current_generated_proof"] == {
+        "accepted_commits": ["e77496aae", "76e918f1f", "71e72b08e"],
+        "status": "accepted_generated_c6",
+    }
     assert row171["owned_corridor_instruction_eas"] == [
         0x40BFF4,
         0x40BFFA,
@@ -17359,11 +17362,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("e46616cb7522aa2823b9d84aa4bc80c142c24260")
+    assert summary["accepted_code_sha"] == ("71e72b08ea449935c4bfcc5116c4422b22b30c3e")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 166
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BFF2"
+    assert len(accepted_operation_ids) == 167
+    assert accepted_operation_ids[-1] == "rhad:route@0x40C00C"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -17400,13 +17403,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 94,
-        "vertically_proved_operations": 93,
-        "accepted_receipt_operations": 93,
-        "earliest_unproved_reference_order": 171,
-        "earliest_unproved_operation_id": "rhad:route@0x40C00C",
+        "vertically_proved_operations": 94,
+        "accepted_receipt_operations": 94,
+        "earliest_unproved_reference_order": 173,
+        "earliest_unproved_operation_id": "rhad:route@0x40C059",
         "first_missing_typed_obligation": (
-            "publish row171 through immutable preflight and one exact committed "
-            "GENERATED receipt before CMAT_FINAL"
+            "add producer-inclusive typed existing-conditional evidence and exact "
+            "target closures for row173 before live mutation"
         ),
     }
     assert setcc == {
