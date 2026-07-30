@@ -15073,7 +15073,13 @@ def test_row187_inventory_has_producer_inclusive_exact_target_closures() -> None
         "typed_existing_conditional_plus_indirect"
     )
     assert row187["current_generated_proof"] == {
-        "accepted_commits": ["f01733bb6", "674e30644", "c0424acd4"],
+        "accepted_commits": [
+            "f01733bb6",
+            "674e30644",
+            "c0424acd4",
+            "5419515e6",
+            "9b3aa623d",
+        ],
         "status": "accepted_generated_c6",
     }
     assert row187["flag_producer_native_ea"] == 0x40C259
@@ -20067,7 +20073,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("c0424acd4eae6695b9dfdb8bd1c1387ff2cb5656")
+    assert summary["accepted_code_sha"] == ("9b3aa623d0e902b1d0b9689460c1191b6a541633")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
     assert len(accepted_operation_ids) == 183
