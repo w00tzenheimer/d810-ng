@@ -14423,9 +14423,7 @@ def test_row178_inventory_has_producer_inclusive_exact_target_closures() -> None
     assert row178["operation_id"] == "rhad:route@0x40C0EE"
     assert row178["operation_variant"] == "cmov_selected_indirect"
     assert row178["reference_symbol"] == "JumpInliner._fixup_cmov"
-    assert row178["current_compiler_support"] == (
-        "conditional_vocabulary_present_operation_uninstantiated"
-    )
+    assert row178["current_compiler_support"] == "typed_cmov_selected_indirect"
     assert row178["current_generated_proof"] == {"status": "unproved"}
     assert row178["flag_producer_native_ea"] == 0x40C0D9
     assert row178["predicate_native_ea"] == 0x40C0E7
@@ -18535,7 +18533,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 25,
+        "compiled_operation_instances": 26,
         "vertically_proved_operations": 25,
         "accepted_receipt_operations": 25,
         "earliest_unproved_reference_order": 0,
