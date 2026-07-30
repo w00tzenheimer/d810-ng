@@ -9618,7 +9618,7 @@ def test_row148_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row148["predicate_native_ea"] == 0x40BC87
     assert row148["transfer_native_ea"] == 0x40BC93
     assert row148["current_compiler_support"] == (
-        "conditional_vocabulary_present_operation_uninstantiated"
+        "typed_existing_conditional_plus_indirect"
     )
     assert row148["current_generated_proof"] == {"status": "unproved"}
     assert row148["owned_corridor_instruction_eas"] == [
@@ -13634,15 +13634,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 78,
+        "compiled_operation_instances": 79,
         "vertically_proved_operations": 78,
         "accepted_receipt_operations": 78,
         "earliest_unproved_reference_order": 148,
         "earliest_unproved_operation_id": "rhad:route@0x40BC93",
         "first_missing_typed_obligation": (
-            "add compare producer 0x40BC81 to row148 ownership and derive the "
-            "unavailable 0x40BC95 target-root closure before compiler "
-            "instantiation or live mutation"
+            "publish compiled row148 through immutable preflight and prove the "
+            "exact GENERATED-to-CMAT_FINAL canary"
         ),
     }
     assert setcc == {
