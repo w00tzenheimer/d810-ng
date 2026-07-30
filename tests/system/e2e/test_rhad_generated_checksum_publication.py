@@ -188,6 +188,7 @@ _REFERENCE_OPERATION_IDS = (
     "route:rhad-direct@0x40BF8A",
     "rhad:route@0x40BFA2",
     "rhad:route@0x40BFBC",
+    "rhad:route@0x40BFD8",
 )
 _IMPORTED_BLOCK_IDS = (
     "native@0x40A607",
@@ -2787,7 +2788,7 @@ def _run_worker(binary: pathlib.Path) -> None:
             str(receipt.fragment_plan_id) for receipt in receipts
         )
         receipt = matching[0]
-        assert receipt.operation_count == receipt.planned_operation_count == 1145, (
+        assert receipt.operation_count == receipt.planned_operation_count == 1148, (
             receipt.operation_count,
             receipt.planned_operation_count,
         )
@@ -3771,7 +3772,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             compiled_payload["aggregate_program_identity"]
         )
         assert compiled_payload["aggregate_program_identity"] == (
-            "sha256:249b22cb88a4f80d57b481b38ad1426adc0d03405b8d3cd279fd069c1ccd06f3"
+            "sha256:abff71f8438d0c9f8b009e34f62ffee9bf09a86fba9b3b6ce394c232be362e56"
         )
         proof_artifacts = {
             artifact["proof"]["binding"]["operation_id"]: artifact
@@ -8749,6 +8750,35 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             "native@0x40BFD8",
         ]
         assert row168_reference["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+        row169_reference = reference_payloads["rhad:route@0x40BFD8"]
+        assert row169_reference["reference_order"] == 169
+        assert row169_reference["reference_symbol"] == "JumpInliner._fixup_cmov"
+        assert row169_reference["operation_variant"] == "cmov_selected_indirect"
+        assert row169_reference["source_native_ea"] == 0x40BFC9
+        assert row169_reference["source_block_anchor_ea"] == 0x40BFBE
+        assert row169_reference["source_value_block_id"] == "native@0x40BFBE"
+        assert row169_reference["condition_producer_ea"] == 0x40BFC3
+        assert row169_reference["predicate_anchor_ea"] == 0x40BFD1
+        assert row169_reference["observed_predicate_kind"] == "slt"
+        assert row169_reference["predicate_kind"] == "sge"
+        assert row169_reference["comparison_constant"] == 0x0BB2D365
+        assert row169_reference["transfer_ea"] == 0x40BFD8
+        assert row169_reference["true_target_ea"] == 0x40B6C0
+        assert row169_reference["false_target_ea"] == 0x40A607
+        assert row169_reference["owned_corridor_instruction_eas"] == [
+            0x40BFC3,
+            0x40BFC9,
+            0x40BFCB,
+            0x40BFD1,
+            0x40BFD4,
+            0x40BFD6,
+            0x40BFD8,
+        ]
+        assert row169_reference["boundary_exit_eas"] == [
+            0x40A61B,
+            0x40A68C,
+            0x40B790,
+        ]
         setcc_reference = reference_payloads["rhad:route@0x40A77C"]
         assert setcc_reference["reference_order"] == 16
         assert setcc_reference["reference_symbol"] == (
@@ -10813,6 +10843,29 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             assert row168["semantic_targets_survive"] is True
             assert row168["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
             assert row168["passed"] is True
+            row169 = observations["rhad:route@0x40BFD8"]
+            assert row169["source_present"] is True
+            assert row169["source_topology_reachable"] is (
+                maturity != "MMAT_LOCOPT"
+            )
+            assert row169["source_topology_retired"] is (
+                maturity == "MMAT_LOCOPT"
+            )
+            assert row169["indirect_transfer_present"] is False
+            assert row169["target_eas"] == (
+                [0x40A607]
+                if maturity == "MMAT_LOCOPT"
+                else [0x40A607, 0x40B6C0]
+            )
+            assert row169["semantic_target_eas"] == [0x40A607, 0x40B6C0]
+            assert row169["delivery_target_eas"] == [0x40A607, 0x40B6C0]
+            assert row169["semantic_targets_survive"] is True
+            assert row169["boundary_exit_eas"] == [
+                0x40A61B,
+                0x40A68C,
+                0x40B790,
+            ]
+            assert row169["passed"] is True
         calls_payload = maturity_payloads["MMAT_CALLS"]
         calls_observations = {
             row["operation_id"]: row for row in calls_payload["operation_observations"]
@@ -12639,6 +12692,22 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert row168_calls["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
         assert row168_calls["passed"] is True
         assert 0x40BFBC not in calls_payload["reachable_eas"]
+        row169_calls = calls_observations["rhad:route@0x40BFD8"]
+        assert row169_calls["source_present"] is False
+        assert row169_calls["source_topology_reachable"] is False
+        assert row169_calls["source_topology_retired"] is True
+        assert row169_calls["indirect_transfer_present"] is False
+        assert row169_calls["target_eas"] == []
+        assert row169_calls["semantic_target_eas"] == [0x40A607, 0x40B6C0]
+        assert row169_calls["delivery_target_eas"] == [0x40A607, 0x40B6C0]
+        assert row169_calls["semantic_targets_survive"] is True
+        assert row169_calls["boundary_exit_eas"] == [
+            0x40A61B,
+            0x40A68C,
+            0x40B790,
+        ]
+        assert row169_calls["passed"] is True
+        assert 0x40BFD8 not in calls_payload["reachable_eas"]
         assert 0x40BD82 not in calls_payload["reachable_eas"]
         assert 0x40BD68 not in calls_payload["reachable_eas"]
         assert 0x40BD4E not in calls_payload["reachable_eas"]
@@ -12685,7 +12754,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT planned_operation_count, applied_operation_count, outcome "
             "FROM mutation_receipts"
-        ).fetchall() == [(1145, 1145, "committed")]
+        ).fetchall() == [(1148, 1148, "committed")]
         assert connection.execute(
             "SELECT current_phase, mutation_started, poisoned, interr_code "
             "FROM cfg_transaction_attempts"
@@ -12698,7 +12767,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT COUNT(*) FROM semantic_fragment_route_oracle_comparisons "
             "WHERE outcome='matched'"
-        ).fetchone() == (164,)
+        ).fetchone() == (165,)
         assert connection.execute(
             "SELECT COUNT(*) FROM mutation_receipt_identities"
         ).fetchone() == (736,)
