@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 705
+    assert len(IMPORTED_BLOCK_IDS) == 701
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -305,7 +305,6 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40C42E,
         0x40BE63,
         0x40BEB2,
-        0x40BECC,
         0x40C464,
     )
     assert tuple(operation.operation_id for operation in plan.operations) == (
@@ -1147,6 +1146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40A5F0,
         0x40A9A0,
         0x40B55B,
+        0x40BECC,
         0x40BFA4,
         0x40C05B,
         0x40C10A,
@@ -10720,29 +10720,21 @@ def test_row161_inventory_owns_producer_and_complete_targets() -> None:
         0x40BEC0,
         0x40BEC6,
         0x40BECA,
-        0x40BECC,
-        0x40BEDE,
-        0x40BEE1,
-        0x40BEE5,
         0x40C464,
         0x40C472,
         0x40C478,
         0x40C47C,
     ]
-    assert row161["boundary_exit_eas"] == [0x40A5F0, 0x40A607, 0x40B6C0]
+    assert row161["boundary_exit_eas"] == [0x40A5F0, 0x40BECC]
     assert row161["unavailable_closure_exit_eas"] == []
     assert row161["target_rooted_closures"] == [
         {
-            "boundary_exit_eas": [0x40A607, 0x40B6C0],
+            "boundary_exit_eas": [0x40A5F0, 0x40BECC],
             "expected_generated_block_anchor_eas": [
                 0x40BEB2,
                 0x40BEC0,
                 0x40BEC6,
                 0x40BECA,
-                0x40BECC,
-                0x40BEDE,
-                0x40BEE1,
-                0x40BEE5,
                 0x40A5F0,
                 0x40A605,
             ],
@@ -10750,8 +10742,6 @@ def test_row161_inventory_owns_producer_and_complete_targets() -> None:
                 0x40BEB2,
                 0x40BEC0,
                 0x40BEC6,
-                0x40BECC,
-                0x40BEE1,
                 0x40A5F0,
             ],
             "root_ea": 0x40BEB2,
@@ -11911,35 +11901,24 @@ def test_checksum_producer_compiles_row161_existing_dependency() -> None:
         "native@0x40BEC0",
         "native@0x40BEC6",
         "native@0x40BECA",
-        "native@0x40BECC",
-        "native@0x40BEDE",
-        "native@0x40BEE1",
-        "native@0x40BEE5",
         "native@0x40C464",
         "native@0x40C472",
         "native@0x40C478",
         "native@0x40C47C",
     )
-    assert payload["boundary_exit_eas"] == [0x40A5F0, 0x40A607, 0x40B6C0]
+    assert payload["boundary_exit_eas"] == [0x40A5F0, 0x40BECC]
     assert next(
         candidate
         for candidate in batch.operations
         if candidate.operation_id == "rhad:route@0x40BEB0"
     ).depends_on == ("rhad:route@0x40BE96",)
-    assert {"native@0x40BEB2", "native@0x40BECC", "native@0x40C464"}.issubset(
+    assert {"native@0x40BEB2", "native@0x40C464"}.issubset(
         batch.native_body_entry_block_ids
     )
-    assert plan.block(
-        "native@0x40BEDE"
-    ).stable_identity.exact_instruction_eas == frozenset({0x40BEDE})
-    assert plan.block(
-        "native@0x40BEE5"
-    ).stable_identity.exact_instruction_eas == frozenset({0x40BEE5})
     assert "rhad:route@0x40BEB0" in batch.native_body_proof_ids
 
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
     assert templates[0x40BEB2].boundary_exit_eas == (0x40A5F0, 0x40BECC)
-    assert templates[0x40BECC].boundary_exit_eas == (0x40A607, 0x40B6C0)
     assert templates[0x40C464].boundary_exit_eas == (0x40A5F0,)
 
 
