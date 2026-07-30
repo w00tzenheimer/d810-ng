@@ -10435,7 +10435,9 @@ def test_row158_inventory_owns_producer_and_both_target_fragments() -> None:
     assert row158["flag_producer_native_ea"] == 0x40BE35
     assert row158["predicate_native_ea"] == 0x40BE3B
     assert row158["transfer_native_ea"] == 0x40BE47
-    assert row158["current_compiler_support"] == "unsupported_typed_shape"
+    assert row158["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row158["current_generated_proof"] == {"status": "unproved"}
     assert row158["owned_corridor_instruction_eas"] == [
         0x40BE2F,
@@ -15171,14 +15173,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 85,
+        "compiled_operation_instances": 86,
         "vertically_proved_operations": 85,
         "accepted_receipt_operations": 85,
         "earliest_unproved_reference_order": 158,
         "earliest_unproved_operation_id": "rhad:route@0x40BE47",
         "first_missing_typed_obligation": (
-            "derive unavailable target root 0x40BE49 and instantiate typed "
-            "existing-conditional evidence for row158 before live mutation"
+            "prove immutable preflight and actual-MMAT_GENERATED publication for "
+            "compiled row158"
         ),
     }
     assert setcc == {
