@@ -199,7 +199,7 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 92,
+      "compiled_operation_instances": 93,
       "vertically_proved_operations": 92,
       "accepted_receipt_operations": 92,
       "earliest_unproved_reference_order": 170,
