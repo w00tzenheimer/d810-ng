@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 763
+    assert len(IMPORTED_BLOCK_IDS) == 757
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -317,7 +317,6 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40C527,
         0x40C00E,
         0x40C05B,
-        0x40C075,
         0x40C578,
     )
     assert tuple(operation.operation_id for operation in plan.operations) == (
@@ -1218,6 +1217,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40A5F0,
         0x40A9A0,
         0x40B55B,
+        0x40C075,
         0x40C10A,
         0x40C16A,
         0x40C315,
@@ -13762,48 +13762,32 @@ def test_row173_inventory_owns_producer_and_complete_target_closures() -> None:
         0x40A5F0,
         0x40A605,
         0x40C05B,
+        0x40C069,
         0x40C06F,
         0x40C073,
-        0x40C075,
-        0x40C088,
-        0x40C09A,
-        0x40C09E,
         0x40C578,
         0x40C586,
         0x40C58C,
         0x40C590,
-        0x40C751,
-        0x40C768,
-        0x40C76E,
     ]
-    assert row173["boundary_exit_eas"] == [0x40A607, 0x40B6C0, 0x40C592]
+    assert row173["boundary_exit_eas"] == [0x40A5F0, 0x40C075, 0x40C592]
     assert row173["unavailable_closure_exit_eas"] == []
     assert row173["target_rooted_closures"] == [
         {
-            "boundary_exit_eas": [0x40A607, 0x40B6C0],
+            "boundary_exit_eas": [0x40A5F0, 0x40C075],
             "expected_generated_block_anchor_eas": [
                 0x40A5F0,
                 0x40A605,
                 0x40C05B,
+                0x40C069,
                 0x40C06F,
                 0x40C073,
-                0x40C075,
-                0x40C088,
-                0x40C09A,
-                0x40C09E,
-                0x40C751,
-                0x40C768,
-                0x40C76E,
             ],
             "owned_native_block_entry_eas": [
                 0x40A5F0,
                 0x40C05B,
+                0x40C069,
                 0x40C06F,
-                0x40C075,
-                0x40C088,
-                0x40C09A,
-                0x40C751,
-                0x40C768,
             ],
             "root_ea": 0x40C05B,
             "status": "complete",
@@ -13876,21 +13860,15 @@ def test_checksum_producer_compiles_row173_existing_dependency() -> None:
     )
     assert generated_reference.ROW173_TARGET_IMPORTED_BLOCK_IDS == (
         "native@0x40C05B",
+        "native@0x40C069",
         "native@0x40C06F",
         "native@0x40C073",
-        "native@0x40C075",
-        "native@0x40C088",
-        "native@0x40C09A",
-        "native@0x40C09E",
         "native@0x40C578",
         "native@0x40C586",
         "native@0x40C58C",
         "native@0x40C590",
-        "native@0x40C751",
-        "native@0x40C768",
-        "native@0x40C76E",
     )
-    assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0, 0x40C592]
+    assert payload["boundary_exit_eas"] == [0x40A5F0, 0x40C075, 0x40C592]
     assert next(
         candidate
         for candidate in batch.operations
@@ -13900,64 +13878,32 @@ def test_checksum_producer_compiles_row173_existing_dependency() -> None:
     assert "native@0x40C578" in batch.native_body_entry_block_ids
     assert plan.block(
         "native@0x40C05B"
-    ).stable_identity.exact_instruction_eas == frozenset(
-        {0x40C05B, 0x40C061, 0x40C067, 0x40C069}
-    )
+    ).stable_identity.exact_instruction_eas == frozenset({0x40C05B, 0x40C061, 0x40C067})
+    assert plan.block(
+        "native@0x40C069"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40C069})
     assert plan.block(
         "native@0x40C073"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C073})
-    assert plan.block(
-        "native@0x40C075"
-    ).stable_identity.exact_instruction_eas == frozenset(
-        {0x40C075, 0x40C07A, 0x40C07E, 0x40C082}
-    )
-    assert plan.block(
-        "native@0x40C09E"
-    ).stable_identity.exact_instruction_eas == frozenset({0x40C09E})
     assert plan.block(
         "native@0x40C578"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C578, 0x40C57E, 0x40C584})
     assert plan.block(
         "native@0x40C590"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C590})
-    assert plan.block(
-        "native@0x40C751"
-    ).stable_identity.exact_instruction_eas == frozenset(
-        {0x40C751, 0x40C756, 0x40C75C, 0x40C762}
-    )
-    assert plan.block(
-        "native@0x40C76E"
-    ).stable_identity.exact_instruction_eas == frozenset({0x40C76E})
     assert "rhad:route@0x40C059" in batch.native_body_proof_ids
 
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
     assert templates[0x40C05B].owned_ranges == ((0x40C05B, 0x40C075),)
-    assert templates[0x40C05B].owned_block_entry_eas == (0x40C05B, 0x40C06F)
+    assert templates[0x40C05B].owned_block_entry_eas == (
+        0x40C05B,
+        0x40C069,
+        0x40C06F,
+    )
     assert templates[0x40C05B].preserved_unresolved_transfers == (
         generated_reference.RhadGeneratedPreservedTransfer(
             transfer_ea=0x40C073,
             boundary_exit_eas=(0x40A5F0, 0x40C075),
-        ),
-    )
-    assert templates[0x40C075].owned_ranges == (
-        (0x40C075, 0x40C0A0),
-        (0x40C751, 0x40C770),
-    )
-    assert templates[0x40C075].owned_block_entry_eas == (
-        0x40C075,
-        0x40C088,
-        0x40C09A,
-        0x40C751,
-        0x40C768,
-    )
-    assert templates[0x40C075].preserved_unresolved_transfers == (
-        generated_reference.RhadGeneratedPreservedTransfer(
-            transfer_ea=0x40C09E,
-            boundary_exit_eas=(0x40B6C0,),
-        ),
-        generated_reference.RhadGeneratedPreservedTransfer(
-            transfer_ea=0x40C76E,
-            boundary_exit_eas=(0x40A607,),
         ),
     )
     assert templates[0x40C578].owned_ranges == ((0x40C578, 0x40C592),)

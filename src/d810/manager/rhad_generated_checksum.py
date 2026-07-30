@@ -1881,20 +1881,14 @@ ROW171_TARGET_IMPORTED_LAYOUT = (
     (0x40C74F, 0x40C751, (0x40C74F,)),
 )
 ROW173_TARGET_IMPORTED_LAYOUT = (
-    (0x40C05B, 0x40C06F, (0x40C05B, 0x40C061, 0x40C067, 0x40C069)),
+    (0x40C05B, 0x40C069, (0x40C05B, 0x40C061, 0x40C067)),
+    (0x40C069, 0x40C06F, (0x40C069,)),
     (0x40C06F, 0x40C075, (0x40C06F, 0x40C071, 0x40C073)),
     (0x40C073, 0x40C075, (0x40C073,)),
-    (0x40C075, 0x40C088, (0x40C075, 0x40C07A, 0x40C07E, 0x40C082)),
-    (0x40C088, 0x40C09A, (0x40C088, 0x40C08E, 0x40C094)),
-    (0x40C09A, 0x40C0A0, (0x40C09A, 0x40C09C, 0x40C09E)),
-    (0x40C09E, 0x40C0A0, (0x40C09E,)),
     (0x40C578, 0x40C586, (0x40C578, 0x40C57E, 0x40C584)),
     (0x40C586, 0x40C58C, (0x40C586,)),
     (0x40C58C, 0x40C592, (0x40C58C, 0x40C58E, 0x40C590)),
     (0x40C590, 0x40C592, (0x40C590,)),
-    (0x40C751, 0x40C768, (0x40C751, 0x40C756, 0x40C75C, 0x40C762)),
-    (0x40C768, 0x40C770, (0x40C768, 0x40C76A, 0x40C76C, 0x40C76E)),
-    (0x40C76E, 0x40C770, (0x40C76E,)),
 )
 BASE_IMPORTED_LAYOUT = (
     (0x40A607, 0x40A615, (0x40A607,)),
@@ -2608,6 +2602,7 @@ BOUNDARY_EXIT_EAS = (
     0x40A5F0,
     0x40A9A0,
     0x40B55B,
+    0x40C075,
     0x40C10A,
     0x40C16A,
     0x40C315,
@@ -2789,7 +2784,6 @@ TEMPLATE_ROOT_EAS = (
     0x40C527,
     0x40C00E,
     0x40C05B,
-    0x40C075,
     0x40C578,
 )
 
@@ -9081,7 +9075,7 @@ _ROW173_EXISTING_ROUTE = RhadExistingConditionalRoute(
         0x40C059,
     ),
     imported_closure_block_ids=ROW173_TARGET_IMPORTED_BLOCK_IDS,
-    boundary_exit_eas=(0x40A607, 0x40B6C0, 0x40C592),
+    boundary_exit_eas=(0x40A5F0, 0x40C075, 0x40C592),
     flag_corridor_id="flags-intact@0x40C047",
     phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
     depends_on=(_ROW172_DIRECT_ROUTE.operation_id,),
@@ -9611,15 +9605,11 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         "native@0x40C730",
         "native@0x40C749",
         "native@0x40C05B",
+        "native@0x40C069",
         "native@0x40C06F",
-        "native@0x40C075",
-        "native@0x40C088",
-        "native@0x40C09A",
         "native@0x40C578",
         "native@0x40C586",
         "native@0x40C58C",
-        "native@0x40C751",
-        "native@0x40C768",
     ),
     native_body_ranges=(
         (0x40A5CA, 0x40A5E5),
@@ -9791,7 +9781,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         (0x40BFF4, 0x40C00E),
         (0x40C00E, 0x40C041),
         (0x40C041, 0x40C05B),
-        (0x40C05B, 0x40C0A0),
+        (0x40C05B, 0x40C075),
         (0x40C0A0, 0x40C0BA),
         (0x40C0F0, 0x40C10A),
         (0x40C150, 0x40C16A),
@@ -9813,7 +9803,6 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         (0x40C6DA, 0x40C705),
         (0x40C705, 0x40C730),
         (0x40C730, 0x40C751),
-        (0x40C751, 0x40C770),
     ),
     native_body_proof_ids=(
         "native-body@0x40A605",
@@ -13066,7 +13055,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         RhadGeneratedTemplateFragment(
             root_ea=0x40C05B,
             owned_ranges=((0x40C05B, 0x40C075),),
-            owned_block_entry_eas=(0x40C05B, 0x40C06F),
+            owned_block_entry_eas=(0x40C05B, 0x40C069, 0x40C06F),
             boundary_ranges=(),
             boundary_exit_eas=(0x40A5F0, 0x40C075),
             direct_boundary_routes=(),
@@ -13074,24 +13063,6 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
                 RhadGeneratedPreservedTransfer(
                     transfer_ea=0x40C073,
                     boundary_exit_eas=(0x40A5F0, 0x40C075),
-                ),
-            ),
-        ),
-        RhadGeneratedTemplateFragment(
-            root_ea=0x40C075,
-            owned_ranges=((0x40C075, 0x40C0A0), (0x40C751, 0x40C770)),
-            owned_block_entry_eas=(0x40C075, 0x40C088, 0x40C09A, 0x40C751, 0x40C768),
-            boundary_ranges=(),
-            boundary_exit_eas=(0x40A607, 0x40B6C0),
-            direct_boundary_routes=(),
-            preserved_unresolved_transfers=(
-                RhadGeneratedPreservedTransfer(
-                    transfer_ea=0x40C09E,
-                    boundary_exit_eas=(0x40B6C0,),
-                ),
-                RhadGeneratedPreservedTransfer(
-                    transfer_ea=0x40C76E,
-                    boundary_exit_eas=(0x40A607,),
                 ),
             ),
         ),
