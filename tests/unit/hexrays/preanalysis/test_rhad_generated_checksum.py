@@ -11036,7 +11036,10 @@ def test_row165_inventory_owns_producer_join_and_complete_targets() -> None:
     assert row165["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
-    assert row165["current_generated_proof"] == {"status": "unproved"}
+    assert row165["current_generated_proof"] == {
+        "accepted_commits": ["561a676f0", "baedbfafd", "427f64ed8"],
+        "status": "accepted_generated_c6",
+    }
     assert row165["owned_corridor_instruction_eas"] == [
         0x40BF01,
         0x40BF07,
@@ -16307,11 +16310,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("c5d90d4545cfd89dde7f6dacba222d5d7bd095cb")
+    assert summary["accepted_code_sha"] == ("427f64ed805e1e52de33e308db1c689e7fab8ae4")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 160
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BEFF"
+    assert len(accepted_operation_ids) == 161
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BF19"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -16347,13 +16350,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 90,
-        "vertically_proved_operations": 90,
-        "accepted_receipt_operations": 90,
-        "earliest_unproved_reference_order": 165,
-        "earliest_unproved_operation_id": "rhad:route@0x40BF19",
+        "compiled_operation_instances": 91,
+        "vertically_proved_operations": 91,
+        "accepted_receipt_operations": 91,
+        "earliest_unproved_reference_order": 168,
+        "earliest_unproved_operation_id": "rhad:route@0x40BFBC",
         "first_missing_typed_obligation": (
-            "add typed existing-conditional compiler evidence for row165 before "
+            "add typed existing-conditional compiler evidence for row168 before "
             "live mutation"
         ),
     }
