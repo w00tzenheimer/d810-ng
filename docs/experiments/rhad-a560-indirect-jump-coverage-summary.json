@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "9e008addab72ef414ac54488e9fe2dedebbe983a",
+  "accepted_code_sha": "c5b9d064bf731d50d93c37ca45933ca1b2b13c38",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -167,7 +167,8 @@
     "rhad:route@0x40BEE5",
     "rhad:route@0x40BEFF",
     "rhad:route@0x40BF19",
-    "route:rhad-direct@0x40BF8A"
+    "route:rhad-direct@0x40BF8A",
+    "rhad:route@0x40BFA2"
   ],
   "variants": [
     {
@@ -207,12 +208,12 @@
       "operation_variant": "setcc_indexed_table",
       "total_reference_operations": 8,
       "compiler_supported_operations": 8,
-      "compiled_operation_instances": 7,
-      "vertically_proved_operations": 7,
-      "accepted_receipt_operations": 7,
-      "earliest_unproved_reference_order": 167,
-      "earliest_unproved_operation_id": "rhad:route@0x40BFA2",
-      "first_missing_typed_obligation": "add a typed immutable table-proof artifact and compiler evidence for row167 before live mutation"
+      "compiled_operation_instances": 8,
+      "vertically_proved_operations": 8,
+      "accepted_receipt_operations": 8,
+      "earliest_unproved_reference_order": null,
+      "earliest_unproved_operation_id": null,
+      "first_missing_typed_obligation": null
     }
   ],
   "selected_third_shape": {

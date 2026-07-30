@@ -11209,10 +11209,11 @@ def test_row167_inventory_references_exact_typed_table_proof() -> None:
     assert row167["transfer_native_ea"] == 0x40BFA2
     assert row167["current_compiler_support"] == "typed_setcc_indexed_table"
     assert row167["current_generated_proof"] == {
+        "accepted_commits": ["008344931", "e102a57ae", "c5b9d064b"],
         "proof_artifact_identity": (
             "sha256:fafc420031c9e89a7c8de87bf6932b836a12b8f1a2376eeb21e9f057956e3be8"
         ),
-        "status": "unproved",
+        "status": "accepted_generated_c6",
     }
     assert row167["owned_corridor_instruction_eas"] == [
         0x40BF8C,
@@ -16630,11 +16631,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("9e008addab72ef414ac54488e9fe2dedebbe983a")
+    assert summary["accepted_code_sha"] == ("c5b9d064bf731d50d93c37ca45933ca1b2b13c38")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 162
-    assert accepted_operation_ids[-1] == "route:rhad-direct@0x40BF8A"
+    assert len(accepted_operation_ids) == 163
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BFA2"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -16684,15 +16685,12 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "setcc_indexed_table",
         "total_reference_operations": 8,
         "compiler_supported_operations": 8,
-        "compiled_operation_instances": 7,
-        "vertically_proved_operations": 7,
-        "accepted_receipt_operations": 7,
-        "earliest_unproved_reference_order": 167,
-        "earliest_unproved_operation_id": "rhad:route@0x40BFA2",
-        "first_missing_typed_obligation": (
-            "add a typed immutable table-proof artifact and compiler evidence for "
-            "row167 before live mutation"
-        ),
+        "compiled_operation_instances": 8,
+        "vertically_proved_operations": 8,
+        "accepted_receipt_operations": 8,
+        "earliest_unproved_reference_order": None,
+        "earliest_unproved_operation_id": None,
+        "first_missing_typed_obligation": None,
     }
 
 
