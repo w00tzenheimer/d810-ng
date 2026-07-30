@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 732
+    assert len(IMPORTED_BLOCK_IDS) == 734
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -12943,6 +12943,8 @@ def test_row168_inventory_owns_producer_and_complete_target_closures() -> None:
         0x40A5F0,
         0x40A605,
         0x40BFBE,
+        0x40BFD1,
+        0x40BFD4,
         0x40BFD8,
     ]
     assert row168["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -12950,8 +12952,13 @@ def test_row168_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row168["target_rooted_closures"] == [
         {
             "boundary_exit_eas": [0x40A607, 0x40B6C0],
-            "expected_generated_block_anchor_eas": [0x40BFBE, 0x40BFD8],
-            "owned_native_block_entry_eas": [0x40BFBE],
+            "expected_generated_block_anchor_eas": [
+                0x40BFBE,
+                0x40BFD1,
+                0x40BFD4,
+                0x40BFD8,
+            ],
+            "owned_native_block_entry_eas": [0x40BFBE, 0x40BFD4],
             "root_ea": 0x40BFBE,
             "status": "complete",
             "unavailable_exit_eas": [],
@@ -13020,6 +13027,8 @@ def test_checksum_producer_compiles_row168_existing_dependency() -> None:
     )
     assert generated_reference.ROW168_TARGET_IMPORTED_BLOCK_IDS == (
         "native@0x40BFBE",
+        "native@0x40BFD1",
+        "native@0x40BFD4",
         "native@0x40BFD8",
     )
     assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -13035,7 +13044,11 @@ def test_checksum_producer_compiles_row168_existing_dependency() -> None:
     assert "rhad:route@0x40BFBC" in batch.native_body_proof_ids
 
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
-    assert templates[0x40BFBE].owned_ranges == ((0x40BFBE, 0x40BFDA),)
+    assert templates[0x40BFBE].owned_ranges == (
+        (0x40BFBE, 0x40BFD4),
+        (0x40BFD4, 0x40BFDA),
+    )
+    assert templates[0x40BFBE].owned_block_entry_eas == (0x40BFBE, 0x40BFD4)
     assert templates[0x40BFBE].preserved_unresolved_transfers == (
         generated_reference.RhadGeneratedPreservedTransfer(
             transfer_ea=0x40BFD8,
