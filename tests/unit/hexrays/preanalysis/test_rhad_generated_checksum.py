@@ -14884,7 +14884,10 @@ def test_row184_inventory_has_producer_inclusive_exact_target_closures() -> None
     assert row184["operation_variant"] == "cmov_selected_indirect"
     assert row184["reference_symbol"] == "JumpInliner._fixup_cmov"
     assert row184["current_compiler_support"] == "typed_cmov_selected_indirect"
-    assert row184["current_generated_proof"] == {"status": "unproved"}
+    assert row184["current_generated_proof"] == {
+        "accepted_commits": ["5bfa862d0", "aa6de6f7b", "cb6ad0f1a"],
+        "status": "accepted_generated_c6",
+    }
     assert row184["flag_producer_native_ea"] == 0x40C1DB
     assert row184["predicate_native_ea"] == 0x40C1E9
     assert row184["source_native_ea"] == 0x40C1C6
@@ -19555,12 +19558,12 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
     )
 
     assert summary["accepted_code_sha"] == (
-        "e73c91e2e00bfae63011b8519fa429b5adae1900"
+        "cb6ad0f1a60da6709ab9b987a78f2375c2a7bdc9"
     )
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 179
-    assert accepted_operation_ids[-1] == "rhad:route@0x40C19E"
+    assert len(accepted_operation_ids) == 180
+    assert accepted_operation_ids[-1] == "rhad:route@0x40C1F0"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -19569,8 +19572,8 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
         "compiled_operation_instances": 28,
-        "vertically_proved_operations": 27,
-        "accepted_receipt_operations": 27,
+        "vertically_proved_operations": 28,
+        "accepted_receipt_operations": 28,
         "earliest_unproved_reference_order": 0,
         "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
         "first_missing_typed_obligation": (
