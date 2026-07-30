@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "0d7af822e7f2b626a551bd15a5ea16926923f860",
+  "accepted_code_sha": "e51992c759b7939b5f1e80f4ea62b88046f4e282",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -148,7 +148,8 @@
     "rhad:route@0x40BC11",
     "rhad:route@0x40BC2B",
     "rhad:route@0x40BC5F",
-    "rhad:route@0x40BC79"
+    "rhad:route@0x40BC79",
+    "rhad:route@0x40BC93"
   ],
   "variants": [
     {
@@ -178,11 +179,11 @@
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
       "compiled_operation_instances": 79,
-      "vertically_proved_operations": 78,
-      "accepted_receipt_operations": 78,
-      "earliest_unproved_reference_order": 148,
-      "earliest_unproved_operation_id": "rhad:route@0x40BC93",
-      "first_missing_typed_obligation": "publish compiled row148 through immutable preflight and prove the exact GENERATED-to-CMAT_FINAL canary"
+      "vertically_proved_operations": 79,
+      "accepted_receipt_operations": 79,
+      "earliest_unproved_reference_order": 149,
+      "earliest_unproved_operation_id": "rhad:route@0x40BCAD",
+      "first_missing_typed_obligation": "correct producer-inclusive row149 ownership and source anchor before compiler instantiation or live mutation"
     },
     {
       "operation_variant": "setcc_indexed_table",

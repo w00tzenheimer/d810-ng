@@ -9620,7 +9620,10 @@ def test_row148_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row148["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
-    assert row148["current_generated_proof"] == {"status": "unproved"}
+    assert row148["current_generated_proof"] == {
+        "accepted_commits": ["bfff07e8b", "5e89d0c17", "e51992c75"],
+        "status": "accepted_generated_c6",
+    }
     assert row148["owned_corridor_instruction_eas"] == [
         0x40BC7B,
         0x40BC81,
@@ -13594,11 +13597,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("0d7af822e7f2b626a551bd15a5ea16926923f860")
+    assert summary["accepted_code_sha"] == ("e51992c759b7939b5f1e80f4ea62b88046f4e282")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 143
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BC79"
+    assert len(accepted_operation_ids) == 144
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BC93"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -13635,13 +13638,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 79,
-        "vertically_proved_operations": 78,
-        "accepted_receipt_operations": 78,
-        "earliest_unproved_reference_order": 148,
-        "earliest_unproved_operation_id": "rhad:route@0x40BC93",
+        "vertically_proved_operations": 79,
+        "accepted_receipt_operations": 79,
+        "earliest_unproved_reference_order": 149,
+        "earliest_unproved_operation_id": "rhad:route@0x40BCAD",
         "first_missing_typed_obligation": (
-            "publish compiled row148 through immutable preflight and prove the "
-            "exact GENERATED-to-CMAT_FINAL canary"
+            "correct producer-inclusive row149 ownership and source anchor before "
+            "compiler instantiation or live mutation"
         ),
     }
     assert setcc == {
