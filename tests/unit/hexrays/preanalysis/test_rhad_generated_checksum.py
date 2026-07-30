@@ -12926,6 +12926,19 @@ def test_row168_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row168["flag_producer_native_ea"] == 0x40BFAA
     assert row168["predicate_native_ea"] == 0x40BFB0
     assert row168["transfer_native_ea"] == 0x40BFBC
+    assert row168["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
+    assert row168["current_generated_proof"] == {
+        "accepted_commits": [
+            "e83b9518a",
+            "0e631aa3b",
+            "103882646",
+            "3955431cf",
+            "33a84deed",
+        ],
+        "status": "accepted_generated_c6",
+    }
     assert row168["owned_corridor_instruction_eas"] == [
         0x40BFA4,
         0x40BFAA,
@@ -16796,11 +16809,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("c5b9d064bf731d50d93c37ca45933ca1b2b13c38")
+    assert summary["accepted_code_sha"] == ("33a84deed3ef4cbd7f030e07f9a21aad7c345fb2")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 163
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BFA2"
+    assert len(accepted_operation_ids) == 164
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BFBC"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -16837,13 +16850,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 92,
-        "vertically_proved_operations": 91,
-        "accepted_receipt_operations": 91,
-        "earliest_unproved_reference_order": 168,
-        "earliest_unproved_operation_id": "rhad:route@0x40BFBC",
+        "vertically_proved_operations": 92,
+        "accepted_receipt_operations": 92,
+        "earliest_unproved_reference_order": 170,
+        "earliest_unproved_operation_id": "rhad:route@0x40BFF2",
         "first_missing_typed_obligation": (
-            "prove immutable preflight and exact actual-MMAT_GENERATED publication "
-            "for row168 through one committed receipt and CMAT_FINAL"
+            "add producer-inclusive typed existing-conditional evidence and exact "
+            "target closures for row170 before live mutation"
         ),
     }
     assert setcc == {
