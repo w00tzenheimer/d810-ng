@@ -440,6 +440,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40BC79",
         "rhad:route@0x40BC93",
         "rhad:route@0x40BCAD",
+        "rhad:route@0x40BCC9",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -689,6 +690,8 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     row148_envelope = row148.computed_branch_normalization.conditional_select_envelope
     row149 = plan.operation("rhad:route@0x40BCAD")
     row149_envelope = row149.computed_branch_normalization.conditional_select_envelope
+    row150 = plan.operation("rhad:route@0x40BCC9")
+    row150_envelope = row150.computed_branch_normalization.conditional_select_envelope
     row137_bb69_owner = plan.block("native@0x40BB69").stable_identity
     assert row137_bb69_owner.native_ranges.contains(0x40BB73)
     assert 0x40BB73 in row137_bb69_owner.exact_instruction_eas
@@ -1003,6 +1006,9 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         row149.source_block_id,
         row149_envelope.selected_value_block_id,
         row149_envelope.join_block_id,
+        row150.source_block_id,
+        row150_envelope.selected_value_block_id,
+        row150_envelope.join_block_id,
     }
     preserved_sources = set(native_body.preserved_native_transfer_block_ids)
     assert operation_topology.isdisjoint(preserved_sources)
@@ -9760,7 +9766,7 @@ def test_row150_inventory_owns_cmov_producer_and_split_source() -> None:
     assert row150["predicate_native_ea"] == 0x40BCC2
     assert row150["transfer_native_ea"] == 0x40BCC9
     assert row150["current_compiler_support"] == (
-        "conditional_vocabulary_present_operation_uninstantiated"
+        "typed_cmov_selected_indirect"
     )
     assert row150["current_generated_proof"] == {"status": "unproved"}
     assert row150["owned_corridor_instruction_eas"] == [
@@ -13831,7 +13837,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 19,
+        "compiled_operation_instances": 20,
         "vertically_proved_operations": 19,
         "accepted_receipt_operations": 19,
         "earliest_unproved_reference_order": 0,
