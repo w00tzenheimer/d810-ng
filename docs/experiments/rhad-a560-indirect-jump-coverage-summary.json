@@ -180,12 +180,12 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 80,
+      "compiled_operation_instances": 81,
       "vertically_proved_operations": 80,
       "accepted_receipt_operations": 80,
       "earliest_unproved_reference_order": 151,
       "earliest_unproved_operation_id": "rhad:route@0x40BCE3",
-      "first_missing_typed_obligation": "add typed existing-conditional compiler evidence for row151 before live mutation"
+      "first_missing_typed_obligation": "prove immutable preflight and actual-MMAT_GENERATED publication for compiled row151"
     },
     {
       "operation_variant": "setcc_indexed_table",
