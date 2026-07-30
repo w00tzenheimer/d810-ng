@@ -510,9 +510,10 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40C19E",
         "rhad:route@0x40C1F0",
         "rhad:route@0x40C20A",
-        "route:rhad-direct@0x40C251",
-        "rhad:route@0x40C26B",
-    )
+            "route:rhad-direct@0x40C251",
+            "rhad:route@0x40C26B",
+            "route:rhad-direct@0x40C2F9",
+        )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
     )
@@ -15121,6 +15122,65 @@ def test_row187_inventory_has_producer_inclusive_exact_target_closures() -> None
     )
 
 
+def test_row188_inventory_has_exact_direct_target_closure() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row188 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 188
+    )
+
+    assert len(inventory["operations"]) == 228
+    assert row188["operation_id"] == "rhad:route@0x40C2F9"
+    assert row188["operation_variant"] == "simple_indirect_jump"
+    assert row188["reference_symbol"] == "JumpInliner._fixup_jmp_and_possible_jcc"
+    assert row188["current_compiler_support"] == "typed_simple_indirect_jump"
+    assert row188["current_generated_proof"] == {"status": "unproved"}
+    assert row188["flag_producer_native_ea"] is None
+    assert row188["predicate_native_ea"] is None
+    assert row188["source_native_ea"] == 0x40C2D7
+    assert row188["source_block_anchor_ea"] == 0x40C2EF
+    assert row188["transfer_native_ea"] == 0x40C2F9
+    assert row188["owned_corridor_instruction_eas"] == [
+        0x40C2D7,
+        0x40C2EF,
+        0x40C2F1,
+        0x40C2F3,
+        0x40C2F9,
+    ]
+    assert row188["semantic_targets"] == [{"ea": 0x40B6C0, "role": "direct"}]
+    assert row188["imported_closure_block_anchor_eas"] == [
+        0x40B6C0,
+        0x40B6CA,
+        0x40B6D0,
+        0x40B6D4,
+    ]
+    assert row188["boundary_exit_eas"] == [0x40B790]
+    assert row188["unavailable_closure_exit_eas"] == []
+    assert row188["target_rooted_closures"] == [
+        {
+            "boundary_exit_eas": [0x40B790],
+            "expected_generated_block_anchor_eas": [
+                0x40B6C0,
+                0x40B6CA,
+                0x40B6D0,
+                0x40B6D4,
+            ],
+            "owned_native_block_entry_eas": [0x40B6C0, 0x40B6CA, 0x40B6D0],
+            "root_ea": 0x40B6C0,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        }
+    ]
+
+
 def test_checksum_producer_compiles_row176_existing_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
@@ -15788,12 +15848,12 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:323aa30244d67791bb95cf92d13b6fbc427c817ce3381ae49d9fd86e81b6b6c0"
+        "sha256:3092866deaf5a81c060be8978caac1e6050ac05c2a3f61a1660e0607f1ad444f"
     )
-    assert len(batch.operations) == 183
+    assert len(batch.operations) == 184
     assert len(batch.imported_blocks) == 808
     assert len(batch.template_fragments) == 179
-    assert len(batch.native_body_proof_ids) == 183
+    assert len(batch.native_body_proof_ids) == 184
     assert len(batch.native_body_entry_block_ids) == 519
     assert len(plan.blocks) == 813
     normalization = operation.computed_branch_normalization
@@ -16247,6 +16307,64 @@ def test_checksum_producer_compiles_row187_existing_dependency() -> None:
         0x40C7D7,
     )
     assert templates[0x40C26D].boundary_exit_eas == (0x40A607, 0x40B6C0)
+
+
+def test_checksum_producer_compiles_row188_direct_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("route:rhad-direct@0x40C2F9")
+    assert operation.computed_branch_normalization is None
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.DIRECT: "native@0x40B6C0"
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_order"] == 188
+    assert payload["reference_operation_id"] == "rhad:route@0x40C2F9"
+    assert payload["reference_symbol"] == "JumpInliner._fixup_jmp_and_possible_jcc"
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40C2D7
+    assert payload["source_block_anchor_ea"] == 0x40C2EF
+    assert payload["transfer_ea"] == 0x40C2F9
+    assert payload["direct_target_block_id"] == "native@0x40B6C0"
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40C2D7,
+        0x40C2EF,
+        0x40C2F1,
+        0x40C2F3,
+        0x40C2F9,
+    ]
+    assert payload["imported_closure_block_ids"] == list(
+        generated_reference.ROW19_TARGET_IMPORTED_BLOCK_IDS
+    )
+    assert payload["boundary_exit_eas"] == [0x40B790]
+    assert next(
+        candidate
+        for candidate in batch.operations
+        if candidate.operation_id == "route:rhad-direct@0x40C2F9"
+    ).depends_on == ("rhad:route@0x40C26B",)
+    assert {"native@0x40C2D7", "native@0x40C2EF", "native@0x40B6C0"}.issubset(
+        batch.native_body_entry_block_ids
+    )
+    assert "route:rhad-direct@0x40C2F9" in batch.native_body_proof_ids
+    assert plan.block(
+        "native@0x40C2D7"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C2D7, 0x40C2DD, 0x40C2E3, 0x40C2E9}
+    )
+    assert plan.block(
+        "native@0x40C2EF"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C2EF, 0x40C2F1, 0x40C2F3, 0x40C2F9}
+    )
+    assert plan.block(
+        "native@0x40C2F9"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40C2F9})
 
 
 def test_checksum_producer_compiles_row143_existing_dependency() -> None:
