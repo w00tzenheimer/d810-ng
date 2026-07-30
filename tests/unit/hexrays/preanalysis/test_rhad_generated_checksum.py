@@ -14495,7 +14495,10 @@ def test_row179_inventory_has_producer_inclusive_exact_target_closures() -> None
     assert row179["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
-    assert row179["current_generated_proof"] == {"status": "unproved"}
+    assert row179["current_generated_proof"] == {
+        "accepted_commits": ["312d846aa", "cb2dabb89", "2c67c621b"],
+        "status": "accepted_generated_c6",
+    }
     assert row179["flag_producer_native_ea"] == 0x40C0F6
     assert row179["predicate_native_ea"] == 0x40C0FC
     assert row179["source_native_ea"] == 0x40C0F0
@@ -18757,11 +18760,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("76c1e3be66599261517f4ccc9c4f9656fe69120b")
+    assert summary["accepted_code_sha"] == ("2c67c621b869f16cea98afb43a77a2c7ca00a155")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 174
-    assert accepted_operation_ids[-1] == "rhad:route@0x40C0EE"
+    assert len(accepted_operation_ids) == 175
+    assert accepted_operation_ids[-1] == "rhad:route@0x40C108"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -18798,13 +18801,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 99,
-        "vertically_proved_operations": 98,
-        "accepted_receipt_operations": 98,
-        "earliest_unproved_reference_order": 179,
-        "earliest_unproved_operation_id": "rhad:route@0x40C108",
+        "vertically_proved_operations": 99,
+        "accepted_receipt_operations": 99,
+        "earliest_unproved_reference_order": 181,
+        "earliest_unproved_operation_id": "rhad:route@0x40C168",
         "first_missing_typed_obligation": (
-            "execute immutable preflight and exact actual-MMAT_GENERATED publication "
-            "through the shared coordinator before acceptance"
+            "instantiate the accepted RhadExistingConditionalRoute vocabulary "
+            "with producer-inclusive row181 evidence and exact row180 dependency "
+            "closure before live mutation"
         ),
     }
     assert setcc == {
