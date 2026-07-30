@@ -13741,7 +13741,9 @@ def test_row173_inventory_owns_producer_and_complete_target_closures() -> None:
     assert row173["flag_producer_native_ea"] == 0x40C047
     assert row173["predicate_native_ea"] == 0x40C04D
     assert row173["transfer_native_ea"] == 0x40C059
-    assert row173["current_compiler_support"] == "unsupported_typed_shape"
+    assert row173["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row173["current_generated_proof"] == {"status": "unproved"}
     assert row173["owned_corridor_instruction_eas"] == [
         0x40C041,
@@ -17756,14 +17758,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 94,
+        "compiled_operation_instances": 95,
         "vertically_proved_operations": 94,
         "accepted_receipt_operations": 94,
         "earliest_unproved_reference_order": 173,
         "earliest_unproved_operation_id": "rhad:route@0x40C059",
         "first_missing_typed_obligation": (
-            "add producer-inclusive typed existing-conditional evidence and exact "
-            "target closures for row173 before live mutation"
+            "publish row173 through the accepted GENERATED coordinator and prove "
+            "its committed receipt and maturity semantics"
         ),
     }
     assert setcc == {

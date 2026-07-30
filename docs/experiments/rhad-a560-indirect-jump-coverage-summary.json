@@ -202,12 +202,12 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 94,
+      "compiled_operation_instances": 95,
       "vertically_proved_operations": 94,
       "accepted_receipt_operations": 94,
       "earliest_unproved_reference_order": 173,
       "earliest_unproved_operation_id": "rhad:route@0x40C059",
-      "first_missing_typed_obligation": "add producer-inclusive typed existing-conditional evidence and exact target closures for row173 before live mutation"
+      "first_missing_typed_obligation": "publish row173 through the accepted GENERATED coordinator and prove its committed receipt and maturity semantics"
     },
     {
       "operation_variant": "setcc_indexed_table",
