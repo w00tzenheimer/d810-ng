@@ -11308,7 +11308,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert row134_calls["source_topology_reachable"] is False
         assert row134_calls["source_topology_retired"] is True
         assert row134_calls["indirect_transfer_present"] is False
-        assert row134_calls["target_eas"] == [0x40B958, 0x40BCD7]
+        assert row134_calls["target_eas"] == [0x40B964, 0x40BCD7]
         assert row134_calls["semantic_target_eas"] == [0x40B958, 0x40BCCB]
         assert row134_calls["delivery_target_eas"] == [0x40B958, 0x40BCCB]
         assert row134_calls["semantic_targets_survive"] is True
