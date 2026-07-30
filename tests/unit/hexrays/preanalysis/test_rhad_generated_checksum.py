@@ -11033,7 +11033,9 @@ def test_row165_inventory_owns_producer_join_and_complete_targets() -> None:
     assert row165["flag_producer_native_ea"] == 0x40BF07
     assert row165["predicate_native_ea"] == 0x40BF0D
     assert row165["transfer_native_ea"] == 0x40BF19
-    assert row165["current_compiler_support"] == "unsupported_typed_shape"
+    assert row165["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
     assert row165["current_generated_proof"] == {"status": "unproved"}
     assert row165["owned_corridor_instruction_eas"] == [
         0x40BF01,
