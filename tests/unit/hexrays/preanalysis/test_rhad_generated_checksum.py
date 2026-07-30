@@ -10541,6 +10541,8 @@ def test_row159_inventory_owns_producer_join_and_complete_targets() -> None:
         0x40A5F0,
         0x40A605,
         0x40BE63,
+        0x40BE8F,
+        0x40BE92,
         0x40BE96,
     ]
     assert row159["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -10548,8 +10550,13 @@ def test_row159_inventory_owns_producer_join_and_complete_targets() -> None:
     assert row159["target_rooted_closures"] == [
         {
             "boundary_exit_eas": [0x40A607, 0x40B6C0],
-            "expected_generated_block_anchor_eas": [0x40BE63, 0x40BE96],
-            "owned_native_block_entry_eas": [0x40BE63],
+            "expected_generated_block_anchor_eas": [
+                0x40BE63,
+                0x40BE8F,
+                0x40BE92,
+                0x40BE96,
+            ],
+            "owned_native_block_entry_eas": [0x40BE63, 0x40BE92],
             "root_ea": 0x40BE63,
             "status": "complete",
             "unavailable_exit_eas": [],
