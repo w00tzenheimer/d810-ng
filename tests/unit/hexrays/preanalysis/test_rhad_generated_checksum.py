@@ -10885,7 +10885,10 @@ def test_row163_inventory_owns_cmov_producer_and_complete_targets() -> None:
     assert row163["predicate_native_ea"] == 0x40BEDE
     assert row163["transfer_native_ea"] == 0x40BEE5
     assert row163["current_compiler_support"] == "typed_cmov_selected_indirect"
-    assert row163["current_generated_proof"] == {"status": "unproved"}
+    assert row163["current_generated_proof"] == {
+        "accepted_commits": ["09a2a8ff6", "977de1463", "c372a860b"],
+        "status": "accepted_generated_c6",
+    }
     assert row163["owned_corridor_instruction_eas"] == [
         0x40BED0,
         0x40BED6,
@@ -15926,12 +15929,12 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
     )
 
     assert summary["accepted_code_sha"] == (
-        "9062ff034c6636f77254e0cf99e1be811bcf540c"
+        "c372a860b4fee8912119ea11686e6d27c85bfa61"
     )
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 158
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BECA"
+    assert len(accepted_operation_ids) == 159
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BEE5"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -15939,9 +15942,9 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 23,
-        "vertically_proved_operations": 23,
-        "accepted_receipt_operations": 23,
+        "compiled_operation_instances": 24,
+        "vertically_proved_operations": 24,
+        "accepted_receipt_operations": 24,
         "earliest_unproved_reference_order": 0,
         "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
         "first_missing_typed_obligation": (
