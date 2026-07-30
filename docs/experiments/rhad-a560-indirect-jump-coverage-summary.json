@@ -190,12 +190,12 @@
       "operation_variant": "simple_indirect_jump",
       "total_reference_operations": 64,
       "compiler_supported_operations": 64,
-      "compiled_operation_instances": 40,
+      "compiled_operation_instances": 41,
       "vertically_proved_operations": 40,
       "accepted_receipt_operations": 40,
       "earliest_unproved_reference_order": 172,
       "earliest_unproved_operation_id": "rhad:route@0x40C03F",
-      "first_missing_typed_obligation": "add typed simple-indirect compiler evidence for row172 before live mutation"
+      "first_missing_typed_obligation": "publish row172 through immutable preflight and one exact committed GENERATED receipt before CMAT_FINAL"
     },
     {
       "operation_variant": "existing_conditional_plus_indirect",
