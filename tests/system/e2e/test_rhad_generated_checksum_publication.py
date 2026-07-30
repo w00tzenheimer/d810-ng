@@ -199,6 +199,7 @@ _REFERENCE_OPERATION_IDS = (
     "rhad:route@0x40C0D2",
     "rhad:route@0x40C0EE",
     "rhad:route@0x40C108",
+    "route:rhad-direct@0x40C14E",
 )
 _IMPORTED_BLOCK_IDS = (
     "native@0x40A607",
@@ -2847,7 +2848,7 @@ def _run_worker(binary: pathlib.Path) -> None:
             str(receipt.fragment_plan_id) for receipt in receipts
         )
         receipt = matching[0]
-        assert receipt.operation_count == receipt.planned_operation_count == 1223, (
+        assert receipt.operation_count == receipt.planned_operation_count == 1224, (
             receipt.operation_count,
             receipt.planned_operation_count,
         )
@@ -3831,7 +3832,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             compiled_payload["aggregate_program_identity"]
         )
         assert compiled_payload["aggregate_program_identity"] == (
-            "sha256:27444d37e1ecb117e51c2b0f71eef6cc278eae46d4e157a10af2205c6354cdc9"
+            "sha256:5298bd9ae62e15a2a9609a2d6c4faa13000cbb72e4faaf828cf9be4027f3cc9a"
         )
         proof_artifacts = {
             artifact["proof"]["binding"]["operation_id"]: artifact
@@ -9181,6 +9182,31 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             "native@0x40C793",
         ]
         assert row179_reference["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+        row180_reference = reference_payloads["route:rhad-direct@0x40C14E"]
+        assert row180_reference["reference_operation_id"] == "rhad:route@0x40C14E"
+        assert row180_reference["reference_order"] == 180
+        assert row180_reference["reference_symbol"] == (
+            "JumpInliner._fixup_jmp_and_possible_jcc"
+        )
+        assert row180_reference["operation_variant"] == "simple_indirect_jump"
+        assert row180_reference["source_native_ea"] == 0x40C132
+        assert row180_reference["source_block_anchor_ea"] == 0x40C144
+        assert row180_reference["transfer_ea"] == 0x40C14E
+        assert row180_reference["direct_target_block_id"] == "native@0x40B6C0"
+        assert row180_reference["owned_corridor_instruction_eas"] == [
+            0x40C132,
+            0x40C144,
+            0x40C146,
+            0x40C148,
+            0x40C14E,
+        ]
+        assert row180_reference["imported_closure_block_ids"] == [
+            "native@0x40B6C0",
+            "native@0x40B6CA",
+            "native@0x40B6D0",
+            "native@0x40B6D4",
+        ]
+        assert row180_reference["boundary_exit_eas"] == [0x40B790]
         setcc_reference = reference_payloads["rhad:route@0x40A77C"]
         assert setcc_reference["reference_order"] == 16
         assert setcc_reference["reference_symbol"] == (
@@ -11360,6 +11386,17 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             assert row179["semantic_targets_survive"] is True
             assert row179["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
             assert row179["passed"] is True
+            row180 = observations["route:rhad-direct@0x40C14E"]
+            assert row180["source_present"] is True
+            assert row180["source_topology_reachable"] is True
+            assert row180["source_topology_retired"] is False
+            assert row180["indirect_transfer_present"] is False
+            assert row180["target_eas"] == [0x40B6C0]
+            assert row180["semantic_target_eas"] == [0x40B6C0]
+            assert row180["delivery_target_eas"] == [0x40B6C0]
+            assert row180["semantic_targets_survive"] is True
+            assert row180["boundary_exit_eas"] == [0x40B790]
+            assert row180["passed"] is True
         calls_payload = maturity_payloads["MMAT_CALLS"]
         calls_observations = {
             row["operation_id"]: row for row in calls_payload["operation_observations"]
@@ -13329,6 +13366,18 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert row179_calls["semantic_targets_survive"] is True
         assert row179_calls["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
         assert row179_calls["passed"] is True
+        row180_calls = calls_observations["route:rhad-direct@0x40C14E"]
+        assert row180_calls["source_present"] is False
+        assert row180_calls["source_topology_reachable"] is False
+        assert row180_calls["source_topology_retired"] is True
+        assert row180_calls["indirect_transfer_present"] is False
+        assert row180_calls["target_eas"] == []
+        assert row180_calls["semantic_target_eas"] == [0x40B6C0]
+        assert row180_calls["delivery_target_eas"] == [0x40B6C0]
+        assert row180_calls["semantic_targets_survive"] is True
+        assert row180_calls["boundary_exit_eas"] == [0x40B790]
+        assert row180_calls["passed"] is True
+        assert 0x40C14E not in calls_payload["reachable_eas"]
         assert 0x40C108 not in calls_payload["reachable_eas"]
         assert 0x40C0EE not in calls_payload["reachable_eas"]
         assert 0x40BD82 not in calls_payload["reachable_eas"]
@@ -13377,7 +13426,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT planned_operation_count, applied_operation_count, outcome "
             "FROM mutation_receipts"
-        ).fetchall() == [(1223, 1223, "committed")]
+        ).fetchall() == [(1224, 1224, "committed")]
         assert connection.execute(
             "SELECT current_phase, mutation_started, poisoned, interr_code "
             "FROM cfg_transaction_attempts"
@@ -13390,7 +13439,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT COUNT(*) FROM semantic_fragment_route_oracle_comparisons "
             "WHERE outcome='matched'"
-        ).fetchone() == (175,)
+        ).fetchone() == (176,)
         assert connection.execute(
             "SELECT COUNT(*) FROM mutation_receipt_identities"
         ).fetchone() == (785,)
