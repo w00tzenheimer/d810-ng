@@ -14148,12 +14148,32 @@ def test_checksum_producer_compiles_row174_existing_dependency() -> None:
 
 
 def test_checksum_producer_compiles_row175_simple_indirect_dependency() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row175 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 175
+    )
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
     )
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
 
+    assert len(inventory["operations"]) == 228
+    assert row175["operation_id"] == "rhad:route@0x40C09E"
+    assert row175["current_compiler_support"] == "typed_simple_indirect_jump"
+    assert row175["current_generated_proof"] == {
+        "accepted_commits": ["a5c06b5ae", "da1873393"],
+        "status": "accepted_generated_c6",
+    }
     operation = plan.operation("route:rhad-direct@0x40C09E")
     rewrite = operation.direct_transfer_rewrite
     assert rewrite is not None
@@ -17940,11 +17960,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("79857c9d52211dbbf036bc006d323b440a8110c5")
+    assert summary["accepted_code_sha"] == ("da1873393607bd1624492ae18179393c59f59822")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 170
-    assert accepted_operation_ids[-1] == "rhad:route@0x40C073"
+    assert len(accepted_operation_ids) == 171
+    assert accepted_operation_ids[-1] == "route:rhad-direct@0x40C09E"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -17967,13 +17987,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
         "compiled_operation_instances": 42,
-        "vertically_proved_operations": 41,
-        "accepted_receipt_operations": 41,
-        "earliest_unproved_reference_order": 175,
-        "earliest_unproved_operation_id": "rhad:route@0x40C09E",
+        "vertically_proved_operations": 42,
+        "accepted_receipt_operations": 42,
+        "earliest_unproved_reference_order": 180,
+        "earliest_unproved_operation_id": "rhad:route@0x40C14E",
         "first_missing_typed_obligation": (
-            "prove row175 immutable preflight and actual-MMAT_GENERATED publication "
-            "through one committed receipt and CMAT_FINAL"
+            "instantiate the accepted RhadDirectRoute vocabulary with exact row179 "
+            "dependency and target-closure evidence before live mutation"
         ),
     }
     assert existing == {
