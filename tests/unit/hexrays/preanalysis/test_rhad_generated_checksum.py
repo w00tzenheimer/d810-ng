@@ -17966,14 +17966,14 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 41,
+        "compiled_operation_instances": 42,
         "vertically_proved_operations": 41,
         "accepted_receipt_operations": 41,
         "earliest_unproved_reference_order": 175,
         "earliest_unproved_operation_id": "rhad:route@0x40C09E",
         "first_missing_typed_obligation": (
-            "add typed simple-indirect compiler evidence for row175 before live "
-            "mutation"
+            "prove row175 immutable preflight and actual-MMAT_GENERATED publication "
+            "through one committed receipt and CMAT_FINAL"
         ),
     }
     assert existing == {
