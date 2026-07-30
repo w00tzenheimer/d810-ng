@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 722
+    assert len(IMPORTED_BLOCK_IDS) == 730
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -310,6 +310,8 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40BF01,
         0x40C49A,
         0x40BF1B,
+        0x40BFA4,
+        0x40C4DC,
     )
     assert tuple(operation.operation_id for operation in plan.operations) == (
         "rhad:route@0x40A605",
@@ -474,6 +476,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40BEFF",
         "rhad:route@0x40BF19",
         "route:rhad-direct@0x40BF8A",
+        "rhad:route@0x40BFA2",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -755,6 +758,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
     row164_envelope = row164.computed_branch_normalization.conditional_select_envelope
     row165 = plan.operation("rhad:route@0x40BF19")
     row165_envelope = row165.computed_branch_normalization.conditional_select_envelope
+    row167 = plan.operation("rhad:route@0x40BFA2")
     row137_bb69_owner = plan.block("native@0x40BB69").stable_identity
     assert row137_bb69_owner.native_ranges.contains(0x40BB73)
     assert 0x40BB73 in row137_bb69_owner.exact_instruction_eas
@@ -1117,6 +1121,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         row165.source_block_id,
         row165_envelope.selected_value_block_id,
         row165_envelope.join_block_id,
+        row167.source_block_id,
     }
     preserved_sources = set(native_body.preserved_native_transfer_block_ids)
     assert operation_topology.isdisjoint(preserved_sources)
@@ -1175,7 +1180,6 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40A5F0,
         0x40A9A0,
         0x40B55B,
-        0x40BFA4,
         0x40C05B,
         0x40C10A,
         0x40C16A,
@@ -1183,7 +1187,6 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         0x40C367,
         0x40C3F3,
         0x40C4B4,
-        0x40C4DC,
         0x40C527,
         0x40C578,
         0x40C5FB,
@@ -12789,6 +12792,105 @@ def test_checksum_producer_compiles_row166_simple_indirect_dependency() -> None:
     assert "route:rhad-direct@0x40BF8A" in batch.native_body_proof_ids
 
 
+def test_checksum_producer_compiles_row167_setcc_table_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("rhad:route@0x40BFA2")
+    normalization = operation.computed_branch_normalization
+    assert isinstance(normalization, FragmentSetccIndexedTableNormalization)
+    assert normalization.predicate_kind is PredicateKind.SGE
+    assert (
+        normalization.fallthrough_delivery
+        is FragmentSetccFallthroughDelivery.PLANNED_HELPER
+    )
+    assert normalization.condition_producer_ea == 0x40BF8E
+    assert normalization.unresolved_transfer_ea == 0x40BFA2
+    evidence = normalization.table_evidence
+    assert evidence.table_base_ea == 0x48B4D4
+    assert evidence.index_scaling.kind.value == "explicit_shift"
+    assert evidence.index_scaling.shift_ea == 0x40BF97
+    assert evidence.index_scaling.shift_bits == 5
+    assert evidence.stride_bytes == 0x20
+    assert evidence.true_entry.raw_value == 0x0252A85B
+    assert evidence.true_entry.decoded_target_ea == 0x40C4DC
+    assert evidence.false_entry.raw_value == 0x0252A323
+    assert evidence.false_entry.decoded_target_ea == 0x40BFA4
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.CONDITIONAL_TAKEN: "native@0x40C4DC",
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40BFA4",
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_order"] == 167
+    assert payload["reference_symbol"] == "JumpInliner._fixup_index_access"
+    assert payload["operation_variant"] == "setcc_indexed_table"
+    assert payload["source_native_ea"] == 0x40BF8C
+    assert payload["condition_producer_ea"] == 0x40BF8E
+    assert payload["predicate_anchor_ea"] == 0x40BF94
+    assert payload["fallthrough_delivery"] == "planned_helper"
+    assert payload["transfer_ea"] == 0x40BFA2
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40BF8C,
+        0x40BF8E,
+        0x40BF94,
+        0x40BF97,
+        0x40BF9A,
+        0x40BFA0,
+        0x40BFA2,
+    ]
+    assert payload["imported_closure_block_ids"] == [
+        "native@0x40BFA4",
+        "native@0x40BFB2",
+        "native@0x40BFB8",
+        "native@0x40BFBC",
+        "native@0x40C4DC",
+        "native@0x40C4EA",
+        "native@0x40C4F0",
+        "native@0x40C4F4",
+    ]
+    artifact_identity = (
+        "sha256:fafc420031c9e89a7c8de87bf6932b836a12b8f1a2376eeb21e9f057956e3be8"
+    )
+    assert payload["boundary_exit_eas"] == [0x40A5F0]
+    assert payload["proof_artifact"]["content_identity"] == artifact_identity
+    assert batch.proof_artifact_identities[-1] == artifact_identity
+    assert next(
+        candidate
+        for candidate in batch.operations
+        if candidate.operation_id == "rhad:route@0x40BFA2"
+    ).depends_on == ("route:rhad-direct@0x40BF8A",)
+    assert "rhad:route@0x40BFA2" in batch.native_body_proof_ids
+
+    templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
+    assert templates[0x40BFA4].owned_ranges == (
+        (0x40BFA4, 0x40BFB2),
+        (0x40BFB2, 0x40BFB8),
+        (0x40BFB8, 0x40BFBE),
+    )
+    assert templates[0x40BFA4].preserved_unresolved_transfers == (
+        generated_reference.RhadGeneratedPreservedTransfer(
+            transfer_ea=0x40BFBC,
+            boundary_exit_eas=(0x40A5F0,),
+        ),
+    )
+    assert templates[0x40C4DC].owned_ranges == (
+        (0x40C4DC, 0x40C4EA),
+        (0x40C4EA, 0x40C4F0),
+        (0x40C4F0, 0x40C4F6),
+    )
+    assert templates[0x40C4DC].preserved_unresolved_transfers == (
+        generated_reference.RhadGeneratedPreservedTransfer(
+            transfer_ea=0x40C4F4,
+            boundary_exit_eas=(0x40A5F0,),
+        ),
+    )
+
+
 def test_checksum_producer_compiles_row143_existing_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
@@ -13000,6 +13102,8 @@ def test_row17_delivery_closure_includes_row18_typed_branch_arms() -> None:
         "native@0x40BD6A",
         "native@0x40BBA9",
         "native@0x40C253",
+        "native@0x40C4DC",
+        "native@0x40BFA4",
         "native@0x40B8CC",
         "native@0x40C186",
         "native@0x40BEB2",
@@ -13317,6 +13421,34 @@ def test_row134_proof_artifact_is_required_and_content_addressed(
     mismatched_path.write_text(json.dumps(checked_in), encoding="utf-8")
     with pytest.raises(RhadCompilerRejection, match="content identity"):
         generated_reference.load_row134_table_proof_artifact(mismatched_path)
+
+
+def test_row167_proof_artifact_is_required_and_content_addressed(
+    tmp_path: Path,
+) -> None:
+    artifact = generated_reference.load_row167_table_proof_artifact()
+    checked_in = json.loads(
+        generated_reference.ROW167_TABLE_PROOF_PATH.read_text(encoding="utf-8")
+    )
+
+    assert artifact.content_identity == checked_in["content_identity"]
+    assert artifact.content_identity == (
+        "sha256:fafc420031c9e89a7c8de87bf6932b836a12b8f1a2376eeb21e9f057956e3be8"
+    )
+    assert artifact.proof_payload == checked_in["proof"]
+    assert artifact.operation_id == "rhad:route@0x40BFA2"
+    assert artifact.reference_order == 167
+
+    with pytest.raises(RhadCompilerRejection, match="artifact is unavailable"):
+        generated_reference.load_row167_table_proof_artifact(
+            tmp_path / "missing-row167-proof.json"
+        )
+
+    mismatched_path = tmp_path / "mismatched-row167-proof.json"
+    checked_in["content_identity"] = "sha256:" + ("0" * 64)
+    mismatched_path.write_text(json.dumps(checked_in), encoding="utf-8")
+    with pytest.raises(RhadCompilerRejection, match="content identity"):
+        generated_reference.load_row167_table_proof_artifact(mismatched_path)
 
 
 def test_stable_228_row_inventory_references_required_table_artifacts() -> None:
