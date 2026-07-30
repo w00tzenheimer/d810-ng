@@ -197,12 +197,12 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
-      "compiled_operation_instances": 91,
+      "compiled_operation_instances": 92,
       "vertically_proved_operations": 91,
       "accepted_receipt_operations": 91,
       "earliest_unproved_reference_order": 168,
       "earliest_unproved_operation_id": "rhad:route@0x40BFBC",
-      "first_missing_typed_obligation": "add typed existing-conditional compiler evidence for row168 before live mutation"
+      "first_missing_typed_obligation": "prove immutable preflight and exact actual-MMAT_GENERATED publication for row168 through one committed receipt and CMAT_FINAL"
     },
     {
       "operation_variant": "setcc_indexed_table",
