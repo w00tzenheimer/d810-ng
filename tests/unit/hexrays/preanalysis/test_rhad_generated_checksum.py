@@ -10090,7 +10090,10 @@ def test_row154_inventory_owns_cmov_producer_and_row153_source() -> None:
     assert row154["predicate_native_ea"] == 0x40BD47
     assert row154["transfer_native_ea"] == 0x40BD4E
     assert row154["current_compiler_support"] == "typed_cmov_selected_indirect"
-    assert row154["current_generated_proof"] == {"status": "unproved"}
+    assert row154["current_generated_proof"] == {
+        "accepted_commits": ["a80818fa0", "b5e9f79ea", "d867b524d"],
+        "status": "accepted_generated_c6",
+    }
     assert row154["owned_corridor_instruction_eas"] == [
         0x40BD2B,
         0x40BD39,
@@ -14517,11 +14520,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("c21c2fdae651745b4ef434a28176e6c7251713dd")
+    assert summary["accepted_code_sha"] == ("d867b524d35b8903e7af68b7023ec5f9efa774c6")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 149
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BD17"
+    assert len(accepted_operation_ids) == 150
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BD4E"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -14530,8 +14533,8 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
         "compiled_operation_instances": 21,
-        "vertically_proved_operations": 20,
-        "accepted_receipt_operations": 20,
+        "vertically_proved_operations": 21,
+        "accepted_receipt_operations": 21,
         "earliest_unproved_reference_order": 0,
         "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
         "first_missing_typed_obligation": (
