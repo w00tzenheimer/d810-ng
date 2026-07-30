@@ -16262,6 +16262,8 @@
         4236784,
         4236805,
         4243818,
+        4243837,
+        4243840,
         4243844
       ],
       "operation_id": "rhad:route@0x40C168",
@@ -16298,10 +16300,14 @@
           ],
           "expected_generated_block_anchor_eas": [
             4243818,
+            4243837,
+            4243840,
             4243844
           ],
           "owned_native_block_entry_eas": [
-            4243818
+            4243818,
+            4243837,
+            4243840
           ],
           "root_ea": 4243818,
           "status": "complete",

@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 785
+    assert len(IMPORTED_BLOCK_IDS) == 787
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -14682,6 +14682,8 @@ def test_row181_inventory_has_producer_inclusive_exact_target_closures() -> None
         0x40A5F0,
         0x40A605,
         0x40C16A,
+        0x40C17D,
+        0x40C180,
         0x40C184,
     ]
     assert row181["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -14689,8 +14691,13 @@ def test_row181_inventory_has_producer_inclusive_exact_target_closures() -> None
     assert row181["target_rooted_closures"] == [
         {
             "boundary_exit_eas": [0x40A607, 0x40B6C0],
-            "expected_generated_block_anchor_eas": [0x40C16A, 0x40C184],
-            "owned_native_block_entry_eas": [0x40C16A],
+            "expected_generated_block_anchor_eas": [
+                0x40C16A,
+                0x40C17D,
+                0x40C180,
+                0x40C184,
+            ],
+            "owned_native_block_entry_eas": [0x40C16A, 0x40C17D, 0x40C180],
             "root_ea": 0x40C16A,
             "status": "complete",
             "unavailable_exit_eas": [],
@@ -15272,6 +15279,8 @@ def test_checksum_producer_compiles_row181_existing_dependency() -> None:
     )
     assert generated_reference.ROW181_TARGET_IMPORTED_BLOCK_IDS == (
         "native@0x40C16A",
+        "native@0x40C17D",
+        "native@0x40C180",
         "native@0x40C184",
     )
     assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -15290,10 +15299,15 @@ def test_checksum_producer_compiles_row181_existing_dependency() -> None:
             0x40C175,
             0x40C177,
             0x40C17D,
-            0x40C180,
-            0x40C182,
-            0x40C184,
         }
+    )
+    assert plan.block(
+        "native@0x40C17D"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40C17D})
+    assert plan.block(
+        "native@0x40C180"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C180, 0x40C182, 0x40C184}
     )
     assert plan.block(
         "native@0x40C184"
@@ -15302,7 +15316,11 @@ def test_checksum_producer_compiles_row181_existing_dependency() -> None:
 
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
     assert templates[0x40C16A].owned_ranges == ((0x40C16A, 0x40C186),)
-    assert templates[0x40C16A].owned_block_entry_eas == (0x40C16A,)
+    assert templates[0x40C16A].owned_block_entry_eas == (
+        0x40C16A,
+        0x40C17D,
+        0x40C180,
+    )
     assert templates[0x40C16A].boundary_exit_eas == (0x40A607, 0x40B6C0)
     assert templates[0x40C16A].preserved_unresolved_transfers == (
         generated_reference.RhadGeneratedPreservedTransfer(
