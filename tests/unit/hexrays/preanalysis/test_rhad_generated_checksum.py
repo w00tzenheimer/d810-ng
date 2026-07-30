@@ -10438,7 +10438,10 @@ def test_row158_inventory_owns_producer_and_both_target_fragments() -> None:
     assert row158["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
-    assert row158["current_generated_proof"] == {"status": "unproved"}
+    assert row158["current_generated_proof"] == {
+        "accepted_commits": ["8e96511ff", "3ab37a696", "5f15dd538"],
+        "status": "accepted_generated_c6",
+    }
     assert row158["owned_corridor_instruction_eas"] == [
         0x40BE2F,
         0x40BE35,
@@ -15132,12 +15135,12 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
     )
 
     assert summary["accepted_code_sha"] == (
-        "be4ef006748b0eed6e2ad1aefcbf8fd5baac1e63"
+        "5f15dd5388ef76f11f4d1f8e6ef37703d70a31cd"
     )
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 153
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BE2D"
+    assert len(accepted_operation_ids) == 154
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BE47"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -15174,13 +15177,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 86,
-        "vertically_proved_operations": 85,
-        "accepted_receipt_operations": 85,
-        "earliest_unproved_reference_order": 158,
-        "earliest_unproved_operation_id": "rhad:route@0x40BE47",
+        "vertically_proved_operations": 86,
+        "accepted_receipt_operations": 86,
+        "earliest_unproved_reference_order": 159,
+        "earliest_unproved_operation_id": "rhad:route@0x40BE61",
         "first_missing_typed_obligation": (
-            "prove immutable preflight and actual-MMAT_GENERATED publication for "
-            "compiled row158"
+            "correct producer-inclusive ownership and join evidence, then compile "
+            "row159 before live mutation"
         ),
     }
     assert setcc == {
