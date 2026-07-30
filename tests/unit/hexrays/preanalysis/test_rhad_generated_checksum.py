@@ -500,6 +500,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40C0D2",
         "rhad:route@0x40C0EE",
         "rhad:route@0x40C108",
+        "route:rhad-direct@0x40C14E",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -15070,6 +15071,72 @@ def test_checksum_producer_compiles_row179_existing_dependency() -> None:
             boundary_exit_eas=(0x40A607,),
         ),
     )
+
+
+def test_checksum_producer_compiles_row180_direct_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("route:rhad-direct@0x40C14E")
+    assert operation.predicate_anchor_ea is None
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.DIRECT: "native@0x40B6C0",
+    }
+    rewrite = operation.direct_transfer_rewrite
+    assert rewrite is not None
+    assert rewrite.route_proof_id == "rhad-direct@0x40C14E"
+    assert rewrite.owner_anchor_ea == 0x40C144
+    assert rewrite.rewrite_anchor_ea == 0x40C14E
+    assert rewrite.proof_corridor_instruction_eas == (
+        0x40C132,
+        0x40C144,
+        0x40C146,
+        0x40C148,
+        0x40C14E,
+    )
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_order"] == 180
+    assert payload["reference_operation_id"] == "rhad:route@0x40C14E"
+    assert payload["reference_symbol"] == (
+        "JumpInliner._fixup_jmp_and_possible_jcc"
+    )
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40C132
+    assert payload["source_block_anchor_ea"] == 0x40C144
+    assert payload["transfer_ea"] == 0x40C14E
+    assert payload["direct_target_block_id"] == "native@0x40B6C0"
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40C132,
+        0x40C144,
+        0x40C146,
+        0x40C148,
+        0x40C14E,
+    ]
+    assert payload["imported_closure_block_ids"] == list(
+        generated_reference.ROW19_TARGET_IMPORTED_BLOCK_IDS
+    )
+    assert payload["boundary_exit_eas"] == [0x40B790]
+    assert next(
+        candidate
+        for candidate in batch.operations
+        if candidate.operation_id == "route:rhad-direct@0x40C14E"
+    ).depends_on == ("rhad:route@0x40C108",)
+    assert "native@0x40C144" in batch.native_body_entry_block_ids
+    assert "native@0x40B6C0" in batch.native_body_entry_block_ids
+    assert "route:rhad-direct@0x40C14E" in batch.native_body_proof_ids
+    assert plan.block(
+        "native@0x40C144"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C144, 0x40C146, 0x40C148, 0x40C14E}
+    )
+    assert plan.block(
+        "native@0x40C14E"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40C14E})
 
 
 def test_checksum_producer_compiles_row143_existing_dependency() -> None:
