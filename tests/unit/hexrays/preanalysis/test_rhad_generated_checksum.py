@@ -11207,7 +11207,7 @@ def test_row167_inventory_references_exact_typed_table_proof() -> None:
     assert row167["flag_producer_native_ea"] == 0x40BF8E
     assert row167["predicate_native_ea"] == 0x40BF94
     assert row167["transfer_native_ea"] == 0x40BFA2
-    assert row167["current_compiler_support"] == "unsupported_typed_shape"
+    assert row167["current_compiler_support"] == "typed_setcc_indexed_table"
     assert row167["current_generated_proof"] == {
         "proof_artifact_identity": (
             "sha256:fafc420031c9e89a7c8de87bf6932b836a12b8f1a2376eeb21e9f057956e3be8"
@@ -11216,6 +11216,7 @@ def test_row167_inventory_references_exact_typed_table_proof() -> None:
     }
     assert row167["owned_corridor_instruction_eas"] == [
         0x40BF8C,
+        0x40BF8E,
         0x40BF94,
         0x40BF97,
         0x40BF9A,
