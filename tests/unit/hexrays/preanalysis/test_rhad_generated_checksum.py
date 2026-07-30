@@ -9918,7 +9918,10 @@ def test_row152_inventory_owns_producer_and_both_target_fragments() -> None:
     assert row152["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
-    assert row152["current_generated_proof"] == {"status": "unproved"}
+    assert row152["current_generated_proof"] == {
+        "accepted_commits": ["924f302c1", "94258d823", "6500e7b38"],
+        "status": "accepted_generated_c6",
+    }
     assert row152["owned_corridor_instruction_eas"] == [
         0x40BCE5,
         0x40BCEB,
@@ -14196,11 +14199,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("915e09fe91882501e0692547e53a61946b411361")
+    assert summary["accepted_code_sha"] == ("6500e7b3845025143bfb9686cc0b8fd848acf08a")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 147
-    assert accepted_operation_ids[-1] == "rhad:route@0x40BCE3"
+    assert len(accepted_operation_ids) == 148
+    assert accepted_operation_ids[-1] == "rhad:route@0x40BCFD"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -14237,13 +14240,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
         "compiled_operation_instances": 82,
-        "vertically_proved_operations": 81,
-        "accepted_receipt_operations": 81,
-        "earliest_unproved_reference_order": 152,
-        "earliest_unproved_operation_id": "rhad:route@0x40BCFD",
+        "vertically_proved_operations": 82,
+        "accepted_receipt_operations": 82,
+        "earliest_unproved_reference_order": 153,
+        "earliest_unproved_operation_id": "rhad:route@0x40BD17",
         "first_missing_typed_obligation": (
-            "prove immutable preflight and actual-MMAT_GENERATED publication for "
-            "compiled row152"
+            "add typed existing-conditional compiler evidence for row153 before "
+            "live mutation"
         ),
     }
     assert setcc == {
