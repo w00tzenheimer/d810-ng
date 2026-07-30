@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "f0b3fc290f2e88bbd3ca8e63a494ad80eccf0515",
+  "accepted_code_sha": "2ee0eb4138e1f894a2d4e91287e703d95e32fd82",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -186,7 +186,8 @@
     "rhad:route@0x40C184",
     "rhad:route@0x40C19E",
     "rhad:route@0x40C1F0",
-    "rhad:route@0x40C20A"
+    "rhad:route@0x40C20A",
+    "route:rhad-direct@0x40C251"
   ],
   "variants": [
     {
@@ -205,11 +206,11 @@
       "total_reference_operations": 64,
       "compiler_supported_operations": 64,
       "compiled_operation_instances": 44,
-      "vertically_proved_operations": 43,
-      "accepted_receipt_operations": 43,
-      "earliest_unproved_reference_order": 186,
-      "earliest_unproved_operation_id": "rhad:route@0x40C251",
-      "first_missing_typed_obligation": "complete immutable preflight and exact actual-MMAT_GENERATED publication for compiled row186 through the shared coordinator before any later reference operation"
+      "vertically_proved_operations": 44,
+      "accepted_receipt_operations": 44,
+      "earliest_unproved_reference_order": 188,
+      "earliest_unproved_operation_id": "rhad:route@0x40C2F9",
+      "first_missing_typed_obligation": "instantiate the accepted RhadDirectRoute vocabulary with exact row187 dependency and target-closure evidence before live mutation"
     },
     {
       "operation_variant": "existing_conditional_plus_indirect",
