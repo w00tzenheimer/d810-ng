@@ -35,6 +35,7 @@ from d810.transforms.fragment_plan import (
     FragmentWorkItemScope,
 )
 from d810.transforms.rhad_reference_compiler import (
+    RhadAbsoluteConstantEncoding,
     RhadAbsoluteConstantMaterialization,
     RhadCompilerRejection,
     RhadConstantPublicationEnvelope,
@@ -11547,6 +11548,7 @@ _CONSTANT_ROW0_ADD_ABSOLUTE = RhadAbsoluteConstantMaterialization(
     materialized_value=0x3776723F,
     source_instruction_bytes="0305ccad4800",
     replacement_instruction_bytes="81c03f727637",
+    encoding_variant=RhadAbsoluteConstantEncoding.ADD_R32_ABSOLUTE,
     publication_envelope=RhadConstantPublicationEnvelope.GENERATED_ABSOLUTE_LOAD,
     phase=RhadReferencePhase.CONSTANT_MATERIALIZATION,
     depends_on=(_ROW227_DIRECT_ROUTE.operation_id,),
@@ -11573,9 +11575,37 @@ _CONSTANT_ROW1_MOV_ABSOLUTE = RhadAbsoluteConstantMaterialization(
     materialized_value=0x2F192B3A,
     source_instruction_bytes="8b1510ae4800",
     replacement_instruction_bytes="90ba3a2b192f",
+    encoding_variant=RhadAbsoluteConstantEncoding.MOV_R32_ABSOLUTE,
     publication_envelope=RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE,
     phase=RhadReferencePhase.CONSTANT_MATERIALIZATION,
     depends_on=(_CONSTANT_ROW0_ADD_ABSOLUTE.operation_id,),
+)
+
+_CONSTANT_ROW2_MOV_ABSOLUTE = RhadAbsoluteConstantMaterialization(
+    operation_id="constant:rhad-mov-absolute@0x40A868",
+    reference_operation_id="rhad:constant@0x40A868",
+    reference_order=2,
+    operation_variant=RhadOperationVariant.MOV_ABSOLUTE,
+    reference_symbol="deob_consts.ConstantInliner.transform_mov_mem_to_imm",
+    source_block_id="native@0x40A868",
+    source_native_ea=0x40A868,
+    data_native_ea=0x48AE28,
+    source_width_bits=32,
+    destination_width_bits=32,
+    destination_storage=StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=8,
+    ),
+    reference_read_width_bits=32,
+    reference_data_bytes_le="2cac5d0c",
+    reference_raw_value=0x0C5DAC2C,
+    materialized_value=0x0C5DAC2C,
+    source_instruction_bytes="a128ae4800",
+    replacement_instruction_bytes="b82cac5d0c",
+    encoding_variant=RhadAbsoluteConstantEncoding.MOV_EAX_ABSOLUTE,
+    publication_envelope=RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE,
+    phase=RhadReferencePhase.CONSTANT_MATERIALIZATION,
+    depends_on=(_CONSTANT_ROW1_MOV_ABSOLUTE.operation_id,),
 )
 
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
@@ -16484,6 +16514,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW227_DIRECT_ROUTE,
         _CONSTANT_ROW0_ADD_ABSOLUTE,
         _CONSTANT_ROW1_MOV_ABSOLUTE,
+        _CONSTANT_ROW2_MOV_ABSOLUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
@@ -16838,6 +16869,7 @@ def _constant_materialization_maturity_payload(
         "reference_operation_id": operation.reference_operation_id,
         "operation_category": operation.category.value,
         "operation_variant": operation.operation_variant.value,
+        "encoding_variant": operation.encoding_variant.value,
         "publication_envelope": operation.publication_envelope.value,
         "source_native_ea": int(operation.source_native_ea),
         "data_native_ea": int(operation.data_native_ea),
