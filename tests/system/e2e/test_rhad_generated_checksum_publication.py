@@ -2998,7 +2998,7 @@ def _run_worker(binary: pathlib.Path) -> None:
             str(receipt.fragment_plan_id) for receipt in receipts
         )
         receipt = matching[0]
-        assert receipt.operation_count == receipt.planned_operation_count == 1424, (
+        assert receipt.operation_count == receipt.planned_operation_count == 1425, (
             receipt.operation_count,
             receipt.planned_operation_count,
         )
@@ -16336,7 +16336,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT planned_operation_count, applied_operation_count, outcome "
             "FROM mutation_receipts"
-        ).fetchall() == [(1424, 1424, "committed")]
+        ).fetchall() == [(1425, 1425, "committed")]
         assert connection.execute(
             "SELECT current_phase, mutation_started, poisoned, interr_code "
             "FROM cfg_transaction_attempts"
@@ -16352,7 +16352,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         ).fetchone() == (223,)
         assert connection.execute(
             "SELECT COUNT(*) FROM mutation_receipt_identities"
-        ).fetchone() == (886,)
+        ).fetchone() == (887,)
         committed_witnesses = connection.execute(
             "SELECT local_block_id, provenance, logical_proxy_token, "
             "logical_version, logical_generation, insertion_quantity_before, "
