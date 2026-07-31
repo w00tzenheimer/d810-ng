@@ -22839,7 +22839,7 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 30,
+        "compiled_operation_instances": 31,
         "vertically_proved_operations": 30,
         "accepted_receipt_operations": 30,
         "earliest_unproved_reference_order": 0,
