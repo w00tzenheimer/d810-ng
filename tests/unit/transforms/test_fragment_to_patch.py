@@ -16,6 +16,7 @@ from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
 from d810.transforms.fragment_plan import (
     FragmentAbsoluteConstantMaterialization,
     FragmentArithmeticFlagRole,
+    FragmentConstantPublicationEnvelope,
 )
 from d810.transforms.fragment_to_patch import (
     CfgTransactionCoordinator,
@@ -169,6 +170,9 @@ def test_constant_materializations_lower_as_one_exact_fragment_patch_step() -> N
         source_instruction_bytes="030500004800",
         replacement_instruction_bytes="81c03f727637",
         consumer_operation=ValueOpKind.ADD,
+        publication_envelope=(
+            FragmentConstantPublicationEnvelope.GENERATED_ABSOLUTE_LOAD
+        ),
         preserved_flag_roles=(
             FragmentArithmeticFlagRole.CARRY,
             FragmentArithmeticFlagRole.OVERFLOW,

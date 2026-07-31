@@ -625,6 +625,9 @@ def _constant_ledger():
         materialized_value=0x3776723F,
         source_instruction_bytes="0305ccad4800",
         replacement_instruction_bytes="81c03f727637",
+        publication_envelope=(
+            compiler.RhadConstantPublicationEnvelope.GENERATED_ABSOLUTE_LOAD
+        ),
         phase=compiler.RhadReferencePhase.CONSTANT_MATERIALIZATION,
         depends_on=(mixed.operations[-1].operation_id,),
     )
@@ -701,6 +704,9 @@ def _mov_constant_ledger():
         materialized_value=0x2F192B3A,
         source_instruction_bytes="8b1510ae4800",
         replacement_instruction_bytes="90ba3a2b192f",
+        publication_envelope=(
+            compiler.RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE
+        ),
         phase=compiler.RhadReferencePhase.CONSTANT_MATERIALIZATION,
         depends_on=(add_ledger.operations[-1].operation_id,),
     )

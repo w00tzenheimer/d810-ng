@@ -28,6 +28,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentComputedBranchNormalization,
+    FragmentConstantPublicationEnvelope,
     FragmentConditionalSelectEnvelope,
     FragmentDirectTransferRewrite,
     FragmentEdge,
@@ -80,6 +81,13 @@ class RhadOperationVariant(str, Enum):
     SETCC_INDEXED_TABLE = "setcc_indexed_table"
     ADD_ABSOLUTE = "add_absolute"
     MOV_ABSOLUTE = "mov_absolute"
+
+
+class RhadConstantPublicationEnvelope(str, Enum):
+    """Typed current-transaction source form for one constant operation."""
+
+    GENERATED_ABSOLUTE_LOAD = "generated_absolute_load"
+    IMPORTED_GLOBAL_MOVE = "imported_global_move"
 
 
 EXPECTED_REFERENCE_PHASE_ORDER = (
@@ -742,6 +750,7 @@ class RhadAbsoluteConstantMaterialization:
     materialized_value: int
     source_instruction_bytes: str
     replacement_instruction_bytes: str
+    publication_envelope: RhadConstantPublicationEnvelope
     phase: RhadReferencePhase
     depends_on: tuple[str, ...]
     category: RhadOperationCategory = RhadOperationCategory.CONSTANT_MATERIALIZATION
@@ -777,6 +786,17 @@ class RhadAbsoluteConstantMaterialization:
         }:
             raise RhadCompilerRejection(
                 "Rhad constant contract admits only typed absolute variants"
+            )
+        publication_envelope = self.publication_envelope
+        if not isinstance(publication_envelope, RhadConstantPublicationEnvelope):
+            raise TypeError("Rhad constant publication envelope must be typed")
+        if (
+            self.operation_variant is RhadOperationVariant.ADD_ABSOLUTE
+            and publication_envelope
+            is not RhadConstantPublicationEnvelope.GENERATED_ABSOLUTE_LOAD
+        ):
+            raise RhadCompilerRejection(
+                "Rhad add-absolute requires its generated load envelope"
             )
         if self.category is not RhadOperationCategory.CONSTANT_MATERIALIZATION:
             raise RhadCompilerRejection(
@@ -872,6 +892,7 @@ class RhadAbsoluteConstantMaterialization:
         object.__setattr__(self, "reference_raw_value", reference_raw_value)
         object.__setattr__(self, "materialized_value", materialized_value)
         object.__setattr__(self, "destination_storage", destination_storage)
+        object.__setattr__(self, "publication_envelope", publication_envelope)
         object.__setattr__(self, "depends_on", dependencies)
 
 
@@ -1665,6 +1686,7 @@ def _reference_payload(
                 "destination_width_bits": int(route.destination_width_bits),
                 "materialized_value": int(route.materialized_value),
                 "operation_variant": route.operation_variant.value,
+                "publication_envelope": route.publication_envelope.value,
                 "reference_data_bytes_le": route.reference_data_bytes_le,
                 "reference_operation_id": route.reference_operation_id,
                 "reference_order": int(route.reference_order),
@@ -2108,6 +2130,9 @@ def _compile_absolute_constant_materialization(
         source_instruction_bytes=operation.source_instruction_bytes,
         replacement_instruction_bytes=operation.replacement_instruction_bytes,
         consumer_operation=consumer_operation,
+        publication_envelope=FragmentConstantPublicationEnvelope(
+            operation.publication_envelope.value
+        ),
         preserved_flag_roles=preserved_flag_roles,
     )
 
@@ -2556,9 +2581,6 @@ def compile_rhad_reference_fragment(
                 else ()
             ),
         )
-    } | {
-        materialization.source_block_id
-        for materialization in constant_materializations
     }
     native_bodies = tuple(
         replace(
@@ -2596,6 +2618,7 @@ def compile_rhad_reference_fragment(
 __all__ = [
     "EXPECTED_REFERENCE_PHASE_ORDER",
     "RhadCompilerRejection",
+    "RhadConstantPublicationEnvelope",
     "RhadAbsoluteConstantMaterialization",
     "RhadConditionalRoute",
     "RhadDirectRoute",
