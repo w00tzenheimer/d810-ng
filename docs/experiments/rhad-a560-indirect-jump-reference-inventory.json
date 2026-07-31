@@ -17833,7 +17833,7 @@
         4236807,
         4241088
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
         "status": "unproved"
       },
@@ -17844,12 +17844,14 @@
         4236784,
         4236805,
         4244606,
+        4244628,
         4244632
       ],
       "operation_id": "rhad:route@0x40C47C",
       "operation_variant": "existing_conditional_plus_indirect",
       "owned_corridor_instruction_eas": [
         4244580,
+        4244586,
         4244592,
         4244594,
         4244600,
@@ -17879,10 +17881,12 @@
           ],
           "expected_generated_block_anchor_eas": [
             4244606,
+            4244628,
             4244632
           ],
           "owned_native_block_entry_eas": [
-            4244606
+            4244606,
+            4244628
           ],
           "root_ea": 4244606,
           "status": "complete",
