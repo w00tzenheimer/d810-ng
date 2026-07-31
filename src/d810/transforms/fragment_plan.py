@@ -1386,9 +1386,9 @@ class FragmentDirectTransferRewrite:
 class FragmentAbsoluteConstantMaterialization:
     """Replace one proven absolute load with an immutable constant value.
 
-    The first admitted shape is the 32-bit source of a native ADD.  The
-    backend must replace only the load result; the existing carry, overflow,
-    arithmetic, zero, parity, and sign consumers remain authoritative.
+    The backend must replace only the load result.  Typed consumer and
+    destination evidence determine whether an arithmetic flag envelope must
+    remain authoritative or the value is delivered by a plain move.
     """
 
     materialization_id: str
@@ -1398,6 +1398,7 @@ class FragmentAbsoluteConstantMaterialization:
     data_ea: int
     width_bits: int
     reference_read_width_bits: int
+    destination_storage: StorageIdentity
     constant_value: int
     reference_data_bytes_le: str
     source_instruction_bytes: str
@@ -1439,15 +1440,20 @@ class FragmentAbsoluteConstantMaterialization:
         constant_value = int(self.constant_value)
         if width_bits != 32 or reference_read_width_bits != 32:
             raise FragmentPlanRejected(
-                "add-absolute materialization requires a 32-bit load and read"
+                "absolute materialization requires a 32-bit load and read"
             )
         if not 0 <= constant_value <= 0xFFFFFFFF:
             raise FragmentPlanRejected(
-                "add-absolute materialized value must fit 32 bits"
+                "absolute materialized value must fit 32 bits"
             )
-        if self.consumer_operation is not ValueOpKind.ADD:
+        destination_storage = self.destination_storage
+        if (
+            not isinstance(destination_storage, StorageIdentity)
+            or destination_storage.kind is not StorageIdentityKind.REGISTER
+            or int(destination_storage.offset) < 0
+        ):
             raise FragmentPlanRejected(
-                "first constant materialization contract admits only ADD"
+                "constant materialization requires register destination storage"
             )
         expected_flags = (
             FragmentArithmeticFlagRole.CARRY,
@@ -1457,9 +1463,17 @@ class FragmentAbsoluteConstantMaterialization:
             FragmentArithmeticFlagRole.SIGN,
         )
         flags = tuple(self.preserved_flag_roles)
-        if flags != expected_flags:
+        if self.consumer_operation is ValueOpKind.ADD and flags != expected_flags:
             raise FragmentPlanRejected(
                 "add-absolute materialization requires the complete flag envelope"
+            )
+        if self.consumer_operation is ValueOpKind.MOVE and flags:
+            raise FragmentPlanRejected(
+                "mov-absolute materialization cannot claim an arithmetic flag envelope"
+            )
+        if self.consumer_operation not in {ValueOpKind.ADD, ValueOpKind.MOVE}:
+            raise FragmentPlanRejected(
+                "constant materialization consumer lacks a typed contract"
             )
         encodings = (
             (self.reference_data_bytes_le, 4, "constant reference data"),
@@ -1498,6 +1512,7 @@ class FragmentAbsoluteConstantMaterialization:
             reference_read_width_bits,
         )
         object.__setattr__(self, "constant_value", constant_value)
+        object.__setattr__(self, "destination_storage", destination_storage)
         object.__setattr__(
             self,
             "reference_data_bytes_le",
