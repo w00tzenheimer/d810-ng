@@ -112,6 +112,14 @@ class FragmentConstantPublicationEnvelope(str, Enum):
     IMPORTED_GLOBAL_MOVE = "imported_global_move"
 
 
+class FragmentAbsoluteConstantEncoding(str, Enum):
+    """Exact native encoding family proved by the reference operation."""
+
+    ADD_R32_ABSOLUTE = "add_r32_absolute"
+    MOV_R32_ABSOLUTE = "mov_r32_absolute"
+    MOV_EAX_ABSOLUTE = "mov_eax_absolute"
+
+
 @dataclass(frozen=True, slots=True)
 class FragmentSetccExplicitShiftScaling:
     """A standalone native shift/multiply before the table lookup."""
@@ -1411,6 +1419,7 @@ class FragmentAbsoluteConstantMaterialization:
     source_instruction_bytes: str
     replacement_instruction_bytes: str
     consumer_operation: ValueOpKind
+    encoding_variant: FragmentAbsoluteConstantEncoding
     publication_envelope: FragmentConstantPublicationEnvelope
     preserved_flag_roles: tuple[FragmentArithmeticFlagRole, ...]
 
@@ -1483,6 +1492,33 @@ class FragmentAbsoluteConstantMaterialization:
             raise FragmentPlanRejected(
                 "constant materialization consumer lacks a typed contract"
             )
+        encoding_variant = self.encoding_variant
+        if not isinstance(encoding_variant, FragmentAbsoluteConstantEncoding):
+            raise TypeError("constant materialization encoding must be typed")
+        encoding_contract = {
+            FragmentAbsoluteConstantEncoding.ADD_R32_ABSOLUTE: (
+                ValueOpKind.ADD,
+                6,
+                6,
+            ),
+            FragmentAbsoluteConstantEncoding.MOV_R32_ABSOLUTE: (
+                ValueOpKind.MOVE,
+                6,
+                6,
+            ),
+            FragmentAbsoluteConstantEncoding.MOV_EAX_ABSOLUTE: (
+                ValueOpKind.MOVE,
+                5,
+                5,
+            ),
+        }[encoding_variant]
+        expected_consumer, source_encoding_width, replacement_encoding_width = (
+            encoding_contract
+        )
+        if self.consumer_operation is not expected_consumer:
+            raise FragmentPlanRejected(
+                "constant encoding differs from its typed consumer"
+            )
         publication_envelope = self.publication_envelope
         if not isinstance(
             publication_envelope,
@@ -1501,10 +1537,14 @@ class FragmentAbsoluteConstantMaterialization:
             )
         encodings = (
             (self.reference_data_bytes_le, 4, "constant reference data"),
-            (self.source_instruction_bytes, 6, "constant source instruction"),
+            (
+                self.source_instruction_bytes,
+                source_encoding_width,
+                "constant source instruction",
+            ),
             (
                 self.replacement_instruction_bytes,
-                6,
+                replacement_encoding_width,
                 "constant replacement instruction",
             ),
         )
@@ -1537,6 +1577,7 @@ class FragmentAbsoluteConstantMaterialization:
         )
         object.__setattr__(self, "constant_value", constant_value)
         object.__setattr__(self, "destination_storage", destination_storage)
+        object.__setattr__(self, "encoding_variant", encoding_variant)
         object.__setattr__(self, "publication_envelope", publication_envelope)
         object.__setattr__(
             self,

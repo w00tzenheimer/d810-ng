@@ -625,6 +625,7 @@ def _constant_ledger():
         materialized_value=0x3776723F,
         source_instruction_bytes="0305ccad4800",
         replacement_instruction_bytes="81c03f727637",
+        encoding_variant=compiler.RhadAbsoluteConstantEncoding.ADD_R32_ABSOLUTE,
         publication_envelope=(
             compiler.RhadConstantPublicationEnvelope.GENERATED_ABSOLUTE_LOAD
         ),
@@ -704,6 +705,7 @@ def _mov_constant_ledger():
         materialized_value=0x2F192B3A,
         source_instruction_bytes="8b1510ae4800",
         replacement_instruction_bytes="90ba3a2b192f",
+        encoding_variant=compiler.RhadAbsoluteConstantEncoding.MOV_R32_ABSOLUTE,
         publication_envelope=(
             compiler.RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE
         ),
@@ -744,6 +746,7 @@ def test_compiler_emits_typed_add_absolute_materialization() -> None:
     assert materialization.instruction_ea == 0x40A574
     assert materialization.data_ea == 0x48ADCC
     assert materialization.constant_value == 0x3776723F
+    assert materialization.encoding_variant.value == "add_r32_absolute"
     assert materialization.destination_storage == StorageIdentity(
         kind=StorageIdentityKind.REGISTER,
         offset=0,
@@ -783,6 +786,7 @@ def test_compiler_emits_typed_mov_absolute_materialization() -> None:
     assert materialization.instruction_ea == 0x40A710
     assert materialization.data_ea == 0x48AE10
     assert materialization.constant_value == 0x2F192B3A
+    assert materialization.encoding_variant.value == "mov_r32_absolute"
     assert materialization.destination_storage == StorageIdentity(
         kind=StorageIdentityKind.REGISTER,
         offset=12,
@@ -820,6 +824,20 @@ def test_mov_absolute_rejects_non_register_destination_before_compilation() -> N
                 kind=StorageIdentityKind.GLOBAL,
                 offset=0x48AE10,
             ),
+        )
+
+
+def test_mov_absolute_rejects_mismatched_encoding_before_compilation() -> None:
+    compiler = _compiler_module()
+    operation = _mov_constant_ledger().operations[-1]
+
+    with pytest.raises(
+        compiler.RhadCompilerRejection,
+        match="encoding differs from its operation variant",
+    ):
+        replace(
+            operation,
+            operation_variant=compiler.RhadOperationVariant.ADD_ABSOLUTE,
         )
 
 
