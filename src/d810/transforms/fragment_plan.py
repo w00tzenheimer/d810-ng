@@ -3095,7 +3095,14 @@ class FragmentPlan:
                 envelope.join_block_id,
             )
         }
-        operation_topology_ids = operation_source_ids | operation_envelope_ids
+        operation_topology_ids = (
+            operation_source_ids
+            | operation_envelope_ids
+            | {
+                materialization.source_block_id
+                for materialization in constant_materializations
+            }
+        )
         for native_body in native_bodies:
             terminal_ids = set(native_body.terminal_block_ids)
             preserved_native_transfer_ids = set(
