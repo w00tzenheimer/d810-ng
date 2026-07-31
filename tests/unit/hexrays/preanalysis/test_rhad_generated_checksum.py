@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 878
+    assert len(IMPORTED_BLOCK_IDS) == 880
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -16824,6 +16824,8 @@ def test_row210_inventory_owns_producer_join_and_c62f_target_corridor() -> None:
         0x40A5F0,
         0x40A605,
         0x40C62F,
+        0x40C642,
+        0x40C645,
         0x40C649,
     ]
     assert row210["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -16831,8 +16833,13 @@ def test_row210_inventory_owns_producer_join_and_c62f_target_corridor() -> None:
     assert row210["target_rooted_closures"] == [
         {
             "boundary_exit_eas": [0x40A607, 0x40B6C0],
-            "expected_generated_block_anchor_eas": [0x40C62F, 0x40C649],
-            "owned_native_block_entry_eas": [0x40C62F],
+            "expected_generated_block_anchor_eas": [
+                0x40C62F,
+                0x40C642,
+                0x40C645,
+                0x40C649,
+            ],
+            "owned_native_block_entry_eas": [0x40C62F, 0x40C645],
             "root_ea": 0x40C62F,
             "status": "complete",
             "unavailable_exit_eas": [],
@@ -17515,14 +17522,14 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:f74803f039a78ae23782807dd54b88f124d51e74d40729336e65c85a3f8fc827"
+        "sha256:02041ec206c90190d4e3f1b928cc5b47dc331b94769ece6231e3b87293f221a4"
     )
     assert len(batch.operations) == 206
-    assert len(batch.imported_blocks) == 878
+    assert len(batch.imported_blocks) == 880
     assert len(batch.template_fragments) == 192
     assert len(batch.native_body_proof_ids) == 206
-    assert len(batch.native_body_entry_block_ids) == 566
-    assert len(plan.blocks) == 883
+    assert len(batch.native_body_entry_block_ids) == 567
+    assert len(plan.blocks) == 885
     normalization = operation.computed_branch_normalization
     assert normalization is not None
     assert normalization.predicate_kind is PredicateKind.NE
@@ -19481,7 +19488,7 @@ def test_checksum_producer_compiles_row206_cmov_dependency_without_new_template(
     assert "native@0x40C56F" in batch.native_body_entry_block_ids
     assert "rhad:route@0x40C576" in batch.native_body_proof_ids
     assert plan.block("native@0x40C56F").stable_identity.exact_instruction_eas == frozenset({0x40C56F})
-    assert len(batch.imported_blocks) == 878
+    assert len(batch.imported_blocks) == 880
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
     assert templates[0x40C541].owned_ranges == (
         (0x40C541, 0x40C54D),
@@ -19628,10 +19635,10 @@ def test_checksum_producer_compiles_row208_direct_dependency_and_reused_closure(
     assert "native@0x40C5EF" in batch.native_body_entry_block_ids
     assert "native@0x40B6C0" in batch.native_body_entry_block_ids
     assert "route:rhad-direct@0x40C5F9" in batch.native_body_proof_ids
-    assert len(batch.imported_blocks) == 878
+    assert len(batch.imported_blocks) == 880
     assert len(batch.template_fragments) == 192
-    assert len(batch.native_body_entry_block_ids) == 566
-    assert len(plan.blocks) == 883
+    assert len(batch.native_body_entry_block_ids) == 567
+    assert len(plan.blocks) == 885
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
     assert templates[0x40C592].preserved_unresolved_transfers[0] == (
         generated_reference.RhadGeneratedPreservedTransfer(
@@ -19722,10 +19729,10 @@ def test_checksum_producer_compiles_row209_existing_dependency_and_both_target_c
     assert plan.block(
         "native@0x40C663"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C663})
-    assert len(batch.imported_blocks) == 878
+    assert len(batch.imported_blocks) == 880
     assert len(batch.template_fragments) == 192
-    assert len(batch.native_body_entry_block_ids) == 566
-    assert len(plan.blocks) == 883
+    assert len(batch.native_body_entry_block_ids) == 567
+    assert len(plan.blocks) == 885
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
     assert templates[0x40C5FB].preserved_unresolved_transfers == (
         generated_reference.RhadGeneratedPreservedTransfer(
@@ -19798,6 +19805,8 @@ def test_checksum_producer_compiles_row210_existing_dependency_and_c62f_target_c
     )
     assert generated_reference.ROW210_TARGET_IMPORTED_BLOCK_IDS == (
         "native@0x40C62F",
+        "native@0x40C642",
+        "native@0x40C645",
         "native@0x40C649",
     )
     assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -19811,18 +19820,22 @@ def test_checksum_producer_compiles_row210_existing_dependency_and_c62f_target_c
         "native@0x40C623",
         "native@0x40C629",
         "native@0x40C62F",
+        "native@0x40C645",
     }.issubset(batch.native_body_entry_block_ids)
     assert "rhad:route@0x40C62D" in batch.native_body_proof_ids
     assert plan.block(
         "native@0x40C649"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C649})
-    assert len(batch.imported_blocks) == 878
+    assert len(batch.imported_blocks) == 880
     assert len(batch.template_fragments) == 192
-    assert len(batch.native_body_entry_block_ids) == 566
-    assert len(plan.blocks) == 883
+    assert len(batch.native_body_entry_block_ids) == 567
+    assert len(plan.blocks) == 885
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
-    assert templates[0x40C62F].owned_ranges == ((0x40C62F, 0x40C64B),)
-    assert templates[0x40C62F].owned_block_entry_eas == (0x40C62F,)
+    assert templates[0x40C62F].owned_ranges == (
+        (0x40C62F, 0x40C645),
+        (0x40C645, 0x40C64B),
+    )
+    assert templates[0x40C62F].owned_block_entry_eas == (0x40C62F, 0x40C645)
     assert templates[0x40C62F].preserved_unresolved_transfers == (
         generated_reference.RhadGeneratedPreservedTransfer(
             transfer_ea=0x40C649,
