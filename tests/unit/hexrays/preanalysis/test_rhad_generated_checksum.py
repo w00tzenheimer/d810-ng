@@ -15930,6 +15930,71 @@ def test_row198_inventory_has_exact_cmov_producer_and_reused_closures() -> None:
     }
 
 
+def test_row199_inventory_has_exact_producer_and_partitioned_target_closure() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row199 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 199
+    )
+
+    assert len(inventory["operations"]) == 228
+    assert row199["operation_id"] == "rhad:route@0x40C47C"
+    assert row199["operation_variant"] == "existing_conditional_plus_indirect"
+    assert row199["reference_symbol"] == "JumpInliner._fixup_jmp_and_possible_jcc"
+    assert row199["current_compiler_support"] == (
+        "typed_existing_conditional_plus_indirect"
+    )
+    assert row199["current_generated_proof"] == {"status": "unproved"}
+    assert row199["source_native_ea"] == 0x40C464
+    assert row199["source_block_anchor_ea"] == 0x40C478
+    assert row199["flag_producer_native_ea"] == 0x40C46A
+    assert row199["predicate_native_ea"] == 0x40C470
+    assert row199["transfer_native_ea"] == 0x40C47C
+    assert row199["owned_corridor_instruction_eas"] == [
+        0x40C464,
+        0x40C46A,
+        0x40C470,
+        0x40C472,
+        0x40C478,
+        0x40C47A,
+        0x40C47C,
+    ]
+    assert row199["semantic_targets"] == [
+        {"ea": 0x40C47E, "role": "conditional_taken"},
+        {"ea": 0x40A5F0, "role": "conditional_fallthrough"},
+    ]
+    assert row199["imported_closure_block_anchor_eas"] == [
+        0x40A5F0,
+        0x40A605,
+        0x40C47E,
+        0x40C494,
+        0x40C498,
+    ]
+    assert row199["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
+    assert row199["unavailable_closure_exit_eas"] == []
+    closures = {
+        closure["root_ea"]: closure for closure in row199["target_rooted_closures"]
+    }
+    assert closures[0x40C47E] == {
+        "boundary_exit_eas": [0x40A607, 0x40B6C0],
+        "expected_generated_block_anchor_eas": [0x40C47E, 0x40C494, 0x40C498],
+        "owned_native_block_entry_eas": [0x40C47E, 0x40C494],
+        "root_ea": 0x40C47E,
+        "status": "complete",
+        "unavailable_exit_eas": [],
+    }
+    assert closures[0x40A5F0]["status"] == "complete"
+    assert closures[0x40A5F0]["unavailable_exit_eas"] == []
+
+
 def test_checksum_producer_compiles_row176_existing_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
