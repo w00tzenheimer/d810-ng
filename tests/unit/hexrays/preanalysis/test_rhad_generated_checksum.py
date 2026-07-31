@@ -16879,7 +16879,10 @@ def test_row211_inventory_owns_c634_producer_and_reuses_split_source() -> None:
     assert row211["operation_variant"] == "cmov_selected_indirect"
     assert row211["reference_symbol"] == "JumpInliner._fixup_cmov"
     assert row211["current_compiler_support"] == "typed_cmov_selected_indirect"
-    assert row211["current_generated_proof"] == {"status": "unproved"}
+    assert row211["current_generated_proof"] == {
+        "accepted_commits": ["097dbaad0", "625ac3dad", "a09a00e88"],
+        "status": "accepted_generated_c6",
+    }
     assert row211["source_native_ea"] == 0x40C63A
     assert row211["source_block_anchor_ea"] == 0x40C62F
     assert row211["flag_producer_native_ea"] == 0x40C634
