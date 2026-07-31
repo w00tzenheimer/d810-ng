@@ -20083,7 +20083,12 @@
       ],
       "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "8a2d8cb56",
+          "a56768630",
+          "784b22a13"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
