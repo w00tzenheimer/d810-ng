@@ -17282,7 +17282,10 @@ def test_row217_inventory_reuses_row165_source_and_a607_closure() -> None:
     assert row217["operation_id"] == "rhad:route@0x40C72E"
     assert row217["operation_variant"] == "simple_indirect_jump"
     assert row217["current_compiler_support"] == "typed_simple_indirect_jump"
-    assert row217["current_generated_proof"] == {"status": "unproved"}
+    assert row217["current_generated_proof"] == {
+        "accepted_commits": ["36f058231", "db34d611f", "9e8390c65"],
+        "status": "accepted_generated_c6",
+    }
     assert row217["source_native_ea"] == 0x40BF62
     assert row217["source_block_anchor_ea"] == 0x40C722
     assert row217["transfer_native_ea"] == 0x40C72E
