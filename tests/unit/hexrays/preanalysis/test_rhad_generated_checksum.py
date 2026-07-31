@@ -16475,7 +16475,10 @@ def test_row205_inventory_has_exact_producer_and_complete_target_closure() -> No
     assert row205["operation_variant"] == "existing_conditional_plus_indirect"
     assert row205["reference_symbol"] == "JumpInliner._fixup_jmp_and_possible_jcc"
     assert row205["current_compiler_support"] == "typed_existing_conditional_plus_indirect"
-    assert row205["current_generated_proof"] == {"status": "unproved"}
+    assert row205["current_generated_proof"] == {
+        "accepted_commits": ["c61e52677", "571975c87", "c6268bec0"],
+        "status": "accepted_generated_c6",
+    }
     assert row205["source_native_ea"] == 0x40C527
     assert row205["source_block_anchor_ea"] == 0x40C53B
     assert row205["flag_producer_native_ea"] == 0x40C52D
