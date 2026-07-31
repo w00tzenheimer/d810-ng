@@ -16801,7 +16801,15 @@ def test_row210_inventory_owns_producer_join_and_c62f_target_corridor() -> None:
     assert row210["operation_variant"] == "existing_conditional_plus_indirect"
     assert row210["reference_symbol"] == "JumpInliner._fixup_jmp_and_possible_jcc"
     assert row210["current_compiler_support"] == "typed_existing_conditional_plus_indirect"
-    assert row210["current_generated_proof"] == {"status": "unproved"}
+    assert row210["current_generated_proof"] == {
+        "accepted_commits": [
+            "9ddbddc4c",
+            "6e1c7b762",
+            "ae1393d46",
+            "c970204d6",
+        ],
+        "status": "accepted_generated_c6",
+    }
     assert row210["source_native_ea"] == 0x40C615
     assert row210["source_block_anchor_ea"] == 0x40C629
     assert row210["flag_producer_native_ea"] == 0x40C61B
