@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "5733375a6c7f92eb295470977f48a13f10505343",
+  "accepted_code_sha": "9b84dc2fc4e83f797d53aa0568c249e3639fb250",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -198,7 +198,8 @@
     "route:rhad-direct@0x40C3D7",
     "rhad:route@0x40C3F1",
     "route:rhad-direct@0x40C42C",
-    "rhad:route@0x40C446"
+    "rhad:route@0x40C446",
+    "rhad:route@0x40C462"
   ],
   "variants": [
     {
@@ -206,11 +207,11 @@
       "total_reference_operations": 39,
       "compiler_supported_operations": 39,
       "compiled_operation_instances": 29,
-      "vertically_proved_operations": 28,
-      "accepted_receipt_operations": 28,
-      "earliest_unproved_reference_order": 198,
-      "earliest_unproved_operation_id": "rhad:route@0x40C462",
-      "first_missing_typed_obligation": "publish compiled row198 through immutable preflight and the shared actual-MMAT_GENERATED coordinator before committing one complete receipt"
+      "vertically_proved_operations": 29,
+      "accepted_receipt_operations": 29,
+      "earliest_unproved_reference_order": 0,
+      "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
+      "first_missing_typed_obligation": "instantiate existing RhadConditionalRoute vocabulary with exact per-operation evidence and dependency closure"
     },
     {
       "operation_variant": "simple_indirect_jump",
