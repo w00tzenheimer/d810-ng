@@ -49,6 +49,7 @@ from d810.transforms.rhad_reference_compiler import (
     compile_rhad_reference_fragment,
     rhad_reference_operation_identity_payload,
 )
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 
 
 logger = getLogger(__name__)
@@ -11535,6 +11536,10 @@ _CONSTANT_ROW0_ADD_ABSOLUTE = RhadAbsoluteConstantMaterialization(
     data_native_ea=0x48ADCC,
     source_width_bits=32,
     destination_width_bits=32,
+    destination_storage=StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=0,
+    ),
     reference_read_width_bits=32,
     reference_data_bytes_le="3f727637",
     reference_raw_value=0x3776723F,

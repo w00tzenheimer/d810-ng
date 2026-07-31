@@ -14,6 +14,7 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
 )
 from d810.ir.block_identity import StableBlockIdentity
 from d810.ir.flowgraph import BlockKind, InsnKind
+from d810.ir.expressions import ValueOpKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.cfg_transaction import CfgProjection, TransactionAttemptId
 from d810.transforms.fragment_plan import (
@@ -629,6 +630,7 @@ class PreparedConstantMaterializationFact:
     instruction_ea: int
     envelope_start_instruction_index: int
     load_instruction_index: int
+    consumer_operation: ValueOpKind
     envelope: tuple[PreparedNativeInstructionFact, ...]
 
     def __post_init__(self) -> None:
@@ -654,13 +656,24 @@ class PreparedConstantMaterializationFact:
             self.load_instruction_index,
             "constant load instruction index",
         )
+        consumer_operation = self.consumer_operation
+        if not isinstance(consumer_operation, ValueOpKind):
+            raise TypeError("constant materialization consumer must be typed")
         envelope = tuple(self.envelope)
-        if len(envelope) != 10 or any(
+        expected_length = {
+            ValueOpKind.ADD: 10,
+            ValueOpKind.MOVE: 4,
+        }.get(consumer_operation)
+        if expected_length is None:
+            raise ValueError("constant materialization consumer is unsupported")
+        if len(envelope) != expected_length:
+            raise ValueError(
+                "constant materialization differs from its typed consumer envelope"
+            )
+        if any(
             not isinstance(item, PreparedNativeInstructionFact) for item in envelope
         ):
-            raise TypeError(
-                "constant materialization requires an exact ten-instruction envelope"
-            )
+            raise TypeError("constant materialization envelope must be immutable")
         if load_index != envelope_start + 2:
             raise ValueError(
                 "constant load index differs from its exact envelope position"
@@ -674,6 +687,7 @@ class PreparedConstantMaterializationFact:
             "constant envelope instruction ids",
         )
         object.__setattr__(self, "instruction_ea", instruction_ea)
+        object.__setattr__(self, "consumer_operation", consumer_operation)
         object.__setattr__(
             self,
             "envelope_start_instruction_index",

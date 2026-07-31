@@ -11,6 +11,7 @@ import pytest
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.expressions import ValueOpKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
 from d810.transforms.fragment_plan import (
     FragmentAbsoluteConstantMaterialization,
@@ -159,6 +160,10 @@ def test_constant_materializations_lower_as_one_exact_fragment_patch_step() -> N
         data_ea=0x480000,
         width_bits=32,
         reference_read_width_bits=32,
+        destination_storage=StorageIdentity(
+            kind=StorageIdentityKind.REGISTER,
+            offset=0,
+        ),
         constant_value=0x3776723F,
         reference_data_bytes_le="3f727637",
         source_instruction_bytes="030500004800",

@@ -21,6 +21,7 @@ from d810.core.semantic_route_oracle import (
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.expressions import ValueOpKind
 from d810.ir.semantics import PredicateKind, inverted_predicate_kind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.fragment_plan import (
     FragmentAbsoluteConstantMaterialization,
     FragmentArithmeticFlagRole,
@@ -78,6 +79,7 @@ class RhadOperationVariant(str, Enum):
     EXISTING_CONDITIONAL_PLUS_INDIRECT = "existing_conditional_plus_indirect"
     SETCC_INDEXED_TABLE = "setcc_indexed_table"
     ADD_ABSOLUTE = "add_absolute"
+    MOV_ABSOLUTE = "mov_absolute"
 
 
 EXPECTED_REFERENCE_PHASE_ORDER = (
@@ -733,6 +735,7 @@ class RhadAbsoluteConstantMaterialization:
     data_native_ea: int
     source_width_bits: int
     destination_width_bits: int
+    destination_storage: StorageIdentity
     reference_read_width_bits: int
     reference_data_bytes_le: str
     reference_raw_value: int
@@ -768,9 +771,12 @@ class RhadAbsoluteConstantMaterialization:
             raise RhadCompilerRejection(
                 "Rhad constant reference order must be non-negative"
             )
-        if self.operation_variant is not RhadOperationVariant.ADD_ABSOLUTE:
+        if self.operation_variant not in {
+            RhadOperationVariant.ADD_ABSOLUTE,
+            RhadOperationVariant.MOV_ABSOLUTE,
+        }:
             raise RhadCompilerRejection(
-                "first Rhad constant contract admits only add_absolute"
+                "Rhad constant contract admits only typed absolute variants"
             )
         if self.category is not RhadOperationCategory.CONSTANT_MATERIALIZATION:
             raise RhadCompilerRejection(
@@ -798,9 +804,19 @@ class RhadAbsoluteConstantMaterialization:
             width = int(getattr(self, field_name))
             if width != 32:
                 raise RhadCompilerRejection(
-                    "add_absolute requires 32-bit source, destination, and read widths"
+                    "absolute constant materialization requires 32-bit source, "
+                    "destination, and read widths"
                 )
             object.__setattr__(self, field_name, width)
+        destination_storage = self.destination_storage
+        if (
+            not isinstance(destination_storage, StorageIdentity)
+            or destination_storage.kind is not StorageIdentityKind.REGISTER
+            or int(destination_storage.offset) < 0
+        ):
+            raise RhadCompilerRejection(
+                "Rhad absolute constant requires register destination storage"
+            )
         encodings = (
             (self.reference_data_bytes_le, 4, "reference data"),
             (self.source_instruction_bytes, 6, "source instruction"),
@@ -828,7 +844,7 @@ class RhadAbsoluteConstantMaterialization:
             or not 0 <= materialized_value <= 0xFFFFFFFF
         ):
             raise RhadCompilerRejection(
-                "Rhad add_absolute data bytes and materialized value differ"
+                "Rhad absolute constant data bytes and materialized value differ"
             )
         dependencies = tuple(
             _identifier(value, "Rhad dependency") for value in self.depends_on
@@ -855,6 +871,7 @@ class RhadAbsoluteConstantMaterialization:
         )
         object.__setattr__(self, "reference_raw_value", reference_raw_value)
         object.__setattr__(self, "materialized_value", materialized_value)
+        object.__setattr__(self, "destination_storage", destination_storage)
         object.__setattr__(self, "depends_on", dependencies)
 
 
@@ -2034,15 +2051,24 @@ def _compile_absolute_constant_materialization(
     )
     if (
         source is None
-        or source.role is not FragmentBlockRole.EXTERNAL
-        or source.materialization is not FragmentBlockMaterialization.REUSE_PUBLISHED
+        or (source.role, source.materialization)
+        not in {
+            (
+                FragmentBlockRole.EXTERNAL,
+                FragmentBlockMaterialization.REUSE_PUBLISHED,
+            ),
+            (
+                FragmentBlockRole.IMPORTED,
+                FragmentBlockMaterialization.IMPORT_NATIVE,
+            ),
+        }
         or source.stable_identity is None
         or not source.stable_identity.native_ranges.contains(
             operation.source_native_ea
         )
     ):
         raise RhadCompilerRejection(
-            "Rhad add_absolute source requires an exact published identity"
+            "Rhad absolute constant source requires an exact published identity"
         )
     scope = ledger.base_plan.work_item_scope
     if (
@@ -2050,7 +2076,23 @@ def _compile_absolute_constant_materialization(
         or operation.operation_id not in scope.selected_obligation_ids
     ):
         raise RhadCompilerRejection(
-            "Rhad add_absolute operation is absent from work-item authority"
+            "Rhad absolute constant operation is absent from work-item authority"
+        )
+    if operation.operation_variant is RhadOperationVariant.ADD_ABSOLUTE:
+        consumer_operation = ValueOpKind.ADD
+        preserved_flag_roles = (
+            FragmentArithmeticFlagRole.CARRY,
+            FragmentArithmeticFlagRole.OVERFLOW,
+            FragmentArithmeticFlagRole.ZERO,
+            FragmentArithmeticFlagRole.PARITY,
+            FragmentArithmeticFlagRole.SIGN,
+        )
+    elif operation.operation_variant is RhadOperationVariant.MOV_ABSOLUTE:
+        consumer_operation = ValueOpKind.MOVE
+        preserved_flag_roles = ()
+    else:
+        raise RhadCompilerRejection(
+            "Rhad absolute constant variant lacks a typed compiler contract"
         )
     return FragmentAbsoluteConstantMaterialization(
         materialization_id=operation.operation_id,
@@ -2060,18 +2102,13 @@ def _compile_absolute_constant_materialization(
         data_ea=int(operation.data_native_ea),
         width_bits=int(operation.source_width_bits),
         reference_read_width_bits=int(operation.reference_read_width_bits),
+        destination_storage=operation.destination_storage,
         constant_value=int(operation.materialized_value),
         reference_data_bytes_le=operation.reference_data_bytes_le,
         source_instruction_bytes=operation.source_instruction_bytes,
         replacement_instruction_bytes=operation.replacement_instruction_bytes,
-        consumer_operation=ValueOpKind.ADD,
-        preserved_flag_roles=(
-            FragmentArithmeticFlagRole.CARRY,
-            FragmentArithmeticFlagRole.OVERFLOW,
-            FragmentArithmeticFlagRole.ZERO,
-            FragmentArithmeticFlagRole.PARITY,
-            FragmentArithmeticFlagRole.SIGN,
-        ),
+        consumer_operation=consumer_operation,
+        preserved_flag_roles=preserved_flag_roles,
     )
 
 

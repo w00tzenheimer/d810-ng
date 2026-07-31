@@ -14,6 +14,7 @@ from d810.core.semantic_route_oracle import RouteOracleRun, SemanticTransferKind
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 import d810.transforms.fragment_plan as fragment_plan
 from d810.transforms.fragment_plan import (
     FragmentBlock,
@@ -614,6 +615,10 @@ def _constant_ledger():
         data_native_ea=0x48ADCC,
         source_width_bits=32,
         destination_width_bits=32,
+        destination_storage=StorageIdentity(
+            kind=StorageIdentityKind.REGISTER,
+            offset=0,
+        ),
         reference_read_width_bits=32,
         reference_data_bytes_le="3f727637",
         reference_raw_value=0x3776723F,
@@ -632,6 +637,82 @@ def _constant_ledger():
             "operation_shapes": (
                 *mixed.reference_provenance["operation_shapes"],
                 "add_absolute",
+            ),
+        },
+    )
+
+
+def _mov_constant_ledger():
+    compiler = _compiler_module()
+    add_ledger = _constant_ledger()
+    source = FragmentBlock(
+        block_id="native@0x40A70E",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x40A70E,
+        stable_identity=_identity(
+            0x40A70E,
+            0x40A73F,
+            0x40A70E,
+            0x40A710,
+            0x40A716,
+            0x40A71B,
+            0x40A71D,
+            0x40A721,
+            0x40A723,
+            0x40A728,
+            0x40A72E,
+            0x40A730,
+            0x40A736,
+        ),
+    )
+    constant_id = "constant:rhad-mov-absolute@0x40A710"
+    scope = add_ledger.base_plan.work_item_scope
+    assert scope is not None
+    base = replace(
+        add_ledger.base_plan,
+        blocks=(*add_ledger.base_plan.blocks, source),
+        work_item_scope=replace(
+            scope,
+            selected_obligation_ids=(
+                *scope.selected_obligation_ids,
+                constant_id,
+            ),
+        ),
+    )
+    constant = compiler.RhadAbsoluteConstantMaterialization(
+        operation_id=constant_id,
+        reference_operation_id="rhad:constant@0x40A710",
+        reference_order=1,
+        operation_variant=compiler.RhadOperationVariant.MOV_ABSOLUTE,
+        reference_symbol="deob_consts.ConstantInliner.transform_mov_mem_to_imm",
+        source_block_id=source.block_id,
+        source_native_ea=0x40A710,
+        data_native_ea=0x48AE10,
+        source_width_bits=32,
+        destination_width_bits=32,
+        destination_storage=StorageIdentity(
+            kind=StorageIdentityKind.REGISTER,
+            offset=12,
+        ),
+        reference_read_width_bits=32,
+        reference_data_bytes_le="3a2b192f",
+        reference_raw_value=0x2F192B3A,
+        materialized_value=0x2F192B3A,
+        source_instruction_bytes="8b1510ae4800",
+        replacement_instruction_bytes="90ba3a2b192f",
+        phase=compiler.RhadReferencePhase.CONSTANT_MATERIALIZATION,
+        depends_on=(add_ledger.operations[-1].operation_id,),
+    )
+    return replace(
+        add_ledger,
+        base_plan=base,
+        operations=(*add_ledger.operations, constant),
+        reference_provenance={
+            **add_ledger.reference_provenance,
+            "operation_shapes": (
+                *add_ledger.reference_provenance["operation_shapes"],
+                "mov_absolute",
             ),
         },
     )
@@ -657,6 +738,10 @@ def test_compiler_emits_typed_add_absolute_materialization() -> None:
     assert materialization.instruction_ea == 0x40A574
     assert materialization.data_ea == 0x48ADCC
     assert materialization.constant_value == 0x3776723F
+    assert materialization.destination_storage == StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=0,
+    )
     assert materialization.source_instruction_bytes == "0305ccad4800"
     assert materialization.replacement_instruction_bytes == "81c03f727637"
     changed = replace(
@@ -671,6 +756,65 @@ def test_compiler_emits_typed_add_absolute_materialization() -> None:
         operations=(*ledger.operations[:-1], changed),
     )
     assert changed_ledger.aggregate_program_identity != ledger.aggregate_program_identity
+
+
+def test_compiler_emits_typed_mov_absolute_materialization() -> None:
+    compiler = _compiler_module()
+    ledger = _mov_constant_ledger()
+
+    plan = compiler.compile_rhad_reference_fragment(
+        ledger,
+        expected_evidence_generation=1,
+    )
+
+    assert len(plan.constant_materializations) == 2
+    materialization = plan.constant_materializations[-1]
+    assert materialization.materialization_id == (
+        "constant:rhad-mov-absolute@0x40A710"
+    )
+    assert materialization.reference_operation_id == "rhad:constant@0x40A710"
+    assert materialization.source_block_id == "native@0x40A70E"
+    assert materialization.instruction_ea == 0x40A710
+    assert materialization.data_ea == 0x48AE10
+    assert materialization.constant_value == 0x2F192B3A
+    assert materialization.destination_storage == StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=12,
+    )
+    assert materialization.consumer_operation.value == "move"
+    assert materialization.preserved_flag_roles == ()
+
+
+def test_mov_absolute_destination_storage_participates_in_program_identity() -> None:
+    ledger = _mov_constant_ledger()
+    changed = replace(
+        ledger.operations[-1],
+        destination_storage=StorageIdentity(
+            kind=StorageIdentityKind.REGISTER,
+            offset=16,
+        ),
+    )
+
+    assert replace(
+        ledger,
+        operations=(*ledger.operations[:-1], changed),
+    ).aggregate_program_identity != ledger.aggregate_program_identity
+
+
+def test_mov_absolute_rejects_non_register_destination_before_compilation() -> None:
+    operation = _mov_constant_ledger().operations[-1]
+
+    with pytest.raises(
+        _compiler_module().RhadCompilerRejection,
+        match="register destination storage",
+    ):
+        replace(
+            operation,
+            destination_storage=StorageIdentity(
+                kind=StorageIdentityKind.GLOBAL,
+                offset=0x48AE10,
+            ),
+        )
 
 
 def test_add_absolute_rejects_mismatched_reference_bytes() -> None:

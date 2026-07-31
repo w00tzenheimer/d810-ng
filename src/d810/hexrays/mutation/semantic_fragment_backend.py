@@ -198,6 +198,10 @@ def _require_add_absolute_envelope(
         )
         and _primitive_shape_contains(right[6], ("number", 0))
         and _primitive_shape_contains(right[7], ("number", 0))
+        and _primitive_shape_contains(
+            destination[9],
+            ("register", int(materialization.destination_storage.offset)),
+        )
     )
     expected_sizes = (
         (destination[0], 2),
@@ -224,6 +228,87 @@ def _require_add_absolute_envelope(
         )
 
 
+def _require_mov_absolute_envelope(
+    materialization: FragmentAbsoluteConstantMaterialization,
+    facts: tuple[object, ...],
+) -> None:
+    """Prove one exact GENERATED absolute load delivered by a plain move."""
+    expected_opcodes = (
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_ldx),
+        int(ida_hexrays.m_mov),
+    )
+    if len(facts) != len(expected_opcodes) or tuple(
+        int(getattr(fact, "opcode", -1)) for fact in facts
+    ) != expected_opcodes:
+        raise SemanticFragmentBackendRejected(
+            "mov_absolute GENERATED opcode envelope differs from reference evidence",
+            reason_code="constant_materialization_envelope_mismatch",
+            anchor_ea=materialization.instruction_ea,
+            payload={"materialization_id": materialization.materialization_id},
+        )
+    shapes = tuple(getattr(fact, "operand_shape", ()) for fact in facts)
+    if any(len(shape) != 3 for shape in shapes):
+        raise SemanticFragmentBackendRejected(
+            "mov_absolute GENERATED operand envelope is incomplete",
+            reason_code="constant_materialization_operand_mismatch",
+            anchor_ea=materialization.instruction_ea,
+            payload={"materialization_id": materialization.materialization_id},
+        )
+    left = tuple(shape[0] for shape in shapes)
+    right = tuple(shape[1] for shape in shapes)
+    destination = tuple(shape[2] for shape in shapes)
+    dataflow_matches = (
+        left[2] == destination[0]
+        and right[2] == destination[1]
+        and left[3] == destination[2]
+        and _primitive_shape_contains(
+            left[1],
+            ("global", int(materialization.data_ea)),
+        )
+        and _primitive_shape_contains(
+            destination[3],
+            ("register", int(materialization.destination_storage.offset)),
+        )
+    )
+    expected_sizes = (
+        (destination[0], 2),
+        (destination[1], materialization.width_bits // 8),
+        (destination[2], materialization.width_bits // 8),
+        (destination[3], materialization.width_bits // 8),
+    )
+    sizes_match = all(
+        isinstance(shape, tuple) and len(shape) >= 2 and int(shape[1]) == size
+        for shape, size in expected_sizes
+    )
+    if not dataflow_matches or not sizes_match:
+        raise SemanticFragmentBackendRejected(
+            "mov_absolute GENERATED data-flow envelope differs from reference evidence",
+            reason_code="constant_materialization_dataflow_mismatch",
+            anchor_ea=materialization.instruction_ea,
+            payload={"materialization_id": materialization.materialization_id},
+        )
+
+
+def _require_constant_materialization_envelope(
+    materialization: FragmentAbsoluteConstantMaterialization,
+    facts: tuple[object, ...],
+) -> None:
+    if materialization.consumer_operation is ValueOpKind.ADD:
+        _require_add_absolute_envelope(materialization, facts)
+        return
+    if materialization.consumer_operation is ValueOpKind.MOVE:
+        _require_mov_absolute_envelope(materialization, facts)
+        return
+    raise SemanticFragmentBackendRejected(
+        "constant materialization consumer lacks immutable preflight support",
+        reason_code="constant_materialization_consumer_unsupported",
+        anchor_ea=materialization.instruction_ea,
+        payload={"materialization_id": materialization.materialization_id},
+    )
+
+
 def _prepare_constant_materializations(
     plan: FragmentPlan,
     live_by_id: Mapping[str, object],
@@ -248,10 +333,22 @@ def _prepare_constant_materializations(
             if int(getattr(instruction, "ea", -1)) == materialization.instruction_ea
         )
         indexes = tuple(index for index, _instruction in matches)
+        expected_envelope_length = {
+            ValueOpKind.ADD: 10,
+            ValueOpKind.MOVE: 4,
+        }.get(materialization.consumer_operation)
+        if expected_envelope_length is None:
+            raise SemanticFragmentBackendRejected(
+                "constant materialization consumer lacks immutable preflight support",
+                reason_code="constant_materialization_consumer_unsupported",
+                anchor_ea=materialization.instruction_ea,
+                payload={"materialization_id": materialization.materialization_id},
+            )
         if (
-            len(matches) != 10
+            len(matches) != expected_envelope_length
             or not indexes
-            or indexes != tuple(range(indexes[0], indexes[0] + 10))
+            or indexes
+            != tuple(range(indexes[0], indexes[0] + expected_envelope_length))
         ):
             raise SemanticFragmentBackendRejected(
                 "constant materialization lacks one exact contiguous envelope",
@@ -270,7 +367,7 @@ def _prepare_constant_materializations(
             )
             for offset, (_index, instruction) in enumerate(matches)
         )
-        _require_add_absolute_envelope(materialization, facts)
+        _require_constant_materialization_envelope(materialization, facts)
         prepared.append(
             PreparedConstantMaterializationFact(
                 materialization_id=materialization.materialization_id,
@@ -278,6 +375,7 @@ def _prepare_constant_materializations(
                 instruction_ea=materialization.instruction_ea,
                 envelope_start_instruction_index=indexes[0],
                 load_instruction_index=indexes[0] + 2,
+                consumer_operation=materialization.consumer_operation,
                 envelope=facts,
             )
         )
@@ -1284,6 +1382,12 @@ def _materialize_constant_materializations(
                 anchor_ea=materialization.instruction_ea,
             )
         fact = fact_by_id[materialization.materialization_id]
+        if fact.consumer_operation is not materialization.consumer_operation:
+            raise SemanticFragmentBackendRejected(
+                "constant immutable fact differs from its typed consumer",
+                reason_code="constant_materialization_fact_mismatch",
+                anchor_ea=materialization.instruction_ea,
+            )
         binding = state.binding(source_ref.local_block_id)
         block = _live_block_for_binding(modifier, binding)
         rows = tuple(_iter_block_instructions(block))
@@ -1305,7 +1409,7 @@ def _materialize_constant_materializations(
             for offset, instruction in enumerate(
                 rows[
                     fact.envelope_start_instruction_index :
-                    fact.envelope_start_instruction_index + 10
+                    fact.envelope_start_instruction_index + len(fact.envelope)
                 ]
             )
         )
