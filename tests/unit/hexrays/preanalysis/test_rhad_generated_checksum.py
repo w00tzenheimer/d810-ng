@@ -18054,7 +18054,7 @@ def test_constant_inventory_is_exact_reference_ordered_and_identity_bound() -> N
 def test_constant_row0_compiles_typed_materialization_and_binds_identity() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
-    operation = batch.operations[-3]
+    operation = batch.operations[-4]
     assert isinstance(operation, generated_reference.RhadAbsoluteConstantMaterialization)
     assert operation.operation_id == "constant:rhad-add-absolute@0x40A574"
     assert operation.reference_operation_id == "rhad:constant@0x40A574"
@@ -18082,7 +18082,7 @@ def test_constant_row0_compiles_typed_materialization_and_binds_identity() -> No
         native_key=_native_key(),
         evidence_generation=7,
     )
-    assert len(plan.constant_materializations) == 3
+    assert len(plan.constant_materializations) == 4
     materialization = plan.constant_materializations[0]
     assert materialization.materialization_id == operation.operation_id
     assert materialization.source_block_id == operation.source_block_id
@@ -18108,7 +18108,7 @@ def test_constant_row0_compiles_typed_materialization_and_binds_identity() -> No
 def test_constant_row1_compiles_typed_mov_from_imported_source() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
-    operation = batch.operations[-2]
+    operation = batch.operations[-3]
     assert isinstance(operation, generated_reference.RhadAbsoluteConstantMaterialization)
     assert operation.operation_id == "constant:rhad-mov-absolute@0x40A710"
     assert operation.reference_operation_id == "rhad:constant@0x40A710"
@@ -18133,8 +18133,8 @@ def test_constant_row1_compiles_typed_mov_from_imported_source() -> None:
         native_key=_native_key(),
         evidence_generation=7,
     )
-    assert len(plan.constant_materializations) == 3
-    materialization = plan.constant_materializations[-2]
+    assert len(plan.constant_materializations) == 4
+    materialization = plan.constant_materializations[-3]
     assert materialization.materialization_id == operation.operation_id
     assert materialization.consumer_operation.value == "move"
     assert materialization.publication_envelope.value == "imported_global_move"
@@ -18154,7 +18154,7 @@ def test_constant_row1_compiles_typed_mov_from_imported_source() -> None:
 def test_constant_row2_reuses_imported_global_move_contract() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
-    operation = batch.operations[-1]
+    operation = batch.operations[-2]
     assert isinstance(operation, generated_reference.RhadAbsoluteConstantMaterialization)
     assert operation.operation_id == "constant:rhad-mov-absolute@0x40A868"
     assert operation.reference_operation_id == "rhad:constant@0x40A868"
@@ -18179,8 +18179,8 @@ def test_constant_row2_reuses_imported_global_move_contract() -> None:
         native_key=_native_key(),
         evidence_generation=7,
     )
-    assert len(plan.constant_materializations) == 3
-    materialization = plan.constant_materializations[-1]
+    assert len(plan.constant_materializations) == 4
+    materialization = plan.constant_materializations[-2]
     assert materialization.materialization_id == operation.operation_id
     assert materialization.consumer_operation.value == "move"
     assert materialization.publication_envelope.value == "imported_global_move"
@@ -18197,10 +18197,56 @@ def test_constant_row2_reuses_imported_global_move_contract() -> None:
     assert operation.source_block_id in native_body.preserved_native_transfer_block_ids
 
 
+def test_constant_row3_reuses_mov_eax_absolute_contract() -> None:
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+    operation = batch.operations[-1]
+    assert isinstance(operation, generated_reference.RhadAbsoluteConstantMaterialization)
+    assert operation.operation_id == "constant:rhad-mov-absolute@0x40A903"
+    assert operation.reference_operation_id == "rhad:constant@0x40A903"
+    assert operation.reference_order == 3
+    assert operation.operation_variant.value == "mov_absolute"
+    assert operation.encoding_variant.value == "mov_eax_absolute"
+    assert operation.publication_envelope.value == "imported_global_move"
+    assert operation.source_block_id == "native@0x40A903"
+    assert operation.source_native_ea == 0x40A903
+    assert operation.data_native_ea == 0x48AE80
+    assert operation.destination_storage == StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=8,
+    )
+    assert operation.reference_data_bytes_le == "9578d1df"
+    assert operation.materialized_value == 0xDFD17895
+    assert operation.source_instruction_bytes == "a180ae4800"
+    assert operation.replacement_instruction_bytes == "b89578d1df"
+    assert operation.depends_on == ("constant:rhad-mov-absolute@0x40A868",)
+
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(),
+        evidence_generation=7,
+    )
+    assert len(plan.constant_materializations) == 4
+    materialization = plan.constant_materializations[-1]
+    assert materialization.materialization_id == operation.operation_id
+    assert materialization.consumer_operation.value == "move"
+    assert materialization.encoding_variant.value == "mov_eax_absolute"
+    assert materialization.publication_envelope.value == "imported_global_move"
+    assert materialization.destination_storage == operation.destination_storage
+    source = plan.block(operation.source_block_id)
+    assert source.role.value == "imported"
+    assert source.materialization.value == "import_native"
+    assert source.stable_identity is not None
+    assert source.stable_identity.native_ranges.contains(operation.source_native_ea)
+    native_body = next(
+        body for body in plan.native_bodies if operation.source_block_id in body.block_ids
+    )
+    assert operation.source_block_id in native_body.preserved_native_transfer_block_ids
+
+
 def test_constant_row0_value_changes_aggregate_program_identity() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
-    operation = batch.operations[-3]
+    operation = batch.operations[-4]
     changed = replace(
         operation,
         reference_data_bytes_le="3e727637",
@@ -18210,7 +18256,7 @@ def test_constant_row0_value_changes_aggregate_program_identity() -> None:
     )
     changed_batch = replace(
         batch,
-        operations=(*batch.operations[:-3], changed, *batch.operations[-2:]),
+        operations=(*batch.operations[:-4], changed, *batch.operations[-3:]),
     )
 
     assert changed_batch.aggregate_program_identity != batch.aggregate_program_identity
@@ -18883,9 +18929,9 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:80661a101f706c008029cd6c947f83f0b92f7967b7a0d36073888f77e0f37aad"
+        "sha256:27cf1a0cf423fdcdaedf3f375360399b5452d4cfe8d37d3052b1fc6d99d1cd5f"
     )
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -21269,7 +21315,7 @@ def test_checksum_producer_compiles_row211_cmov_from_reused_split_source() -> No
     assert plan.block(
         "native@0x40C642"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C642})
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -21362,7 +21408,7 @@ def test_checksum_producer_compiles_row212_existing_and_c665_target() -> None:
     assert plan.block(
         "native@0x40C694"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C694})
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -21446,7 +21492,7 @@ def test_checksum_producer_compiles_row213_cmov_from_row212_split_source() -> No
     assert plan.block(
         "native@0x40C68D"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C68D})
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -21525,7 +21571,7 @@ def test_checksum_producer_compiles_row214_direct_from_row121_source() -> None:
         "native@0x40C6B3",
     }.issubset(plan.native_bodies[0].block_ids)
     assert "route:rhad-direct@0x40C6B3" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -21593,7 +21639,7 @@ def test_checksum_producer_compiles_row215_direct_from_row132_source() -> None:
         "native@0x40C6D8",
     }.issubset(plan.native_bodies[0].block_ids)
     assert "route:rhad-direct@0x40C6D8" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -21666,7 +21712,7 @@ def test_checksum_producer_compiles_row216_direct_from_row137_source() -> None:
         "native@0x40C703"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C703})
     assert "route:rhad-direct@0x40C703" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -21717,7 +21763,7 @@ def test_checksum_producer_compiles_row217_direct_from_row165_source() -> None:
     assert plan.block(
         "native@0x40C72E"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C72E})
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -21797,7 +21843,7 @@ def test_checksum_producer_compiles_row218_direct_from_row171_source() -> None:
         "native@0x40C74F"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C74F})
     assert "route:rhad-direct@0x40C74F" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -21874,7 +21920,7 @@ def test_checksum_producer_compiles_row219_direct_from_row174_source() -> None:
         "native@0x40C76E"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C76E})
     assert "route:rhad-direct@0x40C76E" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -21952,7 +21998,7 @@ def test_checksum_producer_compiles_row220_direct_from_row179_source() -> None:
         "native@0x40C793"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C793})
     assert "route:rhad-direct@0x40C793" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -22030,7 +22076,7 @@ def test_checksum_producer_compiles_row221_direct_from_row185_source() -> None:
         "native@0x40C7B8"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C7B8})
     assert "route:rhad-direct@0x40C7B8" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -22087,7 +22133,7 @@ def test_checksum_producer_compiles_row222_direct_from_row187_source() -> None:
         "native@0x40C7E3"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C7E3})
     assert "route:rhad-direct@0x40C7E3" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -22160,7 +22206,7 @@ def test_checksum_producer_compiles_row223_direct_from_row189_source() -> None:
         "native@0x40C802"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C802})
     assert "route:rhad-direct@0x40C802" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -22233,7 +22279,7 @@ def test_checksum_producer_compiles_row224_direct_from_row191_source() -> None:
         "native@0x40C821"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C821})
     assert "route:rhad-direct@0x40C821" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -22306,7 +22352,7 @@ def test_checksum_producer_compiles_row225_direct_from_row193_source() -> None:
         "native@0x40C840"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C840})
     assert "route:rhad-direct@0x40C840" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -22383,7 +22429,7 @@ def test_checksum_producer_compiles_row226_direct_from_row195_source() -> None:
         "native@0x40C86B"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C86B})
     assert "route:rhad-direct@0x40C86B" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
@@ -22460,7 +22506,7 @@ def test_checksum_producer_compiles_row227_direct_from_row207_source() -> None:
         "native@0x40C896"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C896})
     assert "route:rhad-direct@0x40C896" in batch.native_body_proof_ids
-    assert len(batch.operations) == 226
+    assert len(batch.operations) == 227
     assert len(batch.imported_blocks) == 884
     assert len(batch.template_fragments) == 193
     assert len(batch.native_body_proof_ids) == 223
