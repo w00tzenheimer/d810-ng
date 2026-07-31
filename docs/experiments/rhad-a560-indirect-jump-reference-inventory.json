@@ -18900,7 +18900,7 @@
         4236807,
         4241088
       ],
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "typed_existing_conditional_plus_indirect",
       "current_generated_proof": {
         "status": "unproved"
       },
@@ -18917,6 +18917,7 @@
       "operation_variant": "existing_conditional_plus_indirect",
       "owned_corridor_instruction_eas": [
         4245013,
+        4245019,
         4245025,
         4245027,
         4245033,
@@ -18936,7 +18937,7 @@
           "role": "conditional_fallthrough"
         }
       ],
-      "source_block_anchor_ea": 4245027,
+      "source_block_anchor_ea": 4245033,
       "source_native_ea": 4245013,
       "target_rooted_closures": [
         {
