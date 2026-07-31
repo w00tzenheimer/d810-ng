@@ -17454,7 +17454,10 @@ def test_row220_inventory_reuses_row179_source_and_a607_closure() -> None:
         "JumpInliner._fixup_jmp_and_possible_jcc"
     )
     assert row220["current_compiler_support"] == "typed_simple_indirect_jump"
-    assert row220["current_generated_proof"] == {"status": "unproved"}
+    assert row220["current_generated_proof"] == {
+        "accepted_commits": ["0e0a88d1a", "b512d0161", "c8873e361"],
+        "status": "accepted_generated_c6",
+    }
     assert row220["source_native_ea"] == 0x40C12C
     assert row220["source_block_anchor_ea"] == 0x40C787
     assert row220["flag_producer_native_ea"] is None
