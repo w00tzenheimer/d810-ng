@@ -2556,6 +2556,9 @@ def compile_rhad_reference_fragment(
                 else ()
             ),
         )
+    } | {
+        materialization.source_block_id
+        for materialization in constant_materializations
     }
     native_bodies = tuple(
         replace(

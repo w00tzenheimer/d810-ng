@@ -11550,6 +11550,31 @@ _CONSTANT_ROW0_ADD_ABSOLUTE = RhadAbsoluteConstantMaterialization(
     depends_on=(_ROW227_DIRECT_ROUTE.operation_id,),
 )
 
+_CONSTANT_ROW1_MOV_ABSOLUTE = RhadAbsoluteConstantMaterialization(
+    operation_id="constant:rhad-mov-absolute@0x40A710",
+    reference_operation_id="rhad:constant@0x40A710",
+    reference_order=1,
+    operation_variant=RhadOperationVariant.MOV_ABSOLUTE,
+    reference_symbol="deob_consts.ConstantInliner.transform_mov_mem_to_imm",
+    source_block_id="native@0x40A70E",
+    source_native_ea=0x40A710,
+    data_native_ea=0x48AE10,
+    source_width_bits=32,
+    destination_width_bits=32,
+    destination_storage=StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=12,
+    ),
+    reference_read_width_bits=32,
+    reference_data_bytes_le="3a2b192f",
+    reference_raw_value=0x2F192B3A,
+    materialized_value=0x2F192B3A,
+    source_instruction_bytes="8b1510ae4800",
+    replacement_instruction_bytes="90ba3a2b192f",
+    phase=RhadReferencePhase.CONSTANT_MATERIALIZATION,
+    depends_on=(_CONSTANT_ROW0_ADD_ABSOLUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -16455,6 +16480,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW226_DIRECT_ROUTE,
         _ROW227_DIRECT_ROUTE,
         _CONSTANT_ROW0_ADD_ABSOLUTE,
+        _CONSTANT_ROW1_MOV_ABSOLUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
@@ -17514,6 +17540,7 @@ def build_rhad_generated_reference_plan(
     imported_operation_source_ids = frozenset(
         operation.source_block_id
         for operation in batch.operations
+        if not isinstance(operation, RhadAbsoluteConstantMaterialization)
         if operation.source_block_id
         in {evidence.block_id for evidence in batch.imported_blocks}
     )
