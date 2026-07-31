@@ -17940,6 +17940,13 @@ def test_checksum_producer_compiles_row198_cmov_dependency() -> None:
     assert "native@0x40B6C0" in batch.native_body_entry_block_ids
     assert "native@0x40A607" in batch.native_body_entry_block_ids
     assert "rhad:route@0x40C462" in batch.native_body_proof_ids
+    block_ids = [block.block_id for block in plan.blocks]
+    source_index = block_ids.index("native@0x40C448")
+    assert block_ids[source_index : source_index + 3] == [
+        "native@0x40C448",
+        "native@0x40C45B",
+        "native@0x40C45E",
+    ]
     assert plan.block(
         "native@0x40C45B"
     ).stable_identity.exact_instruction_eas == frozenset({0x40C45B})
