@@ -25,6 +25,7 @@ from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.fragment_plan import (
     FragmentAbsoluteConstantMaterialization,
     FragmentArithmeticFlagRole,
+    FragmentAbsoluteConstantEncoding,
     FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentComputedBranchNormalization,
@@ -88,6 +89,14 @@ class RhadConstantPublicationEnvelope(str, Enum):
 
     GENERATED_ABSOLUTE_LOAD = "generated_absolute_load"
     IMPORTED_GLOBAL_MOVE = "imported_global_move"
+
+
+class RhadAbsoluteConstantEncoding(str, Enum):
+    """Typed native encoding family emitted by the reference compiler."""
+
+    ADD_R32_ABSOLUTE = "add_r32_absolute"
+    MOV_R32_ABSOLUTE = "mov_r32_absolute"
+    MOV_EAX_ABSOLUTE = "mov_eax_absolute"
 
 
 EXPECTED_REFERENCE_PHASE_ORDER = (
@@ -750,6 +759,7 @@ class RhadAbsoluteConstantMaterialization:
     materialized_value: int
     source_instruction_bytes: str
     replacement_instruction_bytes: str
+    encoding_variant: RhadAbsoluteConstantEncoding
     publication_envelope: RhadConstantPublicationEnvelope
     phase: RhadReferencePhase
     depends_on: tuple[str, ...]
@@ -786,6 +796,33 @@ class RhadAbsoluteConstantMaterialization:
         }:
             raise RhadCompilerRejection(
                 "Rhad constant contract admits only typed absolute variants"
+            )
+        encoding_variant = self.encoding_variant
+        if not isinstance(encoding_variant, RhadAbsoluteConstantEncoding):
+            raise TypeError("Rhad constant encoding variant must be typed")
+        encoding_contract = {
+            RhadAbsoluteConstantEncoding.ADD_R32_ABSOLUTE: (
+                RhadOperationVariant.ADD_ABSOLUTE,
+                6,
+                6,
+            ),
+            RhadAbsoluteConstantEncoding.MOV_R32_ABSOLUTE: (
+                RhadOperationVariant.MOV_ABSOLUTE,
+                6,
+                6,
+            ),
+            RhadAbsoluteConstantEncoding.MOV_EAX_ABSOLUTE: (
+                RhadOperationVariant.MOV_ABSOLUTE,
+                5,
+                5,
+            ),
+        }[encoding_variant]
+        expected_operation, source_encoding_width, replacement_encoding_width = (
+            encoding_contract
+        )
+        if self.operation_variant is not expected_operation:
+            raise RhadCompilerRejection(
+                "Rhad constant encoding differs from its operation variant"
             )
         publication_envelope = self.publication_envelope
         if not isinstance(publication_envelope, RhadConstantPublicationEnvelope):
@@ -839,8 +876,16 @@ class RhadAbsoluteConstantMaterialization:
             )
         encodings = (
             (self.reference_data_bytes_le, 4, "reference data"),
-            (self.source_instruction_bytes, 6, "source instruction"),
-            (self.replacement_instruction_bytes, 6, "replacement instruction"),
+            (
+                self.source_instruction_bytes,
+                source_encoding_width,
+                "source instruction",
+            ),
+            (
+                self.replacement_instruction_bytes,
+                replacement_encoding_width,
+                "replacement instruction",
+            ),
         )
         normalized_encodings: list[str] = []
         for value, width, description in encodings:
@@ -892,6 +937,7 @@ class RhadAbsoluteConstantMaterialization:
         object.__setattr__(self, "reference_raw_value", reference_raw_value)
         object.__setattr__(self, "materialized_value", materialized_value)
         object.__setattr__(self, "destination_storage", destination_storage)
+        object.__setattr__(self, "encoding_variant", encoding_variant)
         object.__setattr__(self, "publication_envelope", publication_envelope)
         object.__setattr__(self, "depends_on", dependencies)
 
@@ -1684,6 +1730,7 @@ def _reference_payload(
             {
                 "data_native_ea": int(route.data_native_ea),
                 "destination_width_bits": int(route.destination_width_bits),
+                "encoding_variant": route.encoding_variant.value,
                 "materialized_value": int(route.materialized_value),
                 "operation_variant": route.operation_variant.value,
                 "publication_envelope": route.publication_envelope.value,
@@ -2130,6 +2177,9 @@ def _compile_absolute_constant_materialization(
         source_instruction_bytes=operation.source_instruction_bytes,
         replacement_instruction_bytes=operation.replacement_instruction_bytes,
         consumer_operation=consumer_operation,
+        encoding_variant=FragmentAbsoluteConstantEncoding(
+            operation.encoding_variant.value
+        ),
         publication_envelope=FragmentConstantPublicationEnvelope(
             operation.publication_envelope.value
         ),
@@ -2617,6 +2667,7 @@ def compile_rhad_reference_fragment(
 
 __all__ = [
     "EXPECTED_REFERENCE_PHASE_ORDER",
+    "RhadAbsoluteConstantEncoding",
     "RhadCompilerRejection",
     "RhadConstantPublicationEnvelope",
     "RhadAbsoluteConstantMaterialization",

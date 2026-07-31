@@ -14,6 +14,7 @@ from d810.ir.expressions import ValueOpKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
 from d810.transforms.fragment_plan import (
+    FragmentAbsoluteConstantEncoding,
     FragmentAbsoluteConstantMaterialization,
     FragmentArithmeticFlagRole,
     FragmentConstantPublicationEnvelope,
@@ -170,6 +171,7 @@ def test_constant_materializations_lower_as_one_exact_fragment_patch_step() -> N
         source_instruction_bytes="030500004800",
         replacement_instruction_bytes="81c03f727637",
         consumer_operation=ValueOpKind.ADD,
+        encoding_variant=FragmentAbsoluteConstantEncoding.ADD_R32_ABSOLUTE,
         publication_envelope=(
             FragmentConstantPublicationEnvelope.GENERATED_ABSOLUTE_LOAD
         ),
