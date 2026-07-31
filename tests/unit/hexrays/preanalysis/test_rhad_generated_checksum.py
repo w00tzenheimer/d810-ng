@@ -16660,7 +16660,10 @@ def test_row208_inventory_reuses_exact_direct_source_and_target_closure() -> Non
     assert row208["operation_variant"] == "simple_indirect_jump"
     assert row208["reference_symbol"] == "JumpInliner._fixup_jmp_and_possible_jcc"
     assert row208["current_compiler_support"] == "typed_simple_indirect_jump"
-    assert row208["current_generated_proof"] == {"status": "unproved"}
+    assert row208["current_generated_proof"] == {
+        "accepted_commits": ["5fa32452b", "b457201a6", "5f1159d25"],
+        "status": "accepted_generated_c6",
+    }
     assert row208["source_native_ea"] == 0x40C5D7
     assert row208["source_block_anchor_ea"] == 0x40C5EF
     assert row208["flag_producer_native_ea"] is None
@@ -23352,13 +23355,13 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 49,
-        "vertically_proved_operations": 49,
-        "accepted_receipt_operations": 49,
-        "earliest_unproved_reference_order": 208,
-        "earliest_unproved_operation_id": "rhad:route@0x40C5F9",
+        "compiled_operation_instances": 50,
+        "vertically_proved_operations": 50,
+        "accepted_receipt_operations": 50,
+        "earliest_unproved_reference_order": 214,
+        "earliest_unproved_operation_id": "rhad:route@0x40C6B3",
         "first_missing_typed_obligation": (
-            "instantiate the accepted RhadDirectRoute vocabulary with exact row207 "
+            "instantiate the accepted RhadDirectRoute vocabulary with exact row213 "
             "dependency and target-closure evidence before live mutation"
         ),
     }
