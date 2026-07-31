@@ -16159,6 +16159,11 @@ def test_row201_inventory_has_exact_producer_and_complete_target_closure() -> No
         0x40B660,
         0x40B666,
         0x40C4B4,
+        0x40C4C3,
+        0x40C4C6,
+        0x40C4D4,
+        0x40C4D6,
+        0x40C4DA,
     ]
     assert row201["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
     assert row201["unavailable_closure_exit_eas"] == []
@@ -16178,6 +16183,11 @@ def test_row201_inventory_has_exact_producer_and_complete_target_closure() -> No
             0x40B660,
             0x40B666,
             0x40C4B4,
+            0x40C4C3,
+            0x40C4C6,
+            0x40C4D4,
+            0x40C4D6,
+            0x40C4DA,
         ],
         "owned_native_block_entry_eas": [
             0x40ADA2,
@@ -16187,6 +16197,9 @@ def test_row201_inventory_has_exact_producer_and_complete_target_closure() -> No
             0x40B647,
             0x40B660,
             0x40C4B4,
+            0x40C4C6,
+            0x40C4D4,
+            0x40C4D6,
         ],
         "root_ea": 0x40C4B4,
         "status": "complete",
