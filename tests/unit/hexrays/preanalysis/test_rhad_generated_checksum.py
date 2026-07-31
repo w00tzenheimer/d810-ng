@@ -518,6 +518,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         "rhad:route@0x40C313",
         "route:rhad-direct@0x40C34B",
         "rhad:route@0x40C365",
+        "route:rhad-direct@0x40C390",
     )
     payload = json.loads(
         operation.reference_route_authority.reference_route.reference_ledger_json
@@ -16109,12 +16110,12 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:ec0f57fa1a080af68c9fd432a14aef635b27092be7574d42739a82203c240eec"
+        "sha256:783c549739a727433e140dc05f54f3a69ed7f3d78cb425483bb15ce968cc08cf"
     )
-    assert len(batch.operations) == 187
+    assert len(batch.operations) == 188
     assert len(batch.imported_blocks) == 822
     assert len(batch.template_fragments) == 181
-    assert len(batch.native_body_proof_ids) == 187
+    assert len(batch.native_body_proof_ids) == 188
     assert len(batch.native_body_entry_block_ids) == 529
     assert len(plan.blocks) == 827
     normalization = operation.computed_branch_normalization
@@ -16911,6 +16912,73 @@ def test_checksum_producer_compiles_row191_existing_dependency() -> None:
         0x40C81B,
     )
     assert templates[0x40C367].boundary_exit_eas == (0x40A607, 0x40B6C0)
+
+
+def test_checksum_producer_compiles_row192_direct_dependency() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
+    )
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+
+    operation = plan.operation("route:rhad-direct@0x40C390")
+    assert operation.direct_transfer_rewrite is not None
+    assert operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x40C390
+    assert operation.direct_transfer_rewrite.owner_anchor_ea == 0x40C38C
+    assert {edge.role: edge.target_block_id for edge in operation.edges} == {
+        SemanticEdgeRole.DIRECT: "native@0x40B6C0"
+    }
+    payload = json.loads(
+        operation.reference_route_authority.reference_route.reference_ledger_json
+    )
+    assert payload["reference_operation_id"] == "rhad:route@0x40C390"
+    assert payload["reference_order"] == 192
+    assert payload["reference_symbol"] == "JumpInliner._fixup_jmp_and_possible_jcc"
+    assert payload["operation_variant"] == "simple_indirect_jump"
+    assert payload["source_native_ea"] == 0x40C37A
+    assert payload["source_block_anchor_ea"] == 0x40C38C
+    assert payload["transfer_ea"] == 0x40C390
+    assert payload["direct_target_block_id"] == "native@0x40B6C0"
+    assert payload["owned_corridor_instruction_eas"] == [
+        0x40C37A,
+        0x40C38C,
+        0x40C38E,
+        0x40C390,
+    ]
+    assert payload["imported_closure_block_ids"] == [
+        "native@0x40B6C0",
+        "native@0x40B6CA",
+        "native@0x40B6D0",
+        "native@0x40B6D4",
+    ]
+    assert payload["boundary_exit_eas"] == [0x40B790]
+    assert next(
+        candidate
+        for candidate in batch.operations
+        if candidate.operation_id == "route:rhad-direct@0x40C390"
+    ).depends_on == ("rhad:route@0x40C365",)
+    assert "route:rhad-direct@0x40C390" in batch.native_body_proof_ids
+    assert plan.block(
+        "native@0x40C37A"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C37A, 0x40C380, 0x40C386}
+    )
+    assert plan.block(
+        "native@0x40C38C"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C38C, 0x40C38E, 0x40C390}
+    )
+    assert plan.block(
+        "native@0x40C390"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40C390})
+
+    templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
+    assert templates[0x40C367].preserved_unresolved_transfers[0] == (
+        generated_reference.RhadGeneratedPreservedTransfer(
+            transfer_ea=0x40C390,
+            boundary_exit_eas=(0x40B6C0,),
+        )
+    )
 
 
 def test_checksum_producer_compiles_row143_existing_dependency() -> None:
