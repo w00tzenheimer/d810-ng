@@ -16414,7 +16414,10 @@ def test_row204_inventory_has_exact_cmov_source_alias_and_reused_closures() -> N
     assert row204["operation_variant"] == "cmov_selected_indirect"
     assert row204["reference_symbol"] == "JumpInliner._fixup_cmov"
     assert row204["current_compiler_support"] == "typed_cmov_selected_indirect"
-    assert row204["current_generated_proof"] == {"status": "unproved"}
+    assert row204["current_generated_proof"] == {
+        "accepted_commits": ["436246ad9", "a675ae0f4", "7a3f8dae6"],
+        "status": "accepted_generated_c6",
+    }
     assert row204["source_native_ea"] == 0x40C516
     assert row204["source_block_anchor_ea"] == 0x40C4F6
     assert row204["flag_producer_native_ea"] == 0x40C510
@@ -22827,11 +22830,11 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         if row["operation_variant"] == "simple_indirect_jump"
     )
 
-    assert summary["accepted_code_sha"] == ("96d4282340c9c09115e66d5af5601e5ddde6b0cd")
+    assert summary["accepted_code_sha"] == ("7a3f8dae663266f94f81e1975dd17210c42710fb")
     accepted_operation_ids = summary["accepted_receipt_operation_ids"]
     compiled_operation_ids = [operation.operation_id for operation in batch.operations]
-    assert len(accepted_operation_ids) == 199
-    assert accepted_operation_ids[-1] == "rhad:route@0x40C4F4"
+    assert len(accepted_operation_ids) == 200
+    assert accepted_operation_ids[-1] == "rhad:route@0x40C525"
     assert (
         accepted_operation_ids == compiled_operation_ids[: len(accepted_operation_ids)]
     )
@@ -22840,8 +22843,8 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
         "compiled_operation_instances": 31,
-        "vertically_proved_operations": 30,
-        "accepted_receipt_operations": 30,
+        "vertically_proved_operations": 31,
+        "accepted_receipt_operations": 31,
         "earliest_unproved_reference_order": 0,
         "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
         "first_missing_typed_obligation": (
