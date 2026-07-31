@@ -95,6 +95,16 @@ class FragmentSetccFallthroughDelivery(str, Enum):
     PLANNED_HELPER = "planned_helper"
 
 
+class FragmentArithmeticFlagRole(str, Enum):
+    """Architectural flags preserved by an arithmetic materialization."""
+
+    CARRY = "carry"
+    OVERFLOW = "overflow"
+    ZERO = "zero"
+    PARITY = "parity"
+    SIGN = "sign"
+
+
 @dataclass(frozen=True, slots=True)
 class FragmentSetccExplicitShiftScaling:
     """A standalone native shift/multiply before the table lookup."""
@@ -1373,6 +1383,140 @@ class FragmentDirectTransferRewrite:
 
 
 @dataclass(frozen=True, slots=True)
+class FragmentAbsoluteConstantMaterialization:
+    """Replace one proven absolute load with an immutable constant value.
+
+    The first admitted shape is the 32-bit source of a native ADD.  The
+    backend must replace only the load result; the existing carry, overflow,
+    arithmetic, zero, parity, and sign consumers remain authoritative.
+    """
+
+    materialization_id: str
+    reference_operation_id: str
+    source_block_id: str
+    instruction_ea: int
+    data_ea: int
+    width_bits: int
+    reference_read_width_bits: int
+    constant_value: int
+    reference_data_bytes_le: str
+    source_instruction_bytes: str
+    replacement_instruction_bytes: str
+    consumer_operation: ValueOpKind
+    preserved_flag_roles: tuple[FragmentArithmeticFlagRole, ...]
+
+    def __post_init__(self) -> None:
+        materialization_id = _require_identifier(
+            self.materialization_id,
+            "constant materialization id",
+        )
+        reference_operation_id = _require_identifier(
+            self.reference_operation_id,
+            "constant reference operation id",
+        )
+        source_block_id = _require_identifier(
+            self.source_block_id,
+            "constant materialization source block",
+        )
+        if not materialization_id.startswith("constant:"):
+            raise FragmentPlanRejected(
+                "constant materialization requires compiled operation identity"
+            )
+        if not reference_operation_id.startswith("rhad:constant@"):
+            raise FragmentPlanRejected(
+                "constant materialization requires exact reference identity"
+            )
+        instruction_ea = _require_native_ea(
+            self.instruction_ea,
+            "constant materialization instruction",
+        )
+        data_ea = _require_native_ea(
+            self.data_ea,
+            "constant materialization data",
+        )
+        width_bits = int(self.width_bits)
+        reference_read_width_bits = int(self.reference_read_width_bits)
+        constant_value = int(self.constant_value)
+        if width_bits != 32 or reference_read_width_bits != 32:
+            raise FragmentPlanRejected(
+                "add-absolute materialization requires a 32-bit load and read"
+            )
+        if not 0 <= constant_value <= 0xFFFFFFFF:
+            raise FragmentPlanRejected(
+                "add-absolute materialized value must fit 32 bits"
+            )
+        if self.consumer_operation is not ValueOpKind.ADD:
+            raise FragmentPlanRejected(
+                "first constant materialization contract admits only ADD"
+            )
+        expected_flags = (
+            FragmentArithmeticFlagRole.CARRY,
+            FragmentArithmeticFlagRole.OVERFLOW,
+            FragmentArithmeticFlagRole.ZERO,
+            FragmentArithmeticFlagRole.PARITY,
+            FragmentArithmeticFlagRole.SIGN,
+        )
+        flags = tuple(self.preserved_flag_roles)
+        if flags != expected_flags:
+            raise FragmentPlanRejected(
+                "add-absolute materialization requires the complete flag envelope"
+            )
+        encodings = (
+            (self.reference_data_bytes_le, 4, "constant reference data"),
+            (self.source_instruction_bytes, 6, "constant source instruction"),
+            (
+                self.replacement_instruction_bytes,
+                6,
+                "constant replacement instruction",
+            ),
+        )
+        normalized_encodings: list[str] = []
+        for value, width, description in encodings:
+            normalized = str(value).lower()
+            if len(normalized) != width * 2 or any(
+                character not in "0123456789abcdef" for character in normalized
+            ):
+                raise FragmentPlanRejected(
+                    f"{description} requires exactly {width} encoded bytes"
+                )
+            normalized_encodings.append(normalized)
+        if int.from_bytes(bytes.fromhex(normalized_encodings[0]), "little") != (
+            constant_value
+        ):
+            raise FragmentPlanRejected(
+                "constant reference data differs from the materialized value"
+            )
+        object.__setattr__(self, "materialization_id", materialization_id)
+        object.__setattr__(self, "reference_operation_id", reference_operation_id)
+        object.__setattr__(self, "source_block_id", source_block_id)
+        object.__setattr__(self, "instruction_ea", instruction_ea)
+        object.__setattr__(self, "data_ea", data_ea)
+        object.__setattr__(self, "width_bits", width_bits)
+        object.__setattr__(
+            self,
+            "reference_read_width_bits",
+            reference_read_width_bits,
+        )
+        object.__setattr__(self, "constant_value", constant_value)
+        object.__setattr__(
+            self,
+            "reference_data_bytes_le",
+            normalized_encodings[0],
+        )
+        object.__setattr__(
+            self,
+            "source_instruction_bytes",
+            normalized_encodings[1],
+        )
+        object.__setattr__(
+            self,
+            "replacement_instruction_bytes",
+            normalized_encodings[2],
+        )
+        object.__setattr__(self, "preserved_flag_roles", flags)
+
+
+@dataclass(frozen=True, slots=True)
 class FragmentOperation:
     """One complete semantic control-flow operation inside a fragment."""
 
@@ -2046,6 +2190,7 @@ class FragmentPlan:
     owned_originals: tuple[str, ...]
     prohibited_dispatcher_blocks: tuple[str, ...]
     operations: tuple[FragmentOperation, ...]
+    constant_materializations: tuple[FragmentAbsoluteConstantMaterialization, ...] = ()
     work_item_scope: FragmentWorkItemScope | None = None
     normalization_authority: NormalizationWorkItemAuthority | None = None
     return_carriers: tuple[FragmentReturnCarrier, ...] = ()
@@ -2294,6 +2439,50 @@ class FragmentPlan:
             (operation.source_block_id for operation in operations),
             "fragment operation source",
         )
+        constant_materializations = tuple(self.constant_materializations)
+        if any(
+            not isinstance(item, FragmentAbsoluteConstantMaterialization)
+            for item in constant_materializations
+        ):
+            raise TypeError(
+                "fragment plan contains an invalid constant materialization"
+            )
+        self._require_unique_ids(
+            (item.materialization_id for item in constant_materializations),
+            "constant materialization",
+        )
+        for item in constant_materializations:
+            source = block_by_id.get(item.source_block_id)
+            if (
+                source is None
+                or source.role
+                not in {
+                    FragmentBlockRole.EXTERNAL,
+                    FragmentBlockRole.REPLACEMENT,
+                    FragmentBlockRole.IMPORTED,
+                }
+                or source.stable_identity is None
+                or not source.stable_identity.native_ranges.contains(
+                    item.instruction_ea
+                )
+            ):
+                raise FragmentPlanRejected(
+                    f"constant materialization {item.materialization_id!r} lacks "
+                    "an exact owned source identity"
+                )
+            if (
+                self.publication_purpose
+                is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+                and (
+                    not isinstance(work_item_scope, FragmentWorkItemScope)
+                    or item.materialization_id
+                    not in work_item_scope.selected_obligation_ids
+                )
+            ):
+                raise FragmentPlanRejected(
+                    f"constant materialization {item.materialization_id!r} is "
+                    "absent from frontend work-item authority"
+                )
         semantic_envelope_owner_by_ea: dict[int, str] = {}
         reference_authorities: list[FragmentReferenceRouteAuthority] = []
         for operation in operations:
@@ -3256,6 +3445,11 @@ class FragmentPlan:
             prohibited_dispatcher_blocks,
         )
         object.__setattr__(self, "operations", operations)
+        object.__setattr__(
+            self,
+            "constant_materializations",
+            constant_materializations,
+        )
         object.__setattr__(self, "work_item_scope", work_item_scope)
         object.__setattr__(self, "return_carriers", return_carriers)
         object.__setattr__(self, "terminal_returns", terminal_returns)
@@ -3476,6 +3670,8 @@ def serialize_fragment_plan(plan: FragmentPlan) -> str:
 
 
 __all__ = [
+    "FragmentAbsoluteConstantMaterialization",
+    "FragmentArithmeticFlagRole",
     "FragmentBlock",
     "FragmentBlockMaterialization",
     "FragmentBlockRole",

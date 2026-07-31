@@ -19,8 +19,11 @@ from d810.core.semantic_route_oracle import (
     SemanticTransferKind,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.expressions import ValueOpKind
 from d810.ir.semantics import PredicateKind, inverted_predicate_kind
 from d810.transforms.fragment_plan import (
+    FragmentAbsoluteConstantMaterialization,
+    FragmentArithmeticFlagRole,
     FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentComputedBranchNormalization,
@@ -74,6 +77,7 @@ class RhadOperationVariant(str, Enum):
     SIMPLE_INDIRECT_JUMP = "simple_indirect_jump"
     EXISTING_CONDITIONAL_PLUS_INDIRECT = "existing_conditional_plus_indirect"
     SETCC_INDEXED_TABLE = "setcc_indexed_table"
+    ADD_ABSOLUTE = "add_absolute"
 
 
 EXPECTED_REFERENCE_PHASE_ORDER = (
@@ -716,6 +720,145 @@ class RhadDirectRoute:
 
 
 @dataclass(frozen=True, slots=True)
+class RhadAbsoluteConstantMaterialization:
+    """One exact absolute-data load materialized by the reference compiler."""
+
+    operation_id: str
+    reference_operation_id: str
+    reference_order: int
+    operation_variant: RhadOperationVariant
+    reference_symbol: str
+    source_block_id: str
+    source_native_ea: int
+    data_native_ea: int
+    source_width_bits: int
+    destination_width_bits: int
+    reference_read_width_bits: int
+    reference_data_bytes_le: str
+    reference_raw_value: int
+    materialized_value: int
+    source_instruction_bytes: str
+    replacement_instruction_bytes: str
+    phase: RhadReferencePhase
+    depends_on: tuple[str, ...]
+    category: RhadOperationCategory = RhadOperationCategory.CONSTANT_MATERIALIZATION
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "operation_id",
+            "reference_operation_id",
+            "reference_symbol",
+            "source_block_id",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _identifier(getattr(self, field_name), field_name.replace("_", " ")),
+            )
+        if not self.operation_id.startswith("constant:"):
+            raise RhadCompilerRejection(
+                "Rhad constant operation requires compiled constant identity"
+            )
+        if not self.reference_operation_id.startswith("rhad:constant@"):
+            raise RhadCompilerRejection(
+                "Rhad constant operation requires exact ledger identity"
+            )
+        reference_order = int(self.reference_order)
+        if reference_order < 0:
+            raise RhadCompilerRejection(
+                "Rhad constant reference order must be non-negative"
+            )
+        if self.operation_variant is not RhadOperationVariant.ADD_ABSOLUTE:
+            raise RhadCompilerRejection(
+                "first Rhad constant contract admits only add_absolute"
+            )
+        if self.category is not RhadOperationCategory.CONSTANT_MATERIALIZATION:
+            raise RhadCompilerRejection(
+                "Rhad constant operation requires its typed category"
+            )
+        if self.phase is not RhadReferencePhase.CONSTANT_MATERIALIZATION:
+            raise RhadCompilerRejection(
+                "Rhad constant operation requires the constant phase"
+            )
+        object.__setattr__(
+            self,
+            "source_native_ea",
+            _native_ea(self.source_native_ea, "Rhad constant source"),
+        )
+        object.__setattr__(
+            self,
+            "data_native_ea",
+            _native_ea(self.data_native_ea, "Rhad constant data"),
+        )
+        for field_name in (
+            "source_width_bits",
+            "destination_width_bits",
+            "reference_read_width_bits",
+        ):
+            width = int(getattr(self, field_name))
+            if width != 32:
+                raise RhadCompilerRejection(
+                    "add_absolute requires 32-bit source, destination, and read widths"
+                )
+            object.__setattr__(self, field_name, width)
+        encodings = (
+            (self.reference_data_bytes_le, 4, "reference data"),
+            (self.source_instruction_bytes, 6, "source instruction"),
+            (self.replacement_instruction_bytes, 6, "replacement instruction"),
+        )
+        normalized_encodings: list[str] = []
+        for value, width, description in encodings:
+            normalized = str(value).lower()
+            if len(normalized) != width * 2 or any(
+                character not in "0123456789abcdef" for character in normalized
+            ):
+                raise RhadCompilerRejection(
+                    f"Rhad constant {description} requires exactly {width} bytes"
+                )
+            normalized_encodings.append(normalized)
+        reference_raw_value = int(self.reference_raw_value)
+        materialized_value = int(self.materialized_value)
+        encoded_value = int.from_bytes(
+            bytes.fromhex(normalized_encodings[0]),
+            "little",
+        )
+        if (
+            reference_raw_value != encoded_value
+            or materialized_value != reference_raw_value
+            or not 0 <= materialized_value <= 0xFFFFFFFF
+        ):
+            raise RhadCompilerRejection(
+                "Rhad add_absolute data bytes and materialized value differ"
+            )
+        dependencies = tuple(
+            _identifier(value, "Rhad dependency") for value in self.depends_on
+        )
+        if not dependencies or len(set(dependencies)) != len(dependencies):
+            raise RhadCompilerRejection(
+                "Rhad constant dependencies must be non-empty and unique"
+            )
+        object.__setattr__(self, "reference_order", reference_order)
+        object.__setattr__(
+            self,
+            "reference_data_bytes_le",
+            normalized_encodings[0],
+        )
+        object.__setattr__(
+            self,
+            "source_instruction_bytes",
+            normalized_encodings[1],
+        )
+        object.__setattr__(
+            self,
+            "replacement_instruction_bytes",
+            normalized_encodings[2],
+        )
+        object.__setattr__(self, "reference_raw_value", reference_raw_value)
+        object.__setattr__(self, "materialized_value", materialized_value)
+        object.__setattr__(self, "depends_on", dependencies)
+
+
+@dataclass(frozen=True, slots=True)
 class RhadExistingConditionalRoute:
     """One imported native conditional-select followed by an indirect jump."""
 
@@ -1071,6 +1214,7 @@ RhadReferenceOperation = (
     | RhadDirectRoute
     | RhadExistingConditionalRoute
     | RhadSetccIndexedTableRoute
+    | RhadAbsoluteConstantMaterialization
 )
 
 
@@ -1112,6 +1256,7 @@ def rhad_reference_operation_identity_payload(
             RhadDirectRoute,
             RhadExistingConditionalRoute,
             RhadSetccIndexedTableRoute,
+            RhadAbsoluteConstantMaterialization,
         ),
     ):
         raise TypeError("Rhad reference identity requires an admitted operation")
@@ -1161,6 +1306,7 @@ class RhadReferenceLedger:
                     RhadDirectRoute,
                     RhadExistingConditionalRoute,
                     RhadSetccIndexedTableRoute,
+                    RhadAbsoluteConstantMaterialization,
                 ),
             )
             for operation in operations
@@ -1301,6 +1447,7 @@ def _validate_ledger(
     closure_ids = {
         block_id
         for operation in ledger.operations
+        if not isinstance(operation, RhadAbsoluteConstantMaterialization)
         for block_id in operation.imported_closure_block_ids
     }
     if closure_ids != imported_ids:
@@ -1334,6 +1481,7 @@ def _validate_ledger(
             {
                 int(boundary_ea)
                 for operation in ledger.operations
+                if not isinstance(operation, RhadAbsoluteConstantMaterialization)
                 for boundary_ea in operation.boundary_exit_eas
             }
             - internalized_exit_eas
@@ -1350,17 +1498,26 @@ def _reference_payload(
     route: RhadReferenceOperation,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
-        "boundary_exit_eas": list(route.boundary_exit_eas),
         "evidence_generation": int(ledger.evidence_generation),
         "function_ea": int(ledger.function_ea),
-        "imported_closure_block_ids": list(route.imported_closure_block_ids),
         "operation_category": route.category.value,
         "operation_id": route.operation_id,
-        "owned_corridor_instruction_eas": list(route.owned_corridor_instruction_eas),
         "reference_phase": route.phase.value,
         "reference_provenance": dict(ledger.reference_provenance),
-        "transfer_ea": int(route.transfer_ea),
     }
+    if not isinstance(route, RhadAbsoluteConstantMaterialization):
+        payload.update(
+            {
+                "boundary_exit_eas": list(route.boundary_exit_eas),
+                "imported_closure_block_ids": list(
+                    route.imported_closure_block_ids
+                ),
+                "owned_corridor_instruction_eas": list(
+                    route.owned_corridor_instruction_eas
+                ),
+                "transfer_ea": int(route.transfer_ea),
+            }
+        )
     if isinstance(route, RhadConditionalRoute):
         payload.update(
             {
@@ -1482,6 +1639,30 @@ def _reference_payload(
                     "zeroed_width_bits": int(evidence.zeroed_width_bits),
                     "zeroing_ea": int(evidence.zeroing_ea),
                 },
+            }
+        )
+    elif isinstance(route, RhadAbsoluteConstantMaterialization):
+        payload.update(
+            {
+                "data_native_ea": int(route.data_native_ea),
+                "destination_width_bits": int(route.destination_width_bits),
+                "materialized_value": int(route.materialized_value),
+                "operation_variant": route.operation_variant.value,
+                "reference_data_bytes_le": route.reference_data_bytes_le,
+                "reference_operation_id": route.reference_operation_id,
+                "reference_order": int(route.reference_order),
+                "reference_raw_value": int(route.reference_raw_value),
+                "reference_read_width_bits": int(
+                    route.reference_read_width_bits
+                ),
+                "reference_symbol": route.reference_symbol,
+                "replacement_instruction_bytes": (
+                    route.replacement_instruction_bytes
+                ),
+                "source_block_id": route.source_block_id,
+                "source_instruction_bytes": route.source_instruction_bytes,
+                "source_native_ea": int(route.source_native_ea),
+                "source_width_bits": int(route.source_width_bits),
             }
         )
     else:
@@ -1835,6 +2016,61 @@ def _compile_direct_route(
             reference_route=reference_route,
             candidate_rewrite_anchor_ea=int(route.transfer_ea),
             imported_closure_block_ids=route.imported_closure_block_ids,
+        ),
+    )
+
+
+def _compile_absolute_constant_materialization(
+    ledger: RhadReferenceLedger,
+    operation: RhadAbsoluteConstantMaterialization,
+) -> FragmentAbsoluteConstantMaterialization:
+    source = next(
+        (
+            block
+            for block in ledger.base_plan.blocks
+            if block.block_id == operation.source_block_id
+        ),
+        None,
+    )
+    if (
+        source is None
+        or source.role is not FragmentBlockRole.EXTERNAL
+        or source.materialization is not FragmentBlockMaterialization.REUSE_PUBLISHED
+        or source.stable_identity is None
+        or not source.stable_identity.native_ranges.contains(
+            operation.source_native_ea
+        )
+    ):
+        raise RhadCompilerRejection(
+            "Rhad add_absolute source requires an exact published identity"
+        )
+    scope = ledger.base_plan.work_item_scope
+    if (
+        scope is None
+        or operation.operation_id not in scope.selected_obligation_ids
+    ):
+        raise RhadCompilerRejection(
+            "Rhad add_absolute operation is absent from work-item authority"
+        )
+    return FragmentAbsoluteConstantMaterialization(
+        materialization_id=operation.operation_id,
+        reference_operation_id=operation.reference_operation_id,
+        source_block_id=operation.source_block_id,
+        instruction_ea=int(operation.source_native_ea),
+        data_ea=int(operation.data_native_ea),
+        width_bits=int(operation.source_width_bits),
+        reference_read_width_bits=int(operation.reference_read_width_bits),
+        constant_value=int(operation.materialized_value),
+        reference_data_bytes_le=operation.reference_data_bytes_le,
+        source_instruction_bytes=operation.source_instruction_bytes,
+        replacement_instruction_bytes=operation.replacement_instruction_bytes,
+        consumer_operation=ValueOpKind.ADD,
+        preserved_flag_roles=(
+            FragmentArithmeticFlagRole.CARRY,
+            FragmentArithmeticFlagRole.OVERFLOW,
+            FragmentArithmeticFlagRole.ZERO,
+            FragmentArithmeticFlagRole.PARITY,
+            FragmentArithmeticFlagRole.SIGN,
         ),
     )
 
@@ -2231,6 +2467,7 @@ def compile_rhad_reference_fragment(
         expected_evidence_generation=expected_evidence_generation,
     )
     operations: list[FragmentOperation] = []
+    constant_materializations: list[FragmentAbsoluteConstantMaterialization] = []
     corridors: list[FragmentFlagCorridor] = []
     for operation in ledger.operations:
         if isinstance(operation, RhadConditionalRoute):
@@ -2256,6 +2493,10 @@ def compile_rhad_reference_fragment(
             )
             operations.append(compiled_operation)
             corridors.append(corridor)
+        elif isinstance(operation, RhadAbsoluteConstantMaterialization):
+            constant_materializations.append(
+                _compile_absolute_constant_materialization(ledger, operation)
+            )
         else:
             raise RhadCompilerRejection(
                 f"Rhad operation type is unsupported: {type(operation).__name__}"
@@ -2305,6 +2546,7 @@ def compile_rhad_reference_fragment(
         ),
         atomic_group_id=ledger.ledger_id,
         operations=tuple(operations),
+        constant_materializations=tuple(constant_materializations),
         flag_corridors=tuple(ledger.base_plan.flag_corridors) + tuple(corridors),
         native_bodies=native_bodies,
         reference_oracle_run=ledger.reference_oracle_run,
@@ -2314,6 +2556,7 @@ def compile_rhad_reference_fragment(
 __all__ = [
     "EXPECTED_REFERENCE_PHASE_ORDER",
     "RhadCompilerRejection",
+    "RhadAbsoluteConstantMaterialization",
     "RhadConditionalRoute",
     "RhadDirectRoute",
     "RhadExistingConditionalRoute",
