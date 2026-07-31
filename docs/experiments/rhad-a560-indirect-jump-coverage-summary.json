@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "1bafdf09b42e75c526973682525662059285bd18",
+  "accepted_code_sha": "96d4282340c9c09115e66d5af5601e5ddde6b0cd",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -203,7 +203,8 @@
     "rhad:route@0x40C47C",
     "rhad:route@0x40C498",
     "rhad:route@0x40C4B2",
-    "rhad:route@0x40C4DA"
+    "rhad:route@0x40C4DA",
+    "rhad:route@0x40C4F4"
   ],
   "variants": [
     {
@@ -233,11 +234,11 @@
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
       "compiled_operation_instances": 112,
-      "vertically_proved_operations": 111,
-      "accepted_receipt_operations": 111,
-      "earliest_unproved_reference_order": 203,
-      "earliest_unproved_operation_id": "rhad:route@0x40C4F4",
-      "first_missing_typed_obligation": "publish the compiled row203 operation and complete C4F6/C525 target closure at actual MMAT_GENERATED through the shared coordinator, then persist one committed receipt and maturity proof"
+      "vertically_proved_operations": 112,
+      "accepted_receipt_operations": 112,
+      "earliest_unproved_reference_order": 205,
+      "earliest_unproved_operation_id": "rhad:route@0x40C53F",
+      "first_missing_typed_obligation": "instantiate the accepted RhadExistingConditionalRoute vocabulary with exact row204 dependency and target-closure evidence before live mutation"
     },
     {
       "operation_variant": "setcc_indexed_table",
