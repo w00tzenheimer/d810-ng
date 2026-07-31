@@ -2370,6 +2370,7 @@ ROW221_TARGET_IMPORTED_BLOCK_IDS = (
     "native@0x40A680",
     "native@0x40A68A",
 )
+ROW222_TARGET_IMPORTED_BLOCK_IDS = ROW221_TARGET_IMPORTED_BLOCK_IDS
 BASE_IMPORTED_LAYOUT = (
     (0x40A607, 0x40A615, (0x40A607,)),
     (0x40A615, 0x40A61B, (0x40A615,)),
@@ -11322,6 +11323,34 @@ _ROW221_DIRECT_ROUTE = RhadDirectRoute(
     depends_on=(_ROW220_DIRECT_ROUTE.operation_id,),
 )
 
+_ROW222_DIRECT_ROUTE = RhadDirectRoute(
+    operation_id="route:rhad-direct@0x40C7E3",
+    reference_operation_id="rhad:route@0x40C7E3",
+    reference_order=222,
+    operation_variant=RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+    reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
+    source_block_id="native@0x40C7D7",
+    source_native_ea=0x40C2D1,
+    transfer_ea=0x40C7E3,
+    owner_anchor_ea=0x40C7D7,
+    direct_target_block_id="native@0x40A607",
+    owned_corridor_instruction_eas=(
+        0x40C2D1,
+        0x40C2E3,
+        0x40C2E9,
+        0x40C7CB,
+        0x40C7D7,
+        0x40C7D9,
+        0x40C7DB,
+        0x40C7DD,
+        0x40C7E3,
+    ),
+    imported_closure_block_ids=ROW222_TARGET_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40A61B, 0x40A68C),
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_ROW221_DIRECT_ROUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -12388,6 +12417,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW219_DIRECT_ROUTE.operation_id,
         _ROW220_DIRECT_ROUTE.operation_id,
         _ROW221_DIRECT_ROUTE.operation_id,
+        _ROW222_DIRECT_ROUTE.operation_id,
     ),
     template_fragments=(
         RhadGeneratedTemplateFragment(
@@ -16195,6 +16225,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW219_DIRECT_ROUTE,
         _ROW220_DIRECT_ROUTE,
         _ROW221_DIRECT_ROUTE,
+        _ROW222_DIRECT_ROUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
