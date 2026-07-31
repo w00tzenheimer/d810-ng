@@ -16524,7 +16524,10 @@ def test_row206_inventory_has_exact_cmov_source_alias_and_reused_closures() -> N
     assert row206["operation_variant"] == "cmov_selected_indirect"
     assert row206["reference_symbol"] == "JumpInliner._fixup_cmov"
     assert row206["current_compiler_support"] == "typed_cmov_selected_indirect"
-    assert row206["current_generated_proof"] == {"status": "unproved"}
+    assert row206["current_generated_proof"] == {
+        "accepted_commits": ["c77cea952", "955ad7351", "b937f29d2"],
+        "status": "accepted_generated_c6",
+    }
     assert row206["source_native_ea"] == 0x40C553
     assert row206["source_block_anchor_ea"] == 0x40C54D
     assert row206["flag_producer_native_ea"] == 0x40C561
