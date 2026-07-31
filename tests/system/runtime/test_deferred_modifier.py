@@ -170,6 +170,129 @@ def test_modifier_uses_an_injected_session_mutation_gateway() -> None:
     assert gateway.active is True
 
 
+def test_exact_constant_replacement_preserves_destination_and_rolls_back(
+    monkeypatch,
+) -> None:
+    """The central instruction edit is exact, in-place, and reversible."""
+    mop_z = int(ida_hexrays.mop_z)
+    mop_n = int(ida_hexrays.mop_n)
+    m_ldx = int(ida_hexrays.m_ldx)
+    m_mov = int(ida_hexrays.m_mov)
+
+    class FakeMop:
+        def __init__(self, kind=mop_z, *, value=0, size=0):
+            self.t = int(kind)
+            self.nnn = SimpleNamespace(value=int(value))
+            self.size = int(size)
+
+        def make_number(self, value, size, _ea):
+            self.t = mop_n
+            self.nnn.value = int(value)
+            self.size = int(size)
+
+        def erase(self):
+            self.t = mop_z
+            self.nnn.value = 0
+            self.size = 0
+
+        def assign(self, other):
+            self.t = int(other.t)
+            self.nnn.value = int(other.nnn.value)
+            self.size = int(other.size)
+
+    class FakeInsn:
+        def __init__(self, source=None):
+            if source is None:
+                self.ea = 0x401234
+                self.opcode = m_ldx
+                self.iprops = 7
+                self.l = FakeMop(ida_hexrays.mop_r, size=2)
+                self.r = FakeMop(ida_hexrays.mop_r, size=4)
+                self.d = FakeMop(ida_hexrays.mop_r, size=4)
+            else:
+                self.ea = int(source.ea)
+                self.opcode = int(source.opcode)
+                self.iprops = int(source.iprops)
+                self.l = FakeMop()
+                self.r = FakeMop()
+                self.d = FakeMop()
+                self.l.assign(source.l)
+                self.r.assign(source.r)
+                self.d.assign(source.d)
+            self.next = None
+
+    target = FakeInsn()
+    block = _FakeBlock(0, start=0x401200)
+    block.head = block.tail = target
+    mba = _FakeMBA()
+    mba.blocks = {0: block}
+    monkeypatch.setattr(dm.ida_hexrays, "minsn_t", FakeInsn)
+    modifier = dm.DeferredGraphModifier(mba)
+
+    original = modifier.replace_instruction_with_constant_now(
+        block,
+        instruction_index=0,
+        expected_ea=0x401234,
+        expected_opcode=m_ldx,
+        constant_value=0x3776723F,
+        value_size=4,
+    )
+
+    assert int(target.opcode) == m_mov
+    assert (int(target.l.t), int(target.l.nnn.value), int(target.l.size)) == (
+        mop_n,
+        0x3776723F,
+        4,
+    )
+    assert int(target.r.t) == mop_z
+    assert (int(target.d.t), int(target.d.size)) == (
+        int(ida_hexrays.mop_r),
+        4,
+    )
+    modifier.restore_instruction_from_snapshot_now(
+        block,
+        instruction_index=0,
+        expected_ea=0x401234,
+        expected_opcode=m_mov,
+        original=original,
+    )
+    assert int(target.opcode) == m_ldx
+    assert int(target.iprops) == 7
+    assert (int(target.l.t), int(target.l.size)) == (
+        int(ida_hexrays.mop_r),
+        2,
+    )
+    assert (int(target.r.t), int(target.r.size)) == (
+        int(ida_hexrays.mop_r),
+        4,
+    )
+    assert (int(target.d.t), int(target.d.size)) == (
+        int(ida_hexrays.mop_r),
+        4,
+    )
+
+
+def test_constant_replacement_rejects_a_changed_preflight_anchor() -> None:
+    target = SimpleNamespace(
+        ea=0x401235,
+        opcode=ida_hexrays.m_ldx,
+        next=None,
+    )
+    block = _FakeBlock(0, start=0x401200)
+    block.head = block.tail = target
+    modifier = dm.DeferredGraphModifier(_FakeMBA())
+
+    with pytest.raises(ValueError, match="changed after immutable preflight"):
+        modifier.replace_instruction_with_constant_now(
+            block,
+            instruction_index=0,
+            expected_ea=0x401234,
+            expected_opcode=ida_hexrays.m_ldx,
+            constant_value=1,
+            value_size=4,
+        )
+
+
 def test_standalone_native_block_is_published_to_the_injected_identity_index(
     monkeypatch,
 ) -> None:

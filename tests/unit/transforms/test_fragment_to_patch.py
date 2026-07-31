@@ -10,12 +10,18 @@ import pytest
 
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.flowgraph import FlowGraph
+from d810.ir.expressions import ValueOpKind
 from d810.transforms.cfg_transaction import CfgProjection, PlanBlockRef
+from d810.transforms.fragment_plan import (
+    FragmentAbsoluteConstantMaterialization,
+    FragmentArithmeticFlagRole,
+)
 from d810.transforms.fragment_to_patch import (
     CfgTransactionCoordinator,
     FragmentContractBundle,
     FragmentTransactionParticipant,
     PatchFragmentBlockMaterialization,
+    PatchFragmentConstantMaterializations,
     PatchFragmentOperation,
     PatchFragmentRootPublication,
     PatchTransactionParticipant,
@@ -141,6 +147,72 @@ def test_lowering_preserves_plan_refs_and_complete_semantic_contract() -> None:
         plan.plan_id,
         "fallthrough-helper:condition",
     )
+
+
+def test_constant_materializations_lower_as_one_exact_fragment_patch_step() -> None:
+    plan = _plan()
+    materialization = FragmentAbsoluteConstantMaterialization(
+        materialization_id="constant:test-add-absolute@0x1000",
+        reference_operation_id="rhad:constant@0x1000",
+        source_block_id="replacement",
+        instruction_ea=0x1000,
+        data_ea=0x480000,
+        width_bits=32,
+        reference_read_width_bits=32,
+        constant_value=0x3776723F,
+        reference_data_bytes_le="3f727637",
+        source_instruction_bytes="030500004800",
+        replacement_instruction_bytes="81c03f727637",
+        consumer_operation=ValueOpKind.ADD,
+        preserved_flag_roles=(
+            FragmentArithmeticFlagRole.CARRY,
+            FragmentArithmeticFlagRole.OVERFLOW,
+            FragmentArithmeticFlagRole.ZERO,
+            FragmentArithmeticFlagRole.PARITY,
+            FragmentArithmeticFlagRole.SIGN,
+        ),
+    )
+    plan = replace(plan, constant_materializations=(materialization,))
+
+    lowered = lower_fragment_plan(plan, _prepared(plan))
+
+    steps = tuple(
+        step
+        for step in lowered.steps
+        if isinstance(step, PatchFragmentConstantMaterializations)
+    )
+    assert steps == (
+        PatchFragmentConstantMaterializations(
+            materializations=(materialization,),
+            source_refs=(PlanBlockRef(plan.plan_id, "replacement"),),
+        ),
+    )
+    block_step_index = max(
+        index
+        for index, step in enumerate(lowered.steps)
+        if isinstance(step, PatchFragmentBlockMaterialization)
+    )
+    constant_step_index = lowered.steps.index(steps[0])
+    operation_step_index = next(
+        index
+        for index, step in enumerate(lowered.steps)
+        if isinstance(step, PatchFragmentOperation)
+    )
+    assert block_step_index < constant_step_index < operation_step_index
+
+    forged = list(lowered.steps)
+    changed_materialization = replace(
+        materialization,
+        constant_value=0x3776723E,
+        reference_data_bytes_le="3e727637",
+        replacement_instruction_bytes="81c03e727637",
+    )
+    forged[constant_step_index] = replace(
+        steps[0],
+        materializations=(changed_materialization,),
+    )
+    with pytest.raises(ValueError, match="constant materialization PatchStep"):
+        replace(lowered, steps=tuple(forged))
 
 
 def test_lowering_rejects_projection_that_failed_fragment_preflight() -> None:

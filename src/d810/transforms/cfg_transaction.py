@@ -229,6 +229,7 @@ class CfgTransactionPhase(str, Enum):
     OBSERVED = "observed"
     COMMITTED = "committed"
     REJECTED_CLEAN = "rejected_clean"
+    ROLLED_BACK_CLEAN = "rolled_back_clean"
     POISONED_RESTART_REQUIRED = "poisoned_restart_required"
 
 
@@ -251,15 +252,17 @@ class CfgTransactionFailure:
             raise TypeError("phase must be a CfgTransactionPhase")
         if self.phase not in {
             CfgTransactionPhase.REJECTED_CLEAN,
+            CfgTransactionPhase.ROLLED_BACK_CLEAN,
             CfgTransactionPhase.POISONED_RESTART_REQUIRED,
         }:
             raise ValueError("failure phase must be a terminal failure phase")
         _require_identifier(self.reason, "reason")
         if not isinstance(self.live_mutation_started, bool):
             raise TypeError("live_mutation_started must be a bool")
-        expected_mutation_started = (
-            self.phase is CfgTransactionPhase.POISONED_RESTART_REQUIRED
-        )
+        expected_mutation_started = self.phase in {
+            CfgTransactionPhase.ROLLED_BACK_CLEAN,
+            CfgTransactionPhase.POISONED_RESTART_REQUIRED,
+        }
         if self.live_mutation_started is not expected_mutation_started:
             raise ValueError("live_mutation_started must match failure phase")
         if self.first_failed_obligation is not None:

@@ -881,14 +881,56 @@ class _SemanticPatchLifecycle:
                 error=original_error,
             )
         if self.gateway.mutation_started:
+            rollback_error: Exception | None = None
+            rollback_succeeded = False
+            if (
+                not self.root_attempted
+                and self.stage_attempted
+                and bool(self.plan.constant_materializations)
+            ):
+                try:
+                    self.backend._discard_staged_semantic_fragment(self.plan)
+                    rollback_succeeded = True
+                except Exception as error:
+                    rollback_error = error
+                    _record_rollback_failure(self.gateway, self.plan, error)
+                try:
+                    self.gateway._record_fragment_rollback(
+                        self.plan,
+                        succeeded=rollback_succeeded,
+                    )
+                except Exception as error:
+                    rollback_error = rollback_error or error
+                    rollback_succeeded = False
+                    _record_rollback_failure(self.gateway, self.plan, error)
+                if rollback_succeeded:
+                    reason = _failure_message(primary_error)
+                    self.gateway._record_rolled_back_cfg_failure(
+                        reason=reason,
+                        failure_phase=self.failure_phase,
+                        first_failed_obligation=_first_failed_obligation(
+                            original_error,
+                            failure_phase=self.failure_phase,
+                        ),
+                        interr_code=_interr_code(primary_error),
+                    )
+                    self.gateway.abort(reason=reason)
+                    if self.lifecycle_staged:
+                        _abort_lifecycle(
+                            self.lifecycle_authority,
+                            self.plan,
+                            reason=reason,
+                        )
+                    return
+            poison_error = rollback_error or primary_error
             failure = self.gateway._poison_cfg_generation(
-                reason=_failure_message(primary_error),
+                reason=_failure_message(poison_error),
                 failure_phase=self.failure_phase,
                 first_failed_obligation=_first_failed_obligation(
-                    original_error,
+                    poison_error,
                     failure_phase=self.failure_phase,
                 ),
-                interr_code=_interr_code(primary_error),
+                interr_code=_interr_code(poison_error),
                 plan=self.plan,
             )
             self.lifecycle_authority.request_poisoned_generation_restart(

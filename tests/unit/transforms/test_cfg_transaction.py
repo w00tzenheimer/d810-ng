@@ -306,3 +306,27 @@ def test_projection_failure_records_that_live_mutation_never_started() -> None:
         )
     with pytest.raises(ValueError, match="poisoned"):
         CfgGenerationPoisoned(failure)
+
+
+def test_completed_instruction_rollback_is_a_non_poisoned_terminal_failure() -> None:
+    """A proven exact rollback is distinct from clean preflight and poison."""
+    failure = CfgTransactionFailure(
+        attempt_id=_attempt(),
+        phase=CfgTransactionPhase.ROLLED_BACK_CLEAN,
+        reason="constant postwrite validation rejected",
+        live_mutation_started=True,
+        first_failed_obligation="constant:rhad-add-absolute@source",
+        failure_phase="stage",
+    )
+
+    assert failure.phase is CfgTransactionPhase.ROLLED_BACK_CLEAN
+    assert failure.live_mutation_started is True
+    with pytest.raises(ValueError, match="live_mutation_started"):
+        CfgTransactionFailure(
+            attempt_id=_attempt(),
+            phase=CfgTransactionPhase.ROLLED_BACK_CLEAN,
+            reason="rollback claim without a write",
+            live_mutation_started=False,
+        )
+    with pytest.raises(ValueError, match="poisoned"):
+        CfgGenerationPoisoned(failure)

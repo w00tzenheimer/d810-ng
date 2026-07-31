@@ -944,6 +944,40 @@ class MbaMutationGateway:
         self._mutation_started = True
         self._emit_cfg_transaction_phase(CfgTransactionPhase.REALIZING)
 
+    def _record_rolled_back_cfg_failure(
+        self,
+        *,
+        reason: str,
+        failure_phase: str,
+        first_failed_obligation: str,
+        interr_code: int | None = None,
+    ) -> CfgTransactionFailure:
+        """Record an exact completed rollback without poisoning the generation."""
+        self._require_generation_usable()
+        if not self._mutation_started:
+            raise RuntimeError("rolled-back rejection requires a live mutation")
+        if self._active_rollback_succeeded is not True:
+            raise RuntimeError("rolled-back rejection lacks completed recovery proof")
+        attempt = self._current_transaction_attempt
+        if attempt is None:
+            raise RuntimeError("rolled-back rejection has no transaction attempt")
+        failure = CfgTransactionFailure(
+            attempt_id=attempt,
+            phase=CfgTransactionPhase.ROLLED_BACK_CLEAN,
+            reason=str(reason),
+            live_mutation_started=True,
+            first_failed_obligation=str(first_failed_obligation),
+            failure_phase=str(failure_phase),
+            interr_code=interr_code,
+        )
+        self._transaction_failure = failure
+        self._cfg_invalidated_refs.update(self._cfg_reservations)
+        self._emit_cfg_transaction_phase(
+            CfgTransactionPhase.ROLLED_BACK_CLEAN,
+            failure=failure,
+        )
+        return failure
+
     def _record_fragment_mutation_started(
         self,
         plan: FragmentPlan | None = None,
@@ -1360,6 +1394,21 @@ class MbaMutationGateway:
                         reason=(f"native-body:{block.native_body_id}:{block.block_id}"),
                     )
                 )
+        for materialization in plan.constant_materializations:
+            source = plan.block(materialization.source_block_id)
+            items.append(
+                MbaMutationPlanItem(
+                    item_index=len(items),
+                    mutation_kind=(
+                        "semantic_fragment_constant_materialization"
+                    ),
+                    source_anchor_ea=int(materialization.instruction_ea),
+                    source_identity=source.stable_identity,
+                    target_anchor_ea=int(materialization.instruction_ea),
+                    target_identity=source.stable_identity,
+                    reason=f"constant:{materialization.materialization_id}",
+                )
+            )
         for carrier in plan.return_carriers:
             block = plan.block(carrier.block_id)
             items.append(
@@ -1636,6 +1685,7 @@ class MbaMutationGateway:
         self._active_fragment_snapshot_id = str(snapshot_id)
         self._active_prepared_semantic_fragment = prepared_fragment
         effect_kinds = {
+            "semantic_fragment_constant_materialization",
             "semantic_fragment_return_carrier_materialization",
             "semantic_fragment_terminal_return_materialization",
         }
@@ -1647,7 +1697,8 @@ class MbaMutationGateway:
             if item.mutation_kind in effect_kinds
         }
         expected_effect_requirement_count = (
-            len(plan.return_carriers)
+            len(plan.constant_materializations)
+            + len(plan.return_carriers)
             + len(plan.terminal_returns)
             + (
                 sum(
@@ -2426,8 +2477,22 @@ class MbaMutationGateway:
             and identity.native_ranges.contains(int(item.target_anchor_ea))
             and item.target_identity.native_ranges.contains(int(item.target_anchor_ea))
         )
+        generated_constant_anchor_matches = (
+            mutation_kind == "semantic_fragment_constant_materialization"
+            and identity is not None
+            and item.source_identity is not None
+            and item.source_anchor_ea is not None
+            and identity.native_key == item.source_identity.native_key
+            and int(item.source_anchor_ea) in identity.exact_instruction_eas
+            and identity.native_ranges.contains(int(item.source_anchor_ea))
+            and item.source_identity.native_ranges.contains(
+                int(item.source_anchor_ea)
+            )
+        )
         if identity is None or (
-            identity not in expected_identities and not generated_helper_anchor_matches
+            identity not in expected_identities
+            and not generated_helper_anchor_matches
+            and not generated_constant_anchor_matches
         ):
             raise ValueError(
                 "semantic-fragment effect block identity does not match its "
@@ -2450,6 +2515,19 @@ class MbaMutationGateway:
         self._record_semantic_fragment_effect(
             mutation_kind="semantic_fragment_return_carrier_materialization",
             reason=f"return-carrier:{carrier_id}",
+            block=block,
+        )
+
+    def record_semantic_fragment_constant_materialization(
+        self,
+        *,
+        materialization_id: str,
+        block: MbaBlockHandle,
+    ) -> None:
+        """Acknowledge one exact in-place constant replacement."""
+        self._record_semantic_fragment_effect(
+            mutation_kind="semantic_fragment_constant_materialization",
+            reason=f"constant:{str(materialization_id)}",
             block=block,
         )
 
