@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "e4cda52388ce14ed28c9dcf4889e12c34a6da84e",
+  "accepted_code_sha": "855aef7b63b0a88287056c376e6274a7723ac7dd",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -201,7 +201,8 @@
     "rhad:route@0x40C446",
     "rhad:route@0x40C462",
     "rhad:route@0x40C47C",
-    "rhad:route@0x40C498"
+    "rhad:route@0x40C498",
+    "rhad:route@0x40C4B2"
   ],
   "variants": [
     {
@@ -231,11 +232,11 @@
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
       "compiled_operation_instances": 110,
-      "vertically_proved_operations": 109,
-      "accepted_receipt_operations": 109,
-      "earliest_unproved_reference_order": 201,
-      "earliest_unproved_operation_id": "rhad:route@0x40C4B2",
-      "first_missing_typed_obligation": "publish the compiled row201 operation and complete target closure at actual MMAT_GENERATED through the shared coordinator, then persist one committed receipt and maturity proof"
+      "vertically_proved_operations": 110,
+      "accepted_receipt_operations": 110,
+      "earliest_unproved_reference_order": 202,
+      "earliest_unproved_operation_id": "rhad:route@0x40C4DA",
+      "first_missing_typed_obligation": "instantiate the accepted RhadExistingConditionalRoute vocabulary with exact row201 dependency and target-closure evidence before live mutation"
     },
     {
       "operation_variant": "setcc_indexed_table",
