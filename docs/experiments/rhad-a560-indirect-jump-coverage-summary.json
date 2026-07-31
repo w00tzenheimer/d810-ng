@@ -212,12 +212,12 @@
       "operation_variant": "simple_indirect_jump",
       "total_reference_operations": 64,
       "compiler_supported_operations": 64,
-      "compiled_operation_instances": 47,
+      "compiled_operation_instances": 48,
       "vertically_proved_operations": 47,
       "accepted_receipt_operations": 47,
       "earliest_unproved_reference_order": 194,
       "earliest_unproved_operation_id": "rhad:route@0x40C3D7",
-      "first_missing_typed_obligation": "instantiate the accepted RhadDirectRoute vocabulary with exact row193 dependency and target-closure evidence before live mutation"
+      "first_missing_typed_obligation": "publish the compiled row194 plan through immutable preflight and the shared actual-MMAT_GENERATED coordinator, then prove one committed receipt and maturity semantics"
     },
     {
       "operation_variant": "existing_conditional_plus_indirect",
