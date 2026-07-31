@@ -20228,7 +20228,12 @@
       ],
       "current_compiler_support": "typed_simple_indirect_jump",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "d3ad3dec6",
+          "bcd544707",
+          "3094e5dbc"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,
