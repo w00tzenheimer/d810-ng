@@ -20833,14 +20833,15 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "simple_indirect_jump",
         "total_reference_operations": 64,
         "compiler_supported_operations": 64,
-        "compiled_operation_instances": 46,
+        "compiled_operation_instances": 47,
         "vertically_proved_operations": 46,
         "accepted_receipt_operations": 46,
         "earliest_unproved_reference_order": 192,
         "earliest_unproved_operation_id": "rhad:route@0x40C390",
         "first_missing_typed_obligation": (
-            "instantiate the accepted RhadDirectRoute vocabulary with exact row191 "
-            "dependency and target-closure evidence before live mutation"
+            "publish the compiled row192 plan through immutable preflight and the "
+            "shared actual-MMAT_GENERATED coordinator, then prove one committed "
+            "receipt and maturity semantics"
         ),
     }
     assert existing == {
