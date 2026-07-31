@@ -19188,7 +19188,12 @@
       ],
       "current_compiler_support": "typed_cmov_selected_indirect",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "7f6bb3d89",
+          "77d7589b0",
+          "aaa99e035"
+        ],
+        "status": "accepted_generated_c6"
       },
       "flag_interference_native_ea": null,
       "flag_interference_safe_reorder": null,

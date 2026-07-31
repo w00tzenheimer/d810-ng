@@ -17044,7 +17044,10 @@ def test_row213_inventory_owns_c67f_producer_and_reuses_row212_topology() -> Non
     assert row213["operation_variant"] == "cmov_selected_indirect"
     assert row213["reference_symbol"] == "JumpInliner._fixup_cmov"
     assert row213["current_compiler_support"] == "typed_cmov_selected_indirect"
-    assert row213["current_generated_proof"] == {"status": "unproved"}
+    assert row213["current_generated_proof"] == {
+        "accepted_commits": ["7f6bb3d89", "77d7589b0", "aaa99e035"],
+        "status": "accepted_generated_c6",
+    }
     assert row213["source_native_ea"] == 0x40C685
     assert row213["source_block_anchor_ea"] == 0x40C665
     assert row213["flag_producer_native_ea"] == 0x40C67F
