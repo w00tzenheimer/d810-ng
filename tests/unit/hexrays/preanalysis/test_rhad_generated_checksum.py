@@ -16508,6 +16508,57 @@ def test_row205_inventory_has_exact_producer_and_complete_target_closure() -> No
     assert closures[0x40A5F0]["status"] == "complete"
 
 
+def test_row206_inventory_has_exact_cmov_source_alias_and_reused_closures() -> None:
+    inventory = json.loads(
+        (_REPO / "docs" / "experiments" / "rhad-a560-indirect-jump-reference-inventory.json").read_text(encoding="utf-8")
+    )
+    row206 = next(row for row in inventory["operations"] if row["reference_order"] == 206)
+    assert len(inventory["operations"]) == 228
+    assert row206["operation_id"] == "rhad:route@0x40C576"
+    assert row206["operation_variant"] == "cmov_selected_indirect"
+    assert row206["reference_symbol"] == "JumpInliner._fixup_cmov"
+    assert row206["current_compiler_support"] == "typed_cmov_selected_indirect"
+    assert row206["current_generated_proof"] == {"status": "unproved"}
+    assert row206["source_native_ea"] == 0x40C553
+    assert row206["source_block_anchor_ea"] == 0x40C54D
+    assert row206["flag_producer_native_ea"] == 0x40C561
+    assert row206["predicate_native_ea"] == 0x40C56F
+    assert row206["transfer_native_ea"] == 0x40C576
+    assert row206["owned_corridor_instruction_eas"] == [
+        0x40C553,
+        0x40C561,
+        0x40C567,
+        0x40C569,
+        0x40C56F,
+        0x40C572,
+        0x40C574,
+        0x40C576,
+    ]
+    assert row206["semantic_targets"] == [
+        {"ea": 0x40B6C0, "role": "conditional_taken"},
+        {"ea": 0x40A607, "role": "conditional_fallthrough"},
+    ]
+    assert row206["imported_closure_block_anchor_eas"] == [
+        0x40A607,
+        0x40A615,
+        0x40A619,
+        0x40A680,
+        0x40A68A,
+        0x40B6C0,
+        0x40B6CA,
+        0x40B6D0,
+        0x40B6D4,
+        0x40C56F,
+    ]
+    assert row206["boundary_exit_eas"] == [0x40A61B, 0x40A68C, 0x40B790]
+    assert row206["unavailable_closure_exit_eas"] == []
+    closures = {closure["root_ea"]: closure for closure in row206["target_rooted_closures"]}
+    assert closures[0x40B6C0]["status"] == "complete"
+    assert closures[0x40B6C0]["unavailable_exit_eas"] == []
+    assert closures[0x40A607]["status"] == "complete"
+    assert closures[0x40A607]["unavailable_exit_eas"] == []
+
+
 def test_checksum_producer_compiles_row176_existing_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
