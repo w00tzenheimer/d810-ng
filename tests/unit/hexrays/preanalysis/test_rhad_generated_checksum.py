@@ -16988,6 +16988,8 @@ def test_row212_inventory_owns_c651_producer_and_c665_target_corridor() -> None:
         0x40A5F0,
         0x40A605,
         0x40C665,
+        0x40C68D,
+        0x40C690,
         0x40C694,
     ]
     assert row212["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -16995,8 +16997,13 @@ def test_row212_inventory_owns_c651_producer_and_c665_target_corridor() -> None:
     assert row212["target_rooted_closures"] == [
         {
             "boundary_exit_eas": [0x40A607, 0x40B6C0],
-            "expected_generated_block_anchor_eas": [0x40C665, 0x40C694],
-            "owned_native_block_entry_eas": [0x40C665],
+            "expected_generated_block_anchor_eas": [
+                0x40C665,
+                0x40C68D,
+                0x40C690,
+                0x40C694,
+            ],
+            "owned_native_block_entry_eas": [0x40C665, 0x40C690],
             "root_ea": 0x40C665,
             "status": "complete",
             "unavailable_exit_eas": [],
