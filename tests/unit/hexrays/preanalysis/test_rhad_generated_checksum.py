@@ -15384,6 +15384,64 @@ def test_row191_inventory_has_producer_inclusive_exact_target_closures() -> None
     )
 
 
+def test_row192_inventory_has_exact_direct_target_closure() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row192 = next(
+        operation
+        for operation in inventory["operations"]
+        if operation["reference_order"] == 192
+    )
+
+    assert len(inventory["operations"]) == 228
+    assert row192["operation_id"] == "rhad:route@0x40C390"
+    assert row192["operation_variant"] == "simple_indirect_jump"
+    assert row192["reference_symbol"] == "JumpInliner._fixup_jmp_and_possible_jcc"
+    assert row192["current_compiler_support"] == "typed_simple_indirect_jump"
+    assert row192["current_generated_proof"] == {"status": "unproved"}
+    assert row192["flag_producer_native_ea"] is None
+    assert row192["predicate_native_ea"] is None
+    assert row192["source_native_ea"] == 0x40C37A
+    assert row192["source_block_anchor_ea"] == 0x40C38C
+    assert row192["transfer_native_ea"] == 0x40C390
+    assert row192["owned_corridor_instruction_eas"] == [
+        0x40C37A,
+        0x40C38C,
+        0x40C38E,
+        0x40C390,
+    ]
+    assert row192["semantic_targets"] == [{"ea": 0x40B6C0, "role": "direct"}]
+    assert row192["imported_closure_block_anchor_eas"] == [
+        0x40B6C0,
+        0x40B6CA,
+        0x40B6D0,
+        0x40B6D4,
+    ]
+    assert row192["boundary_exit_eas"] == [0x40B790]
+    assert row192["unavailable_closure_exit_eas"] == []
+    assert row192["target_rooted_closures"] == [
+        {
+            "boundary_exit_eas": [0x40B790],
+            "expected_generated_block_anchor_eas": [
+                0x40B6C0,
+                0x40B6CA,
+                0x40B6D0,
+                0x40B6D4,
+            ],
+            "owned_native_block_entry_eas": [0x40B6C0, 0x40B6CA, 0x40B6D0],
+            "root_ea": 0x40B6C0,
+            "status": "complete",
+            "unavailable_exit_eas": [],
+        }
+    ]
+
+
 def test_checksum_producer_compiles_row176_existing_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
