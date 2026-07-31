@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "071a6dab4051f8fb6de777521eedb02771c105a1",
+  "accepted_code_sha": "e4cda52388ce14ed28c9dcf4889e12c34a6da84e",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -200,7 +200,8 @@
     "route:rhad-direct@0x40C42C",
     "rhad:route@0x40C446",
     "rhad:route@0x40C462",
-    "rhad:route@0x40C47C"
+    "rhad:route@0x40C47C",
+    "rhad:route@0x40C498"
   ],
   "variants": [
     {
@@ -208,11 +209,11 @@
       "total_reference_operations": 39,
       "compiler_supported_operations": 39,
       "compiled_operation_instances": 30,
-      "vertically_proved_operations": 29,
-      "accepted_receipt_operations": 29,
+      "vertically_proved_operations": 30,
+      "accepted_receipt_operations": 30,
       "earliest_unproved_reference_order": 0,
       "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
-      "first_missing_typed_obligation": "publish the compiled row200 RhadConditionalRoute through immutable preflight and the shared actual-MMAT_GENERATED coordinator, then prove one complete committed receipt and CMAT_FINAL"
+      "first_missing_typed_obligation": "instantiate existing RhadConditionalRoute vocabulary with exact per-operation evidence and dependency closure"
     },
     {
       "operation_variant": "simple_indirect_jump",
