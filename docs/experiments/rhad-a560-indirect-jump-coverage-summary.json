@@ -4,7 +4,7 @@
   "inventory_operation_count": 228,
   "input_sha256": "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
-  "accepted_code_sha": "41b2420e867f0bea966da1ac78fc26d13454d8a8",
+  "accepted_code_sha": "8d1cc35e678919d54a176e4d7a8ab1fb2379c6ca",
   "accepted_receipt_operation_ids": [
     "rhad:route@0x40A605",
     "route:rhad-direct@0x40A619",
@@ -191,7 +191,8 @@
     "rhad:route@0x40C26B",
     "route:rhad-direct@0x40C2F9",
     "rhad:route@0x40C313",
-    "route:rhad-direct@0x40C34B"
+    "route:rhad-direct@0x40C34B",
+    "rhad:route@0x40C365"
   ],
   "variants": [
     {
@@ -221,11 +222,11 @@
       "total_reference_operations": 117,
       "compiler_supported_operations": 117,
       "compiled_operation_instances": 105,
-      "vertically_proved_operations": 104,
-      "accepted_receipt_operations": 104,
-      "earliest_unproved_reference_order": 191,
-      "earliest_unproved_operation_id": "rhad:route@0x40C365",
-      "first_missing_typed_obligation": "publish the compiled row191 plan through immutable preflight and the shared actual-MMAT_GENERATED coordinator, then prove one committed receipt and maturity semantics"
+      "vertically_proved_operations": 105,
+      "accepted_receipt_operations": 105,
+      "earliest_unproved_reference_order": 193,
+      "earliest_unproved_operation_id": "rhad:route@0x40C3AA",
+      "first_missing_typed_obligation": "instantiate the accepted RhadExistingConditionalRoute vocabulary with exact row192 dependency and target-closure evidence before live mutation"
     },
     {
       "operation_variant": "setcc_indexed_table",
