@@ -2291,7 +2291,7 @@ ROW210_TARGET_IMPORTED_BLOCK_IDS = tuple(
 ROW212_TARGET_IMPORTED_LAYOUT = (
     (
         0x40C665,
-        0x40C696,
+        0x40C690,
         (
             0x40C665,
             0x40C667,
@@ -2304,11 +2304,10 @@ ROW212_TARGET_IMPORTED_LAYOUT = (
             0x40C685,
             0x40C687,
             0x40C68D,
-            0x40C690,
-            0x40C692,
-            0x40C694,
         ),
     ),
+    (0x40C68D, 0x40C690, (0x40C68D,)),
+    (0x40C690, 0x40C696, (0x40C690, 0x40C692, 0x40C694)),
     (0x40C694, 0x40C696, (0x40C694,)),
 )
 ROW212_TARGET_IMPORTED_BLOCK_IDS = tuple(
@@ -11629,6 +11628,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         "native@0x40C659",
         "native@0x40C65F",
         "native@0x40C665",
+        "native@0x40C690",
         "native@0x40C62F",
         "native@0x40C645",
         "native@0x40C642",
@@ -15633,8 +15633,8 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         ),
         RhadGeneratedTemplateFragment(
             root_ea=0x40C665,
-            owned_ranges=((0x40C665, 0x40C696),),
-            owned_block_entry_eas=(0x40C665,),
+            owned_ranges=((0x40C665, 0x40C690), (0x40C690, 0x40C696)),
+            owned_block_entry_eas=(0x40C665, 0x40C690),
             boundary_ranges=(),
             boundary_exit_eas=(0x40A607, 0x40B6C0),
             direct_boundary_routes=(),
