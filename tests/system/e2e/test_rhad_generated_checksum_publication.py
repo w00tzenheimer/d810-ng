@@ -248,6 +248,8 @@ _REFERENCE_OPERATION_IDS = (
     "route:rhad-direct@0x40C86B",
     "route:rhad-direct@0x40C896",
 )
+_CONSTANT_OPERATION_ID = "constant:rhad-add-absolute@0x40A574"
+_COMPILED_OPERATION_IDS = (*_REFERENCE_OPERATION_IDS, _CONSTANT_OPERATION_ID)
 _IMPORTED_BLOCK_IDS = (
     "native@0x40A607",
     "native@0x40A615",
@@ -3981,7 +3983,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             compiled_payload["aggregate_program_identity"]
         )
         assert compiled_payload["aggregate_program_identity"] == (
-            "sha256:9aeab40a1386ae8b62bcb61bec8552836ad31379c174943977687052ffec85e1"
+            "sha256:d89037b66d96086dbe798ce6784aa4fa017a34c696d6de993e995cd10fc6cb6a"
         )
         proof_artifacts = {
             artifact["proof"]["binding"]["operation_id"]: artifact
@@ -4020,14 +4022,18 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
                 "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
                 "reference_order": reference_order,
             }
-        assert tuple(compiled_payload["operation_ids"]) == _REFERENCE_OPERATION_IDS
+        assert tuple(compiled_payload["operation_ids"]) == _COMPILED_OPERATION_IDS
         assert tuple(compiled_payload["imported_block_ids"]) == _IMPORTED_BLOCK_IDS
         assert compiled_payload["imported_block_count"] == len(_IMPORTED_BLOCK_IDS)
         reference_payloads = {
-            row["operation_id"]: json.loads(row["reference_ledger_json"])
+            row["operation_id"]: row["reference_evidence"]
             for row in compiled_payload["reference_operations"]
         }
-        assert set(reference_payloads) == set(_REFERENCE_OPERATION_IDS)
+        assert set(reference_payloads) == set(_COMPILED_OPERATION_IDS)
+        assert all(
+            row["reference_identity"].startswith("sha256:")
+            for row in compiled_payload["reference_operations"]
+        )
         direct_reference = reference_payloads["route:rhad-direct@0x40A619"]
         assert direct_reference["operation_category"] == "direct_route"
         assert direct_reference["reference_operation_id"] == "rhad:route@0x40A619"
@@ -10927,6 +10933,31 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         ]
         assert row19_reference["boundary_exit_eas"] == [0x40B790]
 
+        constant_reference = reference_payloads[_CONSTANT_OPERATION_ID]
+        assert constant_reference == {
+            "category": "constant_materialization",
+            "data_native_ea": 0x48ADCC,
+            "depends_on": ["route:rhad-direct@0x40C896"],
+            "destination_width_bits": 32,
+            "materialized_value": 0x3776723F,
+            "operation_id": _CONSTANT_OPERATION_ID,
+            "operation_variant": "add_absolute",
+            "phase": "constant_materialization",
+            "reference_data_bytes_le": "3f727637",
+            "reference_operation_id": "rhad:constant@0x40A574",
+            "reference_order": 0,
+            "reference_raw_value": 0x3776723F,
+            "reference_read_width_bits": 32,
+            "reference_symbol": (
+                "deob_consts.ConstantInliner.transform_arith_mem_to_imm"
+            ),
+            "replacement_instruction_bytes": "81c03f727637",
+            "source_block_id": "native@0x40A560",
+            "source_instruction_bytes": "0305ccad4800",
+            "source_native_ea": 0x40A574,
+            "source_width_bits": 32,
+        }
+
         published_payload = json.loads(lifecycle_rows[2][3])
         assert (
             published_payload["aggregate_program_identity"]
@@ -10964,6 +10995,25 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
                 0x40B790,
             ]
             assert accepted["passed"] is True
+            constant = observations[_CONSTANT_OPERATION_ID]
+            assert constant["reference_operation_id"] == "rhad:constant@0x40A574"
+            assert constant["operation_category"] == "constant_materialization"
+            assert constant["operation_variant"] == "add_absolute"
+            assert constant["source_native_ea"] == 0x40A574
+            assert constant["data_native_ea"] == 0x48ADCC
+            assert constant["materialized_value"] == 0x3776723F
+            assert constant["absolute_load_present"] is False
+            assert constant["passed"] is True
+            if constant["source_present"]:
+                assert constant["source_topology_reachable"] is True
+                assert constant["source_topology_retired"] is False
+                assert constant["materialized_constant_present"] is True
+            else:
+                assert constant["source_topology_reachable"] is False
+                assert constant["source_topology_retired"] is True
+            if maturity == "MMAT_GENERATED":
+                assert constant["flag_envelope_survives"] is True
+                assert constant["exact_generated_envelope"] is True
             direct = observations["route:rhad-direct@0x40A619"]
             assert direct["source_present"] is True
             assert direct["source_topology_reachable"] is True
@@ -13651,6 +13701,15 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         calls_observations = {
             row["operation_id"]: row for row in calls_payload["operation_observations"]
         }
+        constant_calls = calls_observations[_CONSTANT_OPERATION_ID]
+        assert constant_calls["absolute_load_present"] is False
+        assert constant_calls["source_present"] is False
+        assert constant_calls["source_topology_reachable"] is False
+        assert constant_calls["source_topology_retired"] is True
+        assert constant_calls["materialized_constant_present"] is False
+        assert constant_calls["flag_envelope_survives"] is False
+        assert constant_calls["exact_generated_envelope"] is False
+        assert constant_calls["passed"] is True
         direct_calls = calls_observations["route:rhad-direct@0x40A619"]
         assert direct_calls["source_present"] is False
         assert direct_calls["source_topology_reachable"] is False

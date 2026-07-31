@@ -16660,6 +16660,136 @@ def _direct_route_maturity_payload(
     }
 
 
+def _reference_operation_diagnostic_payload(
+    operation: RhadReferenceOperation,
+    reference_evidence: dict[str, object],
+) -> dict[str, object]:
+    """Persist one complete typed reference identity without route-only fields."""
+    identity_evidence = rhad_reference_operation_identity_payload(operation)
+    canonical = json.dumps(
+        identity_evidence,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return {
+        "operation_id": operation.operation_id,
+        "reference_identity": (
+            "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        ),
+        "reference_evidence": reference_evidence,
+    }
+
+
+def _constant_materialization_maturity_payload(
+    *,
+    operation: RhadAbsoluteConstantMaterialization,
+    blocks: dict[int, object],
+    origins: dict[int, int],
+) -> dict[str, object]:
+    """Observe one typed add-absolute operation without changing the live MBA."""
+    import ida_hexrays
+
+    def operand_contains_value(operand: object | None) -> bool:
+        if operand is None:
+            return False
+        operand_type = int(getattr(operand, "t", -1))
+        if operand_type == int(ida_hexrays.mop_n):
+            return int(operand.nnn.value) == int(operation.materialized_value)
+        if operand_type == int(ida_hexrays.mop_d):
+            nested = operand.d
+            return any(
+                operand_contains_value(getattr(nested, slot, None))
+                for slot in ("l", "r", "d")
+            )
+        if operand_type == int(ida_hexrays.mop_a):
+            address = getattr(operand, "a", None)
+            return operand_contains_value(getattr(address, "v", address))
+        if operand_type == int(ida_hexrays.mop_f):
+            arguments = getattr(getattr(operand, "f", None), "args", ())
+            return any(operand_contains_value(argument) for argument in arguments)
+        if operand_type == int(ida_hexrays.mop_p):
+            pair = getattr(operand, "pair", None)
+            return any(
+                operand_contains_value(getattr(pair, slot, None))
+                for slot in ("lop", "hop")
+            )
+        return False
+
+    anchored_rows: list[object] = []
+    residual_absolute_load = False
+    for block in blocks.values():
+        for row in _instructions(block):
+            if int(origins.get(int(row.ea), int(row.ea))) != int(
+                operation.source_native_ea
+            ):
+                continue
+            anchored_rows.append(row)
+            if int(row.opcode) == int(ida_hexrays.m_ldx):
+                residual_absolute_load = True
+
+    materialized_constant_present = any(
+        any(
+            operand_contains_value(getattr(row, slot, None))
+            for slot in ("l", "r", "d")
+        )
+        for row in anchored_rows
+    )
+    required_flag_envelope = (
+        int(ida_hexrays.m_cfadd),
+        int(ida_hexrays.m_ofadd),
+        int(ida_hexrays.m_add),
+        int(ida_hexrays.m_setz),
+        int(ida_hexrays.m_setp),
+        int(ida_hexrays.m_sets),
+    )
+    observed_envelope = tuple(int(row.opcode) for row in anchored_rows)
+    flag_envelope_survives = bool(
+        materialized_constant_present
+        and all(opcode in observed_envelope for opcode in required_flag_envelope)
+        and observed_envelope.count(int(ida_hexrays.m_mov)) >= 2
+    )
+    generated_envelope = (
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_cfadd),
+        int(ida_hexrays.m_ofadd),
+        int(ida_hexrays.m_add),
+        int(ida_hexrays.m_setz),
+        int(ida_hexrays.m_setp),
+        int(ida_hexrays.m_sets),
+        int(ida_hexrays.m_mov),
+    )
+    exact_generated_envelope = observed_envelope == generated_envelope
+    source_present = bool(anchored_rows)
+    source_topology_retired = not source_present
+    passed = bool(
+        not residual_absolute_load
+        and (
+            (source_present and materialized_constant_present)
+            or source_topology_retired
+        )
+    )
+    return {
+        "operation_id": operation.operation_id,
+        "reference_operation_id": operation.reference_operation_id,
+        "operation_category": operation.category.value,
+        "operation_variant": operation.operation_variant.value,
+        "source_native_ea": int(operation.source_native_ea),
+        "data_native_ea": int(operation.data_native_ea),
+        "materialized_value": int(operation.materialized_value),
+        "source_present": source_present,
+        "source_topology_reachable": source_present,
+        "source_topology_retired": source_topology_retired,
+        "absolute_load_present": residual_absolute_load,
+        "materialized_constant_present": materialized_constant_present,
+        "flag_envelope_opcodes": list(observed_envelope),
+        "flag_envelope_survives": flag_envelope_survives,
+        "exact_generated_envelope": exact_generated_envelope,
+        "passed": passed,
+    }
+
+
 def _reference_batch_observation(
     mba: object,
     batch: RhadGeneratedReferenceBatch,
@@ -17192,6 +17322,16 @@ def _reference_batch_observation(
             }
         )
 
+    operation_observations.extend(
+        _constant_materialization_maturity_payload(
+            operation=operation,
+            blocks=blocks,
+            origins=origins,
+        )
+        for operation in batch.operations
+        if isinstance(operation, RhadAbsoluteConstantMaterialization)
+    )
+
     return {
         "batch_id": batch.batch_id,
         "operation_observations": operation_observations,
@@ -17576,6 +17716,12 @@ def publish_rhad_generated_reference_batch(
         native_key=session.native_key,
         evidence_generation=int(session.native_preanalysis.evidence_generation),
     )
+    route_reference_evidence = {
+        operation.operation_id: json.loads(
+            operation.reference_route_authority.reference_route.reference_ledger_json
+        )
+        for operation in plan.operations
+    }
     _emit_checksum_lifecycle(
         session,
         event_kind="rhad_generated_checksum_compiled",
@@ -17595,18 +17741,20 @@ def publish_rhad_generated_reference_batch(
                 for operation in batch.operations
                 if isinstance(operation, RhadSetccIndexedTableRoute)
             ],
-            "operation_ids": [operation.operation_id for operation in plan.operations],
+            "operation_ids": [operation.operation_id for operation in batch.operations],
             "reference_operations": [
-                {
-                    "operation_id": operation.operation_id,
-                    "reference_ledger_identity": (
-                        operation.reference_route_authority.reference_route.reference_ledger_identity
+                _reference_operation_diagnostic_payload(
+                    operation,
+                    (
+                        rhad_reference_operation_identity_payload(operation)
+                        if isinstance(
+                            operation,
+                            RhadAbsoluteConstantMaterialization,
+                        )
+                        else route_reference_evidence[operation.operation_id]
                     ),
-                    "reference_ledger_json": (
-                        operation.reference_route_authority.reference_route.reference_ledger_json
-                    ),
-                }
-                for operation in plan.operations
+                )
+                for operation in batch.operations
             ],
             "imported_block_ids": [
                 evidence.block_id for evidence in batch.imported_blocks
