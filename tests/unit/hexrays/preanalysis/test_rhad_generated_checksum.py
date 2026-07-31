@@ -22714,14 +22714,15 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "existing_conditional_plus_indirect",
         "total_reference_operations": 117,
         "compiler_supported_operations": 117,
-        "compiled_operation_instances": 111,
+        "compiled_operation_instances": 112,
         "vertically_proved_operations": 111,
         "accepted_receipt_operations": 111,
         "earliest_unproved_reference_order": 203,
         "earliest_unproved_operation_id": "rhad:route@0x40C4F4",
         "first_missing_typed_obligation": (
-            "instantiate the accepted RhadExistingConditionalRoute vocabulary with "
-            "exact row202 dependency and target-closure evidence before live mutation"
+            "publish the compiled row203 operation and complete C4F6/C525 target closure "
+            "at actual MMAT_GENERATED through the shared coordinator, then persist one "
+            "committed receipt and maturity proof"
         ),
     }
     assert setcc == {
