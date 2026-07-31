@@ -17654,6 +17654,7 @@
         4236784,
         4236805,
         4244552,
+        4244574,
         4244578
       ],
       "operation_id": "rhad:route@0x40C446",
@@ -17690,10 +17691,12 @@
           ],
           "expected_generated_block_anchor_eas": [
             4244552,
+            4244574,
             4244578
           ],
           "owned_native_block_entry_eas": [
-            4244552
+            4244552,
+            4244574
           ],
           "root_ea": 4244552,
           "status": "complete",

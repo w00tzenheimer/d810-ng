@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 839
+    assert len(IMPORTED_BLOCK_IDS) == 840
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -15813,6 +15813,7 @@ def test_row197_inventory_has_exact_producer_and_target_closure() -> None:
         0x40A5F0,
         0x40A605,
         0x40C448,
+        0x40C45E,
         0x40C462,
     ]
     assert row197["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
@@ -15822,8 +15823,8 @@ def test_row197_inventory_has_exact_producer_and_target_closure() -> None:
     }
     assert closures[0x40C448] == {
         "boundary_exit_eas": [0x40A607, 0x40B6C0],
-        "expected_generated_block_anchor_eas": [0x40C448, 0x40C462],
-        "owned_native_block_entry_eas": [0x40C448],
+        "expected_generated_block_anchor_eas": [0x40C448, 0x40C45E, 0x40C462],
+        "owned_native_block_entry_eas": [0x40C448, 0x40C45E],
         "root_ea": 0x40C448,
         "status": "complete",
         "unavailable_exit_eas": [],
@@ -16499,14 +16500,14 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:e01e94b0c9b9d7c632b7657a12446e5435555bac7881a00266be193c55e50296"
+        "sha256:f4995ee01277ff47aee5233507243668c59826be08c954a61b2787255af06157"
     )
     assert len(batch.operations) == 193
-    assert len(batch.imported_blocks) == 839
+    assert len(batch.imported_blocks) == 840
     assert len(batch.template_fragments) == 184
     assert len(batch.native_body_proof_ids) == 193
     assert len(batch.native_body_entry_block_ids) == 541
-    assert len(plan.blocks) == 844
+    assert len(plan.blocks) == 845
     normalization = operation.computed_branch_normalization
     assert normalization is not None
     assert normalization.predicate_kind is PredicateKind.NE
@@ -17757,7 +17758,12 @@ def test_checksum_producer_compiles_row197_existing_dependency() -> None:
     assert plan.block(
         "native@0x40C448"
     ).stable_identity.exact_instruction_eas == frozenset(
-        {0x40C448, 0x40C44D, 0x40C453, 0x40C455, 0x40C45B, 0x40C45E, 0x40C460, 0x40C462}
+        {0x40C448, 0x40C44D, 0x40C453, 0x40C455, 0x40C45B}
+    )
+    assert plan.block(
+        "native@0x40C45E"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C45E, 0x40C460, 0x40C462}
     )
     assert plan.block(
         "native@0x40C462"
@@ -17765,8 +17771,11 @@ def test_checksum_producer_compiles_row197_existing_dependency() -> None:
 
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
     assert templates[0x40C42E].boundary_exit_eas == (0x40A5F0, 0x40C448)
-    assert templates[0x40C448].owned_ranges == ((0x40C448, 0x40C464),)
-    assert templates[0x40C448].owned_block_entry_eas == (0x40C448,)
+    assert templates[0x40C448].owned_ranges == (
+        (0x40C448, 0x40C45E),
+        (0x40C45E, 0x40C464),
+    )
+    assert templates[0x40C448].owned_block_entry_eas == (0x40C448, 0x40C45E)
     assert templates[0x40C448].boundary_exit_eas == (0x40A607, 0x40B6C0)
     assert templates[0x40C448].preserved_unresolved_transfers == (
         generated_reference.RhadGeneratedPreservedTransfer(
