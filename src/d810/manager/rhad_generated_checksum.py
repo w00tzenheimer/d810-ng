@@ -2321,6 +2321,13 @@ ROW214_TARGET_IMPORTED_BLOCK_IDS = (
     "native@0x40A680",
     "native@0x40A68A",
 )
+ROW215_TARGET_IMPORTED_BLOCK_IDS = (
+    "native@0x40A607",
+    "native@0x40A615",
+    "native@0x40A619",
+    "native@0x40A680",
+    "native@0x40A68A",
+)
 BASE_IMPORTED_LAYOUT = (
     (0x40A607, 0x40A615, (0x40A607,)),
     (0x40A615, 0x40A61B, (0x40A615,)),
@@ -11086,6 +11093,32 @@ _ROW214_DIRECT_ROUTE = RhadDirectRoute(
     depends_on=(_ROW213_CMOV_ROUTE.operation_id,),
 )
 
+_ROW215_DIRECT_ROUTE = RhadDirectRoute(
+    operation_id="route:rhad-direct@0x40C6D8",
+    reference_operation_id="rhad:route@0x40C6D8",
+    reference_order=215,
+    operation_variant=RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+    reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
+    source_block_id="native@0x40C6CC",
+    source_native_ea=0x40B90F,
+    transfer_ea=0x40C6D8,
+    owner_anchor_ea=0x40C6CC,
+    direct_target_block_id="native@0x40A607",
+    owned_corridor_instruction_eas=(
+        0x40B90F,
+        0x40B921,
+        0x40C6CC,
+        0x40C6CE,
+        0x40C6D0,
+        0x40C6D2,
+        0x40C6D8,
+    ),
+    imported_closure_block_ids=ROW215_TARGET_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40A61B, 0x40A68C),
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_ROW214_DIRECT_ROUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -12145,6 +12178,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW212_EXISTING_ROUTE.operation_id,
         _ROW213_CMOV_ROUTE.operation_id,
         _ROW214_DIRECT_ROUTE.operation_id,
+        _ROW215_DIRECT_ROUTE.operation_id,
     ),
     template_fragments=(
         RhadGeneratedTemplateFragment(
@@ -15945,6 +15979,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW212_EXISTING_ROUTE,
         _ROW213_CMOV_ROUTE,
         _ROW214_DIRECT_ROUTE,
+        _ROW215_DIRECT_ROUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
