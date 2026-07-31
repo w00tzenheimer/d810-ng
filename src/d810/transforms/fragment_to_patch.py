@@ -30,6 +30,7 @@ from d810.transforms.fragment_validation import (
 from d810.transforms.plan import (
     FragmentContractBundle,
     PatchFragmentBlockMaterialization,
+    PatchFragmentConstantMaterializations,
     PatchFragmentOperation,
     PatchFragmentOperationNormalization,
     PatchFragmentRootPublication,
@@ -220,6 +221,16 @@ def lower_fragment_plan(
                 native_body_id=block.native_body_id,
             )
         )
+    if plan.constant_materializations:
+        steps.append(
+            PatchFragmentConstantMaterializations(
+                materializations=plan.constant_materializations,
+                source_refs=tuple(
+                    refs[item.source_block_id]
+                    for item in plan.constant_materializations
+                ),
+            )
+        )
     normalized_operations = tuple(
         operation
         for operation in plan.operations
@@ -303,6 +314,7 @@ __all__ = [
     "FragmentContractBundle",
     "FragmentTransactionParticipant",
     "PatchFragmentBlockMaterialization",
+    "PatchFragmentConstantMaterializations",
     "PatchFragmentOperation",
     "PatchFragmentOperationNormalization",
     "PatchFragmentRootPublication",

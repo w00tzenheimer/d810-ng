@@ -621,6 +621,7 @@ class _FragmentBackend:
                 generation=self.gateway.generation,
                 projection_input=projection_input,
                 native_bodies=(),
+                constant_materializations=(),
                 return_carrier_constructions=(),
             ),
             payload=SemanticFragmentRealizationPayload(

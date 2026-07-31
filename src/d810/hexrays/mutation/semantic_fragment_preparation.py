@@ -621,6 +621,83 @@ class PreparedReturnCarrierConstruction:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparedConstantMaterializationFact:
+    """Serial-free instruction-envelope authority for one constant rewrite."""
+
+    materialization_id: str
+    source_block_id: str
+    instruction_ea: int
+    envelope_start_instruction_index: int
+    load_instruction_index: int
+    envelope: tuple[PreparedNativeInstructionFact, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "materialization_id",
+            _identifier(self.materialization_id, "constant materialization id"),
+        )
+        object.__setattr__(
+            self,
+            "source_block_id",
+            _identifier(self.source_block_id, "constant source block id"),
+        )
+        instruction_ea = _nonnegative_int(
+            self.instruction_ea,
+            "constant instruction EA",
+        )
+        envelope_start = _nonnegative_int(
+            self.envelope_start_instruction_index,
+            "constant envelope start index",
+        )
+        load_index = _nonnegative_int(
+            self.load_instruction_index,
+            "constant load instruction index",
+        )
+        envelope = tuple(self.envelope)
+        if len(envelope) != 10 or any(
+            not isinstance(item, PreparedNativeInstructionFact) for item in envelope
+        ):
+            raise TypeError(
+                "constant materialization requires an exact ten-instruction envelope"
+            )
+        if load_index != envelope_start + 2:
+            raise ValueError(
+                "constant load index differs from its exact envelope position"
+            )
+        if any(item.native_ea != instruction_ea for item in envelope):
+            raise ValueError(
+                "constant envelope instructions differ from the source native EA"
+            )
+        _unique(
+            tuple(item.instruction_id for item in envelope),
+            "constant envelope instruction ids",
+        )
+        object.__setattr__(self, "instruction_ea", instruction_ea)
+        object.__setattr__(
+            self,
+            "envelope_start_instruction_index",
+            envelope_start,
+        )
+        object.__setattr__(self, "load_instruction_index", load_index)
+        object.__setattr__(self, "envelope", envelope)
+
+    @property
+    def envelope_signature(self) -> tuple[tuple[object, ...], ...]:
+        """Primitive content identity re-observed immediately before mutation."""
+        return tuple(
+            (
+                int(item.native_ea),
+                int(item.opcode),
+                item.kind.value,
+                item.operand_shape,
+                item.writes_condition_codes,
+            )
+            for item in self.envelope
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class SemanticFragmentRealizationPayload:
     """Backend-local SDK payload with no semantic authority."""
 
@@ -661,6 +738,7 @@ class SemanticFragmentSnapshotAuthority:
     generation: int
     projection_input: FragmentProjectionInput
     native_bodies: tuple[PreparedNativeBodyFact, ...]
+    constant_materializations: tuple[PreparedConstantMaterializationFact, ...]
     return_carrier_constructions: tuple[PreparedReturnCarrierConstruction, ...]
 
     def __post_init__(self) -> None:
@@ -678,11 +756,17 @@ class SemanticFragmentSnapshotAuthority:
         if not isinstance(self.projection_input, FragmentProjectionInput):
             raise TypeError("snapshot authority requires typed projection input")
         native_bodies = tuple(self.native_bodies)
+        constant_materializations = tuple(self.constant_materializations)
         carrier_constructions = tuple(self.return_carrier_constructions)
         if any(not isinstance(body, PreparedNativeBodyFact) for body in native_bodies):
             raise TypeError("snapshot native bodies must be typed facts")
         if any(body.plan_id != self.plan_id for body in native_bodies):
             raise ValueError("snapshot native body belongs to another plan")
+        if any(
+            not isinstance(item, PreparedConstantMaterializationFact)
+            for item in constant_materializations
+        ):
+            raise TypeError("snapshot constant materializations must be typed facts")
         if any(
             not isinstance(item, PreparedReturnCarrierConstruction)
             for item in carrier_constructions
@@ -690,10 +774,19 @@ class SemanticFragmentSnapshotAuthority:
             raise TypeError("snapshot return carriers must be typed facts")
         _unique(tuple(body.body_id for body in native_bodies), "native body ids")
         _unique(
+            tuple(item.materialization_id for item in constant_materializations),
+            "constant materialization ids",
+        )
+        _unique(
             tuple(item.carrier_id for item in carrier_constructions),
             "return carrier ids",
         )
         object.__setattr__(self, "native_bodies", native_bodies)
+        object.__setattr__(
+            self,
+            "constant_materializations",
+            constant_materializations,
+        )
         object.__setattr__(
             self,
             "return_carrier_constructions",
@@ -825,6 +918,7 @@ class PreparedSemanticFragment:
 
 
 __all__ = [
+    "PreparedConstantMaterializationFact",
     "PreparedNativeBodyPayload",
     "PreparedNativeBodyPreparation",
     "PreparedReturnCarrierConstruction",

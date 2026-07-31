@@ -45,6 +45,7 @@ from d810.hexrays.mutation.semantic_fragment_inventory import (
     semantic_fragment_root_group_id,
 )
 from d810.hexrays.mutation.semantic_fragment_preparation import (
+    PreparedConstantMaterializationFact,
     PreparedNativeBodyPreparation,
     PreparedNativeBodyPayload,
     PreparedReturnCarrierConstruction,
@@ -68,6 +69,7 @@ from d810.ir.semantics import PredicateKind, inverted_predicate_kind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.cfg_transaction import PlanBlockRef
 from d810.transforms.fragment_plan import (
+    FragmentAbsoluteConstantMaterialization,
     FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentConditionalSelectEnvelope,
@@ -126,6 +128,202 @@ def _iter_block_instructions(block):
         if instruction is block.tail:
             break
         instruction = instruction.next
+
+
+def _primitive_shape_contains(
+    shape: object,
+    marker: tuple[object, ...],
+) -> bool:
+    if shape == marker:
+        return True
+    return isinstance(shape, tuple) and any(
+        _primitive_shape_contains(item, marker) for item in shape
+    )
+
+
+def _prepared_flag_write(instruction: object) -> bool | None:
+    try:
+        return bool(instruction_writes_condition_codes(instruction))
+    except ConditionCodeQueryUnavailable:
+        return None
+
+
+def _require_add_absolute_envelope(
+    materialization: FragmentAbsoluteConstantMaterialization,
+    facts: tuple[object, ...],
+) -> None:
+    """Prove the exact GENERATED lowering whose load may be replaced."""
+    expected_opcodes = (
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_ldx),
+        int(ida_hexrays.m_cfadd),
+        int(ida_hexrays.m_ofadd),
+        int(ida_hexrays.m_add),
+        int(ida_hexrays.m_setz),
+        int(ida_hexrays.m_setp),
+        int(ida_hexrays.m_sets),
+        int(ida_hexrays.m_mov),
+    )
+    if len(facts) != len(expected_opcodes) or tuple(
+        int(getattr(fact, "opcode", -1)) for fact in facts
+    ) != expected_opcodes:
+        raise SemanticFragmentBackendRejected(
+            "add_absolute GENERATED opcode envelope differs from reference evidence",
+            reason_code="constant_materialization_envelope_mismatch",
+            anchor_ea=materialization.instruction_ea,
+            payload={"materialization_id": materialization.materialization_id},
+        )
+    shapes = tuple(getattr(fact, "operand_shape", ()) for fact in facts)
+    if any(len(shape) != 3 for shape in shapes):
+        raise SemanticFragmentBackendRejected(
+            "add_absolute GENERATED operand envelope is incomplete",
+            reason_code="constant_materialization_operand_mismatch",
+            anchor_ea=materialization.instruction_ea,
+            payload={"materialization_id": materialization.materialization_id},
+        )
+    left = tuple(shape[0] for shape in shapes)
+    right = tuple(shape[1] for shape in shapes)
+    destination = tuple(shape[2] for shape in shapes)
+    dataflow_matches = (
+        left[2] == destination[0]
+        and right[2] == destination[1]
+        and left[3] == left[4] == left[5] == destination[2]
+        and right[3] == right[4] == right[5]
+        and left[6] == left[7] == left[8] == left[9] == destination[5]
+        and destination[9] == right[3]
+        and _primitive_shape_contains(
+            left[1],
+            ("global", int(materialization.data_ea)),
+        )
+        and _primitive_shape_contains(right[6], ("number", 0))
+        and _primitive_shape_contains(right[7], ("number", 0))
+    )
+    expected_sizes = (
+        (destination[0], 2),
+        (destination[1], 4),
+        (destination[2], 4),
+        (destination[3], 1),
+        (destination[4], 1),
+        (destination[5], 4),
+        (destination[6], 1),
+        (destination[7], 1),
+        (destination[8], 1),
+        (destination[9], 4),
+    )
+    sizes_match = all(
+        isinstance(shape, tuple) and len(shape) >= 2 and int(shape[1]) == size
+        for shape, size in expected_sizes
+    )
+    if not dataflow_matches or not sizes_match:
+        raise SemanticFragmentBackendRejected(
+            "add_absolute GENERATED data-flow envelope differs from reference evidence",
+            reason_code="constant_materialization_dataflow_mismatch",
+            anchor_ea=materialization.instruction_ea,
+            payload={"materialization_id": materialization.materialization_id},
+        )
+
+
+def _prepare_constant_materializations(
+    plan: FragmentPlan,
+    live_by_id: Mapping[str, object],
+) -> tuple[PreparedConstantMaterializationFact, ...]:
+    """Capture exact serial-free constant envelopes while the gateway is idle."""
+    from d810.transforms.prepared_native_body import PreparedNativeInstructionFact
+
+    prepared: list[PreparedConstantMaterializationFact] = []
+    for materialization in plan.constant_materializations:
+        live = live_by_id.get(materialization.source_block_id)
+        if live is None:
+            raise SemanticFragmentBackendRejected(
+                "constant materialization source lacks a published live binding",
+                reason_code="constant_materialization_source_missing",
+                anchor_ea=materialization.instruction_ea,
+                payload={"materialization_id": materialization.materialization_id},
+            )
+        rows = tuple(_iter_block_instructions(live))
+        matches = tuple(
+            (index, instruction)
+            for index, instruction in enumerate(rows)
+            if int(getattr(instruction, "ea", -1)) == materialization.instruction_ea
+        )
+        indexes = tuple(index for index, _instruction in matches)
+        if (
+            len(matches) != 10
+            or not indexes
+            or indexes != tuple(range(indexes[0], indexes[0] + 10))
+        ):
+            raise SemanticFragmentBackendRejected(
+                "constant materialization lacks one exact contiguous envelope",
+                reason_code="constant_materialization_envelope_missing",
+                anchor_ea=materialization.instruction_ea,
+                payload={"materialization_id": materialization.materialization_id},
+            )
+        facts = tuple(
+            PreparedNativeInstructionFact(
+                instruction_id=f"{materialization.materialization_id}:{offset}",
+                native_ea=int(instruction.ea),
+                opcode=int(instruction.opcode),
+                kind=sdk_instruction_kind(int(instruction.opcode)),
+                operand_shape=sdk_instruction_operand_shape(instruction),
+                writes_condition_codes=_prepared_flag_write(instruction),
+            )
+            for offset, (_index, instruction) in enumerate(matches)
+        )
+        _require_add_absolute_envelope(materialization, facts)
+        prepared.append(
+            PreparedConstantMaterializationFact(
+                materialization_id=materialization.materialization_id,
+                source_block_id=materialization.source_block_id,
+                instruction_ea=materialization.instruction_ea,
+                envelope_start_instruction_index=indexes[0],
+                load_instruction_index=indexes[0] + 2,
+                envelope=facts,
+            )
+        )
+    return tuple(prepared)
+
+
+def _reobserve_constant_materializations(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+) -> tuple[PreparedConstantMaterializationFact, ...]:
+    if not plan.constant_materializations:
+        return ()
+    if _generated_graph_free(modifier):
+        live_by_id = generated_plan_live_bindings(modifier, plan)
+    else:
+        live_by_id: dict[str, object] = {}
+        gateway = _gateway(modifier)
+        for materialization in plan.constant_materializations:
+            block = plan.block(materialization.source_block_id)
+            if (
+                block.materialization
+                is not FragmentBlockMaterialization.REUSE_PUBLISHED
+                or block.stable_identity is None
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "constant materialization requires a published source block",
+                    reason_code="constant_materialization_source_unpublished",
+                    anchor_ea=materialization.instruction_ea,
+                    payload={
+                        "materialization_id": materialization.materialization_id
+                    },
+                )
+            rebound = gateway.identity_index.rebind_identity(block.stable_identity)
+            if rebound.block is None:
+                raise SemanticFragmentBackendRejected(
+                    "constant materialization source no longer rebinds uniquely",
+                    reason_code="constant_materialization_source_stale",
+                    anchor_ea=materialization.instruction_ea,
+                    payload={
+                        "materialization_id": materialization.materialization_id
+                    },
+                )
+            live_by_id[block.block_id] = modifier.mba.get_mblock(
+                int(rebound.block.serial)
+            )
+    return _prepare_constant_materializations(plan, live_by_id)
 
 
 def _capture_predicate_insn_snapshot(instruction) -> InsnSnapshot:
@@ -303,6 +501,17 @@ class SemanticFragmentRootPublicationToken:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SemanticConstantMaterializationRollback:
+    """Exact SDK snapshot for one rollback-capable published instruction edit."""
+
+    materialization_id: str
+    source_block_id: str
+    instruction_ea: int
+    instruction_index: int
+    original_instruction: object
+
+
 @dataclass(slots=True)
 class SemanticFragmentBackendState:
     """Transaction-local serial-free bindings for one staged fragment."""
@@ -335,6 +544,9 @@ class SemanticFragmentBackendState:
     ] = field(default_factory=dict)
     return_carrier_operands: dict[str, object] = field(default_factory=dict)
     materialized_native_body_ids: set[str] = field(default_factory=set)
+    constant_materialization_rollbacks: list[
+        SemanticConstantMaterializationRollback
+    ] = field(default_factory=list)
 
     def binding(self, block_id: str) -> SemanticFragmentRuntimeBinding:
         try:
@@ -1035,6 +1247,132 @@ def _stage_native_bodies(
         )
     context.validate_complete()
     state.materialized_native_body_ids.add(native_body_id)
+
+
+def _materialize_constant_materializations(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    step: object,
+    prepared_facts: tuple[PreparedConstantMaterializationFact, ...],
+) -> None:
+    from d810.transforms.plan import PatchFragmentConstantMaterializations
+    from d810.transforms.prepared_native_body import PreparedNativeInstructionFact
+
+    if not isinstance(step, PatchFragmentConstantMaterializations):
+        raise TypeError("constant materialization requires its typed PatchStep")
+    fact_by_id = {fact.materialization_id: fact for fact in prepared_facts}
+    if tuple(fact_by_id) != tuple(
+        item.materialization_id for item in step.materializations
+    ):
+        raise SemanticFragmentBackendRejected(
+            "constant PatchStep differs from immutable materialization facts",
+            reason_code="constant_materialization_fact_mismatch",
+        )
+    gateway = _gateway(modifier)
+    for materialization, source_ref in zip(
+        step.materializations,
+        step.source_refs,
+    ):
+        if any(
+            rollback.materialization_id == materialization.materialization_id
+            for rollback in state.constant_materialization_rollbacks
+        ):
+            raise SemanticFragmentBackendRejected(
+                "constant materialization was applied more than once",
+                reason_code="constant_materialization_duplicate",
+                anchor_ea=materialization.instruction_ea,
+            )
+        fact = fact_by_id[materialization.materialization_id]
+        binding = state.binding(source_ref.local_block_id)
+        block = _live_block_for_binding(modifier, binding)
+        rows = tuple(_iter_block_instructions(block))
+        if fact.load_instruction_index >= len(rows):
+            raise SemanticFragmentBackendRejected(
+                "constant load index escaped the published source block",
+                reason_code="constant_materialization_index_stale",
+                anchor_ea=materialization.instruction_ea,
+            )
+        live_envelope = tuple(
+            PreparedNativeInstructionFact(
+                instruction_id=f"{materialization.materialization_id}:{offset}",
+                native_ea=int(instruction.ea),
+                opcode=int(instruction.opcode),
+                kind=sdk_instruction_kind(int(instruction.opcode)),
+                operand_shape=sdk_instruction_operand_shape(instruction),
+                writes_condition_codes=_prepared_flag_write(instruction),
+            )
+            for offset, instruction in enumerate(
+                rows[
+                    fact.envelope_start_instruction_index :
+                    fact.envelope_start_instruction_index + 10
+                ]
+            )
+        )
+        if live_envelope != fact.envelope:
+            raise SemanticFragmentBackendRejected(
+                "constant envelope changed after immutable preflight",
+                reason_code="constant_materialization_prewrite_mismatch",
+                anchor_ea=materialization.instruction_ea,
+            )
+        original = ida_hexrays.minsn_t(rows[fact.load_instruction_index])
+        state.constant_materialization_rollbacks.append(
+            SemanticConstantMaterializationRollback(
+                materialization_id=materialization.materialization_id,
+                source_block_id=materialization.source_block_id,
+                instruction_ea=materialization.instruction_ea,
+                instruction_index=fact.load_instruction_index,
+                original_instruction=original,
+            )
+        )
+        gateway._record_fragment_mutation_started(plan)
+        modifier.replace_instruction_with_constant_now(
+            block,
+            instruction_index=fact.load_instruction_index,
+            expected_ea=materialization.instruction_ea,
+            expected_opcode=int(ida_hexrays.m_ldx),
+            constant_value=materialization.constant_value,
+            value_size=materialization.width_bits // 8,
+        )
+        applied = tuple(_iter_block_instructions(block))[
+            fact.load_instruction_index
+        ]
+        applied_shape = sdk_instruction_operand_shape(applied)
+        expected_destination = fact.envelope[2].operand_shape[2]
+        if (
+            int(applied.opcode) != int(ida_hexrays.m_mov)
+            or not _primitive_shape_contains(
+                applied_shape[0],
+                ("number", int(materialization.constant_value)),
+            )
+            or applied_shape[2] != expected_destination
+        ):
+            raise SemanticFragmentBackendRejected(
+                "constant replacement differs from the compiled materialization",
+                reason_code="constant_materialization_postwrite_mismatch",
+                anchor_ea=materialization.instruction_ea,
+            )
+        gateway.record_semantic_fragment_constant_materialization(
+            materialization_id=materialization.materialization_id,
+            block=binding.version.handle,
+        )
+
+
+def _rollback_constant_materializations(
+    modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
+) -> None:
+    for rollback in reversed(state.constant_materialization_rollbacks):
+        binding = state.binding(rollback.source_block_id)
+        block = _live_block_for_binding(modifier, binding)
+        modifier.restore_instruction_from_snapshot_now(
+            block,
+            instruction_index=rollback.instruction_index,
+            expected_ea=rollback.instruction_ea,
+            expected_opcode=int(ida_hexrays.m_mov),
+            original=rollback.original_instruction,
+        )
+    state.constant_materialization_rollbacks.clear()
 
 
 def _published_binding(
@@ -5089,6 +5427,22 @@ def snapshot_semantic_fragment_inputs(
             "snapshot function entry lacks published authority",
         )
     entry_block_id = ids_by_serial[0]
+    try:
+        constant_materializations = _prepare_constant_materializations(
+            plan,
+            live_by_id,
+        )
+    except SemanticFragmentBackendRejected as exc:
+        materialization_id = (
+            plan.constant_materializations[0].materialization_id
+            if plan.constant_materializations
+            else "constant-materialization"
+        )
+        raise FragmentProjectionFailure(
+            FragmentValidationPostcondition.USE_DEF_INTEGRITY,
+            materialization_id,
+            str(exc),
+        ) from exc
 
     generated_topology = (
         _generated_structural_serial_topology(modifier)
@@ -5510,6 +5864,7 @@ def snapshot_semantic_fragment_inputs(
             native_bodies=tuple(
                 preparation.fact for _body_id, preparation in preparations
             ),
+            constant_materializations=constant_materializations,
             return_carrier_constructions=tuple(carrier_constructions),
         ),
         payload=SemanticFragmentRealizationPayload(
@@ -6053,6 +6408,35 @@ def realize_semantic_patch_plan(
         raise SemanticFragmentBackendRejected(
             "semantic fragment realization authority projection was forged"
         )
+    expected_constant_ids = tuple(
+        item.materialization_id for item in plan.constant_materializations
+    )
+    prepared_constant_ids = tuple(
+        item.materialization_id
+        for item in authority.snapshot.constant_materializations
+    )
+    if prepared_constant_ids != expected_constant_ids:
+        raise SemanticFragmentBackendRejected(
+            "prepared constant materialization inventory differs from the plan",
+            reason_code="constant_materialization_inventory_mismatch",
+        )
+    try:
+        live_constant_materializations = _reobserve_constant_materializations(
+            modifier,
+            plan,
+        )
+    except SemanticFragmentBackendRejected:
+        raise
+    except Exception as exc:
+        raise SemanticFragmentBackendRejected(
+            "constant materialization live evidence cannot be re-observed",
+            reason_code="constant_materialization_reobservation_failed",
+        ) from exc
+    if live_constant_materializations != authority.snapshot.constant_materializations:
+        raise SemanticFragmentBackendRejected(
+            "constant materialization live evidence differs from immutable preflight",
+            reason_code="constant_materialization_preflight_mismatch",
+        )
 
     fact_by_body_id = {fact.body_id: fact for fact in authority.snapshot.native_bodies}
     try:
@@ -6150,6 +6534,7 @@ def realize_semantic_patch_plan(
     try:
         from d810.transforms.plan import (
             PatchFragmentBlockMaterialization,
+            PatchFragmentConstantMaterializations,
             PatchFragmentOperation,
             PatchFragmentOperationNormalization,
             PatchFragmentRootPublication,
@@ -6157,6 +6542,7 @@ def realize_semantic_patch_plan(
         )
 
         computed_branches_normalized = False
+        constants_materialized = False
         terminal_effects_materialized = False
         root_helpers_reserved = False
         root_steps = tuple(
@@ -6210,6 +6596,19 @@ def realize_semantic_patch_plan(
                         reference_version=state.binding(plan.roots[0]).version,
                         plan_ref=step.block_ref,
                     )
+            elif isinstance(step, PatchFragmentConstantMaterializations):
+                if constants_materialized:
+                    raise SemanticFragmentBackendRejected(
+                        "semantic PatchPlan duplicated constant materializations"
+                    )
+                _materialize_constant_materializations(
+                    modifier,
+                    plan,
+                    state,
+                    step,
+                    authority.snapshot.constant_materializations,
+                )
+                constants_materialized = True
             elif isinstance(step, PatchFragmentOperationNormalization):
                 if computed_branches_normalized:
                     raise SemanticFragmentBackendRejected(
@@ -6316,6 +6715,7 @@ def discard_staged_semantic_fragment(
     if state.plan_id != plan.plan_id or state.atomic_group_id != plan.atomic_group_id:
         raise RuntimeError("staged semantic fragment does not match discard request")
     try:
+        _rollback_constant_materializations(modifier, state)
         modifier._discard_detached_semantic_versions(
             tuple(
                 state.binding(block_id).version for block_id in state.staged_block_ids

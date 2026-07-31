@@ -74,6 +74,7 @@ from d810.transforms.graph_modification import (
 )
 from d810.transforms.materialization_payload import CapturedBlockBody
 from d810.transforms.fragment_plan import (
+    FragmentAbsoluteConstantMaterialization,
     FragmentBlock,
     FragmentBlockMaterialization,
     FragmentOperation,
@@ -299,6 +300,43 @@ class PatchFragmentBlockMaterialization(_PatchRefValidated):
             self.native_body_id is not None
         ):
             raise ValueError("only imported fragment blocks require a native body id")
+
+
+@dataclass(frozen=True)
+class PatchFragmentConstantMaterializations(_PatchRefValidated):
+    """One exact immutable batch of fragment-local constant replacements."""
+
+    materializations: tuple[FragmentAbsoluteConstantMaterialization, ...]
+    source_refs: tuple[PlanBlockRef, ...]
+    _REF_TUPLE_FIELDS: ClassVar[tuple[str, ...]] = ("source_refs",)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if (
+            not isinstance(self.materializations, tuple)
+            or not self.materializations
+            or any(
+                not isinstance(item, FragmentAbsoluteConstantMaterialization)
+                for item in self.materializations
+            )
+        ):
+            raise TypeError(
+                "fragment constant materialization step requires a typed tuple"
+            )
+        if (
+            not isinstance(self.source_refs, tuple)
+            or len(self.source_refs) != len(self.materializations)
+            or any(not isinstance(ref, PlanBlockRef) for ref in self.source_refs)
+        ):
+            raise TypeError(
+                "fragment constant materialization step requires exact source refs"
+            )
+        if tuple(ref.local_block_id for ref in self.source_refs) != tuple(
+            item.source_block_id for item in self.materializations
+        ):
+            raise ValueError(
+                "fragment constant materialization sources differ from semantic intent"
+            )
 
 
 @dataclass(frozen=True)
@@ -984,6 +1022,7 @@ BlockCreatingGraphModification = Union[
 
 PatchOperation = Union[
     PatchFragmentBlockMaterialization,
+    PatchFragmentConstantMaterializations,
     PatchFragmentOperation,
     PatchFragmentOperationNormalization,
     PatchFragmentTerminalEffects,
@@ -1049,6 +1088,25 @@ def _validate_fragment_contract_steps(
             None if step.source_ref is None else step.source_ref.local_block_id
         ) != expected_source or step.native_body_id != block.native_body_id:
             raise ValueError("fragment block PatchStep authority differs")
+
+    constant_steps = tuple(
+        step
+        for step in steps
+        if isinstance(step, PatchFragmentConstantMaterializations)
+    )
+    expected_constant_count = int(bool(fragment.constant_materializations))
+    if len(constant_steps) != expected_constant_count:
+        raise ValueError("fragment constant materialization PatchStep inventory differs")
+    if constant_steps and (
+        constant_steps[0].materializations != fragment.constant_materializations
+        or tuple(
+            ref.local_block_id for ref in constant_steps[0].source_refs
+        )
+        != tuple(
+            item.source_block_id for item in fragment.constant_materializations
+        )
+    ):
+        raise ValueError("fragment constant materialization PatchStep payload differs")
 
     operation_steps = tuple(
         step for step in steps if isinstance(step, PatchFragmentOperation)
@@ -1140,6 +1198,7 @@ def _validate_fragment_contract_steps(
 
     recognized = (
         PatchFragmentBlockMaterialization,
+        PatchFragmentConstantMaterializations,
         PatchFragmentOperationNormalization,
         PatchFragmentTerminalEffects,
         PatchFragmentOperation,

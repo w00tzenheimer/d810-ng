@@ -35,6 +35,7 @@ from d810.transforms.fragment_plan import (
     FragmentWorkItemScope,
 )
 from d810.transforms.rhad_reference_compiler import (
+    RhadAbsoluteConstantMaterialization,
     RhadCompilerRejection,
     RhadConditionalRoute,
     RhadDirectRoute,
@@ -3404,6 +3405,12 @@ class RhadGeneratedBlockEvidence:
     start_ea: int
     end_ea: int
     exact_instruction_eas: tuple[int, ...]
+
+    @property
+    def semantic_anchor_ea(self) -> int:
+        """Return a real instruction anchor inside the typed native range."""
+        exact = tuple(int(ea) for ea in self.exact_instruction_eas)
+        return int(self.start_ea) if int(self.start_ea) in exact else exact[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -11517,6 +11524,27 @@ _ROW227_DIRECT_ROUTE = RhadDirectRoute(
     depends_on=(_ROW226_DIRECT_ROUTE.operation_id,),
 )
 
+_CONSTANT_ROW0_ADD_ABSOLUTE = RhadAbsoluteConstantMaterialization(
+    operation_id="constant:rhad-add-absolute@0x40A574",
+    reference_operation_id="rhad:constant@0x40A574",
+    reference_order=0,
+    operation_variant=RhadOperationVariant.ADD_ABSOLUTE,
+    reference_symbol="deob_consts.ConstantInliner.transform_arith_mem_to_imm",
+    source_block_id="native@0x40A560",
+    source_native_ea=0x40A574,
+    data_native_ea=0x48ADCC,
+    source_width_bits=32,
+    destination_width_bits=32,
+    reference_read_width_bits=32,
+    reference_data_bytes_le="3f727637",
+    reference_raw_value=0x3776723F,
+    materialized_value=0x3776723F,
+    source_instruction_bytes="0305ccad4800",
+    replacement_instruction_bytes="81c03f727637",
+    phase=RhadReferencePhase.CONSTANT_MATERIALIZATION,
+    depends_on=(_ROW227_DIRECT_ROUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -11536,6 +11564,25 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         exact_instruction_eas=(0x40A5F0, 0x40A5F6, 0x40A5FE, 0x40A601, 0x40A605),
     ),
     auxiliary_blocks=(
+        RhadGeneratedBlockEvidence(
+            block_id="native@0x40A560",
+            start_ea=0x40A560,
+            end_ea=0x40A59A,
+            exact_instruction_eas=(
+                0x40A561,
+                0x40A566,
+                0x40A569,
+                0x40A56F,
+                0x40A574,
+                0x40A57A,
+                0x40A57E,
+                0x40A586,
+                0x40A58D,
+                0x40A592,
+                0x40A594,
+                0x40A595,
+            ),
+        ),
         RhadGeneratedBlockEvidence(
             block_id="native@0x40A5FE",
             start_ea=0x40A5FE,
@@ -16402,6 +16449,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW225_DIRECT_ROUTE,
         _ROW226_DIRECT_ROUTE,
         _ROW227_DIRECT_ROUTE,
+        _CONSTANT_ROW0_ADD_ABSOLUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
@@ -17357,7 +17405,7 @@ def build_rhad_generated_reference_plan(
                 block_id=evidence.block_id,
                 role=FragmentBlockRole.EXTERNAL,
                 materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
-                semantic_anchor_ea=evidence.start_ea,
+                semantic_anchor_ea=evidence.semantic_anchor_ea,
                 stable_identity=_identity(
                     native_key,
                     evidence.start_ea,
@@ -17407,6 +17455,7 @@ def build_rhad_generated_reference_plan(
             ),
         )
         for operation in batch.operations
+        if not isinstance(operation, RhadAbsoluteConstantMaterialization)
     )
     base_plan = FragmentPlan(
         plan_id=f"{batch.batch_id}-base",

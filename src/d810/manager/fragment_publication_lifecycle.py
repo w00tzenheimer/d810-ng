@@ -212,6 +212,10 @@ class SessionFragmentPublicationLifecycleAuthority:
                 work_item_id=scope.work_item_id,
                 published_operation_ids=tuple(
                     operation.operation_id for operation in plan.operations
+                )
+                + tuple(
+                    item.materialization_id
+                    for item in plan.constant_materializations
                 ),
                 selected_obligation_ids=scope.selected_obligation_ids,
                 remaining_obligation_ids=scope.remaining_obligation_ids,

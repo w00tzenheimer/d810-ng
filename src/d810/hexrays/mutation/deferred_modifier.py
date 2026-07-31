@@ -3003,6 +3003,80 @@ class DeferredGraphModifier:
         if mark_chains:
             self.mba.mark_chains_dirty()
 
+    def replace_instruction_with_constant_now(
+        self,
+        block: ida_hexrays.mblock_t,
+        *,
+        instruction_index: int,
+        expected_ea: int,
+        expected_opcode: int,
+        constant_value: int,
+        value_size: int,
+    ) -> ida_hexrays.minsn_t:
+        """Replace one exactly indexed load with ``m_mov #constant, dest``."""
+        instructions = self._block_instructions(block)
+        instruction_index = int(instruction_index)
+        if not 0 <= instruction_index < len(instructions):
+            raise ValueError("constant replacement index is outside the live block")
+        target = instructions[instruction_index]
+        if (
+            int(target.ea) != int(expected_ea)
+            or int(target.opcode) != int(expected_opcode)
+        ):
+            raise ValueError(
+                "constant replacement index changed after immutable preflight; "
+                f"blk{int(block.serial)}@0x{int(block.start):X} "
+                f"index={instruction_index} expected=(0x{int(expected_ea):X},"
+                f"{int(expected_opcode)}) actual=(0x{int(target.ea):X},"
+                f"{int(target.opcode)})"
+            )
+        value_size = int(value_size)
+        if value_size <= 0:
+            raise ValueError("constant replacement requires a positive value size")
+        original = ida_hexrays.minsn_t(target)
+        target.opcode = int(ida_hexrays.m_mov)
+        target.l.make_number(
+            int(constant_value) & ((1 << (value_size * 8)) - 1),
+            value_size,
+            int(expected_ea),
+        )
+        target.r.erase()
+        block.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+        return original
+
+    def restore_instruction_from_snapshot_now(
+        self,
+        block: ida_hexrays.mblock_t,
+        *,
+        instruction_index: int,
+        expected_ea: int,
+        expected_opcode: int,
+        original: ida_hexrays.minsn_t,
+    ) -> None:
+        """Restore one in-place instruction from its exact SDK snapshot."""
+        instructions = self._block_instructions(block)
+        instruction_index = int(instruction_index)
+        if not 0 <= instruction_index < len(instructions):
+            raise ValueError("constant rollback index is outside the live block")
+        target = instructions[instruction_index]
+        if (
+            int(target.ea) != int(expected_ea)
+            or int(target.opcode)
+            not in {int(expected_opcode), int(original.opcode)}
+        ):
+            raise ValueError(
+                "constant rollback index differs from the applied replacement"
+            )
+        target.opcode = int(original.opcode)
+        target.ea = int(original.ea)
+        target.iprops = int(original.iprops)
+        target.l.assign(original.l)
+        target.r.assign(original.r)
+        target.d.assign(original.d)
+        block.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+
     @staticmethod
     def _block_instructions(block: ida_hexrays.mblock_t) -> tuple[object, ...]:
         instructions: list[object] = []
