@@ -564,6 +564,182 @@ def _mixed_ledger():
     )
 
 
+def _constant_ledger():
+    compiler = _compiler_module()
+    mixed = _mixed_ledger()
+    source = FragmentBlock(
+        block_id="native@0x40A560",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x40A560,
+        stable_identity=_identity(
+            0x40A560,
+            0x40A59A,
+            0x40A561,
+            0x40A566,
+            0x40A569,
+            0x40A56F,
+            0x40A574,
+            0x40A57A,
+            0x40A57E,
+            0x40A586,
+            0x40A58D,
+            0x40A592,
+            0x40A594,
+            0x40A595,
+        ),
+    )
+    constant_id = "constant:rhad-add-absolute@0x40A574"
+    base = replace(
+        mixed.base_plan,
+        blocks=(*mixed.base_plan.blocks, source),
+        work_item_scope=replace(
+            mixed.base_plan.work_item_scope,
+            selected_obligation_ids=(
+                *mixed.base_plan.work_item_scope.selected_obligation_ids,
+                constant_id,
+            ),
+        ),
+    )
+    constant = compiler.RhadAbsoluteConstantMaterialization(
+        operation_id=constant_id,
+        reference_operation_id="rhad:constant@0x40A574",
+        reference_order=0,
+        operation_variant=compiler.RhadOperationVariant.ADD_ABSOLUTE,
+        reference_symbol=(
+            "deob_consts.ConstantInliner.transform_arith_mem_to_imm"
+        ),
+        source_block_id=source.block_id,
+        source_native_ea=0x40A574,
+        data_native_ea=0x48ADCC,
+        source_width_bits=32,
+        destination_width_bits=32,
+        reference_read_width_bits=32,
+        reference_data_bytes_le="3f727637",
+        reference_raw_value=0x3776723F,
+        materialized_value=0x3776723F,
+        source_instruction_bytes="0305ccad4800",
+        replacement_instruction_bytes="81c03f727637",
+        phase=compiler.RhadReferencePhase.CONSTANT_MATERIALIZATION,
+        depends_on=(mixed.operations[-1].operation_id,),
+    )
+    return replace(
+        mixed,
+        base_plan=base,
+        operations=(*mixed.operations, constant),
+        reference_provenance={
+            **mixed.reference_provenance,
+            "operation_shapes": (
+                *mixed.reference_provenance["operation_shapes"],
+                "add_absolute",
+            ),
+        },
+    )
+
+
+def test_compiler_emits_typed_add_absolute_materialization() -> None:
+    compiler = _compiler_module()
+    ledger = _constant_ledger()
+
+    plan = compiler.compile_rhad_reference_fragment(
+        ledger,
+        expected_evidence_generation=1,
+    )
+
+    assert len(plan.operations) == 2
+    assert len(plan.constant_materializations) == 1
+    materialization = plan.constant_materializations[0]
+    assert materialization.materialization_id == (
+        "constant:rhad-add-absolute@0x40A574"
+    )
+    assert materialization.reference_operation_id == "rhad:constant@0x40A574"
+    assert materialization.source_block_id == "native@0x40A560"
+    assert materialization.instruction_ea == 0x40A574
+    assert materialization.data_ea == 0x48ADCC
+    assert materialization.constant_value == 0x3776723F
+    assert materialization.source_instruction_bytes == "0305ccad4800"
+    assert materialization.replacement_instruction_bytes == "81c03f727637"
+    changed = replace(
+        ledger.operations[-1],
+        reference_data_bytes_le="3e727637",
+        reference_raw_value=0x3776723E,
+        materialized_value=0x3776723E,
+        replacement_instruction_bytes="81c03e727637",
+    )
+    changed_ledger = replace(
+        ledger,
+        operations=(*ledger.operations[:-1], changed),
+    )
+    assert changed_ledger.aggregate_program_identity != ledger.aggregate_program_identity
+
+
+def test_add_absolute_rejects_mismatched_reference_bytes() -> None:
+    compiler = _compiler_module()
+    operation = _constant_ledger().operations[-1]
+
+    with pytest.raises(
+        compiler.RhadCompilerRejection,
+        match="data bytes and materialized value differ",
+    ):
+        replace(operation, reference_data_bytes_le="3e727637")
+
+
+def test_compiler_rejects_add_absolute_without_exact_published_source() -> None:
+    compiler = _compiler_module()
+    ledger = _constant_ledger()
+    *routes, constant = ledger.operations
+
+    with pytest.raises(
+        compiler.RhadCompilerRejection,
+        match="exact published identity",
+    ):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                operations=(
+                    *routes,
+                    replace(constant, source_block_id="native@0x40A5F0"),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_unselected_add_absolute_obligation() -> None:
+    compiler = _compiler_module()
+    ledger = _constant_ledger()
+    scope = ledger.base_plan.work_item_scope
+    assert scope is not None
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="work-item authority"):
+        compiler.compile_rhad_reference_fragment(
+            replace(
+                ledger,
+                base_plan=replace(
+                    ledger.base_plan,
+                    work_item_scope=replace(
+                        scope,
+                        selected_obligation_ids=scope.selected_obligation_ids[:-1],
+                    ),
+                ),
+            ),
+            expected_evidence_generation=1,
+        )
+
+
+def test_compiler_rejects_reference_phase_regression_after_constant() -> None:
+    compiler = _compiler_module()
+    ledger = _constant_ledger()
+    first, direct, constant = ledger.operations
+    constant = replace(constant, depends_on=(first.operation_id,))
+
+    with pytest.raises(compiler.RhadCompilerRejection, match="phase order regressed"):
+        compiler.compile_rhad_reference_fragment(
+            replace(ledger, operations=(first, constant, direct)),
+            expected_evidence_generation=1,
+        )
+
+
 def test_conditional_flag_producer_may_precede_the_owned_rewrite_corridor() -> None:
     compiler = _compiler_module()
     ledger = _ledger()
