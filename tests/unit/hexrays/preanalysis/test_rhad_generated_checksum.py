@@ -16965,7 +16965,16 @@ def test_row212_inventory_owns_c651_producer_and_c665_target_corridor() -> None:
     assert row212["current_compiler_support"] == (
         "typed_existing_conditional_plus_indirect"
     )
-    assert row212["current_generated_proof"] == {"status": "unproved"}
+    assert row212["current_generated_proof"] == {
+        "accepted_commits": [
+            "8d50e0a77",
+            "f3f1ce9e0",
+            "a64ffa948",
+            "87f1433a2",
+            "938c635c0",
+        ],
+        "status": "accepted_generated_c6",
+    }
     assert row212["source_native_ea"] == 0x40C64B
     assert row212["source_block_anchor_ea"] == 0x40C65F
     assert row212["flag_producer_native_ea"] == 0x40C651
