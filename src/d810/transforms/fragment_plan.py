@@ -105,6 +105,13 @@ class FragmentArithmeticFlagRole(str, Enum):
     SIGN = "sign"
 
 
+class FragmentConstantPublicationEnvelope(str, Enum):
+    """Exact immutable source form accepted at fragment publication."""
+
+    GENERATED_ABSOLUTE_LOAD = "generated_absolute_load"
+    IMPORTED_GLOBAL_MOVE = "imported_global_move"
+
+
 @dataclass(frozen=True, slots=True)
 class FragmentSetccExplicitShiftScaling:
     """A standalone native shift/multiply before the table lookup."""
@@ -1404,6 +1411,7 @@ class FragmentAbsoluteConstantMaterialization:
     source_instruction_bytes: str
     replacement_instruction_bytes: str
     consumer_operation: ValueOpKind
+    publication_envelope: FragmentConstantPublicationEnvelope
     preserved_flag_roles: tuple[FragmentArithmeticFlagRole, ...]
 
     def __post_init__(self) -> None:
@@ -1475,6 +1483,22 @@ class FragmentAbsoluteConstantMaterialization:
             raise FragmentPlanRejected(
                 "constant materialization consumer lacks a typed contract"
             )
+        publication_envelope = self.publication_envelope
+        if not isinstance(
+            publication_envelope,
+            FragmentConstantPublicationEnvelope,
+        ):
+            raise TypeError(
+                "constant materialization publication envelope must be typed"
+            )
+        if (
+            self.consumer_operation is ValueOpKind.ADD
+            and publication_envelope
+            is not FragmentConstantPublicationEnvelope.GENERATED_ABSOLUTE_LOAD
+        ):
+            raise FragmentPlanRejected(
+                "add-absolute materialization requires its generated load envelope"
+            )
         encodings = (
             (self.reference_data_bytes_le, 4, "constant reference data"),
             (self.source_instruction_bytes, 6, "constant source instruction"),
@@ -1513,6 +1537,7 @@ class FragmentAbsoluteConstantMaterialization:
         )
         object.__setattr__(self, "constant_value", constant_value)
         object.__setattr__(self, "destination_storage", destination_storage)
+        object.__setattr__(self, "publication_envelope", publication_envelope)
         object.__setattr__(
             self,
             "reference_data_bytes_le",
@@ -3095,14 +3120,7 @@ class FragmentPlan:
                 envelope.join_block_id,
             )
         }
-        operation_topology_ids = (
-            operation_source_ids
-            | operation_envelope_ids
-            | {
-                materialization.source_block_id
-                for materialization in constant_materializations
-            }
-        )
+        operation_topology_ids = operation_source_ids | operation_envelope_ids
         for native_body in native_bodies:
             terminal_ids = set(native_body.terminal_block_ids)
             preserved_native_transfer_ids = set(
