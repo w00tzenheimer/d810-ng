@@ -18,6 +18,7 @@ from d810.ir.expressions import ValueOpKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.transforms.cfg_transaction import CfgProjection, TransactionAttemptId
 from d810.transforms.fragment_plan import (
+    FragmentConstantPublicationEnvelope,
     FragmentNativeBody,
     FragmentPlan,
     FragmentReturnSource,
@@ -631,6 +632,7 @@ class PreparedConstantMaterializationFact:
     envelope_start_instruction_index: int
     load_instruction_index: int
     consumer_operation: ValueOpKind
+    publication_envelope: FragmentConstantPublicationEnvelope
     envelope: tuple[PreparedNativeInstructionFact, ...]
 
     def __post_init__(self) -> None:
@@ -659,11 +661,27 @@ class PreparedConstantMaterializationFact:
         consumer_operation = self.consumer_operation
         if not isinstance(consumer_operation, ValueOpKind):
             raise TypeError("constant materialization consumer must be typed")
+        publication_envelope = self.publication_envelope
+        if not isinstance(
+            publication_envelope,
+            FragmentConstantPublicationEnvelope,
+        ):
+            raise TypeError("constant publication envelope must be typed")
         envelope = tuple(self.envelope)
         expected_length = {
-            ValueOpKind.ADD: 10,
-            ValueOpKind.MOVE: 4,
-        }.get(consumer_operation)
+            (
+                ValueOpKind.ADD,
+                FragmentConstantPublicationEnvelope.GENERATED_ABSOLUTE_LOAD,
+            ): 10,
+            (
+                ValueOpKind.MOVE,
+                FragmentConstantPublicationEnvelope.GENERATED_ABSOLUTE_LOAD,
+            ): 4,
+            (
+                ValueOpKind.MOVE,
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE,
+            ): 1,
+        }.get((consumer_operation, publication_envelope))
         if expected_length is None:
             raise ValueError("constant materialization consumer is unsupported")
         if len(envelope) != expected_length:
@@ -674,7 +692,13 @@ class PreparedConstantMaterializationFact:
             not isinstance(item, PreparedNativeInstructionFact) for item in envelope
         ):
             raise TypeError("constant materialization envelope must be immutable")
-        if load_index != envelope_start + 2:
+        expected_load_offset = (
+            0
+            if publication_envelope
+            is FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE
+            else 2
+        )
+        if load_index != envelope_start + expected_load_offset:
             raise ValueError(
                 "constant load index differs from its exact envelope position"
             )
@@ -688,6 +712,7 @@ class PreparedConstantMaterializationFact:
         )
         object.__setattr__(self, "instruction_ea", instruction_ea)
         object.__setattr__(self, "consumer_operation", consumer_operation)
+        object.__setattr__(self, "publication_envelope", publication_envelope)
         object.__setattr__(
             self,
             "envelope_start_instruction_index",
