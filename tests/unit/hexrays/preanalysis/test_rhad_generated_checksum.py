@@ -146,7 +146,7 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         SemanticEdgeRole.CONDITIONAL_FALLTHROUGH: "native@0x40A607",
     }
     assert plan.native_bodies[0].block_ids == IMPORTED_BLOCK_IDS
-    assert len(IMPORTED_BLOCK_IDS) == 846
+    assert len(IMPORTED_BLOCK_IDS) == 851
     assert TEMPLATE_ROOT_EAS == (
         0x40A607,
         0x40B6C0,
@@ -16876,14 +16876,14 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:093890c5c38353fb9f7c5e2f254278ae7331e415ca3c789c7536cd6171a85b6e"
+        "sha256:a85497f6291ff2b7aa59aacb83c738726f06412c7c0a265f69137b03fdbefb7b"
     )
     assert len(batch.operations) == 197
-    assert len(batch.imported_blocks) == 846
+    assert len(batch.imported_blocks) == 851
     assert len(batch.template_fragments) == 186
     assert len(batch.native_body_proof_ids) == 197
-    assert len(batch.native_body_entry_block_ids) == 543
-    assert len(plan.blocks) == 851
+    assert len(batch.native_body_entry_block_ids) == 546
+    assert len(plan.blocks) == 856
     normalization = operation.computed_branch_normalization
     assert normalization is not None
     assert normalization.predicate_kind is PredicateKind.NE
@@ -18444,6 +18444,14 @@ def test_checksum_producer_compiles_row201_existing_dependency() -> None:
     assert payload["imported_closure_block_ids"] == list(
         generated_reference.ROW201_TARGET_IMPORTED_BLOCK_IDS
     )
+    assert generated_reference.ROW201_TARGET_IMPORTED_BLOCK_IDS == (
+        "native@0x40C4B4",
+        "native@0x40C4C3",
+        "native@0x40C4C6",
+        "native@0x40C4D4",
+        "native@0x40C4D6",
+        "native@0x40C4DA",
+    )
     assert payload["boundary_exit_eas"] == [0x40A607, 0x40B6C0]
     assert next(
         candidate
@@ -18457,24 +18465,41 @@ def test_checksum_producer_compiles_row201_existing_dependency() -> None:
     assert plan.block(
         "native@0x40C4B4"
     ).stable_identity.exact_instruction_eas == frozenset(
-        {
-            0x40C4B4,
-            0x40C4B9,
-            0x40C4BE,
-            0x40C4C3,
-            0x40C4C6,
-            0x40C4CC,
-            0x40C4D2,
-            0x40C4D4,
-            0x40C4D6,
-            0x40C4D8,
-            0x40C4DA,
-        }
+        {0x40C4B4, 0x40C4B9, 0x40C4BE, 0x40C4C3}
     )
+    assert plan.block(
+        "native@0x40C4C3"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40C4C3})
+    assert plan.block(
+        "native@0x40C4C6"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C4C6, 0x40C4CC, 0x40C4D2}
+    )
+    assert plan.block(
+        "native@0x40C4D4"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40C4D4})
+    assert plan.block(
+        "native@0x40C4D6"
+    ).stable_identity.exact_instruction_eas == frozenset(
+        {0x40C4D6, 0x40C4D8, 0x40C4DA}
+    )
+    assert plan.block(
+        "native@0x40C4DA"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40C4DA})
     templates = {fragment.root_ea: fragment for fragment in batch.template_fragments}
     assert templates[0x40C49A].boundary_exit_eas == (0x40A5F0, 0x40C4B4)
-    assert templates[0x40C4B4].owned_ranges == ((0x40C4B4, 0x40C4DC),)
-    assert templates[0x40C4B4].owned_block_entry_eas == (0x40C4B4,)
+    assert templates[0x40C4B4].owned_ranges == (
+        (0x40C4B4, 0x40C4C6),
+        (0x40C4C6, 0x40C4D4),
+        (0x40C4D4, 0x40C4D6),
+        (0x40C4D6, 0x40C4DC),
+    )
+    assert templates[0x40C4B4].owned_block_entry_eas == (
+        0x40C4B4,
+        0x40C4C6,
+        0x40C4D4,
+        0x40C4D6,
+    )
     assert templates[0x40C4B4].boundary_exit_eas == (0x40A607, 0x40B6C0)
     assert templates[0x40C4B4].preserved_unresolved_transfers == (
         generated_reference.RhadGeneratedPreservedTransfer(
