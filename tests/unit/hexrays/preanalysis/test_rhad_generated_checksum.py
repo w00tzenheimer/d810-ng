@@ -17716,6 +17716,51 @@ def test_row224_inventory_reuses_row191_source_and_a607_closure() -> None:
     assert row224["unavailable_closure_exit_eas"] == []
 
 
+def test_row225_inventory_reuses_row193_source_and_a607_closure() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-indirect-jump-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    row225 = next(
+        row for row in inventory["operations"] if row["reference_order"] == 225
+    )
+    assert len(inventory["operations"]) == 228
+    assert row225["operation_id"] == "rhad:route@0x40C840"
+    assert row225["operation_variant"] == "simple_indirect_jump"
+    assert row225["reference_symbol"] == (
+        "JumpInliner._fixup_jmp_and_possible_jcc"
+    )
+    assert row225["current_compiler_support"] == "typed_simple_indirect_jump"
+    assert row225["current_generated_proof"] == {"status": "unproved"}
+    assert row225["source_native_ea"] == 0x40C3BB
+    assert row225["source_block_anchor_ea"] == 0x40C83A
+    assert row225["flag_producer_native_ea"] is None
+    assert row225["predicate_native_ea"] is None
+    assert row225["transfer_native_ea"] == 0x40C840
+    assert row225["owned_corridor_instruction_eas"] == [
+        0x40C3BB,
+        0x40C3CD,
+        0x40C83A,
+        0x40C83C,
+        0x40C83E,
+        0x40C840,
+    ]
+    assert row225["semantic_targets"] == [{"ea": 0x40A607, "role": "direct"}]
+    assert row225["imported_closure_block_anchor_eas"] == [
+        0x40A607,
+        0x40A615,
+        0x40A619,
+        0x40A680,
+        0x40A68A,
+    ]
+    assert row225["boundary_exit_eas"] == [0x40A61B, 0x40A68C]
+    assert row225["unavailable_closure_exit_eas"] == []
+
+
 def test_checksum_producer_compiles_row176_existing_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
