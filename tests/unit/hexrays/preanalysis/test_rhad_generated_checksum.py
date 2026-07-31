@@ -22124,14 +22124,15 @@ def test_indirect_jump_coverage_summary_matches_committed_acceptance_prefix() ->
         "operation_variant": "cmov_selected_indirect",
         "total_reference_operations": 39,
         "compiler_supported_operations": 39,
-        "compiled_operation_instances": 29,
+        "compiled_operation_instances": 30,
         "vertically_proved_operations": 29,
         "accepted_receipt_operations": 29,
         "earliest_unproved_reference_order": 0,
         "earliest_unproved_operation_id": "rhad:route@0x40A5E3",
         "first_missing_typed_obligation": (
-            "instantiate existing RhadConditionalRoute vocabulary with exact "
-            "per-operation evidence and dependency closure"
+            "publish the compiled row200 RhadConditionalRoute through immutable "
+            "preflight and the shared actual-MMAT_GENERATED coordinator, then prove "
+            "one complete committed receipt and CMAT_FINAL"
         ),
     }
     assert simple == {
