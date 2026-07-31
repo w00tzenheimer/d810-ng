@@ -17919,8 +17919,28 @@ def test_constant_inventory_is_exact_reference_ordered_and_identity_bound() -> N
 
     first = operations[0]
     assert first == {
-        "current_compiler_support": "unsupported_typed_shape",
-        "current_generated_proof": {"status": "unproved"},
+        "current_compiler_support": (
+            "compiled_rhad_absolute_constant_materialization"
+        ),
+        "current_generated_proof": {
+            "accepted_commits": [
+                "75a8ce1ef",
+                "3ba57cd2b",
+                "45b1333fb",
+                "f9c57ae8e",
+            ],
+            "aggregate_program_identity": (
+                "sha256:d89037b66d96086dbe798ce6784aa4fa017a34c696d6de993e995cd10fc6cb6a"
+            ),
+            "diagnostic_db": (
+                ".tmp/logs/"
+                "000000000040a560_accepted_397_constant_row0.diag.sqlite3"
+            ),
+            "diagnostic_db_sha256": (
+                "05063278d1940394953c522d7d38ec5836103486d0bd851836959c2af720be25"
+            ),
+            "status": "accepted_generated_c6",
+        },
         "data_native_ea": 0x48ADCC,
         "destination_register": "eax",
         "destination_width_bits": 32,
