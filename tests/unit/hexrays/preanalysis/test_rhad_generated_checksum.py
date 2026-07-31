@@ -16721,7 +16721,10 @@ def test_row209_inventory_owns_producer_and_both_target_corridors() -> None:
     assert row209["operation_variant"] == "existing_conditional_plus_indirect"
     assert row209["reference_symbol"] == "JumpInliner._fixup_jmp_and_possible_jcc"
     assert row209["current_compiler_support"] == "typed_existing_conditional_plus_indirect"
-    assert row209["current_generated_proof"] == {"status": "unproved"}
+    assert row209["current_generated_proof"] == {
+        "accepted_commits": ["5cbf40c24", "e117f46fa", "bcde98ff6"],
+        "status": "accepted_generated_c6",
+    }
     assert row209["source_native_ea"] == 0x40C5FB
     assert row209["source_block_anchor_ea"] == 0x40C60F
     assert row209["flag_producer_native_ea"] == 0x40C601
