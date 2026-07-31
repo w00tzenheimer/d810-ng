@@ -37,6 +37,7 @@ from d810.transforms.fragment_plan import (
 from d810.transforms.rhad_reference_compiler import (
     RhadAbsoluteConstantMaterialization,
     RhadCompilerRejection,
+    RhadConstantPublicationEnvelope,
     RhadConditionalRoute,
     RhadDirectRoute,
     RhadExistingConditionalRoute,
@@ -11538,7 +11539,7 @@ _CONSTANT_ROW0_ADD_ABSOLUTE = RhadAbsoluteConstantMaterialization(
     destination_width_bits=32,
     destination_storage=StorageIdentity(
         kind=StorageIdentityKind.REGISTER,
-        offset=0,
+        offset=8,
     ),
     reference_read_width_bits=32,
     reference_data_bytes_le="3f727637",
@@ -11546,6 +11547,7 @@ _CONSTANT_ROW0_ADD_ABSOLUTE = RhadAbsoluteConstantMaterialization(
     materialized_value=0x3776723F,
     source_instruction_bytes="0305ccad4800",
     replacement_instruction_bytes="81c03f727637",
+    publication_envelope=RhadConstantPublicationEnvelope.GENERATED_ABSOLUTE_LOAD,
     phase=RhadReferencePhase.CONSTANT_MATERIALIZATION,
     depends_on=(_ROW227_DIRECT_ROUTE.operation_id,),
 )
@@ -11571,6 +11573,7 @@ _CONSTANT_ROW1_MOV_ABSOLUTE = RhadAbsoluteConstantMaterialization(
     materialized_value=0x2F192B3A,
     source_instruction_bytes="8b1510ae4800",
     replacement_instruction_bytes="90ba3a2b192f",
+    publication_envelope=RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE,
     phase=RhadReferencePhase.CONSTANT_MATERIALIZATION,
     depends_on=(_CONSTANT_ROW0_ADD_ABSOLUTE.operation_id,),
 )
@@ -16717,7 +16720,7 @@ def _constant_materialization_maturity_payload(
     blocks: dict[int, object],
     origins: dict[int, int],
 ) -> dict[str, object]:
-    """Observe one typed add-absolute operation without changing the live MBA."""
+    """Observe one typed absolute materialization without changing the live MBA."""
     import ida_hexrays
 
     def operand_contains_value(operand: object | None) -> bool:
@@ -16746,6 +16749,16 @@ def _constant_materialization_maturity_payload(
             )
         return False
 
+    def operand_is_destination(operand: object | None) -> bool:
+        return bool(
+            operand is not None
+            and int(getattr(operand, "t", -1)) == int(ida_hexrays.mop_r)
+            and int(getattr(operand, "r", -1))
+            == int(operation.destination_storage.offset)
+            and int(getattr(operand, "size", 0))
+            == int(operation.destination_width_bits) // 8
+        )
+
     anchored_rows: list[object] = []
     residual_absolute_load = False
     for block in blocks.values():
@@ -16765,6 +16778,9 @@ def _constant_materialization_maturity_payload(
         )
         for row in anchored_rows
     )
+    destination_delivery_present = any(
+        operand_is_destination(getattr(row, "d", None)) for row in anchored_rows
+    )
     required_flag_envelope = (
         int(ida_hexrays.m_cfadd),
         int(ida_hexrays.m_ofadd),
@@ -16774,22 +16790,38 @@ def _constant_materialization_maturity_payload(
         int(ida_hexrays.m_sets),
     )
     observed_envelope = tuple(int(row.opcode) for row in anchored_rows)
+    if operation.operation_variant is RhadOperationVariant.ADD_ABSOLUTE:
+        generated_envelope = (
+            int(ida_hexrays.m_mov),
+            int(ida_hexrays.m_mov),
+            int(ida_hexrays.m_mov),
+            int(ida_hexrays.m_cfadd),
+            int(ida_hexrays.m_ofadd),
+            int(ida_hexrays.m_add),
+            int(ida_hexrays.m_setz),
+            int(ida_hexrays.m_setp),
+            int(ida_hexrays.m_sets),
+            int(ida_hexrays.m_mov),
+        )
+        required_flag_roles = ("carry", "overflow", "zero", "parity", "sign")
+    elif operation.operation_variant is RhadOperationVariant.MOV_ABSOLUTE:
+        generated_envelope = (
+            (int(ida_hexrays.m_mov),)
+            if operation.publication_envelope
+            is RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE
+            else (int(ida_hexrays.m_mov),) * 4
+        )
+        required_flag_envelope = ()
+        required_flag_roles = ()
+    else:
+        raise ValueError("unsupported typed Rhad constant observation variant")
     flag_envelope_survives = bool(
-        materialized_constant_present
-        and all(opcode in observed_envelope for opcode in required_flag_envelope)
-        and observed_envelope.count(int(ida_hexrays.m_mov)) >= 2
+        all(opcode in observed_envelope for opcode in required_flag_envelope)
     )
-    generated_envelope = (
-        int(ida_hexrays.m_mov),
-        int(ida_hexrays.m_mov),
-        int(ida_hexrays.m_mov),
-        int(ida_hexrays.m_cfadd),
-        int(ida_hexrays.m_ofadd),
-        int(ida_hexrays.m_add),
-        int(ida_hexrays.m_setz),
-        int(ida_hexrays.m_setp),
-        int(ida_hexrays.m_sets),
-        int(ida_hexrays.m_mov),
+    semantic_envelope_survives = bool(
+        materialized_constant_present
+        and destination_delivery_present
+        and flag_envelope_survives
     )
     exact_generated_envelope = observed_envelope == generated_envelope
     source_present = bool(anchored_rows)
@@ -16806,16 +16838,22 @@ def _constant_materialization_maturity_payload(
         "reference_operation_id": operation.reference_operation_id,
         "operation_category": operation.category.value,
         "operation_variant": operation.operation_variant.value,
+        "publication_envelope": operation.publication_envelope.value,
         "source_native_ea": int(operation.source_native_ea),
         "data_native_ea": int(operation.data_native_ea),
         "materialized_value": int(operation.materialized_value),
+        "destination_storage": operation.destination_storage.to_record(),
+        "destination_width_bits": int(operation.destination_width_bits),
+        "required_flag_roles": list(required_flag_roles),
         "source_present": source_present,
         "source_topology_reachable": source_present,
         "source_topology_retired": source_topology_retired,
         "absolute_load_present": residual_absolute_load,
         "materialized_constant_present": materialized_constant_present,
+        "destination_delivery_present": destination_delivery_present,
         "flag_envelope_opcodes": list(observed_envelope),
         "flag_envelope_survives": flag_envelope_survives,
+        "semantic_envelope_survives": semantic_envelope_survives,
         "exact_generated_envelope": exact_generated_envelope,
         "passed": passed,
     }

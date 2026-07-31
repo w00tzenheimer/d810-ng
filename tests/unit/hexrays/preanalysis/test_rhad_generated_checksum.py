@@ -1396,11 +1396,6 @@ def test_checksum_producer_compiles_row17_scaled_lookup_reference() -> None:
         row213_envelope.selected_value_block_id,
         row213_envelope.join_block_id,
     }
-    operation_topology |= {
-        materialization.source_block_id
-        for materialization in plan.constant_materializations
-        if materialization.source_block_id in native_body.block_ids
-    }
     preserved_sources = set(native_body.preserved_native_transfer_block_ids)
     assert operation_topology.isdisjoint(preserved_sources)
     assert operation_topology | preserved_sources == set(native_body.block_ids)
@@ -17978,9 +17973,14 @@ def test_constant_row0_compiles_typed_materialization_and_binds_identity() -> No
     assert operation.reference_operation_id == "rhad:constant@0x40A574"
     assert operation.reference_order == 0
     assert operation.operation_variant.value == "add_absolute"
+    assert operation.publication_envelope.value == "generated_absolute_load"
     assert operation.source_block_id == "native@0x40A560"
     assert operation.source_native_ea == 0x40A574
     assert operation.data_native_ea == 0x48ADCC
+    assert operation.destination_storage == StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=8,
+    )
     assert operation.source_width_bits == operation.destination_width_bits == 32
     assert operation.reference_read_width_bits == 32
     assert operation.reference_data_bytes_le == "3f727637"
@@ -18003,6 +18003,7 @@ def test_constant_row0_compiles_typed_materialization_and_binds_identity() -> No
     assert materialization.width_bits == 32
     assert materialization.constant_value == 0x3776723F
     assert materialization.consumer_operation.value == "add"
+    assert materialization.publication_envelope.value == "generated_absolute_load"
     assert materialization.preserved_flag_roles == (
         "carry",
         "overflow",
@@ -18025,6 +18026,7 @@ def test_constant_row1_compiles_typed_mov_from_imported_source() -> None:
     assert operation.reference_operation_id == "rhad:constant@0x40A710"
     assert operation.reference_order == 1
     assert operation.operation_variant.value == "mov_absolute"
+    assert operation.publication_envelope.value == "imported_global_move"
     assert operation.source_block_id == "native@0x40A70E"
     assert operation.source_native_ea == 0x40A710
     assert operation.data_native_ea == 0x48AE10
@@ -18046,6 +18048,7 @@ def test_constant_row1_compiles_typed_mov_from_imported_source() -> None:
     materialization = plan.constant_materializations[-1]
     assert materialization.materialization_id == operation.operation_id
     assert materialization.consumer_operation.value == "move"
+    assert materialization.publication_envelope.value == "imported_global_move"
     assert materialization.preserved_flag_roles == ()
     assert materialization.destination_storage == operation.destination_storage
     source = plan.block(operation.source_block_id)
@@ -18053,6 +18056,10 @@ def test_constant_row1_compiles_typed_mov_from_imported_source() -> None:
     assert source.materialization.value == "import_native"
     assert source.stable_identity is not None
     assert source.stable_identity.native_ranges.contains(operation.source_native_ea)
+    native_body = next(
+        body for body in plan.native_bodies if operation.source_block_id in body.block_ids
+    )
+    assert operation.source_block_id in native_body.preserved_native_transfer_block_ids
 
 
 def test_constant_row0_value_changes_aggregate_program_identity() -> None:
@@ -18741,7 +18748,7 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:404b96f3f729e1777a6e2f95c46313967d909baea198ceb132ea7d55b3b1936a"
+        "sha256:b8d8b0e7a05bc347ec8e54e9405d33a9e8f8fcba89753b65a85c902b1072089d"
     )
     assert len(batch.operations) == 225
     assert len(batch.imported_blocks) == 884
