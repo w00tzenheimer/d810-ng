@@ -10053,6 +10053,29 @@ _ROW193_EXISTING_ROUTE = RhadExistingConditionalRoute(
     depends_on=(_ROW192_DIRECT_ROUTE.operation_id,),
 )
 
+_ROW194_DIRECT_ROUTE = RhadDirectRoute(
+    operation_id="route:rhad-direct@0x40C3D7",
+    reference_operation_id="rhad:route@0x40C3D7",
+    reference_order=194,
+    operation_variant=RhadOperationVariant.SIMPLE_INDIRECT_JUMP,
+    reference_symbol="JumpInliner._fixup_jmp_and_possible_jcc",
+    source_block_id="native@0x40C3D3",
+    source_native_ea=0x40C3C1,
+    transfer_ea=0x40C3D7,
+    owner_anchor_ea=0x40C3D3,
+    direct_target_block_id="native@0x40B6C0",
+    owned_corridor_instruction_eas=(
+        0x40C3C1,
+        0x40C3D3,
+        0x40C3D5,
+        0x40C3D7,
+    ),
+    imported_closure_block_ids=ROW19_TARGET_IMPORTED_BLOCK_IDS,
+    boundary_exit_eas=(0x40B790,),
+    phase=RhadReferencePhase.INDIRECT_JUMP_RECONSTRUCTION,
+    depends_on=(_ROW193_EXISTING_ROUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -11037,6 +11060,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW191_EXISTING_ROUTE.operation_id,
         _ROW192_DIRECT_ROUTE.operation_id,
         _ROW193_EXISTING_ROUTE.operation_id,
+        _ROW194_DIRECT_ROUTE.operation_id,
     ),
     template_fragments=(
         RhadGeneratedTemplateFragment(
@@ -14616,6 +14640,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _ROW191_EXISTING_ROUTE,
         _ROW192_DIRECT_ROUTE,
         _ROW193_EXISTING_ROUTE,
+        _ROW194_DIRECT_ROUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
