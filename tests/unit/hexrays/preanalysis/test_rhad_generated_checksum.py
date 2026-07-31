@@ -17869,6 +17869,81 @@ def test_row227_inventory_reuses_row207_source_and_a607_closure() -> None:
     assert row227["unavailable_closure_exit_eas"] == []
 
 
+def test_constant_inventory_is_exact_reference_ordered_and_identity_bound() -> None:
+    inventory = json.loads(
+        (
+            _REPO
+            / "docs"
+            / "experiments"
+            / "rhad-a560-constant-materialization-reference-inventory.json"
+        ).read_text(encoding="utf-8")
+    )
+    operations = inventory["operations"]
+    canonical_operations = json.dumps(
+        operations,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    import hashlib
+
+    assert inventory["schema_version"] == 1
+    assert inventory["reference_commit"] == (
+        "21b0d4783703bc4fb6910cfae51d92cd683d2c65"
+    )
+    assert inventory["input_sha256"] == (
+        "2449071691418114b0afbf290b0dae3bf52553c562b2c3aebc092a7f18335e4c"
+    )
+    assert inventory["function_ea"] == 0x40A560
+    assert inventory["function_end_ea"] == 0x40C8A3
+    assert inventory["reference_pipeline_order"] == [
+        "deob_jumps.deobfuscate_function",
+        "deob_consts.ConstantInliner.deobfuscate",
+    ]
+    assert inventory["operation_count"] == len(operations) == 68
+    assert inventory["operation_variant_counts"] == {
+        "add_absolute": 1,
+        "mov_absolute": 63,
+        "movzx_absolute": 3,
+        "xor_absolute": 1,
+    }
+    assert inventory["operations_identity"] == (
+        "sha256:" + hashlib.sha256(canonical_operations.encode()).hexdigest()
+    )
+    assert [operation["reference_order"] for operation in operations] == list(
+        range(68)
+    )
+    assert [operation["source_native_ea"] for operation in operations] == sorted(
+        operation["source_native_ea"] for operation in operations
+    )
+    assert len({operation["operation_id"] for operation in operations}) == 68
+
+    first = operations[0]
+    assert first == {
+        "current_compiler_support": "unsupported_typed_shape",
+        "current_generated_proof": {"status": "unproved"},
+        "data_native_ea": 0x48ADCC,
+        "destination_register": "eax",
+        "destination_width_bits": 32,
+        "encoding_variant": "add_r32_absolute",
+        "materialized_value": 0x3776723F,
+        "operation_id": "rhad:constant@0x40A574",
+        "operation_variant": "add_absolute",
+        "reference_data_bytes_le": "3f727637",
+        "reference_order": 0,
+        "reference_raw_value": 0x3776723F,
+        "reference_read_width_bits": 32,
+        "reference_symbol": (
+            "deob_consts.ConstantInliner.transform_arith_mem_to_imm"
+        ),
+        "replacement_instruction_bytes": "81c03f727637",
+        "source_instruction_bytes": "0305ccad4800",
+        "source_native_ea": 0x40A574,
+        "source_operand_path": "operand[1].absolute_memory",
+        "source_width_bits": 32,
+    }
+
+
 def test_checksum_producer_compiles_row176_existing_dependency() -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=_native_key(), evidence_generation=7
