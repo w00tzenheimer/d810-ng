@@ -19013,7 +19013,7 @@ def test_constant_inventory_is_exact_reference_ordered_and_identity_bound() -> N
                 "e6803c05e",
             ],
             "aggregate_program_identity": (
-                "sha256:068abb0547c222b4c4517d5276d06e3f6347a00b3f09c3a35806d301cde6816b"
+                "sha256:69135c8eb15c7289f00ff806268b02d2ae325938e9466004b7be6389f495ae8f"
             ),
             "diagnostic_db": (
                 ".tmp/logs/"
@@ -20428,6 +20428,9 @@ def test_constant_row30_compiles_movzx_byte_absolute_contract() -> None:
     assert operation.operation_id == "constant:rhad-movzx-absolute@0x40B815"
     assert operation.reference_operation_id == "rhad:constant@0x40B815"
     assert operation.reference_order == 30
+    assert operation.reference_symbol == (
+        "deob_consts.ConstantInliner.transform_mov_mem_to_imm"
+    )
     assert operation.operation_variant.value == "movzx_absolute"
     assert operation.encoding_variant.value == "movzx_r32_byte_absolute"
     assert operation.publication_envelope.value == (
@@ -21156,7 +21159,7 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:068abb0547c222b4c4517d5276d06e3f6347a00b3f09c3a35806d301cde6816b"
+        "sha256:69135c8eb15c7289f00ff806268b02d2ae325938e9466004b7be6389f495ae8f"
     )
     assert len(batch.operations) == 254
     assert len(batch.imported_blocks) == 884

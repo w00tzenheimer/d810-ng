@@ -4046,7 +4046,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             compiled_payload["aggregate_program_identity"]
         )
         assert compiled_payload["aggregate_program_identity"] == (
-            "sha256:068abb0547c222b4c4517d5276d06e3f6347a00b3f09c3a35806d301cde6816b"
+            "sha256:69135c8eb15c7289f00ff806268b02d2ae325938e9466004b7be6389f495ae8f"
         )
         proof_artifacts = {
             artifact["proof"]["binding"]["operation_id"]: artifact
@@ -11918,7 +11918,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             "reference_raw_value": 0x2EFE7416,
             "reference_read_width_bits": 32,
             "reference_symbol": (
-                "deob_consts.ConstantInliner.transform_movzx_mem_to_imm"
+                "deob_consts.ConstantInliner.transform_mov_mem_to_imm"
             ),
             "replacement_instruction_bytes": "b9160000009090",
             "source_block_id": "native@0x40B810",
