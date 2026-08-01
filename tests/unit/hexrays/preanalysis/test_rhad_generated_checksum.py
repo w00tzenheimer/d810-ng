@@ -19011,16 +19011,17 @@ def test_constant_inventory_is_exact_reference_ordered_and_identity_bound() -> N
                 "ab3dd0a88",
                 "0c2e1261f",
                 "e6803c05e",
+                "70bb01f99",
             ],
             "aggregate_program_identity": (
                 "sha256:69135c8eb15c7289f00ff806268b02d2ae325938e9466004b7be6389f495ae8f"
             ),
             "diagnostic_db": (
                 ".tmp/logs/"
-                "000000000040a560_accepted_427_constant_row30.diag.sqlite3"
+                "000000000040a560_accepted_428_constant_row30_reference_symbol.diag.sqlite3"
             ),
             "diagnostic_db_sha256": (
-                "32fb7ac7a4cac91e350cd6732f25aff809bdc209bcdfa84b49bac9aaff41235d"
+                "a82c44eac3b733da3a5e81a9c18c1d7883a5d8b8f59aaad65ff4a9ae27819a24"
             ),
             "status": "accepted_generated_c6",
         },
