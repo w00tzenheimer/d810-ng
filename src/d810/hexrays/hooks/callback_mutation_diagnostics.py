@@ -107,6 +107,51 @@ def _iter_instruction_tree(
             )
 
 
+def _capture_block_nop_sites(
+    block: object,
+    *,
+    default_serial: int,
+) -> tuple[LiveNopSite, ...]:
+    sites: list[LiveNopSite] = []
+    instruction = getattr(block, "head", None)
+    ordinal = 0
+    seen_instructions: set[int] = set()
+    while instruction is not None:
+        if _runtime_identity(instruction) in seen_instructions:
+            break
+        for instruction_path, candidate in _iter_instruction_tree(
+            instruction,
+            path=f"top[{ordinal}]",
+            seen_instructions=seen_instructions,
+        ):
+            if int(getattr(candidate, "opcode", -1)) == int(ida_hexrays.m_nop):
+                sites.append(
+                    LiveNopSite(
+                        block_runtime_identity=_runtime_identity(block),
+                        instruction_runtime_identity=_runtime_identity(candidate),
+                        block_serial=int(getattr(block, "serial", default_serial)),
+                        block_start_ea=int(getattr(block, "start", 0) or 0),
+                        block_end_ea=int(getattr(block, "end", 0) or 0),
+                        instruction_ea=int(getattr(candidate, "ea", 0) or 0),
+                        instruction_ordinal=ordinal,
+                        instruction_path=instruction_path,
+                    )
+                )
+        instruction = getattr(instruction, "next", None)
+        ordinal += 1
+    return tuple(sites)
+
+
+def capture_block_nop_sites(block: object) -> tuple[LiveNopSite, ...]:
+    """Capture top-level and nested NOPs owned by one callback block."""
+    if block is None:
+        return ()
+    return _capture_block_nop_sites(
+        block,
+        default_serial=int(getattr(block, "serial", 0) or 0),
+    )
+
+
 def capture_live_nop_sites(mba: object) -> tuple[LiveNopSite, ...]:
     """Capture top-level and nested NOPs without retaining live SDK objects."""
     sites: list[LiveNopSite] = []
@@ -119,32 +164,7 @@ def capture_live_nop_sites(mba: object) -> tuple[LiveNopSite, ...]:
         block = get_mblock(serial)
         if block is None:
             continue
-        instruction = getattr(block, "head", None)
-        ordinal = 0
-        seen_instructions: set[int] = set()
-        while instruction is not None:
-            if _runtime_identity(instruction) in seen_instructions:
-                break
-            for instruction_path, candidate in _iter_instruction_tree(
-                instruction,
-                path=f"top[{ordinal}]",
-                seen_instructions=seen_instructions,
-            ):
-                if int(getattr(candidate, "opcode", -1)) == int(ida_hexrays.m_nop):
-                    sites.append(
-                        LiveNopSite(
-                            block_runtime_identity=_runtime_identity(block),
-                            instruction_runtime_identity=_runtime_identity(candidate),
-                            block_serial=int(getattr(block, "serial", serial)),
-                            block_start_ea=int(getattr(block, "start", 0) or 0),
-                            block_end_ea=int(getattr(block, "end", 0) or 0),
-                            instruction_ea=int(getattr(candidate, "ea", 0) or 0),
-                            instruction_ordinal=ordinal,
-                            instruction_path=instruction_path,
-                        )
-                    )
-            instruction = getattr(instruction, "next", None)
-            ordinal += 1
+        sites.extend(_capture_block_nop_sites(block, default_serial=serial))
     return tuple(sites)
 
 
@@ -273,5 +293,6 @@ __all__ = [
     "LiveNopSite",
     "build_callback_nop_delta_records",
     "build_callback_nop_inventory_records",
+    "capture_block_nop_sites",
     "capture_live_nop_sites",
 ]

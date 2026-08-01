@@ -17,7 +17,7 @@ from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     LiveNopSite,
     build_callback_nop_delta_records,
-    capture_live_nop_sites,
+    capture_block_nop_sites,
 )
 from d810.hexrays.ir.minsn_utils import build_z3_equivalence_proof
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
@@ -402,15 +402,16 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
     def _capture_callback_nop_sites(
         self,
-        mba: object,
+        block: object,
     ) -> tuple[LiveNopSite, ...] | None:
         """Capture GLBOPT2 NOP sites only when diagnostics are installed."""
+        mba = getattr(block, "mba", None)
         if self._fact_consumer_callback is None or int(
             getattr(mba, "maturity", -1)
         ) < int(ida_hexrays.MMAT_GLBOPT2):
             return None
         try:
-            return capture_live_nop_sites(mba)
+            return capture_block_nop_sites(block)
         except Exception:
             optimizer_logger.debug(
                 "failed to capture pre-instruction-callback NOP sites",
@@ -420,7 +421,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
     def _report_callback_nop_delta(
         self,
-        mba: object,
+        block: object,
         *,
         before: tuple[LiveNopSite, ...] | None,
         callback_result: int | bool | None,
@@ -430,6 +431,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         if before is None or self._fact_consumer_callback is None:
             return
         try:
+            mba = getattr(block, "mba", None)
             optimizer_name = str(
                 getattr(
                     self._last_optimizer_tried,
@@ -440,7 +442,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             maturity_value = getattr(mba, "maturity", self.current_maturity)
             records = build_callback_nop_delta_records(
                 before=before,
-                after=capture_live_nop_sites(mba),
+                after=capture_block_nop_sites(block),
                 callback_kind="optinsn_callback",
                 callback_name=optimizer_name,
                 callback_result=(
@@ -461,7 +463,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             )
 
     def func(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
-        callback_nop_sites = self._capture_callback_nop_sites(blk.mba)
+        callback_nop_sites = self._capture_callback_nop_sites(blk)
         callback_result: bool | None = None
         callback_exception_name: str | None = None
         try:
@@ -516,7 +518,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             raise
         finally:
             self._report_callback_nop_delta(
-                blk.mba,
+                blk,
                 before=callback_nop_sites,
                 callback_result=callback_result,
                 exception_name=callback_exception_name,
