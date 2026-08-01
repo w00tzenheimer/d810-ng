@@ -28,7 +28,9 @@ from d810.core.observability import (
 from d810.core.observability_events import (
     CaptureMbaSnapshotRequested,
     DagObserved,
+    FrontendNormalizationPlanIntentObserved,
     ModificationsObserved,
+    SemanticOutputVerifiedObserved,
 )
 from d810.core.observability_models import (
     BlockSnapshot,
@@ -133,6 +135,56 @@ def test_install_is_idempotent():
 def test_uninstall_clears_install_flag():
     uninstall_diag_event_handlers()
     assert not is_installed()
+
+
+def test_typed_frontend_normalization_intent_is_queryable(fake_conn):
+    emit(
+        FrontendNormalizationPlanIntentObserved(
+            session_id="session-1",
+            func_ea=0x180001000,
+            evidence_generation=4,
+            work_item_id="work-item-4",
+            plan_id="plan-4",
+            atomic_group_id="group-4",
+            publication_revision=2,
+            block_count=3,
+            operation_count=2,
+            imported_block_count=1,
+            native_body_count=2,
+            published_operation_ids=("op-1",),
+            selected_obligation_ids=("obl-1",),
+            remaining_obligation_ids=("obl-2",),
+            unreachable_obligation_ids=(),
+            complete_plan_json='{"plan_id":"plan-4","blocks":[],"operations":[]}',
+        )
+    )
+
+    assert fake_conn.execute(
+        "SELECT plan_id, evidence_generation "
+        "FROM frontend_normalization_plan_intents"
+    ).fetchone() == ("plan-4", 4)
+    assert fake_conn.execute(
+        "SELECT event_kind, payload_json FROM lifecycle_events"
+    ).fetchone() == ("frontend_normalization_plan_intent", "{}")
+
+
+def test_semantic_output_verification_requires_an_explicit_typed_event(fake_conn):
+    emit(
+        SemanticOutputVerifiedObserved(
+            session_id="session-1",
+            func_ea=0x180001000,
+            verifier_id="verifier:fixture",
+            witness_id="verifier:fixture:1",
+            summary="Reference and candidate outputs matched.",
+            native_anchor_ea=0x180001000,
+            evidence_generation=5,
+        )
+    )
+
+    assert fake_conn.execute(
+        "SELECT verifier_id, witness_id, native_anchor_ea_i64 "
+        "FROM semantic_output_verdicts"
+    ).fetchone() == ("verifier:fixture", "verifier:fixture:1", 0x180001000)
 
 
 # ---------------------------------------------------------------------------

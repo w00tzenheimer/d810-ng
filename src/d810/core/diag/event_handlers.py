@@ -40,11 +40,13 @@ from d810.core.diag.lifecycle import (
     persist_cfg_transaction_attempt,
     persist_diagnostic_session_transition,
     persist_evidence_generation,
+    persist_frontend_normalization_plan_intent,
     persist_identity_decision,
     persist_lifecycle_event,
     persist_mutation_plan,
     persist_mutation_receipt,
     persist_semantic_fragment_route_oracle,
+    persist_semantic_output_verified,
 )
 from d810.core.formatting import format_block_id
 from d810.core.diag.snapshot import (
@@ -89,6 +91,7 @@ from d810.core.observability_events import (
     DagObserved,
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
+    FrontendNormalizationPlanIntentObserved,
     FactConflictsObserved,
     FactConsumersForLatestSnapshot,
     FactConsumersObserved,
@@ -100,6 +103,7 @@ from d810.core.observability_events import (
     MutationPlanObserved,
     MutationReceiptObserved,
     SemanticFragmentRouteOracleComparedObserved,
+    SemanticOutputVerifiedObserved,
     ReachabilityObserved,
     RenderedProgramObserved,
     StateDispatcherRowsObserved,
@@ -263,6 +267,28 @@ def _handle_identity_decision(ev: IdentityDecisionObserved) -> None:
         return
     snapshot_id = None if ev.snapshot is None else _resolve_snapshot_id(ev.snapshot)
     persist_identity_decision(conn, ev, snapshot_id=snapshot_id)
+
+
+def _handle_frontend_normalization_plan_intent(
+    ev: FrontendNormalizationPlanIntentObserved,
+) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is not None:
+        with conn:
+            persist_frontend_normalization_plan_intent(conn, ev)
+
+
+def _handle_semantic_output_verified(ev: SemanticOutputVerifiedObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is not None:
+        with conn:
+            persist_semantic_output_verified(conn, ev)
 
 
 def _handle_mutation_plan(ev: MutationPlanObserved) -> None:
@@ -888,6 +914,11 @@ _HANDLERS: tuple[tuple[type, object], ...] = (
     (LifecycleEventObserved, _handle_lifecycle_event),
     (EvidenceGenerationObserved, _handle_evidence_generation),
     (IdentityDecisionObserved, _handle_identity_decision),
+    (
+        FrontendNormalizationPlanIntentObserved,
+        _handle_frontend_normalization_plan_intent,
+    ),
+    (SemanticOutputVerifiedObserved, _handle_semantic_output_verified),
     (MutationPlanObserved, _handle_mutation_plan),
     (MutationReceiptObserved, _handle_mutation_receipt),
     (CfgTransactionAttemptObserved, _handle_cfg_transaction_attempt),

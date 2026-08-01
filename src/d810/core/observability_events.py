@@ -68,6 +68,96 @@ class LifecycleEventObserved:
 
 
 @dataclass(frozen=True)
+class FrontendNormalizationPlanIntentObserved:
+    """Receipt-backed, typed frontend normalization plan intent."""
+
+    session_id: str
+    func_ea: int
+    evidence_generation: int
+    work_item_id: str
+    plan_id: str
+    atomic_group_id: str
+    publication_revision: int
+    block_count: int
+    operation_count: int
+    imported_block_count: int
+    native_body_count: int
+    published_operation_ids: tuple[str, ...]
+    selected_obligation_ids: tuple[str, ...]
+    remaining_obligation_ids: tuple[str, ...]
+    unreachable_obligation_ids: tuple[str, ...]
+    complete_plan_json: str
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "session_id",
+            "work_item_id",
+            "plan_id",
+            "atomic_group_id",
+            "complete_plan_json",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be non-empty")
+        if int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        for field_name in (
+            "evidence_generation",
+            "publication_revision",
+            "block_count",
+            "operation_count",
+            "imported_block_count",
+            "native_body_count",
+        ):
+            if int(getattr(self, field_name)) < 0:
+                raise ValueError(f"{field_name} must be non-negative")
+        for field_name in (
+            "published_operation_ids",
+            "selected_obligation_ids",
+            "remaining_obligation_ids",
+            "unreachable_obligation_ids",
+        ):
+            values = tuple(str(value) for value in getattr(self, field_name))
+            if any(not value.strip() for value in values):
+                raise ValueError(f"{field_name} must contain non-empty identifiers")
+            if len(values) != len(set(values)):
+                raise ValueError(f"{field_name} must not contain duplicates")
+            object.__setattr__(self, field_name, values)
+
+
+@dataclass(frozen=True)
+class SemanticOutputVerifiedObserved:
+    """Typed semantic-output verification receipt and witness identity."""
+
+    session_id: str
+    func_ea: int
+    verifier_id: str
+    witness_id: str
+    summary: str
+    native_anchor_ea: int
+    evidence_generation: int
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "session_id",
+            "verifier_id",
+            "witness_id",
+            "summary",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be non-empty")
+        if int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        if int(self.native_anchor_ea) < 0:
+            raise ValueError("native_anchor_ea must be non-negative")
+        if int(self.evidence_generation) < 0:
+            raise ValueError("evidence_generation must be non-negative")
+
+
+@dataclass(frozen=True)
 class EvidenceGenerationObserved:
     session_id: str
     func_ea: int
@@ -966,7 +1056,10 @@ class BlockLineageDrainRequested:
 __all__ = [
     # Hex-Rays
     "CaptureMbaSnapshotRequested",
+    "DiagnosticSessionObserved",
+    "FrontendNormalizationPlanIntentObserved",
     "FragmentRootPublicationGroupObserved",
+    "SemanticOutputVerifiedObserved",
     "SemanticFragmentFailureObserved",
     # Preanalysis
     "BranchOwnershipProofsObserved",

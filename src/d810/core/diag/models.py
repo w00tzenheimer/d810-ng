@@ -359,6 +359,164 @@ class MutationPlanItem(BaseModel):
         indexes = ((("mutation_batch_id", "item_index"), True),)
 
 
+class FrontendNormalizationPlanIntent(BaseModel):
+    """Typed receipt-backed frontend plan intent used by the case projector."""
+
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    work_item_id = TextField()
+    plan_id = TextField()
+    atomic_group_id = TextField()
+    evidence_generation = IntegerField()
+    publication_revision = IntegerField()
+    block_count = IntegerField()
+    operation_count = IntegerField()
+    imported_block_count = IntegerField()
+    native_body_count = IntegerField()
+    published_operation_ids_json = TextField()
+    selected_obligation_ids_json = TextField()
+    remaining_obligation_ids_json = TextField()
+    unreachable_obligation_ids_json = TextField()
+    complete_plan_json = TextField()
+
+    class Meta:
+        table_name = "frontend_normalization_plan_intents"
+        indexes = ((('plan_id', 'publication_revision'), False),)
+
+
+class SemanticOutputVerdict(BaseModel):
+    """Typed port for a verifier that proves semantic output equivalence."""
+
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    verifier_id = TextField()
+    witness_id = TextField()
+    summary = TextField()
+    native_anchor_ea_i64 = IntegerField()
+
+    class Meta:
+        table_name = "semantic_output_verdicts"
+        indexes = ((('verifier_id', 'witness_id'), False),)
+
+
+class DeobfuscationCase(BaseModel):
+    """One closed, versioned case owned by a terminal diagnostic session."""
+
+    case_id = TextField(primary_key=True)
+    session = ForeignKeyField(
+        DiagnosticSession,
+        field="session_id",
+        column_name="session_id",
+        unique=True,
+        index=False,
+        null=False,
+    )
+    case_schema_version = IntegerField()
+    function_fingerprint = TextField()
+    runtime_identity = TextField()
+    run_identity = TextField()
+    closed_status = TextField(
+        constraints=[Check("closed_status IN ('finished','failed')")]
+    )
+    closed_at = FloatField()
+    verdict_level = TextField(
+        constraints=[
+            Check(
+                "verdict_level IN ('c0_environment','c1_discovery',"
+                "'c2_normalization','c3_canonical_plan','c4_staged_proof',"
+                "'c5_publication','c6_semantic_output')"
+            )
+        ]
+    )
+    verdict_summary = TextField()
+    first_blocked_obligation = TextField(null=True)
+    semantic_witness = TextField(null=True)
+
+    class Meta:
+        table_name = "deobfuscation_cases"
+        indexes = ((('session', 'closed_at'), False),)
+
+
+class DeobfuscationCaseFinding(BaseModel):
+    """Normalized case evidence retaining its typed lifecycle source."""
+
+    case = ForeignKeyField(
+        DeobfuscationCase,
+        field="case_id",
+        column_name="case_id",
+        index=False,
+        null=False,
+    )
+    finding_index = IntegerField()
+    finding_id = TextField()
+    source_event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="source_event_id",
+        index=False,
+        null=False,
+    )
+    finding_kind = TextField()
+    evidence_level = TextField()
+    summary = TextField()
+    detail = TextField()
+    native_anchor_ea_i64 = IntegerField(null=True)
+    confidence = FloatField(null=True)
+    provenance_json = TextField()
+    blocked_obligation = TextField(null=True)
+
+    class Meta:
+        table_name = "deobfuscation_case_findings"
+        primary_key = CompositeKey("case", "finding_index")
+        indexes = (
+            (("case", "finding_id"), True),
+            (("source_event",), False),
+        )
+
+
+class DeobfuscationCaseSemanticWitness(BaseModel):
+    """A verifier witness linked to both the case and its source event."""
+
+    case = ForeignKeyField(
+        DeobfuscationCase,
+        field="case_id",
+        column_name="case_id",
+        index=False,
+        null=False,
+    )
+    witness_id = TextField()
+    source_event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="source_event_id",
+        index=False,
+        null=False,
+    )
+    verifier_id = TextField()
+    native_anchor_ea_i64 = IntegerField()
+    summary = TextField()
+
+    class Meta:
+        table_name = "deobfuscation_case_semantic_witnesses"
+        primary_key = CompositeKey("case", "witness_id")
+        indexes = (
+            (("source_event",), False),
+            (("verifier_id", "witness_id"), False),
+        )
+
+
 class MutationReceipt(BaseModel):
     event = ForeignKeyField(
         LifecycleEvent,
@@ -1513,6 +1671,11 @@ MODELS = (
     EvidenceGenerationEvent,
     IdentityDecision,
     MutationPlanItem,
+    FrontendNormalizationPlanIntent,
+    SemanticOutputVerdict,
+    DeobfuscationCase,
+    DeobfuscationCaseFinding,
+    DeobfuscationCaseSemanticWitness,
     MutationReceipt,
     MutationReceiptIdentity,
     CfgTransactionAttemptRecord,

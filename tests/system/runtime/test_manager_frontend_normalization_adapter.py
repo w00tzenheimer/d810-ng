@@ -11,7 +11,10 @@ from d810.analyses.control_flow.frontend_normalization import (
     FrontendNormalizationEvidenceRejected,
 )
 from d810.core.observability import subscribe, unsubscribe
-from d810.core.observability_events import LifecycleEventObserved
+from d810.core.observability_events import (
+    FrontendNormalizationPlanIntentObserved,
+    LifecycleEventObserved,
+)
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.ir.block_identity import (
     CurrentMbaBlockIdentityBinding,
@@ -397,7 +400,9 @@ def test_live_adapter_binds_committed_import_identity_to_current_mba(
     )
 
     observed: list[LifecycleEventObserved] = []
+    observed_intents: list[FrontendNormalizationPlanIntentObserved] = []
     subscribe(LifecycleEventObserved, observed.append)
+    subscribe(FrontendNormalizationPlanIntentObserved, observed_intents.append)
     try:
         live_normalization.run_live_frontend_normalization(
             function_ea=0x1000,
@@ -410,23 +415,26 @@ def test_live_adapter_binds_committed_import_identity_to_current_mba(
         )
     finally:
         unsubscribe(LifecycleEventObserved, observed.append)
+        unsubscribe(FrontendNormalizationPlanIntentObserved, observed_intents.append)
 
     assert state.current_mba_token == 0x1234
     assert state.current_mba_identity_binding_for(0x1234) is imported_binding
     assert state.imported_instruction_origins_for(0x1234) == imported_origins
-    assert len(observed) == 2
-    intent_event, identity_event = observed
-    assert intent_event.event_kind == "frontend_normalization_plan_intent_recorded"
-    assert intent_event.correlation_id == (
+    assert len(observed) == 1
+    assert len(observed_intents) == 1
+    intent_event = observed_intents[0]
+    identity_event = observed[0]
+    assert intent_event.work_item_id == (
         "frontend-normalization:0x1000:g3:root@0x1000"
     )
-    assert intent_event.payload["outcome"] == "recorded"
-    assert intent_event.payload["plan_id"] == complete_plan.plan_id
-    assert intent_event.payload["atomic_group_id"] == complete_plan.atomic_group_id
-    assert intent_event.payload["publication_revision"] == 1
-    assert intent_event.payload["block_count"] == 3
-    assert intent_event.payload["operation_count"] == 1
-    assert intent_event.payload["complete_plan"]["plan_id"] == complete_plan.plan_id
+    assert intent_event.plan_id == complete_plan.plan_id
+    assert intent_event.atomic_group_id == complete_plan.atomic_group_id
+    assert intent_event.publication_revision == 1
+    assert intent_event.block_count == 3
+    assert intent_event.operation_count == 1
+    assert '"plan_id":"frontend-normalization:0x1000:g3"' in (
+        intent_event.complete_plan_json
+    )
     assert identity_event.event_kind == "current_mba_import_identity_bound"
     assert identity_event.payload == {
         "outcome": "bound",
