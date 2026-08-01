@@ -16,6 +16,22 @@ from d810.core.diag.models import DiagnosticSchemaVersion, MODELS
 # deobfuscation-case producer is the next disposable hard cut.
 DIAGNOSTIC_SCHEMA_VERSION = 10
 
+# Recovered-CFG tables were historically named ``dag_*``.  The modeled
+# schema now owns ``state_cfg_*`` tables; this mapping is retained for the
+# read-only cleanup inventory so it can describe legacy databases without
+# weakening the current-schema hard cut.
+_LEGACY_DAG_TABLE_RENAMES = {
+    "dag_nodes": "state_cfg_nodes",
+    "dag_edges": "state_cfg_edges",
+    "dag_node_blocks": "state_cfg_node_blocks",
+    "dag_local_segments": "state_cfg_local_segments",
+    "dag_local_edges": "state_cfg_local_edges",
+    "dag_edge_diagnostics": "state_cfg_edge_diagnostics",
+    "dag_frontier_closure_diagnostics": "state_cfg_frontier_closure_diagnostics",
+    "dag_edge_alternate_correlations": "state_cfg_edge_alternate_correlations",
+    "dag_edge_alternate_selections": "state_cfg_edge_alternate_selections",
+}
+
 
 class DiagnosticSchemaMismatch(RuntimeError):
     """Raised when a disposable diagnostic database is not current."""

@@ -38,6 +38,7 @@ _PROJECT_CONFIG_KEYS = frozenset(
         "pipeline_v2",
         "pipeline_v2_mode",
         "require_pipeline_v2_shadow_match",
+        "router_resolution",
     }
 )
 

@@ -11,12 +11,17 @@ from d810.backends.hexrays.registration import register_hexrays_backend_provider
 from d810.hexrays.utils.ida_utils import ensure_hexrays_available
 from d810.backends.mba.ida import adapt_rules
 from d810.core import typing
-from d810.core.config import D810Configuration, ProjectConfiguration
+from d810.core.config import (
+    D810Configuration,
+    ProjectConfiguration,
+    RuleConfiguration,
+)
 from d810.core.config_v2_defaults import (
     ConfigV2DefaultSelection,
     format_config_v2_default_selection_status,
     select_config_v2_default_project,
 )
+from d810.core.deobfuscation_case import DeobfuscationCaseEvidence
 from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core.platform import resolve_arch_config
 from d810.core.project import (
@@ -28,13 +33,53 @@ from d810.core.registry import SingletonMeta
 from d810.core.rule_scope import RuleScopeEvent
 from d810.core.stats import OptimizationStatistics
 from d810.core.typing import TYPE_CHECKING
+from d810.diagnostics.workbench_models import (
+    DiagnosticCleanupPlan,
+    DiagnosticCleanupResult,
+    DiagnosticDatabaseSummary,
+    DiagnosticRecord,
+    DiagnosticSnapshotSummary,
+    DiagnosticViewKind,
+)
 from d810.mba.rules import VerifiableRule
+from d810.manager.project_runtime import (
+    ProjectRuntimeSnapshot,
+    build_project_runtime_snapshot,
+    clone_runtime_project as clone_runtime_project_command,
+    save_legacy_project as save_legacy_project_command,
+)
+from d810.manager.config_v2_edit_models import (
+    ConfigV2FieldSerializer,
+    ConfigV2ProjectDraft,
+    ConfigV2ProjectValidation,
+)
+from d810.passes.function_recipe_runtime import (
+    activate_function_recipe_runtime,
+    build_recipe_runtime_project,
+)
+from d810.manager.workbench_models import (
+    BaselineRef,
+    D810OutputRef,
+    DeobfuscationWorkbenchSnapshot,
+    WorkbenchCommandRequest,
+    WorkbenchCommandResult,
+    WorkbenchComparisonSnapshot,
+)
+from d810.manager.workbench_recipe_models import (
+    FunctionPipelineOverride,
+    PassCatalogEntry,
+    PipelineRecipeDraft,
+    RecipeValidation,
+    RecipeCommandRequest,
+    RecipeCommandResult,
+)
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
 
 if TYPE_CHECKING:
     from d810.manager import D810Manager
+    from d810.manager.workbench_comparison import ComparisonIdentity
     from d810.ui.ida_ui import D810GUI
 
 logger = getLogger("D810")
@@ -86,6 +131,7 @@ class D810State(metaclass=SingletonMeta):
         self.last_pipeline_v2_hook_mode: str | None = None
         self.last_config_v2_default_selection: ConfigV2DefaultSelection | None = None
         self.current_runtime_project: ProjectConfiguration | None = None
+        self.current_project_runtime_snapshot: ProjectRuntimeSnapshot | None = None
         self._is_loaded: bool = False
         self.gui = None
         self.log_dir = self.d810_config.log_dir / D810_LOG_DIR_NAME
@@ -108,11 +154,6 @@ class D810State(metaclass=SingletonMeta):
         self.project_manager.delete(config)
 
     def load_project(self, project_index: int) -> ProjectConfiguration:
-        old_project_name = (
-            self.current_project.path.name
-            if getattr(self, "current_project", None) is not None
-            else None
-        )
         next_project = self.project_manager.get(project_index)
         default_selection = select_config_v2_default_project(next_project)
         runtime_project = (
@@ -120,6 +161,28 @@ class D810State(metaclass=SingletonMeta):
             if default_selection is not None
             else next_project
         )
+        return self._activate_runtime_project(
+            project_index=project_index,
+            source_project=next_project,
+            runtime_project=runtime_project,
+            default_selection=default_selection,
+        )
+
+    def _activate_runtime_project(
+        self,
+        *,
+        project_index: int,
+        source_project: ProjectConfiguration,
+        runtime_project: ProjectConfiguration,
+        default_selection: ConfigV2DefaultSelection | None,
+    ) -> ProjectConfiguration:
+        """Configure one explicit source/runtime pair without rediscovering it."""
+        old_project_name = (
+            self.current_project.path.name
+            if getattr(self, "current_project", None) is not None
+            else None
+        )
+        next_project = source_project
         emit_project_reloading(
             old_project_name=old_project_name,
             new_project_name=next_project.path.name,
@@ -150,6 +213,14 @@ class D810State(metaclass=SingletonMeta):
         else:
             project_ins_rules = tuple(runtime_project.ins_rules)
             project_blk_rules = tuple(runtime_project.blk_rules)
+
+        self.current_project_runtime_snapshot = build_project_runtime_snapshot(
+            source_project=self.current_project,
+            runtime_project=runtime_project,
+            default_selection=default_selection,
+            hook_activation=hook_activation,
+            hook_mode=self.last_pipeline_v2_hook_mode,
+        )
 
         for rule in self.known_ins_rules:
             for rule_conf in project_ins_rules:
@@ -224,6 +295,491 @@ class D810State(metaclass=SingletonMeta):
                 runtime_project.path,
             )
         return self.current_project
+
+    def get_project_runtime_snapshot(self) -> ProjectRuntimeSnapshot:
+        snapshot = self.current_project_runtime_snapshot
+        if snapshot is None:
+            raise RuntimeError("No project runtime snapshot is available")
+        return snapshot
+
+    def get_workbench_snapshot(
+        self,
+        function_ea: int,
+        function_name: str = "",
+        function_fingerprint: str | None = None,
+        *,
+        facts: typing.Any | None = None,
+    ) -> DeobfuscationWorkbenchSnapshot:
+        """Collect workbench truth for the current source/runtime project pair."""
+        project_snapshot = self.current_project_runtime_snapshot
+        runtime_project = self.current_runtime_project
+        if project_snapshot is None or runtime_project is None:
+            raise RuntimeError("No runtime project is available for the workbench")
+        return self.manager.get_workbench_snapshot(
+            function_ea=function_ea,
+            function_name=function_name,
+            function_fingerprint=function_fingerprint,
+            project_snapshot=project_snapshot,
+            runtime_project=runtime_project,
+            facts=facts,
+        )
+
+    def capture_workbench_baseline(
+        self,
+        identity: ComparisonIdentity,
+        pseudocode: str,
+    ) -> BaselineRef:
+        return self.manager.capture_workbench_baseline(identity, pseudocode)
+
+    def capture_workbench_d810_output(
+        self,
+        identity: ComparisonIdentity,
+        pseudocode: str,
+    ) -> D810OutputRef:
+        return self.manager.capture_workbench_d810_output(identity, pseudocode)
+
+    def get_workbench_comparison(
+        self,
+        identity: ComparisonIdentity,
+    ) -> WorkbenchComparisonSnapshot:
+        return self.manager.get_workbench_comparison(identity)
+
+    def get_diagnostic_databases(self) -> tuple[DiagnosticDatabaseSummary, ...]:
+        return self.manager.get_diagnostic_databases()
+
+    def get_diagnostic_snapshots(
+        self, path: pathlib.Path | str
+    ) -> tuple[DiagnosticSnapshotSummary, ...]:
+        return self.manager.get_diagnostic_snapshots(path)
+
+    def get_diagnostic_records(
+        self,
+        path: pathlib.Path | str,
+        snapshot_id: int,
+        kind: DiagnosticViewKind,
+    ) -> tuple[DiagnosticRecord, ...]:
+        return self.manager.get_diagnostic_records(path, snapshot_id, kind)
+
+    def get_diagnostic_case_evidence(
+        self,
+        path: pathlib.Path | str,
+        function_ea: int,
+    ) -> DeobfuscationCaseEvidence | None:
+        return self.manager.get_diagnostic_case_evidence(path, function_ea)
+
+    def plan_diagnostic_selected_snapshots(
+        self, path: pathlib.Path | str, snapshot_ids: typing.Sequence[int]
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_selected_snapshots(path, snapshot_ids)
+
+    def plan_diagnostic_all_snapshots(
+        self, path: pathlib.Path | str
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_all_snapshots(path)
+
+    def plan_diagnostic_keep_latest(
+        self, path: pathlib.Path | str, keep: int
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_keep_latest(path, keep)
+
+    def plan_diagnostic_selected_databases(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_selected_databases(paths)
+
+    def plan_diagnostic_all_closed_databases(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_all_closed_databases(paths)
+
+    def plan_diagnostic_vacuum(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.manager.plan_diagnostic_vacuum(paths)
+
+    def execute_diagnostic_cleanup(
+        self,
+        plan: DiagnosticCleanupPlan,
+        *,
+        checkpoint_wal: bool = True,
+        vacuum_after: bool = False,
+    ) -> DiagnosticCleanupResult:
+        return self.manager.execute_diagnostic_cleanup(
+            plan,
+            checkpoint_wal=checkpoint_wal,
+            vacuum_after=vacuum_after,
+        )
+
+    def get_config_v2_serializer_manifest(self) -> tuple[ConfigV2FieldSerializer, ...]:
+        return self.manager.get_config_v2_serializer_manifest()
+
+    def create_config_v2_project_draft(
+        self, destination: pathlib.Path
+    ) -> ConfigV2ProjectDraft:
+        runtime_project = self.current_runtime_project
+        if runtime_project is None:
+            raise RuntimeError("No runtime project is available for config-v2 editing")
+        return self.manager.create_config_v2_project_draft(
+            runtime_project,
+            destination=destination,
+        )
+
+    def validate_config_v2_project_draft(
+        self, draft: ConfigV2ProjectDraft
+    ) -> ConfigV2ProjectValidation:
+        return self.manager.validate_config_v2_project_draft(draft)
+
+    def set_config_v2_description(
+        self, draft: ConfigV2ProjectDraft, description: str
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.set_config_v2_description(draft, description)
+
+    def add_config_v2_pass(
+        self,
+        draft: ConfigV2ProjectDraft,
+        pass_id: str,
+        *,
+        index: int | None = None,
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.add_config_v2_pass(draft, pass_id, index=index)
+
+    def remove_config_v2_pass(
+        self, draft: ConfigV2ProjectDraft, pass_index: int
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.remove_config_v2_pass(draft, pass_index)
+
+    def reorder_config_v2_pass(
+        self, draft: ConfigV2ProjectDraft, pass_index: int, new_index: int
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.reorder_config_v2_pass(draft, pass_index, new_index)
+
+    def set_config_v2_pass_rules(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        pass_index: int,
+        include: typing.Sequence[str],
+        exclude: typing.Sequence[str],
+        options: typing.Mapping[str, object],
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.set_config_v2_pass_rules(
+            draft,
+            pass_index=pass_index,
+            include=include,
+            exclude=exclude,
+            options=options,
+        )
+
+    def set_config_v2_routing_override(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        prefer: typing.Mapping[str, float],
+        require: str | None,
+        deny: typing.Sequence[str],
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.set_config_v2_routing_override(
+            draft,
+            prefer=prefer,
+            require=require,
+            deny=deny,
+        )
+
+    def materialize_recipe_as_config_v2(
+        self,
+        draft: ConfigV2ProjectDraft,
+        recipe: PipelineRecipeDraft,
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.materialize_recipe_as_config_v2(draft, recipe)
+
+    def save_and_reload_config_v2_project(
+        self,
+        draft: ConfigV2ProjectDraft,
+        validation: ConfigV2ProjectValidation,
+    ) -> ProjectConfiguration:
+        saved = self.manager.save_config_v2_project(draft, validation)
+        name = saved.path.name
+        if name in self.project_manager.project_names():
+            previous = self.project_manager.get(name)
+            self.update_project(previous, saved)
+        else:
+            self.add_project(saved)
+        return self.load_project(self.project_manager.index(name))
+
+    def get_workbench_recipe_catalog(self) -> tuple[PassCatalogEntry, ...]:
+        return self.manager.get_workbench_recipe_catalog()
+
+    def create_workbench_recipe_draft(
+        self,
+        snapshot: DeobfuscationWorkbenchSnapshot,
+    ) -> PipelineRecipeDraft:
+        runtime_project = self.current_runtime_project
+        if runtime_project is None:
+            raise RuntimeError("No runtime project is available for the recipe")
+        return self.manager.create_workbench_recipe_draft(snapshot, runtime_project)
+
+    def create_saved_workbench_recipe_draft(
+        self,
+        *,
+        function_ea: int,
+        function_fingerprint: str | None,
+        workbench_generation: int = 0,
+    ) -> PipelineRecipeDraft | None:
+        snapshot = self.current_project_runtime_snapshot
+        if snapshot is None:
+            raise RuntimeError("No runtime project is available for the recipe")
+        return self.manager.create_saved_workbench_recipe_draft(
+            function_ea=function_ea,
+            function_fingerprint=function_fingerprint,
+            workbench_generation=workbench_generation,
+            source_path=str(snapshot.source.path),
+            runtime_path=str(snapshot.runtime.path),
+        )
+
+    def validate_workbench_recipe(
+        self,
+        draft: PipelineRecipeDraft,
+        *,
+        facts: object | None = None,
+    ) -> RecipeValidation:
+        return self.manager.validate_workbench_recipe(draft, facts=facts)
+
+    def add_workbench_recipe_pass(
+        self,
+        draft: PipelineRecipeDraft,
+        pass_id: str,
+    ) -> PipelineRecipeDraft:
+        return self.manager.add_workbench_recipe_pass(draft, pass_id)
+
+    def remove_workbench_recipe_pass(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+    ) -> PipelineRecipeDraft:
+        return self.manager.remove_workbench_recipe_pass(draft, item_id)
+
+    def set_workbench_recipe_pass_enabled(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+        enabled: bool,
+    ) -> PipelineRecipeDraft:
+        return self.manager.set_workbench_recipe_pass_enabled(
+            draft,
+            item_id,
+            enabled,
+        )
+
+    def reorder_workbench_recipe_pass(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+        new_index: int,
+    ) -> PipelineRecipeDraft:
+        return self.manager.reorder_workbench_recipe_pass(
+            draft,
+            item_id,
+            new_index,
+        )
+
+    def replace_workbench_recipe_pass_options(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+        options: typing.Mapping[str, object],
+    ) -> PipelineRecipeDraft:
+        return self.manager.replace_workbench_recipe_pass_options(
+            draft,
+            item_id,
+            options,
+        )
+
+    def save_workbench_function_recipe(
+        self,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+    ) -> FunctionPipelineOverride:
+        return self.manager.save_workbench_function_recipe(draft, validation)
+
+    def get_workbench_function_recipe(
+        self,
+        function_ea: int,
+    ) -> FunctionPipelineOverride | None:
+        return self.manager.get_workbench_function_recipe(function_ea)
+
+    def clear_workbench_function_recipe(self, function_ea: int) -> bool:
+        return self.manager.clear_workbench_function_recipe(function_ea)
+
+    @contextlib.contextmanager
+    def activate_workbench_recipe(
+        self,
+        draft: PipelineRecipeDraft,
+    ):
+        """Run one synchronous decompile under an in-memory function recipe."""
+        if not self.manager.started:
+            raise RuntimeError("D810 must be started before activating a recipe")
+        source_project = self.current_project
+        runtime_project = self.current_runtime_project
+        if runtime_project is None:
+            raise RuntimeError("No runtime project is available for recipe activation")
+        project_index = self.current_project_index
+        default_selection = self.last_config_v2_default_selection
+        pass_configs_json = self.manager.recipe_service.serialize_enabled_configs(draft)
+        recipe_project = build_recipe_runtime_project(
+            runtime_project,
+            self.manager.recipe_service.deserialize_configs(pass_configs_json),
+            function_ea=draft.function_ea,
+        )
+
+        def activate_recipe() -> None:
+            self._activate_runtime_project(
+                project_index=project_index,
+                source_project=source_project,
+                runtime_project=recipe_project,
+                default_selection=None,
+            )
+
+        def restore_project() -> None:
+            self._activate_runtime_project(
+                project_index=project_index,
+                source_project=source_project,
+                runtime_project=runtime_project,
+                default_selection=default_selection,
+            )
+
+        with activate_function_recipe_runtime(
+            recipe_project,
+            stop_runtime=self.stop_d810,
+            start_runtime=self.start_d810,
+            runtime_started=lambda: bool(self.manager.started),
+            activate_recipe=activate_recipe,
+            restore_project=restore_project,
+        ):
+            yield recipe_project
+
+    def execute_workbench_apply_recipe_once(
+        self,
+        request: RecipeCommandRequest,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+        *,
+        lifecycle: typing.Callable[[PipelineRecipeDraft], bool],
+    ) -> RecipeCommandResult:
+        return self.manager.execute_workbench_apply_recipe_once(
+            request,
+            draft,
+            validation,
+            lifecycle=lifecycle,
+        )
+
+    def workbench_recipe_request_is_current(
+        self,
+        request: RecipeCommandRequest,
+    ) -> bool:
+        return self.manager.workbench_service.recipe_request_is_current(request)
+
+    def execute_workbench_save_function_recipe(
+        self,
+        request: RecipeCommandRequest,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+    ) -> RecipeCommandResult:
+        return self.manager.execute_workbench_save_function_recipe(
+            request,
+            draft,
+            validation,
+        )
+
+    def analyze_workbench_recipe(
+        self,
+        *,
+        function_ea: int,
+        target: object,
+        provider_phase: object,
+    ) -> object:
+        return self.manager.analyze_workbench_recipe(
+            function_ea=function_ea,
+            target=target,
+            provider_phase=provider_phase,
+        )
+
+    def execute_workbench_analyze(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        target: object,
+        provider_phase: object,
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_analyze(
+            request,
+            target=target,
+            provider_phase=provider_phase,
+        )
+
+    def execute_workbench_deobfuscate(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        lifecycle: typing.Callable[[], bool],
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_deobfuscate(
+            request,
+            lifecycle=lifecycle,
+        )
+
+    def execute_workbench_build_deobfuscator(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        target: object,
+        provider_phase: object,
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_build_deobfuscator(
+            request,
+            target=target,
+            provider_phase=provider_phase,
+        )
+
+    def execute_workbench_function_override(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        lifecycle: typing.Callable[[], bool],
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_function_override(
+            request,
+            lifecycle=lifecycle,
+        )
+
+    def clone_current_runtime_project(
+        self,
+        destination: pathlib.Path,
+        description: str,
+    ) -> ProjectConfiguration:
+        return clone_runtime_project_command(
+            runtime_project=self.current_runtime_project,
+            destination=destination,
+            description=description,
+        )
+
+    def save_legacy_project(
+        self,
+        *,
+        snapshot: ProjectRuntimeSnapshot | None,
+        source: ProjectConfiguration | None,
+        destination: pathlib.Path,
+        description: str,
+        ins_rules: typing.Sequence[RuleConfiguration],
+        blk_rules: typing.Sequence[RuleConfiguration],
+    ) -> ProjectConfiguration:
+        return save_legacy_project_command(
+            snapshot=snapshot,
+            source=source,
+            destination=destination,
+            description=description,
+            ins_rules=ins_rules,
+            blk_rules=blk_rules,
+        )
 
     def _register_backend_analysis_providers(self) -> None:
         """Register backend-supplied analysis seams before runtime starts."""
