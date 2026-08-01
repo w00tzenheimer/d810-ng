@@ -683,8 +683,8 @@ class PreparedConstantMaterializationFact:
             ): 1,
             (
                 ValueOpKind.MOVE,
-                FragmentConstantPublicationEnvelope.GENERATED_BYTE_LOAD_ZERO_EXTEND,
-            ): 4,
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE,
+            ): 1,
         }.get((consumer_operation, publication_envelope))
         if expected_length is None:
             raise ValueError("constant materialization consumer is unsupported")
@@ -699,7 +699,10 @@ class PreparedConstantMaterializationFact:
         expected_load_offset = (
             0
             if publication_envelope
-            is FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE
+            in {
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE,
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE,
+            }
             else 2
         )
         if load_index != envelope_start + expected_load_offset:

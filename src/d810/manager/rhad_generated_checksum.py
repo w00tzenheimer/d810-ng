@@ -12360,7 +12360,7 @@ _CONSTANT_ROW30_MOVZX_ABSOLUTE = RhadAbsoluteConstantMaterialization(
     replacement_instruction_bytes="b9160000009090",
     encoding_variant=RhadAbsoluteConstantEncoding.MOVZX_R32_BYTE_ABSOLUTE,
     publication_envelope=(
-        RhadConstantPublicationEnvelope.GENERATED_BYTE_LOAD_ZERO_EXTEND
+        RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE
     ),
     phase=RhadReferencePhase.CONSTANT_MATERIALIZATION,
     depends_on=(_CONSTANT_ROW29_MOV_ABSOLUTE.operation_id,),
@@ -17567,13 +17567,19 @@ def _constant_materialization_maturity_payload(
         return False
 
     def operand_is_destination(operand: object | None) -> bool:
+        observed_width_bits = (
+            operation.source_width_bits
+            if operation.publication_envelope
+            is RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE
+            else operation.destination_width_bits
+        )
         return bool(
             operand is not None
             and int(getattr(operand, "t", -1)) == int(ida_hexrays.mop_r)
             and int(getattr(operand, "r", -1))
             == int(operation.destination_storage.offset)
             and int(getattr(operand, "size", 0))
-            == int(operation.destination_width_bits) // 8
+            == int(observed_width_bits) // 8
         )
 
     anchored_rows: list[object] = []
@@ -17631,12 +17637,7 @@ def _constant_materialization_maturity_payload(
         required_flag_envelope = ()
         required_flag_roles = ()
     elif operation.operation_variant is RhadOperationVariant.MOVZX_ABSOLUTE:
-        generated_envelope = (
-            int(ida_hexrays.m_mov),
-            int(ida_hexrays.m_mov),
-            int(ida_hexrays.m_mov),
-            int(ida_hexrays.m_xdu),
-        )
+        generated_envelope = (int(ida_hexrays.m_mov),)
         required_flag_envelope = ()
         required_flag_roles = ()
     else:

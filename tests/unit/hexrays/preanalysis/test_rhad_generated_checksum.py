@@ -20388,7 +20388,7 @@ def test_constant_row30_compiles_movzx_byte_absolute_contract() -> None:
     assert operation.operation_variant.value == "movzx_absolute"
     assert operation.encoding_variant.value == "movzx_r32_byte_absolute"
     assert operation.publication_envelope.value == (
-        "generated_byte_load_zero_extend"
+        "imported_global_byte_move"
     )
     assert operation.source_block_id == "native@0x40B810"
     assert operation.source_native_ea == 0x40B815
@@ -20419,7 +20419,7 @@ def test_constant_row30_compiles_movzx_byte_absolute_contract() -> None:
     assert materialization.consumer_operation.value == "move"
     assert materialization.encoding_variant.value == "movzx_r32_byte_absolute"
     assert materialization.publication_envelope.value == (
-        "generated_byte_load_zero_extend"
+        "imported_global_byte_move"
     )
     assert materialization.destination_storage == operation.destination_storage
     source = plan.block(operation.source_block_id)
@@ -21113,7 +21113,7 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:3870fa409e1d58964d91df095b8486cbf2ab05abe3b52490790561a27f089ca0"
+        "sha256:068abb0547c222b4c4517d5276d06e3f6347a00b3f09c3a35806d301cde6816b"
     )
     assert len(batch.operations) == 254
     assert len(batch.imported_blocks) == 884
