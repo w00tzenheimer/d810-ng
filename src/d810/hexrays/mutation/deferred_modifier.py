@@ -3045,7 +3045,7 @@ class DeferredGraphModifier:
         self.mba.mark_chains_dirty()
         return original
 
-    def replace_instruction_right_global_with_constant_now(
+    def replace_instruction_left_global_with_constant_now(
         self,
         block: ida_hexrays.mblock_t,
         *,
@@ -3056,21 +3056,21 @@ class DeferredGraphModifier:
         constant_value: int,
         value_size: int,
     ) -> ida_hexrays.minsn_t:
-        """Replace only one proved right-side global operand with a constant."""
+        """Replace only one proved left-side global operand with a constant."""
         instructions = self._block_instructions(block)
         instruction_index = int(instruction_index)
         if not 0 <= instruction_index < len(instructions):
             raise ValueError("constant replacement index is outside the live block")
         target = instructions[instruction_index]
-        right = target.r
+        left = target.l
         if (
             int(target.ea) != int(expected_ea)
             or int(target.opcode) != int(expected_opcode)
-            or int(right.t) != int(ida_hexrays.mop_v)
-            or int(right.g) != int(expected_data_ea)
+            or int(left.t) != int(ida_hexrays.mop_v)
+            or int(left.g) != int(expected_data_ea)
         ):
             raise ValueError(
-                "right-global constant replacement changed after immutable preflight; "
+                "left-global constant replacement changed after immutable preflight; "
                 f"blk{int(block.serial)}@0x{int(block.start):X} "
                 f"index={instruction_index} expected=(0x{int(expected_ea):X},"
                 f"{int(expected_opcode)},0x{int(expected_data_ea):X})"
@@ -3079,7 +3079,7 @@ class DeferredGraphModifier:
         if value_size <= 0:
             raise ValueError("constant replacement requires a positive value size")
         original = ida_hexrays.minsn_t(target)
-        right.make_number(
+        left.make_number(
             int(constant_value) & ((1 << (value_size * 8)) - 1),
             value_size,
             int(expected_ea),

@@ -272,7 +272,7 @@ def test_exact_constant_replacement_preserves_destination_and_rolls_back(
     )
 
 
-def test_exact_right_operand_constant_replacement_preserves_xor_and_rolls_back(
+def test_exact_left_operand_constant_replacement_preserves_xor_and_rolls_back(
     monkeypatch,
 ) -> None:
     """The typed byte-XOR edit replaces only the proved global operand."""
@@ -305,8 +305,8 @@ def test_exact_right_operand_constant_replacement_preserves_xor_and_rolls_back(
                 self.ea = 0x40C322
                 self.opcode = m_xor
                 self.iprops = 11
-                self.l = FakeMop(mop_r, value=8, size=1)
-                self.r = FakeMop(ida_hexrays.mop_v, value=0x48AEC8, size=1)
+                self.l = FakeMop(ida_hexrays.mop_v, value=0x48AEC8, size=1)
+                self.r = FakeMop(mop_r, value=8, size=1)
                 self.d = FakeMop(mop_r, value=8, size=1)
             else:
                 self.ea = int(source.ea)
@@ -328,7 +328,7 @@ def test_exact_right_operand_constant_replacement_preserves_xor_and_rolls_back(
     monkeypatch.setattr(dm.ida_hexrays, "minsn_t", FakeInsn)
     modifier = dm.DeferredGraphModifier(mba)
 
-    original = modifier.replace_instruction_right_global_with_constant_now(
+    original = modifier.replace_instruction_left_global_with_constant_now(
         block,
         instruction_index=0,
         expected_ea=0x40C322,
@@ -340,13 +340,13 @@ def test_exact_right_operand_constant_replacement_preserves_xor_and_rolls_back(
 
     assert int(target.opcode) == m_xor
     assert (int(target.l.t), int(target.l.nnn.value), int(target.l.size)) == (
-        mop_r,
-        8,
+        mop_n,
+        1,
         1,
     )
     assert (int(target.r.t), int(target.r.nnn.value), int(target.r.size)) == (
-        mop_n,
-        1,
+        mop_r,
+        8,
         1,
     )
     assert (int(target.d.t), int(target.d.nnn.value), int(target.d.size)) == (
@@ -362,9 +362,9 @@ def test_exact_right_operand_constant_replacement_preserves_xor_and_rolls_back(
         original=original,
     )
     assert int(target.opcode) == m_xor
-    assert int(target.r.t) == int(ida_hexrays.mop_v)
-    assert int(target.r.g) == 0x48AEC8
-    assert int(target.r.size) == 1
+    assert int(target.l.t) == int(ida_hexrays.mop_v)
+    assert int(target.l.g) == 0x48AEC8
+    assert int(target.l.size) == 1
 
 
 def test_constant_replacement_rejects_a_changed_preflight_anchor() -> None:
