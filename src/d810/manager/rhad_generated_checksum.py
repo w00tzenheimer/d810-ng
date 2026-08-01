@@ -22,6 +22,9 @@ from d810.hexrays.mutation.semantic_fragment_profile import (
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
+from d810.manager.frontend_normalization import (
+    record_receipted_frontend_normalization_generation,
+)
 from d810.transforms.fragment_plan import (
     FragmentBlock,
     FragmentBlockMaterialization,
@@ -33,6 +36,9 @@ from d810.transforms.fragment_plan import (
     FragmentPublicationPurpose,
     FragmentSetccFallthroughDelivery,
     FragmentWorkItemScope,
+)
+from d810.transforms.frontend_normalization import (
+    FrontendNormalizationGenerationPlan,
 )
 from d810.transforms.rhad_reference_compiler import (
     RhadAbsoluteConstantEncoding,
@@ -19761,6 +19767,14 @@ def publish_rhad_generated_reference_batch(
     receipt = backend._committed_fragment_receipt
     if receipt is None:
         raise RuntimeError("GENERATED checksum did not produce a receipt")
+    record_receipted_frontend_normalization_generation(
+        plan_authority=session.frontend_normalization_plan_authority,
+        lifecycle_state=session.native_preanalysis,
+        generation_plan=FrontendNormalizationGenerationPlan(
+            complete_plan=plan,
+            work_item_plan=plan,
+        ),
+    )
     session.rhad_generated_checksum_committed_for_current_mba = True
     decision["microcode_modified"] = True
     decision["rhad_generated_checksum_receipt"] = receipt

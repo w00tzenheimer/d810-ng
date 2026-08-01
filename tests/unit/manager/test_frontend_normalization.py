@@ -29,8 +29,10 @@ from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.manager.frontend_normalization import (
     FrontendNormalizationPublicationError,
     SessionFrontendNormalizationPlanAuthority,
+    record_receipted_frontend_normalization_generation,
     run_frontend_normalization_pipeline,
 )
+from d810.transforms.fragment_plan import FragmentWorkItemScope
 from d810.transforms.frontend_normalization import (
     FrontendNormalizationGenerationPlan,
 )
@@ -517,6 +519,64 @@ def test_pipeline_does_not_republish_a_generation_already_authoritative() -> Non
     assert result.microcode_modified is False
     assert result.published_generation == GENERATION
     assert backend.plans == []
+
+
+def test_committed_complete_plan_binds_distinct_typed_work_item_identity() -> None:
+    source_state = _state()
+    source_authority = _plan_authority()
+    source_backend = _Backend(source_state, publish_receipt=True)
+    run_frontend_normalization_pipeline(
+        source=_source(_graph(normalized=False)),
+        backend=source_backend,
+        evidence_provider=_Provider(_evidence()),
+        plan_authority=source_authority,
+        lifecycle_state=source_state,
+        native_key=NATIVE_KEY,
+    )
+    retained = source_authority.plan_for(0x1000, GENERATION)
+    assert retained is not None
+    complete_plan, _source_receipt = retained
+    operation_ids = tuple(
+        operation.operation_id for operation in complete_plan.operations
+    )
+    committed_plan = replace(
+        complete_plan,
+        plan_id="reference-compiler:aggregate:g7",
+        work_item_scope=FragmentWorkItemScope(
+            work_item_id="reference-batch:g7",
+            selected_obligation_ids=operation_ids,
+            remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
+        ),
+    )
+    lifecycle_state = _state()
+    lifecycle_state._fragment_publication_mark_normalization_staged()
+    lifecycle_state._fragment_publication_mark_normalization_validated()
+    lifecycle_state._fragment_publication_commit_normalization_work_item(
+        work_item_id="reference-batch:g7",
+        published_operation_ids=operation_ids,
+        selected_obligation_ids=operation_ids,
+        remaining_obligation_ids=(),
+        unreachable_obligation_ids=(),
+    )
+    plan_authority = _plan_authority()
+
+    authority = record_receipted_frontend_normalization_generation(
+        plan_authority=plan_authority,
+        lifecycle_state=lifecycle_state,
+        generation_plan=FrontendNormalizationGenerationPlan(
+            complete_plan=committed_plan,
+            work_item_plan=committed_plan,
+        ),
+    )
+
+    assert authority.evidence_generation == GENERATION
+    assert authority.source_plan_id == "reference-compiler:aggregate:g7"
+    assert authority.work_item_id == "reference-batch:g7"
+    assert plan_authority.plan_for(0x1000, GENERATION) == (
+        committed_plan,
+        authority,
+    )
 
 
 def test_pipeline_without_portable_evidence_is_a_noop() -> None:
