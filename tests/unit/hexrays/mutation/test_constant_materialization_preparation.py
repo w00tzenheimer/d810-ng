@@ -58,6 +58,12 @@ def _envelope(length: int) -> tuple[PreparedNativeInstructionFact, ...]:
             1,
             0,
         ),
+        (
+            ValueOpKind.XOR,
+            FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR,
+            1,
+            0,
+        ),
     ),
 )
 def test_constant_preparation_envelope_is_bound_to_typed_consumer(
