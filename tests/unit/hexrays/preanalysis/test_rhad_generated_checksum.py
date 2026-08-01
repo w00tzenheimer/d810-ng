@@ -19748,6 +19748,35 @@ def test_constant_inventory_is_exact_reference_ordered_and_identity_bound() -> N
         "source_width_bits": 32,
     }
 
+    fifty_first = operations[50]
+    assert fifty_first == {
+        "current_compiler_support": "compiled_rhad_absolute_constant_materialization",
+        "current_generated_proof": {
+            "accepted_commits": ["f2364eb80"],
+            "aggregate_program_identity": "sha256:ad523822be8f4ee6a9b3337aae270eb3d2172b5410b7d5a15ded1b886a230bc1",
+            "diagnostic_db": ".tmp/logs/000000000040a560_accepted_448_constant_row50.diag.sqlite3",
+            "diagnostic_db_sha256": "4f06e8ce3996f58e852a7bd05585925845856daef2e0942d1acd42199d1bb0ff",
+            "status": "accepted_generated_c6",
+        },
+        "data_native_ea": 0x48AE20,
+        "destination_register": "eax",
+        "destination_width_bits": 32,
+        "encoding_variant": "mov_eax_absolute",
+        "materialized_value": 0xE888549D,
+        "operation_id": "rhad:constant@0x40BE63",
+        "operation_variant": "mov_absolute",
+        "reference_data_bytes_le": "9d5488e8",
+        "reference_order": 50,
+        "reference_raw_value": 0xE888549D,
+        "reference_read_width_bits": 32,
+        "reference_symbol": "deob_consts.ConstantInliner.transform_mov_mem_to_imm",
+        "replacement_instruction_bytes": "b89d5488e8",
+        "source_instruction_bytes": "a120ae4800",
+        "source_native_ea": 0x40BE63,
+        "source_operand_path": "operand[1].absolute_memory",
+        "source_width_bits": 32,
+    }
+
 
 _EXPECTED_BATCH_OPERATION_COUNT = 274
 
