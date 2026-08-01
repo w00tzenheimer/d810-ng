@@ -1686,6 +1686,41 @@ def test_partial_canonical_composition_owns_calls_maturity_admission(
     assert reported[-1].reason == "recovery_round_granted"
 
 
+def test_materialized_computed_goto_recovery_runs_once_per_evidence_epoch(
+    monkeypatch,
+) -> None:
+    reported = []
+    rule = _fresh_rule()
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    rule.config = {}
+    rule._pass_manager = SimpleNamespace(reset_func=lambda _func_ea: None)
+    rule._pass_manager_session_by_func = {}
+    rule._union_maturities_cache = frozenset({ida_hexrays.MMAT_GLBOPT1})
+    native = NativePreanalysisSessionState(evidence_generation=7)
+    native.normalization_published_postvalidated_generation = 7
+    resolver_state = ResolverSessionState(
+        native_preanalysis=native,
+        native_key=NATIVE_KEY,
+        materialized=True,
+        indirect_dispatcher_materialized=False,
+    )
+    rule.current_resolver_session_state = lambda: resolver_state
+    monkeypatch.setattr(
+        unflattener,
+        "imported_detached_snippet_target_eas",
+        lambda _mba: (),
+    )
+    mba = SimpleNamespace(entry_ea=_EA, maturity=ida_hexrays.MMAT_GLBOPT1)
+
+    assert rule._should_recover(mba) == (True, False)
+    assert reported[-1].reason == "recovery_round_granted"
+
+    assert rule._should_recover(mba) == (False, False)
+    assert reported[-1].reason == "materialized_profile_already_attempted"
+
+
 def test_canonical_composition_rejection_reports_stable_route_obligation() -> None:
     reported = []
     rule = _fresh_rule()

@@ -2153,6 +2153,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             isinstance(resolver_state, ResolverSessionState)
             and resolver_state.indirect_dispatcher_materialized
         )
+        materialized_computed_goto_profile = bool(
+            isinstance(resolver_state, ResolverSessionState)
+            and is_computed_goto_materialized(resolver_state)
+        )
         # INDIRECT keeps the historical one-shot MMAT_CALLS contract (its
         # terminal-tail / folded-loop-guard lowering is tuned for a single CALLS
         # pass).  The NON-indirect profile now recovers at EVERY maturity from LOCOPT
@@ -2160,6 +2164,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # pre-fold stage where their dispatcher is still alive.
         canonical_composition_admission = bool(
             canonical_composition_ready and not is_indirect
+        )
+        one_shot_recovery = bool(
+            canonical_composition_admission or materialized_computed_goto_profile
         )
         if is_indirect:
             if mba.maturity != ida_hexrays.MMAT_CALLS:
@@ -2243,7 +2250,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             int(mba.entry_ea),
             is_indirect=is_indirect,
             maturity=int(mba.maturity),
-            one_shot=canonical_composition_admission,
+            one_shot=one_shot_recovery,
         ):
             if int(mba.entry_ea) in self._unflat_done_eas:
                 decline_reason = "function_converged"
@@ -2251,6 +2258,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 decline_reason = "canonical_composition_already_attempted"
             elif is_indirect and rounds_before >= 1:
                 decline_reason = "indirect_profile_already_attempted"
+            elif materialized_computed_goto_profile and rounds_before >= 1:
+                decline_reason = "materialized_profile_already_attempted"
             else:
                 decline_reason = "round_budget_exhausted"
             self._report_recovery_gate_decision(
