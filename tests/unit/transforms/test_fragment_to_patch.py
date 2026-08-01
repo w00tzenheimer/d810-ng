@@ -160,7 +160,8 @@ def test_constant_materializations_lower_as_one_exact_fragment_patch_step() -> N
         source_block_id="replacement",
         instruction_ea=0x1000,
         data_ea=0x480000,
-        width_bits=32,
+        source_width_bits=32,
+        destination_width_bits=32,
         reference_read_width_bits=32,
         destination_storage=StorageIdentity(
             kind=StorageIdentityKind.REGISTER,
