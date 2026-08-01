@@ -25,7 +25,7 @@ def _write_version(path: str, version: int | None) -> None:
     conn.close()
 
 
-@pytest.mark.parametrize("version", [None, 1, 2, 3, 4, 5, 6, 7, 8])
+@pytest.mark.parametrize("version", [None, 1, 2, 3, 4, 5, 6, 7, 8, 9])
 def test_reader_rejects_noncurrent_schema_without_mutating_file(
     tmp_path, version: int | None
 ) -> None:
@@ -55,3 +55,7 @@ def test_writer_creates_only_current_schema_without_legacy_views() -> None:
         "SELECT name FROM sqlite_master WHERE name LIKE 'dag_%'"
     ).fetchall()
     assert legacy == []
+
+
+def test_case_producer_uses_schema_v10_after_lrea_v9() -> None:
+    assert DIAGNOSTIC_SCHEMA_VERSION == 10
