@@ -416,6 +416,58 @@ def _require_movzx_absolute_envelope(
         )
 
 
+def _require_xor_absolute_envelope(
+    materialization: FragmentAbsoluteConstantMaterialization,
+    facts: tuple[object, ...],
+) -> None:
+    """Prove one exact imported byte XOR before replacing its right operand."""
+    if (
+        materialization.publication_envelope
+        is not FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR
+        or len(facts) != 1
+        or int(getattr(facts[0], "opcode", -1)) != int(ida_hexrays.m_xor)
+    ):
+        raise SemanticFragmentBackendRejected(
+            "xor_absolute imported opcode envelope differs from reference evidence",
+            reason_code="constant_materialization_envelope_mismatch",
+            anchor_ea=materialization.instruction_ea,
+            payload={"materialization_id": materialization.materialization_id},
+        )
+    fact = facts[0]
+    shape = getattr(fact, "operand_shape", ())
+    left = shape[0] if len(shape) == 3 else ()
+    right = shape[1] if len(shape) == 3 else ()
+    destination = shape[2] if len(shape) == 3 else ()
+    byte_shapes = all(
+        isinstance(operand, tuple)
+        and len(operand) >= 2
+        and int(operand[1]) == materialization.source_width_bits // 8
+        for operand in (left, right, destination)
+    )
+    if (
+        len(shape) != 3
+        or materialization.source_width_bits != 8
+        or materialization.destination_width_bits != 8
+        or not byte_shapes
+        or left != destination
+        or not _primitive_shape_contains(
+            left,
+            ("register", int(materialization.destination_storage.offset)),
+        )
+        or not _primitive_shape_contains(
+            right,
+            ("global", int(materialization.data_ea)),
+        )
+        or getattr(fact, "writes_condition_codes", None) is not True
+    ):
+        raise SemanticFragmentBackendRejected(
+            "xor_absolute imported data flow differs from reference evidence",
+            reason_code="constant_materialization_dataflow_mismatch",
+            anchor_ea=materialization.instruction_ea,
+            payload={"materialization_id": materialization.materialization_id},
+        )
+
+
 def _require_constant_materialization_envelope(
     materialization: FragmentAbsoluteConstantMaterialization,
     facts: tuple[object, ...],
@@ -434,6 +486,9 @@ def _require_constant_materialization_envelope(
             _require_movzx_absolute_envelope(materialization, facts)
             return
         _require_mov_absolute_envelope(materialization, facts)
+        return
+    if materialization.consumer_operation is ValueOpKind.XOR:
+        _require_xor_absolute_envelope(materialization, facts)
         return
     raise SemanticFragmentBackendRejected(
         "constant materialization consumer lacks immutable preflight support",
@@ -509,6 +564,10 @@ def _prepare_constant_materializations(
                 ValueOpKind.MOVE,
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND,
             ): 1,
+            (
+                ValueOpKind.XOR,
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR,
+            ): 1,
         }.get(
             (
                 materialization.consumer_operation,
@@ -557,6 +616,7 @@ def _prepare_constant_materializations(
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE,
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE,
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND,
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR,
             }
             else 2
         )
@@ -1646,26 +1706,41 @@ def _materialize_constant_materializations(
             is FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND
             else materialization.source_width_bits
         ) // 8
-        modifier.replace_instruction_with_constant_now(
-            block,
-            instruction_index=fact.load_instruction_index,
-            expected_ea=live_instruction_ea,
-            expected_opcode=int(
-                {
-                    FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE: (
-                        ida_hexrays.m_mov
-                    ),
-                    FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE: (
-                        ida_hexrays.m_mov
-                    ),
-                    FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND: (
-                        ida_hexrays.m_xdu
-                    ),
-                }.get(materialization.publication_envelope, ida_hexrays.m_ldx)
-            ),
-            constant_value=materialization.constant_value,
-            value_size=replacement_value_size,
+        is_right_global_xor = (
+            materialization.publication_envelope
+            is FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR
         )
+        if is_right_global_xor:
+            modifier.replace_instruction_right_global_with_constant_now(
+                block,
+                instruction_index=fact.load_instruction_index,
+                expected_ea=live_instruction_ea,
+                expected_opcode=int(ida_hexrays.m_xor),
+                expected_data_ea=materialization.data_ea,
+                constant_value=materialization.constant_value,
+                value_size=replacement_value_size,
+            )
+        else:
+            modifier.replace_instruction_with_constant_now(
+                block,
+                instruction_index=fact.load_instruction_index,
+                expected_ea=live_instruction_ea,
+                expected_opcode=int(
+                    {
+                        FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE: (
+                            ida_hexrays.m_mov
+                        ),
+                        FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE: (
+                            ida_hexrays.m_mov
+                        ),
+                        FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND: (
+                            ida_hexrays.m_xdu
+                        ),
+                    }.get(materialization.publication_envelope, ida_hexrays.m_ldx)
+                ),
+                constant_value=materialization.constant_value,
+                value_size=replacement_value_size,
+            )
         applied = tuple(_iter_block_instructions(block))[
             fact.load_instruction_index
         ]
@@ -1673,15 +1748,29 @@ def _materialize_constant_materializations(
         envelope_load_index = (
             fact.load_instruction_index - fact.envelope_start_instruction_index
         )
-        expected_destination = fact.envelope[envelope_load_index].operand_shape[2]
-        if (
-            int(applied.opcode) != int(ida_hexrays.m_mov)
-            or not _primitive_shape_contains(
-                applied_shape[0],
-                ("number", int(materialization.constant_value)),
+        original_shape = fact.envelope[envelope_load_index].operand_shape
+        expected_destination = original_shape[2]
+        replacement_matches = (
+            (
+                int(applied.opcode) == int(ida_hexrays.m_xor)
+                and applied_shape[0] == original_shape[0]
+                and _primitive_shape_contains(
+                    applied_shape[1],
+                    ("number", int(materialization.constant_value)),
+                )
+                and applied_shape[2] == expected_destination
             )
-            or applied_shape[2] != expected_destination
-        ):
+            if is_right_global_xor
+            else (
+                int(applied.opcode) == int(ida_hexrays.m_mov)
+                and _primitive_shape_contains(
+                    applied_shape[0],
+                    ("number", int(materialization.constant_value)),
+                )
+                and applied_shape[2] == expected_destination
+            )
+        )
+        if not replacement_matches:
             raise SemanticFragmentBackendRejected(
                 "constant replacement differs from the compiled materialization",
                 reason_code="constant_materialization_postwrite_mismatch",
@@ -1704,7 +1793,11 @@ def _rollback_constant_materializations(
             block,
             instruction_index=rollback.instruction_index,
             expected_ea=rollback.instruction_ea,
-            expected_opcode=int(ida_hexrays.m_mov),
+            expected_opcode=(
+                int(ida_hexrays.m_xor)
+                if int(rollback.original_instruction.opcode) == int(ida_hexrays.m_xor)
+                else int(ida_hexrays.m_mov)
+            ),
             original=rollback.original_instruction,
         )
     state.constant_materialization_rollbacks.clear()

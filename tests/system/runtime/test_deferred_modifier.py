@@ -272,6 +272,101 @@ def test_exact_constant_replacement_preserves_destination_and_rolls_back(
     )
 
 
+def test_exact_right_operand_constant_replacement_preserves_xor_and_rolls_back(
+    monkeypatch,
+) -> None:
+    """The typed byte-XOR edit replaces only the proved global operand."""
+    mop_z = int(ida_hexrays.mop_z)
+    mop_n = int(ida_hexrays.mop_n)
+    mop_r = int(ida_hexrays.mop_r)
+    m_xor = int(ida_hexrays.m_xor)
+
+    class FakeMop:
+        def __init__(self, kind=mop_z, *, value=0, size=0):
+            self.t = int(kind)
+            self.nnn = SimpleNamespace(value=int(value))
+            self.g = int(value)
+            self.size = int(size)
+
+        def make_number(self, value, size, _ea):
+            self.t = mop_n
+            self.nnn.value = int(value)
+            self.size = int(size)
+
+        def assign(self, other):
+            self.t = int(other.t)
+            self.nnn.value = int(other.nnn.value)
+            self.g = int(other.g)
+            self.size = int(other.size)
+
+    class FakeInsn:
+        def __init__(self, source=None):
+            if source is None:
+                self.ea = 0x40C322
+                self.opcode = m_xor
+                self.iprops = 11
+                self.l = FakeMop(mop_r, value=8, size=1)
+                self.r = FakeMop(ida_hexrays.mop_v, value=0x48AEC8, size=1)
+                self.d = FakeMop(mop_r, value=8, size=1)
+            else:
+                self.ea = int(source.ea)
+                self.opcode = int(source.opcode)
+                self.iprops = int(source.iprops)
+                self.l = FakeMop()
+                self.r = FakeMop()
+                self.d = FakeMop()
+                self.l.assign(source.l)
+                self.r.assign(source.r)
+                self.d.assign(source.d)
+            self.next = None
+
+    target = FakeInsn()
+    block = _FakeBlock(0, start=0x40C315)
+    block.head = block.tail = target
+    mba = _FakeMBA()
+    mba.blocks = {0: block}
+    monkeypatch.setattr(dm.ida_hexrays, "minsn_t", FakeInsn)
+    modifier = dm.DeferredGraphModifier(mba)
+
+    original = modifier.replace_instruction_right_global_with_constant_now(
+        block,
+        instruction_index=0,
+        expected_ea=0x40C322,
+        expected_opcode=m_xor,
+        expected_data_ea=0x48AEC8,
+        constant_value=1,
+        value_size=1,
+    )
+
+    assert int(target.opcode) == m_xor
+    assert (int(target.l.t), int(target.l.nnn.value), int(target.l.size)) == (
+        mop_r,
+        8,
+        1,
+    )
+    assert (int(target.r.t), int(target.r.nnn.value), int(target.r.size)) == (
+        mop_n,
+        1,
+        1,
+    )
+    assert (int(target.d.t), int(target.d.nnn.value), int(target.d.size)) == (
+        mop_r,
+        8,
+        1,
+    )
+    modifier.restore_instruction_from_snapshot_now(
+        block,
+        instruction_index=0,
+        expected_ea=0x40C322,
+        expected_opcode=m_xor,
+        original=original,
+    )
+    assert int(target.opcode) == m_xor
+    assert int(target.r.t) == int(ida_hexrays.mop_v)
+    assert int(target.r.g) == 0x48AEC8
+    assert int(target.r.size) == 1
+
+
 def test_constant_replacement_rejects_a_changed_preflight_anchor() -> None:
     target = SimpleNamespace(
         ea=0x401235,

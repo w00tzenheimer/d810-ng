@@ -689,6 +689,10 @@ class PreparedConstantMaterializationFact:
                 ValueOpKind.MOVE,
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND,
             ): 1,
+            (
+                ValueOpKind.XOR,
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR,
+            ): 1,
         }.get((consumer_operation, publication_envelope))
         if expected_length is None:
             raise ValueError("constant materialization consumer is unsupported")
@@ -707,6 +711,7 @@ class PreparedConstantMaterializationFact:
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE,
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE,
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND,
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR,
             }
             else 2
         )
