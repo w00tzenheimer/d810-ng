@@ -820,6 +820,83 @@ def _movzx_constant_ledger():
     )
 
 
+def _xor_constant_ledger():
+    compiler = _compiler_module()
+    movzx_ledger = _movzx_constant_ledger()
+    source = FragmentBlock(
+        block_id="native@0x40C315",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x40C315,
+        stable_identity=_identity(
+            0x40C315,
+            0x40C335,
+            0x40C315,
+            0x40C31F,
+            0x40C322,
+            0x40C328,
+            0x40C32D,
+            0x40C32F,
+        ),
+    )
+    constant_id = "constant:rhad-xor-absolute@0x40C322"
+    scope = movzx_ledger.base_plan.work_item_scope
+    assert scope is not None
+    base = replace(
+        movzx_ledger.base_plan,
+        blocks=(*movzx_ledger.base_plan.blocks, source),
+        work_item_scope=replace(
+            scope,
+            selected_obligation_ids=(
+                *scope.selected_obligation_ids,
+                constant_id,
+            ),
+        ),
+    )
+    constant = compiler.RhadAbsoluteConstantMaterialization(
+        operation_id=constant_id,
+        reference_operation_id="rhad:constant@0x40C322",
+        reference_order=3,
+        operation_variant=compiler.RhadOperationVariant.XOR_ABSOLUTE,
+        reference_symbol=(
+            "deob_consts.ConstantInliner.transform_arith_mem_to_imm"
+        ),
+        source_block_id=source.block_id,
+        source_native_ea=0x40C322,
+        data_native_ea=0x48AEC8,
+        source_width_bits=8,
+        destination_width_bits=8,
+        destination_storage=StorageIdentity(
+            kind=StorageIdentityKind.REGISTER,
+            offset=8,
+        ),
+        reference_read_width_bits=32,
+        reference_data_bytes_le="01000000",
+        reference_raw_value=1,
+        materialized_value=1,
+        source_instruction_bytes="3205c8ae4800",
+        replacement_instruction_bytes="80f001909090",
+        encoding_variant=compiler.RhadAbsoluteConstantEncoding.XOR_R8_ABSOLUTE,
+        publication_envelope=(
+            compiler.RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR
+        ),
+        phase=compiler.RhadReferencePhase.CONSTANT_MATERIALIZATION,
+        depends_on=(movzx_ledger.operations[-1].operation_id,),
+    )
+    return replace(
+        movzx_ledger,
+        base_plan=base,
+        operations=(*movzx_ledger.operations, constant),
+        reference_provenance={
+            **movzx_ledger.reference_provenance,
+            "operation_shapes": (
+                *movzx_ledger.reference_provenance["operation_shapes"],
+                "xor_absolute",
+            ),
+        },
+    )
+
+
 def test_compiler_emits_typed_add_absolute_materialization() -> None:
     compiler = _compiler_module()
     ledger = _constant_ledger()
@@ -947,6 +1024,69 @@ def test_compiler_emits_imported_movzx_zero_extend_envelope() -> None:
     assert plan.constant_materializations[-1].publication_envelope.value == (
         "imported_global_byte_zero_extend"
     )
+
+
+def test_compiler_emits_typed_xor_r8_absolute_materialization() -> None:
+    compiler = _compiler_module()
+
+    plan = compiler.compile_rhad_reference_fragment(
+        _xor_constant_ledger(),
+        expected_evidence_generation=1,
+    )
+
+    materialization = plan.constant_materializations[-1]
+    assert materialization.materialization_id == (
+        "constant:rhad-xor-absolute@0x40C322"
+    )
+    assert materialization.reference_operation_id == "rhad:constant@0x40C322"
+    assert materialization.source_block_id == "native@0x40C315"
+    assert materialization.instruction_ea == 0x40C322
+    assert materialization.data_ea == 0x48AEC8
+    assert materialization.source_width_bits == 8
+    assert materialization.destination_width_bits == 8
+    assert materialization.reference_read_width_bits == 32
+    assert materialization.constant_value == 1
+    assert materialization.encoding_variant.value == "xor_r8_absolute"
+    assert materialization.publication_envelope.value == "imported_global_byte_xor"
+    assert materialization.destination_storage == StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=8,
+    )
+    assert materialization.consumer_operation.value == "xor"
+    assert tuple(role.value for role in materialization.preserved_flag_roles) == (
+        "carry",
+        "overflow",
+        "zero",
+        "parity",
+        "sign",
+    )
+
+
+def test_xor_absolute_rejects_wrong_widths() -> None:
+    compiler = _compiler_module()
+    operation = _xor_constant_ledger().operations[-1]
+
+    with pytest.raises(
+        compiler.RhadCompilerRejection,
+        match="requires 8-bit source and destination with a 32-bit reference read",
+    ):
+        replace(operation, destination_width_bits=32)
+
+
+def test_xor_absolute_rejects_move_publication_envelope() -> None:
+    compiler = _compiler_module()
+    operation = _xor_constant_ledger().operations[-1]
+
+    with pytest.raises(
+        compiler.RhadCompilerRejection,
+        match="requires its imported byte XOR envelope",
+    ):
+        replace(
+            operation,
+            publication_envelope=(
+                compiler.RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE
+            ),
+        )
 
 
 def test_movzx_absolute_rejects_unmasked_materialized_value() -> None:
