@@ -20,6 +20,7 @@ from d810.hexrays.hooks.callback_mutation_diagnostics import (
     LiveNopSite,
     build_callback_nop_delta_records,
     build_callback_nop_inventory_records,
+    capture_block_nop_sites,
     capture_live_nop_sites,
 )
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
@@ -975,6 +976,22 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
             return None
 
+    def _capture_callback_block_nop_sites(
+        self,
+        block: object,
+    ) -> tuple[LiveNopSite, ...] | None:
+        """Capture only the block owned by one optblock callback."""
+        if self._fact_consumer_callback is None:
+            return None
+        try:
+            return capture_block_nop_sites(block)
+        except Exception:
+            optimizer_logger.debug(
+                "failed to capture pre-optblock-callback NOP sites",
+                exc_info=True,
+            )
+            return None
+
     def _report_callback_nop_delta(
         self,
         mba: object,
@@ -1009,6 +1026,44 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         except Exception:
             optimizer_logger.debug(
                 "failed to persist callback NOP delta",
+                exc_info=True,
+            )
+
+    def _report_callback_block_nop_delta(
+        self,
+        block: object,
+        *,
+        before: tuple[LiveNopSite, ...] | None,
+        callback_kind: str,
+        callback_name: str,
+        callback_result: int | None,
+        exception_name: str | None = None,
+    ) -> None:
+        """Persist one optblock callback's block-local NOP delta."""
+        if before is None or self._fact_consumer_callback is None:
+            return
+        try:
+            mba = getattr(block, "mba", None)
+            maturity_value = getattr(mba, "maturity", self.current_maturity)
+            records = build_callback_nop_delta_records(
+                before=before,
+                after=capture_block_nop_sites(block),
+                callback_kind=callback_kind,
+                callback_name=callback_name,
+                callback_result=(
+                    None if callback_result is None else int(callback_result)
+                ),
+                maturity=maturity_to_string(maturity_value),
+                exception_name=exception_name,
+            )
+            if records:
+                self._fact_consumer_callback(
+                    int(getattr(mba, "entry_ea", 0) or 0),
+                    records,
+                )
+        except Exception:
+            optimizer_logger.debug(
+                "failed to persist optblock callback NOP delta",
                 exc_info=True,
             )
 
@@ -1135,7 +1190,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         )
                         if callable(set_current_rule_name):
                             set_current_rule_name(rule_name)
-                    callback_nop_sites = self._capture_callback_nop_sites(blk.mba)
+                    callback_nop_sites = self._capture_callback_block_nop_sites(blk)
                     callback_result: int | None = None
                     callback_exception_name: str | None = None
                     try:
@@ -1145,8 +1200,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         callback_exception_name = type(error).__name__
                         raise
                     finally:
-                        self._report_callback_nop_delta(
-                            blk.mba,
+                        self._report_callback_block_nop_delta(
+                            blk,
                             before=callback_nop_sites,
                             callback_kind="optblock_rule",
                             callback_name=rule_name,

@@ -61,6 +61,15 @@ class _Mba:
         return self._blocks[serial]
 
 
+class _RejectUnrelatedBlockMba(_Mba):
+    """Prove callback-local diagnostics do not walk sibling blocks."""
+
+    def get_mblock(self, serial: int) -> _Block:
+        if int(serial) != 0:
+            raise AssertionError("callback diagnostics scanned an unrelated block")
+        return super().get_mblock(serial)
+
+
 class _NopWritingRule:
     name = "unreported_nop_writer"
     priority = 100
@@ -329,6 +338,47 @@ def test_block_optimizer_reports_a_rule_nop_write_that_returns_zero() -> None:
     assert persisted[0].payload["callback_name"] == "unreported_nop_writer"
 
 
+def test_block_optimizer_nop_diagnostics_are_callback_block_local() -> None:
+    instruction = _Instruction(ida_hexrays.m_mov, 0x401010)
+    block = _Block(
+        serial=0,
+        start=0x401000,
+        end=0x401020,
+        head=instruction,
+    )
+    _RejectUnrelatedBlockMba(
+        (
+            block,
+            _Block(
+                serial=1,
+                start=0x402000,
+                end=0x402020,
+                head=_Instruction(ida_hexrays.m_mov, 0x402010),
+            ),
+        )
+    )
+    rule = _NopWritingRule(instruction)
+    persisted = []
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(),
+        Path("."),
+        ctx_cls=FlowMaturityContext,
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+    manager.configure(
+        rule_scope_service=_RuleScope(rule),
+        rule_scope_project_name="test",
+        rule_scope_idb_key="test-idb",
+        fact_consumer_callback=lambda _func_ea, records: persisted.extend(records),
+    )
+
+    assert manager.optimize(block) == 0
+
+    assert len(persisted) == 1
+    assert persisted[0].decision == "mutation_unreported"
+    assert persisted[0].payload["block_anchor"] == "blk0@0x401000"
+
+
 def test_glbopt_reports_its_nop_write_with_merr_loop(
     monkeypatch,
 ) -> None:
@@ -415,3 +465,52 @@ def test_instruction_optimizer_reports_a_nop_write_that_returns_false() -> None:
     assert len(persisted) == 1
     assert persisted[0].decision == "mutation_unreported"
     assert persisted[0].payload["callback_kind"] == "optinsn_callback"
+
+
+def test_instruction_optimizer_nop_diagnostics_are_callback_block_local() -> None:
+    instruction = _Instruction(ida_hexrays.m_mov, 0x401010)
+    block = _Block(
+        serial=0,
+        start=0x401000,
+        end=0x401020,
+        head=instruction,
+    )
+    _RejectUnrelatedBlockMba(
+        (
+            block,
+            _Block(
+                serial=1,
+                start=0x402000,
+                end=0x402020,
+                head=_Instruction(ida_hexrays.m_mov, 0x402010),
+            ),
+        )
+    )
+    persisted = []
+    manager = SimpleNamespace(
+        _fact_consumer_callback=(lambda _func_ea, records: persisted.extend(records)),
+        current_maturity=ida_hexrays.MMAT_GLBOPT2,
+        instruction_visitor=SimpleNamespace(blk=None),
+        _last_optimizer_tried="synthetic_nop_writer",
+    )
+    manager._capture_callback_nop_sites = MethodType(
+        InstructionOptimizerManager._capture_callback_nop_sites,
+        manager,
+    )
+    manager._report_callback_nop_delta = MethodType(
+        InstructionOptimizerManager._report_callback_nop_delta,
+        manager,
+    )
+    manager.log_info_on_input = lambda _blk, _ins: False
+
+    def create_unreported_nop(_blk, _ins) -> bool:
+        instruction.opcode = ida_hexrays.m_nop
+        return False
+
+    manager.optimize = create_unreported_nop
+
+    assert InstructionOptimizerManager.func(manager, block, instruction) is False
+
+    assert len(persisted) == 1
+    assert persisted[0].decision == "mutation_unreported"
+    assert persisted[0].payload["block_anchor"] == "blk0@0x401000"
