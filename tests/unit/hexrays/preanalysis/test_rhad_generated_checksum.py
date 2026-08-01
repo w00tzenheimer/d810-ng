@@ -19836,7 +19836,7 @@ def test_constant_inventory_is_exact_reference_ordered_and_identity_bound() -> N
     }
 
 
-_EXPECTED_BATCH_OPERATION_COUNT = 276
+_EXPECTED_BATCH_OPERATION_COUNT = 277
 
 
 def _constant_operation(batch, reference_order: int):
@@ -22279,6 +22279,51 @@ def test_constant_row52_reuses_imported_mov_r32_contract_inside_template() -> No
     assert source.stable_identity.native_ranges.contains(operation.source_native_ea)
 
 
+def test_constant_row53_reuses_imported_mov_r32_contract_at_template_root() -> None:
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+    operation = _constant_operation(batch, 53)
+    assert operation.operation_id == "constant:rhad-mov-absolute@0x40C118"
+    assert operation.reference_operation_id == "rhad:constant@0x40C118"
+    assert operation.reference_order == 53
+    assert operation.reference_symbol == (
+        "deob_consts.ConstantInliner.transform_mov_mem_to_imm"
+    )
+    assert operation.operation_variant.value == "mov_absolute"
+    assert operation.encoding_variant.value == "mov_r32_absolute"
+    assert operation.publication_envelope.value == "imported_global_move"
+    assert operation.source_block_id == "native@0x40C10A"
+    assert operation.source_native_ea == 0x40C118
+    assert operation.data_native_ea == 0x48ADF0
+    assert operation.source_width_bits == 32
+    assert operation.destination_width_bits == 32
+    assert operation.reference_read_width_bits == 32
+    assert operation.destination_storage == StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=16,
+    )
+    assert operation.reference_data_bytes_le == "65032b98"
+    assert operation.reference_raw_value == 0x982B0365
+    assert operation.materialized_value == 0x982B0365
+    assert operation.source_instruction_bytes == "8b0df0ad4800"
+    assert operation.replacement_instruction_bytes == "90b965032b98"
+    assert operation.depends_on == ("constant:rhad-mov-absolute@0x40BF4E",)
+
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(),
+        evidence_generation=7,
+    )
+    materialization = plan.constant_materializations[53]
+    assert materialization.materialization_id == operation.operation_id
+    assert materialization.consumer_operation.value == "move"
+    assert materialization.encoding_variant.value == "mov_r32_absolute"
+    assert materialization.publication_envelope.value == "imported_global_move"
+    assert materialization.destination_storage == operation.destination_storage
+    source = plan.block(operation.source_block_id)
+    assert source.stable_identity is not None
+    assert source.stable_identity.native_ranges.contains(operation.source_native_ea)
+
+
 def test_constant_row0_value_changes_aggregate_program_identity() -> None:
     batch = reference_batch_for_native_key(_native_key())
     assert batch is not None
@@ -22968,7 +23013,7 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:7b7c1ad8029cf0dd1f98b879b6f7ffc8b9d1625756a2e8cbd3de4843bf98e4ce"
+        "sha256:a3f99062a89f50988cbd130e6a530d083b14647f7fcd78cd02e224840e48899f"
     )
     assert len(batch.operations) == _EXPECTED_BATCH_OPERATION_COUNT
     assert len(batch.imported_blocks) == 884
