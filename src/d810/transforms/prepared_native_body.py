@@ -332,7 +332,6 @@ class PreparedNormalizationWorkItemSnapshot:
             authority.source_plan_id != source_plan_id
             or authority.source_atomic_group_id != source_atomic_group_id
             or scope is None
-            or scope.work_item_id != work_item_plan.plan_id
             or authority.work_item_id != scope.work_item_id
             or prepared_bodies.plan_id != work_item_plan.plan_id
             or prepared_bodies.evidence_generation != authority.evidence_generation

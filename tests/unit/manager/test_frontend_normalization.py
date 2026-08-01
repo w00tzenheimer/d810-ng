@@ -24,15 +24,22 @@ from d810.capabilities.semantic_routes import (
     SemanticRouteReferenceOracleCapability,
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
+from d810.ir.expressions import ValueOpKind
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.manager.frontend_normalization import (
     FrontendNormalizationPublicationError,
     SessionFrontendNormalizationPlanAuthority,
     record_receipted_frontend_normalization_generation,
     run_frontend_normalization_pipeline,
 )
-from d810.transforms.fragment_plan import FragmentWorkItemScope
+from d810.transforms.fragment_plan import (
+    FragmentAbsoluteConstantEncoding,
+    FragmentAbsoluteConstantMaterialization,
+    FragmentConstantPublicationEnvelope,
+    FragmentWorkItemScope,
+)
 from d810.transforms.frontend_normalization import (
     FrontendNormalizationGenerationPlan,
 )
@@ -539,12 +546,42 @@ def test_committed_complete_plan_binds_distinct_typed_work_item_identity() -> No
     operation_ids = tuple(
         operation.operation_id for operation in complete_plan.operations
     )
+    source_block = complete_plan.block(
+        complete_plan.operations[0].source_block_id
+    )
+    constant_id = "constant:test-mov-absolute@0x1100"
+    materialization = FragmentAbsoluteConstantMaterialization(
+        materialization_id=constant_id,
+        reference_operation_id="rhad:constant@0x1100",
+        source_block_id=source_block.block_id,
+        instruction_ea=source_block.semantic_anchor_ea,
+        data_ea=0x480000,
+        source_width_bits=32,
+        destination_width_bits=32,
+        reference_read_width_bits=32,
+        destination_storage=StorageIdentity(
+            kind=StorageIdentityKind.REGISTER,
+            offset=0,
+        ),
+        constant_value=0x3776723F,
+        reference_data_bytes_le="3f727637",
+        source_instruction_bytes="8b0500004800",
+        replacement_instruction_bytes="90b83f727637",
+        consumer_operation=ValueOpKind.MOVE,
+        encoding_variant=FragmentAbsoluteConstantEncoding.MOV_R32_ABSOLUTE,
+        publication_envelope=(
+            FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE
+        ),
+        preserved_flag_roles=(),
+    )
+    published_ids = (*operation_ids, constant_id)
     committed_plan = replace(
         complete_plan,
         plan_id="reference-compiler:aggregate:g7",
+        constant_materializations=(materialization,),
         work_item_scope=FragmentWorkItemScope(
             work_item_id="reference-batch:g7",
-            selected_obligation_ids=operation_ids,
+            selected_obligation_ids=published_ids,
             remaining_obligation_ids=(),
             unreachable_obligation_ids=(),
         ),
@@ -554,8 +591,8 @@ def test_committed_complete_plan_binds_distinct_typed_work_item_identity() -> No
     lifecycle_state._fragment_publication_mark_normalization_validated()
     lifecycle_state._fragment_publication_commit_normalization_work_item(
         work_item_id="reference-batch:g7",
-        published_operation_ids=operation_ids,
-        selected_obligation_ids=operation_ids,
+        published_operation_ids=published_ids,
+        selected_obligation_ids=published_ids,
         remaining_obligation_ids=(),
         unreachable_obligation_ids=(),
     )
@@ -573,6 +610,7 @@ def test_committed_complete_plan_binds_distinct_typed_work_item_identity() -> No
     assert authority.evidence_generation == GENERATION
     assert authority.source_plan_id == "reference-compiler:aggregate:g7"
     assert authority.work_item_id == "reference-batch:g7"
+    assert authority.published_operation_ids == published_ids
     assert plan_authority.plan_for(0x1000, GENERATION) == (
         committed_plan,
         authority,

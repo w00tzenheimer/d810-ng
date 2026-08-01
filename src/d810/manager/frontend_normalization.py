@@ -110,11 +110,16 @@ class SessionFrontendNormalizationPlanAuthority:
                 "frontend normalization receipt authority changed plan lineage"
             )
         work_item_scope = work_item_plan.work_item_scope
+        published_operation_ids = tuple(
+            operation.operation_id for operation in work_item_plan.operations
+        ) + tuple(
+            materialization.materialization_id
+            for materialization in work_item_plan.constant_materializations
+        )
         if (
             work_item_scope is None
             or authority.work_item_id != work_item_scope.work_item_id
-            or authority.published_operation_ids
-            != tuple(operation.operation_id for operation in work_item_plan.operations)
+            or authority.published_operation_ids != published_operation_ids
             or authority.selected_obligation_ids
             != work_item_scope.selected_obligation_ids
             or authority.remaining_obligation_ids
