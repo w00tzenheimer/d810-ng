@@ -51,6 +51,7 @@ from d810.transforms.fragment_plan import (
     FragmentOperation,
     FragmentPlan,
     FragmentPublicationPurpose,
+    FragmentReferencedImportedConditionalSelectEnvelope,
     FragmentReferenceRouteAuthority,
     FragmentReturnCarrier,
     FragmentReturnSource,
@@ -637,15 +638,20 @@ def _merged_imported_ranges(
         for interval in block.stable_identity.native_ranges.intervals
     ]
     for operation in operations:
-        normalization = operation.computed_branch_normalization
-        if normalization is None or not isinstance(
-            normalization.conditional_select_envelope,
-            FragmentImportedConditionalSelectEnvelope,
+        for normalization in (
+            operation.computed_branch_normalization,
+            operation.superseded_computed_branch_normalization,
         ):
-            continue
-        envelope = normalization.conditional_select_envelope
-        intervals.extend(envelope.selected_value_identity.native_ranges.intervals)
-        intervals.extend(envelope.join_identity.native_ranges.intervals)
+            if normalization is None or not isinstance(
+                normalization.conditional_select_envelope,
+                FragmentImportedConditionalSelectEnvelope,
+            ):
+                continue
+            envelope = normalization.conditional_select_envelope
+            intervals.extend(
+                envelope.selected_value_identity.native_ranges.intervals
+            )
+            intervals.extend(envelope.join_identity.native_ranges.intervals)
     intervals.sort(key=lambda interval: (int(interval.start_ea), int(interval.end_ea)))
     merged = []
     for interval in intervals:
@@ -658,6 +664,31 @@ def _merged_imported_ranges(
             max(int(previous.end_ea), int(interval.end_ea)),
         )
     return tuple(merged)
+
+
+def _referenced_conditional_carrier_block_ids(
+    operation: FragmentOperation,
+) -> tuple[str, ...]:
+    """Return exact imported carriers retained by one typed normalization."""
+    return tuple(
+        dict.fromkeys(
+            block_id
+            for normalization in (
+                operation.computed_branch_normalization,
+                operation.superseded_computed_branch_normalization,
+            )
+            if normalization is not None
+            for envelope in (normalization.conditional_select_envelope,)
+            if isinstance(
+                envelope,
+                FragmentReferencedImportedConditionalSelectEnvelope,
+            )
+            for block_id in (
+                envelope.selected_value_block_id,
+                envelope.join_block_id,
+            )
+        )
+    )
 
 
 def _prohibited_frontend_replacement_ids(
@@ -865,6 +896,27 @@ def _detached_target_component(
                 )
             continue
         selected_operation_ids.add(operation.operation_id)
+        for carrier_block_id in _referenced_conditional_carrier_block_ids(
+            operation
+        ):
+            carrier = plan.block(carrier_block_id)
+            if (
+                carrier.role is not FragmentBlockRole.IMPORTED
+                or carrier.native_body_id != native_body.body_id
+                or carrier_block_id not in native_block_ids
+            ):
+                raise CanonicalSemanticFragmentRejected(
+                    "referenced conditional carrier escapes its native body",
+                    reason_code=(
+                        "referenced_conditional_carrier_native_body_mismatch"
+                    ),
+                    anchor_ea=int(carrier.semantic_anchor_ea),
+                    payload={
+                        "operation_id": operation.operation_id,
+                        "carrier_block_id": carrier_block_id,
+                    },
+                )
+            selected_ids.add(carrier_block_id)
         for edge in operation.edges:
             edge_target = plan.block(edge.target_block_id)
             if edge_target.role is FragmentBlockRole.IMPORTED:
@@ -1811,6 +1863,14 @@ def _with_semantic_imported_consumer(
         ),
         predicate_anchor_ea=int(proof.source_anchor_ea),
         direct_transfer_rewrite=_direct_transfer_rewrite(proof),
+        superseded_computed_branch_normalization=(
+            raw_operation.computed_branch_normalization
+        ),
+        superseded_predicate_anchor_ea=(
+            raw_operation.predicate_anchor_ea
+            if raw_operation.computed_branch_normalization is not None
+            else None
+        ),
     )
     native_bodies = tuple(
         replace(
