@@ -29,6 +29,7 @@ from d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener imp
     _portable_materialized_state_route_evidence,
     _postvalidated_canonical_terminal_state_targets,
     _rebind_portable_materialized_state_routes,
+    _request_materialized_recovery_generated_restart,
     _resolver_native_state_register,
     _should_defer_incomplete_materialized_identity,
     _should_defer_unbound_materialized_preopt,
@@ -204,6 +205,36 @@ def test_materialized_mutation_waits_for_current_preopt_evidence_generation(
     native.normalization_published_postvalidated_generation = None
     state.materialized = False
     assert not _should_defer_unbound_materialized_preopt(state)
+
+
+def test_materialized_recovery_requests_restart_for_newer_evidence() -> None:
+    native = NativePreanalysisSessionState(evidence_generation=6)
+    native.normalization_published_postvalidated_generation = 3
+    state = ResolverSessionState(
+        native_preanalysis=native,
+        materialized=True,
+        native_key=NATIVE_KEY,
+    )
+
+    assert _request_materialized_recovery_generated_restart(state)
+
+    assert native.has_pending_generated_restart
+    assert native.pending_generated_restart_generation == 6
+    assert native.pending_generated_restart_family == "dispatcher_recovery_evidence"
+
+
+def test_materialized_recovery_does_not_restart_bound_evidence() -> None:
+    native = NativePreanalysisSessionState(evidence_generation=6)
+    native.normalization_published_postvalidated_generation = 6
+    state = ResolverSessionState(
+        native_preanalysis=native,
+        materialized=True,
+        native_key=NATIVE_KEY,
+    )
+
+    assert not _request_materialized_recovery_generated_restart(state)
+
+    assert not native.has_pending_generated_restart
 
 
 def test_terminal_completeness_uses_current_postvalidated_canonical_proof(

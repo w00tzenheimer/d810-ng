@@ -683,7 +683,10 @@ class D810Manager:
         """
         function_ea = int(function_ea)
         result: typing.Any = None
-        for _round in range(3):
+        # Two accepted frontend evidence retries plus one dispatcher-recovery
+        # retry can follow the initial decompile. The fourth round binds the
+        # portable state routes discovered by GLBOPT1 into GENERATED/PREOPT.
+        for _round in range(4):
             self.prepare_native_preanalysis(function_ea)
             from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
                 acquire_detached_call_stack_capacity_witness,
