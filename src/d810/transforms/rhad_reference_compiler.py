@@ -83,6 +83,7 @@ class RhadOperationVariant(str, Enum):
     ADD_ABSOLUTE = "add_absolute"
     MOV_ABSOLUTE = "mov_absolute"
     MOVZX_ABSOLUTE = "movzx_absolute"
+    XOR_ABSOLUTE = "xor_absolute"
 
 
 class RhadConstantPublicationEnvelope(str, Enum):
@@ -92,6 +93,7 @@ class RhadConstantPublicationEnvelope(str, Enum):
     IMPORTED_GLOBAL_MOVE = "imported_global_move"
     IMPORTED_GLOBAL_BYTE_MOVE = "imported_global_byte_move"
     IMPORTED_GLOBAL_BYTE_ZERO_EXTEND = "imported_global_byte_zero_extend"
+    IMPORTED_GLOBAL_BYTE_XOR = "imported_global_byte_xor"
 
 
 class RhadAbsoluteConstantEncoding(str, Enum):
@@ -101,6 +103,7 @@ class RhadAbsoluteConstantEncoding(str, Enum):
     MOV_R32_ABSOLUTE = "mov_r32_absolute"
     MOV_EAX_ABSOLUTE = "mov_eax_absolute"
     MOVZX_R32_BYTE_ABSOLUTE = "movzx_r32_byte_absolute"
+    XOR_R8_ABSOLUTE = "xor_r8_absolute"
 
 
 EXPECTED_REFERENCE_PHASE_ORDER = (
@@ -798,6 +801,7 @@ class RhadAbsoluteConstantMaterialization:
             RhadOperationVariant.ADD_ABSOLUTE,
             RhadOperationVariant.MOV_ABSOLUTE,
             RhadOperationVariant.MOVZX_ABSOLUTE,
+            RhadOperationVariant.XOR_ABSOLUTE,
         }:
             raise RhadCompilerRejection(
                 "Rhad constant contract admits only typed absolute variants"
@@ -838,6 +842,14 @@ class RhadAbsoluteConstantMaterialization:
                 32,
                 32,
             ),
+            RhadAbsoluteConstantEncoding.XOR_R8_ABSOLUTE: (
+                RhadOperationVariant.XOR_ABSOLUTE,
+                6,
+                6,
+                8,
+                8,
+                32,
+            ),
         }[encoding_variant]
         (
             expected_operation,
@@ -874,6 +886,14 @@ class RhadAbsoluteConstantMaterialization:
                 "Rhad movzx-absolute requires an imported byte materialization "
                 "envelope"
             )
+        if (
+            self.operation_variant is RhadOperationVariant.XOR_ABSOLUTE
+            and publication_envelope
+            is not RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR
+        ):
+            raise RhadCompilerRejection(
+                "Rhad xor-absolute requires its imported byte XOR envelope"
+            )
         if self.category is not RhadOperationCategory.CONSTANT_MATERIALIZATION:
             raise RhadCompilerRejection(
                 "Rhad constant operation requires its typed category"
@@ -908,6 +928,11 @@ class RhadAbsoluteConstantMaterialization:
                 raise RhadCompilerRejection(
                     "Rhad movzx-absolute requires 8-bit source, 32-bit "
                     "destination, and 32-bit reference read"
+                )
+            if self.operation_variant is RhadOperationVariant.XOR_ABSOLUTE:
+                raise RhadCompilerRejection(
+                    "Rhad xor-absolute requires 8-bit source and destination "
+                    "with a 32-bit reference read"
                 )
             raise RhadCompilerRejection(
                 "absolute constant materialization requires 32-bit source, "
@@ -964,7 +989,11 @@ class RhadAbsoluteConstantMaterialization:
             )
         expected_materialized_value = (
             reference_raw_value & 0xFF
-            if self.operation_variant is RhadOperationVariant.MOVZX_ABSOLUTE
+            if self.operation_variant
+            in {
+                RhadOperationVariant.MOVZX_ABSOLUTE,
+                RhadOperationVariant.XOR_ABSOLUTE,
+            }
             else reference_raw_value
         )
         if materialized_value != expected_materialized_value:
@@ -2231,6 +2260,15 @@ def _compile_absolute_constant_materialization(
     elif operation.operation_variant is RhadOperationVariant.MOVZX_ABSOLUTE:
         consumer_operation = ValueOpKind.MOVE
         preserved_flag_roles = ()
+    elif operation.operation_variant is RhadOperationVariant.XOR_ABSOLUTE:
+        consumer_operation = ValueOpKind.XOR
+        preserved_flag_roles = (
+            FragmentArithmeticFlagRole.CARRY,
+            FragmentArithmeticFlagRole.OVERFLOW,
+            FragmentArithmeticFlagRole.ZERO,
+            FragmentArithmeticFlagRole.PARITY,
+            FragmentArithmeticFlagRole.SIGN,
+        )
     else:
         raise RhadCompilerRejection(
             "Rhad absolute constant variant lacks a typed compiler contract"

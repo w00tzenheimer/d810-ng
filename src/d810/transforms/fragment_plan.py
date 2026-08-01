@@ -112,6 +112,7 @@ class FragmentConstantPublicationEnvelope(str, Enum):
     IMPORTED_GLOBAL_MOVE = "imported_global_move"
     IMPORTED_GLOBAL_BYTE_MOVE = "imported_global_byte_move"
     IMPORTED_GLOBAL_BYTE_ZERO_EXTEND = "imported_global_byte_zero_extend"
+    IMPORTED_GLOBAL_BYTE_XOR = "imported_global_byte_xor"
 
 
 class FragmentAbsoluteConstantEncoding(str, Enum):
@@ -121,6 +122,7 @@ class FragmentAbsoluteConstantEncoding(str, Enum):
     MOV_R32_ABSOLUTE = "mov_r32_absolute"
     MOV_EAX_ABSOLUTE = "mov_eax_absolute"
     MOVZX_R32_BYTE_ABSOLUTE = "movzx_r32_byte_absolute"
+    XOR_R8_ABSOLUTE = "xor_r8_absolute"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1485,7 +1487,15 @@ class FragmentAbsoluteConstantMaterialization:
             raise FragmentPlanRejected(
                 "mov-absolute materialization cannot claim an arithmetic flag envelope"
             )
-        if self.consumer_operation not in {ValueOpKind.ADD, ValueOpKind.MOVE}:
+        if self.consumer_operation is ValueOpKind.XOR and flags != expected_flags:
+            raise FragmentPlanRejected(
+                "xor-absolute materialization requires the complete flag envelope"
+            )
+        if self.consumer_operation not in {
+            ValueOpKind.ADD,
+            ValueOpKind.MOVE,
+            ValueOpKind.XOR,
+        }:
             raise FragmentPlanRejected(
                 "constant materialization consumer lacks a typed contract"
             )
@@ -1523,6 +1533,14 @@ class FragmentAbsoluteConstantMaterialization:
                 7,
                 8,
                 32,
+                32,
+            ),
+            FragmentAbsoluteConstantEncoding.XOR_R8_ABSOLUTE: (
+                ValueOpKind.XOR,
+                6,
+                6,
+                8,
+                8,
                 32,
             ),
         }[encoding_variant]
@@ -1579,6 +1597,14 @@ class FragmentAbsoluteConstantMaterialization:
                 "movzx-absolute materialization requires an imported byte "
                 "materialization envelope"
             )
+        if (
+            encoding_variant is FragmentAbsoluteConstantEncoding.XOR_R8_ABSOLUTE
+            and publication_envelope
+            is not FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR
+        ):
+            raise FragmentPlanRejected(
+                "xor-absolute materialization requires its imported byte XOR envelope"
+            )
         encodings = (
             (self.reference_data_bytes_le, 4, "constant reference data"),
             (
@@ -1609,7 +1635,10 @@ class FragmentAbsoluteConstantMaterialization:
         expected_constant_value = (
             reference_raw_value & 0xFF
             if encoding_variant
-            is FragmentAbsoluteConstantEncoding.MOVZX_R32_BYTE_ABSOLUTE
+            in {
+                FragmentAbsoluteConstantEncoding.MOVZX_R32_BYTE_ABSOLUTE,
+                FragmentAbsoluteConstantEncoding.XOR_R8_ABSOLUTE,
+            }
             else reference_raw_value
         )
         if constant_value != expected_constant_value:
