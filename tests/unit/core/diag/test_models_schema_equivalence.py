@@ -163,6 +163,66 @@ EXPECTED_TABLE_INFO = {
         ("candidate_shape_json", "TEXT", 0, 0),
         ("reason", "TEXT", 1, 0),
     ],
+    "frontend_normalization_plan_intents": [
+        ("event_id", "INTEGER", 1, 1),
+        ("work_item_id", "TEXT", 1, 0),
+        ("plan_id", "TEXT", 1, 0),
+        ("atomic_group_id", "TEXT", 1, 0),
+        ("evidence_generation", "INTEGER", 1, 0),
+        ("publication_revision", "INTEGER", 1, 0),
+        ("block_count", "INTEGER", 1, 0),
+        ("operation_count", "INTEGER", 1, 0),
+        ("imported_block_count", "INTEGER", 1, 0),
+        ("native_body_count", "INTEGER", 1, 0),
+        ("published_operation_ids_json", "TEXT", 1, 0),
+        ("selected_obligation_ids_json", "TEXT", 1, 0),
+        ("remaining_obligation_ids_json", "TEXT", 1, 0),
+        ("unreachable_obligation_ids_json", "TEXT", 1, 0),
+        ("complete_plan_json", "TEXT", 1, 0),
+    ],
+    "semantic_output_verdicts": [
+        ("event_id", "INTEGER", 1, 1),
+        ("verifier_id", "TEXT", 1, 0),
+        ("witness_id", "TEXT", 1, 0),
+        ("summary", "TEXT", 1, 0),
+        ("native_anchor_ea_i64", "INTEGER", 1, 0),
+    ],
+    "deobfuscation_cases": [
+        ("case_id", "TEXT", 1, 1),
+        ("session_id", "TEXT", 1, 0),
+        ("case_schema_version", "INTEGER", 1, 0),
+        ("function_fingerprint", "TEXT", 1, 0),
+        ("runtime_identity", "TEXT", 1, 0),
+        ("run_identity", "TEXT", 1, 0),
+        ("closed_status", "TEXT", 1, 0),
+        ("closed_at", "REAL", 1, 0),
+        ("verdict_level", "TEXT", 1, 0),
+        ("verdict_summary", "TEXT", 1, 0),
+        ("first_blocked_obligation", "TEXT", 0, 0),
+        ("semantic_witness", "TEXT", 0, 0),
+    ],
+    "deobfuscation_case_findings": [
+        ("case_id", "TEXT", 1, 1),
+        ("finding_index", "INTEGER", 1, 2),
+        ("finding_id", "TEXT", 1, 0),
+        ("source_event_id", "INTEGER", 1, 0),
+        ("finding_kind", "TEXT", 1, 0),
+        ("evidence_level", "TEXT", 1, 0),
+        ("summary", "TEXT", 1, 0),
+        ("detail", "TEXT", 1, 0),
+        ("native_anchor_ea_i64", "INTEGER", 0, 0),
+        ("confidence", "REAL", 0, 0),
+        ("provenance_json", "TEXT", 1, 0),
+        ("blocked_obligation", "TEXT", 0, 0),
+    ],
+    "deobfuscation_case_semantic_witnesses": [
+        ("case_id", "TEXT", 1, 1),
+        ("witness_id", "TEXT", 1, 2),
+        ("source_event_id", "INTEGER", 1, 0),
+        ("verifier_id", "TEXT", 1, 0),
+        ("native_anchor_ea_i64", "INTEGER", 1, 0),
+        ("summary", "TEXT", 1, 0),
+    ],
     "blocks": [
         ("snapshot_id", "INTEGER", 1, 1),
         ("serial", "INTEGER", 1, 2),
@@ -649,6 +709,27 @@ EXPECTED_INDEXES = {
         ("c", ("rewrite_anchor_ea_i64", "outcome")),
         ("pk", ("mutation_batch_id", "route_id")),
     ],
+    "frontend_normalization_plan_intents": [
+        ("c", ("plan_id", "publication_revision")),
+    ],
+    "semantic_output_verdicts": [
+        ("c", ("verifier_id", "witness_id")),
+    ],
+    "deobfuscation_cases": [
+        ("c", ("session_id", "closed_at")),
+        ("c", ("session_id",)),
+        ("pk", ("case_id",)),
+    ],
+    "deobfuscation_case_findings": [
+        ("c", ("source_event_id",)),
+        ("c", ("case_id", "finding_id")),
+        ("pk", ("case_id", "finding_index")),
+    ],
+    "deobfuscation_case_semantic_witnesses": [
+        ("c", ("source_event_id",)),
+        ("c", ("verifier_id", "witness_id")),
+        ("pk", ("case_id", "witness_id")),
+    ],
     "blocks": [("pk", ("snapshot_id", "serial"))],
     "block_observations": [
         ("c", ("body_fingerprint",)),
@@ -927,5 +1008,5 @@ class TestModeledSchemaEquivalence:
                     assert required in columns, (table, ref_column, required)
 
     def test_modeled_count(self) -> None:
-        # Phase A models the non-slice-1, non-view tables.
-        assert len(EXPECTED_TABLE_INFO) == 38
+        # Phase A models the non-slice-1, non-view tables plus case sources.
+        assert len(EXPECTED_TABLE_INFO) == 43

@@ -10,10 +10,12 @@ from d810.core.observability_events import (
     CfgTransactionAttemptObserved,
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
+    FrontendNormalizationPlanIntentObserved,
     IdentityDecisionObserved,
     LifecycleEventObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
+    SemanticOutputVerifiedObserved,
     SemanticFragmentRouteOracleComparedObserved,
 )
 
@@ -353,12 +355,98 @@ def persist_identity_decision(
     return event_id
 
 
+def persist_frontend_normalization_plan_intent(
+    conn: sqlite3.Connection,
+    event: FrontendNormalizationPlanIntentObserved,
+) -> int:
+    """Persist the typed, receipt-backed frontend plan source."""
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="frontend_normalization_plan_intent",
+            provider="d810.manager.frontend_normalization",
+            phase="frontend_normalization",
+            evidence_generation=event.evidence_generation,
+            correlation_id=event.work_item_id,
+            summary="receipt-backed complete normalization intent recorded",
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+    conn.execute(
+        "INSERT INTO frontend_normalization_plan_intents "
+        "(event_id,work_item_id,plan_id,atomic_group_id,evidence_generation,"
+        "publication_revision,block_count,operation_count,imported_block_count,"
+        "native_body_count,published_operation_ids_json,"
+        "selected_obligation_ids_json,remaining_obligation_ids_json,"
+        "unreachable_obligation_ids_json,complete_plan_json) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            event_id,
+            event.work_item_id,
+            event.plan_id,
+            event.atomic_group_id,
+            int(event.evidence_generation),
+            int(event.publication_revision),
+            int(event.block_count),
+            int(event.operation_count),
+            int(event.imported_block_count),
+            int(event.native_body_count),
+            json.dumps(list(event.published_operation_ids), separators=(",", ":")),
+            json.dumps(list(event.selected_obligation_ids), separators=(",", ":")),
+            json.dumps(list(event.remaining_obligation_ids), separators=(",", ":")),
+            json.dumps(list(event.unreachable_obligation_ids), separators=(",", ":")),
+            event.complete_plan_json,
+        ),
+    )
+    return event_id
+
+
+def persist_semantic_output_verified(
+    conn: sqlite3.Connection,
+    event: SemanticOutputVerifiedObserved,
+) -> int:
+    """Persist an explicit semantic verifier receipt and its witness identity."""
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="semantic_output_verified",
+            provider=event.verifier_id,
+            phase="semantic_verification",
+            evidence_generation=event.evidence_generation,
+            correlation_id=event.witness_id,
+            summary=event.summary,
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+    conn.execute(
+        "INSERT INTO semantic_output_verdicts "
+        "(event_id,verifier_id,witness_id,summary,native_anchor_ea_i64) "
+        "VALUES (?,?,?,?,?)",
+        (
+            event_id,
+            event.verifier_id,
+            event.witness_id,
+            event.summary,
+            int(event.native_anchor_ea),
+        ),
+    )
+    return event_id
+
+
 __all__ = [
     "persist_diagnostic_session",
     "persist_diagnostic_session_transition",
     "persist_evidence_generation",
+    "persist_frontend_normalization_plan_intent",
     "persist_identity_decision",
     "persist_lifecycle_event",
+    "persist_semantic_output_verified",
 ]
 
 

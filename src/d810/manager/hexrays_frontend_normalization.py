@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import MutableMapping
+import json
 
 from d810.analyses.control_flow.frontend_normalization import (
     FrontendNormalizationEvidenceRejected,
 )
 from d810.core.logging import getLogger
 from d810.core.observability import emit as emit_diagnostic
-from d810.core.observability_events import LifecycleEventObserved
+from d810.core.observability_events import (
+    FrontendNormalizationPlanIntentObserved,
+    LifecycleEventObserved,
+)
 from d810.ir.block_identity import CurrentMbaIdentityBindingSnapshot
 from d810.manager.decompilation_lifecycle import DecompilationSessionContext
 from d810.manager.frontend_normalization import (
@@ -103,32 +107,27 @@ def _emit_receipted_complete_plan_intent(
         block for block in plan.blocks if block.role is FragmentBlockRole.IMPORTED
     )
     emit_diagnostic(
-        LifecycleEventObserved(
+        FrontendNormalizationPlanIntentObserved(
             session_id=session.identity_key,
             func_ea=int(function_ea),
-            event_kind="frontend_normalization_plan_intent_recorded",
-            provider=_HANDLER_NAME,
-            phase="frontend_normalization",
             evidence_generation=int(evidence_generation),
-            correlation_id=authority.work_item_id,
-            summary="receipt-backed complete normalization intent recorded",
-            payload={
-                "outcome": "recorded",
-                "plan_id": plan.plan_id,
-                "atomic_group_id": plan.atomic_group_id,
-                "publication_revision": int(authority.publication_revision),
-                "block_count": len(plan.blocks),
-                "operation_count": len(plan.operations),
-                "imported_block_count": len(imported_blocks),
-                "native_body_count": len(plan.native_bodies),
-                "published_operation_ids": list(authority.published_operation_ids),
-                "selected_obligation_ids": list(authority.selected_obligation_ids),
-                "remaining_obligation_ids": list(authority.remaining_obligation_ids),
-                "unreachable_obligation_ids": list(
-                    authority.unreachable_obligation_ids
-                ),
-                "complete_plan": fragment_plan_to_dict(plan),
-            },
+            work_item_id=authority.work_item_id,
+            plan_id=plan.plan_id,
+            atomic_group_id=plan.atomic_group_id,
+            publication_revision=int(authority.publication_revision),
+            block_count=len(plan.blocks),
+            operation_count=len(plan.operations),
+            imported_block_count=len(imported_blocks),
+            native_body_count=len(plan.native_bodies),
+            published_operation_ids=tuple(authority.published_operation_ids),
+            selected_obligation_ids=tuple(authority.selected_obligation_ids),
+            remaining_obligation_ids=tuple(authority.remaining_obligation_ids),
+            unreachable_obligation_ids=tuple(authority.unreachable_obligation_ids),
+            complete_plan_json=json.dumps(
+                fragment_plan_to_dict(plan),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         )
     )
 
