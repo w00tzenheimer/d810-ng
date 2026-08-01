@@ -12,7 +12,9 @@ from __future__ import annotations
 from d810._vendor.peewee import SqliteDatabase
 from d810.core.diag.models import DiagnosticSchemaVersion, MODELS
 
-DIAGNOSTIC_SCHEMA_VERSION = 9
+# LREA portable-CFG integration consumed schema v9.  The closed, versioned
+# deobfuscation-case producer is the next disposable hard cut.
+DIAGNOSTIC_SCHEMA_VERSION = 10
 
 
 class DiagnosticSchemaMismatch(RuntimeError):
