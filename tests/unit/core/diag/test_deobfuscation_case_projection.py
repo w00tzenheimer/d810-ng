@@ -320,6 +320,13 @@ def test_rejected_receipt_is_a_c5_blocker_and_materialization_is_idempotent(conn
         "mutation_receipt_not_committed",
         None,
     )
+    assert conn.execute(
+        "SELECT finding_id, blocked_obligation "
+        "FROM deobfuscation_case_findings ORDER BY finding_index"
+    ).fetchall() == [
+        ("mutation-plan:2", None),
+        ("mutation-receipt:3", "mutation_receipt_not_committed"),
+    ]
     assert conn.execute("SELECT COUNT(*) FROM deobfuscation_cases").fetchone() == (1,)
 
 
