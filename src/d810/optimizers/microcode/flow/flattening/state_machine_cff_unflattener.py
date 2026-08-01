@@ -1099,7 +1099,14 @@ class _MaterializedComputedGotoContinuationFamily:
     """
 
     name = "materialized_computed_goto_continuation"
-    recovery_maturities = (IRMaturity.CALL_MODELED,)
+    # The evidence epoch may become complete at CALLS for an intact indirect
+    # profile or at GLBOPT1 after GENERATED imports and PREOPT rebind the full
+    # handler/route closure.  Admission follows that typed evidence state; it
+    # is not tied to one sample function or native address.
+    recovery_maturities = (
+        IRMaturity.CALL_MODELED,
+        IRMaturity.GLOBAL_ANALYZED,
+    )
 
     def detect(self, graph, capabilities, context=None):
         return self
@@ -1504,15 +1511,20 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         mba: object,
         *,
         canonical_composition_ready: bool,
+        materialized_evidence_ready: bool = False,
         run_pipeline: Callable[[], object],
     ) -> bool:
         """Run the pipeline while preserving typed declines and unexpected failures."""
+        diagnostics_expected = bool(
+            canonical_composition_ready or materialized_evidence_ready
+        )
         try:
             run_pipeline()
         except CanonicalSemanticFragmentRejected as rejection:
+            if diagnostics_expected:
+                self._report_canonical_composition_rejection(mba, rejection)
             if not canonical_composition_ready:
                 raise
-            self._report_canonical_composition_rejection(mba, rejection)
             contextual_restart = (
                 self._promote_contextual_plan_after_canonical_rejection(rejection)
             )
@@ -1526,7 +1538,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
             return False
         except Exception as error:
-            if canonical_composition_ready:
+            if diagnostics_expected:
                 try:
                     self._report_canonical_pipeline_exception(mba, error)
                 except Exception:
@@ -2075,6 +2087,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if not self._run_pipeline_with_canonical_diagnostics(
                 mba,
                 canonical_composition_ready=canonical_composition_ready,
+                materialized_evidence_ready=materialized_evidence_ready,
                 run_pipeline=run_pipeline,
             ):
                 return self._fragment_publication_callback_change_count(mba, backend)
@@ -3754,15 +3767,47 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # A per-project ``recovery_maturity`` override (config-driven, ticket llr-a93i)
         # REPLACES the selected profile's declared maturities for this project; absent it,
         # the profile's own ``recovery_maturities`` apply.
-        _target_maturities = (
-            self._config_recovery_maturities()
-            or self._family_recovery_maturities(family)
+        configured_maturities = self._config_recovery_maturities()
+        _target_maturities = configured_maturities or self._family_recovery_maturities(
+            family
         )
-        if (
+        deferred = bool(
             family is not None
             and not is_indirect
             and int(mba.maturity) not in _target_maturities
-        ):
+        )
+        if family is not None:
+            flow_context = getattr(self, "flow_context", None)
+            report = getattr(flow_context, "report_fact_consumers", None)
+            if callable(report):
+                family_name = str(getattr(family, "name", "unknown"))
+                report(
+                    (
+                        FactConsumerRecord(
+                            consumer="state_machine_cff_unflattener",
+                            strategy="family_maturity_admission",
+                            fact_id=f"family:{family_name}",
+                            maturity=maturity_to_string(int(mba.maturity)),
+                            decision="declined" if deferred else "accepted",
+                            reason=(
+                                "family_maturity_deferred"
+                                if deferred
+                                else "family_maturity_admitted"
+                            ),
+                            payload={
+                                "configured_override": bool(configured_maturities),
+                                "current_maturity": int(mba.maturity),
+                                "family_name": family_name,
+                                "indirect_bypass": bool(is_indirect),
+                                "target_maturities": sorted(
+                                    int(maturity)
+                                    for maturity in _target_maturities
+                                ),
+                            },
+                        ),
+                    )
+                )
+        if deferred:
             if logger.debug_on:
                 logger.debug(
                     "unflat: family=%s defers func=0x%x at %s (wants %s)",

@@ -1500,6 +1500,42 @@ def test_complete_materialized_identity_evidence_reopens_the_family_gate(
     )
 
 
+def test_materialized_continuation_admits_bound_global_maturity_with_receipt() -> None:
+    from d810.optimizers.microcode.flow.flattening import (
+        state_machine_cff_unflattener as unflat_mod,
+    )
+
+    reported = []
+    rule = _fresh_rule()
+    rule.config = {}
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    family = unflat_mod._MaterializedComputedGotoContinuationFamily()
+    mba = SimpleNamespace(entry_ea=_EA, maturity=ida_hexrays.MMAT_GLBOPT1)
+
+    assert rule._family_defers(mba, family, is_indirect=False) is False
+
+    assert len(reported) == 1
+    record = reported[0]
+    assert record.consumer == "state_machine_cff_unflattener"
+    assert record.strategy == "family_maturity_admission"
+    assert record.fact_id == "family:materialized_computed_goto_continuation"
+    assert record.maturity == "MMAT_GLBOPT1"
+    assert record.decision == "accepted"
+    assert record.reason == "family_maturity_admitted"
+    assert record.payload == {
+        "configured_override": False,
+        "current_maturity": ida_hexrays.MMAT_GLBOPT1,
+        "family_name": "materialized_computed_goto_continuation",
+        "indirect_bypass": False,
+        "target_maturities": [
+            ida_hexrays.MMAT_CALLS,
+            ida_hexrays.MMAT_GLBOPT1,
+        ],
+    }
+
+
 def test_materialized_dispatcher_identity_rebinds_without_serial_persistence() -> None:
     transfers = (
         SimpleNamespace(
@@ -1937,6 +1973,37 @@ def test_unexpected_canonical_pipeline_exception_is_reported_and_reraised() -> N
         "anchor_ea": f"0x{_EA:X}",
         "exception_detail": "canonical composition exploded",
         "exception_type": "builtins.RuntimeError",
+    }
+
+
+def test_materialized_pipeline_exception_is_reported_before_reraise() -> None:
+    reported = []
+    rule = _fresh_rule()
+    rule.flow_context = SimpleNamespace(
+        report_fact_consumers=lambda records: reported.extend(records) or len(records)
+    )
+    mba = SimpleNamespace(entry_ea=_EA, maturity=ida_hexrays.MMAT_GLBOPT1)
+    failure = ValueError("materialized semantic lower failed")
+
+    with pytest.raises(ValueError) as caught:
+        rule._run_pipeline_with_canonical_diagnostics(
+            mba,
+            canonical_composition_ready=False,
+            materialized_evidence_ready=True,
+            run_pipeline=lambda: (_ for _ in ()).throw(failure),
+        )
+
+    assert caught.value is failure
+    assert len(reported) == 1
+    record = reported[0]
+    assert record.strategy == "canonical_semantic_composition"
+    assert record.maturity == "MMAT_GLBOPT1"
+    assert record.decision == "declined"
+    assert record.reason == "canonical_pipeline_exception"
+    assert record.payload == {
+        "anchor_ea": f"0x{_EA:X}",
+        "exception_detail": "materialized semantic lower failed",
+        "exception_type": "builtins.ValueError",
     }
 
 
