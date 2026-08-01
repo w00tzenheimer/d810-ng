@@ -535,12 +535,22 @@ def test_current_mba_mutation_gateway_uses_session_lifecycle_authority() -> None
     assert gateway.event_emitter is event_emitter
 
 
-def test_manager_constructs_the_semantic_native_body_materializer() -> None:
+@pytest.mark.parametrize(
+    ("maturity", "records_normalization_fact"),
+    (
+        (ida_hexrays.MMAT_PREOPTIMIZED, True),
+        (ida_hexrays.MMAT_GLBOPT1, False),
+    ),
+)
+def test_manager_constructs_the_semantic_native_body_materializer(
+    maturity,
+    records_normalization_fact,
+) -> None:
     from d810.hexrays.mutation.detached_handler_island import (
         PreoptUnionSemanticNativeBodyMaterializer,
     )
 
-    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_PREOPTIMIZED)
+    mba = SimpleNamespace(maturity=maturity)
     session = DecompilationSessionContext(
         function_ea=0x40A560,
         database_identity="test",
@@ -558,7 +568,9 @@ def test_manager_constructs_the_semantic_native_body_materializer() -> None:
     )
     assert materializer.mba is mba
     assert materializer.function_ea == 0x40A560
-    assert callable(materializer.prepared_fact_observer)
+    assert bool(callable(materializer.prepared_fact_observer)) is (
+        records_normalization_fact
+    )
 
 
 def test_manager_constructs_the_calls_native_body_materializer() -> None:
@@ -622,7 +634,7 @@ def test_calls_native_body_companion_request_queues_range_and_restart(
 
 
 def test_manager_rejects_unsupported_native_body_materializer_maturity() -> None:
-    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT1)
+    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT2)
 
     with pytest.raises(
         ValueError,

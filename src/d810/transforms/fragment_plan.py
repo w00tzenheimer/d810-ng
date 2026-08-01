@@ -1360,11 +1360,21 @@ class FragmentDirectTransferRewrite:
                 source_predicate_anchor_ea,
                 "direct transfer source predicate",
             )
-            if (
-                rewrite_anchor_ea != source_predicate_anchor_ea
-                or not delivery_region.start_ea
-                <= source_normalization.normalization_start_ea
+            predicate_cut = bool(
+                delivery_region.start_ea
+                == source_normalization.normalization_start_ea
                 <= source_predicate_anchor_ea
+                == rewrite_anchor_ea
+            )
+            delivery_prefix_cut = bool(
+                delivery_region.start_ea
+                == rewrite_anchor_ea
+                < source_normalization.normalization_start_ea
+                <= source_predicate_anchor_ea
+            )
+            if (
+                not (predicate_cut or delivery_prefix_cut)
+                or not source_predicate_anchor_ea
                 < source_normalization.unresolved_transfer_ea
                 < delivery_region.end_ea
                 or source_normalization.condition_producer_ea
@@ -1585,8 +1595,7 @@ class FragmentAbsoluteConstantMaterialization:
                 "add-absolute materialization requires its generated load envelope"
             )
         if (
-            encoding_variant
-            is FragmentAbsoluteConstantEncoding.MOVZX_R32_BYTE_ABSOLUTE
+            encoding_variant is FragmentAbsoluteConstantEncoding.MOVZX_R32_BYTE_ABSOLUTE
             and publication_envelope
             not in {
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE,
@@ -3601,13 +3610,28 @@ class FragmentPlan:
                     }
                 )
                 != len(reference_authorities)
-                or len(
-                    {
-                        authority.reference_route.reference_ledger_identity
-                        for authority in reference_authorities
-                    }
+                or (
+                    self.publication_purpose
+                    is FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+                    and len(
+                        {
+                            authority.reference_route.reference_ledger_identity
+                            for authority in reference_authorities
+                        }
+                    )
+                    != 1
                 )
-                != 1
+                or (
+                    self.publication_purpose
+                    is FragmentPublicationPurpose.CANONICAL_SEMANTIC_LOWERING
+                    and len(
+                        {
+                            authority.reference_route.reference_ledger_identity
+                            for authority in reference_authorities
+                        }
+                    )
+                    != len(reference_authorities)
+                )
             ):
                 raise FragmentPlanRejected(
                     "fragment reference oracle authority is incomplete or mismatched"

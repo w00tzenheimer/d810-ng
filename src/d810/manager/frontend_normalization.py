@@ -325,26 +325,14 @@ class SessionFrontendNormalizationPlanAuthority:
         block_id: str,
     ) -> PreparedNormalizationWorkItemSnapshot | None:
         """Expose the exact receipted work item that prepared one imported block."""
-        if (
-            int(function_ea) != self.function_ea
-            or int(evidence_generation) != self._evidence_generation
-            or str(source_plan_id)
-            != (None if self._plan is None else self._plan.plan_id)
-            or self._plan is None
-            or self._authority is None
-        ):
-            return None
         matches = tuple(
             snapshot
-            for (
-                generation,
-                retained_source_plan_id,
-                _work_item_id,
-                _publication_revision,
-            ), snapshot in self._receipted_prepared_work_items.items()
-            if generation == int(evidence_generation)
-            and retained_source_plan_id == str(source_plan_id)
-            and any(
+            for snapshot in self.prepared_work_items_for(
+                function_ea,
+                evidence_generation,
+                source_plan_id,
+            )
+            if any(
                 candidate.block_id == str(block_id)
                 and candidate.role is FragmentBlockRole.IMPORTED
                 for candidate in snapshot.work_item_plan.blocks
@@ -360,6 +348,53 @@ class SessionFrontendNormalizationPlanAuthority:
         return max(
             matches,
             key=lambda snapshot: int(snapshot.authority.publication_revision),
+        )
+
+    def prepared_work_items_for(
+        self,
+        function_ea: int,
+        evidence_generation: int,
+        source_plan_id: str,
+    ) -> tuple[PreparedNormalizationWorkItemSnapshot, ...]:
+        """Expose each latest receipt in deterministic publication order."""
+        if (
+            int(function_ea) != self.function_ea
+            or int(evidence_generation) != self._evidence_generation
+            or str(source_plan_id)
+            != (None if self._plan is None else self._plan.plan_id)
+            or self._plan is None
+            or self._authority is None
+        ):
+            return ()
+        latest_by_work_item_plan_id: dict[
+            str,
+            PreparedNormalizationWorkItemSnapshot,
+        ] = {}
+        for (
+            generation,
+            retained_source_plan_id,
+            work_item_plan_id,
+            _publication_revision,
+        ), snapshot in self._receipted_prepared_work_items.items():
+            if (
+                generation != int(evidence_generation)
+                or retained_source_plan_id != str(source_plan_id)
+            ):
+                continue
+            previous = latest_by_work_item_plan_id.get(work_item_plan_id)
+            if previous is None or int(snapshot.authority.publication_revision) > int(
+                previous.authority.publication_revision
+            ):
+                latest_by_work_item_plan_id[work_item_plan_id] = snapshot
+        return tuple(
+            sorted(
+                latest_by_work_item_plan_id.values(),
+                key=lambda snapshot: (
+                    int(snapshot.authority.publication_revision),
+                    snapshot.work_item_plan.plan_id,
+                    snapshot.prepared_bodies.snapshot_id,
+                ),
+            )
         )
 
     def plan_for(

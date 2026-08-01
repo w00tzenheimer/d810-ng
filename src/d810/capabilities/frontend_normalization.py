@@ -44,6 +44,15 @@ class FrontendNormalizationPlanCapability(Protocol):
 class FrontendNormalizationPreparedBodyCapability(Protocol):
     """Supply receipt-associated immutable PREOPT native-body facts."""
 
+    def prepared_work_items_for(
+        self,
+        function_ea: int,
+        evidence_generation: int,
+        source_plan_id: str,
+    ) -> "tuple[PreparedNormalizationWorkItemSnapshot, ...]":
+        """Return current receipts in deterministic publication order."""
+        ...
+
     def prepared_work_item_for(
         self,
         function_ea: int,

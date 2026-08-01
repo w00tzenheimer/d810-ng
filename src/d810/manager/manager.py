@@ -190,9 +190,7 @@ def _build_current_mba_identity_index(*, session, mba):
     from d810.core.observability import emit as emit_diagnostic
     from d810.core.observability_events import IdentityDecisionObserved
 
-    maturity = (
-        f"maturity={maturity_to_name(int(getattr(mba, 'maturity', 0) or 0))}"
-    )
+    maturity = f"maturity={maturity_to_name(int(getattr(mba, 'maturity', 0) or 0))}"
 
     def _observe_identity(observation):
         identity = observation.identity
@@ -302,21 +300,27 @@ def _new_semantic_native_body_materializer(*, session, mba):
     if native_maturity in {
         HexRaysMaturity.MMAT_GENERATED,
         HexRaysMaturity.MMAT_PREOPTIMIZED,
+        HexRaysMaturity.MMAT_GLBOPT1,
     }:
         evidence_generation = int(session.native_preanalysis.evidence_generation)
 
-        def observe_prepared_body_fact(plan, native_body, fact) -> None:
-            session.frontend_normalization_plan_authority.record_prepared_body_fact(
-                plan,
-                native_body,
-                fact,
-                evidence_generation=evidence_generation,
-            )
+        prepared_fact_observer = None
+        if native_maturity is not HexRaysMaturity.MMAT_GLBOPT1:
+
+            def observe_prepared_body_fact(plan, native_body, fact) -> None:
+                session.frontend_normalization_plan_authority.record_prepared_body_fact(
+                    plan,
+                    native_body,
+                    fact,
+                    evidence_generation=evidence_generation,
+                )
+
+            prepared_fact_observer = observe_prepared_body_fact
 
         return PreoptUnionSemanticNativeBodyMaterializer(
             mba=mba,
             function_ea=int(session.function_ea),
-            prepared_fact_observer=observe_prepared_body_fact,
+            prepared_fact_observer=prepared_fact_observer,
         )
     if native_maturity is HexRaysMaturity.MMAT_CALLS:
 
