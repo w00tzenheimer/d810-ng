@@ -6,6 +6,7 @@ import hashlib
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import d810.manager.rhad_generated_checksum as generated_reference
 import pytest
@@ -41,6 +42,93 @@ def _native_key():
         ),
         function_rva=0xA560,
     )
+
+
+def test_generated_receipt_binds_exact_frontend_normalization_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = reference_batch_for_native_key(_native_key())
+    assert batch is not None
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(),
+        evidence_generation=7,
+    )
+    receipt = SimpleNamespace(
+        mutation_batch_id="generated-batch:g7",
+        planned_operation_count=len(plan.operations),
+        operation_count=len(plan.operations),
+        root_publication_confirmed=True,
+        prepublication_validation=SimpleNamespace(passed=True),
+        postpublication_validation=SimpleNamespace(passed=True),
+    )
+    calls: dict[str, object] = {}
+
+    class _Backend:
+        def __init__(self, **kwargs: object) -> None:
+            calls["backend_kwargs"] = kwargs
+            self._committed_fragment_receipt = None
+
+        def apply(self, applied_plan: object, mba: object, **kwargs: object) -> None:
+            calls["applied_plan"] = applied_plan
+            calls["mba"] = mba
+            calls["apply_kwargs"] = kwargs
+            self._committed_fragment_receipt = receipt
+
+    def _record_receipted_generation(**kwargs: object) -> None:
+        calls["receipt_binding"] = kwargs
+
+    import d810.backends.hexrays.mutation.backend as backend_module
+
+    monkeypatch.setattr(backend_module, "HexRaysMutationBackend", _Backend)
+    monkeypatch.setattr(
+        generated_reference,
+        "_emit_checksum_lifecycle",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setattr(
+        generated_reference,
+        "observe_rhad_generated_reference_maturity",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        generated_reference,
+        "record_receipted_frontend_normalization_generation",
+        _record_receipted_generation,
+        raising=False,
+    )
+    plan_authority = object()
+    lifecycle_state = SimpleNamespace(evidence_generation=7)
+    session = SimpleNamespace(
+        native_key=_native_key(),
+        native_preanalysis=lifecycle_state,
+        frontend_normalization_plan_authority=plan_authority,
+        rhad_generated_checksum_attempted_for_current_mba=False,
+        rhad_generated_checksum_committed_for_current_mba=False,
+        rhad_generated_checksum_observed_maturities=set(),
+    )
+    mba = SimpleNamespace(entry_ea=batch.function_ea)
+    decision: dict[str, object] = {
+        "session": session,
+        "mutation_gateway": object(),
+        "semantic_native_body_materializer": object(),
+    }
+
+    generated_reference.publish_rhad_generated_reference_batch(
+        function_ea=batch.function_ea,
+        mba=mba,
+        decision=decision,
+    )
+
+    assert calls["applied_plan"] == plan
+    binding = calls["receipt_binding"]
+    assert isinstance(binding, dict)
+    assert binding["plan_authority"] is plan_authority
+    assert binding["lifecycle_state"] is lifecycle_state
+    generation_plan = binding["generation_plan"]
+    assert generation_plan.complete_plan == plan
+    assert generation_plan.work_item_plan == plan
+    assert session.rhad_generated_checksum_committed_for_current_mba is True
+    assert decision["rhad_generated_checksum_receipt"] is receipt
 
 
 def test_aggregate_identity_binds_typed_direct_reference_evidence() -> None:

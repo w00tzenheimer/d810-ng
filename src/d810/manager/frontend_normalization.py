@@ -112,8 +112,7 @@ class SessionFrontendNormalizationPlanAuthority:
         work_item_scope = work_item_plan.work_item_scope
         if (
             work_item_scope is None
-            or work_item_scope.work_item_id != work_item_plan.plan_id
-            or authority.work_item_id != work_item_plan.plan_id
+            or authority.work_item_id != work_item_scope.work_item_id
             or authority.published_operation_ids
             != tuple(operation.operation_id for operation in work_item_plan.operations)
             or authority.selected_obligation_ids
@@ -400,6 +399,62 @@ class SessionFrontendNormalizationEvidenceProvider:
         return self.state.frontend_normalization_evidence_for(self.native_key)
 
 
+def record_receipted_frontend_normalization_generation(
+    *,
+    plan_authority: SessionFrontendNormalizationPlanAuthority,
+    lifecycle_state: NativePreanalysisSessionState,
+    generation_plan: FrontendNormalizationGenerationPlan,
+) -> NormalizationWorkItemAuthority:
+    """Bind exact portable plan intent to the lifecycle's committed receipt."""
+    if not isinstance(
+        plan_authority,
+        SessionFrontendNormalizationPlanAuthority,
+    ):
+        raise TypeError(
+            "frontend normalization receipt binding requires manager-owned authority"
+        )
+    if not isinstance(lifecycle_state, NativePreanalysisSessionState):
+        raise TypeError(
+            "frontend normalization receipt binding requires lifecycle state"
+        )
+    if not isinstance(generation_plan, FrontendNormalizationGenerationPlan):
+        raise TypeError(
+            "frontend normalization receipt binding requires a generation plan"
+        )
+    work_item_id = lifecycle_state.normalization_last_published_work_item_id
+    if work_item_id is None:
+        raise FrontendNormalizationPublicationError(
+            "receipt-backed normalization lacks its work-item identity"
+        )
+    complete_plan = generation_plan.complete_plan
+    authority = NormalizationWorkItemAuthority(
+        evidence_generation=int(lifecycle_state.evidence_generation),
+        publication_revision=int(
+            lifecycle_state.normalization_work_item_publication_revision
+        ),
+        source_plan_id=complete_plan.plan_id,
+        source_atomic_group_id=complete_plan.atomic_group_id,
+        work_item_id=work_item_id,
+        published_operation_ids=(
+            lifecycle_state.normalization_last_published_operation_ids
+        ),
+        selected_obligation_ids=(
+            lifecycle_state.normalization_last_selected_obligation_ids
+        ),
+        remaining_obligation_ids=(
+            lifecycle_state.normalization_last_remaining_obligation_ids
+        ),
+        unreachable_obligation_ids=(
+            lifecycle_state.normalization_last_unreachable_obligation_ids
+        ),
+    )
+    plan_authority.record_receipted_generation(
+        generation_plan,
+        authority=authority,
+    )
+    return authority
+
+
 @dataclass(frozen=True, slots=True)
 class FrontendNormalizationRunResult:
     """Observable result of one manager-owned normalization generation."""
@@ -548,33 +603,10 @@ def run_frontend_normalization_pipeline(
             raise FrontendNormalizationPublicationError(
                 "receipt-backed normalization lacks its portable generation plan"
             )
-        work_item_id = lifecycle_state.normalization_last_published_work_item_id
-        if work_item_id is None:
-            raise FrontendNormalizationPublicationError(
-                "receipt-backed normalization lacks its work-item identity"
-            )
-        complete_plan = generation_plan.complete_plan
-        plan_authority.record_receipted_generation(
-            generation_plan,
-            authority=NormalizationWorkItemAuthority(
-                evidence_generation=generation,
-                publication_revision=after_work_item_revision,
-                source_plan_id=complete_plan.plan_id,
-                source_atomic_group_id=complete_plan.atomic_group_id,
-                work_item_id=work_item_id,
-                published_operation_ids=(
-                    lifecycle_state.normalization_last_published_operation_ids
-                ),
-                selected_obligation_ids=(
-                    lifecycle_state.normalization_last_selected_obligation_ids
-                ),
-                remaining_obligation_ids=(
-                    lifecycle_state.normalization_last_remaining_obligation_ids
-                ),
-                unreachable_obligation_ids=(
-                    lifecycle_state.normalization_last_unreachable_obligation_ids
-                ),
-            ),
+        record_receipted_frontend_normalization_generation(
+            plan_authority=plan_authority,
+            lifecycle_state=lifecycle_state,
+            generation_plan=generation_plan,
         )
     if after_published == generation:
         if not work_item_published:
@@ -629,5 +661,6 @@ __all__ = [
     "FrontendNormalizationRunResult",
     "SessionFrontendNormalizationEvidenceProvider",
     "SessionFrontendNormalizationPlanAuthority",
+    "record_receipted_frontend_normalization_generation",
     "run_frontend_normalization_pipeline",
 ]
