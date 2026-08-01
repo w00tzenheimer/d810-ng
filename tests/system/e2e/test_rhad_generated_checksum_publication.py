@@ -294,6 +294,7 @@ _ROW42_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40BA7F"
 _ROW43_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40BACF"
 _ROW44_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40BB0A"
 _ROW45_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40BB28"
+_ROW46_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40BD84"
 _COMPILED_OPERATION_IDS = (
     *_REFERENCE_OPERATION_IDS,
     _CONSTANT_OPERATION_ID,
@@ -342,6 +343,7 @@ _COMPILED_OPERATION_IDS = (
     _ROW43_CONSTANT_OPERATION_ID,
     _ROW44_CONSTANT_OPERATION_ID,
     _ROW45_CONSTANT_OPERATION_ID,
+    _ROW46_CONSTANT_OPERATION_ID,
 )
 _IMPORTED_BLOCK_IDS = (
     "native@0x40A607",
@@ -3091,7 +3093,7 @@ def _run_worker(binary: pathlib.Path) -> None:
             str(receipt.fragment_plan_id) for receipt in receipts
         )
         receipt = matching[0]
-        assert receipt.operation_count == receipt.planned_operation_count == 1470, (
+        assert receipt.operation_count == receipt.planned_operation_count == 1471, (
             receipt.operation_count,
             receipt.planned_operation_count,
         )
@@ -4076,7 +4078,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             compiled_payload["aggregate_program_identity"]
         )
         assert compiled_payload["aggregate_program_identity"] == (
-            "sha256:3f2a95ecbc66a7ef1d84cec374a1541ee40cc646a8c53852f53a5f191fefa03f"
+            "sha256:537b52989704143e30cee8d23299e1ea5ab0f120d58d97a10eb7660f59dd183f"
         )
         proof_artifacts = {
             artifact["proof"]["binding"]["operation_id"]: artifact
@@ -12373,6 +12375,33 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             "source_native_ea": 0x40BB28,
             "source_width_bits": 32,
         }
+        row46_constant_reference = reference_payloads[_ROW46_CONSTANT_OPERATION_ID]
+        assert row46_constant_reference == {
+            "category": "constant_materialization",
+            "data_native_ea": 0x48AE74,
+            "depends_on": [_ROW45_CONSTANT_OPERATION_ID],
+            "destination_storage": {"kind": "r", "offset": 8},
+            "destination_width_bits": 32,
+            "encoding_variant": "mov_eax_absolute",
+            "materialized_value": 0xA23904A4,
+            "operation_id": _ROW46_CONSTANT_OPERATION_ID,
+            "operation_variant": "mov_absolute",
+            "phase": "constant_materialization",
+            "publication_envelope": "imported_global_move",
+            "reference_data_bytes_le": "a40439a2",
+            "reference_operation_id": "rhad:constant@0x40BD84",
+            "reference_order": 46,
+            "reference_raw_value": 0xA23904A4,
+            "reference_read_width_bits": 32,
+            "reference_symbol": (
+                "deob_consts.ConstantInliner.transform_mov_mem_to_imm"
+            ),
+            "replacement_instruction_bytes": "b8a40439a2",
+            "source_block_id": "native@0x40BD84",
+            "source_instruction_bytes": "a174ae4800",
+            "source_native_ea": 0x40BD84,
+            "source_width_bits": 32,
+        }
 
         published_payload = json.loads(lifecycle_rows[2][3])
         assert (
@@ -13181,6 +13210,22 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
                 assert row45_constant["semantic_envelope_survives"] is True
             if maturity == "MMAT_GENERATED":
                 assert row45_constant["exact_generated_envelope"] is True
+            row46_constant = observations[_ROW46_CONSTANT_OPERATION_ID]
+            assert row46_constant["reference_operation_id"] == (
+                "rhad:constant@0x40BD84"
+            )
+            assert row46_constant["operation_variant"] == "mov_absolute"
+            assert row46_constant["encoding_variant"] == "mov_eax_absolute"
+            assert row46_constant["publication_envelope"] == "imported_global_move"
+            assert row46_constant["destination_storage"]["key"] == "r8"
+            assert row46_constant["absolute_load_present"] is False
+            assert row46_constant["passed"] is True
+            if row46_constant["source_present"]:
+                assert row46_constant["destination_delivery_present"] is True
+                assert row46_constant["materialized_constant_present"] is True
+                assert row46_constant["semantic_envelope_survives"] is True
+            if maturity == "MMAT_GENERATED":
+                assert row46_constant["exact_generated_envelope"] is True
             direct = observations["route:rhad-direct@0x40A619"]
             assert direct["source_present"] is True
             assert direct["source_topology_reachable"] is True
@@ -16235,6 +16280,14 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             assert row45_constant_calls["destination_delivery_present"] is True
         else:
             assert row45_constant_calls["source_topology_retired"] is True
+        row46_constant_calls = calls_observations[_ROW46_CONSTANT_OPERATION_ID]
+        assert row46_constant_calls["absolute_load_present"] is False
+        assert row46_constant_calls["passed"] is True
+        if row46_constant_calls["source_present"]:
+            assert row46_constant_calls["materialized_constant_present"] is True
+            assert row46_constant_calls["destination_delivery_present"] is True
+        else:
+            assert row46_constant_calls["source_topology_retired"] is True
         direct_calls = calls_observations["route:rhad-direct@0x40A619"]
         assert direct_calls["source_present"] is False
         assert direct_calls["source_topology_reachable"] is False
@@ -18861,7 +18914,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT planned_operation_count, applied_operation_count, outcome "
             "FROM mutation_receipts"
-        ).fetchall() == [(1470, 1470, "committed")]
+        ).fetchall() == [(1471, 1471, "committed")]
         assert connection.execute(
             "SELECT current_phase, mutation_started, poisoned, interr_code "
             "FROM cfg_transaction_attempts"
