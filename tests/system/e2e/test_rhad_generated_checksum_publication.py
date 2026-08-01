@@ -3069,7 +3069,7 @@ def _run_worker(binary: pathlib.Path) -> None:
             str(receipt.fragment_plan_id) for receipt in receipts
         )
         receipt = matching[0]
-        assert receipt.operation_count == receipt.planned_operation_count == 1458, (
+        assert receipt.operation_count == receipt.planned_operation_count == 1459, (
             receipt.operation_count,
             receipt.planned_operation_count,
         )
@@ -18271,7 +18271,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT planned_operation_count, applied_operation_count, outcome "
             "FROM mutation_receipts"
-        ).fetchall() == [(1458, 1458, "committed")]
+        ).fetchall() == [(1459, 1459, "committed")]
         assert connection.execute(
             "SELECT current_phase, mutation_started, poisoned, interr_code "
             "FROM cfg_transaction_attempts"
