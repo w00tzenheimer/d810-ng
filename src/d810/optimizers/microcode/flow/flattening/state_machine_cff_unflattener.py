@@ -258,6 +258,30 @@ def _should_defer_unbound_materialized_preopt(
     )
 
 
+def _request_materialized_recovery_generated_restart(
+    state: ResolverSessionState | None,
+) -> bool:
+    """Bind evidence discovered by recovery into a fresh GENERATED MBA."""
+    if (
+        not isinstance(state, ResolverSessionState)
+        or not is_computed_goto_materialized(state)
+        or not state.native_preanalysis.needs_normalization_publication()
+    ):
+        return False
+    if not state.native_preanalysis.request_generated_restart(
+        evidence_family="dispatcher_recovery_evidence",
+        reason=(
+            "GLBOPT1 published portable dispatcher recovery evidence for "
+            "fresh GENERATED/PREOPT binding"
+        ),
+    ):
+        raise RuntimeError(
+            "portable dispatcher recovery evidence did not acquire a "
+            "generated restart"
+        )
+    return True
+
+
 def _partial_canonical_composition_ready(
     state: ResolverSessionState | None,
 ) -> bool:
@@ -1891,6 +1915,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             source,
             materialized_computed_goto_profile=(materialized_computed_goto_profile),
         )
+        if (
+            resolver_state is not None
+            and resolver_state.native_preanalysis.has_pending_generated_restart
+        ):
+            logger.info(
+                "unflat: deferring mutation for staged dispatcher recovery "
+                "restart at evidence generation %d",
+                int(resolver_state.evidence_generation),
+            )
+            return 0
         rule_config = getattr(self, "config", None)
         materialized_evidence_ready = bool(
             materialized_computed_goto_profile
@@ -3285,6 +3319,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         len(stored_portable_routes),
                         changed,
                     )
+            if _request_materialized_recovery_generated_restart(resolver_state):
+                logger.info(
+                    "portable dispatcher recovery staged GENERATED restart: "
+                    "generation=%d",
+                    int(resolver_state.evidence_generation),
+                )
             resolver_evidence = resolver_state.native_preanalysis.resolver_evidence
             stored_portable_routes = (
                 () if resolver_evidence is None else resolver_evidence.state_routes

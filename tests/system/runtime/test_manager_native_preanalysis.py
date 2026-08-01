@@ -1109,6 +1109,39 @@ def test_decompile_controller_services_poison_restart_from_second_round(
     assert [kind for kind, _ea in calls].count("pending") == 3
 
 
+def test_decompile_controller_binds_post_recovery_dispatcher_evidence(
+    monkeypatch,
+) -> None:
+    pending = iter((True, True, True, False))
+
+    class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return None
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
+        def has_pending_generated_restart(_function_ea: int) -> bool:
+            return next(pending)
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+    rounds: list[int] = []
+
+    result = manager.decompile_with_native_preanalysis(
+        0x401000,
+        lambda: rounds.append(len(rounds) + 1) or rounds[-1],
+        lambda: None,
+    )
+
+    assert result == 4
+    assert rounds == [1, 2, 3, 4]
+
+
 def test_decompile_controller_fails_loudly_if_restart_remains_after_poison_retry(
     monkeypatch,
 ) -> None:
@@ -1137,7 +1170,7 @@ def test_decompile_controller_fails_loudly_if_restart_remains_after_poison_retry
             lambda: None,
         )
 
-    assert rounds == ["decompile", "decompile", "decompile"]
+    assert rounds == ["decompile", "decompile", "decompile", "decompile"]
 
 
 def test_decompile_controller_fails_on_distinct_post_recovery_poison(
