@@ -19,6 +19,7 @@ from types import MappingProxyType
 
 from d810.core.typing import Callable, Mapping, Protocol, TypeVar, runtime_checkable
 from d810.core.config import ProjectConfiguration
+from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.maturity import IRMaturity
 from d810.analyses.value_flow.model import ValidatedFactView
@@ -712,6 +713,7 @@ class PipelineConfig:
     safety_policy: SafetyPolicy = field(default_factory=SafetyPolicy)
     contract: PassContract = field(default_factory=PassContract)
     rules: RuleSelection = field(default_factory=RuleSelection)
+    workflow_stage: StrategyWorkflowStage = StrategyWorkflowStage.CANONICAL_PIPELINE
     options: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -749,6 +751,7 @@ class PipelineConfig:
             },
             "contract": self.contract.to_dict(),
             "rules": self.rules.to_dict(),
+            "workflow_stage": self.workflow_stage.value,
             "options": _copy_json_value(self.options, "options"),
         }
 
@@ -847,6 +850,14 @@ class PipelineConfig:
             ),
             contract=PassContract.from_dict(contract_payload),
             rules=RuleSelection.from_dict(data.get("rules", {})),
+            workflow_stage=_parse_enum(
+                StrategyWorkflowStage,
+                data.get(
+                    "workflow_stage",
+                    StrategyWorkflowStage.CANONICAL_PIPELINE.value,
+                ),
+                "workflow_stage",
+            ),
             options=_copy_json_mapping(data.get("options", {}), "options"),
         )
 
@@ -949,6 +960,7 @@ class PassSpec:
     backend_route: BackendRoute = BackendRoute.MUTATION_BACKEND
     contract: PassContract = field(default_factory=PassContract)
     rules: RuleSelection = field(default_factory=RuleSelection)
+    workflow_stage: StrategyWorkflowStage = StrategyWorkflowStage.CANONICAL_PIPELINE
     options: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -972,6 +984,7 @@ class PassSpec:
             safety_policy=self.safety_policy,
             contract=self.contract,
             rules=self.rules,
+            workflow_stage=self.workflow_stage,
             options=self.options,
         )
 

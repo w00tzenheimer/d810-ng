@@ -9,6 +9,7 @@ from d810.passes.contract_preflight import (
     preflight_pipeline_contract,
 )
 from d810.passes.pass_pipeline import (
+    AnalysisContract,
     FactRequirement,
     PassContract,
     PassOutputs,
@@ -188,6 +189,34 @@ def test_pipeline_preflight_declared_outputs_can_satisfy_later_fact_requirement(
     assert result.satisfied
     assert [item.satisfied for item in result.results] == [True, True]
     assert facts.available_facts() == ()
+
+
+def test_pipeline_preflight_declared_analyses_can_satisfy_later_requirement():
+    facts = AnalysisManager("G0")
+    first = PassSpec(
+        "recover_dispatcher",
+        _raising_factory,
+        no_caps,
+        default,
+        analyses=AnalysisContract(provided=frozenset({"recover_dispatcher"})),
+    )
+    second = PassSpec(
+        "recover_transitions",
+        _raising_factory,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(
+                analyses=frozenset({"recover_dispatcher"}),
+            ),
+        ),
+    )
+
+    result = preflight_pipeline_contract((first, second), facts)
+
+    assert result.satisfied
+    assert [item.satisfied for item in result.results] == [True, True]
+    assert facts.available_analyses() == ()
 
 
 def test_pipeline_preflight_declared_canonical_outputs_satisfy_legacy_requirement():

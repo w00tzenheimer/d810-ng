@@ -3,15 +3,125 @@
 from __future__ import annotations
 
 __all__ = [
+    "ArtifactRef",
+    "ArtifactFreshness",
+    "AttackSummary",
+    "BaselineRef",
+    "ConsumerOutcomeSnapshot",
+    "ComparisonMetric",
+    "ConfigV2EditDiagnostic",
+    "ConfigV2EditError",
+    "ConfigV2EditableField",
+    "ConfigV2EditingService",
+    "ConfigV2FieldSerializer",
+    "ConfigV2ProjectDraft",
+    "ConfigV2ProjectValidation",
+    "CountEntry",
     "D810_LOG_DIR_NAME",
     "D810Manager",
     "D810State",
+    "D810OutputRef",
+    "DeobfuscationWorkbenchSnapshot",
+    "FunctionRef",
+    "FunctionPipelineOverride",
+    "OutcomeStatus",
+    "PatchCountEntry",
+    "PassCatalogEntry",
+    "PipelineRecipeDraft",
+    "PipelineStageSnapshot",
+    "ProjectConfigurationEditError",
+    "ProjectConfigMode",
+    "ProjectIdentitySnapshot",
+    "ProjectRuntimeSnapshot",
+    "RuleScopeSummary",
+    "RecipeCommandRequest",
+    "RecipeCommandResult",
+    "RecipeDiagnostic",
+    "RecipePass",
+    "RecipeValidation",
+    "RuleProjectionKind",
+    "RuntimeConfigRef",
+    "SnapshotFreshness",
+    "StatisticsSummary",
+    "WorkbenchCommandRequest",
+    "WorkbenchCommandResult",
+    "WorkbenchComparisonSnapshot",
+    "WorkbenchDiagnostic",
     "d810_hooks_suppressed",
     "maybe_run_tail_distinct",
 ]
 
+_WORKBENCH_MODEL_NAMES = {
+    "ArtifactRef",
+    "ArtifactFreshness",
+    "AttackSummary",
+    "BaselineRef",
+    "ConsumerOutcomeSnapshot",
+    "ComparisonMetric",
+    "CountEntry",
+    "D810OutputRef",
+    "DeobfuscationWorkbenchSnapshot",
+    "FunctionRef",
+    "OutcomeStatus",
+    "PatchCountEntry",
+    "PipelineStageSnapshot",
+    "RuleScopeSummary",
+    "RuntimeConfigRef",
+    "SnapshotFreshness",
+    "StatisticsSummary",
+    "WorkbenchCommandRequest",
+    "WorkbenchCommandResult",
+    "WorkbenchComparisonSnapshot",
+    "WorkbenchDiagnostic",
+}
+
+_WORKBENCH_RECIPE_MODEL_NAMES = {
+    "FunctionPipelineOverride",
+    "PassCatalogEntry",
+    "PipelineRecipeDraft",
+    "RecipeCommandRequest",
+    "RecipeCommandResult",
+    "RecipeDiagnostic",
+    "RecipePass",
+    "RecipeValidation",
+}
+
+_CONFIG_V2_EDIT_MODEL_NAMES = {
+    "ConfigV2EditDiagnostic",
+    "ConfigV2EditableField",
+    "ConfigV2FieldSerializer",
+    "ConfigV2ProjectDraft",
+    "ConfigV2ProjectValidation",
+}
+
 
 def __getattr__(name: str):
+    if name in _WORKBENCH_MODEL_NAMES:
+        import d810.manager.workbench_models as workbench_models
+
+        return getattr(workbench_models, name)
+    if name in _WORKBENCH_RECIPE_MODEL_NAMES:
+        import d810.manager.workbench_recipe_models as recipe_models
+
+        return getattr(recipe_models, name)
+    if name in _CONFIG_V2_EDIT_MODEL_NAMES:
+        import d810.manager.config_v2_edit_models as config_v2_models
+
+        return getattr(config_v2_models, name)
+    if name in {"ConfigV2EditError", "ConfigV2EditingService"}:
+        import d810.manager.config_v2_editing as config_v2_editing
+
+        return getattr(config_v2_editing, name)
+    if name in {
+        "ProjectConfigurationEditError",
+        "ProjectConfigMode",
+        "ProjectIdentitySnapshot",
+        "ProjectRuntimeSnapshot",
+        "RuleProjectionKind",
+    }:
+        import d810.manager.project_runtime as project_runtime
+
+        return getattr(project_runtime, name)
     if name == "D810State":
         from d810.manager.state import D810State
 

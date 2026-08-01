@@ -1,24 +1,41 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import os
 import pathlib
 
 import ida_kernwin
 import idaapi
 
 from d810.core import logging, typing
+from d810.manager import ProjectConfigurationEditError
 from d810.qt_shim import QFrame, QGroupBox, QMenu, QtCore, QtGui, QToolButton, QtWidgets
 
 if typing.TYPE_CHECKING:
-    from d810.manager import D810State
+    from d810.manager import D810State, ProjectRuntimeSnapshot
 
 from d810.core.config import ProjectConfiguration, RuleConfiguration
 from d810.core.logging import LoggerConfigurator, getLogger
+from d810.ui.project_config_logic import (
+    ConfigEditMode,
+    ConfigSaveStrategy,
+    ProjectConfigView,
+    build_project_config_view,
+    select_config_edit_policy,
+)
+from d810.ui.project_picker_logic import build_project_picker_entries
+from d810.ui.project_picker_popup import ProjectPickerPopup
 from d810.ui.rule_detail import RuleDetailPanel
+from d810.ui.icon_assets import bundled_icon
 from d810.ui.rule_tree import RuleTreeWidget
 from d810.ui.testbed import TestRunnerForm
 
 logger = getLogger("D810.ui")
+
+def _config_action_icon(name: str):
+    """Load a bundled SVG instead of relying on the host font's glyph set."""
+
+    return bundled_icon(name)
 
 
 class LoggingConfigDialog(QtWidgets.QDialog):
@@ -412,11 +429,15 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.created = False
         self.parent = None
         self.test_runner: TestRunnerForm | None = None
+        self._config_v2_editor = None
 
         # Edit state machine attributes
-        self._edit_mode: str | None = None  # "new", "duplicate", or "edit"
+        self._edit_mode: ConfigEditMode | None = None
         self._edit_path: pathlib.Path | None = None
         self._edit_old_conf: ProjectConfiguration | None = None
+        self._edit_source_config: ProjectConfiguration | None = None
+        self._edit_runtime_snapshot: ProjectRuntimeSnapshot | None = None
+        self._view_rules_title = "Rules"
 
         # Initialize all widget attributes to None (defensive pattern)
         # These are created in OnCreate() but may be accessed before OnCreate() runs
@@ -428,6 +449,10 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.btn_duplicate_cfg = None
         self.btn_edit_cfg = None
         self.btn_delele_cfg = None
+        self._config_mode_value = None
+        self._config_source_value = None
+        self._config_runtime_value = None
+        self._config_passes_value = None
         self.cfg_description = None
         self._rules_group = None
         self._rules_content = None
@@ -456,7 +481,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         # Disconnect all signals to prevent PySide6 crash during Python finalization
         try:
             if hasattr(self, "cfg_select") and self.cfg_select is not None:
-                self.cfg_select.currentIndexChanged.disconnect()
+                self.cfg_select.clicked.disconnect()
 
             if hasattr(self, "_rule_tree") and self._rule_tree is not None:
                 self._rule_tree.rule_selected.disconnect()
@@ -496,10 +521,17 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._rule_tree = None
         self._rule_detail = None
         self.cfg_select = None
+        self._config_mode_value = None
+        self._config_source_value = None
+        self._config_runtime_value = None
+        self._config_passes_value = None
 
         if self.test_runner is not None:
             self.test_runner.Close(ida_kernwin.PluginForm.WCLS_SAVE)
             self.test_runner = None
+        if self._config_v2_editor is not None:
+            self._config_v2_editor.close()
+            self._config_v2_editor = None
 
     def Show(self):
         logger.debug("Calling Show")
@@ -541,12 +573,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         config_row = QtWidgets.QHBoxLayout()
         project_vbox.addLayout(config_row)
 
-        # Status indicator (colored circle)
+        # Status indicator (bundled SVG avoids host-font glyph fallbacks).
         self._status_indicator = QtWidgets.QLabel()
-        self._status_indicator.setTextFormat(QtCore.Qt.RichText)
-        self._status_indicator.setText(
-            '<span style="color: #D32F2F; font-size: 20px;">●</span>'
-        )
+        self._status_indicator.setFixedSize(20, 20)
         self._status_indicator.setToolTip("D810 is stopped")
         config_row.addWidget(self._status_indicator)
 
@@ -554,49 +583,61 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.curlabel = QtWidgets.QLabel("Config:")
         config_row.addWidget(self.curlabel)
 
-        self.cfg_select = QtWidgets.QComboBox(self.parent)
+        self.cfg_select = QtWidgets.QPushButton(self.parent)
+        self.cfg_select.setToolTip("Choose a D-810 configuration")
         config_row.addWidget(self.cfg_select, stretch=1)
 
         # Project buttons (icon-only toolbuttons)
         self.btn_new_cfg = QToolButton()
-        self.btn_new_cfg.setText("+")
+        self.btn_new_cfg.setIcon(_config_action_icon("new"))
         self.btn_new_cfg.setToolTip("Create new configuration")
         self.btn_new_cfg.setFixedSize(32, 32)
-        font = self.btn_new_cfg.font()
-        font.setPointSize(16)
-        self.btn_new_cfg.setFont(font)
+        self.btn_new_cfg.setIconSize(QtCore.QSize(20, 20))
         self.btn_new_cfg.clicked.connect(self._create_config)
         config_row.addWidget(self.btn_new_cfg)
 
         self.btn_duplicate_cfg = QToolButton()
-        self.btn_duplicate_cfg.setText("⧉")
+        self.btn_duplicate_cfg.setIcon(_config_action_icon("duplicate"))
         self.btn_duplicate_cfg.setToolTip("Duplicate current configuration")
         self.btn_duplicate_cfg.setFixedSize(32, 32)
-        font = self.btn_duplicate_cfg.font()
-        font.setPointSize(16)
-        self.btn_duplicate_cfg.setFont(font)
+        self.btn_duplicate_cfg.setIconSize(QtCore.QSize(20, 20))
         self.btn_duplicate_cfg.clicked.connect(self._duplicate_config)
         config_row.addWidget(self.btn_duplicate_cfg)
 
         self.btn_edit_cfg = QToolButton()
-        self.btn_edit_cfg.setText("✎")
+        self.btn_edit_cfg.setIcon(_config_action_icon("edit"))
         self.btn_edit_cfg.setToolTip("Edit current configuration")
         self.btn_edit_cfg.setFixedSize(32, 32)
-        font = self.btn_edit_cfg.font()
-        font.setPointSize(16)
-        self.btn_edit_cfg.setFont(font)
+        self.btn_edit_cfg.setIconSize(QtCore.QSize(20, 20))
         self.btn_edit_cfg.clicked.connect(self._edit_config)
         config_row.addWidget(self.btn_edit_cfg)
 
         self.btn_delele_cfg = QToolButton()
-        self.btn_delele_cfg.setText("🗑")
+        self.btn_delele_cfg.setIcon(_config_action_icon("delete"))
         self.btn_delele_cfg.setToolTip("Delete current configuration")
         self.btn_delele_cfg.setFixedSize(32, 32)
-        font = self.btn_delele_cfg.font()
-        font.setPointSize(16)
-        self.btn_delele_cfg.setFont(font)
+        self.btn_delele_cfg.setIconSize(QtCore.QSize(20, 20))
         self.btn_delele_cfg.clicked.connect(self._delete_config)
         config_row.addWidget(self.btn_delele_cfg)
+
+        identity_layout = QtWidgets.QFormLayout()
+        self._config_mode_value = QtWidgets.QLabel()
+        self._config_source_value = QtWidgets.QLabel()
+        self._config_runtime_value = QtWidgets.QLabel()
+        self._config_passes_value = QtWidgets.QLabel()
+        for value_label in (
+            self._config_mode_value,
+            self._config_source_value,
+            self._config_runtime_value,
+            self._config_passes_value,
+        ):
+            value_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self._config_passes_value.setWordWrap(True)
+        identity_layout.addRow("Mode:", self._config_mode_value)
+        identity_layout.addRow("Source:", self._config_source_value)
+        identity_layout.addRow("Runtime:", self._config_runtime_value)
+        identity_layout.addRow("Effective passes:", self._config_passes_value)
+        project_vbox.addLayout(identity_layout)
 
         # Description text box (read-only, scrollable, below config row)
         self.cfg_description = QtWidgets.QTextEdit()
@@ -739,8 +780,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         # Final initialization
         # =====================================================================
         self.update_cfg_select()
-        self.cfg_select.setCurrentIndex(self.state.current_project_index)
-        self.cfg_select.currentIndexChanged.connect(self._load_config)
+        self.cfg_select.clicked.connect(self._open_config_picker)
 
         # Load the current config to populate the Rules tree immediately
         self._load_config(self.state.current_project_index)
@@ -751,13 +791,13 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             logger.debug("Cannot update status indicator: widget not created yet")
             return
         if loaded:
-            self._status_indicator.setText(
-                '<span style="color: #4CAF50; font-size: 20px;">*</span>'
+            self._status_indicator.setPixmap(
+                _config_action_icon("status-running").pixmap(QtCore.QSize(16, 16))
             )
             self._status_indicator.setToolTip("D810 is running")
         else:
-            self._status_indicator.setText(
-                '<span style="color: #D32F2F; font-size: 20px;">*</span>'
+            self._status_indicator.setPixmap(
+                _config_action_icon("status-stopped").pixmap(QtCore.QSize(16, 16))
             )
             self._status_indicator.setToolTip("D810 is stopped")
 
@@ -787,24 +827,40 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             logger.debug("Config stored: %s.%s = %s", rule.name, param_name, value)
 
     def update_cfg_select(self):
-        logger.debug("Calling update_cfg_select")
-        tmp = self.state.current_project_index
-        # Prevent spurious _load_config calls while we rebuild the combo box.
-        was_blocked = self.cfg_select.blockSignals(True)
-        try:
-            self.cfg_select.clear()
-            # Display basename for readability
-            self.cfg_select.addItems(self.state.project_manager.project_names())
-        finally:
-            self.cfg_select.blockSignals(was_blocked)
-        if self.cfg_select.count() == 0:
-            self.cfg_select.setCurrentIndex(-1)
+        """Synchronize the current-project button without loading a project."""
+
+        projects = self.state.project_manager.projects()
+        if not projects:
+            self.cfg_select.setText("No configurations available")
+            self.cfg_select.setToolTip("No D-810 configuration projects were discovered")
+            self.cfg_select.setEnabled(False)
             return
-        if tmp < 0:
-            tmp = 0
-        elif tmp >= self.cfg_select.count():
-            tmp = self.cfg_select.count() - 1
-        self.cfg_select.setCurrentIndex(tmp)
+        project_index = min(
+            max(0, self.state.current_project_index),
+            len(projects) - 1,
+        )
+        self.cfg_select.setText(f"{projects[project_index].path.name}  ▼")
+        self.cfg_select.setToolTip(
+            f"Choose D-810 configuration ({len(projects)} discovered)"
+        )
+        self.cfg_select.setEnabled(True)
+
+    def _open_config_picker(self, checked: bool = False) -> None:
+        del checked
+        projects = tuple(self.state.project_manager.projects())
+        if not projects:
+            return
+        existing_popup = getattr(self, "_config_picker_popup", None)
+        if existing_popup is not None:
+            existing_popup.close()
+        popup_parent = self.parent or QtWidgets.QApplication.activeWindow()
+        self._config_picker_popup = ProjectPickerPopup(
+            build_project_picker_entries(projects),
+            current_project_index=self.state.current_project_index,
+            on_project_selected=self._load_config,
+            parent=popup_parent,
+        )
+        self._config_picker_popup.show_for(self.cfg_select)
 
     # =========================================================================
     # Edit state machine
@@ -812,54 +868,43 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
     def _enter_edit_mode(
         self,
-        mode: str,
+        mode: ConfigEditMode,
         description: str,
         ins_rules: list[RuleConfiguration],
         blk_rules: list[RuleConfiguration],
         path: pathlib.Path | None,
-        old_conf: ProjectConfiguration | None,
+        source_config: ProjectConfiguration | None,
+        snapshot: ProjectRuntimeSnapshot | None,
+        rules_editable: bool,
+        enabled_rule_names: frozenset[str] | None = None,
     ) -> None:
-        """Enter edit mode (new, duplicate, or edit).
-
-        Args:
-            mode: One of "new", "duplicate", or "edit"
-            description: Project description
-            ins_rules: Instruction-level rules
-            blk_rules: Block-level rules
-            path: Path to save (None for new/duplicate)
-            old_conf: Old configuration (for edit mode)
-        """
+        """Enter a policy-selected project editing mode."""
         logger.debug("Entering edit mode: %s", mode)
 
         self._edit_mode = mode
         self._edit_path = path
-        self._edit_old_conf = old_conf
+        self._edit_old_conf = (
+            source_config if mode is ConfigEditMode.EDIT else None
+        )
+        self._edit_source_config = source_config
+        self._edit_runtime_snapshot = snapshot
 
-        # Build enabled set and per-rule config dict from RuleConfiguration lists
-        enabled_names: set[str] = set()
+        enabled_names: set[str] = set(enabled_rule_names or ())
         self._rule_configs.clear()
-
-        for rc in ins_rules:
-            if rc.is_activated:
-                enabled_names.add(rc.name)
-            if rc.config:
-                self._rule_configs[rc.name] = dict(rc.config)
-
-        for rc in blk_rules:
-            if rc.is_activated:
-                enabled_names.add(rc.name)
-            if rc.config:
-                self._rule_configs[rc.name] = dict(rc.config)
+        for rule_config in (*ins_rules, *blk_rules):
+            if rule_config.is_activated and rule_config.name:
+                enabled_names.add(str(rule_config.name))
+            if rule_config.config and rule_config.name:
+                self._rule_configs[rule_config.name] = dict(rule_config.config)
 
         # Update tree to show enabled rules
         self._rule_tree.set_enabled_rules(enabled_names)
 
-        # Make tree and detail panel editable
-        self._rule_tree.set_read_only(False)
-        self._rule_detail.set_read_only(False)
+        self._rule_tree.set_read_only(not rules_editable)
+        self._rule_detail.set_read_only(not rules_editable)
 
         # Show edit header only for new/duplicate
-        if mode in ("new", "duplicate"):
+        if mode in (ConfigEditMode.NEW, ConfigEditMode.DUPLICATE):
             self._edit_header.setVisible(True)
             self._edit_name_input.setText("")
             self._edit_desc_input.setText(description)
@@ -867,7 +912,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             self._edit_header.setVisible(False)
 
         # Update title and show Save/Cancel buttons
-        self._rules_group.setTitle("Rules (editing)")
+        self._rules_group.setTitle(
+            "Rules (editing)" if rules_editable else self._view_rules_title
+        )
         self._btn_save_rules.setVisible(True)
         self._btn_cancel_rules.setVisible(True)
 
@@ -880,7 +927,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         logger.debug("Exiting edit mode")
 
         # Update title and hide Save/Cancel buttons
-        self._rules_group.setTitle("Rules")
+        self._rules_group.setTitle(self._view_rules_title)
         self._btn_save_rules.setVisible(False)
         self._btn_cancel_rules.setVisible(False)
 
@@ -899,6 +946,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._edit_mode = None
         self._edit_path = None
         self._edit_old_conf = None
+        self._edit_source_config = None
+        self._edit_runtime_snapshot = None
         self._rule_configs.clear()
 
     def _save_rules(self) -> None:
@@ -906,7 +955,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         logger.debug("Saving rules (mode: %s)", self._edit_mode)
 
         # Determine save path
-        if self._edit_mode in ("new", "duplicate"):
+        if self._edit_mode in (ConfigEditMode.NEW, ConfigEditMode.DUPLICATE):
             # Open file dialog
             fname, _ = QtWidgets.QFileDialog.getSaveFileName(
                 self.parent,
@@ -918,7 +967,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 return  # User cancelled
             save_path = pathlib.Path(fname)
             description = self._edit_desc_input.text()
-        elif self._edit_mode == "edit":
+        elif self._edit_mode is ConfigEditMode.EDIT:
             # Save to user cfg dir (same as _resolve_config_path user path)
             save_path = self.state.d810_config.config_dir / self._edit_path.name
             description = self.state.current_project.description
@@ -950,17 +999,46 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                     )
                 )
 
-        # Create and save ProjectConfiguration
-        new_config = ProjectConfiguration(
-            path=save_path,
-            description=description,
-            ins_rules=ins_rules,
-            blk_rules=blk_rules,
+        if self._edit_mode is None:
+            logger.error("Cannot save without an edit mode")
+            return
+        policy = select_config_edit_policy(
+            self._edit_mode,
+            self._edit_runtime_snapshot,
         )
-        new_config.save()
+        if not policy.allowed or policy.save_strategy is ConfigSaveStrategy.REFUSE:
+            QtWidgets.QMessageBox.warning(
+                self.parent,
+                "Configuration not saved",
+                policy.explanation,
+            )
+            return
+
+        try:
+            if policy.save_strategy is ConfigSaveStrategy.CLONE_RUNTIME_V2:
+                new_config = self.state.clone_current_runtime_project(
+                    save_path,
+                    description,
+                )
+            else:
+                new_config = self.state.save_legacy_project(
+                    snapshot=self._edit_runtime_snapshot,
+                    source=self._edit_source_config,
+                    destination=save_path,
+                    description=description,
+                    ins_rules=ins_rules,
+                    blk_rules=blk_rules,
+                )
+        except ProjectConfigurationEditError as exc:
+            QtWidgets.QMessageBox.critical(
+                self.parent,
+                "Configuration not saved",
+                str(exc),
+            )
+            return
 
         # Update state
-        if self._edit_mode in ("new", "duplicate"):
+        if self._edit_mode in (ConfigEditMode.NEW, ConfigEditMode.DUPLICATE):
             self.state.add_project(new_config)
         else:  # edit
             self.state.update_project(self._edit_old_conf, new_config)
@@ -971,7 +1049,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         # Find the index of the newly saved config
         for i, proj in enumerate(self.state.project_manager.projects()):
             if proj.path == save_path:
-                self.cfg_select.setCurrentIndex(i)
+                self._load_config(i)
                 break
 
         # Exit edit mode
@@ -984,37 +1062,157 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
     def _create_config(self):
         logger.debug("Calling _create_config")
-        self._enter_edit_mode("new", "", [], [], None, None)
+        policy = select_config_edit_policy(ConfigEditMode.NEW, None)
+        self._enter_edit_mode(
+            ConfigEditMode.NEW,
+            "",
+            [],
+            [],
+            None,
+            None,
+            None,
+            policy.rules_editable,
+        )
 
     def _duplicate_config(self):
         logger.debug("Calling _duplicate_config")
-        cur_cfg = self.state.current_project
+        snapshot = self.state.get_project_runtime_snapshot()
+        policy = select_config_edit_policy(ConfigEditMode.DUPLICATE, snapshot)
+        if not policy.allowed:
+            QtWidgets.QMessageBox.information(
+                self.parent,
+                "Configuration cannot be duplicated",
+                policy.explanation,
+            )
+            return
+        current = self.state.current_project
+        view = build_project_config_view(snapshot)
+        if policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2:
+            destination = self._choose_config_v2_destination(
+                snapshot,
+                duplicate=True,
+            )
+            if destination is not None:
+                self._open_config_v2_editor(destination)
+            return
+        is_runtime_clone = (
+            policy.save_strategy is ConfigSaveStrategy.CLONE_RUNTIME_V2
+        )
         self._enter_edit_mode(
-            "duplicate",
-            "Duplicate of " + cur_cfg.description,
-            cur_cfg.ins_rules,
-            cur_cfg.blk_rules,
+            ConfigEditMode.DUPLICATE,
+            "Duplicate of " + current.description,
+            [] if is_runtime_clone else current.ins_rules,
+            [] if is_runtime_clone else current.blk_rules,
             None,
-            None,
+            current,
+            snapshot,
+            policy.rules_editable,
+            view.enabled_rule_names if is_runtime_clone else None,
         )
 
     def _edit_config(self):
         logger.debug("Calling _edit_config")
-        cur_cfg = self.state.current_project
+        snapshot = self.state.get_project_runtime_snapshot()
+        policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
+        if not policy.allowed:
+            QtWidgets.QMessageBox.information(
+                self.parent,
+                "Configuration is read-only",
+                policy.explanation,
+            )
+            return
+        if policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2:
+            destination = self._choose_config_v2_destination(
+                snapshot,
+                duplicate=False,
+            )
+            if destination is not None:
+                self._open_config_v2_editor(destination)
+            return
+        current = self.state.current_project
         self._enter_edit_mode(
-            "edit",
-            cur_cfg.description,
-            cur_cfg.ins_rules,
-            cur_cfg.blk_rules,
-            cur_cfg.path,
-            cur_cfg,
+            ConfigEditMode.EDIT,
+            current.description,
+            current.ins_rules,
+            current.blk_rules,
+            current.path,
+            current,
+            snapshot,
+            policy.rules_editable,
         )
+
+    def _choose_config_v2_destination(
+        self,
+        snapshot: "ProjectRuntimeSnapshot",
+        *,
+        duplicate: bool,
+    ) -> pathlib.Path | None:
+        config_dir = pathlib.Path(self.state.d810_config.config_dir).resolve()
+        runtime_path = pathlib.Path(snapshot.runtime.path).resolve()
+        if not duplicate and runtime_path.parent == config_dir:
+            default = runtime_path
+        else:
+            suffix = "copy" if duplicate else "user"
+            default = config_dir / f"{runtime_path.stem}_{suffix}.json"
+        destination, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self.parent,
+            "Choose a lossless config-v2 project destination",
+            str(default),
+            "D810 project configurations (*.json)",
+        )
+        return pathlib.Path(destination) if destination else None
+
+    def _open_config_v2_editor(self, destination: pathlib.Path) -> None:
+        from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
+        from d810.ui.config_v2_editing_panel import ConfigV2EditingPanel
+
+        try:
+            adapter = ConfigV2EditingAdapter(
+                self.state,
+                destination=destination,
+            )
+            if self._config_v2_editor is not None:
+                self._config_v2_editor.close()
+            editor = ConfigV2EditingPanel(
+                adapter,
+                on_saved=self._refresh_config_v2_project_view,
+            )
+        except Exception as exc:
+            logger.warning("Config-v2 project editor failed: %s", exc)
+            QtWidgets.QMessageBox.critical(
+                self.parent,
+                "Config-v2 project editor",
+                str(exc),
+            )
+            return
+        self._config_v2_editor = editor
+        editor.show()
+
+    def _refresh_config_v2_project_view(self) -> None:
+        self.update_cfg_select()
+        snapshot = self.state.get_project_runtime_snapshot()
+        self.cfg_description.setPlainText(self.state.current_project.description)
+        self._apply_project_config_view(build_project_config_view(snapshot))
 
     # callback when the "Delete" button is clicked
     def _delete_config(self):
         logger.debug("Calling _delete_config")
         self.state.project_manager.delete(self.state.current_project)
         self.update_cfg_select()
+
+    def _apply_project_config_view(self, view: ProjectConfigView) -> None:
+        self._config_mode_value.setText(view.mode_text)
+        self._config_source_value.setText(view.source_text)
+        self._config_source_value.setToolTip(view.source_tooltip)
+        self._config_runtime_value.setText(view.runtime_text)
+        self._config_runtime_value.setToolTip(view.runtime_tooltip)
+        self._config_passes_value.setText(view.effective_passes_text)
+        self.btn_edit_cfg.setEnabled(view.edit_enabled)
+        self.btn_edit_cfg.setToolTip(view.edit_tooltip)
+        self._view_rules_title = view.rules_title
+        if self._edit_mode is None:
+            self._rules_group.setTitle(view.rules_title)
+        self._rule_tree.set_enabled_rules(set(view.enabled_rule_names))
 
     # Called when the edit combo is changed
     def _load_config(self, index: int):
@@ -1044,18 +1242,11 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 current_name,
             )
         project = self.state.load_project(index)
+        self.update_cfg_select()
+        snapshot = self.state.get_project_runtime_snapshot()
+        view = build_project_config_view(snapshot)
         self.cfg_description.setPlainText(project.description)
-
-        # Populate rules tree with the current config's rules (read-only mode)
-        enabled_names: set[str] = set()
-        for rc in project.ins_rules:
-            if rc.is_activated:
-                enabled_names.add(rc.name)
-        for rc in project.blk_rules:
-            if rc.is_activated:
-                enabled_names.add(rc.name)
-
-        self._rule_tree.set_enabled_rules(enabled_names)
+        self._apply_project_config_view(view)
         return
 
     def _configure_plugin(self):

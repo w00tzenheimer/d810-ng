@@ -464,6 +464,28 @@ def test_evidence_store_reads_state_write_contract_token_from_live_observation()
     assert not am.has_evidence("dispatcher_predicates")
 
 
+def test_state_transition_anchor_is_known_branch_target_contract_evidence():
+    observation = type(
+        "_Obs",
+        (),
+        {
+            "kind": "StateTransitionAnchorFact",
+            "payload": {
+                "source_block_serial": 3,
+                "successor_block_serial": 7,
+            },
+            "evidence": ("goto @7",),
+        },
+    )()
+    am = AnalysisManager(
+        graph="G0",
+        input_facts=type("_Facts", (), {"active_observations": (observation,)})(),
+    )
+
+    assert am.has_evidence("ir.branch_target")
+    assert am.get_evidence("branch_targets") == (observation,)
+
+
 def test_invalidate_to_clears_published_evidence_for_new_epoch():
     am = AnalysisManager(graph="G0")
     am.put_evidence("branch_targets", object())

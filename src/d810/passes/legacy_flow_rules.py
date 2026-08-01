@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
@@ -26,6 +27,18 @@ _SIMPLE_FLOW_RULE_PASS_IDS: Mapping[str, str] = {
     "mba-state-preconditioner": "MbaStatePreconditioner",
     "jump-fixer": "JumpFixer",
     "single-trip-loop-peel": "SingleTripLoopPeel",
+}
+
+_WORKFLOW_STAGE_BY_PASS_ID: Mapping[str, StrategyWorkflowStage] = {
+    "forward-constant-propagation": StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+    "global-constant-inliner": StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+    "identity-call-resolver": StrategyWorkflowStage.CANONICAL_ANALYSIS,
+    "indirect-branch-resolver": StrategyWorkflowStage.CANONICAL_ANALYSIS,
+    "indirect-call-resolver": StrategyWorkflowStage.CANONICAL_ANALYSIS,
+    "jump-fixer": StrategyWorkflowStage.BACKEND_PUBLICATION,
+    "materialized-computed-goto-island": StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+    "mba-state-preconditioner": StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+    "single-trip-loop-peel": StrategyWorkflowStage.CANONICAL_TRANSFORM,
 }
 
 
@@ -112,7 +125,17 @@ def build_legacy_flow_rule_pass(config: PipelineConfig) -> LegacyFlowRuleAdapter
 def register_legacy_flow_rule_passes(registry: PassRegistry) -> PassRegistry:
     """Register the simple config-aware legacy flow-rule adapter pass ids."""
     for pass_id in sorted(_SIMPLE_FLOW_RULE_PASS_IDS):
-        registry.register_configured(pass_id, build_legacy_flow_rule_pass)
+        legacy_rule = _SIMPLE_FLOW_RULE_PASS_IDS[pass_id]
+        registry.register_configured(
+            pass_id,
+            build_legacy_flow_rule_pass,
+            config_template=PipelineConfig(
+                pass_id=pass_id,
+                workflow_stage=_WORKFLOW_STAGE_BY_PASS_ID[pass_id],
+                options={"legacy_rule": legacy_rule},
+            ),
+            transforms=(legacy_rule,),
+        )
     return registry
 
 

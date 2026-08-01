@@ -32,7 +32,6 @@ Usage:
 
 from __future__ import annotations
 
-import pathlib
 import sys
 
 from d810.core.typing import Any, Literal, Union, cast
@@ -50,13 +49,6 @@ def _is_ida_gui_available() -> bool:
     - Running via idalib/idapro module
     - Running in pytest or other non-GUI environment
     """
-    exec_name = pathlib.Path(sys.executable).name.lower()
-
-    # Check if we're in IDA at all
-    in_ida = exec_name.startswith("ida")
-    if not in_ida:
-        return False
-
     # ast-grep-ignore: no-ida-try-import
     try:
         import idaapi
@@ -631,6 +623,7 @@ else:
                 QKeyEvent,
                 QKeySequence,
                 QPalette,
+                QPixmap,
                 QStandardItem,
                 QStandardItemModel,
                 QTextCursor,
@@ -652,7 +645,6 @@ else:
                 QMainWindow,
                 QMenu,
                 QMessageBox,
-                QPixmap,
                 QPushButton,
                 QScrollArea,
                 QShortcut,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.families.state_machine_cff.pipeline import (
     standard_state_machine_passes,
     state_machine_pass_registry,
@@ -127,6 +128,20 @@ def test_registry_build_spec_preserves_pass_options_metadata():
     assert spec.config.options == options
 
 
+def test_registry_build_spec_preserves_display_only_workflow_stage():
+    registry = PassRegistry()
+    registry.register("fake", _FakePass)
+    config = PipelineConfig(
+        pass_id="fake",
+        workflow_stage=StrategyWorkflowStage.CANONICAL_TRANSFORM,
+    )
+
+    spec = registry.build_spec(config)
+
+    assert spec.workflow_stage is StrategyWorkflowStage.CANONICAL_TRANSFORM
+    assert spec.config.workflow_stage is StrategyWorkflowStage.CANONICAL_TRANSFORM
+
+
 def test_registry_configured_factory_receives_full_pipeline_config():
     seen = []
 
@@ -160,3 +175,37 @@ def test_registry_configured_factory_receives_full_pipeline_config():
     assert seen == [config, config]
     assert built.config.rules.include_order == ("B", "A")
     assert spec.rules is config.rules
+
+
+def test_registry_exposes_deterministic_read_only_catalog_metadata():
+    registry = PassRegistry()
+    template = PipelineConfig(
+        pass_id="zeta",
+        options={"legacy_rule": "ZetaTransform"},
+    )
+    registry.register_configured(
+        "zeta",
+        lambda config: _FakePass(),
+        config_template=template,
+        transforms=("ZetaTransform",),
+    )
+    registry.register(
+        "alpha",
+        _FakePass,
+        config_template=PipelineConfig(pass_id="alpha"),
+    )
+
+    assert registry.registered_pass_ids() == ("alpha", "zeta")
+    assert registry.config_template_for("zeta") is template
+    assert registry.transforms_for("zeta") == ("ZetaTransform",)
+    assert registry.is_configured("zeta") is True
+    assert registry.is_configured("alpha") is False
+    with pytest.raises(TypeError):
+        template.options["new"] = True
+
+
+def test_registry_catalog_rejects_unknown_metadata_lookup():
+    registry = PassRegistry()
+
+    with pytest.raises(UnknownPassIdError, match="unknown pass id"):
+        registry.config_template_for("missing")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
@@ -92,7 +93,14 @@ def build_mba_simplify_pass(config: PipelineConfig) -> MbaSimplifyPass:
 
 def register_mba_simplify_pass(registry: PassRegistry) -> PassRegistry:
     """Register the config-aware ``mba-simplify`` pass factory."""
-    registry.register_configured(MBA_SIMPLIFY_PASS_ID, build_mba_simplify_pass)
+    registry.register_configured(
+        MBA_SIMPLIFY_PASS_ID,
+        build_mba_simplify_pass,
+        config_template=PipelineConfig(
+            pass_id=MBA_SIMPLIFY_PASS_ID,
+            workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+        ),
+    )
     return registry
 
 

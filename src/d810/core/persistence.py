@@ -116,6 +116,19 @@ class FunctionRuleConfig:
     notes: str = ""
 
 
+@dataclass(frozen=True)
+class FunctionRecipeConfig:
+    """Complete registered-pass pipeline saved for one function."""
+
+    function_addr: int
+    schema_version: int
+    function_fingerprint: str | None
+    source_path: str
+    runtime_path: str
+    pass_configs_json: str
+    updated_at: float
+
+
 @dataclass
 class ActiveRuleInferenceConfig:
     """Persisted active rule inference selector."""
@@ -156,6 +169,20 @@ class SupportsOptimizationStorage(Protocol):
         self, function_addr: int
     ) -> Optional[FunctionRuleConfig]: ...
     def clear_function_rules(self, function_addr: int) -> None: ...
+    def set_function_recipe(
+        self,
+        *,
+        function_addr: int,
+        schema_version: int,
+        function_fingerprint: str | None,
+        source_path: str,
+        runtime_path: str,
+        pass_configs_json: str,
+    ) -> None: ...
+    def get_function_recipe(
+        self, function_addr: int
+    ) -> Optional[FunctionRecipeConfig]: ...
+    def clear_function_recipe(self, function_addr: int) -> None: ...
     def set_function_tags(self, function_addr: int, tags: Set[str]) -> None: ...
     def get_function_tags(self, function_addr: int) -> Set[str]: ...
     def set_active_rule_inference(
@@ -484,6 +511,7 @@ class NetnodeOptimizationStorage:
             "results": {},
             "patches": {},
             "function_rules": {},
+            "function_recipes": {},
             "active_inference": None,
         }
         self._state = self._load_state()
@@ -499,6 +527,7 @@ class NetnodeOptimizationStorage:
                 "results": {},
                 "patches": {},
                 "function_rules": {},
+                "function_recipes": {},
                 "active_inference": None,
             }
         if not isinstance(payload, dict):
@@ -507,12 +536,14 @@ class NetnodeOptimizationStorage:
                 "results": {},
                 "patches": {},
                 "function_rules": {},
+                "function_recipes": {},
                 "active_inference": None,
             }
         payload.setdefault("functions", {})
         payload.setdefault("results", {})
         payload.setdefault("patches", {})
         payload.setdefault("function_rules", {})
+        payload.setdefault("function_recipes", {})
         # Backward compat: migrate old "active_recipe" key to "active_inference"
         if "active_recipe" in payload and "active_inference" not in payload:
             payload["active_inference"] = payload.pop("active_recipe")
@@ -652,6 +683,48 @@ class NetnodeOptimizationStorage:
         self._flush_state()
         logger.info("Cleared rule configuration for function %x", function_addr)
 
+    def set_function_recipe(
+        self,
+        *,
+        function_addr: int,
+        schema_version: int,
+        function_fingerprint: str | None,
+        source_path: str,
+        runtime_path: str,
+        pass_configs_json: str,
+    ) -> None:
+        self._state["function_recipes"][self._func_key(function_addr)] = {
+            "schema_version": int(schema_version),
+            "function_fingerprint": function_fingerprint,
+            "source_path": str(source_path),
+            "runtime_path": str(runtime_path),
+            "pass_configs_json": str(pass_configs_json),
+            "updated_at": time.time(),
+        }
+        self._flush_state()
+        logger.info("Updated function recipe for %x", function_addr)
+
+    def get_function_recipe(
+        self, function_addr: int
+    ) -> Optional[FunctionRecipeConfig]:
+        row = self._state["function_recipes"].get(self._func_key(function_addr))
+        if not row:
+            return None
+        return FunctionRecipeConfig(
+            function_addr=int(function_addr),
+            schema_version=int(row.get("schema_version", 0)),
+            function_fingerprint=row.get("function_fingerprint"),
+            source_path=str(row.get("source_path", "")),
+            runtime_path=str(row.get("runtime_path", "")),
+            pass_configs_json=str(row.get("pass_configs_json", "")),
+            updated_at=float(row.get("updated_at", 0.0)),
+        )
+
+    def clear_function_recipe(self, function_addr: int) -> None:
+        self._state["function_recipes"].pop(self._func_key(function_addr), None)
+        self._flush_state()
+        logger.info("Cleared function recipe for %x", function_addr)
+
     def set_function_tags(self, function_addr: int, tags: Set[str]) -> None:
         fkey = self._func_key(function_addr)
         existing = self._state["function_rules"].get(fkey, {})
@@ -735,6 +808,7 @@ class NetnodeOptimizationStorage:
                 len(v) for v in self._state["patches"].values() if isinstance(v, list)
             ),
             "functions_with_custom_rules": len(self._state["function_rules"]),
+            "functions_with_recipes": len(self._state["function_recipes"]),
         }
 
     def close(self) -> None:
@@ -998,6 +1072,20 @@ class SQLiteOptimizationStorage:
             cursor.execute(
                 "ALTER TABLE function_rules ADD COLUMN tags TEXT DEFAULT '[]'"
             )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS function_recipes (
+                function_addr INTEGER PRIMARY KEY,
+                schema_version INTEGER NOT NULL,
+                function_fingerprint TEXT,
+                source_path TEXT NOT NULL,
+                runtime_path TEXT NOT NULL,
+                pass_configs_json TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """
+        )
 
         # Results table: cached optimization results
         cursor.execute(
@@ -1402,6 +1490,74 @@ class SQLiteOptimizationStorage:
         )
         self.conn.commit()
         logger.info("Cleared rule configuration for function %x", function_addr)
+
+    def set_function_recipe(
+        self,
+        *,
+        function_addr: int,
+        schema_version: int,
+        function_fingerprint: str | None,
+        source_path: str,
+        runtime_path: str,
+        pass_configs_json: str,
+    ) -> None:
+        if not self.conn:
+            return
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO function_recipes
+            (function_addr, schema_version, function_fingerprint, source_path,
+             runtime_path, pass_configs_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(function_addr),
+                int(schema_version),
+                function_fingerprint,
+                str(source_path),
+                str(runtime_path),
+                str(pass_configs_json),
+                time.time(),
+            ),
+        )
+        self.conn.commit()
+        logger.info("Updated function recipe for %x", function_addr)
+
+    def get_function_recipe(
+        self, function_addr: int
+    ) -> Optional[FunctionRecipeConfig]:
+        if not self.conn:
+            return None
+        row = self.conn.execute(
+            """
+            SELECT schema_version, function_fingerprint, source_path,
+                   runtime_path, pass_configs_json, updated_at
+            FROM function_recipes
+            WHERE function_addr = ?
+            """,
+            (int(function_addr),),
+        ).fetchone()
+        if row is None:
+            return None
+        return FunctionRecipeConfig(
+            function_addr=int(function_addr),
+            schema_version=int(row["schema_version"]),
+            function_fingerprint=row["function_fingerprint"],
+            source_path=str(row["source_path"]),
+            runtime_path=str(row["runtime_path"]),
+            pass_configs_json=str(row["pass_configs_json"]),
+            updated_at=float(row["updated_at"]),
+        )
+
+    def clear_function_recipe(self, function_addr: int) -> None:
+        if not self.conn:
+            return
+        self.conn.execute(
+            "DELETE FROM function_recipes WHERE function_addr = ?",
+            (int(function_addr),),
+        )
+        self.conn.commit()
+        logger.info("Cleared function recipe for %x", function_addr)
 
     def set_function_tags(self, function_addr: int, tags: Set[str]) -> None:
         if not self.conn:

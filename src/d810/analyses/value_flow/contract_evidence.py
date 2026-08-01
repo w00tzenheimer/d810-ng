@@ -57,6 +57,12 @@ def contract_evidence_tokens(observation: object) -> frozenset[str]:
     # token metadata.
     if getattr(observation, "kind", None) in {"StateWriteAnchorFact", "StateWriteFact"}:
         tokens.add(ContractEvidenceToken.STATE_VARIABLE_WRITES.value)
+    if (
+        getattr(observation, "kind", None) == "StateTransitionAnchorFact"
+        and isinstance(payload, Mapping)
+        and payload.get("successor_block_serial") is not None
+    ):
+        tokens.add(ContractEvidenceToken.BRANCH_TARGETS.value)
 
     return frozenset(token for token in tokens if token in CONTRACT_EVIDENCE_TOKENS)
 

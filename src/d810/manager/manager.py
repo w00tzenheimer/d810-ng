@@ -11,8 +11,13 @@ from d810.core import (
     MOP_TO_AST_CACHE,
     typing,
 )
-from d810.core.decompilation_session import DecompilationSessionEvent
+from d810.core.deobfuscation_case import DeobfuscationCaseEvidence
+from d810.core.decompilation_session import (
+    DecompilationEvent,
+    DecompilationSessionEvent,
+)
 from d810.core.logging import getLogger
+from d810.core.observability import get_active_diag_path
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.project import (
     emit_preanalysis_fact_collector_registration,
@@ -31,6 +36,20 @@ from d810.backends.hexrays.registration import (
     ensure_hexrays_fact_lifter_registered,
 )
 from d810.diagnostics.post_d810_handoff import detect_post_d810_handoff_violations
+from d810.diagnostics.deobfuscation_case_repository import (
+    DeobfuscationCaseRepository,
+    SqliteCaseDiagnosticReader,
+)
+from d810.diagnostics.workbench_cleanup import DiagnosticCleanupService
+from d810.diagnostics.workbench_inventory import DiagnosticInventoryService
+from d810.diagnostics.workbench_models import (
+    DiagnosticCleanupPlan,
+    DiagnosticCleanupResult,
+    DiagnosticDatabaseSummary,
+    DiagnosticRecord,
+    DiagnosticSnapshotSummary,
+    DiagnosticViewKind,
+)
 from d810.evaluator.hexrays_microcode.dispatcher_artifacts import (
     plan_dispatcher_state_return_carrier_artifact,
 )
@@ -39,8 +58,8 @@ from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.hexrays.ir_maturity import HexRaysMaturity, maturity_to_name
-from d810.core.decompilation_session import DecompilationEvent
 from d810.hexrays.lifecycle import HEXRAYS_MICROCODE_PROVIDER
+from d810.optimizers import load_optimizer_registries
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
@@ -65,10 +84,52 @@ from d810.manager.decompilation_lifecycle import (
     DecompilationLifecycleCoordinator,
     FlowgraphReadyPayload,
 )
+from d810.manager.config_v2_edit_models import (
+    ConfigV2FieldSerializer,
+    ConfigV2ProjectDraft,
+    ConfigV2ProjectValidation,
+)
+from d810.manager.config_v2_editing import ConfigV2EditingService
+from d810.manager.deobfuscation_case_service import DeobfuscationCaseService
+from d810.manager.function_recipe_runtime import (
+    FunctionRecipePersistenceError,
+    FunctionRecipeRuntime,
+)
+from d810.manager.function_recipe_activation import (
+    select_workbench_recipe_projection,
+)
 from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
 from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
 from d810.manager.profiling import ProfilingController
+from d810.manager.project_runtime import ProjectRuntimeSnapshot
 from d810.manager.rule_scope_runtime import RuleScopeRuntime
+from d810.manager.workbench_comparison import (
+    ComparisonIdentity,
+    WorkbenchComparisonService,
+)
+from d810.manager.workbench_models import (
+    BaselineRef,
+    D810OutputRef,
+    DeobfuscationCaseSnapshot,
+    DeobfuscationWorkbenchSnapshot,
+    FunctionRef,
+    RuntimeConfigRef,
+    WorkbenchComparisonSnapshot,
+)
+from d810.manager.workbench_service import WorkbenchService
+from d810.manager.workbench_recipe_models import (
+    FunctionPipelineOverride,
+    PassCatalogEntry,
+    PipelineRecipeDraft,
+    RecipeValidation,
+    RecipeCommandRequest,
+    RecipeCommandResult,
+)
+from d810.manager.workbench_recipe_commands import WorkbenchRecipeCommandService
+from d810.manager.workbench_recipe_analysis import collect_recipe_preflight_facts
+from d810.manager.workbench_recipe_service import RecipeService
+from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
+from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
 
 
 D810_LOG_DIR_NAME = "d810_logs"
@@ -393,6 +454,11 @@ def _new_semantic_native_body_materializer(*, session, mba):
     )
 
 
+def _active_diagnostic_paths() -> tuple[str, ...]:
+    path = get_active_diag_path()
+    return (path,) if path is not None else ()
+
+
 def maybe_run_tail_distinct(
     mba: typing.Any,
     *,
@@ -438,6 +504,9 @@ def _maturity_name(maturity: int) -> str:
 @dataclasses.dataclass
 class D810Manager:
     log_dir: pathlib.Path
+    diagnostic_active_paths_provider: typing.Callable[[], typing.Any] = (
+        dataclasses.field(default=_active_diagnostic_paths, repr=False)
+    )
     stats: OptimizationStatistics = dataclasses.field(
         default_factory=OptimizationStatistics
     )
@@ -465,6 +534,18 @@ class D810Manager:
     )
     profiling: ProfilingController = dataclasses.field(init=False)
     rule_scope_runtime: RuleScopeRuntime = dataclasses.field(init=False)
+    comparison_service: WorkbenchComparisonService = dataclasses.field(init=False)
+    recipe_service: RecipeService = dataclasses.field(init=False)
+    function_recipe_runtime: FunctionRecipeRuntime = dataclasses.field(init=False)
+    recipe_command_service: WorkbenchRecipeCommandService = dataclasses.field(
+        init=False
+    )
+    workbench_service: WorkbenchService = dataclasses.field(init=False)
+    diagnostic_inventory_service: DiagnosticInventoryService = dataclasses.field(
+        init=False
+    )
+    diagnostic_cleanup_service: DiagnosticCleanupService = dataclasses.field(init=False)
+    config_v2_editing_service: ConfigV2EditingService = dataclasses.field(init=False)
     instruction_optimizer: InstructionOptimizerManager = dataclasses.field(init=False)
     block_optimizer: BlockOptimizerManager = dataclasses.field(init=False)
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
@@ -478,6 +559,12 @@ class D810Manager:
     )
     _post_d810_runtime: typing.Any = dataclasses.field(default=None, init=False)
     _database_identity: str = dataclasses.field(default="", init=False)
+    _recon_phase: typing.Any = dataclasses.field(default=None, init=False)
+    _recon_runtime: typing.Any = dataclasses.field(default=None, init=False)
+    _recon_bundle: typing.Any = dataclasses.field(default=None, init=False)
+    _flowgraph_ready_subscriber: typing.Any = dataclasses.field(
+        default=None, init=False
+    )
     _function_analysis_priors: dict[str, FunctionAnalysisPriors] = dataclasses.field(
         default_factory=dict, init=False
     )
@@ -492,6 +579,29 @@ class D810Manager:
             project_name_provider=lambda: str(self.config.get("project_name", "")),
             config_provider=lambda: self.config,
         )
+        self.comparison_service = WorkbenchComparisonService()
+        workbench_registry = operational_config_v2_pass_registry()
+        self.recipe_service = RecipeService(workbench_registry)
+        self.function_recipe_runtime = FunctionRecipeRuntime(
+            storage_provider=lambda: self.rule_scope_runtime.storage,
+            event_emitter=self.event_emitter,
+            project_name_provider=lambda: str(self.config.get("project_name", "")),
+        )
+        self.workbench_service = WorkbenchService(self, registry=workbench_registry)
+        self.recipe_command_service = WorkbenchRecipeCommandService(
+            identity_is_current=self.workbench_service.recipe_request_is_current,
+        )
+        diagnostic_quarantine_directory = self.log_dir / "diagnostic_quarantine"
+        self.diagnostic_inventory_service = DiagnosticInventoryService(
+            roots=(self.log_dir,),
+            excluded_roots=(diagnostic_quarantine_directory,),
+            active_paths_provider=self.diagnostic_active_paths_provider,
+        )
+        self.diagnostic_cleanup_service = DiagnosticCleanupService(
+            active_paths_provider=self.diagnostic_active_paths_provider,
+            quarantine_directory=diagnostic_quarantine_directory,
+        )
+        self.config_v2_editing_service = ConfigV2EditingService(workbench_registry)
 
     @property
     def started(self):
@@ -744,6 +854,471 @@ class D810Manager:
             return None
         return bundle.db_path
 
+    def load_recon_hints(self, function_ea: int) -> typing.Any | None:
+        """Return persisted hints without triggering collection or mutation."""
+        runtime = self._recon_runtime
+        if runtime is not None:
+            return runtime.load_hints(int(function_ea))
+        analysis_runtime = self._analysis_runtime
+        if analysis_runtime is not None:
+            return analysis_runtime.load_hints(int(function_ea))
+        return None
+
+    def get_recon_outcome_reports(self, function_ea: int) -> tuple[typing.Any, ...]:
+        """Return a detached tuple of current cross-consumer reports."""
+        runtime = self._recon_runtime
+        if runtime is not None:
+            return tuple(runtime.outcome_log.get_func_reports(int(function_ea)))
+        analysis_runtime = self._analysis_runtime
+        if analysis_runtime is not None:
+            return tuple(analysis_runtime.outcome_log.get_func_reports(int(function_ea)))
+        return ()
+
+    def get_diagnostic_databases(self) -> tuple[DiagnosticDatabaseSummary, ...]:
+        return self.diagnostic_inventory_service.databases()
+
+    def get_diagnostic_snapshots(
+        self, path: pathlib.Path | str
+    ) -> tuple[DiagnosticSnapshotSummary, ...]:
+        return self.diagnostic_inventory_service.snapshots(path)
+
+    def get_diagnostic_records(
+        self,
+        path: pathlib.Path | str,
+        snapshot_id: int,
+        kind: DiagnosticViewKind,
+    ) -> tuple[DiagnosticRecord, ...]:
+        return self.diagnostic_inventory_service.records(path, snapshot_id, kind)
+
+    def get_diagnostic_case_evidence(
+        self,
+        path: pathlib.Path | str,
+        function_ea: int,
+    ) -> DeobfuscationCaseEvidence | None:
+        """Read one selected diagnostic database as an immutable case session."""
+        repository = DeobfuscationCaseRepository(
+            SqliteCaseDiagnosticReader((pathlib.Path(path),))
+        )
+        return repository.load(int(function_ea), None)
+
+    def plan_diagnostic_selected_snapshots(
+        self, path: pathlib.Path | str, snapshot_ids: typing.Sequence[int]
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_selected_snapshots(
+            path, snapshot_ids
+        )
+
+    def plan_diagnostic_all_snapshots(
+        self, path: pathlib.Path | str
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_all_snapshots(path)
+
+    def plan_diagnostic_keep_latest(
+        self, path: pathlib.Path | str, keep: int
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_keep_latest(path, keep)
+
+    def plan_diagnostic_selected_databases(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_selected_databases(paths)
+
+    def plan_diagnostic_all_closed_databases(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_all_closed_databases(paths)
+
+    def plan_diagnostic_vacuum(
+        self, paths: typing.Iterable[pathlib.Path | str]
+    ) -> DiagnosticCleanupPlan:
+        return self.diagnostic_cleanup_service.plan_vacuum(paths)
+
+    def execute_diagnostic_cleanup(
+        self,
+        plan: DiagnosticCleanupPlan,
+        *,
+        checkpoint_wal: bool = True,
+        vacuum_after: bool = False,
+    ) -> DiagnosticCleanupResult:
+        return self.diagnostic_cleanup_service.execute(
+            plan,
+            checkpoint_wal=checkpoint_wal,
+            vacuum_after=vacuum_after,
+        )
+
+    def get_config_v2_serializer_manifest(self) -> tuple[ConfigV2FieldSerializer, ...]:
+        return self.config_v2_editing_service.serializer_manifest()
+
+    def create_config_v2_project_draft(
+        self,
+        runtime_project: object,
+        *,
+        destination: pathlib.Path,
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.create_draft(
+            runtime_project,
+            destination=destination,
+        )
+
+    def validate_config_v2_project_draft(
+        self, draft: ConfigV2ProjectDraft
+    ) -> ConfigV2ProjectValidation:
+        return self.config_v2_editing_service.validate(draft)
+
+    def set_config_v2_description(
+        self, draft: ConfigV2ProjectDraft, description: str
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.set_description(draft, description)
+
+    def add_config_v2_pass(
+        self,
+        draft: ConfigV2ProjectDraft,
+        pass_id: str,
+        *,
+        index: int | None = None,
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.add_pass(draft, pass_id, index=index)
+
+    def remove_config_v2_pass(
+        self, draft: ConfigV2ProjectDraft, pass_index: int
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.remove_pass(draft, pass_index)
+
+    def reorder_config_v2_pass(
+        self,
+        draft: ConfigV2ProjectDraft,
+        pass_index: int,
+        new_index: int,
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.reorder_pass(draft, pass_index, new_index)
+
+    def set_config_v2_pass_rules(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        pass_index: int,
+        include: typing.Sequence[str],
+        exclude: typing.Sequence[str],
+        options: typing.Mapping[str, object],
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.set_pass_rules(
+            draft,
+            pass_index=pass_index,
+            include=include,
+            exclude=exclude,
+            options=options,
+        )
+
+    def set_config_v2_routing_override(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        prefer: typing.Mapping[str, float],
+        require: str | None,
+        deny: typing.Sequence[str],
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.set_routing_override(
+            draft,
+            prefer=prefer,
+            require=require,
+            deny=deny,
+        )
+
+    def materialize_recipe_as_config_v2(
+        self,
+        draft: ConfigV2ProjectDraft,
+        recipe: PipelineRecipeDraft,
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.materialize_recipe(draft, recipe)
+
+    def save_config_v2_project(
+        self,
+        draft: ConfigV2ProjectDraft,
+        validation: ConfigV2ProjectValidation,
+    ) -> object:
+        return self.config_v2_editing_service.save(draft, validation)
+
+    def capture_workbench_baseline(
+        self,
+        identity: ComparisonIdentity,
+        pseudocode: str,
+    ) -> BaselineRef:
+        """Store one native Hex-Rays baseline as immutable evidence."""
+        return self.comparison_service.capture_baseline(identity, pseudocode)
+
+    def capture_workbench_d810_output(
+        self,
+        identity: ComparisonIdentity,
+        pseudocode: str,
+    ) -> D810OutputRef:
+        """Store one normal D810 output as immutable evidence."""
+        return self.comparison_service.capture_d810_output(identity, pseudocode)
+
+    def get_workbench_comparison(
+        self,
+        identity: ComparisonIdentity,
+    ) -> WorkbenchComparisonSnapshot:
+        """Compare captured evidence only when its full identity is current."""
+        return self.comparison_service.compare(identity)
+
+    def get_workbench_recipe_catalog(self) -> tuple[PassCatalogEntry, ...]:
+        return self.recipe_service.catalog()
+
+    def create_workbench_recipe_draft(
+        self,
+        snapshot: DeobfuscationWorkbenchSnapshot,
+        runtime_project: object,
+    ) -> PipelineRecipeDraft:
+        override = self.get_workbench_function_recipe(snapshot.function.ea)
+        if override is not None:
+            return self.recipe_service.create_draft_from_override(
+                override,
+                function_ea=snapshot.function.ea,
+                function_fingerprint=snapshot.function.fingerprint,
+                workbench_generation=snapshot.generation,
+                source_path=snapshot.runtime.source_path,
+                runtime_path=snapshot.runtime.runtime_path,
+            )
+        return self.recipe_service.create_draft(
+            function_ea=snapshot.function.ea,
+            function_fingerprint=snapshot.function.fingerprint,
+            workbench_generation=snapshot.generation,
+            source_path=snapshot.runtime.source_path,
+            runtime_path=snapshot.runtime.runtime_path,
+            configs=pipeline_configs_from_project_config(runtime_project),
+        )
+
+    def create_saved_workbench_recipe_draft(
+        self,
+        *,
+        function_ea: int,
+        function_fingerprint: str | None,
+        workbench_generation: int,
+        source_path: str,
+        runtime_path: str,
+    ) -> PipelineRecipeDraft | None:
+        override = self.get_workbench_function_recipe(function_ea)
+        if override is None:
+            return None
+        return self.recipe_service.create_draft_from_override(
+            override,
+            function_ea=function_ea,
+            function_fingerprint=function_fingerprint,
+            workbench_generation=workbench_generation,
+            source_path=source_path,
+            runtime_path=runtime_path,
+        )
+
+    def validate_workbench_recipe(
+        self,
+        draft: PipelineRecipeDraft,
+        *,
+        facts: object | None = None,
+    ) -> RecipeValidation:
+        return self.recipe_service.validate(draft, facts=facts)
+
+    def add_workbench_recipe_pass(
+        self,
+        draft: PipelineRecipeDraft,
+        pass_id: str,
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.add_pass(draft, pass_id)
+
+    def remove_workbench_recipe_pass(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.remove_pass(draft, item_id)
+
+    def set_workbench_recipe_pass_enabled(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+        enabled: bool,
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.set_enabled(draft, item_id, enabled)
+
+    def reorder_workbench_recipe_pass(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+        new_index: int,
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.reorder_pass(draft, item_id, new_index)
+
+    def replace_workbench_recipe_pass_options(
+        self,
+        draft: PipelineRecipeDraft,
+        item_id: str,
+        options: typing.Mapping[str, object],
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.replace_options(draft, item_id, options)
+
+    def get_workbench_function_recipe(
+        self,
+        function_ea: int,
+    ) -> FunctionPipelineOverride | None:
+        return self.function_recipe_runtime.get(function_ea)
+
+    def save_workbench_function_recipe(
+        self,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+    ) -> FunctionPipelineOverride:
+        pass_configs_json = self.recipe_service.serialize_enabled_configs(draft)
+        return self.function_recipe_runtime.save(
+            draft,
+            validation,
+            pass_configs_json=pass_configs_json,
+        )
+
+    def clear_workbench_function_recipe(self, function_ea: int) -> bool:
+        return self.function_recipe_runtime.clear(function_ea)
+
+    def execute_workbench_apply_recipe_once(
+        self,
+        request: RecipeCommandRequest,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+        *,
+        lifecycle: typing.Callable[[PipelineRecipeDraft], bool],
+    ) -> RecipeCommandResult:
+        return self.recipe_command_service.execute_apply_once(
+            request,
+            draft,
+            validation,
+            lifecycle=lifecycle,
+        )
+
+    def execute_workbench_save_function_recipe(
+        self,
+        request: RecipeCommandRequest,
+        draft: PipelineRecipeDraft,
+        validation: RecipeValidation,
+    ) -> RecipeCommandResult:
+        return self.recipe_command_service.execute_save(
+            request,
+            draft,
+            validation,
+            persistence=self.save_workbench_function_recipe,
+        )
+
+    def get_workbench_snapshot(
+        self,
+        *,
+        function_ea: int,
+        function_name: str,
+        function_fingerprint: str | None,
+        project_snapshot: ProjectRuntimeSnapshot,
+        runtime_project: typing.Any,
+        facts: typing.Any | None = None,
+        baseline: BaselineRef | None = None,
+        latest_output: D810OutputRef | None = None,
+    ) -> DeobfuscationWorkbenchSnapshot:
+        """Collect one immutable read-only workbench snapshot."""
+        runtime_scope = "project"
+        initial_errors: tuple[str, ...] = ()
+        saved_recipe: FunctionPipelineOverride | None = None
+        try:
+            override = self.function_recipe_runtime.get(function_ea)
+            selection = select_workbench_recipe_projection(
+                runtime_project,
+                project_snapshot,
+                override,
+                function_ea=function_ea,
+                function_fingerprint=function_fingerprint,
+            )
+            runtime_project = selection.runtime_project
+            project_snapshot = selection.project_snapshot
+            runtime_scope = selection.recipe_scope
+            initial_errors = selection.errors
+            if selection.recipe_scope == "function-recipe":
+                saved_recipe = override
+        except FunctionRecipePersistenceError as exc:
+            runtime_scope = "function-recipe-blocked"
+            initial_errors = (f"function recipe: {exc}",)
+        return self.workbench_service.collect(
+            function_ea=function_ea,
+            function_name=function_name,
+            function_fingerprint=function_fingerprint,
+            project_snapshot=project_snapshot,
+            runtime_project=runtime_project,
+            facts=facts,
+            baseline=baseline,
+            latest_output=latest_output,
+            runtime_scope=runtime_scope,
+            saved_recipe=saved_recipe,
+            initial_errors=initial_errors,
+        )
+
+    def get_deobfuscation_case_snapshot(
+        self,
+        *,
+        function: FunctionRef,
+        runtime: RuntimeConfigRef,
+        saved_recipe: FunctionPipelineOverride | None,
+    ) -> DeobfuscationCaseSnapshot:
+        """Project only closed, current-schema diagnostic databases for one function."""
+        databases = self.diagnostic_inventory_service.databases()
+        paths = tuple(
+            pathlib.Path(database.path)
+            for database in databases
+            if (
+                database.readable
+                and not database.active
+                and database.schema_version
+                == SqliteCaseDiagnosticReader._SUPPORTED_SCHEMA_VERSION
+                and int(function.ea) in database.function_eas
+            )
+        )
+        repository = DeobfuscationCaseRepository(SqliteCaseDiagnosticReader(paths))
+        return DeobfuscationCaseService(repository).collect(
+            function=function,
+            runtime=runtime,
+            saved_recipe=saved_recipe,
+        )
+
+    def analyze_workbench_function(
+        self,
+        *,
+        function_ea: int,
+        target: object,
+        provider_phase: object,
+    ) -> object:
+        """Collect and classify evidence without applying any rewrite."""
+        if self._recon_runtime is not None:
+            return self._recon_runtime.collect_and_analyze(
+                int(function_ea),
+                target,
+                provider_phase,
+                persist_hints=True,
+            )
+        if self._preanalysis_runtime is None or self._analysis_runtime is None:
+            raise RuntimeError("Analysis runtime is not available")
+        self._preanalysis_runtime.capture_facts(
+            target,
+            func_ea=int(function_ea),
+            provider_phase=provider_phase,
+            phase="workbench_analysis",
+        )
+        return self._analysis_runtime.analyze(int(function_ea))
+
+    def analyze_workbench_recipe(
+        self,
+        *,
+        function_ea: int,
+        target: object,
+        provider_phase: object,
+    ) -> object:
+        """Capture mutation-free live facts for Recipe Composer preflight."""
+        return collect_recipe_preflight_facts(
+            self._recon_runtime or self._preanalysis_runtime,
+            function_ea=function_ea,
+            target=target,
+            provider_phase=provider_phase,
+        )
+
     def configure(self, **kwargs):
         self.config = kwargs
         self._semantic_route_reference_oracle_registry = (
@@ -940,6 +1515,7 @@ class D810Manager:
         if self._started:
             self.stop()
         logger.debug("Starting manager...")
+        load_optimizer_registries()
         # Ensure side-effect registrants are loaded before manager construction.
         from d810.optimizers.microcode.instructions.pattern_matching import (  # noqa: F401
             experimental,
