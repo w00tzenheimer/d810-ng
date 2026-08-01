@@ -1183,11 +1183,51 @@ def test_canonical_route_composes_live_source_with_detached_target_body() -> Non
     )
 
 
+def test_canonical_route_accepts_exact_write_proof_inside_plan_owned_range() -> None:
+    graph, normalization_plan, evidence = _omitted_delivery_source_case()
+    retained_source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1100, 0x1111),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1110,),
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=tuple(
+            replace(block, stable_identity=retained_source_identity)
+            if block.block_id == "live-route-source"
+            else block
+            for block in normalization_plan.blocks
+        ),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        available_evidence=evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    root = plan.block(plan.roots[0])
+    assert root.semantic_anchor_ea == 0x1100
+    assert 0x1100 in root.stable_identity.exact_instruction_eas
+
+
 def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> None:
     graph, normalization_plan, evidence = _live_source_detached_target_case()
     (native_body,) = normalization_plan.native_bodies
     consumer_id = native_body.entry_block_ids[0]
-    consumer_identity = StableBlockIdentity.from_intervals(
+    consumer_plan_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x1200, 0x1208),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1200,),
+    )
+    consumer_evidence_identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(0x1200, 0x1210),),
         native_key=NATIVE_KEY,
         exact_instruction_eas=(0x1200,),
@@ -1219,7 +1259,7 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
         normalization_plan,
         blocks=(
             *(
-                replace(block, stable_identity=consumer_identity)
+                replace(block, stable_identity=consumer_plan_identity)
                 if block.block_id == consumer_id
                 else block
                 for block in normalization_plan.blocks
@@ -1278,9 +1318,9 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
         atomic_group_id=evidence.atomic_group_id,
         proof_kind=SemanticRouteProofKind.STATE_CHOICE,
         shape=SemanticRouteShape.CONDITIONAL,
-        source_identity=consumer_identity,
+        source_identity=consumer_evidence_identity,
         source_anchor_ea=0x1200,
-        source_owner_identity=consumer_identity,
+        source_owner_identity=consumer_evidence_identity,
         source_owner_anchor_ea=0x1200,
         destinations=(
             SemanticRouteDestination(
@@ -1299,10 +1339,10 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
         predicate=SemanticPredicateProof(
             kind=SemanticPredicateKind.STORAGE_EQUALS,
             origin=SemanticCorridorPoint(portable_producer_identity, 0x1100),
-            consumer=SemanticCorridorPoint(consumer_identity, 0x1200),
+            consumer=SemanticCorridorPoint(consumer_evidence_identity, 0x1200),
             corridor=(
                 SemanticCorridorPoint(portable_producer_identity, 0x1100),
-                SemanticCorridorPoint(consumer_identity, 0x1200),
+                SemanticCorridorPoint(consumer_evidence_identity, 0x1200),
             ),
             storage_identity=predicate_storage,
             width=4,
@@ -1315,13 +1355,15 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
                     portable_producer_identity,
                     0x1100,
                 ),
-                consumers=(SemanticCorridorPoint(consumer_identity, 0x1200),),
+                consumers=(
+                    SemanticCorridorPoint(consumer_evidence_identity, 0x1200),
+                ),
                 corridor=(
                     SemanticCorridorPoint(
                         portable_producer_identity,
                         0x1100,
                     ),
-                    SemanticCorridorPoint(consumer_identity, 0x1200),
+                    SemanticCorridorPoint(consumer_evidence_identity, 0x1200),
                 ),
                 storage_identity=carrier_storage,
                 width=4,
