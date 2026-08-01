@@ -12443,7 +12443,7 @@ _CONSTANT_ROW33_MOVZX_ABSOLUTE = RhadAbsoluteConstantMaterialization(
     replacement_instruction_bytes="b8f00000009090",
     encoding_variant=RhadAbsoluteConstantEncoding.MOVZX_R32_BYTE_ABSOLUTE,
     publication_envelope=(
-        RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE
+        RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND
     ),
     phase=RhadReferencePhase.CONSTANT_MATERIALIZATION,
     depends_on=(_CONSTANT_ROW32_MOV_ABSOLUTE.operation_id,),

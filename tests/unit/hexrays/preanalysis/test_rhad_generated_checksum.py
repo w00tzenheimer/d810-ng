@@ -20677,7 +20677,9 @@ def test_constant_row33_reuses_imported_movzx_byte_contract_for_eax() -> None:
     )
     assert operation.operation_variant.value == "movzx_absolute"
     assert operation.encoding_variant.value == "movzx_r32_byte_absolute"
-    assert operation.publication_envelope.value == "imported_global_byte_move"
+    assert operation.publication_envelope.value == (
+        "imported_global_byte_zero_extend"
+    )
     assert operation.source_block_id == "native@0x40B8E6"
     assert operation.source_native_ea == 0x40B8E6
     assert operation.data_native_ea == 0x48A99C
@@ -20706,7 +20708,9 @@ def test_constant_row33_reuses_imported_movzx_byte_contract_for_eax() -> None:
     assert materialization.destination_width_bits == 32
     assert materialization.consumer_operation.value == "move"
     assert materialization.encoding_variant.value == "movzx_r32_byte_absolute"
-    assert materialization.publication_envelope.value == "imported_global_byte_move"
+    assert materialization.publication_envelope.value == (
+        "imported_global_byte_zero_extend"
+    )
     assert materialization.destination_storage == operation.destination_storage
     source = plan.block(operation.source_block_id)
     assert source.stable_identity is not None
@@ -21402,7 +21406,7 @@ def test_checksum_producer_compiles_row183_existing_dependency() -> None:
 
     operation = plan.operation("rhad:route@0x40C19E")
     assert batch.aggregate_program_identity == (
-        "sha256:0c6a7588f15826e4f6b3351c3e2683add2ca714e2f5c8875a7bc3dfefdf9b91e"
+        "sha256:aab61bce91de097416152ff94f41f0b68a34341bdb38bfc73ea3daab404c6f75"
     )
     assert len(batch.operations) == _EXPECTED_BATCH_OPERATION_COUNT
     assert len(batch.imported_blocks) == 884

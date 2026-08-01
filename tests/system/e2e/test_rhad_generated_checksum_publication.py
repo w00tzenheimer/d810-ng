@@ -4052,7 +4052,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             compiled_payload["aggregate_program_identity"]
         )
         assert compiled_payload["aggregate_program_identity"] == (
-            "sha256:0c6a7588f15826e4f6b3351c3e2683add2ca714e2f5c8875a7bc3dfefdf9b91e"
+            "sha256:aab61bce91de097416152ff94f41f0b68a34341bdb38bfc73ea3daab404c6f75"
         )
         proof_artifacts = {
             artifact["proof"]["binding"]["operation_id"]: artifact
@@ -12007,7 +12007,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             "operation_id": _ROW33_CONSTANT_OPERATION_ID,
             "operation_variant": "movzx_absolute",
             "phase": "constant_materialization",
-            "publication_envelope": "imported_global_byte_move",
+            "publication_envelope": "imported_global_byte_zero_extend",
             "reference_data_bytes_le": "f031516a",
             "reference_operation_id": "rhad:constant@0x40B8E6",
             "reference_order": 33,
@@ -12614,7 +12614,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
                 "movzx_r32_byte_absolute"
             )
             assert row33_constant["publication_envelope"] == (
-                "imported_global_byte_move"
+                "imported_global_byte_zero_extend"
             )
             assert row33_constant["source_width_bits"] == 8
             assert row33_constant["destination_width_bits"] == 32
