@@ -1187,9 +1187,15 @@
       "source_width_bits": 32
     },
     {
-      "current_compiler_support": "unsupported_typed_shape",
+      "current_compiler_support": "compiled_rhad_absolute_constant_materialization",
       "current_generated_proof": {
-        "status": "unproved"
+        "accepted_commits": [
+          "753746d85"
+        ],
+        "aggregate_program_identity": "sha256:58a5329c111ab283d77d43248f428946cbd7aecd26dc83801aa490ae51e0f8da",
+        "diagnostic_db": ".tmp/logs/000000000040a560_accepted_437_constant_row39.diag.sqlite3",
+        "diagnostic_db_sha256": "a9cf30a5bd7969d11a46895d567788550708bab9a2f1a7d943914c50ba83ee77",
+        "status": "accepted_generated_c6"
       },
       "data_native_ea": 4763200,
       "destination_register": "eax",
@@ -1854,7 +1860,7 @@
       "source_width_bits": 32
     }
   ],
-  "operations_identity": "sha256:3cfda7507ad7bd128d1032f1436e5449424eac7aef2f9f61b17729964e476ec3",
+  "operations_identity": "sha256:affe2dea0d094e4c329e800a9a0b4190dcd35b9f3720672099dcdbdda0c71ea9",
   "reference_commit": "21b0d4783703bc4fb6910cfae51d92cd683d2c65",
   "reference_phase": "constant_materialization",
   "reference_phase_order": 1,
