@@ -282,6 +282,7 @@ _ROW30_CONSTANT_OPERATION_ID = "constant:rhad-movzx-absolute@0x40B815"
 _ROW31_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40B825"
 _ROW32_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40B84C"
 _ROW33_CONSTANT_OPERATION_ID = "constant:rhad-movzx-absolute@0x40B8E6"
+_ROW34_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40B8ED"
 _COMPILED_OPERATION_IDS = (
     *_REFERENCE_OPERATION_IDS,
     _CONSTANT_OPERATION_ID,
@@ -318,6 +319,7 @@ _COMPILED_OPERATION_IDS = (
     _ROW31_CONSTANT_OPERATION_ID,
     _ROW32_CONSTANT_OPERATION_ID,
     _ROW33_CONSTANT_OPERATION_ID,
+    _ROW34_CONSTANT_OPERATION_ID,
 )
 _IMPORTED_BLOCK_IDS = (
     "native@0x40A607",
@@ -4052,7 +4054,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             compiled_payload["aggregate_program_identity"]
         )
         assert compiled_payload["aggregate_program_identity"] == (
-            "sha256:aab61bce91de097416152ff94f41f0b68a34341bdb38bfc73ea3daab404c6f75"
+            "sha256:ccdca8a0f96416bebf2279d0071037f23216bb1f031292cd3659465c45c7913d"
         )
         proof_artifacts = {
             artifact["proof"]["binding"]["operation_id"]: artifact
@@ -12022,6 +12024,36 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             "source_native_ea": 0x40B8E6,
             "source_width_bits": 8,
         }
+        row34_constant_reference = reference_payloads[_ROW34_CONSTANT_OPERATION_ID]
+        assert row34_constant_reference == {
+            "category": "constant_materialization",
+            "data_native_ea": 0x48AE90,
+            "depends_on": [_ROW33_CONSTANT_OPERATION_ID],
+            "destination_storage": {
+                "kind": "r",
+                "offset": 16,
+            },
+            "destination_width_bits": 32,
+            "encoding_variant": "mov_r32_absolute",
+            "materialized_value": 0x7CBC55D0,
+            "operation_id": _ROW34_CONSTANT_OPERATION_ID,
+            "operation_variant": "mov_absolute",
+            "phase": "constant_materialization",
+            "publication_envelope": "imported_global_move",
+            "reference_data_bytes_le": "d055bc7c",
+            "reference_operation_id": "rhad:constant@0x40B8ED",
+            "reference_order": 34,
+            "reference_raw_value": 0x7CBC55D0,
+            "reference_read_width_bits": 32,
+            "reference_symbol": (
+                "deob_consts.ConstantInliner.transform_mov_mem_to_imm"
+            ),
+            "replacement_instruction_bytes": "90b9d055bc7c",
+            "source_block_id": "native@0x40B8E6",
+            "source_instruction_bytes": "8b0d90ae4800",
+            "source_native_ea": 0x40B8ED,
+            "source_width_bits": 32,
+        }
 
         published_payload = json.loads(lifecycle_rows[2][3])
         assert (
@@ -12628,6 +12660,25 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
                 assert row33_constant["semantic_envelope_survives"] is True
             if maturity == "MMAT_GENERATED":
                 assert row33_constant["exact_generated_envelope"] is True
+            row34_constant = observations[_ROW34_CONSTANT_OPERATION_ID]
+            assert row34_constant["reference_operation_id"] == (
+                "rhad:constant@0x40B8ED"
+            )
+            assert row34_constant["operation_variant"] == "mov_absolute"
+            assert row34_constant["encoding_variant"] == "mov_r32_absolute"
+            assert row34_constant["publication_envelope"] == "imported_global_move"
+            assert row34_constant["source_width_bits"] == 32
+            assert row34_constant["destination_width_bits"] == 32
+            assert row34_constant["reference_read_width_bits"] == 32
+            assert row34_constant["destination_storage"]["key"] == "r16"
+            assert row34_constant["absolute_load_present"] is False
+            assert row34_constant["passed"] is True
+            if row34_constant["source_present"]:
+                assert row34_constant["destination_delivery_present"] is True
+                assert row34_constant["materialized_constant_present"] is True
+                assert row34_constant["semantic_envelope_survives"] is True
+            if maturity == "MMAT_GENERATED":
+                assert row34_constant["exact_generated_envelope"] is True
             direct = observations["route:rhad-direct@0x40A619"]
             assert direct["source_present"] is True
             assert direct["source_topology_reachable"] is True
@@ -15586,6 +15637,14 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             assert row33_constant_calls["destination_delivery_present"] is True
         else:
             assert row33_constant_calls["source_topology_retired"] is True
+        row34_constant_calls = calls_observations[_ROW34_CONSTANT_OPERATION_ID]
+        assert row34_constant_calls["absolute_load_present"] is False
+        assert row34_constant_calls["passed"] is True
+        if row34_constant_calls["source_present"]:
+            assert row34_constant_calls["materialized_constant_present"] is True
+            assert row34_constant_calls["destination_delivery_present"] is True
+        else:
+            assert row34_constant_calls["source_topology_retired"] is True
         direct_calls = calls_observations["route:rhad-direct@0x40A619"]
         assert direct_calls["source_present"] is False
         assert direct_calls["source_topology_reachable"] is False
