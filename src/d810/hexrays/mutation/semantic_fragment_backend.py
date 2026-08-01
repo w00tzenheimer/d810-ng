@@ -1640,6 +1640,12 @@ def _materialize_constant_materializations(
             )
         )
         gateway._record_fragment_mutation_started(plan)
+        replacement_value_size = (
+            materialization.destination_width_bits
+            if materialization.publication_envelope
+            is FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND
+            else materialization.source_width_bits
+        ) // 8
         modifier.replace_instruction_with_constant_now(
             block,
             instruction_index=fact.load_instruction_index,
@@ -1658,7 +1664,7 @@ def _materialize_constant_materializations(
                 }.get(materialization.publication_envelope, ida_hexrays.m_ldx)
             ),
             constant_value=materialization.constant_value,
-            value_size=materialization.source_width_bits // 8,
+            value_size=replacement_value_size,
         )
         applied = tuple(_iter_block_instructions(block))[
             fact.load_instruction_index

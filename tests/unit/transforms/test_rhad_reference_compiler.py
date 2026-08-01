@@ -930,12 +930,20 @@ def test_compiler_emits_imported_movzx_zero_extend_envelope() -> None:
             compiler.RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND
         ),
     )
+    zero_extend_ledger = replace(
+        ledger,
+        operations=(*ledger.operations[:-1], operation),
+    )
 
     plan = compiler.compile_rhad_reference_fragment(
-        replace(ledger, operations=(*ledger.operations[:-1], operation)),
+        zero_extend_ledger,
         expected_evidence_generation=1,
     )
 
+    assert (
+        zero_extend_ledger.aggregate_program_identity
+        != ledger.aggregate_program_identity
+    )
     assert plan.constant_materializations[-1].publication_envelope.value == (
         "imported_global_byte_zero_extend"
     )
