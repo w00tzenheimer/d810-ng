@@ -19767,14 +19767,21 @@ def publish_rhad_generated_reference_batch(
     receipt = backend._committed_fragment_receipt
     if receipt is None:
         raise RuntimeError("GENERATED checksum did not produce a receipt")
-    record_receipted_frontend_normalization_generation(
-        plan_authority=session.frontend_normalization_plan_authority,
-        lifecycle_state=session.native_preanalysis,
-        generation_plan=FrontendNormalizationGenerationPlan(
-            complete_plan=plan,
-            work_item_plan=plan,
-        ),
-    )
+    try:
+        record_receipted_frontend_normalization_generation(
+            plan_authority=session.frontend_normalization_plan_authority,
+            lifecycle_state=session.native_preanalysis,
+            generation_plan=FrontendNormalizationGenerationPlan(
+                complete_plan=plan,
+                work_item_plan=plan,
+            ),
+        )
+    except Exception:
+        logger.exception(
+            "GENERATED checksum receipt-intent binding failed: plan=%s",
+            plan.plan_id,
+        )
+        raise
     session.rhad_generated_checksum_committed_for_current_mba = True
     decision["microcode_modified"] = True
     decision["rhad_generated_checksum_receipt"] = receipt

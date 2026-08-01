@@ -136,6 +136,47 @@ def test_prepared_body_facts_remain_invisible_until_exact_plan_receipt() -> None
     assert retained.prepared_bodies.bodies == (fact,)
 
 
+def test_prepared_body_receipt_accepts_distinct_typed_work_item_identity() -> None:
+    generation_plan, evidence, authority, fact, plan_authority = (
+        _scoped_generation_case()
+    )
+    work_item_plan = generation_plan.work_item_plan
+    scope = work_item_plan.work_item_scope
+    assert scope is not None
+    typed_work_item_id = "reference-batch:g7"
+    work_item_plan = replace(
+        work_item_plan,
+        work_item_scope=replace(scope, work_item_id=typed_work_item_id),
+    )
+    generation_plan = replace(
+        generation_plan,
+        work_item_plan=work_item_plan,
+    )
+    authority = replace(authority, work_item_id=typed_work_item_id)
+    (native_body,) = work_item_plan.native_bodies
+    plan_authority.record_prepared_body_fact(
+        work_item_plan,
+        native_body,
+        fact,
+        evidence_generation=evidence.generation,
+    )
+
+    plan_authority.record_receipted_generation(
+        generation_plan,
+        authority=authority,
+    )
+
+    retained = plan_authority.prepared_work_item_for(
+        0x40A560,
+        evidence.generation,
+        generation_plan.complete_plan.plan_id,
+        "native@0x40BB51",
+    )
+    assert retained is not None
+    assert retained.work_item_plan.plan_id != retained.authority.work_item_id
+    assert retained.authority.work_item_id == typed_work_item_id
+
+
 def test_prepared_body_authority_rejects_fact_lineage_drift() -> None:
     generation_plan, evidence, _authority, fact, plan_authority = (
         _scoped_generation_case()
