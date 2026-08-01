@@ -80,15 +80,19 @@ from d810.transforms.canonical_semantic_fragment import (
     compose_canonical_carrier_ingress_fragment_plan,
     compose_canonical_semantic_boundary_fragment_plan,
     compose_canonical_semantic_fragment_plan,
+    compile_receipted_prepared_topology,
     plan_detached_reference_direct_route,
+    validate_receipted_prepared_topology_scope,
 )
 from d810.transforms.fragment_plan import (
+    FragmentBlockRole,
     FragmentPlan,
     FragmentPublicationPurpose,
 )
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
     FrontendNormalizationPlanCapability,
+    FrontendNormalizationPreparedBodyCapability,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.core.semantic_route_oracle import (
@@ -115,6 +119,7 @@ from d810.capabilities.semantic_routes import (
 from d810.transforms.detached_route_oracle import (
     DetachedRouteOracleRejected,
     bind_fragment_reference_oracle,
+    select_fragment_reference_oracle_scope,
 )
 from d810.analyses.data_flow.concolic import EmulationCapability
 from d810.core import logging
@@ -1210,11 +1215,13 @@ def _compose_configured_reference_scope_plan(
     available_evidence: CanonicalSemanticEvidence,
     current_identity_by_serial: dict[int, StableBlockIdentity],
     normalization_authority: NormalizationWorkItemAuthority,
+    prepared_body_provider: FrontendNormalizationPreparedBodyCapability | None,
     prohibited_dispatcher_serials: tuple[int, ...],
     composition_attempts: list[dict[str, object]],
 ) -> FragmentPlan:
     """Compose one exact configured root without losing its temporary entry port."""
     publication_root_ea = int(configured_scope.publication_root_ea)
+    effective_normalization_plan = normalization_plan
 
     def oracle_rejection_payload(exc: Exception) -> dict[str, object]:
         if not isinstance(exc, DetachedRouteOracleRejected):
@@ -1238,7 +1245,7 @@ def _compose_configured_reference_scope_plan(
         try:
             plan = compose_canonical_semantic_boundary_fragment_plan(
                 graph,
-                normalization_plan,
+                effective_normalization_plan,
                 boundary_anchor_ea=int(boundary_anchor_ea),
                 available_evidence=available_evidence,
                 current_identity_by_serial=current_identity_by_serial,
@@ -1282,6 +1289,33 @@ def _compose_configured_reference_scope_plan(
         ) from exc
     if route_candidate is not None:
         oracle_scope = configured_scope
+        prepared_work_items = (
+            ()
+            if prepared_body_provider is None
+            else prepared_body_provider.prepared_work_items_for(
+                int(graph.func_ea),
+                int(available_evidence.generation),
+                normalization_plan.plan_id,
+            )
+        )
+        try:
+            for prepared_work_item in prepared_work_items:
+                effective_normalization_plan = compile_receipted_prepared_topology(
+                    effective_normalization_plan,
+                    prepared_work_item,
+                )
+        except CanonicalSemanticFragmentRejected as exc:
+            composition_attempts.append(
+                _rejected_canonical_composition_attempt(
+                    kind="configured_reference_prepared_topology",
+                    rejection=exc,
+                    route_candidate=route_candidate,
+                )
+            )
+            raise _with_canonical_composition_attempts(
+                exc,
+                tuple(composition_attempts),
+            ) from exc
         detached_direct_plan = None
         if len(configured_scope.routes) == 1:
             (configured_route,) = configured_scope.routes
@@ -1311,6 +1345,42 @@ def _compose_configured_reference_scope_plan(
                     route_candidate,
                 )
             )
+            source_prepared_work_items = tuple(
+                prepared_work_item
+                for prepared_work_item in prepared_work_items
+                if any(
+                    block.block_id == detached_direct_plan.source_block.block_id
+                    and block.role is FragmentBlockRole.IMPORTED
+                    for block in prepared_work_item.work_item_plan.blocks
+                )
+            )
+            if len(source_prepared_work_items) != 1:
+                rejection = CanonicalSemanticFragmentRejected(
+                    "detached canonical route lacks receipt-backed prepared topology",
+                    reason_code="prepared_normalization_topology_missing",
+                    anchor_ea=int(
+                        detached_direct_plan.source_block.semantic_anchor_ea
+                    ),
+                    payload={
+                        "source_block_id": detached_direct_plan.source_block.block_id,
+                        "source_plan_id": normalization_plan.plan_id,
+                        "evidence_generation": int(
+                            detached_direct_plan.evidence_generation
+                        ),
+                        "receipt_owner_count": len(source_prepared_work_items),
+                    },
+                )
+                composition_attempts.append(
+                    _rejected_canonical_composition_attempt(
+                        kind="configured_reference_prepared_topology",
+                        rejection=rejection,
+                        route_candidate=route_candidate,
+                    )
+                )
+                raise _with_canonical_composition_attempts(
+                    rejection,
+                    tuple(composition_attempts),
+                )
             try:
                 configured_plan = compose_boundary(
                     int(detached_direct_plan.source_block.semantic_anchor_ea),
@@ -1325,7 +1395,7 @@ def _compose_configured_reference_scope_plan(
                 try:
                     configured_plan = compose_canonical_carrier_ingress_fragment_plan(
                         graph,
-                        normalization_plan,
+                        effective_normalization_plan,
                         available_evidence=available_evidence,
                         detached_route=detached_direct_plan,
                         current_identity_by_serial=current_identity_by_serial,
@@ -1390,7 +1460,7 @@ def _compose_configured_reference_scope_plan(
             try:
                 configured_plan = compose_canonical_semantic_fragment_plan(
                     graph,
-                    normalization_plan,
+                    effective_normalization_plan,
                     route_candidate,
                     available_evidence=available_evidence,
                     current_identity_by_serial=current_identity_by_serial,
@@ -1416,10 +1486,60 @@ def _compose_configured_reference_scope_plan(
                     route_candidate=route_candidate,
                 )
             )
+        if prepared_work_items:
+            try:
+                prepared_block_facts = {}
+                for prepared_work_item in prepared_work_items:
+                    for prepared_body in prepared_work_item.prepared_bodies.bodies:
+                        for prepared_block in prepared_body.blocks:
+                            previous = prepared_block_facts.get(
+                                prepared_block.block_id
+                            )
+                            if previous is not None and previous != prepared_block:
+                                raise CanonicalSemanticFragmentRejected(
+                                    "prepared topology block fact differs across receipts",
+                                    reason_code=(
+                                        "prepared_topology_block_fact_receipt_drift"
+                                    ),
+                                    anchor_ea=int(
+                                        prepared_block.semantic_anchor_ea
+                                    ),
+                                    payload={
+                                        "block_id": prepared_block.block_id,
+                                    },
+                                )
+                            prepared_block_facts[prepared_block.block_id] = (
+                                prepared_block
+                            )
+                validate_receipted_prepared_topology_scope(
+                    normalization_plan,
+                    effective_normalization_plan,
+                    configured_plan,
+                    receipt_snapshot_ids=tuple(
+                        prepared_work_item.prepared_bodies.snapshot_id
+                        for prepared_work_item in prepared_work_items
+                    ),
+                    prepared_block_facts=prepared_block_facts,
+                )
+            except CanonicalSemanticFragmentRejected as exc:
+                composition_attempts.append(
+                    _rejected_canonical_composition_attempt(
+                        kind="configured_reference_prepared_topology_coverage",
+                        rejection=exc,
+                        route_candidate=route_candidate,
+                    )
+                )
+                raise _with_canonical_composition_attempts(
+                    exc,
+                    tuple(composition_attempts),
+                ) from exc
         try:
             return bind_fragment_reference_oracle(
                 configured_plan,
-                oracle_scope,
+                select_fragment_reference_oracle_scope(
+                    configured_plan,
+                    oracle_scope,
+                ),
             )
         except (DetachedRouteOracleRejected, TypeError) as exc:
             rejection = CanonicalSemanticFragmentRejected(
@@ -1518,7 +1638,10 @@ def _compose_configured_reference_scope_plan(
     try:
         return bind_fragment_reference_oracle(
             configured_plan,
-            configured_scope,
+            select_fragment_reference_oracle_scope(
+                configured_plan,
+                configured_scope,
+            ),
         )
     except (DetachedRouteOracleRejected, TypeError) as exc:
         required = _boundary_reference_oracle_rejection(
@@ -1646,6 +1769,9 @@ def _compose_candidate_semantic_fragment(
                 available_evidence=candidate,
                 current_identity_by_serial=current_identity_by_serial,
                 normalization_authority=normalization_authority,
+                prepared_body_provider=context.capabilities.optional(
+                    FrontendNormalizationPreparedBodyCapability
+                ),
                 prohibited_dispatcher_serials=prohibited_dispatcher_serials,
                 composition_attempts=composition_attempts,
             ),

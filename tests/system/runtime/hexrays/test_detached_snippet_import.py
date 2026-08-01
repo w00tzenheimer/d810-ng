@@ -769,8 +769,13 @@ def _single_block_native_body_runtime(
     return destination, native_body, context
 
 
+@pytest.mark.parametrize(
+    "destination_maturity",
+    (ida_hexrays.MMAT_PREOPTIMIZED, ida_hexrays.MMAT_GLBOPT1),
+)
 def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
     monkeypatch,
+    destination_maturity,
 ) -> None:
     _install_runtime_fakes(monkeypatch)
     function_ea = 0xB000
@@ -808,7 +813,7 @@ def test_preopt_native_body_materializer_populates_only_unpublished_bodies(
                 (_Instruction(ida_hexrays.m_nop, function_ea),),
             ),
         ),
-        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+        maturity=destination_maturity,
     )
     body_id = "native-body:test"
     entry_block = _imported_fragment_block(
@@ -2239,6 +2244,67 @@ def test_preopt_split_direct_requires_join_identity_only_for_relocated_tail(
         return
 
     plan = materializer._preflight_split_normalized_direct_transfer_rewrite(
+        template=template,
+        native_body=native_body,
+        block_id=operation.source_block_id,
+        template_block=template_block,
+        source_proof=source_proof,
+        operation=operation,
+        rewrite=rewrite,
+    )
+
+    assert plan.cut_index == 2
+    assert plan.relocated_instructions == ()
+
+
+def test_preopt_split_direct_cuts_at_proved_delivery_prefix(
+    monkeypatch,
+) -> None:
+    normalization = FragmentComputedBranchNormalization(
+        predicate_kind=PredicateKind.SLT,
+        normalization_start_ea=0x3614,
+        condition_producer_ea=0x3608,
+        unresolved_transfer_ea=0x3618,
+    )
+    rewrite = FragmentDirectTransferRewrite(
+        route_proof_id="proof:prefixed-normalized-direct",
+        owner_identity=_direct_rewrite_owner_identity(0x3604, 0x3610),
+        owner_anchor_ea=0x3604,
+        rewrite_anchor_ea=0x3610,
+        delivery_region=NativeEaInterval(0x3610, 0x3619),
+        proof_corridor_instruction_eas=(0x3604, 0x3608, 0x3610),
+        superseded_instruction_eas=(0x3610,),
+        source_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        source_computed_branch_normalization=normalization,
+        source_predicate_anchor_ea=0x3614,
+    )
+    native_body, operation, matched = _direct_transfer_preflight_case(
+        rewrite=rewrite,
+        instructions=(
+            _Instruction(ida_hexrays.m_mov, 0x3604),
+            _Instruction(ida_hexrays.m_sets, 0x3608),
+            _Instruction(ida_hexrays.m_mov, 0x3610),
+            _Instruction(ida_hexrays.m_jcnd, 0x3614),
+        ),
+    )
+    template_block = matched[operation.source_block_id]
+    template = SimpleNamespace(blocks=(template_block,))
+    source_proof = detached_handler_island._computed_branch_source_proof(operation)
+    assert source_proof is not None
+    monkeypatch.setattr(
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer,
+        "_preflight_split_conditional_select_normalization",
+        staticmethod(
+            lambda _template, _template_block, _native_body, _source_proof: (
+                SimpleNamespace(cut_index=3)
+            )
+        ),
+    )
+
+    plan = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer(
+        mba=object(),
+        function_ea=0xB000,
+    )._preflight_split_normalized_direct_transfer_rewrite(
         template=template,
         native_body=native_body,
         block_id=operation.source_block_id,
@@ -4246,7 +4312,7 @@ def test_generated_preserved_fake_transfer_retains_multi_exit_indirect_fact() ->
         external_successor_eas=(0x40A794, 0x40AEE6),
     )
 
-    successors, terminators = (
+    successors, terminators, boundary_exits = (
         detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._generated_preserved_transfer_authority(
             matched={"carrier": carrier},
             native_body=SimpleNamespace(
@@ -4260,6 +4326,7 @@ def test_generated_preserved_fake_transfer_retains_multi_exit_indirect_fact() ->
     assert terminators == {
         "carrier": (transfer_ea, InsnKind.INDIRECT_JUMP),
     }
+    assert boundary_exits == {"carrier": (0x40A794, 0x40AEE6)}
 
 
 def test_generated_stitched_preserved_fake_transfer_rejects_multi_exit() -> None:
@@ -4303,7 +4370,9 @@ def test_generated_stitched_preserved_fake_transfer_rejects_multi_exit() -> None
         )
 
 
-def test_generated_preserved_authority_excludes_superseded_conditional_carrier() -> None:
+def test_generated_preserved_authority_excludes_superseded_conditional_carrier() -> (
+    None
+):
     carrier = detached_handler_island.DetachedSnippetBlockTemplate(
         source_serial=1,
         native_entry_ea=0x40A818,
@@ -4330,16 +4399,19 @@ def test_generated_preserved_authority_excludes_superseded_conditional_carrier()
         instructions=(_Instruction(ida_hexrays.m_nop, 0x40AA60),),
     )
 
-    successors, terminators = detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._generated_preserved_transfer_authority(
-        matched={"carrier": carrier, "taken": taken, "fallthrough": fallthrough},
-        native_body=SimpleNamespace(
-            preserved_native_transfer_block_ids=("carrier",),
-        ),
-        superseded_transfer_carrier_block_ids=("carrier",),
+    successors, terminators, boundary_exits = (
+        detached_handler_island.PreoptUnionSemanticNativeBodyMaterializer._generated_preserved_transfer_authority(
+            matched={"carrier": carrier, "taken": taken, "fallthrough": fallthrough},
+            native_body=SimpleNamespace(
+                preserved_native_transfer_block_ids=("carrier",),
+            ),
+            superseded_transfer_carrier_block_ids=("carrier",),
+        )
     )
 
     assert successors == {"carrier": ()}
     assert terminators == {}
+    assert boundary_exits == {"carrier": ()}
 
 
 def test_generated_composition_stitches_typed_external_exit_to_imported_root(
@@ -4453,9 +4525,7 @@ def test_generated_composition_uses_instruction_scoped_stack_identity_for_aliase
                 blocks=(block,),
                 stack_vd_to_ida=((source_vd, ida_offset),),
                 stable_stack_vd_to_ida=((source_vd, ida_offset),),
-                instruction_stack_vd_to_ida=(
-                    (target_ea, source_vd, ida_offset),
-                ),
+                instruction_stack_vd_to_ida=((target_ea, source_vd, ida_offset),),
                 owned_ranges=((target_ea, target_ea + 2),),
             )
         )

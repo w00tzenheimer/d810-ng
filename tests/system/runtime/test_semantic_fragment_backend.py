@@ -1042,6 +1042,10 @@ def _native_body_preparation(
         plan=plan,
         native_body=native_body,
         rows=rows,
+        preserved_boundary_exits_by_block_id={
+            block_id: ()
+            for block_id in native_body.preserved_native_transfer_block_ids
+        },
         direct_transfer_operation_ids=direct_transfer_operation_ids,
     )
 

@@ -1204,7 +1204,12 @@ _IMPORTED_NATIVE_BLOCK_RANGES: dict[
 
 @dataclass(slots=True)
 class PreoptUnionSemanticNativeBodyMaterializer:
-    """Populate one unpublished FragmentPlan body from a cached PREOPT union."""
+    """Populate one unpublished FragmentPlan body from a cached PREOPT union.
+
+    The template authority is PREOPT-owned.  Its destination may be the PREOPT
+    publication boundary or GLBOPT1 canonical lowering; both paths rebind the
+    same immutable template through the shared fragment backend.
+    """
 
     mba: object
     function_ea: int
@@ -1960,6 +1965,27 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             f"source={block_id!r}@0x{int(template_block.native_entry_ea):X} "
             f"rewrite=0x{int(rewrite.rewrite_anchor_ea):X}"
         )
+        delivery_region = rewrite.delivery_region
+        predicate_cut = (
+            bool(
+                int(delivery_region.start_ea)
+                == int(normalization.normalization_start_ea)
+                <= int(predicate_anchor_ea)
+                == int(rewrite.rewrite_anchor_ea)
+            )
+            if normalization is not None and predicate_anchor_ea is not None
+            else False
+        )
+        delivery_prefix_cut = (
+            bool(
+                int(delivery_region.start_ea)
+                == int(rewrite.rewrite_anchor_ea)
+                < int(normalization.normalization_start_ea)
+                <= int(predicate_anchor_ea)
+            )
+            if normalization is not None and predicate_anchor_ea is not None
+            else False
+        )
         if (
             source_proof is None
             or normalization is None
@@ -1967,7 +1993,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             or source_proof.operation is not operation
             or source_proof.normalization != normalization
             or int(source_proof.predicate_anchor_ea) != int(predicate_anchor_ea)
-            or int(predicate_anchor_ea) != int(rewrite.rewrite_anchor_ea)
+            or not (predicate_cut or delivery_prefix_cut)
             or operation.operation_id not in native_body.proof_ids
             or operation.operation_id != f"route:{rewrite.route_proof_id}"
             or len(operation.edges) != 1
@@ -1986,6 +2012,96 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             native_body,
             source_proof,
         )
+        corridor_coordinates = {
+            int(instruction.ea)
+            for block in template.blocks
+            for instruction in block.instructions
+        }
+        missing_corridor_eas = tuple(
+            int(ea)
+            for ea in rewrite.proof_corridor_instruction_eas
+            if int(ea) != int(rewrite.rewrite_anchor_ea)
+            and int(ea) not in corridor_coordinates
+        )
+        if delivery_prefix_cut:
+            rewrite_anchor_ea = int(rewrite.rewrite_anchor_ea)
+            cut_indexes = tuple(
+                index
+                for index, instruction in enumerate(template_block.instructions)
+                if int(instruction.ea) == rewrite_anchor_ea
+            )
+            cut_index = cut_indexes[0] if len(cut_indexes) == 1 else None
+            delivery_suffix = (
+                ()
+                if cut_index is None
+                else template_block.instructions[int(cut_index) :]
+            )
+            relocated_eas = tuple(
+                int(ea) for ea in normalization.relocated_instruction_eas
+            )
+            checks = (
+                ("source_normalization_validated", split_plan.cut_index >= 0),
+                ("delivery_cut_unique", cut_index is not None),
+                (
+                    "delivery_cut_precedes_normalization",
+                    cut_index is not None
+                    and int(cut_index) < int(split_plan.cut_index),
+                ),
+                ("proof_corridor_present", not missing_corridor_eas),
+                (
+                    "synthetic_cut_owned",
+                    rewrite.superseded_instruction_eas == (rewrite_anchor_ea,),
+                ),
+                (
+                    "delivery_suffix_owned",
+                    bool(delivery_suffix)
+                    and all(
+                        int(delivery_region.start_ea)
+                        <= int(instruction.ea)
+                        < int(delivery_region.end_ea)
+                        for instruction in delivery_suffix
+                    ),
+                ),
+                (
+                    "normalization_extent_owned",
+                    int(delivery_region.start_ea)
+                    == rewrite_anchor_ea
+                    < int(normalization.normalization_start_ea)
+                    <= int(predicate_anchor_ea)
+                    < int(normalization.unresolved_transfer_ea)
+                    < int(delivery_region.end_ea)
+                    and all(
+                        int(delivery_region.start_ea)
+                        <= ea
+                        < int(delivery_region.end_ea)
+                        for ea in relocated_eas
+                    ),
+                ),
+            )
+            failed_obligations = tuple(name for name, passed in checks if not passed)
+            if failed_obligations:
+                raise SemanticFragmentBackendRejected(
+                    "PREOPT prefixed normalized direct transfer does not own "
+                    f"its delivery cut; {label} "
+                    f"failed_obligations={failed_obligations!r}",
+                    reason_code="detached_prefixed_direct_corridor_mismatch",
+                    anchor_ea=rewrite_anchor_ea,
+                    payload={
+                        "operation_id": operation.operation_id,
+                        "failed_obligations": failed_obligations,
+                        "cut_indexes": cut_indexes,
+                        "normalization_cut_index": int(split_plan.cut_index),
+                        "missing_corridor_instruction_eas": tuple(
+                            hex(ea) for ea in missing_corridor_eas
+                        ),
+                    },
+                )
+            assert cut_index is not None
+            return _DirectTransferRewritePlan(
+                operation=operation,
+                rewrite=rewrite,
+                cut_index=int(cut_index),
+            )
         envelope = normalization.conditional_select_envelope
         relocated_eas = tuple(int(ea) for ea in normalization.relocated_instruction_eas)
         raw_tail_size = int(normalization.unresolved_transfer_ea) - (
@@ -1995,17 +2111,6 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         relocated_size = int(predicate_anchor_ea) - int(
             normalization.normalization_start_ea
-        )
-        corridor_coordinates = {
-            int(instruction.ea)
-            for block in template.blocks
-            for instruction in block.instructions
-        }
-        missing_corridor_eas = tuple(
-            int(ea)
-            for ea in rewrite.proof_corridor_instruction_eas
-            if int(ea) != int(predicate_anchor_ea)
-            and int(ea) not in corridor_coordinates
         )
         join_matches = (
             ()
@@ -2058,7 +2163,6 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             )
             for instruction in relocated_instructions
         )
-        delivery_region = rewrite.delivery_region
         checks = (
             ("source_split_validated", split_plan.cut_index >= 0),
             (
@@ -2221,8 +2325,19 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                     "native transfer as preserved or directly rewritten"
                 )
         elif preserved_native_transfer_block_ids:
+            residual_transfers = tuple(
+                (
+                    block_id,
+                    int(plan.block(block_id).semantic_anchor_ea),
+                )
+                for block_id in native_body.block_ids
+                if block_id in preserved_native_transfer_block_ids
+            )
+            first_block_id, first_anchor_ea = residual_transfers[0]
             raise SemanticFragmentBackendRejected(
-                "preserved native transfers require graph-free GENERATED publication"
+                "preserved native transfers require graph-free GENERATED publication; "
+                f"first={first_block_id}@0x{first_anchor_ea:X} "
+                f"count={len(residual_transfers)}"
             )
         for block_id, template_block in matched.items():
             return_indexes = tuple(
@@ -3134,8 +3249,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         )
         predicate_true_opcode = (
             int(ida_hexrays.m_jnz)
-            if normalization.predicate_kind
-            in {PredicateKind.EQ, PredicateKind.SLT}
+            if normalization.predicate_kind in {PredicateKind.EQ, PredicateKind.SLT}
             else int(ida_hexrays.m_jz)
         )
         expected_branch_opcode = (
@@ -3154,8 +3268,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             predicate_plan is not None
             and (
                 (
-                    normalization.predicate_kind
-                    in {PredicateKind.EQ, PredicateKind.NE}
+                    normalization.predicate_kind in {PredicateKind.EQ, PredicateKind.NE}
                     and producer_indexes == (0,)
                     and predicate_indexes == (1,)
                     and int(predicate_plan.cut_index) == 1
@@ -3506,10 +3619,10 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         normalization: FragmentComputedBranchNormalization,
     ) -> _ComputedBranchNormalizationPlan | None:
         """Recognize exact equality materialization and its typed complement."""
-        if (
-            normalization.predicate_kind not in {PredicateKind.EQ, PredicateKind.NE}
-            or predicate_indexes != (1,)
-        ):
+        if normalization.predicate_kind not in {
+            PredicateKind.EQ,
+            PredicateKind.NE,
+        } or predicate_indexes != (1,):
             return None
         producers = (
             PreoptUnionSemanticNativeBodyMaterializer._oriented_predicate_producers(
@@ -3882,6 +3995,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         matched: Mapping[str, DetachedSnippetBlockTemplate],
         prepared: Mapping[str, tuple[tuple[int, object], ...]],
         direct_transfer_operation_ids: tuple[str, ...],
+        preserved_boundary_exits_by_block_id: Mapping[str, tuple[int, ...]],
         preserved_successors_by_block_id: (
             Mapping[str, tuple[PreparedNativeEdgeFact, ...]] | None
         ) = None,
@@ -3900,6 +4014,9 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                 )
                 for block_id in native_body.block_ids
             ),
+            preserved_boundary_exits_by_block_id=(
+                preserved_boundary_exits_by_block_id
+            ),
             direct_transfer_operation_ids=direct_transfer_operation_ids,
             preserved_successors_by_block_id=(preserved_successors_by_block_id),
             preserved_terminators_by_block_id=(preserved_terminators_by_block_id),
@@ -3914,6 +4031,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
     ) -> tuple[
         dict[str, tuple[PreparedNativeEdgeFact, ...]],
         dict[str, tuple[int, InsnKind]],
+        dict[str, tuple[int, ...]],
     ]:
         """Project cached native transfers into serial-free immutable facts."""
         block_id_by_serial = {
@@ -3926,12 +4044,14 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             )
         successors_by_id: dict[str, tuple[PreparedNativeEdgeFact, ...]] = {}
         terminators_by_id: dict[str, tuple[int, InsnKind]] = {}
+        boundary_exits_by_id: dict[str, tuple[int, ...]] = {}
         superseded_carriers = {
             str(block_id) for block_id in superseded_transfer_carrier_block_ids
         }
         for block_id in native_body.preserved_native_transfer_block_ids:
             if block_id in superseded_carriers:
                 successors_by_id[str(block_id)] = ()
+                boundary_exits_by_id[str(block_id)] = ()
                 continue
             template_block = matched[block_id]
             internal_targets = tuple(
@@ -3997,6 +4117,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             external_targets = tuple(
                 int(ea) for ea in template_block.external_successor_eas if int(ea) > 0
             )
+            boundary_exits_by_id[str(block_id)] = external_targets
             if unresolved_transfer_carrier:
                 terminators_by_id[str(block_id)] = (
                     int(tail.ea),
@@ -4013,7 +4134,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
                         int(tail.ea),
                         InsnKind.GOTO,
                     )
-        return successors_by_id, terminators_by_id
+        return successors_by_id, terminators_by_id, boundary_exits_by_id
 
     def prepare_native_body(
         self,
@@ -4023,13 +4144,16 @@ class PreoptUnionSemanticNativeBodyMaterializer:
     ) -> PreparedNativeBodyPreparation:
         """Prepare one PREOPT body without changing the destination MBA."""
         # Hex-Rays invokes hxe_preoptimized after PREOPT has completed but
-        # before advancing mba.maturity from GENERATED to PREOPTIMIZED.
+        # before advancing mba.maturity from GENERATED to PREOPTIMIZED.  The
+        # canonical semantic pass may later consume the same captured PREOPT
+        # authority at GLBOPT1.
         if int(self.mba.maturity) not in {
             int(ida_hexrays.MMAT_GENERATED),
             int(ida_hexrays.MMAT_PREOPTIMIZED),
+            int(ida_hexrays.MMAT_GLBOPT1),
         }:
             raise SemanticFragmentBackendRejected(
-                "PREOPT native body requires the hxe_preoptimized destination MBA"
+                "PREOPT native body requires a PREOPT or GLBOPT1 destination MBA"
             )
         (
             _template,
@@ -4045,6 +4169,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             native_body=native_body,
             matched=matched,
             prepared=prepared,
+            preserved_boundary_exits_by_block_id={},
             direct_transfer_operation_ids=direct_transfer_operation_ids,
         )
         observer = self.prepared_fact_observer
@@ -4076,6 +4201,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         (
             preserved_successors,
             preserved_terminators,
+            preserved_boundary_exits,
         ) = self._generated_preserved_transfer_authority(
             matched=matched,
             native_body=native_body,
@@ -4091,6 +4217,7 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             native_body=native_body,
             matched=matched,
             prepared=prepared,
+            preserved_boundary_exits_by_block_id=preserved_boundary_exits,
             direct_transfer_operation_ids=direct_transfer_operation_ids,
             preserved_successors_by_block_id=preserved_successors,
             preserved_terminators_by_block_id=preserved_terminators,
@@ -4777,6 +4904,7 @@ class CallsSemanticNativeBodyMaterializer(PreoptUnionSemanticNativeBodyMateriali
                 )
                 for block_id in native_body.block_ids
             ),
+            preserved_boundary_exits_by_block_id={},
             direct_transfer_operation_ids=tuple(
                 entry.operation.operation_id
                 for entry in direct_transfer_rewrites.values()
@@ -5905,15 +6033,9 @@ def _capture_detached_snippet_template(
             included[int(block.serial)] = block
     for source in tuple(included.values()):
         tail = source.tail
-        if (
-            tail is None
-            or int(tail.ea) not in preserved_unresolved_transfers
-        ):
+        if tail is None or int(tail.ea) not in preserved_unresolved_transfers:
             continue
-        if (
-            int(tail.opcode) == int(ida_hexrays.m_ijmp)
-            and int(source.nsucc()) == 0
-        ):
+        if int(tail.opcode) == int(ida_hexrays.m_ijmp) and int(source.nsucc()) == 0:
             synthetic_serial = int(mba.qty) + len(
                 synthesized_preserved_carrier_by_source_serial
             )
@@ -5923,10 +6045,7 @@ def _capture_detached_snippet_template(
             )
             observed_preserved_unresolved_transfers.add(int(tail.ea))
             continue
-        if (
-            int(tail.opcode) != int(ida_hexrays.m_icall)
-            or int(source.nsucc()) != 1
-        ):
+        if int(tail.opcode) != int(ida_hexrays.m_icall) or int(source.nsucc()) != 1:
             continue
         successor_serial = int(tuple(source.succset)[0])
         successor = mba.get_mblock(successor_serial)

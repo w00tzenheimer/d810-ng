@@ -39,7 +39,7 @@ from d810.ir.block_identity import (
     stable_block_identity_token,
 )
 from d810.ir.expressions import ValueOpKind
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
+from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
@@ -1199,7 +1199,6 @@ def test_canonical_route_accepts_exact_write_proof_inside_plan_owned_range() -> 
             for block in normalization_plan.blocks
         ),
     )
-
     plan = compose_canonical_semantic_fragment_plan(
         graph,
         normalization_plan,
@@ -1307,9 +1306,9 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
     )
     (direct_proof,) = evidence.route_proofs
     portable_producer_identity = StableBlockIdentity.from_intervals(
-        (NativeEaInterval(0x1100, 0x1110),),
+        (NativeEaInterval(0x1000, 0x1010),),
         native_key=NATIVE_KEY,
-        exact_instruction_eas=(0x1100,),
+        exact_instruction_eas=(0x1000,),
     )
     predicate_storage = StorageIdentity(StorageIdentityKind.STACK, 0x40)
     carrier_storage = StorageIdentity(StorageIdentityKind.STACK, 0x44)
@@ -1338,10 +1337,10 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
         ),
         predicate=SemanticPredicateProof(
             kind=SemanticPredicateKind.STORAGE_EQUALS,
-            origin=SemanticCorridorPoint(portable_producer_identity, 0x1100),
+            origin=SemanticCorridorPoint(portable_producer_identity, 0x1000),
             consumer=SemanticCorridorPoint(consumer_evidence_identity, 0x1200),
             corridor=(
-                SemanticCorridorPoint(portable_producer_identity, 0x1100),
+                SemanticCorridorPoint(portable_producer_identity, 0x1000),
                 SemanticCorridorPoint(consumer_evidence_identity, 0x1200),
             ),
             storage_identity=predicate_storage,
@@ -1353,22 +1352,20 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
                 carrier_id="entry-state",
                 definition=SemanticCorridorPoint(
                     portable_producer_identity,
-                    0x1100,
+                    0x1000,
                 ),
-                consumers=(
-                    SemanticCorridorPoint(consumer_evidence_identity, 0x1200),
-                ),
+                consumers=(SemanticCorridorPoint(consumer_evidence_identity, 0x1200),),
                 corridor=(
                     SemanticCorridorPoint(
                         portable_producer_identity,
-                        0x1100,
+                        0x1000,
                     ),
                     SemanticCorridorPoint(consumer_evidence_identity, 0x1200),
                 ),
                 storage_identity=carrier_storage,
                 width=4,
                 state_values=(0x22, 0x33),
-                permitted_write_eas=frozenset({0x1100}),
+                permitted_write_eas=frozenset({0x1000}),
             ),
         ),
     )
@@ -1377,12 +1374,37 @@ def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> No
         route_proofs=(direct_proof, state_choice),
     )
 
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            10: _block(10, 0x1000, succs=(20, 90), preds=()),
+        },
+    )
+    current_identity_by_serial = _current_identity_authority(graph)
+    current_identity_by_serial[10] = StableBlockIdentity.from_intervals(
+        (
+            NativeEaInterval(0x1000, 0x1001),
+            NativeEaInterval(0x1020, 0x1021),
+        ),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1000, 0x1020),
+    )
+    current_identity_by_serial[90] = StableBlockIdentity.from_intervals(
+        (
+            NativeEaInterval(0x1000, 0x1001),
+            NativeEaInterval(0x1400, 0x1401),
+        ),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(0x1000, 0x1400),
+    )
+
     plan = compose_canonical_semantic_fragment_plan(
         graph,
         normalization_plan,
         evidence,
         available_evidence=evidence,
-        current_identity_by_serial=_current_identity_authority(graph),
+        current_identity_by_serial=current_identity_by_serial,
         normalization_authority=_normalization_authority(
             normalization_plan,
             evidence,
@@ -3226,9 +3248,25 @@ def test_detached_component_stops_at_unique_current_imported_successor() -> None
     assert successor.stable_identity == current_identity_by_serial[30]
 
 
-@pytest.mark.parametrize("authority_matches", (False, True))
+@pytest.mark.parametrize(
+    ("authority_matches", "normalization_start_ea", "call_operation_present"),
+    (
+        (False, 0x1264, True),
+        (True, 0x1264, True),
+        (True, 0x1266, True),
+        (True, 0x1266, False),
+    ),
+    ids=(
+        "transfer-authority-mismatch",
+        "predicate-delivery-anchor",
+        "normalization-after-delivery-anchor",
+        "proof-derived-call-fallthrough",
+    ),
+)
 def test_call_backed_nested_route_keeps_published_corridor_staged(
     authority_matches: bool,
+    normalization_start_ea: int,
+    call_operation_present: bool,
 ) -> None:
     graph, normalization_plan, root_evidence = _live_source_detached_target_case()
     graph = replace(
@@ -3247,7 +3285,7 @@ def test_call_backed_nested_route_keeps_published_corridor_staged(
                 0x1260,
                 succs=(),
                 preds=(),
-                insn_eas=(0x1260, 0x1264, 0x1268),
+                insn_eas=(0x1260, 0x1264, 0x1266, 0x1268),
             ),
         },
     )
@@ -3268,7 +3306,7 @@ def test_call_backed_nested_route_keeps_published_corridor_staged(
         stable_identity=StableBlockIdentity.from_intervals(
             (NativeEaInterval(0x1260, 0x1269),),
             native_key=NATIVE_KEY,
-            exact_instruction_eas=(0x1260, 0x1264),
+            exact_instruction_eas=(0x1260, 0x1264, 0x1266),
         ),
         native_body_id=normalization_plan.native_bodies[0].body_id,
     )
@@ -3301,23 +3339,29 @@ def test_call_backed_nested_route_keeps_published_corridor_staged(
                     ),
                 ),
             ),
-            FragmentOperation(
-                operation_id="call-backed-fallthrough@0x1255",
-                source_block_id=call_block.block_id,
-                edges=(
-                    FragmentEdge(
-                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
-                        target_block_id=route_source.block_id,
+            *(
+                (
+                    FragmentOperation(
+                        operation_id="call-backed-fallthrough@0x1255",
+                        source_block_id=call_block.block_id,
+                        edges=(
+                            FragmentEdge(
+                                role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                                target_block_id=route_source.block_id,
+                            ),
+                        ),
                     ),
-                ),
+                )
+                if call_operation_present
+                else ()
             ),
             FragmentOperation(
                 operation_id="native-indirect-transfer@0x1268",
                 source_block_id=route_source.block_id,
-                predicate_anchor_ea=0x1264,
+                predicate_anchor_ea=normalization_start_ea,
                 computed_branch_normalization=FragmentComputedBranchNormalization(
                     predicate_kind=PredicateKind.SLT,
-                    normalization_start_ea=0x1264,
+                    normalization_start_ea=normalization_start_ea,
                     condition_producer_ea=0x1260,
                     unresolved_transfer_ea=0x1268,
                 ),
@@ -3351,8 +3395,15 @@ def test_call_backed_nested_route_keeps_published_corridor_staged(
                 ),
                 proof_ids=(
                     *native_body.proof_ids,
-                    "call-backed-fallthrough@0x1255",
+                    *(
+                        ("call-backed-fallthrough@0x1255",)
+                        if call_operation_present
+                        else ()
+                    ),
                     "native-indirect-transfer@0x1268",
+                ),
+                preserved_native_transfer_block_ids=(
+                    (call_block.block_id,) if not call_operation_present else ()
                 ),
             ),
         ),
@@ -3426,12 +3477,21 @@ def test_call_backed_nested_route_keeps_published_corridor_staged(
     )
 
     operations = {operation.operation_id: operation for operation in plan.operations}
-    call_operation = operations["call-backed-fallthrough@0x1255"]
+    call_operation_id = (
+        "call-backed-fallthrough@0x1255"
+        if call_operation_present
+        else ("call-backed-fallthrough:state-assignment@0x1264:0x55@0x1255")
+    )
+    call_operation = operations[call_operation_id]
     assert tuple(edge.role for edge in call_operation.edges) == (
         SemanticEdgeRole.CALL_FALLTHROUGH,
     )
     route_operation = operations[f"route:{nested_proof.proof_id}"]
     assert route_operation.direct_transfer_rewrite is not None
+    assert (
+        route_operation.direct_transfer_rewrite.source_predicate_anchor_ea
+        == normalization_start_ea
+    )
     assert tuple(
         plan.block(edge.target_block_id).semantic_anchor_ea
         for edge in route_operation.edges
@@ -3825,6 +3885,102 @@ def test_detached_component_requires_receipted_current_imported_successor_topolo
     }
 
 
+@pytest.mark.parametrize(
+    "stage_preserved_owner",
+    (False, True),
+    ids=("published-boundary", "staged-prohibited-owner"),
+)
+def test_detached_component_stops_at_published_preserved_native_transfer(
+    stage_preserved_owner: bool,
+) -> None:
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            30: _block(
+                30,
+                0x1250,
+                succs=(),
+                preds=(),
+                insn_eas=(0x1250,),
+            ),
+        },
+    )
+    (native_body,) = normalization_plan.native_bodies
+    published_successor = FragmentBlock(
+        block_id="preserved-native-successor",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=_identity(0x1250),
+        native_body_id=native_body.body_id,
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(*normalization_plan.blocks, published_successor),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="detached-normalization",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=published_successor.block_id,
+                    ),
+                ),
+            ),
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(*native_body.block_ids, published_successor.block_id),
+                terminal_block_ids=(),
+                native_ranges=(
+                    *native_body.native_ranges,
+                    NativeEaInterval(0x1250, 0x1251),
+                ),
+                preserved_native_transfer_block_ids=(
+                    *native_body.preserved_native_transfer_block_ids,
+                    published_successor.block_id,
+                ),
+            ),
+        ),
+    )
+    current_identity_by_serial = _current_identity_authority(graph)
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        available_evidence=evidence,
+        current_identity_by_serial=current_identity_by_serial,
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        prohibited_dispatcher_serials=(30, 90) if stage_preserved_owner else (90,),
+    )
+
+    operation = next(
+        operation
+        for operation in plan.operations
+        if operation.operation_id == "detached-normalization"
+    )
+    (edge,) = operation.edges
+    boundary = plan.block(edge.target_block_id)
+    if stage_preserved_owner:
+        assert boundary.role is FragmentBlockRole.IMPORTED
+        assert boundary.materialization is FragmentBlockMaterialization.IMPORT_NATIVE
+        (planned_body,) = plan.native_bodies
+        assert boundary.block_id in planned_body.preserved_native_transfer_block_ids
+    else:
+        assert boundary.role is FragmentBlockRole.EXTERNAL
+        assert boundary.materialization is FragmentBlockMaterialization.REUSE_PUBLISHED
+        assert boundary.stable_identity == current_identity_by_serial[30]
+
+
 def test_detached_component_stops_at_receipted_semantic_conditional() -> None:
     graph, normalization_plan, evidence = _live_source_detached_target_case()
     graph = replace(
@@ -4087,6 +4243,153 @@ def test_detached_component_rejects_ambiguous_current_imported_successor() -> No
         "blk30@0x1250",
         "blk31@0x1250",
     )
+
+
+@pytest.mark.parametrize("prohibited_overlap", (False, True))
+def test_detached_component_selects_unique_owner_matching_prepared_topology(
+    prohibited_overlap: bool,
+) -> None:
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            30: _block(
+                30,
+                0x1250,
+                succs=(31, 32),
+                preds=(),
+                insn_eas=(0x1250, 0x1251),
+            ),
+            31: _block(31, 0x1250, succs=(32,), preds=(30,)),
+            32: _block(32, 0x1260, succs=(), preds=(30, 31)),
+        },
+    )
+    (native_body,) = normalization_plan.native_bodies
+    published_successor = FragmentBlock(
+        block_id="detached-successor",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1250,
+        stable_identity=_identity(0x1250),
+        native_body_id=native_body.body_id,
+    )
+    published_terminal = FragmentBlock(
+        block_id="detached-terminal",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=0x1260,
+        stable_identity=_identity(0x1260),
+        native_body_id=native_body.body_id,
+    )
+    successor_operation = FragmentOperation(
+        operation_id="prepared-topology:detached-successor",
+        source_block_id=published_successor.block_id,
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.DIRECT,
+                target_block_id=published_terminal.block_id,
+            ),
+        ),
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *normalization_plan.blocks,
+            published_successor,
+            published_terminal,
+        ),
+        operations=(
+            *normalization_plan.operations,
+            FragmentOperation(
+                operation_id="detached-normalization",
+                source_block_id="detached-target",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=published_successor.block_id,
+                    ),
+                ),
+            ),
+            successor_operation,
+        ),
+        native_bodies=(
+            replace(
+                native_body,
+                block_ids=(
+                    *native_body.block_ids,
+                    published_successor.block_id,
+                    published_terminal.block_id,
+                ),
+                terminal_block_ids=(published_terminal.block_id,),
+                native_ranges=(
+                    *native_body.native_ranges,
+                    NativeEaInterval(0x1250, 0x1251),
+                    NativeEaInterval(0x1260, 0x1261),
+                ),
+                proof_ids=(*native_body.proof_ids, successor_operation.operation_id),
+            ),
+        ),
+    )
+    scope = normalization_plan.work_item_scope
+    assert scope is not None
+    normalization_plan = replace(
+        normalization_plan,
+        work_item_scope=replace(
+            scope,
+            selected_obligation_ids=tuple(
+                operation.operation_id for operation in normalization_plan.operations
+            ),
+            remaining_obligation_ids=(),
+            unreachable_obligation_ids=(),
+        ),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        available_evidence=evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+            published_operation_ids=tuple(
+                operation.operation_id for operation in normalization_plan.operations
+            ),
+        ),
+        prohibited_dispatcher_serials=(30, 90) if prohibited_overlap else (90,),
+    )
+
+    current_identity_by_serial = _current_identity_authority(graph)
+    reused = tuple(
+        block
+        for block in plan.blocks
+        if block.role is FragmentBlockRole.EXTERNAL
+        and block.semantic_anchor_ea == 0x1250
+        and block.stable_identity == current_identity_by_serial[31]
+    )
+    assert len(reused) == 1
+    assert reused[0].stable_identity == current_identity_by_serial[31]
+
+
+def test_current_owner_selection_uses_unique_entry_reachable_topology() -> None:
+    graph = FlowGraph(
+        blocks={
+            0: _block(0, 0x1000, succs=(1,), preds=()),
+            1: _block(1, 0x1100, succs=(3,), preds=(0,)),
+            2: _block(2, 0x1100, succs=(3,), preds=()),
+            3: _block(3, 0x1200, succs=(), preds=(1, 2)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    assert canonical_fragment._unique_owner_serial_matching_evidence(
+        graph,
+        (1, 2),
+        BlockKind.ONE_WAY,
+    ) == 1
 
 
 def test_projected_boundary_reuses_its_unique_current_owner_role() -> None:

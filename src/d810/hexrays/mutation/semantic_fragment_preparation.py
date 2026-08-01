@@ -315,6 +315,7 @@ def build_prepared_native_body(
     plan: FragmentPlan,
     native_body: FragmentNativeBody,
     rows: tuple[tuple[str, int, tuple[tuple[int, object], ...]], ...],
+    preserved_boundary_exits_by_block_id: Mapping[str, tuple[int, ...]],
     direct_transfer_operation_ids: tuple[str, ...] = (),
     preserved_successors_by_block_id: Mapping[
         str, tuple[PreparedNativeEdgeFact, ...]
@@ -336,6 +337,10 @@ def build_prepared_native_body(
             preserved_terminators_by_block_id or {}
         ).items()
     }
+    preserved_boundary_exits = {
+        str(block_id): tuple(int(ea) for ea in exit_eas)
+        for block_id, exit_eas in preserved_boundary_exits_by_block_id.items()
+    }
     if set(preserved_successors) != preserved_block_ids:
         raise ValueError(
             "prepared preserved-transfer successors differ from the native body"
@@ -343,6 +348,10 @@ def build_prepared_native_body(
     if not set(preserved_terminators) <= preserved_block_ids:
         raise ValueError(
             "prepared preserved-transfer terminators differ from the native body"
+        )
+    if set(preserved_boundary_exits) != preserved_block_ids:
+        raise ValueError(
+            "prepared preserved-transfer boundary exits differ from the native body"
         )
     successors_by_block_id = {
         block_id: (
@@ -402,6 +411,7 @@ def build_prepared_native_body(
         )
         operations = operations_by_source.get(block_id, ())
         successors = successors_by_block_id[block_id]
+        boundary_exit_eas = preserved_boundary_exits.get(block_id, ())
         kind = {
             0: BlockKind.ZERO_WAY,
             1: BlockKind.ONE_WAY,
@@ -441,6 +451,7 @@ def build_prepared_native_body(
                 block_flags=block_flags,
                 kind=kind,
                 successors=successors,
+                boundary_exit_eas=boundary_exit_eas,
                 predecessor_block_ids=predecessors[block_id],
                 terminator_ea=terminator_ea,
                 terminator_kind=terminator_kind,

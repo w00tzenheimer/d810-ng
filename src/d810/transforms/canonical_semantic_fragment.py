@@ -18,6 +18,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticStateWriteProof,
     semantic_route_proof_reaches_consumer,
 )
+from d810.analyses.control_flow.reachability import reachable_from
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
 from d810.core.semantic_route_oracle import (
     ReferenceRouteRewrite,
@@ -32,7 +33,7 @@ from d810.ir.block_identity import (
     stable_block_identity_token,
 )
 from d810.ir.directed_graph import tarjan_scc
-from d810.ir.flowgraph import BlockKind, FlowGraph
+from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.semantics import PredicateKind
 from d810.transforms.fragment_plan import (
@@ -61,6 +62,10 @@ from d810.transforms.fragment_plan import (
     FragmentTerminalRoute,
     FragmentValueSite,
 )
+from d810.transforms.prepared_native_body import (
+    PreparedNativeBlockFact,
+    PreparedNormalizationWorkItemSnapshot,
+)
 
 
 class CanonicalSemanticFragmentRejected(ValueError):
@@ -78,6 +83,444 @@ class CanonicalSemanticFragmentRejected(ValueError):
         self.reason_code = str(reason_code)
         self.anchor_ea = None if anchor_ea is None else int(anchor_ea)
         self.payload = dict(payload or {})
+
+
+def compile_receipted_prepared_topology(
+    normalization_plan: FragmentPlan,
+    prepared_work_item: PreparedNormalizationWorkItemSnapshot,
+) -> FragmentPlan:
+    """Compile receipt-backed preserved topology into explicit operations.
+
+    GENERATED may retain native transfer topology as immutable prepared facts
+    because its graph-free observer interprets those facts directly.  A later
+    graph-aware canonical transaction instead needs one ordinary
+    ``FragmentOperation`` for every staged non-terminal block.  This compiler
+    translates only the exact receipted work-item facts; it does not inspect a
+    live MBA or infer edges from serials.
+    """
+    if not isinstance(normalization_plan, FragmentPlan):
+        raise TypeError("prepared topology compilation requires a FragmentPlan")
+    if not isinstance(prepared_work_item, PreparedNormalizationWorkItemSnapshot):
+        raise TypeError(
+            "prepared topology compilation requires a prepared work-item snapshot"
+        )
+    if (
+        normalization_plan.publication_purpose
+        is not FragmentPublicationPurpose.FRONTEND_NORMALIZATION
+        or prepared_work_item.source_plan_id != normalization_plan.plan_id
+        or prepared_work_item.source_atomic_group_id
+        != normalization_plan.atomic_group_id
+        or prepared_work_item.work_item_plan.native_key != normalization_plan.native_key
+    ):
+        raise CanonicalSemanticFragmentRejected(
+            "prepared topology receipt differs from normalization intent",
+            reason_code="prepared_topology_receipt_lineage_drift",
+            anchor_ea=stable_block_identity_semantic_anchor(
+                normalization_plan.blocks[0].stable_identity
+            )
+            if normalization_plan.blocks
+            and normalization_plan.blocks[0].stable_identity is not None
+            else 0,
+        )
+
+    operation_source_ids = {
+        operation.source_block_id for operation in normalization_plan.operations
+    }
+    synthesized_operations: list[FragmentOperation] = []
+    synthesized_ids_by_body_id: dict[str, list[str]] = {}
+    synthesized_source_ids_by_body_id: dict[str, set[str]] = {}
+    complete_block_by_id = {
+        block.block_id: block for block in normalization_plan.blocks
+    }
+    work_item_plan = prepared_work_item.work_item_plan
+    for prepared_body in prepared_work_item.prepared_bodies.bodies:
+        work_bodies = tuple(
+            body
+            for body in work_item_plan.native_bodies
+            if body.body_id == prepared_body.body_id
+        )
+        if len(work_bodies) != 1:
+            raise CanonicalSemanticFragmentRejected(
+                "prepared topology lacks one work-item native body",
+                reason_code="prepared_topology_work_item_body_mismatch",
+                anchor_ea=0,
+                payload={"prepared_body_id": prepared_body.body_id},
+            )
+        (work_body,) = work_bodies
+        complete_bodies = tuple(
+            body
+            for body in normalization_plan.native_bodies
+            if set(work_body.block_ids).issubset(body.block_ids)
+        )
+        if len(complete_bodies) != 1:
+            raise CanonicalSemanticFragmentRejected(
+                "prepared topology lacks one complete-plan native body",
+                reason_code="prepared_topology_complete_body_mismatch",
+                anchor_ea=0,
+                payload={"prepared_body_id": prepared_body.body_id},
+            )
+        (complete_body,) = complete_bodies
+        if tuple(block.block_id for block in prepared_body.blocks) != tuple(
+            work_body.block_ids
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "prepared topology block inventory differs from its work item",
+                reason_code="prepared_topology_block_inventory_drift",
+                anchor_ea=0,
+                payload={"prepared_body_id": prepared_body.body_id},
+            )
+        if (
+            prepared_body.preserved_native_transfer_block_ids
+            != work_body.preserved_native_transfer_block_ids
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "prepared topology transfer ownership differs from its work item",
+                reason_code="prepared_topology_transfer_ownership_drift",
+                anchor_ea=int(prepared_body.blocks[0].semantic_anchor_ea),
+                payload={"prepared_body_id": prepared_body.body_id},
+            )
+        preserved_source_ids = set(work_body.preserved_native_transfer_block_ids)
+        for prepared_block in prepared_body.blocks:
+            source_id = prepared_block.block_id
+            work_block = work_item_plan.block(source_id)
+            complete_block = complete_block_by_id.get(source_id)
+            if (
+                complete_block is None
+                or work_block.role is not FragmentBlockRole.IMPORTED
+                or complete_block.role is not FragmentBlockRole.IMPORTED
+                or work_block.semantic_anchor_ea != complete_block.semantic_anchor_ea
+                or work_block.stable_identity != complete_block.stable_identity
+                or prepared_block.semantic_anchor_ea
+                != complete_block.semantic_anchor_ea
+                or prepared_block.stable_identity != complete_block.stable_identity
+            ):
+                raise CanonicalSemanticFragmentRejected(
+                    "prepared topology block identity differs from complete intent",
+                    reason_code="prepared_topology_block_identity_drift",
+                    anchor_ea=int(prepared_block.semantic_anchor_ea),
+                    payload={"block_id": source_id},
+                )
+            if source_id not in preserved_source_ids:
+                continue
+            successors = tuple(prepared_block.successors)
+            boundary_exit_eas = tuple(prepared_block.boundary_exit_eas)
+            call_terminator_witnessed = bool(
+                prepared_block.terminator_kind is InsnKind.CALL
+                and prepared_block.terminator_ea is not None
+                and prepared_block.stable_identity.native_ranges.contains(
+                    prepared_block.terminator_ea
+                )
+                and any(
+                    instruction.native_ea == prepared_block.terminator_ea
+                    and instruction.kind is InsnKind.CALL
+                    for instruction in prepared_block.instructions
+                )
+            )
+            call_fallthrough_target: FragmentBlock | None = None
+            if not successors and not boundary_exit_eas:
+                evidence_only_return_carrier = bool(
+                    prepared_block.terminator_kind is InsnKind.RET
+                    and prepared_block.terminator_ea is not None
+                    and prepared_block.stable_identity.native_ranges.contains(
+                        prepared_block.terminator_ea
+                    )
+                    and len(prepared_block.instructions) == 1
+                    and prepared_block.instructions[0].native_ea
+                    == prepared_block.terminator_ea
+                    and prepared_block.instructions[0].kind is InsnKind.RET
+                )
+                if evidence_only_return_carrier:
+                    continue
+                if prepared_block.terminator_kind is not InsnKind.CALL:
+                    continue
+                source_identity = prepared_block.stable_identity
+                source_ranges = source_identity.native_ranges.intervals
+                fallthrough_ea = (
+                    None if len(source_ranges) != 1 else int(source_ranges[0].end_ea)
+                )
+                fallthrough_targets = tuple(
+                    block
+                    for block in normalization_plan.blocks
+                    if fallthrough_ea is not None
+                    and int(block.semantic_anchor_ea) == fallthrough_ea
+                )
+                if (
+                    prepared_block.terminator_ea is None
+                    or not source_identity.native_ranges.contains(
+                        prepared_block.terminator_ea
+                    )
+                    or not call_terminator_witnessed
+                    or len(fallthrough_targets) != 1
+                ):
+                    raise CanonicalSemanticFragmentRejected(
+                        "prepared call lacks one exact native fallthrough",
+                        reason_code=(
+                            "prepared_topology_call_fallthrough_target_mismatch"
+                        ),
+                        anchor_ea=int(prepared_block.semantic_anchor_ea),
+                        payload={
+                            "block_id": source_id,
+                            "fallthrough_ea": (
+                                None
+                                if fallthrough_ea is None
+                                else f"0x{fallthrough_ea:X}"
+                            ),
+                            "target_block_ids": tuple(
+                                block.block_id for block in fallthrough_targets
+                            ),
+                            "terminator_ea": (
+                                None
+                                if prepared_block.terminator_ea is None
+                                else f"0x{prepared_block.terminator_ea:X}"
+                            ),
+                        },
+                    )
+                (call_fallthrough_target,) = fallthrough_targets
+            if source_id in operation_source_ids:
+                raise CanonicalSemanticFragmentRejected(
+                    "prepared topology overlaps an existing operation owner",
+                    reason_code="prepared_topology_operation_owner_conflict",
+                    anchor_ea=int(prepared_block.semantic_anchor_ea),
+                    payload={"block_id": source_id},
+                )
+            if call_fallthrough_target is not None:
+                operation_edges = (
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                        target_block_id=call_fallthrough_target.block_id,
+                    ),
+                )
+            elif boundary_exit_eas:
+                if (
+                    successors
+                    or len(boundary_exit_eas) != 1
+                    or prepared_block.terminator_kind
+                    not in {InsnKind.GOTO, InsnKind.INDIRECT_JUMP}
+                ):
+                    continue
+                (boundary_exit_ea,) = boundary_exit_eas
+                boundary_targets = tuple(
+                    block
+                    for block in normalization_plan.blocks
+                    if int(block.semantic_anchor_ea) == int(boundary_exit_ea)
+                )
+                if len(boundary_targets) != 1:
+                    continue
+                operation_edges = (
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=boundary_targets[0].block_id,
+                    ),
+                )
+            elif (
+                len(successors) == 1
+                and successors[0].role is SemanticEdgeRole.DIRECT
+                and call_terminator_witnessed
+            ):
+                operation_edges = (
+                    FragmentEdge(
+                        role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                        target_block_id=successors[0].target_block_id,
+                    ),
+                )
+            else:
+                operation_edges = tuple(
+                    FragmentEdge(
+                        role=successor.role,
+                        target_block_id=successor.target_block_id,
+                    )
+                    for successor in successors
+                )
+            if len(operation_edges) > 2 or any(
+                successor.target_block_id not in complete_block_by_id
+                for successor in operation_edges
+            ):
+                continue
+            operation_id = (
+                f"prepared-topology:{prepared_work_item.prepared_bodies.snapshot_id}:"
+                f"{source_id}"
+            )
+            synthesized_operations.append(
+                FragmentOperation(
+                    operation_id=operation_id,
+                    source_block_id=source_id,
+                    predicate_anchor_ea=(
+                        int(prepared_block.terminator_ea)
+                        if len(operation_edges) == 2
+                        and prepared_block.terminator_ea is not None
+                        else None
+                    ),
+                    edges=operation_edges,
+                )
+            )
+            operation_source_ids.add(source_id)
+            synthesized_ids_by_body_id.setdefault(
+                complete_body.body_id,
+                [],
+            ).append(operation_id)
+            synthesized_source_ids_by_body_id.setdefault(
+                complete_body.body_id,
+                set(),
+            ).add(source_id)
+
+    if not synthesized_operations:
+        return normalization_plan
+    return replace(
+        normalization_plan,
+        operations=(*normalization_plan.operations, *synthesized_operations),
+        native_bodies=tuple(
+            replace(
+                body,
+                proof_ids=tuple(
+                    dict.fromkeys(
+                        (
+                            *body.proof_ids,
+                            *synthesized_ids_by_body_id.get(body.body_id, ()),
+                        )
+                    )
+                ),
+                preserved_native_transfer_block_ids=tuple(
+                    block_id
+                    for block_id in body.preserved_native_transfer_block_ids
+                    if block_id
+                    not in synthesized_source_ids_by_body_id.get(body.body_id, set())
+                ),
+            )
+            if body.body_id in synthesized_ids_by_body_id
+            else body
+            for body in normalization_plan.native_bodies
+        ),
+    )
+
+
+def validate_receipted_prepared_topology_scope(
+    normalization_plan: FragmentPlan,
+    compiled_plan: FragmentPlan,
+    scoped_plan: FragmentPlan,
+    *,
+    receipt_snapshot_ids: tuple[str, ...],
+    prepared_block_facts: Mapping[str, PreparedNativeBlockFact],
+) -> None:
+    """Require every scoped preserved transfer to have compiled receipt evidence."""
+    if not all(
+        isinstance(plan, FragmentPlan)
+        for plan in (normalization_plan, compiled_plan, scoped_plan)
+    ):
+        raise TypeError("prepared topology scope validation requires FragmentPlans")
+    snapshot_ids = tuple(receipt_snapshot_ids)
+    if (
+        any(
+            not isinstance(snapshot_id, str) or not snapshot_id.strip()
+            for snapshot_id in snapshot_ids
+        )
+        or len(snapshot_ids) != len(set(snapshot_ids))
+    ):
+        raise ValueError(
+            "prepared topology receipt snapshot identities must be nonblank and unique"
+        )
+    normalized_facts: dict[str, PreparedNativeBlockFact] = {}
+    for block_id, fact in prepared_block_facts.items():
+        if not isinstance(block_id, str) or not block_id.strip():
+            raise TypeError("prepared topology fact keys must be nonblank strings")
+        if not isinstance(fact, PreparedNativeBlockFact) or fact.block_id != block_id:
+            raise TypeError("prepared topology scope requires keyed block facts")
+        normalized_facts[block_id] = fact
+
+    def preserved_block_ids(plan: FragmentPlan) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                block_id
+                for body in plan.native_bodies
+                for block_id in body.preserved_native_transfer_block_ids
+            )
+        )
+
+    original_ids = preserved_block_ids(normalization_plan)
+    original_id_set = set(original_ids)
+    compiled_residual_id_set = set(preserved_block_ids(compiled_plan))
+    scoped_ids = preserved_block_ids(scoped_plan)
+    uncompiled_ids = tuple(
+        block_id
+        for block_id in scoped_ids
+        if block_id in original_id_set and block_id in compiled_residual_id_set
+    )
+    if not uncompiled_ids:
+        return
+    first_block = scoped_plan.block(uncompiled_ids[0])
+    first_fact = normalized_facts.get(uncompiled_ids[0])
+    compiled_ids = tuple(
+        block_id for block_id in original_ids if block_id not in compiled_residual_id_set
+    )
+    if first_fact is not None:
+        boundary_exit_eas = tuple(first_fact.boundary_exit_eas)
+        successors = tuple(first_fact.successors)
+        if boundary_exit_eas and (
+            successors
+            or len(boundary_exit_eas) != 1
+            or first_fact.terminator_kind
+            not in {InsnKind.GOTO, InsnKind.INDIRECT_JUMP}
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "prepared boundary topology lacks one direct semantic role",
+                reason_code="prepared_topology_boundary_role_unsupported",
+                anchor_ea=int(first_fact.semantic_anchor_ea),
+                payload={
+                    "block_id": first_fact.block_id,
+                    "boundary_exit_eas": tuple(
+                        f"0x{ea:X}" for ea in boundary_exit_eas
+                    ),
+                    "internal_successor_count": len(successors),
+                    "terminator_kind": first_fact.terminator_kind.value,
+                    "receipt_snapshot_ids": snapshot_ids,
+                },
+            )
+        if not successors and not boundary_exit_eas:
+            evidence_only_return_carrier = bool(
+                first_fact.terminator_kind is InsnKind.RET
+                and first_fact.terminator_ea is not None
+                and len(first_fact.instructions) == 1
+                and first_fact.instructions[0].native_ea == first_fact.terminator_ea
+                and first_fact.instructions[0].kind is InsnKind.RET
+            )
+            raise CanonicalSemanticFragmentRejected(
+                (
+                    "prepared evidence-only return carrier entered publication scope"
+                    if evidence_only_return_carrier
+                    else "prepared preserved transfer lacks a typed semantic role"
+                ),
+                reason_code=(
+                    "prepared_topology_evidence_only_carrier_selected"
+                    if evidence_only_return_carrier
+                    else "prepared_topology_transfer_role_unsupported"
+                ),
+                anchor_ea=int(first_fact.semantic_anchor_ea),
+                payload={
+                    "block_id": first_fact.block_id,
+                    "terminator_ea": (
+                        None
+                        if first_fact.terminator_ea is None
+                        else f"0x{first_fact.terminator_ea:X}"
+                    ),
+                    "terminator_kind": first_fact.terminator_kind.value,
+                    "instruction_kinds": tuple(
+                        instruction.kind.value
+                        for instruction in first_fact.instructions
+                    ),
+                    "receipt_snapshot_ids": snapshot_ids,
+                },
+            )
+    raise CanonicalSemanticFragmentRejected(
+        "scoped preserved topology lacks receipt-backed compilation",
+        reason_code="prepared_normalization_topology_coverage_missing",
+        anchor_ea=int(first_block.semantic_anchor_ea),
+        payload={
+            "uncompiled_block_ids": uncompiled_ids,
+            "compiled_block_ids": compiled_ids,
+            "receipt_snapshot_ids": snapshot_ids,
+            "original_preserved_count": len(original_ids),
+            "scoped_preserved_count": len(scoped_ids),
+        },
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -424,6 +867,21 @@ def _claim_current_external_identity(
     )
 
 
+def _identity_owns_semantic_corridor_point(
+    identity: StableBlockIdentity,
+    point: SemanticCorridorPoint,
+) -> bool:
+    """Match exact point ownership across split or merged live ranges."""
+    anchor_ea = int(point.anchor_ea)
+    return bool(
+        identity.native_key == point.identity.native_key
+        and anchor_ea in identity.exact_instruction_eas
+        and anchor_ea in point.identity.exact_instruction_eas
+        and identity.native_ranges.contains(anchor_ea)
+        and point.identity.native_ranges.contains(anchor_ea)
+    )
+
+
 def _current_owners_contained_by_identity(
     graph: FlowGraph,
     identity: StableBlockIdentity,
@@ -648,9 +1106,7 @@ def _merged_imported_ranges(
             ):
                 continue
             envelope = normalization.conditional_select_envelope
-            intervals.extend(
-                envelope.selected_value_identity.native_ranges.intervals
-            )
+            intervals.extend(envelope.selected_value_identity.native_ranges.intervals)
             intervals.extend(envelope.join_identity.native_ranges.intervals)
     intervals.sort(key=lambda interval: (int(interval.start_ea), int(interval.end_ea)))
     merged = []
@@ -817,6 +1273,90 @@ def _receipted_semantic_operation_closes_boundary(
     )
 
 
+def _fragment_operation_block_kind(
+    operation: FragmentOperation | None,
+) -> BlockKind | None:
+    """Return the exact live block kind implied by one portable edge envelope."""
+    if operation is None:
+        return None
+    if len(operation.edges) == 1 and operation.edges[0].role in {
+        SemanticEdgeRole.DIRECT,
+        SemanticEdgeRole.CALL_FALLTHROUGH,
+    }:
+        return BlockKind.ONE_WAY
+    if tuple(edge.role for edge in operation.edges) in {
+        (
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+        ),
+        (
+            SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+            SemanticEdgeRole.CONDITIONAL_TAKEN,
+        ),
+    }:
+        return BlockKind.TWO_WAY
+    return None
+
+
+def _unique_owner_serial_matching_evidence(
+    graph: FlowGraph,
+    owner_serials: Iterable[int],
+    expected_kind: BlockKind | None,
+) -> int | None:
+    """Select one owner by typed shape, then unique entry reachability."""
+    normalized_serials = tuple(int(serial) for serial in owner_serials)
+    if any(serial not in graph.blocks for serial in normalized_serials):
+        return None
+    candidates = normalized_serials
+    if expected_kind is not None:
+        candidates = tuple(
+            serial
+            for serial in normalized_serials
+            if graph.blocks[serial].kind is expected_kind
+        )
+        if len(candidates) == 1:
+            return candidates[0]
+        if not candidates:
+            return None
+    if not graph.blocks:
+        return None
+    reachable_serials = reachable_from(
+        graph.as_adjacency_dict(),
+        max(int(serial) for serial in graph.blocks) + 1,
+        int(graph.entry_serial),
+    )
+    reachable_candidates = tuple(
+        serial for serial in candidates if serial in reachable_serials
+    )
+    if len(reachable_candidates) != 1:
+        return None
+    return reachable_candidates[0]
+
+
+def _unique_published_owner_serial(
+    graph: FlowGraph,
+    owner_serials: Iterable[int],
+    prohibited_dispatcher_serials: frozenset[int],
+) -> int | None:
+    """Select one published owner split from typed prohibited topology."""
+    normalized_serials = tuple(int(serial) for serial in owner_serials)
+    if any(serial not in graph.blocks for serial in normalized_serials):
+        return None
+    prohibited = tuple(
+        serial
+        for serial in normalized_serials
+        if serial in prohibited_dispatcher_serials
+    )
+    published = tuple(
+        serial
+        for serial in normalized_serials
+        if serial not in prohibited_dispatcher_serials
+    )
+    if not prohibited or len(published) != 1:
+        return None
+    return published[0]
+
+
 def _detached_target_component(
     graph: FlowGraph,
     plan: FragmentPlan,
@@ -835,6 +1375,7 @@ def _detached_target_component(
     tuple[FragmentOperation, ...],
     FragmentNativeBody,
     tuple[FragmentBoundaryPort, ...],
+    tuple[tuple[str, BlockKind], ...],
 ]:
     native_body_id = target.native_body_id
     native_bodies = tuple(
@@ -890,15 +1431,16 @@ def _detached_target_component(
                     anchor_ea=int(plan.block(block_id).semantic_anchor_ea),
                     payload={"replacement_block_id": block_id},
                 )
-            if block_id not in native_body.terminal_block_ids:
+            if (
+                block_id not in native_body.terminal_block_ids
+                and block_id not in native_body.preserved_native_transfer_block_ids
+            ):
                 raise CanonicalSemanticFragmentRejected(
                     "detached canonical target component lacks closed topology"
                 )
             continue
         selected_operation_ids.add(operation.operation_id)
-        for carrier_block_id in _referenced_conditional_carrier_block_ids(
-            operation
-        ):
+        for carrier_block_id in _referenced_conditional_carrier_block_ids(operation):
             carrier = plan.block(carrier_block_id)
             if (
                 carrier.role is not FragmentBlockRole.IMPORTED
@@ -907,9 +1449,7 @@ def _detached_target_component(
             ):
                 raise CanonicalSemanticFragmentRejected(
                     "referenced conditional carrier escapes its native body",
-                    reason_code=(
-                        "referenced_conditional_carrier_native_body_mismatch"
-                    ),
+                    reason_code=("referenced_conditional_carrier_native_body_mismatch"),
                     anchor_ea=int(carrier.semantic_anchor_ea),
                     payload={
                         "operation_id": operation.operation_id,
@@ -929,6 +1469,20 @@ def _detached_target_component(
                     edge_target.stable_identity,
                     current_identity_by_serial=current_identity_by_serial,
                 )
+                if len(current_owners) > 1:
+                    evidence_owner_serial = _unique_owner_serial_matching_evidence(
+                        graph,
+                        (owner[0] for owner in current_owners),
+                        _fragment_operation_block_kind(
+                            operation_by_source.get(edge_target.block_id)
+                        ),
+                    )
+                    if evidence_owner_serial is not None:
+                        current_owners = tuple(
+                            owner
+                            for owner in current_owners
+                            if int(owner[0]) == evidence_owner_serial
+                        )
                 prohibited_owners = tuple(
                     owner
                     for owner in current_owners
@@ -941,19 +1495,34 @@ def _detached_target_component(
                         if int(owner[0]) not in prohibited_dispatcher_serials
                     )
                     if nonprohibited_owners:
-                        raise CanonicalSemanticFragmentRejected(
-                            "imported body identity has mixed prohibited and "
-                            "published current owners",
-                            reason_code=("imported_boundary_current_owner_mixed"),
-                            anchor_ea=int(edge_target.semantic_anchor_ea),
-                            payload={
-                                "boundary_block_id": edge_target.block_id,
-                                "current_owner_labels": tuple(
-                                    f"blk{serial}@0x{anchor_ea:X}"
-                                    for serial, anchor_ea, _identity in current_owners
-                                ),
-                            },
+                        published_owner_serial = _unique_published_owner_serial(
+                            graph,
+                            (owner[0] for owner in current_owners),
+                            prohibited_dispatcher_serials,
                         )
+                        if published_owner_serial is None:
+                            raise CanonicalSemanticFragmentRejected(
+                                "imported body identity has mixed prohibited and "
+                                "published current owners",
+                                reason_code=(
+                                    "imported_boundary_current_owner_mixed"
+                                ),
+                                anchor_ea=int(edge_target.semantic_anchor_ea),
+                                payload={
+                                    "boundary_block_id": edge_target.block_id,
+                                    "current_owner_labels": tuple(
+                                        f"blk{serial}@0x{anchor_ea:X}"
+                                        for serial, anchor_ea, _identity in current_owners
+                                    ),
+                                },
+                            )
+                        current_owners = tuple(
+                            owner
+                            for owner in current_owners
+                            if int(owner[0]) == published_owner_serial
+                        )
+                        prohibited_owners = ()
+                if prohibited_owners:
                     pending.append(edge_target.block_id)
                     continue
                 replaced_current_owners = tuple(
@@ -1007,6 +1576,8 @@ def _detached_target_component(
                         continue
                     boundary_topology_unresolved = (
                         edge_target.block_id not in native_body.terminal_block_ids
+                        and edge_target.block_id
+                        not in native_body.preserved_native_transfer_block_ids
                         and not _receipted_semantic_operation_closes_boundary(
                             operation_by_source[edge_target.block_id],
                             native_body,
@@ -1115,6 +1686,7 @@ def _detached_target_component(
     scoped_body_id = f"{native_body.body_id}:canonical:{canonical_proof_id}"
     boundary_id_by_source_id: dict[str, str] = {}
     projected_boundary_by_id: dict[str, FragmentBlock] = {}
+    projected_boundary_kind_by_id: dict[str, BlockKind] = {}
     for block in plan.blocks:
         if (
             block.block_id not in selected_ids
@@ -1164,6 +1736,28 @@ def _detached_target_component(
             )
         projected_boundary_by_id[projected_id] = projected
         boundary_id_by_source_id[block.block_id] = projected_id
+        operation_kind = _fragment_operation_block_kind(
+            operation_by_source.get(block.block_id)
+        )
+        existing_kind = projected_boundary_kind_by_id.get(projected_id)
+        if (
+            operation_kind is not None
+            and existing_kind is not None
+            and existing_kind is not operation_kind
+        ):
+            raise CanonicalSemanticFragmentRejected(
+                "detached canonical target boundary topology is ambiguous",
+                reason_code="detached_boundary_topology_ambiguous",
+                anchor_ea=int(projected.semantic_anchor_ea),
+                payload={
+                    "candidate_block_id": block.block_id,
+                    "projected_block_id": projected_id,
+                    "candidate_block_kind": operation_kind.value,
+                    "existing_block_kind": existing_kind.value,
+                },
+            )
+        if operation_kind is not None:
+            projected_boundary_kind_by_id[projected_id] = operation_kind
 
     imported_id_by_source_id: dict[str, str] = {}
     imported_identity_by_source_id: dict[str, StableBlockIdentity] = {}
@@ -1312,6 +1906,11 @@ def _detached_target_component(
             for block_id in native_body.terminal_block_ids
             if block_id in selected_native_imported_ids
         ),
+        preserved_native_transfer_block_ids=tuple(
+            imported_id_by_source_id.get(block_id, block_id)
+            for block_id in native_body.preserved_native_transfer_block_ids
+            if block_id in selected_native_imported_ids
+        ),
         native_ranges=_merged_imported_ranges(
             selected_imported_blocks,
             selected_operations,
@@ -1358,6 +1957,7 @@ def _detached_target_component(
         selected_operations,
         selected_native_body,
         boundary_ports,
+        tuple(sorted(projected_boundary_kind_by_id.items())),
     )
 
 
@@ -2338,7 +2938,7 @@ def _call_backed_nested_route_staging_requirements(
     *,
     native_body_id: str,
     excluded_proof_ids: frozenset[str],
-) -> tuple[_CallBackedNestedRouteStaging, ...]:
+) -> tuple[FragmentPlan, tuple[_CallBackedNestedRouteStaging, ...]]:
     """Keep only exact call-backed route corridors detached until projection."""
     imported_blocks = tuple(
         block
@@ -2350,6 +2950,9 @@ def _call_backed_nested_route_staging_requirements(
     operation_by_source: dict[str, list[FragmentOperation]] = {}
     for operation in plan.operations:
         operation_by_source.setdefault(operation.source_block_id, []).append(operation)
+    augmented_operations = list(plan.operations)
+    derived_operation_ids_by_body_id: dict[str, list[str]] = {}
+    derived_source_ids_by_body_id: dict[str, set[str]] = {}
     call_predecessors_by_target: dict[
         str,
         list[tuple[FragmentBlock, FragmentOperation]],
@@ -2404,10 +3007,14 @@ def _call_backed_nested_route_staging_requirements(
             )
         (source,) = source_matches
         source_operations = tuple(operation_by_source.get(source.block_id, ()))
+        source_operation = None if len(source_operations) != 1 else source_operations[0]
         normalization = (
             None
-            if len(source_operations) != 1
-            else source_operations[0].computed_branch_normalization
+            if source_operation is None
+            else source_operation.computed_branch_normalization
+        )
+        predicate_anchor_ea = (
+            None if source_operation is None else source_operation.predicate_anchor_ea
         )
         predecessor_candidates = tuple(
             (predecessor, operation)
@@ -2446,7 +3053,16 @@ def _call_backed_nested_route_staging_requirements(
         delivery_region = proof.delivery_region
         if (
             normalization is None
-            or int(normalization.normalization_start_ea) != int(proof.source_anchor_ea)
+            or predicate_anchor_ea is None
+            or delivery_region is None
+            or int(delivery_region.start_ea) != int(proof.source_anchor_ea)
+            or not int(proof.source_anchor_ea)
+            <= int(normalization.normalization_start_ea)
+            <= int(predicate_anchor_ea)
+            < int(normalization.unresolved_transfer_ea)
+            < int(delivery_region.end_ea)
+            or int(normalization.condition_producer_ea)
+            not in state_write.corridor_instruction_eas
             or (
                 expected_transfer_ea is not None
                 and int(normalization.unresolved_transfer_ea)
@@ -2454,12 +3070,9 @@ def _call_backed_nested_route_staging_requirements(
             )
             or (
                 expected_transfer_ea is None
-                and (
-                    delivery_region is None
-                    or not int(proof.source_anchor_ea)
-                    < int(normalization.unresolved_transfer_ea)
-                    < int(delivery_region.end_ea)
-                )
+                and not int(proof.source_anchor_ea)
+                < int(normalization.unresolved_transfer_ea)
+                < int(delivery_region.end_ea)
             )
         ):
             raise CanonicalSemanticFragmentRejected(
@@ -2476,8 +3089,23 @@ def _call_backed_nested_route_staging_requirements(
                     "operation_ids": tuple(
                         operation.operation_id for operation in source_operations
                     ),
-                    "expected_normalization_start_ea": (
-                        f"0x{int(proof.source_anchor_ea):X}"
+                    "expected_delivery_region": (
+                        f"0x{int(proof.source_anchor_ea):X}",
+                        (
+                            None
+                            if delivery_region is None
+                            else f"0x{int(delivery_region.end_ea):X}"
+                        ),
+                    ),
+                    "observed_normalization_start_ea": (
+                        None
+                        if normalization is None
+                        else f"0x{int(normalization.normalization_start_ea):X}"
+                    ),
+                    "observed_predicate_anchor_ea": (
+                        None
+                        if predicate_anchor_ea is None
+                        else f"0x{int(predicate_anchor_ea):X}"
                     ),
                     "expected_authority_transfer_ea": (
                         None
@@ -2575,6 +3203,60 @@ def _call_backed_nested_route_staging_requirements(
                 if call_owner_index + 1 == len(ordered_owner_ids)
                 else ordered_owner_ids[call_owner_index + 1]
             )
+            if not call_operations and expected_successor_id is not None:
+                call_native_body = next(
+                    (
+                        body
+                        for body in plan.native_bodies
+                        if body.body_id == call_owner.native_body_id
+                    ),
+                    None,
+                )
+                if (
+                    call_native_body is None
+                    or call_owner.block_id
+                    not in call_native_body.preserved_native_transfer_block_ids
+                    or call_owner.block_id in call_native_body.terminal_block_ids
+                ):
+                    raise CanonicalSemanticFragmentRejected(
+                        "call-backed nested route cannot refine unowned call "
+                        "fallthrough topology",
+                        reason_code=("call_backed_route_call_owner_topology_unowned"),
+                        anchor_ea=int(call_ea),
+                        payload={
+                            "route_proof_id": proof.proof_id,
+                            "call_owner_block_id": call_owner.block_id,
+                            "expected_successor_block_id": expected_successor_id,
+                        },
+                    )
+                operation_id = (
+                    f"call-backed-fallthrough:{proof.proof_id}@0x{int(call_ea):X}"
+                )
+                derived_operation = FragmentOperation(
+                    operation_id=operation_id,
+                    source_block_id=call_owner.block_id,
+                    edges=(
+                        FragmentEdge(
+                            role=SemanticEdgeRole.CALL_FALLTHROUGH,
+                            target_block_id=expected_successor_id,
+                        ),
+                    ),
+                )
+                augmented_operations.append(derived_operation)
+                operation_by_source[call_owner.block_id] = [derived_operation]
+                call_predecessors_by_target.setdefault(
+                    expected_successor_id,
+                    [],
+                ).append((call_owner, derived_operation))
+                derived_operation_ids_by_body_id.setdefault(
+                    call_native_body.body_id,
+                    [],
+                ).append(operation_id)
+                derived_source_ids_by_body_id.setdefault(
+                    call_native_body.body_id,
+                    set(),
+                ).add(call_owner.block_id)
+                call_operations = (derived_operation,)
             if (
                 len(call_operations) != 1
                 or expected_successor_id is None
@@ -2611,7 +3293,40 @@ def _call_backed_nested_route_staging_requirements(
             )
         )
 
-    return tuple(requirements)
+    if not derived_operation_ids_by_body_id:
+        return plan, tuple(requirements)
+    return (
+        replace(
+            plan,
+            operations=tuple(augmented_operations),
+            native_bodies=tuple(
+                replace(
+                    body,
+                    proof_ids=tuple(
+                        dict.fromkeys(
+                            (
+                                *body.proof_ids,
+                                *derived_operation_ids_by_body_id.get(
+                                    body.body_id,
+                                    (),
+                                ),
+                            )
+                        )
+                    ),
+                    preserved_native_transfer_block_ids=tuple(
+                        block_id
+                        for block_id in body.preserved_native_transfer_block_ids
+                        if block_id
+                        not in derived_source_ids_by_body_id.get(body.body_id, set())
+                    ),
+                )
+                if body.body_id in derived_operation_ids_by_body_id
+                else body
+                for body in plan.native_bodies
+            ),
+        ),
+        tuple(requirements),
+    )
 
 
 def _nested_terminal_effects(
@@ -2622,6 +3337,7 @@ def _nested_terminal_effects(
     tuple[FragmentReturnCarrier, ...],
     tuple[FragmentTerminalReturn, ...],
     tuple[FragmentTerminalRoute, ...],
+    tuple[tuple[str, BlockKind], ...],
 ]:
     """Project terminal carrier, return, and route as one detached fragment."""
     block_by_id = {block.block_id: block for block in blocks}
@@ -2767,6 +3483,7 @@ def _resolved_detached_target_component(
     tuple[FragmentReturnCarrier, ...],
     tuple[FragmentTerminalReturn, ...],
     tuple[FragmentTerminalRoute, ...],
+    tuple[tuple[str, BlockKind], ...],
 ]:
     """Resolve every nested state route before exposing one target component."""
     target_native_body_id = target.native_body_id
@@ -2774,7 +3491,10 @@ def _resolved_detached_target_component(
         raise CanonicalSemanticFragmentRejected(
             "detached canonical target lacks native-body ownership"
         )
-    call_backed_staging_requirements = _call_backed_nested_route_staging_requirements(
+    (
+        effective_normalization_plan,
+        call_backed_staging_requirements,
+    ) = _call_backed_nested_route_staging_requirements(
         normalization_plan,
         available_evidence,
         native_body_id=target_native_body_id,
@@ -2785,7 +3505,6 @@ def _resolved_detached_target_component(
         for requirement in call_backed_staging_requirements
         for block_id in requirement.block_ids
     )
-    effective_normalization_plan = normalization_plan
     selected_proof_ids = set(excluded_proof_ids)
     nested_route_proof_list: list[SemanticRouteProof] = []
     nested_decision_by_proof_id: dict[
@@ -2796,7 +3515,13 @@ def _resolved_detached_target_component(
     claimed_nested_corridor_ids: dict[str, str] = {}
     projection_round_limit = len(available_evidence.route_proofs) + 1
     for projection_round in range(1, projection_round_limit + 1):
-        provisional_target_blocks, _operations, _native_body, _boundary_ports = (
+        (
+            provisional_target_blocks,
+            _operations,
+            _native_body,
+            _boundary_ports,
+            _projected_boundary_kinds,
+        ) = (
             _detached_target_component(
                 graph,
                 effective_normalization_plan,
@@ -2958,6 +3683,7 @@ def _resolved_detached_target_component(
             target_operations,
             native_body,
             boundary_ports,
+            projected_boundary_kinds,
         ) = _detached_target_component(
             graph,
             effective_normalization_plan,
@@ -3058,6 +3784,7 @@ def _resolved_detached_target_component(
         return_carriers,
         terminal_returns,
         terminal_routes,
+        projected_boundary_kinds,
     )
 
 
@@ -3227,6 +3954,7 @@ def compose_canonical_semantic_fragment_plan(
         nested_return_carriers,
         nested_terminal_returns,
         nested_terminal_routes,
+        projected_boundary_kinds,
     ) = _resolved_detached_target_component(
         graph,
         effective_normalization_plan,
@@ -3292,6 +4020,7 @@ def compose_canonical_semantic_fragment_plan(
     original_id = f"route:{proof.proof_id}:original"
     replacement_id = f"route:{proof.proof_id}:replacement"
     blocks: list[FragmentBlock] = list(target_external_blocks)
+    projected_boundary_kind_by_id = dict(projected_boundary_kinds)
     external_id_by_serial: dict[int, str] = {}
     external_owner_serial_by_identity: dict[StableBlockIdentity, int] = {}
     for boundary in target_external_blocks:
@@ -3305,6 +4034,30 @@ def compose_canonical_semantic_fragment_plan(
             identity,
             current_identity_by_serial=current_identity_by_serial,
         )
+        if len(current_owners) > 1:
+            topology_owner_serial = _unique_owner_serial_matching_evidence(
+                graph,
+                (owner[0] for owner in current_owners),
+                projected_boundary_kind_by_id.get(boundary.block_id),
+            )
+            if topology_owner_serial is not None:
+                current_owners = tuple(
+                    owner
+                    for owner in current_owners
+                    if int(owner[0]) == topology_owner_serial
+                )
+        if len(current_owners) > 1:
+            published_owner_serial = _unique_published_owner_serial(
+                graph,
+                (owner[0] for owner in current_owners),
+                prohibited_serial_set,
+            )
+            if published_owner_serial is not None:
+                current_owners = tuple(
+                    owner
+                    for owner in current_owners
+                    if int(owner[0]) == published_owner_serial
+                )
         if len(current_owners) > 1:
             raise CanonicalSemanticFragmentRejected(
                 "projected canonical boundary has multiple current owners",
@@ -3424,16 +4177,19 @@ def compose_canonical_semantic_fragment_plan(
         )
     )
 
-    def semantic_point_block_id(point: SemanticCorridorPoint) -> str:
+    def semantic_point_block_id(
+        point: SemanticCorridorPoint,
+        *,
+        predicate_origin: bool = False,
+    ) -> str:
         candidates = tuple(
             block
             for block in blocks
             if block.role is not FragmentBlockRole.ORIGINAL
             and block.stable_identity is not None
-            and stable_block_identities_refine_at_anchor(
+            and _identity_owns_semantic_corridor_point(
                 block.stable_identity,
-                point.identity,
-                point.anchor_ea,
+                point,
             )
         )
         if len(candidates) == 1:
@@ -3452,12 +4208,20 @@ def compose_canonical_semantic_fragment_plan(
         current_owners = tuple(
             int(serial)
             for serial, identity in current_identity_by_serial.items()
-            if stable_block_identities_refine_at_anchor(
-                identity,
-                point.identity,
-                point.anchor_ea,
-            )
+            if _identity_owns_semantic_corridor_point(identity, point)
         )
+        if len(current_owners) != 1 and predicate_origin:
+            conditional_owners = tuple(
+                serial
+                for serial in current_owners
+                if (
+                    graph.blocks[serial].kind is BlockKind.TWO_WAY
+                    and graph.blocks[serial].tail is not None
+                    and int(graph.blocks[serial].tail.ea) == int(point.anchor_ea)
+                )
+            )
+            if len(conditional_owners) == 1:
+                current_owners = conditional_owners
         if len(current_owners) != 1:
             raise CanonicalSemanticFragmentRejected(
                 "canonical semantic corridor requires one current or staged owner",
@@ -3484,7 +4248,10 @@ def compose_canonical_semantic_fragment_plan(
                 "canonical imported consumer lacks one portable storage predicate"
             )
         for point in predicate.corridor:
-            semantic_point_block_id(point)
+            semantic_point_block_id(
+                point,
+                predicate_origin=(point == predicate.origin),
+            )
         predicate_value_id = f"predicate:{imported_consumer.proof_id}"
         data_flow_obligations.append(
             FragmentDataFlowObligation(
@@ -3492,7 +4259,10 @@ def compose_canonical_semantic_fragment_plan(
                 role=FragmentDataFlowRole.CONDITION,
                 definition=FragmentValueSite(
                     site_id=f"{predicate_value_id}:definition",
-                    block_id=semantic_point_block_id(predicate.origin),
+                    block_id=semantic_point_block_id(
+                        predicate.origin,
+                        predicate_origin=True,
+                    ),
                     value_id=predicate_value_id,
                     instruction_ea=int(predicate.origin.anchor_ea),
                     storage_identity=predicate.storage_identity,
@@ -4215,6 +4985,7 @@ def compose_canonical_semantic_boundary_fragment_plan(
         nested_return_carriers,
         nested_terminal_returns,
         nested_terminal_routes,
+        _projected_boundary_kinds,
     ) = _resolved_detached_target_component(
         graph,
         normalization_plan,
@@ -4928,8 +5699,10 @@ __all__ = [
     "CanonicalSemanticFragmentRejected",
     "DetachedDirectRoutePlan",
     "build_canonical_semantic_fragment_plan",
+    "compile_receipted_prepared_topology",
     "compose_canonical_carrier_ingress_fragment_plan",
     "compose_canonical_semantic_boundary_fragment_plan",
     "compose_canonical_semantic_fragment_plan",
     "plan_detached_reference_direct_route",
+    "validate_receipted_prepared_topology_scope",
 ]

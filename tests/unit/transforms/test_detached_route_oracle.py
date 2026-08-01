@@ -30,6 +30,7 @@ from d810.transforms.fragment_plan import (
     FragmentBoundaryPortKind,
     FragmentDirectTransferRewrite,
     FragmentEdge,
+    FragmentNativeBody,
     FragmentOperation,
     FragmentPlan,
     FragmentPlanRejected,
@@ -419,6 +420,102 @@ def test_bind_fragment_reference_oracle_rebinds_unique_donor_patch_coordinate() 
     result = compare_detached_route_oracle(bound, _projection(bound))
     assert result.passed
     assert result.comparisons[0].rewrite_anchor_ea == _REWRITE_ANCHOR_EA
+
+
+def test_bind_fragment_reference_oracle_accepts_distinct_route_ledger_identities() -> (
+    None
+):
+    plan = _unbound_plan()
+    (root_operation,) = plan.operations
+    second_owner_ea = 0x40B540
+    second_rewrite_ea = 0x40B548
+    second_end_ea = 0x40B54A
+    second_identity = _identity(
+        second_owner_ea,
+        second_end_ea,
+        second_owner_ea,
+        second_rewrite_ea,
+    )
+    second_source = FragmentBlock(
+        block_id="second-source",
+        role=FragmentBlockRole.IMPORTED,
+        materialization=FragmentBlockMaterialization.IMPORT_NATIVE,
+        semantic_anchor_ea=second_owner_ea,
+        stable_identity=second_identity,
+        native_body_id="second-body",
+    )
+    second_operation = FragmentOperation(
+        operation_id="route:second",
+        source_block_id=second_source.block_id,
+        direct_transfer_rewrite=FragmentDirectTransferRewrite(
+            route_proof_id="second",
+            owner_identity=second_identity,
+            owner_anchor_ea=second_owner_ea,
+            rewrite_anchor_ea=second_rewrite_ea,
+            delivery_region=NativeEaInterval(second_rewrite_ea, second_end_ea),
+            proof_corridor_instruction_eas=(
+                second_owner_ea,
+                second_rewrite_ea,
+            ),
+            superseded_instruction_eas=(second_rewrite_ea,),
+            source_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        ),
+        edges=(FragmentEdge(role=SemanticEdgeRole.DIRECT, target_block_id="target"),),
+    )
+    plan = replace(
+        plan,
+        blocks=(*plan.blocks, second_source),
+        operations=(
+            replace(
+                root_operation,
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id=second_source.block_id,
+                    ),
+                ),
+            ),
+            second_operation,
+        ),
+        native_bodies=(
+            FragmentNativeBody(
+                body_id="second-body",
+                block_ids=(second_source.block_id,),
+                entry_block_ids=(second_source.block_id,),
+                terminal_block_ids=(),
+                native_ranges=(NativeEaInterval(second_owner_ea, second_end_ea),),
+                proof_ids=(second_operation.operation_id,),
+            ),
+        ),
+    )
+    first_route = replace(
+        _reference_route(),
+        direct_target_ea=second_owner_ea,
+    )
+    second_route = ReferenceRouteRewrite(
+        route_id="rhad:0x40A560:flow_route:0x40B548",
+        function_ea=_FUNCTION_EA,
+        owner_ea=second_owner_ea,
+        rewrite_anchor_ea=second_rewrite_ea,
+        corridor=((second_owner_ea, second_end_ea),),
+        reference_phase="flow_route",
+        original_transfer_kind=SemanticTransferKind.CONDITIONAL,
+        final_transfer_kind=SemanticTransferKind.DIRECT,
+        direct_target_ea=_TARGET_EA,
+        reference_ledger_identity="flow_route:0x40B548",
+    )
+    selection = ReferenceRouteOracleSelection(
+        run=_reference_run(),
+        publication_root_ea=_OWNER_EA,
+        routes=(first_route, second_route),
+    )
+
+    bound = bind_fragment_reference_oracle(plan, selection)
+
+    assert {
+        operation.reference_route_authority.reference_route.reference_ledger_identity
+        for operation in bound.operations
+    } == {"flow_route:0x40B52E", "flow_route:0x40B548"}
 
 
 def test_bind_fragment_reference_oracle_rebinds_complete_conditional_route() -> None:

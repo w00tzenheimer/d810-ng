@@ -113,6 +113,14 @@ def test_prepared_body_facts_remain_invisible_until_exact_plan_receipt() -> None
         )
         is None
     )
+    assert (
+        plan_authority.prepared_work_items_for(
+            0x40A560,
+            evidence.generation,
+            generation_plan.complete_plan.plan_id,
+        )
+        == ()
+    )
 
     plan_authority.record_receipted_generation(
         generation_plan,
@@ -134,6 +142,11 @@ def test_prepared_body_facts_remain_invisible_until_exact_plan_receipt() -> None
         f"r{authority.publication_revision}"
     )
     assert retained.prepared_bodies.bodies == (fact,)
+    assert plan_authority.prepared_work_items_for(
+        0x40A560,
+        evidence.generation,
+        generation_plan.complete_plan.plan_id,
+    ) == (retained,)
 
 
 def test_prepared_body_receipt_accepts_distinct_typed_work_item_identity() -> None:
@@ -283,6 +296,11 @@ def test_prepared_work_item_retains_each_receipt_revision_and_selects_latest() -
     assert current.prepared_bodies.snapshot_id.endswith(
         f"r{replay_authority.publication_revision}"
     )
+    assert plan_authority.prepared_work_items_for(
+        0x40A560,
+        evidence.generation,
+        generation_plan.complete_plan.plan_id,
+    ) == (current,)
     assert plan_authority.plan_for(0x40A560, evidence.generation) == (
         generation_plan.complete_plan,
         replay_authority,

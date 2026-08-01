@@ -222,6 +222,103 @@ def _candidate_rewrite_anchor(operation: FragmentOperation) -> int | None:
     return _conditional_candidate_anchor(operation)
 
 
+def _direct_operation_semantically_matches(
+    plan: FragmentPlan,
+    operation: FragmentOperation,
+    route: ReferenceRouteRewrite,
+) -> bool:
+    rewrite = operation.direct_transfer_rewrite
+    if (
+        rewrite is None
+        or route.final_transfer_kind is not SemanticTransferKind.DIRECT
+        or route.direct_target_ea is None
+        or int(rewrite.owner_anchor_ea) != int(route.owner_ea)
+        or not rewrite.owner_identity.native_ranges.contains(route.owner_ea)
+        or not any(
+            start_ea <= int(rewrite.rewrite_anchor_ea) < end_ea
+            for start_ea, end_ea in route.corridor
+        )
+        or not all(
+            any(start_ea <= ea < end_ea for start_ea, end_ea in route.corridor)
+            for ea in rewrite.proof_corridor_instruction_eas
+        )
+    ):
+        return False
+    target = plan.block(operation.edges[0].target_block_id)
+    target_identity = target.stable_identity
+    return bool(
+        target_identity is not None
+        and target_identity.native_ranges.contains(route.direct_target_ea)
+    )
+
+
+def select_fragment_reference_oracle_scope(
+    plan: FragmentPlan,
+    selection: ReferenceRouteOracleSelection,
+) -> ReferenceRouteOracleSelection:
+    """Select the exact typed donor routes owned by one bounded fragment."""
+    if not isinstance(plan, FragmentPlan):
+        raise TypeError("reference scope selection requires a FragmentPlan")
+    if not isinstance(selection, ReferenceRouteOracleSelection):
+        raise TypeError("reference scope selection requires a route selection")
+    candidate_operations = tuple(
+        operation
+        for operation in plan.operations
+        if _candidate_rewrite_anchor(operation) is not None
+    )
+    if not candidate_operations:
+        raise DetachedRouteOracleRejected(
+            "fragment reference scope requires candidate rewrites",
+            reason_code="fragment_reference_scope_candidate_missing",
+        )
+    selected_routes: list[ReferenceRouteRewrite] = []
+    selected_route_ids: set[str] = set()
+    for operation in candidate_operations:
+        candidate_anchor_ea = _candidate_rewrite_anchor(operation)
+        assert candidate_anchor_ea is not None
+        matching_routes = tuple(
+            route
+            for route in selection.routes
+            if route.route_id not in selected_route_ids
+            and (
+                operation.direct_transfer_rewrite is not None
+                and (
+                    int(route.rewrite_anchor_ea) == candidate_anchor_ea
+                    and route.final_transfer_kind is SemanticTransferKind.DIRECT
+                    or _direct_operation_semantically_matches(plan, operation, route)
+                )
+                or operation.direct_transfer_rewrite is None
+                and (
+                    int(route.rewrite_anchor_ea) == candidate_anchor_ea
+                    and route.final_transfer_kind is SemanticTransferKind.CONDITIONAL
+                    and _conditional_reference_predicate(operation)
+                    == route.predicate_kind
+                    or _conditional_operation_semantically_matches(
+                        plan,
+                        operation,
+                        route,
+                    )
+                )
+            )
+        )
+        if len(matching_routes) != 1:
+            raise DetachedRouteOracleRejected(
+                "bounded fragment operation requires one reference route",
+                reason_code="fragment_reference_scope_operation_match_mismatch",
+                payload={
+                    "candidate_rewrite_anchor_ea": f"0x{candidate_anchor_ea:X}",
+                    "matching_reference_route_ids": tuple(
+                        route.route_id for route in matching_routes
+                    ),
+                    "operation_id": operation.operation_id,
+                },
+            )
+        (selected_route,) = matching_routes
+        selected_routes.append(selected_route)
+        selected_route_ids.add(selected_route.route_id)
+    return replace(selection, routes=tuple(selected_routes))
+
+
 def bind_fragment_reference_oracle(
     plan: FragmentPlan,
     selection: ReferenceRouteOracleSelection,
@@ -287,29 +384,10 @@ def bind_fragment_reference_oracle(
                 for operation in direct_candidates:
                     rewrite = operation.direct_transfer_rewrite
                     assert rewrite is not None
-                    target = plan.block(operation.edges[0].target_block_id)
-                    target_identity = target.stable_identity
-                    if (
-                        route.direct_target_ea is not None
-                        and int(rewrite.owner_anchor_ea) == int(route.owner_ea)
-                        and rewrite.owner_identity.native_ranges.contains(
-                            route.owner_ea
-                        )
-                        and target_identity is not None
-                        and target_identity.native_ranges.contains(
-                            route.direct_target_ea
-                        )
-                        and any(
-                            start_ea <= int(rewrite.rewrite_anchor_ea) < end_ea
-                            for start_ea, end_ea in route.corridor
-                        )
-                        and all(
-                            any(
-                                start_ea <= ea < end_ea
-                                for start_ea, end_ea in route.corridor
-                            )
-                            for ea in rewrite.proof_corridor_instruction_eas
-                        )
+                    if _direct_operation_semantically_matches(
+                        plan,
+                        operation,
+                        route,
                     ):
                         semantic_matches.append(operation)
                 if len(semantic_matches) != 1:
@@ -928,5 +1006,6 @@ __all__ = [
     "DetachedRouteOracleRejected",
     "DetachedRouteOracleResult",
     "bind_fragment_reference_oracle",
+    "select_fragment_reference_oracle_scope",
     "compare_detached_route_oracle",
 ]

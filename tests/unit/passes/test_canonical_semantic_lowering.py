@@ -68,11 +68,11 @@ from d810.transforms.canonical_semantic_fragment import (
     build_canonical_semantic_fragment_plan,
 )
 from d810.transforms.fragment_plan import (
+    FragmentBlockRole,
     FragmentPublicationPurpose,
     FragmentWorkItemScope,
 )
 from d810.transforms.detached_route_oracle import bind_fragment_reference_oracle
-from d810.transforms.plan import PatchPlan
 from tests.native_preanalysis import make_native_key
 
 
@@ -315,7 +315,9 @@ def test_canonical_semantic_lowering_returns_only_a_fragment_plan() -> None:
 
     result = LowerCanonicalSemanticFragment().run(context)
 
-    assert result.rewrite_plan == PatchPlan()
+    assert result.rewrite_plan.steps == ()
+    assert result.rewrite_plan.new_blocks == ()
+    assert result.rewrite_plan.semantic_contract is None
     assert result.fragment_plan is not None
     assert (
         result.fragment_plan.publication_purpose
@@ -1280,7 +1282,7 @@ def test_configured_reference_scope_drives_live_route_composition_before_boundar
     ]
 
 
-def test_configured_reference_scope_preserves_typed_anchor_mismatch(
+def test_configured_reference_scope_selects_only_bounded_plan_routes(
     monkeypatch,
 ) -> None:
     graph, bound = _graph_and_bound_evidence()
@@ -1327,39 +1329,66 @@ def test_configured_reference_scope_preserves_typed_anchor_mismatch(
             ),
         ),
     )
+    prepared_work_item = SimpleNamespace(
+        prepared_bodies=SimpleNamespace(
+            snapshot_id="prepared-multi-route",
+            bodies=(),
+        ),
+    )
+    prepared_requests = []
+    prepared_body_provider = SimpleNamespace(
+        prepared_work_items_for=lambda *args: (
+            prepared_requests.append(args),
+            (prepared_work_item,),
+        )[1]
+    )
+    compiled_plan = replace(plan, plan_id="compiled-multi-route:test")
+    compile_calls = []
+
+    def compile_topology(plan_arg, prepared_arg):
+        compile_calls.append((plan_arg, prepared_arg))
+        return compiled_plan
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "compile_receipted_prepared_topology",
+        compile_topology,
+    )
+    compose_calls = []
+
+    def compose_route(*args, **kwargs):
+        compose_calls.append((args, kwargs))
+        return plan
+
     monkeypatch.setattr(
         state_machine_module,
         "compose_canonical_semantic_fragment_plan",
-        lambda *_args, **_kwargs: plan,
+        compose_route,
     )
 
-    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
-        state_machine_module._compose_configured_reference_scope_plan(
-            graph=graph,
-            normalization_plan=plan,
-            configured_scope=selection,
-            available_evidence=candidate,
-            current_identity_by_serial={
-                serial: _identity(block.start_ea)
-                for serial, block in graph.blocks.items()
-            },
-            normalization_authority=object(),
-            prohibited_dispatcher_serials=(30,),
-            composition_attempts=[],
-        )
-
-    rejection = exc_info.value
-    assert rejection.reason_code == "canonical_configured_reference_scope_invalid"
-    assert rejection.payload["cause_reason_code"] == (
-        "fragment_reference_rewrite_anchor_set_mismatch"
+    result = state_machine_module._compose_configured_reference_scope_plan(
+        graph=graph,
+        normalization_plan=plan,
+        configured_scope=selection,
+        available_evidence=candidate,
+        current_identity_by_serial={
+            serial: _identity(block.start_ea) for serial, block in graph.blocks.items()
+        },
+        normalization_authority=object(),
+        prepared_body_provider=prepared_body_provider,
+        prohibited_dispatcher_serials=(30,),
+        composition_attempts=[],
     )
-    assert rejection.payload["cause_payload"] == {
-        "coordinate_rebindings": (),
-        "missing_rewrite_anchors": ("0x1300",),
-        "planned_rewrite_anchors": ("0x1100",),
-        "selected_rewrite_anchors": ("0x1100", "0x1300"),
-        "unexpected_rewrite_anchors": (),
-    }
+
+    assert result == bind_fragment_reference_oracle(
+        plan,
+        replace(selection, routes=(root_route,)),
+    )
+    assert prepared_requests == [
+        (graph.func_ea, candidate.generation, plan.plan_id)
+    ]
+    assert compile_calls == [(plan, prepared_work_item)]
+    assert compose_calls[0][0][1] is compiled_plan
 
 
 def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
@@ -1459,6 +1488,60 @@ def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
     )
     attempts: list[dict[str, object]] = []
     normalization_authority = object()
+    prepared_work_item = SimpleNamespace(
+        prepared_bodies=SimpleNamespace(
+            snapshot_id="prepared-snapshot-1",
+            bodies=(),
+        ),
+        work_item_plan=SimpleNamespace(
+            blocks=(
+                SimpleNamespace(
+                    block_id=detached_plan.source_block.block_id,
+                    role=FragmentBlockRole.IMPORTED,
+                ),
+            ),
+        ),
+    )
+    sibling_prepared_work_item = SimpleNamespace(
+        prepared_bodies=SimpleNamespace(
+            snapshot_id="prepared-snapshot-2",
+            bodies=(),
+        ),
+        work_item_plan=SimpleNamespace(
+            blocks=(
+                SimpleNamespace(
+                    block_id="prepared-sibling",
+                    role=FragmentBlockRole.IMPORTED,
+                ),
+            ),
+        ),
+    )
+    prepared_body_requests = []
+
+    def prepared_bodies_for(*args):
+        prepared_body_requests.append(args)
+        return (prepared_work_item, sibling_prepared_work_item)
+
+    prepared_body_provider = SimpleNamespace(
+        prepared_work_items_for=prepared_bodies_for
+    )
+    topology_compile_calls = []
+    first_compiled_plan = replace(plan, plan_id="compiled-receipt-1:test")
+    aggregate_compiled_plan = replace(plan, plan_id="compiled-receipts:test")
+
+    def compile_topology(*args):
+        topology_compile_calls.append(args)
+        return (
+            first_compiled_plan
+            if len(topology_compile_calls) == 1
+            else aggregate_compiled_plan
+        )
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "compile_receipted_prepared_topology",
+        compile_topology,
+    )
 
     result = state_machine_module._compose_configured_reference_scope_plan(
         graph=graph,
@@ -1469,6 +1552,7 @@ def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
             serial: _identity(block.start_ea) for serial, block in graph.blocks.items()
         },
         normalization_authority=normalization_authority,
+        prepared_body_provider=prepared_body_provider,
         prohibited_dispatcher_serials=(30,),
         composition_attempts=attempts,
     )
@@ -1490,9 +1574,20 @@ def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
             {"normalization_authority": normalization_authority},
         )
     ]
+    assert topology_compile_calls == [
+        (plan, prepared_work_item),
+        (first_compiled_plan, sibling_prepared_work_item),
+    ]
+    assert prepared_body_requests == [
+        (
+            graph.func_ea,
+            candidate.generation,
+            plan.plan_id,
+        )
+    ]
     assert boundary_calls == [
         (
-            (graph, plan),
+            (graph, aggregate_compiled_plan),
             {
                 "boundary_anchor_ea": 0x1100,
                 "available_evidence": candidate,
@@ -1506,6 +1601,28 @@ def test_configured_reference_direct_route_returns_one_complete_vertical_plan(
         )
     ]
     assert bind_calls == [(vertical_plan, selection)]
+
+    missing_attempts: list[dict[str, object]] = []
+    with pytest.raises(CanonicalSemanticFragmentRejected) as exc_info:
+        state_machine_module._compose_configured_reference_scope_plan(
+            graph=graph,
+            normalization_plan=plan,
+            configured_scope=selection,
+            available_evidence=candidate,
+            current_identity_by_serial={
+                serial: _identity(block.start_ea)
+                for serial, block in graph.blocks.items()
+            },
+            normalization_authority=normalization_authority,
+            prepared_body_provider=None,
+            prohibited_dispatcher_serials=(30,),
+            composition_attempts=missing_attempts,
+        )
+    assert exc_info.value.reason_code == "prepared_normalization_topology_missing"
+    assert [attempt["kind"] for attempt in missing_attempts] == [
+        "configured_reference_detached_direct_route",
+        "configured_reference_prepared_topology",
+    ]
 
 
 def test_configured_detached_route_uses_only_a_closed_carrier_ingress_component(
@@ -1608,6 +1725,28 @@ def test_configured_detached_route_uses_only_a_closed_carrier_ingress_component(
     }
     normalization_authority = object()
     attempts: list[dict[str, object]] = []
+    prepared_work_item = SimpleNamespace(
+        prepared_bodies=SimpleNamespace(
+            snapshot_id="prepared-snapshot-1",
+            bodies=(),
+        ),
+        work_item_plan=SimpleNamespace(
+            blocks=(
+                SimpleNamespace(
+                    block_id=detached_plan.source_block.block_id,
+                    role=FragmentBlockRole.IMPORTED,
+                ),
+            ),
+        ),
+    )
+    prepared_body_provider = SimpleNamespace(
+        prepared_work_items_for=lambda *_args: (prepared_work_item,)
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "compile_receipted_prepared_topology",
+        lambda *_args: plan,
+    )
 
     result = state_machine_module._compose_configured_reference_scope_plan(
         graph=graph,
@@ -1616,6 +1755,7 @@ def test_configured_detached_route_uses_only_a_closed_carrier_ingress_component(
         available_evidence=candidate,
         current_identity_by_serial=current_identity_by_serial,
         normalization_authority=normalization_authority,
+        prepared_body_provider=prepared_body_provider,
         prohibited_dispatcher_serials=(30,),
         composition_attempts=attempts,
     )
@@ -1671,6 +1811,7 @@ def test_configured_detached_route_uses_only_a_closed_carrier_ingress_component(
             available_evidence=candidate,
             current_identity_by_serial=current_identity_by_serial,
             normalization_authority=normalization_authority,
+            prepared_body_provider=prepared_body_provider,
             prohibited_dispatcher_serials=(30,),
             composition_attempts=rejected_attempts,
         )
@@ -1794,6 +1935,7 @@ def test_configured_reference_scope_reuses_proved_temporary_entry_port(
         available_evidence=candidate,
         current_identity_by_serial=current_identity_by_serial,
         normalization_authority=normalization_authority,
+        prepared_body_provider=None,
         prohibited_dispatcher_serials=(30,),
         composition_attempts=composition_attempts,
     )

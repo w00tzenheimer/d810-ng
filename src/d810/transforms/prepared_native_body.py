@@ -102,6 +102,7 @@ class PreparedNativeBlockFact:
     block_flags: int
     kind: BlockKind
     successors: tuple[PreparedNativeEdgeFact, ...]
+    boundary_exit_eas: tuple[int, ...]
     predecessor_block_ids: tuple[str, ...]
     terminator_ea: int | None
     terminator_kind: InsnKind
@@ -124,6 +125,18 @@ class PreparedNativeBlockFact:
         successors = tuple(self.successors)
         if any(not isinstance(edge, PreparedNativeEdgeFact) for edge in successors):
             raise TypeError("prepared block contains an invalid edge")
+        boundary_exit_eas = tuple(
+            _nonnegative_int(ea, "prepared boundary exit EA")
+            for ea in self.boundary_exit_eas
+        )
+        if (
+            any(ea == 0 for ea in boundary_exit_eas)
+            or len(set(boundary_exit_eas)) != len(boundary_exit_eas)
+            or boundary_exit_eas != tuple(sorted(boundary_exit_eas))
+        ):
+            raise ValueError(
+                "prepared boundary exits must be positive, unique, and ordered"
+            )
         predecessor_block_ids = tuple(
             _identifier(value, "prepared predecessor")
             for value in self.predecessor_block_ids
@@ -156,6 +169,7 @@ class PreparedNativeBlockFact:
         object.__setattr__(self, "block_id", block_id)
         object.__setattr__(self, "semantic_anchor_ea", semantic_anchor_ea)
         object.__setattr__(self, "successors", successors)
+        object.__setattr__(self, "boundary_exit_eas", boundary_exit_eas)
         object.__setattr__(self, "predecessor_block_ids", predecessor_block_ids)
         object.__setattr__(self, "terminator_ea", terminator_ea)
         object.__setattr__(self, "instructions", instructions)
