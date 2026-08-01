@@ -48,9 +48,9 @@ def _envelope(length: int) -> tuple[PreparedNativeInstructionFact, ...]:
         ),
         (
             ValueOpKind.MOVE,
-            FragmentConstantPublicationEnvelope.GENERATED_BYTE_LOAD_ZERO_EXTEND,
-            4,
-            2,
+            FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE,
+            1,
+            0,
         ),
     ),
 )

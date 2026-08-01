@@ -801,7 +801,7 @@ def _movzx_constant_ledger():
             compiler.RhadAbsoluteConstantEncoding.MOVZX_R32_BYTE_ABSOLUTE
         ),
         publication_envelope=(
-            compiler.RhadConstantPublicationEnvelope.GENERATED_BYTE_LOAD_ZERO_EXTEND
+            compiler.RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE
         ),
         phase=compiler.RhadReferencePhase.CONSTANT_MATERIALIZATION,
         depends_on=(mov_ledger.operations[-1].operation_id,),
@@ -911,7 +911,7 @@ def test_compiler_emits_typed_movzx_absolute_materialization() -> None:
     assert materialization.constant_value == 0x16
     assert materialization.encoding_variant.value == "movzx_r32_byte_absolute"
     assert materialization.publication_envelope.value == (
-        "generated_byte_load_zero_extend"
+        "imported_global_byte_move"
     )
     assert materialization.destination_storage == StorageIdentity(
         kind=StorageIdentityKind.REGISTER,
