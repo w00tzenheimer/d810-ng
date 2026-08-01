@@ -12530,6 +12530,33 @@ _CONSTANT_ROW36_MOVZX_ABSOLUTE = RhadAbsoluteConstantMaterialization(
     depends_on=(_CONSTANT_ROW35_MOV_ABSOLUTE.operation_id,),
 )
 
+_CONSTANT_ROW37_MOV_ABSOLUTE = RhadAbsoluteConstantMaterialization(
+    operation_id="constant:rhad-mov-absolute@0x40B9FF",
+    reference_operation_id="rhad:constant@0x40B9FF",
+    reference_order=37,
+    operation_variant=RhadOperationVariant.MOV_ABSOLUTE,
+    reference_symbol="deob_consts.ConstantInliner.transform_mov_mem_to_imm",
+    source_block_id="native@0x40B9A6",
+    source_native_ea=0x40B9FF,
+    data_native_ea=0x48AE38,
+    source_width_bits=32,
+    destination_width_bits=32,
+    destination_storage=StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=8,
+    ),
+    reference_read_width_bits=32,
+    reference_data_bytes_le="d9069856",
+    reference_raw_value=0x569806D9,
+    materialized_value=0x569806D9,
+    source_instruction_bytes="a138ae4800",
+    replacement_instruction_bytes="b8d9069856",
+    encoding_variant=RhadAbsoluteConstantEncoding.MOV_EAX_ABSOLUTE,
+    publication_envelope=RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE,
+    phase=RhadReferencePhase.CONSTANT_MATERIALIZATION,
+    depends_on=(_CONSTANT_ROW36_MOVZX_ABSOLUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -17471,6 +17498,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _CONSTANT_ROW34_MOV_ABSOLUTE,
         _CONSTANT_ROW35_MOV_ABSOLUTE,
         _CONSTANT_ROW36_MOVZX_ABSOLUTE,
+        _CONSTANT_ROW37_MOV_ABSOLUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
