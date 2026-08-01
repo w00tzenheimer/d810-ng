@@ -19038,7 +19038,8 @@ def test_constant_row0_compiles_typed_materialization_and_binds_identity() -> No
     assert materialization.source_block_id == operation.source_block_id
     assert materialization.instruction_ea == 0x40A574
     assert materialization.data_ea == 0x48ADCC
-    assert materialization.width_bits == 32
+    assert materialization.source_width_bits == 32
+    assert materialization.destination_width_bits == 32
     assert materialization.constant_value == 0x3776723F
     assert materialization.consumer_operation.value == "add"
     assert materialization.publication_envelope.value == "generated_absolute_load"

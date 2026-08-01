@@ -726,6 +726,100 @@ def _mov_constant_ledger():
     )
 
 
+def _movzx_constant_ledger():
+    compiler = _compiler_module()
+    mov_ledger = _mov_constant_ledger()
+    source = FragmentBlock(
+        block_id="native@0x40B810",
+        role=FragmentBlockRole.EXTERNAL,
+        materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+        semantic_anchor_ea=0x40B810,
+        stable_identity=_identity(
+            0x40B810,
+            0x40B87B,
+            0x40B810,
+            0x40B815,
+            0x40B81C,
+            0x40B81F,
+            0x40B821,
+            0x40B828,
+            0x40B82C,
+            0x40B831,
+            0x40B835,
+            0x40B83A,
+            0x40B83F,
+            0x40B845,
+            0x40B84B,
+            0x40B84D,
+            0x40B854,
+            0x40B85A,
+            0x40B85F,
+            0x40B863,
+            0x40B865,
+            0x40B86B,
+            0x40B871,
+            0x40B875,
+            0x40B879,
+        ),
+    )
+    constant_id = "constant:rhad-movzx-absolute@0x40B815"
+    scope = mov_ledger.base_plan.work_item_scope
+    assert scope is not None
+    base = replace(
+        mov_ledger.base_plan,
+        blocks=(*mov_ledger.base_plan.blocks, source),
+        work_item_scope=replace(
+            scope,
+            selected_obligation_ids=(
+                *scope.selected_obligation_ids,
+                constant_id,
+            ),
+        ),
+    )
+    constant = compiler.RhadAbsoluteConstantMaterialization(
+        operation_id=constant_id,
+        reference_operation_id="rhad:constant@0x40B815",
+        reference_order=2,
+        operation_variant=compiler.RhadOperationVariant.MOVZX_ABSOLUTE,
+        reference_symbol="deob_consts.ConstantInliner.transform_movzx_mem_to_imm",
+        source_block_id=source.block_id,
+        source_native_ea=0x40B815,
+        data_native_ea=0x48AE14,
+        source_width_bits=8,
+        destination_width_bits=32,
+        destination_storage=StorageIdentity(
+            kind=StorageIdentityKind.REGISTER,
+            offset=16,
+        ),
+        reference_read_width_bits=32,
+        reference_data_bytes_le="1674fe2e",
+        reference_raw_value=0x2EFE7416,
+        materialized_value=0x16,
+        source_instruction_bytes="0fb60d14ae4800",
+        replacement_instruction_bytes="b9160000009090",
+        encoding_variant=(
+            compiler.RhadAbsoluteConstantEncoding.MOVZX_R32_BYTE_ABSOLUTE
+        ),
+        publication_envelope=(
+            compiler.RhadConstantPublicationEnvelope.GENERATED_BYTE_LOAD_ZERO_EXTEND
+        ),
+        phase=compiler.RhadReferencePhase.CONSTANT_MATERIALIZATION,
+        depends_on=(mov_ledger.operations[-1].operation_id,),
+    )
+    return replace(
+        mov_ledger,
+        base_plan=base,
+        operations=(*mov_ledger.operations, constant),
+        reference_provenance={
+            **mov_ledger.reference_provenance,
+            "operation_shapes": (
+                *mov_ledger.reference_provenance["operation_shapes"],
+                "movzx_absolute",
+            ),
+        },
+    )
+
+
 def test_compiler_emits_typed_add_absolute_materialization() -> None:
     compiler = _compiler_module()
     ledger = _constant_ledger()
@@ -793,6 +887,76 @@ def test_compiler_emits_typed_mov_absolute_materialization() -> None:
     )
     assert materialization.consumer_operation.value == "move"
     assert materialization.preserved_flag_roles == ()
+
+
+def test_compiler_emits_typed_movzx_absolute_materialization() -> None:
+    compiler = _compiler_module()
+
+    plan = compiler.compile_rhad_reference_fragment(
+        _movzx_constant_ledger(),
+        expected_evidence_generation=1,
+    )
+
+    materialization = plan.constant_materializations[-1]
+    assert materialization.materialization_id == (
+        "constant:rhad-movzx-absolute@0x40B815"
+    )
+    assert materialization.reference_operation_id == "rhad:constant@0x40B815"
+    assert materialization.source_block_id == "native@0x40B810"
+    assert materialization.instruction_ea == 0x40B815
+    assert materialization.data_ea == 0x48AE14
+    assert materialization.source_width_bits == 8
+    assert materialization.destination_width_bits == 32
+    assert materialization.reference_read_width_bits == 32
+    assert materialization.constant_value == 0x16
+    assert materialization.encoding_variant.value == "movzx_r32_byte_absolute"
+    assert materialization.publication_envelope.value == (
+        "generated_byte_load_zero_extend"
+    )
+    assert materialization.destination_storage == StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=16,
+    )
+    assert materialization.consumer_operation.value == "move"
+    assert materialization.preserved_flag_roles == ()
+
+
+def test_movzx_absolute_rejects_unmasked_materialized_value() -> None:
+    compiler = _compiler_module()
+    operation = _movzx_constant_ledger().operations[-1]
+
+    with pytest.raises(
+        compiler.RhadCompilerRejection,
+        match="zero-extended byte value differs from reference data",
+    ):
+        replace(operation, materialized_value=operation.reference_raw_value)
+
+
+def test_movzx_absolute_rejects_wrong_source_width() -> None:
+    compiler = _compiler_module()
+    operation = _movzx_constant_ledger().operations[-1]
+
+    with pytest.raises(
+        compiler.RhadCompilerRejection,
+        match="requires 8-bit source, 32-bit destination, and 32-bit reference read",
+    ):
+        replace(operation, source_width_bits=32)
+
+
+def test_movzx_absolute_rejects_plain_move_publication_envelope() -> None:
+    compiler = _compiler_module()
+    operation = _movzx_constant_ledger().operations[-1]
+
+    with pytest.raises(
+        compiler.RhadCompilerRejection,
+        match="requires its generated byte-load zero-extend envelope",
+    ):
+        replace(
+            operation,
+            publication_envelope=(
+                compiler.RhadConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE
+            ),
+        )
 
 
 def test_mov_absolute_destination_storage_participates_in_program_identity() -> None:
