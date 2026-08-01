@@ -299,8 +299,11 @@ def _unique_plan_block(
         for block in plan.blocks
         if block.role in roles
         and block.stable_identity is not None
-        and anchor_ea in block.stable_identity.exact_instruction_eas
-        and _identity_contains(block.stable_identity, identity)
+        and stable_block_identities_refine_at_anchor(
+            block.stable_identity,
+            identity,
+            anchor_ea,
+        )
     )
     if len(matches) != 1:
         raise CanonicalSemanticFragmentRejected(
@@ -336,7 +339,8 @@ def _current_route_source(
     matches = tuple(
         (block, identity)
         for block, identity in current_blocks
-        if _identity_contains(retained_identity, identity)
+        if _identity_ranges_contain(retained_identity, state_write_identity)
+        and retained_identity.native_ranges.contains(state_write_ea)
         and _identity_contains(identity, state_write_identity)
         and state_write_ea in identity.exact_instruction_eas
     )
@@ -3119,12 +3123,16 @@ def compose_canonical_semantic_fragment_plan(
         )
     state_write = proof.state_write
     if (
-        not _identity_contains(retained_source_identity, state_write.identity)
-        or state_write.instruction_ea
-        not in retained_source_identity.exact_instruction_eas
+        not _identity_ranges_contain(
+            retained_source_identity,
+            state_write.identity,
+        )
+        or not retained_source_identity.native_ranges.contains(
+            state_write.instruction_ea
+        )
         or state_write.corridor_instruction_eas[-1] != int(proof.source_anchor_ea)
         or any(
-            ea not in retained_source_identity.exact_instruction_eas
+            not retained_source_identity.native_ranges.contains(ea)
             for ea in state_write.corridor_instruction_eas
         )
     ):
