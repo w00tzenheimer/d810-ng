@@ -314,6 +314,7 @@ _ROW62_CONSTANT_OPERATION_ID = "constant:rhad-xor-absolute@0x40C322"
 _ROW63_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40C4F8"
 _ROW64_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40C592"
 _ROW65_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40C59E"
+_ROW66_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40C5BD"
 _COMPILED_OPERATION_IDS = (
     *_REFERENCE_OPERATION_IDS,
     _CONSTANT_OPERATION_ID,
@@ -382,6 +383,7 @@ _COMPILED_OPERATION_IDS = (
     _ROW63_CONSTANT_OPERATION_ID,
     _ROW64_CONSTANT_OPERATION_ID,
     _ROW65_CONSTANT_OPERATION_ID,
+    _ROW66_CONSTANT_OPERATION_ID,
 )
 _IMPORTED_BLOCK_IDS = (
     "native@0x40A607",
@@ -3131,7 +3133,7 @@ def _run_worker(binary: pathlib.Path) -> None:
             str(receipt.fragment_plan_id) for receipt in receipts
         )
         receipt = matching[0]
-        assert receipt.operation_count == receipt.planned_operation_count == 1490, (
+        assert receipt.operation_count == receipt.planned_operation_count == 1491, (
             receipt.operation_count,
             receipt.planned_operation_count,
         )
@@ -4116,7 +4118,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             compiled_payload["aggregate_program_identity"]
         )
         assert compiled_payload["aggregate_program_identity"] == (
-            "sha256:2c907e446979430644bc8a93bb0cff66d3ee0cd59354de02e8b0d3fbc61e522e"
+            "sha256:7c5ffebabcf7aeccd29352e4d4bb547812ca8a186b2715a9458666420173ab20"
         )
         proof_artifacts = {
             artifact["proof"]["binding"]["operation_id"]: artifact
@@ -12951,6 +12953,31 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             "source_native_ea": 0x40C59E,
             "source_width_bits": 32,
         }
+        row66_constant_reference = reference_payloads[_ROW66_CONSTANT_OPERATION_ID]
+        assert row66_constant_reference == {
+            "category": "constant_materialization",
+            "data_native_ea": 0x48AEC4,
+            "depends_on": [_ROW65_CONSTANT_OPERATION_ID],
+            "destination_storage": {"kind": "r", "offset": 16},
+            "destination_width_bits": 32,
+            "encoding_variant": "mov_r32_absolute",
+            "materialized_value": 0x381897B5,
+            "operation_id": _ROW66_CONSTANT_OPERATION_ID,
+            "operation_variant": "mov_absolute",
+            "phase": "constant_materialization",
+            "publication_envelope": "imported_global_move",
+            "reference_data_bytes_le": "b5971838",
+            "reference_operation_id": "rhad:constant@0x40C5BD",
+            "reference_order": 66,
+            "reference_raw_value": 0x381897B5,
+            "reference_read_width_bits": 32,
+            "reference_symbol": "deob_consts.ConstantInliner.transform_mov_mem_to_imm",
+            "replacement_instruction_bytes": "90b9b5971838",
+            "source_block_id": "native@0x40C5BD",
+            "source_instruction_bytes": "8b0dc4ae4800",
+            "source_native_ea": 0x40C5BD,
+            "source_width_bits": 32,
+        }
 
         published_payload = json.loads(lifecycle_rows[2][3])
         assert (
@@ -14096,6 +14123,20 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
                 assert row65_constant["semantic_envelope_survives"] is True
             if maturity == "MMAT_GENERATED":
                 assert row65_constant["exact_generated_envelope"] is True
+            row66_constant = observations[_ROW66_CONSTANT_OPERATION_ID]
+            assert row66_constant["reference_operation_id"] == "rhad:constant@0x40C5BD"
+            assert row66_constant["operation_variant"] == "mov_absolute"
+            assert row66_constant["encoding_variant"] == "mov_r32_absolute"
+            assert row66_constant["publication_envelope"] == "imported_global_move"
+            assert row66_constant["destination_storage"]["key"] == "r16"
+            assert row66_constant["absolute_load_present"] is False
+            assert row66_constant["passed"] is True
+            if row66_constant["source_present"]:
+                assert row66_constant["destination_delivery_present"] is True
+                assert row66_constant["materialized_constant_present"] is True
+                assert row66_constant["semantic_envelope_survives"] is True
+            if maturity == "MMAT_GENERATED":
+                assert row66_constant["exact_generated_envelope"] is True
             direct = observations["route:rhad-direct@0x40A619"]
             assert direct["source_present"] is True
             assert direct["source_topology_reachable"] is True
@@ -17310,6 +17351,14 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             assert row65_constant_calls["destination_delivery_present"] is True
         else:
             assert row65_constant_calls["source_topology_retired"] is True
+        row66_constant_calls = calls_observations[_ROW66_CONSTANT_OPERATION_ID]
+        assert row66_constant_calls["absolute_load_present"] is False
+        assert row66_constant_calls["passed"] is True
+        if row66_constant_calls["source_present"]:
+            assert row66_constant_calls["materialized_constant_present"] is True
+            assert row66_constant_calls["destination_delivery_present"] is True
+        else:
+            assert row66_constant_calls["source_topology_retired"] is True
         direct_calls = calls_observations["route:rhad-direct@0x40A619"]
         assert direct_calls["source_present"] is False
         assert direct_calls["source_topology_reachable"] is False
@@ -19936,7 +19985,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT planned_operation_count, applied_operation_count, outcome "
             "FROM mutation_receipts"
-        ).fetchall() == [(1490, 1490, "committed")]
+        ).fetchall() == [(1491, 1491, "committed")]
         assert connection.execute(
             "SELECT current_phase, mutation_started, poisoned, interr_code "
             "FROM cfg_transaction_attempts"
