@@ -12337,6 +12337,35 @@ _CONSTANT_ROW29_MOV_ABSOLUTE = RhadAbsoluteConstantMaterialization(
     depends_on=(_CONSTANT_ROW28_MOV_ABSOLUTE.operation_id,),
 )
 
+_CONSTANT_ROW30_MOVZX_ABSOLUTE = RhadAbsoluteConstantMaterialization(
+    operation_id="constant:rhad-movzx-absolute@0x40B815",
+    reference_operation_id="rhad:constant@0x40B815",
+    reference_order=30,
+    operation_variant=RhadOperationVariant.MOVZX_ABSOLUTE,
+    reference_symbol="deob_consts.ConstantInliner.transform_movzx_mem_to_imm",
+    source_block_id="native@0x40B810",
+    source_native_ea=0x40B815,
+    data_native_ea=0x48AE14,
+    source_width_bits=8,
+    destination_width_bits=32,
+    destination_storage=StorageIdentity(
+        kind=StorageIdentityKind.REGISTER,
+        offset=16,
+    ),
+    reference_read_width_bits=32,
+    reference_data_bytes_le="1674fe2e",
+    reference_raw_value=0x2EFE7416,
+    materialized_value=0x16,
+    source_instruction_bytes="0fb60d14ae4800",
+    replacement_instruction_bytes="b9160000009090",
+    encoding_variant=RhadAbsoluteConstantEncoding.MOVZX_R32_BYTE_ABSOLUTE,
+    publication_envelope=(
+        RhadConstantPublicationEnvelope.GENERATED_BYTE_LOAD_ZERO_EXTEND
+    ),
+    phase=RhadReferencePhase.CONSTANT_MATERIALIZATION,
+    depends_on=(_CONSTANT_ROW29_MOV_ABSOLUTE.operation_id,),
+)
+
 _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
     batch_id="rhad-generated-reference@0x40A560",
     input_sha256=INPUT_SHA256,
@@ -17271,6 +17300,7 @@ _A560_GENERATED_REFERENCE_BATCH = RhadGeneratedReferenceBatch(
         _CONSTANT_ROW27_MOV_ABSOLUTE,
         _CONSTANT_ROW28_MOV_ABSOLUTE,
         _CONSTANT_ROW29_MOV_ABSOLUTE,
+        _CONSTANT_ROW30_MOVZX_ABSOLUTE,
     ),
     required_boundary_exit_eas=BOUNDARY_EXIT_EAS,
     reference_commit="21b0d4783703bc4fb6910cfae51d92cd683d2c65",
@@ -17600,6 +17630,15 @@ def _constant_materialization_maturity_payload(
         )
         required_flag_envelope = ()
         required_flag_roles = ()
+    elif operation.operation_variant is RhadOperationVariant.MOVZX_ABSOLUTE:
+        generated_envelope = (
+            int(ida_hexrays.m_mov),
+            int(ida_hexrays.m_mov),
+            int(ida_hexrays.m_mov),
+            int(ida_hexrays.m_xdu),
+        )
+        required_flag_envelope = ()
+        required_flag_roles = ()
     else:
         raise ValueError("unsupported typed Rhad constant observation variant")
     flag_envelope_survives = bool(
@@ -17631,7 +17670,9 @@ def _constant_materialization_maturity_payload(
         "data_native_ea": int(operation.data_native_ea),
         "materialized_value": int(operation.materialized_value),
         "destination_storage": operation.destination_storage.to_record(),
+        "source_width_bits": int(operation.source_width_bits),
         "destination_width_bits": int(operation.destination_width_bits),
+        "reference_read_width_bits": int(operation.reference_read_width_bits),
         "required_flag_roles": list(required_flag_roles),
         "source_present": source_present,
         "source_topology_reachable": source_present,
