@@ -28,6 +28,7 @@ from d810.core.observability import (
 from d810.core.observability_events import (
     CaptureMbaSnapshotRequested,
     DagObserved,
+    DiagnosticSessionObserved,
     FrontendNormalizationPlanIntentObserved,
     ModificationsObserved,
     SemanticOutputVerifiedObserved,
@@ -185,6 +186,51 @@ def test_semantic_output_verification_requires_an_explicit_typed_event(fake_conn
         "SELECT verifier_id, witness_id, native_anchor_ea_i64 "
         "FROM semantic_output_verdicts"
     ).fetchone() == ("verifier:fixture", "verifier:fixture:1", 0x180001000)
+
+
+def test_terminal_session_materializes_one_closed_case(fake_conn):
+    native_key = '{"function_fingerprint":"sha256:fixture"}'
+    emit(
+        DiagnosticSessionObserved(
+            session_id="session-1",
+            func_ea=0x180001000,
+            top_level_epoch=1,
+            native_key_json=native_key,
+            status="active",
+            timestamp=1.0,
+        )
+    )
+    assert fake_conn.execute(
+        "SELECT COUNT(*) FROM deobfuscation_cases"
+    ).fetchone() == (0,)
+
+    emit(
+        DiagnosticSessionObserved(
+            session_id="session-1",
+            func_ea=0x180001000,
+            top_level_epoch=1,
+            native_key_json=native_key,
+            status="finished",
+            timestamp=2.0,
+        )
+    )
+    assert fake_conn.execute(
+        "SELECT closed_status, verdict_level FROM deobfuscation_cases"
+    ).fetchone() == ("finished", "c0_environment")
+
+    emit(
+        DiagnosticSessionObserved(
+            session_id="session-1",
+            func_ea=0x180001000,
+            top_level_epoch=1,
+            native_key_json=native_key,
+            status="finished",
+            timestamp=3.0,
+        )
+    )
+    assert fake_conn.execute(
+        "SELECT COUNT(*) FROM deobfuscation_cases"
+    ).fetchone() == (1,)
 
 
 # ---------------------------------------------------------------------------

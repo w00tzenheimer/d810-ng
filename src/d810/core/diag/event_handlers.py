@@ -35,6 +35,7 @@ import threading
 from d810._vendor.peewee import fn
 from d810.core import logging as _d810_logging
 from d810.core.diag import active_diag_db, diag_models_on, get_diag_conn
+from d810.core.diag.deobfuscation_case import materialize_closed_deobfuscation_case
 from d810.core.diag.models import CfgProvenance, FactConsumer, Snapshot
 from d810.core.diag.lifecycle import (
     persist_cfg_transaction_attempt,
@@ -233,7 +234,10 @@ def _handle_diagnostic_session(ev: DiagnosticSessionObserved) -> None:
     except Exception:
         return
     if conn is not None:
-        persist_diagnostic_session_transition(conn, ev)
+        transitioned = persist_diagnostic_session_transition(conn, ev)
+        if transitioned and ev.status in {"finished", "failed"}:
+            with conn:
+                materialize_closed_deobfuscation_case(conn, ev.session_id)
 
 
 def _handle_lifecycle_event(ev: LifecycleEventObserved) -> None:
