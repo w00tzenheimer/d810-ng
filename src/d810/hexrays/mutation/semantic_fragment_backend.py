@@ -355,20 +355,23 @@ def _require_movzx_absolute_envelope(
     materialization: FragmentAbsoluteConstantMaterialization,
     facts: tuple[object, ...],
 ) -> None:
-    """Prove one imported byte move derived from native movzx evidence."""
-    if (
-        materialization.publication_envelope
-        is not FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE
-    ):
+    """Prove one exact imported byte materialization from native movzx evidence."""
+    expected_opcode = {
+        FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE: int(
+            ida_hexrays.m_mov
+        ),
+        FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND: int(
+            ida_hexrays.m_xdu
+        ),
+    }.get(materialization.publication_envelope)
+    if expected_opcode is None:
         raise SemanticFragmentBackendRejected(
             "movzx_absolute publication envelope differs from reference evidence",
             reason_code="constant_materialization_envelope_mismatch",
             anchor_ea=materialization.instruction_ea,
             payload={"materialization_id": materialization.materialization_id},
         )
-    if len(facts) != 1 or int(getattr(facts[0], "opcode", -1)) != int(
-        ida_hexrays.m_mov
-    ):
+    if len(facts) != 1 or int(getattr(facts[0], "opcode", -1)) != expected_opcode:
         raise SemanticFragmentBackendRejected(
             "movzx_absolute GENERATED opcode envelope differs from reference evidence",
             reason_code="constant_materialization_envelope_mismatch",
@@ -397,7 +400,13 @@ def _require_movzx_absolute_envelope(
         or int(shape[0][1]) != materialization.source_width_bits // 8
         or not isinstance(shape[2], tuple)
         or len(shape[2]) < 2
-        or int(shape[2][1]) != materialization.source_width_bits // 8
+        or int(shape[2][1])
+        != (
+            materialization.source_width_bits // 8
+            if materialization.publication_envelope
+            is FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE
+            else materialization.destination_width_bits // 8
+        )
     ):
         raise SemanticFragmentBackendRejected(
             "movzx_absolute GENERATED data-flow envelope differs from reference evidence",
@@ -417,7 +426,10 @@ def _require_constant_materialization_envelope(
     if materialization.consumer_operation is ValueOpKind.MOVE:
         if (
             materialization.publication_envelope
-            is FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE
+            in {
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE,
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND,
+            }
         ):
             _require_movzx_absolute_envelope(materialization, facts)
             return
@@ -493,6 +505,10 @@ def _prepare_constant_materializations(
                 ValueOpKind.MOVE,
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE,
             ): 1,
+            (
+                ValueOpKind.MOVE,
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND,
+            ): 1,
         }.get(
             (
                 materialization.consumer_operation,
@@ -540,6 +556,7 @@ def _prepare_constant_materializations(
             in {
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE,
                 FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE,
+                FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND,
             }
             else 2
         )
@@ -1628,13 +1645,17 @@ def _materialize_constant_materializations(
             instruction_index=fact.load_instruction_index,
             expected_ea=live_instruction_ea,
             expected_opcode=int(
-                ida_hexrays.m_mov
-                if materialization.publication_envelope
-                in {
-                    FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE,
-                    FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE,
-                }
-                else ida_hexrays.m_ldx
+                {
+                    FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_MOVE: (
+                        ida_hexrays.m_mov
+                    ),
+                    FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_MOVE: (
+                        ida_hexrays.m_mov
+                    ),
+                    FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND: (
+                        ida_hexrays.m_xdu
+                    ),
+                }.get(materialization.publication_envelope, ida_hexrays.m_ldx)
             ),
             constant_value=materialization.constant_value,
             value_size=materialization.source_width_bits // 8,
