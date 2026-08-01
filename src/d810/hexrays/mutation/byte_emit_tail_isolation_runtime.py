@@ -106,6 +106,16 @@ def _terminal_zero_guard_literal_return_values(mba: Any) -> tuple[int, ...]:
     return terminal_zero_guard_literal_return_values(mba)
 
 
+def impossible_return_artifact_rewrite_enabled() -> bool:
+    raw = os.environ.get("D810_REWRITE_IMPOSSIBLE_RETURN_ARTIFACTS", "0")
+    return str(raw).lower() in {"1", "true", "yes", "on"}
+
+
+def terminal_zero_guard_literal_return_rewrite_enabled() -> bool:
+    raw = os.environ.get("D810_REWRITE_TERMINAL_ZERO_GUARD_LITERAL_RETURNS", "1")
+    return str(raw).lower() in {"1", "true", "yes", "on"}
+
+
 class LiveMbaAdapter:
     """MicrocodeAdapter backed by a live ``mba_t``.
 
@@ -3713,8 +3723,7 @@ def maybe_rewrite_impossible_return_artifact_edges(
     impossible_return_artifact_edges: Iterable[Any] = (),
 ) -> tuple[tuple[int, int, int], ...]:
     """Late Hex-Rays cleanup for proven impossible-return artifact edges."""
-    raw = os.environ.get("D810_REWRITE_IMPOSSIBLE_RETURN_ARTIFACTS", "0")
-    if str(raw).lower() not in {"1", "true", "yes", "on"}:
+    if not impossible_return_artifact_rewrite_enabled():
         return ()
 
     edge_proofs = tuple(impossible_return_artifact_edges)
@@ -3742,8 +3751,7 @@ def maybe_rewrite_terminal_zero_guard_literal_return_edges(
     mutation_gateway: MbaMutationGateway,
 ) -> tuple[tuple[int, int, int], ...]:
     """Late Hex-Rays cleanup for residual zero arms proven to return a literal."""
-    raw = os.environ.get("D810_REWRITE_TERMINAL_ZERO_GUARD_LITERAL_RETURNS", "1")
-    if str(raw).lower() not in {"1", "true", "yes", "on"}:
+    if not terminal_zero_guard_literal_return_rewrite_enabled():
         return ()
 
     literal_values = _terminal_zero_guard_literal_return_values(mba)

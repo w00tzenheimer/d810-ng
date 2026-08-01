@@ -197,6 +197,58 @@ def test_block_optimizer_refreshes_live_identity_before_each_gateway() -> None:
     assert lifecycle.materializer_calls == [(0x401000, block.mba)]
 
 
+def test_disabled_impossible_return_cleanup_does_not_build_gateway(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("D810_REWRITE_IMPOSSIBLE_RETURN_ARTIFACTS", raising=False)
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+    gateway_calls = []
+    manager._flow_context = SimpleNamespace(
+        new_mba_mutation_gateway=lambda: gateway_calls.append(True)
+    )
+
+    assert (
+        manager._maybe_rewrite_impossible_return_artifact_edges(
+            _make_block(maturity=ida_hexrays.MMAT_GLBOPT2)
+        )
+        == 0
+    )
+    assert gateway_calls == []
+
+
+def test_terminal_zero_cleanup_without_evidence_does_not_build_gateway(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv(
+        "D810_REWRITE_TERMINAL_ZERO_GUARD_LITERAL_RETURNS",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "d810.hexrays.mutation.byte_emit_tail_isolation_runtime."
+        "terminal_zero_guard_literal_return_values",
+        lambda _mba: (),
+    )
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+    gateway_calls = []
+    manager._flow_context = SimpleNamespace(
+        new_mba_mutation_gateway=lambda: gateway_calls.append(True)
+    )
+
+    assert (
+        manager._maybe_rewrite_terminal_zero_guard_literal_edges(
+            _make_block(maturity=ida_hexrays.MMAT_GLBOPT2)
+        )
+        == 0
+    )
+    assert gateway_calls == []
+
+
 def test_flow_rule_constructs_a_modifier_from_its_injected_gateway_port() -> None:
     gateway = object()
     context = FlowMaturityContext(
