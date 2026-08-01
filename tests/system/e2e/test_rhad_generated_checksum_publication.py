@@ -281,6 +281,7 @@ _ROW29_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40B45D"
 _ROW30_CONSTANT_OPERATION_ID = "constant:rhad-movzx-absolute@0x40B815"
 _ROW31_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40B825"
 _ROW32_CONSTANT_OPERATION_ID = "constant:rhad-mov-absolute@0x40B84C"
+_ROW33_CONSTANT_OPERATION_ID = "constant:rhad-movzx-absolute@0x40B8E6"
 _COMPILED_OPERATION_IDS = (
     *_REFERENCE_OPERATION_IDS,
     _CONSTANT_OPERATION_ID,
@@ -316,6 +317,7 @@ _COMPILED_OPERATION_IDS = (
     _ROW30_CONSTANT_OPERATION_ID,
     _ROW31_CONSTANT_OPERATION_ID,
     _ROW32_CONSTANT_OPERATION_ID,
+    _ROW33_CONSTANT_OPERATION_ID,
 )
 _IMPORTED_BLOCK_IDS = (
     "native@0x40A607",
@@ -3065,7 +3067,7 @@ def _run_worker(binary: pathlib.Path) -> None:
             str(receipt.fragment_plan_id) for receipt in receipts
         )
         receipt = matching[0]
-        assert receipt.operation_count == receipt.planned_operation_count == 1457, (
+        assert receipt.operation_count == receipt.planned_operation_count == 1458, (
             receipt.operation_count,
             receipt.planned_operation_count,
         )
@@ -4050,7 +4052,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             compiled_payload["aggregate_program_identity"]
         )
         assert compiled_payload["aggregate_program_identity"] == (
-            "sha256:559734dc12206050048c163017cb2a9b70e8f6f0439da29958e4df60805d385f"
+            "sha256:0c6a7588f15826e4f6b3351c3e2683add2ca714e2f5c8875a7bc3dfefdf9b91e"
         )
         proof_artifacts = {
             artifact["proof"]["binding"]["operation_id"]: artifact
@@ -11990,6 +11992,36 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             "source_native_ea": 0x40B84C,
             "source_width_bits": 32,
         }
+        row33_constant_reference = reference_payloads[_ROW33_CONSTANT_OPERATION_ID]
+        assert row33_constant_reference == {
+            "category": "constant_materialization",
+            "data_native_ea": 0x48A99C,
+            "depends_on": [_ROW32_CONSTANT_OPERATION_ID],
+            "destination_storage": {
+                "kind": "r",
+                "offset": 8,
+            },
+            "destination_width_bits": 32,
+            "encoding_variant": "movzx_r32_byte_absolute",
+            "materialized_value": 0xF0,
+            "operation_id": _ROW33_CONSTANT_OPERATION_ID,
+            "operation_variant": "movzx_absolute",
+            "phase": "constant_materialization",
+            "publication_envelope": "imported_global_byte_move",
+            "reference_data_bytes_le": "f031516a",
+            "reference_operation_id": "rhad:constant@0x40B8E6",
+            "reference_order": 33,
+            "reference_raw_value": 0x6A5131F0,
+            "reference_read_width_bits": 32,
+            "reference_symbol": (
+                "deob_consts.ConstantInliner.transform_mov_mem_to_imm"
+            ),
+            "replacement_instruction_bytes": "b8f00000009090",
+            "source_block_id": "native@0x40B8E6",
+            "source_instruction_bytes": "0fb6059ca94800",
+            "source_native_ea": 0x40B8E6,
+            "source_width_bits": 8,
+        }
 
         published_payload = json.loads(lifecycle_rows[2][3])
         assert (
@@ -12573,6 +12605,29 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
                 assert row32_constant["semantic_envelope_survives"] is True
             if maturity == "MMAT_GENERATED":
                 assert row32_constant["exact_generated_envelope"] is True
+            row33_constant = observations[_ROW33_CONSTANT_OPERATION_ID]
+            assert row33_constant["reference_operation_id"] == (
+                "rhad:constant@0x40B8E6"
+            )
+            assert row33_constant["operation_variant"] == "movzx_absolute"
+            assert row33_constant["encoding_variant"] == (
+                "movzx_r32_byte_absolute"
+            )
+            assert row33_constant["publication_envelope"] == (
+                "imported_global_byte_move"
+            )
+            assert row33_constant["source_width_bits"] == 8
+            assert row33_constant["destination_width_bits"] == 32
+            assert row33_constant["reference_read_width_bits"] == 32
+            assert row33_constant["destination_storage"]["key"] == "r8"
+            assert row33_constant["absolute_load_present"] is False
+            assert row33_constant["passed"] is True
+            if row33_constant["source_present"]:
+                assert row33_constant["destination_delivery_present"] is True
+                assert row33_constant["materialized_constant_present"] is True
+                assert row33_constant["semantic_envelope_survives"] is True
+            if maturity == "MMAT_GENERATED":
+                assert row33_constant["exact_generated_envelope"] is True
             direct = observations["route:rhad-direct@0x40A619"]
             assert direct["source_present"] is True
             assert direct["source_topology_reachable"] is True
@@ -15523,6 +15578,14 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
             assert row32_constant_calls["destination_delivery_present"] is True
         else:
             assert row32_constant_calls["source_topology_retired"] is True
+        row33_constant_calls = calls_observations[_ROW33_CONSTANT_OPERATION_ID]
+        assert row33_constant_calls["absolute_load_present"] is False
+        assert row33_constant_calls["passed"] is True
+        if row33_constant_calls["source_present"]:
+            assert row33_constant_calls["materialized_constant_present"] is True
+            assert row33_constant_calls["destination_delivery_present"] is True
+        else:
+            assert row33_constant_calls["source_topology_retired"] is True
         direct_calls = calls_observations["route:rhad-direct@0x40A619"]
         assert direct_calls["source_present"] is False
         assert direct_calls["source_topology_reachable"] is False
@@ -18149,7 +18212,7 @@ def test_a560_generated_checksum_commits_and_reaches_ctree(
         assert connection.execute(
             "SELECT planned_operation_count, applied_operation_count, outcome "
             "FROM mutation_receipts"
-        ).fetchall() == [(1457, 1457, "committed")]
+        ).fetchall() == [(1458, 1458, "committed")]
         assert connection.execute(
             "SELECT current_phase, mutation_started, poisoned, interr_code "
             "FROM cfg_transaction_attempts"
