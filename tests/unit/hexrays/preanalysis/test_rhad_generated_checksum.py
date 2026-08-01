@@ -20096,6 +20096,41 @@ def test_constant_inventory_is_exact_reference_ordered_and_identity_bound() -> N
         "source_width_bits": 32,
     }
 
+    sixty_third = operations[62]
+    assert sixty_third == {
+        "current_compiler_support": "compiled_rhad_absolute_constant_materialization",
+        "current_generated_proof": {
+            "accepted_commits": [
+                "411559791",
+                "131bfe904",
+                "5810ac7e4",
+                "68e93fd1a",
+                "462b983fd",
+            ],
+            "aggregate_program_identity": "sha256:56eff7552ac159bc22e8d6ec4d7c4aea0c866d2741f8636ed4cb4d6111f00809",
+            "diagnostic_db": ".tmp/logs/000000000040a560_accepted_460_constant_row62.diag.sqlite3",
+            "diagnostic_db_sha256": "b33bd69652ed67bc3a864c12fb69102f25763c6b398be9bb03819ccc9bc88e68",
+            "status": "accepted_generated_c6",
+        },
+        "data_native_ea": 0x48AEC8,
+        "destination_register": "al",
+        "destination_width_bits": 8,
+        "encoding_variant": "xor_r8_absolute",
+        "materialized_value": 1,
+        "operation_id": "rhad:constant@0x40C322",
+        "operation_variant": "xor_absolute",
+        "reference_data_bytes_le": "01000000",
+        "reference_order": 62,
+        "reference_raw_value": 1,
+        "reference_read_width_bits": 32,
+        "reference_symbol": "deob_consts.ConstantInliner.transform_arith_mem_to_imm",
+        "replacement_instruction_bytes": "80f001909090",
+        "source_instruction_bytes": "3205c8ae4800",
+        "source_native_ea": 0x40C322,
+        "source_operand_path": "operand[1].absolute_memory",
+        "source_width_bits": 8,
+    }
+
 
 _EXPECTED_BATCH_OPERATION_COUNT = 286
 
