@@ -18464,6 +18464,23 @@ def _constant_materialization_maturity_payload(
             )
         return False
 
+    def operand_contains_data_ea(operand: object | None) -> bool:
+        if operand is None:
+            return False
+        operand_type = int(getattr(operand, "t", -1))
+        if operand_type == int(ida_hexrays.mop_v):
+            return int(getattr(operand, "g", -1)) == int(operation.data_native_ea)
+        if operand_type == int(ida_hexrays.mop_d):
+            nested = operand.d
+            return any(
+                operand_contains_data_ea(getattr(nested, slot, None))
+                for slot in ("l", "r", "d")
+            )
+        if operand_type == int(ida_hexrays.mop_a):
+            address = getattr(operand, "a", None)
+            return operand_contains_data_ea(getattr(address, "v", address))
+        return False
+
     def operand_is_destination(operand: object | None) -> bool:
         observed_width_bits = (
             operation.source_width_bits
@@ -18489,7 +18506,13 @@ def _constant_materialization_maturity_payload(
             ):
                 continue
             anchored_rows.append(row)
-            if int(row.opcode) == int(ida_hexrays.m_ldx):
+            if int(row.opcode) == int(ida_hexrays.m_ldx) or (
+                operation.operation_variant is RhadOperationVariant.XOR_ABSOLUTE
+                and any(
+                    operand_contains_data_ea(getattr(row, slot, None))
+                    for slot in ("l", "r", "d")
+                )
+            ):
                 residual_absolute_load = True
 
     materialized_constant_present = any(
@@ -18538,23 +18561,42 @@ def _constant_materialization_maturity_payload(
         generated_envelope = (int(ida_hexrays.m_mov),)
         required_flag_envelope = ()
         required_flag_roles = ()
+    elif operation.operation_variant is RhadOperationVariant.XOR_ABSOLUTE:
+        generated_envelope = (int(ida_hexrays.m_xor),)
+        required_flag_envelope = generated_envelope
+        required_flag_roles = ("carry", "overflow", "zero", "parity", "sign")
     else:
         raise ValueError("unsupported typed Rhad constant observation variant")
     flag_envelope_survives = bool(
         all(opcode in observed_envelope for opcode in required_flag_envelope)
     )
+    optimizer_boolean_inversion_present = bool(
+        operation.operation_variant is RhadOperationVariant.XOR_ABSOLUTE
+        and any(
+            int(row.opcode) == int(ida_hexrays.m_setnz)
+            and operand_is_destination(getattr(row, "d", None))
+            for row in anchored_rows
+        )
+    )
     semantic_envelope_survives = bool(
-        materialized_constant_present
-        and destination_delivery_present
-        and flag_envelope_survives
+        destination_delivery_present
+        and (
+            materialized_constant_present and flag_envelope_survives
+            or optimizer_boolean_inversion_present
+        )
     )
     exact_generated_envelope = observed_envelope == generated_envelope
     source_present = bool(anchored_rows)
     source_topology_retired = not source_present
+    source_delivery_proven = (
+        semantic_envelope_survives
+        if operation.operation_variant is RhadOperationVariant.XOR_ABSOLUTE
+        else materialized_constant_present
+    )
     passed = bool(
         not residual_absolute_load
         and (
-            (source_present and materialized_constant_present)
+            (source_present and source_delivery_proven)
             or source_topology_retired
         )
     )
@@ -18581,6 +18623,10 @@ def _constant_materialization_maturity_payload(
         "destination_delivery_present": destination_delivery_present,
         "flag_envelope_opcodes": list(observed_envelope),
         "flag_envelope_survives": flag_envelope_survives,
+        "optimizer_boolean_inversion_present": optimizer_boolean_inversion_present,
+        "source_semantics_optimized": bool(
+            source_present and optimizer_boolean_inversion_present
+        ),
         "semantic_envelope_survives": semantic_envelope_survives,
         "exact_generated_envelope": exact_generated_envelope,
         "passed": passed,
