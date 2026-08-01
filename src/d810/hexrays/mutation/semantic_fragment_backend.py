@@ -420,7 +420,7 @@ def _require_xor_absolute_envelope(
     materialization: FragmentAbsoluteConstantMaterialization,
     facts: tuple[object, ...],
 ) -> None:
-    """Prove one exact imported byte XOR before replacing its right operand."""
+    """Prove one exact imported byte XOR before replacing its left operand."""
     if (
         materialization.publication_envelope
         is not FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR
@@ -449,16 +449,16 @@ def _require_xor_absolute_envelope(
         or materialization.source_width_bits != 8
         or materialization.destination_width_bits != 8
         or not byte_shapes
-        or left != destination
         or not _primitive_shape_contains(
             left,
-            ("register", int(materialization.destination_storage.offset)),
+            ("global", int(materialization.data_ea)),
         )
         or not _primitive_shape_contains(
             right,
-            ("global", int(materialization.data_ea)),
+            ("register", int(materialization.destination_storage.offset)),
         )
-        or getattr(fact, "writes_condition_codes", None) is not True
+        or right != destination
+        or getattr(fact, "writes_condition_codes", None) is not False
     ):
         raise SemanticFragmentBackendRejected(
             "xor_absolute imported data flow differs from reference evidence",
@@ -1706,12 +1706,12 @@ def _materialize_constant_materializations(
             is FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_ZERO_EXTEND
             else materialization.source_width_bits
         ) // 8
-        is_right_global_xor = (
+        is_left_global_xor = (
             materialization.publication_envelope
             is FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR
         )
-        if is_right_global_xor:
-            modifier.replace_instruction_right_global_with_constant_now(
+        if is_left_global_xor:
+            modifier.replace_instruction_left_global_with_constant_now(
                 block,
                 instruction_index=fact.load_instruction_index,
                 expected_ea=live_instruction_ea,
@@ -1753,14 +1753,14 @@ def _materialize_constant_materializations(
         replacement_matches = (
             (
                 int(applied.opcode) == int(ida_hexrays.m_xor)
-                and applied_shape[0] == original_shape[0]
                 and _primitive_shape_contains(
-                    applied_shape[1],
+                    applied_shape[0],
                     ("number", int(materialization.constant_value)),
                 )
+                and applied_shape[1] == original_shape[1]
                 and applied_shape[2] == expected_destination
             )
-            if is_right_global_xor
+            if is_left_global_xor
             else (
                 int(applied.opcode) == int(ida_hexrays.m_mov)
                 and _primitive_shape_contains(

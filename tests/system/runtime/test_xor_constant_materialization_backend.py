@@ -26,33 +26,39 @@ def _materialization() -> SimpleNamespace:
     )
 
 
-def _xor_fact(*, writes_condition_codes: bool) -> SimpleNamespace:
+def _xor_fact(
+    *,
+    writes_condition_codes: bool = False,
+    global_on_left: bool = True,
+) -> SimpleNamespace:
+    global_operand = (int(ida_hexrays.mop_v), 1, ("global", 0x48AEC8))
+    register_operand = (int(ida_hexrays.mop_r), 1, ("register", 8))
     return SimpleNamespace(
         opcode=int(ida_hexrays.m_xor),
         operand_shape=(
-            (int(ida_hexrays.mop_r), 1, ("register", 8)),
-            (int(ida_hexrays.mop_v), 1, ("global", 0x48AEC8)),
-            (int(ida_hexrays.mop_r), 1, ("register", 8)),
+            global_operand if global_on_left else register_operand,
+            register_operand if global_on_left else global_operand,
+            register_operand,
         ),
         writes_condition_codes=writes_condition_codes,
     )
 
 
-def test_xor_constant_preflight_accepts_exact_right_global_byte_envelope() -> None:
+def test_xor_constant_preflight_accepts_exact_left_global_byte_envelope() -> None:
     _require_xor_absolute_envelope(
         _materialization(),
-        (_xor_fact(writes_condition_codes=True),),
+        (_xor_fact(),),
     )
 
 
-def test_xor_constant_preflight_rejects_missing_flag_producer() -> None:
+def test_xor_constant_preflight_rejects_swapped_global_operand() -> None:
     with pytest.raises(
         SemanticFragmentBackendRejected,
         match="data flow differs",
     ) as exc_info:
         _require_xor_absolute_envelope(
             _materialization(),
-            (_xor_fact(writes_condition_codes=False),),
+            (_xor_fact(global_on_left=False),),
         )
 
     assert exc_info.value.reason_code == "constant_materialization_dataflow_mismatch"
