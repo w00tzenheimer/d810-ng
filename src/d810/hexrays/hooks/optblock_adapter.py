@@ -1270,9 +1270,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             return 0
         try:
             from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
+                impossible_return_artifact_rewrite_enabled,
                 maybe_rewrite_impossible_return_artifact_edges,
             )
 
+            if not impossible_return_artifact_rewrite_enabled():
+                return 0
             applied = maybe_rewrite_impossible_return_artifact_edges(
                 mba,
                 mutation_gateway=self._flow_context.new_mba_mutation_gateway(),
@@ -1444,8 +1447,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         try:
             from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
                 maybe_rewrite_terminal_zero_guard_literal_return_edges,
+                terminal_zero_guard_literal_return_rewrite_enabled,
+                terminal_zero_guard_literal_return_values,
             )
 
+            if not terminal_zero_guard_literal_return_rewrite_enabled():
+                return 0
+            if not terminal_zero_guard_literal_return_values(mba):
+                return 0
             applied = maybe_rewrite_terminal_zero_guard_literal_return_edges(
                 mba,
                 mutation_gateway=self._flow_context.new_mba_mutation_gateway(),
