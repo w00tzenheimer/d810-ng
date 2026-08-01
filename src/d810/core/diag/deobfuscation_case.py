@@ -93,6 +93,7 @@ class ClosedCaseProjection:
     findings: tuple[CaseFinding, ...]
     verdict: CaseVerdict
     semantic_witnesses: tuple[ProjectedSemanticWitness, ...] = ()
+    finding_blocked_obligations: tuple[tuple[str, str], ...] = ()
 
 
 def _require_text(value: object, field_name: str) -> str:
@@ -253,6 +254,7 @@ def project_closed_case_rows(
 
     ordered: list[tuple[int, int, int, CaseFinding]] = []
     blockers: list[tuple[int, int, str]] = []
+    finding_blockers: list[tuple[str, str]] = []
     semantic_witnesses: list[ProjectedSemanticWitness] = []
 
     def add(
@@ -271,6 +273,7 @@ def project_closed_case_rows(
             blockers.append(
                 (int(source["event_seq"]), int(event_id), blocked_obligation)
             )
+            finding_blockers.append((finding.finding_id, blocked_obligation))
 
     for row in conn.execute(
         "SELECT e.event_id,e.operation,e.outcome,e.owner,e.reason,"
@@ -662,6 +665,7 @@ def project_closed_case_rows(
         findings=findings,
         verdict=verdict,
         semantic_witnesses=tuple(semantic_witnesses),
+        finding_blocked_obligations=tuple(finding_blockers),
     )
 
 
@@ -704,12 +708,13 @@ def materialize_closed_deobfuscation_case(
             projection.verdict.semantic_witness,
         ),
     )
+    blocked_by_finding = dict(projection.finding_blocked_obligations)
     for finding_index, finding in enumerate(projection.findings):
         provenance_json = json.dumps(
             list(finding.provenance), sort_keys=True, separators=(",", ":")
         )
         source_event_id = int(finding.provenance[0].split(":", 1)[1])
-        blocked = projection.verdict.first_blocked_obligation
+        blocked = blocked_by_finding.get(finding.finding_id)
         conn.execute(
             "INSERT INTO deobfuscation_case_findings "
             "(case_id,finding_index,finding_id,source_event_id,finding_kind,"
