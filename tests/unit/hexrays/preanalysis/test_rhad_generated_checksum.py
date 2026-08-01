@@ -10,6 +10,16 @@ from types import SimpleNamespace
 
 import d810.manager.rhad_generated_checksum as generated_reference
 import pytest
+from d810.analyses.control_flow.semantic_route_evidence import (
+    SemanticCarrierProof,
+    SemanticCorridorPoint,
+    SemanticPredicateKind,
+    SemanticPredicateProof,
+    SemanticRouteDestination,
+    SemanticRouteProof,
+    SemanticRouteProofKind,
+    SemanticRouteShape,
+)
 from d810.manager.rhad_generated_checksum import (
     BOUNDARY_EXIT_EAS,
     IMPORTED_BLOCK_IDS,
@@ -18,6 +28,7 @@ from d810.manager.rhad_generated_checksum import (
     reference_batch_for_native_key,
 )
 from d810.ir.semantic_edge import SemanticEdgeRole
+from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.semantics import PredicateKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 from d810.transforms.fragment_plan import (
@@ -25,6 +36,7 @@ from d810.transforms.fragment_plan import (
     FragmentSetccFallthroughDelivery,
     FragmentSetccIndexedTableNormalization,
 )
+from d810.transforms import canonical_semantic_fragment as canonical_fragment
 from d810.transforms.rhad_reference_compiler import (
     RhadCompilerRejection,
     RhadSetccIndexedTableProofArtifact,
@@ -4029,6 +4041,19 @@ def test_checksum_producer_compiles_row60_cmov_selected_dependency() -> None:
     assert payload["imported_closure_block_ids"] == list(
         generated_reference.ACCEPTED_IMPORTED_BLOCK_IDS
     )
+    assert payload["boundary_exit_eas"] == [0x40A61B, 0x40A68C, 0x40B790]
+    assert next(
+        candidate
+        for candidate in batch.operations
+        if candidate.operation_id == "rhad:route@0x40BEE5"
+    ).depends_on == ("rhad:route@0x40BECA",)
+    assert {"native@0x40BECC", "native@0x40BEE1"}.issubset(
+        batch.native_body_entry_block_ids
+    )
+    assert plan.block(
+        "native@0x40BEDE"
+    ).stable_identity.exact_instruction_eas == frozenset({0x40BEDE})
+    assert "rhad:route@0x40BEE5" in batch.native_body_proof_ids
     assert payload["boundary_exit_eas"] == [0x40A61B, 0x40A68C, 0x40B790]
     assert next(
         operation
@@ -12873,19 +12898,94 @@ def test_checksum_producer_compiles_row163_cmov_dependency() -> None:
     assert payload["imported_closure_block_ids"] == list(
         generated_reference.ACCEPTED_IMPORTED_BLOCK_IDS
     )
-    assert payload["boundary_exit_eas"] == [0x40A61B, 0x40A68C, 0x40B790]
-    assert next(
-        candidate
-        for candidate in batch.operations
-        if candidate.operation_id == "rhad:route@0x40BEE5"
-    ).depends_on == ("rhad:route@0x40BECA",)
-    assert {"native@0x40BECC", "native@0x40BEE1"}.issubset(
-        batch.native_body_entry_block_ids
+
+
+def test_row163_carriers_survive_typed_semantic_consumer_supersession() -> None:
+    plan = build_rhad_generated_reference_plan(
+        native_key=_native_key(), evidence_generation=7
     )
-    assert plan.block(
-        "native@0x40BEDE"
-    ).stable_identity.exact_instruction_eas == frozenset({0x40BEDE})
-    assert "rhad:route@0x40BEE5" in batch.native_body_proof_ids
+    source_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40BECC, 0x40BEE7),),
+        native_key=_native_key(),
+        exact_instruction_eas=(0x40BECC,),
+    )
+    origin_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40A5AE, 0x40A5AF),),
+        native_key=_native_key(),
+        exact_instruction_eas=(0x40A5AE,),
+    )
+    source_point = SemanticCorridorPoint(source_identity, 0x40BECC)
+    origin_point = SemanticCorridorPoint(origin_identity, 0x40A5AE)
+    destinations = tuple(
+        SemanticRouteDestination(
+            role=role,
+            state_constant=state_constant,
+            target_identity=plan.block(target_block_id).stable_identity,
+            target_anchor_ea=target_ea,
+        )
+        for role, state_constant, target_block_id, target_ea in (
+            (
+                SemanticEdgeRole.CONDITIONAL_TAKEN,
+                0xA0716E5B,
+                "native@0x40C26D",
+                0x40C26D,
+            ),
+            (
+                SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                0xEC71CA67,
+                "native@0x40B9A6",
+                0x40B9A6,
+            ),
+        )
+    )
+    proof = SemanticRouteProof(
+        proof_id="state-choice@0x40BECC:0xA0716E5B:0xEC71CA67",
+        atomic_group_id="canonical-semantic:g7",
+        proof_kind=SemanticRouteProofKind.STATE_CHOICE,
+        shape=SemanticRouteShape.CONDITIONAL,
+        source_identity=source_identity,
+        source_anchor_ea=0x40BECC,
+        source_owner_identity=source_identity,
+        source_owner_anchor_ea=0x40BECC,
+        destinations=destinations,
+        predicate=SemanticPredicateProof(
+            kind=SemanticPredicateKind.STORAGE_EQUALS,
+            origin=origin_point,
+            consumer=source_point,
+            corridor=(origin_point, source_point),
+            storage_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+            width=4,
+            compare_constant=0,
+        ),
+        carriers=(
+            SemanticCarrierProof(
+                carrier_id="entry-state@0x40A5AE:0x40BECC",
+                definition=origin_point,
+                consumers=(source_point,),
+                corridor=(origin_point, source_point),
+                storage_identity=StorageIdentity(StorageIdentityKind.STACK, 0x40),
+                width=4,
+                state_values=(0xA0716E5B, 0xEC71CA67),
+                permitted_write_eas=frozenset({0x40A5AE}),
+            ),
+        ),
+    )
+
+    projected = canonical_fragment._with_semantic_imported_consumer(plan, proof)
+
+    operation = projected.operation(f"route:{proof.proof_id}")
+    superseded = operation.superseded_computed_branch_normalization
+    assert superseded is not None
+    envelope = superseded.conditional_select_envelope
+    assert isinstance(envelope, FragmentReferencedImportedConditionalSelectEnvelope)
+    assert (envelope.selected_value_block_id, envelope.join_block_id) == (
+        "native@0x40BEDE",
+        "native@0x40BEE1",
+    )
+    (native_body,) = projected.native_bodies
+    assert {"native@0x40BEDE", "native@0x40BEE1"}.issubset(
+        native_body.block_ids
+    )
 
 
 def test_checksum_producer_compiles_row164_existing_dependency() -> None:

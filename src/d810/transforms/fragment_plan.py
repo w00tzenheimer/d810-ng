@@ -1780,6 +1780,14 @@ class FragmentOperation:
                 "fragment conditional cannot combine computed and storage "
                 "predicate materialization"
             )
+        if (
+            computed_branch_normalization is not None
+            and superseded_normalization is not None
+        ):
+            raise FragmentPlanRejected(
+                "fragment operation cannot realize and supersede one computed "
+                "normalization simultaneously"
+            )
         if len(edges) == 1:
             if edges[0].role not in {
                 SemanticEdgeRole.DIRECT,
@@ -1847,14 +1855,15 @@ class FragmentOperation:
                 raise FragmentPlanRejected(
                     "direct transfer rewrite belongs only to one direct edge"
                 )
-            if superseded_normalization is not None:
-                raise FragmentPlanRejected(
-                    "conditional fragment cannot carry a superseded normalization"
-                )
             predicate_anchor_ea = _require_native_ea(
                 predicate_anchor_ea,
                 "fragment predicate anchor",
             )
+            if superseded_normalization is not None:
+                superseded_predicate_anchor_ea = _require_native_ea(
+                    superseded_predicate_anchor_ea,
+                    "superseded computed predicate anchor",
+                )
             if reference_route_authority is not None and (
                 reference_route_authority.reference_route.final_transfer_kind
                 is not SemanticTransferKind.CONDITIONAL
@@ -3235,7 +3244,10 @@ class FragmentPlan:
         operation_envelope_ids = {
             block_id
             for operation in operations
-            for normalization in (operation.computed_branch_normalization,)
+            for normalization in (
+                operation.computed_branch_normalization,
+                operation.superseded_computed_branch_normalization,
+            )
             if normalization is not None
             for envelope in (normalization.conditional_select_envelope,)
             if isinstance(
@@ -3788,7 +3800,10 @@ def superseded_referenced_conditional_carrier_block_ids(
     envelope_carrier_ids = {
         block_id
         for operation in plan.operations
-        for normalization in (operation.computed_branch_normalization,)
+        for normalization in (
+            operation.computed_branch_normalization,
+            operation.superseded_computed_branch_normalization,
+        )
         if normalization is not None
         for envelope in (normalization.conditional_select_envelope,)
         if isinstance(
@@ -3803,7 +3818,10 @@ def superseded_referenced_conditional_carrier_block_ids(
     superseded_transfer_eas = {
         int(normalization.unresolved_transfer_ea)
         for operation in plan.operations
-        for normalization in (operation.computed_branch_normalization,)
+        for normalization in (
+            operation.computed_branch_normalization,
+            operation.superseded_computed_branch_normalization,
+        )
         if normalization is not None
         and (
             isinstance(
