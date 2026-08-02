@@ -149,7 +149,7 @@ if IDA_AVAILABLE:
 
             pass_row = QtWidgets.QHBoxLayout()
             pass_row.setSpacing(4)
-            pass_row.addWidget(self.catalog_combo)
+            pass_row.addWidget(self.catalog_combo, stretch=1)
             for action_id in ("add", "remove", "up", "down", "rules"):
                 pass_row.addWidget(self.pass_buttons[action_id])
 
@@ -199,7 +199,6 @@ if IDA_AVAILABLE:
             outer_splitter.setSizes([450, 550])
 
             action_row = QtWidgets.QHBoxLayout()
-            action_row.setSpacing(4)
             action_row.addWidget(self.routing_button)
             action_row.addWidget(self.reset_button)
             action_row.addStretch(1)
