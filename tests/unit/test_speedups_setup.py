@@ -3,6 +3,7 @@ from __future__ import annotations
 import runpy
 from pathlib import Path
 
+import pytest
 import setuptools
 
 
@@ -40,6 +41,35 @@ def test_linux_sdk_lib_dir_falls_back_to_legacy_layout(monkeypatch, tmp_path):
     legacy_lib = legacy_sdk / "src" / "lib" / "x64_linux_gcc_64"
     legacy_lib.mkdir(parents=True)
     assert select_lib_dir(legacy_sdk) == legacy_lib
+
+
+def test_windows_sdk_lib_subdir_uses_legacy_layout_before_ida_94(monkeypatch):
+    helpers = _load_setup_helpers(monkeypatch)
+    select_subdir = helpers["_windows_sdk_lib_subdir"]
+
+    assert select_subdir(930, library="amd64", is_64bit=True) == "x64_win_vc_64"
+
+
+def test_windows_sdk_lib_subdir_uses_x64_layout_for_ida_94(monkeypatch):
+    helpers = _load_setup_helpers(monkeypatch)
+    select_subdir = helpers["_windows_sdk_lib_subdir"]
+
+    assert select_subdir(940, library="amd64", is_64bit=True) == "x64_win_64"
+
+
+def test_windows_sdk_lib_subdir_uses_arm64_layout_for_ida_94(monkeypatch):
+    helpers = _load_setup_helpers(monkeypatch)
+    select_subdir = helpers["_windows_sdk_lib_subdir"]
+
+    assert select_subdir(940, library="arm64", is_64bit=True) == "arm64_win_64"
+
+
+def test_windows_sdk_lib_subdir_rejects_arm64_before_ida_94(monkeypatch):
+    helpers = _load_setup_helpers(monkeypatch)
+    select_subdir = helpers["_windows_sdk_lib_subdir"]
+
+    with pytest.raises(ValueError, match="ARM64 Windows SDK libraries require IDA 9.4"):
+        select_subdir(930, library="arm64", is_64bit=True)
 
 
 def test_ida_runtime_lib_dir_uses_container_runtime(monkeypatch, tmp_path):

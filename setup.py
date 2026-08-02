@@ -32,7 +32,7 @@ IDA_SDK_BRANCH = "main"
 
 # Platform detection
 OSTYPE = platform.system()
-ARCH = platform.processor() or platform.machine()
+ARCH = (platform.processor() or platform.machine()).lower()
 x64 = platform.architecture()[0] == "64bit"
 DEBUG = os.environ.get("DEBUG") == "1"
 
@@ -92,6 +92,31 @@ def _select_linux_sdk_lib_dir(sdk_path: pathlib.Path) -> pathlib.Path:
         return legacy
 
     return current
+
+
+def _windows_sdk_lib_subdir(
+    sdk_version: int,
+    library: str = LIBRARY,
+    is_64bit: bool = x64,
+) -> str:
+    """Return the Windows SDK library subdirectory for an IDA SDK version.
+
+    IDA 9.4 introduced native Windows ARM64 support and renamed the 64-bit
+    import-library directories.  Older SDKs use ``x64_win_vc_64``; IDA 9.4+
+    uses ``x64_win_64`` or ``arm64_win_64`` according to the build ABI.
+    """
+    normalized_library = str(library).lower()
+    is_arm64 = normalized_library in {"arm64", "aarch64"}
+
+    if is_arm64 and int(sdk_version) < 940:
+        raise ValueError("ARM64 Windows SDK libraries require IDA 9.4 or newer")
+
+    if int(sdk_version) >= 940:
+        if is_arm64:
+            return "arm64_win_64"
+        return "x64_win_64" if is_64bit else "x64_win_32"
+
+    return "x64_win_vc_64" if is_64bit else "x64_win_32"
 
 
 def _ida_runtime_lib_dir() -> pathlib.Path | None:
@@ -262,7 +287,7 @@ def get_ext_modules():
     if OSTYPE == "Windows":
         library_dirs.extend(
             [
-                str(_sdk_lib_dir(IDA_SDK, "x64_win_vc_64")),
+                str(_sdk_lib_dir(IDA_SDK, _windows_sdk_lib_subdir(sdk_version))),
                 str(_sdk_lib_dir(IDA_SDK, "x64_win_qt")),
             ]
         )
