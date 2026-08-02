@@ -36,7 +36,7 @@ class TestSetOpcodesGuardPresent:
     def test_set_opcodes_frozenset_defined(self) -> None:
         """_SET_OPCODES must be defined as a frozenset."""
         src = _read_src()
-        assert "_SET_OPCODES: frozenset[int] = frozenset({" in src, (
+        assert "_SET_OPCODES: frozenset[int] = frozenset(" in src, (
             "_SET_OPCODES frozenset must be defined in fold_constant_subtree.py"
         )
 
@@ -122,7 +122,7 @@ class TestSetOpcodesGuardApplied:
     def test_skip_opcodes_unchanged(self) -> None:
         """_SKIP_OPCODES must still be present (regression guard)."""
         src = _read_src()
-        assert "_SKIP_OPCODES: frozenset[int] = frozenset({" in src, (
+        assert "_SKIP_OPCODES: frozenset[int] = frozenset(" in src, (
             "_SKIP_OPCODES must still be present — this is a regression check"
         )
         assert "ida_hexrays.m_goto," in src, (

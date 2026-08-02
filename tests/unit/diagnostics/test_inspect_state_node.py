@@ -24,6 +24,7 @@ from d810.diagnostics.inspect_state_node import (
     matching_after_lines,
     normalize_state,
 )
+from tests.unit.diagnostics._schema import mark_current_schema
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -252,6 +253,7 @@ def fixture_db(tmp_path: Path) -> Path:
             (5, "semantic_reference_like", 4, "trailer"),
         ],
     )
+    mark_current_schema(conn)
     conn.commit()
     conn.close()
     return db
@@ -320,6 +322,7 @@ def test_cli_returns_two_when_db_has_no_semantic_snapshots(tmp_path: Path):
         "snapshot_id INTEGER NOT NULL, variant_name TEXT NOT NULL,"
         " line_no INTEGER NOT NULL, text TEXT NOT NULL)"
     )
+    mark_current_schema(conn)
     conn.commit()
     conn.close()
     result = _run_cli("--db", str(empty), "--state", "0x1")

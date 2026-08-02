@@ -18,6 +18,7 @@ from d810.diagnostics.terminal_tail_audit import (
     iter_observations,
     run_audit,
 )
+from tests.unit.diagnostics._schema import mark_current_schema
 
 # ---------------------------------------------------------------------------
 # Fixture: a minimal diag DB shaped enough to exercise each helper.
@@ -323,6 +324,7 @@ def test_iter_observations_skips_rows_without_block_serial(tmp_path: Path) -> No
                 json.dumps({"byte_index": 2}),
             ),  # no block_serial
         )
+        mark_current_schema(conn)
         conn.commit()
     finally:
         conn.close()
@@ -350,6 +352,7 @@ def test_iter_observations_skips_malformed_payload(tmp_path: Path) -> None:
                  '{bad json');
             """
         )
+        mark_current_schema(conn)
         conn.commit()
     finally:
         conn.close()
@@ -412,6 +415,7 @@ def test_build_initial_states_skips_when_block_row_missing(tmp_path: Path) -> No
                 ),
             ),
         )
+        mark_current_schema(conn)
         conn.commit()
     finally:
         conn.close()
@@ -523,6 +527,7 @@ def test_run_audit_returns_no_facts_message_when_db_empty(tmp_path: Path) -> Non
             "CREATE TABLE snapshots(id INTEGER PRIMARY KEY, label TEXT,"
             " maturity TEXT, phase TEXT);"
         )
+        mark_current_schema(conn)
         conn.commit()
     finally:
         conn.close()

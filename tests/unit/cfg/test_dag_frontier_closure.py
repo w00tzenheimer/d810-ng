@@ -3,10 +3,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import d810.transforms.dag_frontier_closure as dag_frontier_closure
+from d810.transforms.cfg_transaction import LogicalBlockRef
 from d810.transforms.dag_frontier_closure import (
     _build_indexes,
     _choices_for_observed_edge,
-    plan_dag_authoritative_frontier_closure,
+    plan_dag_authoritative_frontier_closure as _plan_dag_authoritative_frontier_closure,
 )
 from d810.ir.flowgraph import (
     BlockSnapshot,
@@ -20,7 +21,6 @@ from d810.transforms.graph_modification import (
     CreateConditionalRedirect,
     DuplicateBlock,
     InsertBlock,
-    RedirectBranch,
     RedirectGoto,
 )
 from d810.ir.state_dag_key import StateDagNodeKey
@@ -79,6 +79,24 @@ def _flow_with_instructions(
         for serial, succs in succs_by_block.items()
     }
     return FlowGraph(blocks=blocks, entry_serial=129, func_ea=0x1800134E0)
+
+
+def plan_dag_authoritative_frontier_closure(*, flow_graph, **kwargs):
+    """Plan fixture frontiers with explicit logical source witnesses."""
+    assert isinstance(flow_graph, FlowGraph)
+    kwargs.setdefault(
+        "block_refs_by_serial",
+        {
+            serial: LogicalBlockRef(
+                "dag-frontier-test", f"proxy-{serial}", 0
+            )
+            for serial in flow_graph.blocks
+        },
+    )
+    return _plan_dag_authoritative_frontier_closure(
+        flow_graph=flow_graph,
+        **kwargs,
+    )
 
 
 def _state_jz(state_const: int, target: int) -> InsnSnapshot:

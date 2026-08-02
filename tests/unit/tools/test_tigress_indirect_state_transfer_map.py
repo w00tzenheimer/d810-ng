@@ -8,6 +8,7 @@ from pathlib import Path
 
 from d810.diagnostics.__main__ import main as diagnostics_main
 from d810.diagnostics.indirect_state_transfer_map import extract_transfer_map
+from tests.unit.diagnostics._schema import mark_current_schema
 
 
 def _create_schema(conn: sqlite3.Connection) -> None:
@@ -214,6 +215,7 @@ def _base_db(tmp_path: Path) -> Path:
             "'MMAT_LOCOPT', 'pre_d810', 6)"
         )
         _insert_block(conn, 99)
+        mark_current_schema(conn)
         conn.commit()
     finally:
         conn.close()

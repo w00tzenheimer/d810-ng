@@ -811,13 +811,15 @@ if IDA_AVAILABLE:
             self.case_summary.setVisible(True)
             if self._case_evidence is None:
                 self.case_summary.setText(
-                    "No v7 deobfuscation case exists for the selected database/function."
+                    "No current-schema deobfuscation case exists for the selected "
+                    "database/function."
                 )
                 self.compare_case_button.setEnabled(False)
                 return
             lines = [
                 f"Case: {timeline.highest_level_label}",
-                "Case source: latest v7 session for the selected database/function",
+                "Case source: latest current-schema session for the selected "
+                "database/function",
                 (
                     "Semantic output: explicitly witnessed"
                     if timeline.semantic_verified

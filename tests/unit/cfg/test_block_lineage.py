@@ -10,7 +10,8 @@ from d810.transforms.graph_modification import (
     EdgeRedirectViaPredSplit,
     InsertBlock,
 )
-from d810.transforms.plan import compile_patch_plan
+from d810.transforms.cfg_transaction import LogicalBlockRef
+from d810.transforms.plan import compile_patch_plan as _compile_patch_plan
 from d810.transforms.block_lineage import (
     build_patch_plan_block_lineage,
     buffer_patch_plan_block_lineage,
@@ -125,6 +126,24 @@ def _conditional_post_cfg() -> FlowGraph:
     )
 
 
+def compile_patch_plan(*args, **kwargs):
+    """Compile fixture modifications with explicit logical source witnesses."""
+    cfg = kwargs.get("cfg")
+    if cfg is None and len(args) > 1:
+        cfg = args[1]
+    assert isinstance(cfg, FlowGraph)
+    kwargs.setdefault(
+        "block_refs_by_serial",
+        {
+            serial: LogicalBlockRef(
+                "block-lineage-test", f"proxy-{serial}", 0
+            )
+            for serial in cfg.blocks
+        },
+    )
+    return _compile_patch_plan(*args, **kwargs)
+
+
 def test_build_patch_plan_block_lineage_records_origin_and_source_mod_type() -> None:
     pre_cfg = _edge_split_pre_cfg()
     post_cfg = _edge_split_post_cfg()
@@ -140,7 +159,12 @@ def test_build_patch_plan_block_lineage_records_origin_and_source_mod_type() -> 
         pre_cfg,
     )
 
-    entries = build_patch_plan_block_lineage(patch_plan, pre_cfg, post_cfg)
+    entries = build_patch_plan_block_lineage(
+        patch_plan,
+        pre_cfg,
+        post_cfg,
+        realized_serials={patch_plan.new_blocks[0].block_id: 11},
+    )
 
     assert len(entries) == 1
     entry = entries[0]
@@ -162,7 +186,7 @@ def test_build_patch_plan_block_lineage_records_origin_and_source_mod_type() -> 
     assert extra["origin_label"] == "blk[10]@0x1010"
     assert extra["origin_display_fingerprint"] == "fp=[0x1010:op1,0x1014:op2]"
     assert extra["incoming_edge"] == {"source": 9, "target": 10}
-    assert extra["outgoing_edges"] == [{"source": "edge_split:0", "target": 12}]
+    assert extra["outgoing_edges"] == [{"source": "edge_split:0", "target": 11}]
 
     assert entry.as_db_tuple(99) == (
         99,
@@ -196,7 +220,15 @@ def test_buffer_patch_plan_block_lineage_drains_every_created_block() -> None:
     )
 
     try:
-        buffered = buffer_patch_plan_block_lineage(patch_plan, pre_cfg, post_cfg)
+        buffered = buffer_patch_plan_block_lineage(
+            patch_plan,
+            pre_cfg,
+            post_cfg,
+            realized_serials={
+                spec.block_id: serial
+                for spec, serial in zip(patch_plan.new_blocks, (14, 15))
+            },
+        )
         drained = drain_pending_block_lineage()
 
         assert drained == buffered
@@ -270,7 +302,12 @@ def test_insert_block_lineage_uses_body_origin_not_incoming_edge() -> None:
         pre_cfg,
     )
 
-    entries = build_patch_plan_block_lineage(patch_plan, pre_cfg, post_cfg)
+    entries = build_patch_plan_block_lineage(
+        patch_plan,
+        pre_cfg,
+        post_cfg,
+        realized_serials={patch_plan.new_blocks[0].block_id: 42},
+    )
 
     assert len(entries) == 1
     entry = entries[0]
@@ -278,5 +315,5 @@ def test_insert_block_lineage_uses_body_origin_not_incoming_edge() -> None:
     assert entry.origin_serial == 10
     assert entry.origin_start_ea_hex == "0x0000000000001010"
     extra = json.loads(entry.extra_json or "{}")
-    assert extra["incoming_edge"] == {"source": 40, "target": 43}
+    assert extra["incoming_edge"] == {"source": 40, "target": 42}
     assert extra["origin_label"] == "blk[10]@0x1010"
