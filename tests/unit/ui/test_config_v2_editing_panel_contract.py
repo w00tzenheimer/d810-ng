@@ -101,3 +101,27 @@ def test_empty_status_area_does_not_consume_editor_space() -> None:
 
     assert "setPlainText" in calls
     assert "setVisible" in calls
+
+
+def test_editor_uses_a_resizable_outer_splitter_that_favors_preserved_text() -> None:
+    source = ast.unparse(_method("OnCreate"))
+
+    assert "outer_splitter = QtWidgets.QSplitter()" in source
+    assert "outer_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)" in source
+    assert "outer_splitter.addWidget(editing_group)" in source
+    assert "outer_splitter.addWidget(raw_group)" in source
+    assert "outer_splitter.setStretchFactor(0, 1)" in source
+    assert "outer_splitter.setStretchFactor(1, 1)" in source
+    assert "outer_splitter.setSizes([450, 550])" in source
+    assert "layout.addWidget(outer_splitter, stretch=1)" in source
+
+
+def test_typed_editor_panes_have_explicit_resizable_geometry() -> None:
+    source = ast.unparse(_method("OnCreate"))
+
+    for pane in ("manifest_list", "pipeline_list", "routing_view"):
+        assert f"self.{pane}.setMinimumWidth(" in source
+    assert "typed_splitter.setStretchFactor(0, 1)" in source
+    assert "typed_splitter.setStretchFactor(1, 2)" in source
+    assert "typed_splitter.setStretchFactor(2, 2)" in source
+    assert "typed_splitter.setSizes([200, 400, 400])" in source
