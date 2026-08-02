@@ -72,6 +72,14 @@ def test_windows_sdk_lib_subdir_rejects_arm64_before_ida_94(monkeypatch):
         select_subdir(930, library="arm64", is_64bit=True)
 
 
+def test_windows_ida_94_compile_uses_cxx17_for_sdk_headers(monkeypatch):
+    helpers = _load_setup_helpers(monkeypatch)
+    get_compile_args = helpers["get_compile_args"]
+    monkeypatch.setitem(get_compile_args.__globals__, "OSTYPE", "Windows")
+
+    assert "/std:c++17" in get_compile_args(sdk_version=940)
+
+
 def test_ida_runtime_lib_dir_uses_container_runtime(monkeypatch, tmp_path):
     helpers = _load_setup_helpers(monkeypatch)
     runtime_lib_dir = helpers["_ida_runtime_lib_dir"]

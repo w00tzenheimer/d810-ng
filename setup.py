@@ -222,10 +222,11 @@ def ensure_ida_sdk(sdk_path: pathlib.Path) -> pathlib.Path:
         )
 
 
-def get_compile_args():
+def get_compile_args(sdk_version: int = 0):
     """Return platform-specific compilation arguments."""
     if OSTYPE == "Windows":
-        return ["/TP", "/EHa"] + (["/Z7", "/Od"] if DEBUG else [])
+        standard_args = ["/std:c++17"] if int(sdk_version) >= 940 else []
+        return ["/TP", "/EHa"] + standard_args + (["/Z7", "/Od"] if DEBUG else [])
     elif OSTYPE == "Linux":
         base = ["-Wno-stringop-truncation", "-Wno-catch-value", "-Wno-unused-variable"]
         return base + (["-g", "-O0"] if DEBUG else [])
@@ -331,7 +332,7 @@ def get_ext_modules():
             library_dirs=library_dirs,
             libraries=libraries,
             runtime_library_dirs=runtime_library_dirs,
-            extra_compile_args=get_compile_args(),
+            extra_compile_args=get_compile_args(sdk_version),
             extra_link_args=get_link_args(),
             define_macros=macros,
         ),
