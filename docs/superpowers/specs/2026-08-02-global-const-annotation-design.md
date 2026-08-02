@@ -1,284 +1,362 @@
-# Function-Referenced Global Const Assistance Design
+# Constant Simplification and Global Const Assistance Design
 
 ## Goal
 
-Let a user inspect the globals referenced by one function, use D810's existing
-constant-memory evidence to improve decompilation, and optionally persist a
-reversible `const` qualifier in the IDB. The feature must not describe absence
-of direct write xrefs as proof that a writable global is immutable.
+Give users one public constant-simplification operation instead of asking them
+to choose among overlapping rules:
 
-The first useful slice is an explicit, function-scoped command. Existing
-microcode folding remains the default optimization path; IDB type mutation is
-opt-in and starts with a dry-run preview.
+- `FoldReadonlyDataRule`;
+- `ConstantSubtreeFoldRule`;
+- `GlobalConstantInliner`; and
+- `ForwardConstantPropagationRule`.
 
-## Non-goals
+The public operation is **Simplify constants**. Internally it has three ordered
+stages:
 
-- Proving that arbitrary writable memory is immutable under pointer aliasing.
-- Automatically changing IDB types during every decompilation.
-- Replacing `FoldReadonlyDataRule`, `GlobalConstantInliner`, `MopTracker`, or
-  initializer-stable global-read analysis.
-- Removing a user-authored `const` qualifier merely because a direct write xref
-  exists.
-- Treating a type annotation receipt as semantic-output verification.
+1. resolve constant memory reads;
+2. fold constant expressions; and
+3. propagate constants through the function.
 
-## Existing Foundations
+All memory-read decisions come from one constness oracle. A later, optional
+global-annotation feature may consume the same oracle, but persistent IDB
+mutation is not the organizing concept of the optimizer.
 
-- `FoldReadonlyDataRule` already folds direct globals and table loads. Its
-  `fold_writable_constants` option accepts writable-segment addresses with no
-  direct `dr_W` xref.
-- `GlobalConstantInliner` performs the complementary flow-level rewrite for
-  direct and nested `mop_v` operands.
-- `compute_initializer_stable_global_reads()` is the stronger per-read proof:
-  the static initializer is usable only when no modeled store reaches that read.
-- `D810ActionHandler` provides auto-registered actions, injected IDA modules,
-  and deferred execution required for stable context-menu mutations.
-- The case producer materializes only terminal sessions from typed evidence
-  sources. A const-annotation plan or receipt must therefore be a typed source,
-  not an opaque log line or `payload_json` convention.
+## The Current Problem
 
-## Approaches Considered
+The current names expose implementation history rather than a coherent user
+model.
 
-### Port the script as a context-menu action
+- `FoldReadonlyDataRule` materializes values loaded from global memory.
+- `GlobalConstantInliner` performs another form of global-value
+  materialization at flow level.
+- `ForwardConstantPropagationRule` propagates register and stack constants,
+  but also carries a private read-only `ldx` resolver that overlaps the memory
+  rule.
+- `ConstantSubtreeFoldRule` is a downstream expression simplifier, yet it
+  appears beside the memory and propagation mechanisms as if it were an
+  alternative.
+- `allow_executable_readonly` exposes a segment-layout exception to users.
+  It does not explain whether D810 is accepting code bytes, a Mach-O data item
+  stored in an executable segment, or all read-only executable memory.
 
-Reuse native data refs, `dr_W` checks, `tinfo_t.set_const()`, and
-`apply_tinfo()` in one action module. This is the smallest textual change, but
-it preserves the script's unsafe claims, misses function chunks and indirect
-writes, has no mutation ownership, and would put policy and live mutation in
-the UI layer. Rejected.
+This makes users compose the pipeline themselves and makes it possible for the
+implementations to disagree about the same read. Consolidation must remove
+both problems, not merely rename the rules.
 
-### Use only existing ephemeral folding
+## User-facing Contract
 
-Enable `FoldReadonlyDataRule` with `fold_writable_constants=true` and
-`GlobalConstantInliner`; make no IDB changes. This is the safest route to better
-pseudocode and should remain the default. It does not satisfy users who need a
-durable type annotation visible to Hex-Rays and other IDA views.
+The user-authored configuration exposes one canonical bundle:
 
-### Shared evidence plus explicit reversible annotation
-
-Unify the duplicated global-memory classification, expose a function-scoped
-dry-run plan, and put optional `tinfo` mutation behind a backend mutation
-adapter with IDB-local ownership receipts. This is selected because it reuses
-the optimization machinery, keeps the UI thin, and makes persistent changes
-auditable and reversible without overstating the evidence.
-
-## Evidence Model
-
-Add IDA-free models under `d810.analyses.value_flow`:
-
-- `GlobalConstEvidenceKind`: `readonly_segment`, `direct_write_xref`,
-  `no_direct_write_xref`, `initializer_stable_read`, `unsupported_item`, and
-  `unknown_alias_risk`.
-- `GlobalConstCandidate`: canonical item EA and range, display name, item size,
-  original type text, source reference EAs, direct write EAs, and ordered
-  evidence kinds.
-- `GlobalConstDecision`: `mark_const`, `remove_owned_const`, or `skip`, plus a
-  stable reason identifier.
-- `GlobalConstPlan`: function EA, candidate decisions, counts, and a stable
-  digest over all inputs that affect application.
-- `GlobalConstReceipt`: candidate EA, plan digest, before/after serialized type
-  digests, outcome, and ownership identifier.
-
-The model distinguishes evidence strength:
-
-1. A readable, non-writable data segment is eligible for automatic proposal.
-2. A writable segment with no direct write xrefs is advisory evidence only.
-   It may continue to drive an explicitly aggressive ephemeral fold, but it is
-   not enough for automatic persistent annotation.
-3. A direct write xref blocks `mark_const`.
-4. An initializer-stable read is a property of one read site, not proof that the
-   global is immutable. It permits folding that read but not persistent `const`.
-5. Unknown item boundaries, unsupported types, overlaps, indirect access, or
-   alias uncertainty fail closed for persistent mutation.
-
-## IDA Evidence Adapter
-
-Add `d810.backends.hexrays.evidence.global_const_candidates`.
-
-For one canonical function start it:
-
-1. Enumerates instructions with `idautils.FuncItems()`, so non-contiguous
-   function chunks are included and unrelated gap items are excluded.
-2. Collects non-executable data refs and canonicalizes each ref to an IDB item
-   head and half-open item range.
-3. Records every source instruction EA rather than returning only a set of
-   target addresses.
-4. Queries read/write xrefs across the entire item range, not only the exact
-   referenced byte.
-5. Captures segment permissions, item size, current `tinfo`, and whether the
-   reference was observed as a source or destination in lifted microcode.
-6. Emits portable candidates; it never calls `apply_tinfo()`.
-
-Extract the current no-write-xref policy behind a single injected global-memory
-facts interface. `FoldReadonlyDataRule`, `GlobalConstantInliner`, `MopTracker`,
-and the emulator should consume the same classification instead of maintaining
-similar but divergent checks. The compatibility helper
-`is_never_written_var()` may remain temporarily, but its implementation and
-documentation must state the exact claim: no direct write xref was observed.
-
-## Planning and Mutation
-
-Add a manager-owned `GlobalConstAnnotationService` that converts evidence into
-a plan and exposes `preview`, `apply`, and `revert_owned` commands.
-
-Add `d810.backends.hexrays.mutation.global_const_types` as the only live type
-mutation surface. It must:
-
-- verify the plan digest immediately before mutation;
-- re-read the current type and reject stale plans;
-- preserve the complete serialized original `tinfo`;
-- use `TINFO_DEFINITE` only after the preceding checks pass;
-- record an IDB-local, versioned ownership receipt keyed by item EA;
-- remove or restore a qualifier only when the current type and stored receipt
-  still match the type D810 applied;
-- abstain instead of overwriting a later user edit;
-- return one receipt per candidate, including failed and skipped outcomes.
-
-The IDB-local ownership store belongs in the Hex-Rays backend. A named netnode
-with a small versioned JSON or serialized-type payload is sufficient for the
-first slice. Portable code sees only the receipt protocol and never imports
-`ida_netnode` or `ida_typeinf`.
-
-Application is fragment-atomic at the item level, not across the whole
-function: one stale or unsupported item fails without rolling back unrelated
-successful items. Each item retains its own authoritative receipt. An
-unexpected exception while applying one item restores that item's original
-type before proceeding or reports an explicit restore failure.
-
-## User Flow
-
-Add one action, `Inspect referenced global constants`, available in pseudocode
-and disassembly views.
-
-1. The action resolves the current function and schedules work on the next Qt
-   event-loop tick.
-2. The service builds a fresh plan.
-3. A compact report lists address, name, current type, evidence, proposed
-   action, and reason. The initial state is preview-only.
-4. `Apply safe annotations` applies only read-only-segment proposals.
-5. `Revert D810 annotations` restores only matching D810-owned receipts.
-6. After any committed change, mark the function cfunc dirty and invoke the
-   existing manager-controlled decompile path.
-
-Do not add an `Apply aggressive` control in the first slice. Users can already
-opt into aggressive ephemeral folding through rule configuration; persistent
-annotation of writable globals needs a separate design if real demand appears.
-The first slice also skips candidates without an existing, non-empty `tinfo`;
-it does not synthesize an integer type from item size.
-
-Expose the same operations through the headless API so runtime tests and
-investigation scripts do not automate Qt:
-
-```python
-preview_global_const_annotations(function_ea)
-apply_global_const_annotations(function_ea)
-revert_global_const_annotations(function_ea)
+```json
+{
+  "bundle": "constant-simplification",
+  "options": {
+    "memory_policy": "strict"
+  }
+}
 ```
 
-## Diagnostics and Case Identity
+The ordinary UI label is **Simplify constants**. The only initial policy choice
+is:
 
-Add typed observation models and typed diagnostic tables for annotation plans
-and receipts. Each row includes the session, plan digest, function EA, item EA
-and range, evidence classification, proposed action, before/after type digests,
-outcome, and reason. The producer must validate that the referenced source
-event belongs to the same session.
+- `strict` (default): materialize reads only when the target data item is
+  backed by readable, non-writable memory or by a stronger per-read proof.
+- `aggressive_no_direct_writes`: additionally materialize a writable target
+  when no direct write xref is observed. This is an optimization heuristic, not
+  proof of immutability.
 
-The action establishes the manager lifecycle session before applying types,
-emits its typed plan and receipts, and only then runs native preanalysis and
-decompilation in that retained session. This prevents a mutation from becoming
-unattributed pre-session state.
+Stage switches may exist in developer diagnostics, focused tests, or advanced
+configuration, but the normal configuration editor must not present the three
+stages as competing user choices.
 
-Closed-case `runtime_identity` must incorporate a stable digest of committed
-annotation receipts in addition to the native key. Function bytes and project
-configuration alone do not distinguish decompilations performed under
-different global type environments. The annotation receipt is C0 environment
-evidence; it does not advance the case to C1-C6 by itself.
+This requires an honest configuration seam. The current `PassSpec` represents
+one pass with one granularity and maturity contract, so it must not be stretched
+into a fictional multi-maturity pass. A small bundle compiler expands the one
+public bundle into ordered, private stage pass specs. The editor and public
+catalog show the bundle; execution diagnostics may show its stages. Existing
+fully expanded config-v2 documents remain a supported compiled form during
+migration, but newly authored configuration uses the bundle.
+
+`allow_executable_readonly` is removed from the public contract. Segment
+execute permission is not itself the deciding fact. The canonicalized target
+must be an IDA data item and the reference must be a data access. A readable,
+non-writable data item may therefore be accepted even when its containing
+segment is executable; a code item, instruction target, or unresolved item is
+rejected.
+
+## One Oracle, Two Questions
+
+The oracle must answer two different questions explicitly:
+
+1. **Can this particular read be materialized as a constant now?**
+2. **Can the whole global safely receive a persistent `const` qualifier?**
+
+Conflating these questions is unsound. An initializer may be stable at one read
+even though the global is written elsewhere, and absence of a direct write
+xref does not rule out pointer aliases or other indirect writes.
+
+The portable result is a decision object, not a boolean:
+
+```python
+GlobalConstDecision(
+    can_inline_read: bool,
+    can_persist_const: bool,
+    value: int | None,
+    evidence: tuple[GlobalConstEvidence, ...],
+    reason: GlobalConstReason,
+)
+```
+
+The initial decision matrix is:
+
+| Evidence | Inline this read | Persist `const` |
+| --- | --- | --- |
+| Readable, non-writable data item with no write evidence | yes | yes |
+| Same data item in an executable segment | yes | yes |
+| Writable item with no direct write xref | aggressive mode only | no |
+| Initializer proven stable at this read | yes | no |
+| Direct write exists elsewhere, but initializer is stable at this read | yes | no |
+| Direct write without a per-read stability proof | no | no |
+| Modeled store reaches this read | no | no |
+| Code item, unresolved item, unsupported width, or unknown value | no | no |
+| Unknown alias risk without stronger proof | strict mode: no | no |
+
+The second row is accepted because the target is proven to be a data item, not
+because executable read-only memory has been broadly allowed.
+
+Evidence precedence is explicit. An unknown item or value abstains. A modeled
+store reaching the read vetoes it. An initializer-stable proof may then
+authorize that read despite unrelated writes. Without that proof, contradictory
+write evidence against a supposedly non-writable item abstains. Persistent
+`const` requires a non-writable data item and no write evidence anywhere in
+the canonical item range.
+
+## Evidence and Backend Boundary
+
+Add an IDA-free evidence and policy model under
+`d810.analyses.value_flow`. It owns:
+
+- canonical item range and width;
+- source read EA and function EA;
+- segment read, write, and execute permissions;
+- item kind: data, code, tail, or unresolved;
+- direct write xrefs across the whole item range;
+- modeled reaching stores for the particular read;
+- static initializer bytes and decoded value;
+- policy mode; and
+- stable reason identifiers.
+
+The live Hex-Rays backend supplies facts through an injected adapter. For
+function-scoped inspection it must enumerate `idautils.FuncItems()`, retain
+every source EA, canonicalize interior references to item heads and half-open
+ranges, and query reads and writes over the full range. Portable analyses must
+not import IDA.
+
+The oracle abstains when required facts are unavailable. It must not silently
+turn a missing segment, unknown item boundary, failed memory read, or
+unsupported width into zero or into permission to fold.
+
+`is_never_written_var()` may remain as a compatibility helper during
+migration, but its exact meaning is only “no direct write xref was observed.”
+It is never treated as whole-program immutability proof.
+
+## The Three Internal Stages
+
+### 1. Resolve constant memory reads
+
+This is the sole authority for turning a global or table memory read into an
+immediate. It handles direct globals, nested global operands, and supported
+`ldx` table patterns through the shared oracle and one canonical
+materialization implementation.
+
+There must not be separate memory resolvers in a peephole rule, a flow rule,
+and forward propagation. Different microcode shapes may require thin adapters,
+but those adapters submit the same evidence request and apply the same
+decision.
+
+### 2. Fold constant expressions
+
+This stage simplifies arithmetic, logical, and conversion subtrees after
+memory values and other immediate inputs are available. It does not classify
+global memory and does not decide whether a read-only address is foldable.
+
+The existing `ConstantSubtreeFoldRule` supplies this capability and becomes an
+internal stage implementation of **Simplify constants**.
+
+### 3. Propagate constants through the function
+
+This stage carries known values through registers, stack locations, and the
+CFG. It consumes constants produced by the first two stages and may expose new
+folding opportunities on later iterations. It does not contain a private
+read-only-memory resolver.
+
+The existing `ForwardConstantPropagationRule` supplies this capability and
+becomes an internal stage implementation of **Simplify constants**.
+
+The three stages need not execute in one Hex-Rays callback or at one maturity.
+The bundle compiler schedules phase-appropriate internal pass specs and repeats
+them only where the existing optimizer lifecycle permits. “One public
+optimizer” means one user contract and one decision authority, not a forced
+collapse of valid maturity boundaries.
+
+## Consolidation and Migration
+
+Consolidation proceeds in this order:
+
+1. Introduce the shared evidence request, decision model, and oracle with
+   parity tests for the current strict behavior.
+2. Route `FoldReadonlyDataRule`, `GlobalConstantInliner`, and the
+   `ForwardConstantPropagationRule` read-only `ldx` path through the oracle.
+3. Select one canonical memory materializer and reduce the other entry points
+   to bounded shape adapters.
+4. Add bundle compilation and register the private stage implementations under
+   the public `constant-simplification` bundle.
+5. Remove the legacy rule names and `allow_executable_readonly` from the
+   ordinary catalog and configuration editor.
+6. Migrate shipped configurations and fixtures to the canonical optimizer.
+
+A bounded configuration importer may translate legacy user configuration:
+
+- either memory-folding rule enables the memory-resolution stage;
+- `ConstantSubtreeFoldRule` enables expression folding;
+- `ForwardConstantPropagationRule` enables flow propagation;
+- `fold_writable_constants=true` maps to
+  `memory_policy=aggressive_no_direct_writes`; and
+- `allow_executable_readonly` is ignored with an explicit migration notice
+  because item classification now determines the answer.
+
+The importer must reject contradictory legacy combinations rather than run two
+materializers. Newly written configuration contains only the canonical
+bundle. The UI catalog exposes one public entry; the runtime registry may
+expose the compiled internal stage IDs for scheduling and diagnostics while
+temporary compatibility aliases exist at the serialization boundary.
+
+Statistics and diagnostics use stable stage identifiers:
+
+- `memory_resolution`;
+- `expression_folding`; and
+- `flow_propagation`.
+
+They do not require users to understand the legacy class names.
+
+## Persistent Global Annotation as a Later Consumer
+
+Persistent annotation remains useful, but it is a separate subproject. A
+function-scoped **Inspect referenced global constants** action may preview
+oracle decisions and optionally apply only decisions with
+`can_persist_const=true`.
+
+That subproject must retain the safety properties from the original proposal:
+
+- dry-run by default;
+- complete original `tinfo` preservation;
+- IDB-local, versioned D810 ownership receipts;
+- stale-plan and later-user-edit detection;
+- no removal of user-authored `const`;
+- typed plan and receipt diagnostics; and
+- a runtime identity digest that includes committed annotation receipts.
+
+Writable/no-direct-write and initializer-stable-read evidence never authorize
+persistent `const`. The script's size-based type guessing is also excluded
+from the first annotation slice.
+
+This later feature consumes the oracle; it does not introduce another
+definition of constant memory.
 
 ## Failure Semantics
 
-- Missing function, unavailable item/type data, unsupported item size, stale
-  plan, direct write evidence, or ownership mismatch produce explicit skips.
-- No candidate is interpreted as success: the report states that no eligible
-  direct global references were found.
-- Diagnostic persistence failure does not silently permit mutation. Because
-  the mutation changes durable analysis state, an enabled diagnostic session
-  must accept the typed plan before applying it. When diagnostic capture is
-  disabled, the IDB-local ownership receipt remains mandatory but no case is
-  produced. Receipt persistence failure is reported as an incomplete audit and
-  blocks the manager-controlled redecompile.
-- Revert refuses to act when the current type differs from the recorded D810
-  result. It never guesses how to merge a later user edit.
-- Dry-run performs no type, netnode, cfunc-cache, project, or diagnostic writes.
+- Unknown evidence produces an explicit abstention and stable reason.
+- Failure to decode the value prevents materialization even when the target is
+  non-writable.
+- A modeled store that reaches a read vetoes that read. A direct write
+  elsewhere blocks persistent `const`, but does not override a stronger
+  initializer-stable proof for the particular read.
+- Aggressive mode is visibly heuristic and never upgrades
+  `can_persist_const`.
+- Configuration that would activate both a legacy materializer and the
+  canonical materializer fails with an actionable migration error.
+- One stage failure is attributed to that stage; it must not be reported as
+  success by an aggregate counter.
+- Dry-run annotation performs no type, netnode, cfunc-cache, project, or
+  diagnostic writes.
 
 ## Delivery Slices
 
-This design is intentionally delivered as dependent implementation plans, not
-one oversized change:
+### Subproject A: optimizer consolidation
 
-1. **Evidence and preview:** portable models, the IDA evidence adapter,
-   range-aware direct-write classification, a read-only manager preview API,
-   and dry-run/headless tests. No type or diagnostic schema changes.
-2. **Owned mutation:** the backend type adapter, IDB-local receipts,
-   apply/revert service commands, cache invalidation, and IDA round-trip tests.
-3. **User surface:** the thin context-menu report/action and headless parity.
-4. **Case authority:** typed diagnostic plan/receipt sources, terminal-case
-   projection, and annotation-aware runtime identity.
-5. **Policy consolidation:** migrate the existing folding rules and evaluators
-   to the shared classifier without changing their configured aggressive-mode
-   behavior.
+This is the immediate deliverable:
 
-The first implementation plan covers slice 1 only. Each later slice begins
-after the preceding slice's contracts and tests are green.
+1. shared oracle and evidence model;
+2. one canonical memory materializer;
+3. removal of the duplicate forward-propagation memory resolver;
+4. canonical three-stage registration and configuration migration;
+5. unified UI labels, statistics, and diagnostics; and
+6. parity and safety verification.
+
+One implementation plan should cover this subproject in dependency order,
+with review checkpoints after the oracle, materializer migration, and public
+configuration migration.
+
+### Subproject B: persistent IDB annotation
+
+After consolidation is green, plan the preview/apply/revert service, backend
+type mutation adapter, ownership receipts, typed case evidence, and UI action.
+This cannot redefine the oracle or weaken its persistent-const decision.
 
 ## Verification
 
-Unit tests must cover:
+Unit and integration tests for Subproject A must cover:
 
-- portable classification and decision tables;
-- function chunks and exclusion of range gaps;
-- canonical item heads, interior refs, and overlapping write ranges;
-- direct writes, no direct writes, read-only segments, executable segments,
-  missing segments, and unsupported types;
-- dry-run non-mutation across type, receipt store, cfunc cache, and diagnostics;
-- apply/revert ownership, stale-plan rejection, later-user-edit preservation,
-  partial item failure, and restoration after an exception;
-- one shared classification consumed by the folding rules and evaluators;
-- typed plan/receipt schema equivalence and closed-case projection;
-- annotation receipt digest changing closed-case runtime identity;
-- action availability, deferred execution, report commands, and redecompile
-  invalidation;
-- headless preview/apply/revert parity.
+- every row in the decision matrix;
+- direct globals, nested globals, and supported `ldx` table reads;
+- canonical item heads, interior references, overlapping write ranges, and
+  function chunks;
+- non-writable data in R-only and R+X segments;
+- code items and control-flow references in R+X segments being rejected;
+- strict versus aggressive policy;
+- initializer-stable per-read decisions;
+- missing segments, unknown item boundaries, failed reads, and unsupported
+  widths abstaining;
+- all memory-read shapes consulting the same oracle;
+- exactly one materialization authority being active;
+- expression folding containing no global-memory policy;
+- forward propagation containing no private global-memory resolver;
+- legacy configuration migration and contradiction rejection;
+- one public bundle expanding to valid single-granularity, single-maturity
+  internal pass specs;
+- stage ordering, iteration, counters, and stable diagnostics; and
+- output parity with current strict configurations on the runtime corpus.
 
-Runtime tests in IDA must prove:
+Runtime tests in IDA must prove that consolidation preserves or improves the
+relevant decompilation output for representative direct, nested, table, R+X
+data, reaching-write, and initializer-stable cases. Any intentional output
+change needs a case-specific explanation and oracle evidence.
 
-- a referenced read-only global receives `const`, changes the relevant
-  decompilation when appropriate, and round-trips to its exact original type;
-- a writable global with a direct write is skipped;
-- a writable global with no direct write xref remains preview-only;
-- a user type edit after application prevents automatic revert;
-- function-tail references are included;
-- the resulting diagnostic database contains the typed plan and receipt tied
-  to the terminal session.
-
-Before completion, run focused tests plus the worktree boundary gates:
+Before completion, run the focused suites, configuration migration tests,
+runtime oracle cases, and the worktree boundary gates:
 
 ```bash
-pyenv exec python -m pytest -q \
-  tests/unit/analyses/value_flow/test_global_const_annotations.py \
-  tests/unit/backends/hexrays/evidence/test_global_const_candidates.py
 sg scan --config sgconfig.yml --report-style short
 PYTHONPATH=src lint-imports --config .importlinter
 ```
 
 ## Acceptance Criteria
 
-- Existing rule configurations continue to produce ephemeral constant folding
-  without any IDB type mutation.
-- Preview accurately reports every directly referenced non-executable data item
-  in all function chunks and performs zero writes.
-- Default apply mutates only eligible read-only-segment items.
-- D810 can exactly restore only the types it owns and never overwrites a later
-  user edit.
-- Persistent annotation plans and receipts are typed, queryable case evidence,
-  and their digest participates in closed-case runtime identity.
-- Portable layers remain free of live IDA imports and UI code remains a thin
-  dispatcher/renderer.
+- Users enable one bundle named **Simplify constants**.
+- Ordinary configuration does not expose `allow_executable_readonly`.
+- R+X non-writable data is accepted through data-item classification, while
+  code is rejected.
+- Every global-memory materialization consults one constness oracle.
+- Exactly one implementation owns memory-read-to-immediate replacement.
+- Expression folding only folds expressions.
+- Forward propagation only propagates values through function state and the
+  CFG.
+- Aggressive no-direct-write behavior remains opt-in and is never described as
+  proof of immutability.
+- Legacy configuration has an explicit, tested migration path without silent
+  duplicate execution.
+- Persistent annotation, when later implemented, consumes
+  `can_persist_const` from the same oracle and cannot infer it from
+  `can_inline_read`.
+- Portable layers remain free of live IDA imports and the UI remains a thin
+  dispatcher and renderer.
