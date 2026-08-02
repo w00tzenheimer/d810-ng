@@ -568,6 +568,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
         # Use VBoxLayout to stack config row and description
         project_vbox = QtWidgets.QVBoxLayout(self._project_group)
+        project_vbox.setContentsMargins(4, 4, 4, 4)
+        project_vbox.setSpacing(4)
 
         # Config row with status indicator
         config_row = QtWidgets.QHBoxLayout()
@@ -667,6 +669,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         main_layout.addWidget(self._rules_group, stretch=1)
 
         rules_outer_layout = QtWidgets.QVBoxLayout(self._rules_group)
+        rules_outer_layout.setContentsMargins(4, 4, 4, 4)
+        rules_outer_layout.setSpacing(4)
 
         # _rules_content is now always visible
         self._rules_content = QtWidgets.QWidget()
@@ -674,7 +678,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
         rules_content_layout = QtWidgets.QVBoxLayout(self._rules_content)
         rules_content_layout.setContentsMargins(0, 0, 0, 0)
-        rules_content_layout.setSpacing(6)
+        rules_content_layout.setSpacing(4)
 
         # Edit header (name + description) - shown only for new/duplicate
         self._edit_header = QtWidgets.QWidget()
@@ -682,6 +686,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
         edit_header_layout = QtWidgets.QHBoxLayout(self._edit_header)
         edit_header_layout.setContentsMargins(0, 0, 0, 0)
+        edit_header_layout.setSpacing(4)
 
         lbl_name = QtWidgets.QLabel("Name:")
         edit_header_layout.addWidget(lbl_name)
@@ -701,11 +706,15 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
         self._rule_tree = RuleTreeWidget(self._splitter)
         self._splitter.addWidget(self._rule_tree)
+        self._rule_tree.setMinimumWidth(280)
 
         self._rule_detail = RuleDetailPanel(self._splitter)
         self._splitter.addWidget(self._rule_detail)
+        self._rule_detail.setMinimumWidth(420)
 
-        self._splitter.setSizes([450, 750])
+        self._splitter.setStretchFactor(0, 2)
+        self._splitter.setStretchFactor(1, 3)
+        self._splitter.setSizes([400, 600])
 
         # Wire signals
         self._rule_tree.rule_selected.connect(self._on_rule_selected)
@@ -743,6 +752,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         main_layout.addWidget(self._engine_group)
 
         engine_layout = QtWidgets.QHBoxLayout(self._engine_group)
+        engine_layout.setContentsMargins(4, 4, 4, 4)
+        engine_layout.setSpacing(4)
 
         self.btn_start = QtWidgets.QPushButton("Start")
         self.btn_start.clicked.connect(self._start_d810)

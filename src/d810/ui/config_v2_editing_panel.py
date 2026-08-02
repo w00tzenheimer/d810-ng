@@ -136,15 +136,19 @@ if IDA_AVAILABLE:
 
             identity_group = QtWidgets.QGroupBox("Project", self.parent)
             identity_layout = QtWidgets.QFormLayout(identity_group)
+            identity_layout.setContentsMargins(4, 4, 4, 4)
+            identity_layout.setSpacing(4)
             identity_layout.addRow("Destination:", self.destination_label)
             identity_layout.addRow("Validation:", self.validation_label)
 
             description_row = QtWidgets.QHBoxLayout()
+            description_row.setSpacing(4)
             description_row.addWidget(QtWidgets.QLabel("Description:"))
             description_row.addWidget(self.description_edit)
             description_row.addWidget(self.description_button)
 
             pass_row = QtWidgets.QHBoxLayout()
+            pass_row.setSpacing(4)
             pass_row.addWidget(self.catalog_combo)
             for action_id in ("add", "remove", "up", "down", "rules"):
                 pass_row.addWidget(self.pass_buttons[action_id])
@@ -157,9 +161,13 @@ if IDA_AVAILABLE:
             typed_splitter.addWidget(self.manifest_list)
             typed_splitter.addWidget(self.pipeline_list)
             typed_splitter.addWidget(self.routing_view)
+            self.manifest_list.setMinimumWidth(180)
+            self.pipeline_list.setMinimumWidth(280)
+            self.routing_view.setMinimumWidth(280)
             typed_splitter.setStretchFactor(0, 1)
             typed_splitter.setStretchFactor(1, 2)
             typed_splitter.setStretchFactor(2, 2)
+            typed_splitter.setSizes([200, 400, 400])
 
             raw_tabs = QtWidgets.QTabWidget()
             raw_tabs.addTab(self.unsupported_document, "Unsupported fields (read-only)")
@@ -167,15 +175,31 @@ if IDA_AVAILABLE:
 
             editing_group = QtWidgets.QGroupBox("Structured fields", self.parent)
             editing_layout = QtWidgets.QVBoxLayout(editing_group)
+            editing_layout.setContentsMargins(4, 4, 4, 4)
+            editing_layout.setSpacing(4)
             editing_layout.addLayout(description_row)
             editing_layout.addLayout(pass_row)
             editing_layout.addWidget(typed_splitter, stretch=1)
 
             raw_group = QtWidgets.QGroupBox("Preserved document", self.parent)
             raw_layout = QtWidgets.QVBoxLayout(raw_group)
+            raw_layout.setContentsMargins(4, 4, 4, 4)
+            raw_layout.setSpacing(4)
             raw_layout.addWidget(raw_tabs)
 
+            outer_splitter = QtWidgets.QSplitter()
+            try:
+                outer_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)
+            except AttributeError:
+                outer_splitter.setOrientation(QtCore.Qt.Vertical)
+            outer_splitter.addWidget(editing_group)
+            outer_splitter.addWidget(raw_group)
+            outer_splitter.setStretchFactor(0, 1)
+            outer_splitter.setStretchFactor(1, 1)
+            outer_splitter.setSizes([450, 550])
+
             action_row = QtWidgets.QHBoxLayout()
+            action_row.setSpacing(4)
             action_row.addWidget(self.routing_button)
             action_row.addWidget(self.reset_button)
             action_row.addStretch(1)
@@ -186,8 +210,7 @@ if IDA_AVAILABLE:
             layout.setContentsMargins(4, 4, 4, 4)
             layout.setSpacing(6)
             layout.addWidget(identity_group)
-            layout.addWidget(editing_group, stretch=2)
-            layout.addWidget(raw_group, stretch=1)
+            layout.addWidget(outer_splitter, stretch=1)
             layout.addWidget(self.status_detail)
             layout.addLayout(action_row)
             self._render()
