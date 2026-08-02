@@ -125,3 +125,13 @@ def test_typed_editor_panes_have_explicit_resizable_geometry() -> None:
     assert "typed_splitter.setStretchFactor(1, 2)" in source
     assert "typed_splitter.setStretchFactor(2, 2)" in source
     assert "typed_splitter.setSizes([200, 400, 400])" in source
+
+
+def test_editor_uses_compact_local_layouts_for_dense_information() -> None:
+    source = ast.unparse(_method("OnCreate"))
+
+    for layout_name in ("identity_layout", "editing_layout", "raw_layout"):
+        assert f"{layout_name}.setContentsMargins(4, 4, 4, 4)" in source
+        assert f"{layout_name}.setSpacing(4)" in source
+    assert "description_row.setSpacing(4)" in source
+    assert "pass_row.setSpacing(4)" in source
