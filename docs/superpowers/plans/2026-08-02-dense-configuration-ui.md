@@ -40,7 +40,7 @@ Assert that the rule splitter has explicit stretch factors, minimum widths for t
 Run:
 
 ```bash
-pyenv exec python -m pytest -q tests/unit/ui/test_config_v2_editing_panel_contract.py tests/unit/ui/test_ida_ui_contract.py
+pyenv exec python -m pytest -q tests/unit/ui/test_config_v2_editing_panel_contract.py tests/unit/ui/test_ida_ui_layout_contract.py
 ```
 
 Expected: the new layout assertions fail because the current implementation has no outer editor splitter, no explicit typed splitter sizes, and no rule-pane minimum/stretch contract.
@@ -75,7 +75,7 @@ Leave `_render`, `_set_status`, adapter mutations, read-only tabs, and final act
 - [ ] **Step 1: Run the focused UI contracts.**
 
 ```bash
-pyenv exec python -m pytest -q tests/unit/ui/test_config_v2_editing_panel_contract.py tests/unit/ui/test_ida_ui_contract.py
+pyenv exec python -m pytest -q tests/unit/ui/test_config_v2_editing_panel_contract.py tests/unit/ui/test_ida_ui_layout_contract.py
 ```
 
 Expected: PASS.
