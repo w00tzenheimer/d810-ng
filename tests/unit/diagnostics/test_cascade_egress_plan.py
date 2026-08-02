@@ -18,6 +18,7 @@ from d810.diagnostics.cascade_egress_plan import (
     load_sites,
     run_plan,
 )
+from tests.unit.diagnostics._schema import mark_current_schema
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +458,7 @@ def test_load_sites_skips_malformed_payload(tmp_path: Path) -> None:
             "INSERT INTO fact_observations VALUES (?,?,?,?,?,?)",
             (5, "non_dict", "TerminalByteEmitterFact", "[1,2,3]", None, 0.0),
         )
+        mark_current_schema(conn)
         conn.commit()
     finally:
         conn.close()
@@ -498,6 +500,7 @@ def test_run_plan_returns_error_when_no_facts(tmp_path: Path) -> None:
             "CREATE TABLE instructions(snapshot_id INTEGER, block_serial INTEGER,"
             " insn_index INTEGER, opcode_name TEXT, dstr TEXT);"
         )
+        mark_current_schema(conn)
         conn.commit()
     finally:
         conn.close()

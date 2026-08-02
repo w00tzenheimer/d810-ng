@@ -36,7 +36,6 @@ _WORKFLOW_STAGE_BY_PASS_ID: Mapping[str, StrategyWorkflowStage] = {
     "indirect-branch-resolver": StrategyWorkflowStage.CANONICAL_ANALYSIS,
     "indirect-call-resolver": StrategyWorkflowStage.CANONICAL_ANALYSIS,
     "jump-fixer": StrategyWorkflowStage.BACKEND_PUBLICATION,
-    "materialized-computed-goto-island": StrategyWorkflowStage.FRONTEND_NORMALIZATION,
     "mba-state-preconditioner": StrategyWorkflowStage.FRONTEND_NORMALIZATION,
     "single-trip-loop-peel": StrategyWorkflowStage.CANONICAL_TRANSFORM,
 }

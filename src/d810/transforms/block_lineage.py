@@ -129,7 +129,7 @@ def build_patch_plan_block_lineage(
                 origin_body_fingerprint=origin_fingerprint,
                 creation_kind=creation_kind,
                 creation_reason=f"{creation_reason_prefix}:{creation_kind}",
-                planner_block_id=(str(block_id) if block_id is not None else None),
+                planner_block_id=_planner_block_id(block_id),
                 source_mod_type=source_mod_type,
                 extra_json=_json_or_none(extra),
             )
@@ -352,6 +352,15 @@ def _infer_source_mod_type(spec: object) -> str | None:
     return None
 
 
+def _planner_block_id(block_id: object | None) -> str | None:
+    """Persist the plan-local block id, not its per-plan UUID wrapper."""
+    if block_id is None:
+        return None
+    if isinstance(block_id, PlanBlockRef):
+        return block_id.local_block_id
+    return str(block_id)
+
+
 def _entry_extra(
     *,
     spec: object,
@@ -417,6 +426,8 @@ def _ref_payload(
     *,
     source_coordinates: Mapping[LogicalBlockRef | NativeBlockRef, int],
 ) -> int | str | None:
+    if isinstance(value, PlanBlockRef):
+        return value.local_block_id
     int_value = _safe_int(value, source_coordinates=source_coordinates)
     if int_value is not None:
         return int_value
