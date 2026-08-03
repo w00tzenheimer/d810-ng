@@ -12,6 +12,13 @@ from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import (
 )
 
 
+def test_mba_function_ea_accepts_valid_entry_ea():
+    rule = ForwardConstantPropagationRule()
+    mba = SimpleNamespace(entry_ea=0x401000)
+
+    assert rule._mba_function_ea(mba) == 0x401000
+
+
 def test_unmaterialized_ldx_kills_destination(monkeypatch):
     """FCP must not independently manufacture a constant from memory."""
     rule = ForwardConstantPropagationRule()
