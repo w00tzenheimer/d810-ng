@@ -12,7 +12,9 @@ import uuid
 from collections.abc import Mapping, Sequence
 
 from d810.core.config import ProjectConfiguration
-from d810.core.config_v2_defaults import is_bundled_project_config
+from d810.core.config_v2_defaults import (
+    bundled_config_dir,
+)
 from d810.core.project_config_persistence import (
     ProjectConfigurationWriteError,
     write_project_document_atomically,
@@ -132,9 +134,9 @@ class ConfigV2EditingService:
     ) -> ConfigV2ProjectDraft:
         source = pathlib.Path(runtime_project.path).resolve()
         destination_path = pathlib.Path(destination).expanduser().resolve()
-        if is_bundled_project_config(runtime_project) and destination_path == source:
+        if destination_path.parent == bundled_config_dir().resolve():
             raise ConfigV2EditError(
-                "bundled runtime projects cannot be overwritten; choose a user destination"
+                "bundled config destinations are read-only; choose a user destination"
             )
         try:
             raw = source.read_bytes()
@@ -479,13 +481,10 @@ class ConfigV2EditingService:
             or validation.revision != draft.revision
         ):
             raise ConfigV2EditError("stale config-v2 validation identity")
-        if draft.destination_path.resolve() == draft.source_path.resolve():
-            source_project = ProjectConfiguration(path=draft.source_path)
-            if is_bundled_project_config(source_project):
-                raise ConfigV2EditError(
-                    "bundled runtime projects cannot be overwritten; "
-                    "choose a user destination"
-                )
+        if draft.destination_path.resolve().parent == bundled_config_dir().resolve():
+            raise ConfigV2EditError(
+                "bundled config destinations are read-only; choose a user destination"
+            )
         current = self.validate(draft)
         if not validation.valid or current != validation:
             raise ConfigV2EditError(
