@@ -11,7 +11,6 @@ except ImportError:
     pass
 else:
     # Registration side-effects for commonly used flow rules.
-    from d810.optimizers.microcode.flow.constant_prop import global_const_inline  # noqa: F401
     from d810.optimizers.microcode.flow.flattening import mba_state_preconditioner  # noqa: F401
     from d810.optimizers.microcode.flow.flattening import unflattener_cleanup_family  # noqa: F401
 

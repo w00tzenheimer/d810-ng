@@ -20,7 +20,7 @@
  *   - FoldReadonlyDataRule (fold_writable_constants for opaque table)
  *   - predecessor branch-arm repair (conditional chain dispatch)
  *   - EmulatedDispatcherUnflattener (nested while/if CFF pattern)
- *   - GlobalConstantInliner (resolve opaque table loads)
+ *   - Simplify constants (resolve opaque table loads)
  */
 
 #include "polyfill.h"

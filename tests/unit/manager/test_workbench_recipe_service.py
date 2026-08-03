@@ -10,6 +10,7 @@ from d810.manager.workbench_recipe_models import FunctionPipelineOverride, Recip
 from d810.manager.workbench_recipe_service import RecipeEditError, RecipeService
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfig
+from d810.passes.registry import UnknownPassIdError
 
 
 class _Facts:
@@ -91,7 +92,7 @@ def test_catalog_is_sorted_but_draft_keeps_effective_execution_order() -> None:
     ]
 
 
-def test_catalog_exposes_one_constant_operation_but_legacy_configs_still_load():
+def test_catalog_exposes_only_the_consolidated_constant_operation():
     registry = operational_config_v2_pass_registry()
     service = RecipeService(registry)
 
@@ -100,12 +101,8 @@ def test_catalog_exposes_one_constant_operation_but_legacy_configs_still_load():
     assert "constant-simplification" in pass_ids
     assert "global-constant-inliner" not in pass_ids
     assert "forward-constant-propagation" not in pass_ids
-    assert (
-        registry.build_spec(
-            registry.config_template_for("global-constant-inliner")
-        ).pass_id
-        == "global-constant-inliner"
-    )
+    with pytest.raises(UnknownPassIdError, match="global-constant-inliner"):
+        registry.config_template_for("global-constant-inliner")
 
 
 def test_add_remove_enable_and_reorder_are_immutable_and_revisioned() -> None:

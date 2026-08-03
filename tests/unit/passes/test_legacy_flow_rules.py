@@ -180,7 +180,6 @@ def test_legacy_flow_rule_registry_builds_jump_fixer_canary_entry():
 @pytest.mark.parametrize(
     ("pass_id", "legacy_rule"),
     [
-        ("global-constant-inliner", "GlobalConstantInliner"),
         ("forward-constant-propagation", "ForwardConstantPropagationRule"),
         ("identity-call-resolver", "IdentityCallResolver"),
         ("indirect-branch-resolver", "IndirectBranchResolver"),
@@ -212,6 +211,12 @@ def test_legacy_flow_rule_registry_builds_supported_simple_ids(
     assert adapter.name == pass_id
     assert adapter.legacy_rule == legacy_rule
     assert adapter.rule_options == {"limit": 3}
+
+
+def test_global_constant_inliner_is_not_a_registered_legacy_pass():
+    registry = legacy_flow_rule_pass_registry()
+
+    assert "global-constant-inliner" not in registry.registered_pass_ids()
 
 
 def test_legacy_flow_rule_registry_rejects_mismatched_legacy_rule():

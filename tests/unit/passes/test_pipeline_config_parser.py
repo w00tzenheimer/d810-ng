@@ -112,7 +112,6 @@ _REMAINING_GENERATED_SHADOWS = (
         157,
         [
             "MbaStatePreconditioner",
-            "GlobalConstantInliner",
             "JumpFixer",
             "StateMachineCffUnflattener",
         ],
@@ -497,10 +496,7 @@ def test_default_instruction_only_legacy_config_remains_runtime_source():
     )
 
     assert len(project.ins_rules) == 179
-    assert [rule.name for rule in project.blk_rules] == [
-        "GlobalConstantInliner",
-        "JumpFixer",
-    ]
+    assert [rule.name for rule in project.blk_rules] == ["JumpFixer"]
     fold = next(
         rule for rule in project.ins_rules if rule.name == "FoldReadonlyDataRule"
     )
@@ -513,7 +509,6 @@ def test_example_libobfuscated_legacy_config_remains_runtime_source():
 
     assert len([rule for rule in project.ins_rules if rule.is_activated]) == 186
     assert [rule.name for rule in project.blk_rules if rule.is_activated] == [
-        "GlobalConstantInliner",
         "ForwardConstantPropagationRule",
         "MbaStatePreconditioner",
         "StateMachineCffUnflattener",
