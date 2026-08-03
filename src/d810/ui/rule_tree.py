@@ -165,6 +165,30 @@ class RuleTreeWidget(QtWidgets.QWidget):
         """Return the set of currently-checked rule names."""
         return set(self._enabled_rules)
 
+    def select_rule(self, rule_name: str) -> bool:
+        """Select and reveal the first visible leaf named *rule_name*."""
+
+        wanted = str(rule_name)
+        for index in range(self._tree.topLevelItemCount()):
+            item = self._find_rule_item(self._tree.topLevelItem(index), wanted)
+            if item is not None:
+                self._tree.setCurrentItem(item)
+                self._tree.scrollToItem(item)
+                return True
+        return False
+
+    def _find_rule_item(
+        self, parent_item: QtWidgets.QTreeWidgetItem, wanted: str
+    ) -> QtWidgets.QTreeWidgetItem | None:
+        rule = parent_item.data(0, RULE_DATA_ROLE)
+        if rule is not None and str(getattr(rule, "name", "")) == wanted:
+            return parent_item
+        for index in range(parent_item.childCount()):
+            item = self._find_rule_item(parent_item.child(index), wanted)
+            if item is not None:
+                return item
+        return None
+
     def set_read_only(self, read_only: bool) -> None:
         """Set read-only mode.
 
