@@ -12,6 +12,12 @@ from d810.core import typing
 
 from d810.qt_shim import QtCore, QtWidgets, qt_flag_or, QColor, QBrush
 from d810.ui.icon_assets import bundled_icon
+from d810.ui.rule_tree_logic import (
+    RuleTreeContextRequest,
+    RuleTreeContextTarget,
+    RuleTreeTargetKind,
+    context_action_for,
+)
 
 if typing.TYPE_CHECKING:
     from d810.optimizers.microcode.handler import OptimizationRule
@@ -23,6 +29,7 @@ try:
     RULE_DATA_ROLE: int = int(QtCore.Qt.UserRole) + 1
 except (TypeError, ValueError):
     RULE_DATA_ROLE: int = 0x0100 + 1  # fallback for non-GUI stubs
+RULE_OPTIMIZER_ROLE: int = RULE_DATA_ROLE + 1
 
 # Color constants for rule states
 COLOR_ENABLED = QColor(76, 175, 80)  # Material Green 500
@@ -71,16 +78,20 @@ class RuleTreeWidget(QtWidgets.QWidget):
     # Signals ----------------------------------------------------------------
     rule_selected = QtCore.pyqtSignal(object)
     rule_toggled = QtCore.pyqtSignal(object, bool)
+    context_action_requested = QtCore.pyqtSignal(object)
 
     def __init__(
         self,
         parent: QtWidgets.QWidget | None = None,
+        *,
+        context_actions_enabled: bool = False,
     ) -> None:
         super().__init__(parent)
 
         self._rules: list[OptimizationRule] = []
         self._enabled_rules: set[str] = set()  # names of enabled rules
         self._read_only: bool = False
+        self._context_actions_enabled = bool(context_actions_enabled)
 
         # --- Layout -----------------------------------------------------------
         layout = QtWidgets.QVBoxLayout(self)
@@ -168,6 +179,11 @@ class RuleTreeWidget(QtWidgets.QWidget):
         self._read_only = read_only
         self._rebuild_tree()
 
+    def set_context_actions_enabled(self, enabled: bool) -> None:
+        """Enable the state-aware context intent menu for this tree."""
+
+        self._context_actions_enabled = bool(enabled)
+
     # --- Internal -----------------------------------------------------------
 
     def _rebuild_tree(self) -> None:
@@ -215,6 +231,7 @@ class RuleTreeWidget(QtWidgets.QWidget):
                 0,
                 f"{opt_type_name} ({enabled_count}/{total_count} enabled)",
             )
+            type_item.setData(0, RULE_OPTIMIZER_ROLE, opt_type_name)
 
             # Bold font for optimizer type headers
             font = type_item.font(0)
@@ -292,6 +309,7 @@ class RuleTreeWidget(QtWidgets.QWidget):
                     rule_item.setText(0, display_name)
                     rule_item.setToolTip(0, rule.description)
                     rule_item.setData(0, RULE_DATA_ROLE, rule)
+                    rule_item.setData(0, RULE_OPTIMIZER_ROLE, opt_type_name)
 
                     # Set color based on enabled state
                     is_enabled = rule.name in self._enabled_rules
@@ -435,13 +453,29 @@ class RuleTreeWidget(QtWidgets.QWidget):
         self.rule_toggled.emit(rule, is_checked)
 
     def _on_context_menu(self, pos: QtCore.QPoint) -> None:
-        """Show context menu for category items with Select All/Deselect All."""
-        if self._read_only:
-            return  # No context menu in read-only mode
-
+        """Show either state-aware intents or the legacy category menu."""
         item = self._tree.itemAt(pos)
         if item is None:
             return
+
+        if self._context_actions_enabled:
+            target = self._context_target_for_item(item)
+            if target is None:
+                return
+            action = context_action_for(target)
+            if action is None:
+                return
+            menu = QtWidgets.QMenu(self._tree)
+            menu_action = menu.addAction(action.label)
+            request = RuleTreeContextRequest(target=target, action=action)
+            menu_action.triggered.connect(
+                lambda _checked=False: self.context_action_requested.emit(request)
+            )
+            menu.exec_(self._tree.viewport().mapToGlobal(pos))
+            return
+
+        if self._read_only:
+            return  # No legacy context menu in read-only mode
 
         # Check if this is a category/optimizer item (has children but no rule data)
         is_category = (
@@ -467,6 +501,60 @@ class RuleTreeWidget(QtWidgets.QWidget):
 
         # Show menu at global position
         menu.exec_(self._tree.viewport().mapToGlobal(pos))
+
+    def _context_target_for_item(
+        self, item: QtWidgets.QTreeWidgetItem
+    ) -> RuleTreeContextTarget | None:
+        """Build a Qt-free target description from one tree item."""
+
+        rule = item.data(0, RULE_DATA_ROLE)
+        if rule is not None:
+            name = str(getattr(rule, "name", ""))
+            if not name:
+                return None
+            is_enabled = name in self._enabled_rules
+            return RuleTreeContextTarget(
+                kind=RuleTreeTargetKind.RULE,
+                rule_names=(name,),
+                enabled_count=int(is_enabled),
+                total_count=1,
+                rule_name=name,
+                optimizer_type=str(
+                    item.data(0, RULE_OPTIMIZER_ROLE) or ""
+                ) or None,
+            )
+
+        names = tuple(self._rule_names_under(item))
+        if not names:
+            return None
+        optimizer_type = item.data(0, RULE_OPTIMIZER_ROLE)
+        if not optimizer_type:
+            root = item
+            while root.parent() is not None:
+                root = root.parent()
+            optimizer_type = root.data(0, RULE_OPTIMIZER_ROLE)
+        return RuleTreeContextTarget(
+            kind=RuleTreeTargetKind.GROUP,
+            rule_names=names,
+            enabled_count=sum(name in self._enabled_rules for name in names),
+            total_count=len(names),
+            optimizer_type=str(optimizer_type or "") or None,
+        )
+
+    def _rule_names_under(
+        self, parent_item: QtWidgets.QTreeWidgetItem
+    ) -> list[str]:
+        names: list[str] = []
+        for index in range(parent_item.childCount()):
+            child = parent_item.child(index)
+            rule = child.data(0, RULE_DATA_ROLE)
+            if rule is not None:
+                name = str(getattr(rule, "name", ""))
+                if name:
+                    names.append(name)
+            elif child.childCount() > 0:
+                names.extend(self._rule_names_under(child))
+        return names
 
     def _set_category_check_state(
         self,
