@@ -300,23 +300,29 @@ def ensure_ida_sdk(sdk_path: pathlib.Path) -> pathlib.Path:
                 shutil.rmtree(DEFAULT_SDK_DIR)
 
     # Fallback: download tarball
+    #
+    # The handle is closed before the path is written to or removed. Windows
+    # refuses to reopen or delete a file while another handle is open, so
+    # holding a NamedTemporaryFile open across the download and extraction
+    # made the cleanup fail with PermissionError (WinError 32) every time.
+    tmp_path = None
     try:
         tarball_url = f"https://github.com/HexRaysSA/ida-sdk/archive/refs/heads/{IDA_SDK_BRANCH}.tar.gz"
         print(f"Downloading {tarball_url}...", file=sys.stderr)
 
-        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-            urllib.request.urlretrieve(tarball_url, tmp.name)
+        handle, tmp_path = tempfile.mkstemp(suffix=".tar.gz")
+        os.close(handle)
 
-            with tarfile.open(tmp.name, "r:gz") as tar:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    try:
-                        tar.extractall(tmpdir, filter="data")
-                    except TypeError:
-                        tar.extractall(tmpdir)
-                    extracted = next(pathlib.Path(tmpdir).iterdir())
-                    shutil.move(str(extracted), str(DEFAULT_SDK_DIR))
+        urllib.request.urlretrieve(tarball_url, tmp_path)
 
-            os.unlink(tmp.name)
+        with tarfile.open(tmp_path, "r:gz") as tar:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                try:
+                    tar.extractall(tmpdir, filter="data")
+                except TypeError:
+                    tar.extractall(tmpdir)
+                extracted = next(pathlib.Path(tmpdir).iterdir())
+                shutil.move(str(extracted), str(DEFAULT_SDK_DIR))
 
         print(f"IDA SDK downloaded to: {DEFAULT_SDK_DIR}", file=sys.stderr)
         return DEFAULT_SDK_DIR
@@ -327,6 +333,13 @@ def ensure_ida_sdk(sdk_path: pathlib.Path) -> pathlib.Path:
             f"Please manually clone: git clone {IDA_SDK_REPO} {DEFAULT_SDK_DIR}\n"
             f"Or set IDA_SDK environment variable to your SDK location."
         )
+    finally:
+        # Also runs when extraction fails, where the original leaked the file.
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def get_compile_args(sdk_version: int = 0):
