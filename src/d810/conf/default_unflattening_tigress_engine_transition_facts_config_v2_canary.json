@@ -10,6 +10,13 @@
     },
     "pipeline_v2": [
       {
+        "pass": "constant-simplification",
+        "options": {
+          "memory_policy": "strict",
+          "allow_executable_readonly": false
+        }
+      },
+      {
         "pass": "mba-simplify",
         "scope": "expression",
         "maturity": {
@@ -30,7 +37,6 @@
         },
         "rules": {
           "include": [
-            "ConstantSubtreeFoldRule",
             "Z3ConstantOptimization",
             "Z3setnzRuleGeneric",
             "Z3setzRuleGeneric"
@@ -42,29 +48,6 @@
               "min_nb_constant": 3
             }
           }
-        }
-      },
-      {
-        "pass": "forward-constant-propagation",
-        "scope": "block",
-        "maturity": {
-          "range": {
-            "min": "ir.canonical",
-            "max": "ir.global.optimized"
-          }
-        },
-        "requires": {
-          "capabilities": [
-            "legacy_flow_rule_adapter"
-          ]
-        },
-        "migration": {
-          "source_config": "default_unflattening_tigress_engine_transition_facts.json",
-          "source_section": "blk_rules",
-          "source_rule": "ForwardConstantPropagationRule"
-        },
-        "options": {
-          "legacy_rule": "ForwardConstantPropagationRule"
         }
       },
       {

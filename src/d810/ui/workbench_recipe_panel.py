@@ -7,6 +7,7 @@ import json
 from d810.core import typing
 from d810.core.logging import getLogger
 from d810.ui.workbench_recipe_logic import (
+    enables_dangerous_executable_readonly,
     project_catalog_rows,
     project_draft_rows,
     project_recipe_strategy,
@@ -413,6 +414,28 @@ if IDA_AVAILABLE:
             except (json.JSONDecodeError, ValueError) as exc:
                 self.detail.setPlainText(f"Invalid structured options: {exc}")
                 return
+            if enables_dangerous_executable_readonly(
+                row.pass_id,
+                current,
+                options,
+            ):
+                try:
+                    yes = QtWidgets.QMessageBox.StandardButton.Yes
+                    no = QtWidgets.QMessageBox.StandardButton.No
+                except AttributeError:
+                    yes = QtWidgets.QMessageBox.Yes
+                    no = QtWidgets.QMessageBox.No
+                response = QtWidgets.QMessageBox.question(
+                    self.parent,
+                    "Confirm VERY DANGEROUS operation",
+                    "This can treat code or unresolved bytes in executable "
+                    "read-only memory as constant data on any architecture. "
+                    "It can produce incorrect decompilation. Enable it anyway?",
+                    yes | no,
+                    no,
+                )
+                if response != yes:
+                    return
             self._apply_edit(
                 lambda: self._adapter.replace_options(
                     self._draft,

@@ -471,26 +471,10 @@
         }
       },
       {
-        "pass": "forward-constant-propagation",
-        "scope": "block",
-        "maturity": {
-          "range": {
-            "min": "ir.canonical",
-            "max": "ir.global.optimized"
-          }
-        },
-        "requires": {
-          "capabilities": [
-            "legacy_flow_rule_adapter"
-          ]
-        },
-        "migration": {
-          "source_config": "hodur_flag2_with_fcp.json",
-          "source_section": "blk_rules",
-          "source_rule": "ForwardConstantPropagationRule"
-        },
+        "pass": "constant-simplification",
         "options": {
-          "legacy_rule": "ForwardConstantPropagationRule"
+          "memory_policy": "strict",
+          "allow_executable_readonly": false
         }
       }
     ]

@@ -18,6 +18,17 @@ from d810.core.config_v2_defaults import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CONF_DIR = _REPO_ROOT / "src" / "d810" / "conf"
+_CONSTANT_BUNDLE_CANARIES = {
+    "default_instruction_only_config_v2_canary.json": "aggressive_no_direct_writes",
+    "default_unflattening_ollvm_config_v2_canary.json": "aggressive_no_direct_writes",
+    "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json": "strict",
+    "example_hodur_config_v2_canary.json": "strict",
+    "example_libobfuscated_abc_config_v2_canary.json": "strict",
+    "example_libobfuscated_config_v2_canary.json": "aggressive_no_direct_writes",
+    "example_libobfuscated_no_fixprecedessor_config_v2_canary.json": "strict",
+    "flatfold_config_v2_canary.json": "aggressive_no_direct_writes",
+    "hodur_flag2_with_fcp_config_v2_canary.json": "strict",
+}
 
 
 def _project(name: str) -> ProjectConfiguration:
@@ -96,3 +107,32 @@ def test_supported_default_status_is_auditable():
     assert "routed=True" in status
     assert "pipeline_v2_mode='config-v2'" in status
     assert "expected_pass_ids=" in status
+
+
+@pytest.mark.parametrize(
+    ("canary_name", "memory_policy"), _CONSTANT_BUNDLE_CANARIES.items()
+)
+def test_shipped_constant_pipelines_use_one_architecture_neutral_bundle(
+    canary_name, memory_policy
+):
+    project = _project(canary_name)
+    pipeline = project.additional_configuration["pipeline_v2"]
+
+    bundles = [
+        entry for entry in pipeline if entry["pass"] == "constant-simplification"
+    ]
+    assert len(bundles) == 1
+    assert bundles[0]["options"] == {
+        "memory_policy": memory_policy,
+        "allow_executable_readonly": False,
+    }
+    assert not {entry["pass"] for entry in pipeline} & {
+        "global-constant-inliner",
+        "forward-constant-propagation",
+    }
+    for entry in pipeline:
+        if entry["pass"] != "mba-simplify":
+            continue
+        selected = set(entry.get("rules", {}).get("include", ()))
+        selected.update(entry.get("rules", {}).get("include_order", ()))
+        assert not selected & {"FoldReadonlyDataRule", "ConstantSubtreeFoldRule"}
