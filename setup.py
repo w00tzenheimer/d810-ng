@@ -124,13 +124,36 @@ def _windows_sdk_lib_subdir(
 # them for 9.4. ida-qt-libs republishes them, built with QT_NAMESPACE=QT and
 # symbol-for-symbol identical to the last set Hex-Rays shipped.
 IDA_QT_REPO = "mahmoudimus/ida-qt-libs"
-IDA_QT_TAG = "ida-9.4.0-qt-6.8.2-win64"
 DEFAULT_QT_DIR = pathlib.Path(__file__).parent / ".ida-qt"
 
+# IDA SDK version -> matching release. Each IDA release pins a specific Qt
+# version, so the artifact is chosen by SDK rather than hardcoded. 9.3 and 9.4
+# both ship Qt 6.8.2 and their import libraries are currently byte-identical,
+# but that is a coincidence of those two releases, not a rule.
+IDA_QT_TAGS = {
+    930: "ida-9.3-qt-6.8.2-win64",
+    940: "ida-9.4.0-qt-6.8.2-win64",
+}
 
-def _download_ida_qt(
-    dest: pathlib.Path = DEFAULT_QT_DIR, tag: str = IDA_QT_TAG
-) -> pathlib.Path:
+
+def _ida_qt_tag(sdk_version: int) -> str:
+    """Return the ida-qt-libs release matching *sdk_version*."""
+    known = IDA_QT_TAGS.get(int(sdk_version))
+    if known:
+        return known
+
+    newest = IDA_QT_TAGS[max(IDA_QT_TAGS)]
+    print(
+        f"WARNING: no ida-qt-libs release recorded for SDK {sdk_version}; "
+        f"falling back to {newest}. If that IDA ships a different Qt version "
+        "the ABI will not match - set IDA_QT explicitly, or see "
+        f"https://github.com/{IDA_QT_REPO}/releases",
+        file=sys.stderr,
+    )
+    return newest
+
+
+def _download_ida_qt(dest: pathlib.Path, tag: str) -> pathlib.Path:
     """Download and checksum-verify an ida-qt-libs release into *dest*."""
     import hashlib
     import zipfile
@@ -167,7 +190,7 @@ def _download_ida_qt(
     return dest / tag
 
 
-def ensure_ida_qt(sdk_path: pathlib.Path) -> pathlib.Path | None:
+def ensure_ida_qt(sdk_path: pathlib.Path, sdk_version: int) -> pathlib.Path | None:
     """Return a directory containing Qt6*.lib, or None if unavailable.
 
     Resolution order:
@@ -196,9 +219,10 @@ def ensure_ida_qt(sdk_path: pathlib.Path) -> pathlib.Path | None:
         )
         return None
 
-    extracted = DEFAULT_QT_DIR / IDA_QT_TAG
+    tag = _ida_qt_tag(sdk_version)
+    extracted = DEFAULT_QT_DIR / tag
     if not (extracted / "lib").is_dir():
-        extracted = _download_ida_qt()
+        extracted = _download_ida_qt(DEFAULT_QT_DIR, tag)
     return extracted / "lib"
 
 
@@ -384,7 +408,7 @@ def get_ext_modules():
             str(_sdk_lib_dir(IDA_SDK, _windows_sdk_lib_subdir(sdk_version)))
         )
 
-        qt_dir = ensure_ida_qt(IDA_SDK)
+        qt_dir = ensure_ida_qt(IDA_SDK, sdk_version)
         if qt_dir is None:
             raise RuntimeError(
                 "No Qt import libraries found. IDA SDK 9.4 no longer ships "
