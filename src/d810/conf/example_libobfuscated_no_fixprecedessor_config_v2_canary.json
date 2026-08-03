@@ -10,6 +10,13 @@
     },
     "pipeline_v2": [
       {
+        "pass": "constant-simplification",
+        "options": {
+          "memory_policy": "strict",
+          "allow_executable_readonly": false
+        }
+      },
+      {
         "pass": "mba-simplify",
         "scope": "expression",
         "maturity": {
@@ -31,7 +38,6 @@
         "rules": {
           "include": [
             "RotateHelperInlineRule",
-            "FoldReadonlyDataRule",
             "ConstantCallResultFoldRule",
             "Add_SpecialConstantRule_1",
             "Add_SpecialConstantRule_2",
@@ -227,12 +233,6 @@
             "RotateHelperInlineRule": {
               "dump_intermediate_microcode": null
             },
-            "FoldReadonlyDataRule": {
-              "default": {},
-              "macho": {
-                "allow_executable_readonly": true
-              }
-            },
             "ConstantCallResultFoldRule": {
               "dump_intermediate_microcode": null
             },
@@ -293,30 +293,6 @@
               "dump_intermediate_microcode": null
             }
           }
-        }
-      },
-      {
-        "pass": "forward-constant-propagation",
-        "scope": "block",
-        "maturity": {
-          "range": {
-            "min": "ir.canonical",
-            "max": "ir.global.optimized"
-          }
-        },
-        "requires": {
-          "capabilities": [
-            "legacy_flow_rule_adapter"
-          ]
-        },
-        "migration": {
-          "source_config": "example_libobfuscated_no_fixprecedessor.json",
-          "source_section": "blk_rules",
-          "source_rule": "ForwardConstantPropagationRule"
-        },
-        "options": {
-          "legacy_rule": "ForwardConstantPropagationRule",
-          "dump_intermediate_microcode": null
         }
       },
       {

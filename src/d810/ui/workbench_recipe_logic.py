@@ -69,6 +69,22 @@ _WORKFLOW_STAGE_ORDER = {
 }
 
 
+def enables_dangerous_executable_readonly(
+    pass_id: str,
+    current_options: object,
+    proposed_options: object,
+) -> bool:
+    """Return whether an edit newly enables the dangerous constant override."""
+    if pass_id != "constant-simplification":
+        return False
+    if not isinstance(current_options, dict) or not isinstance(proposed_options, dict):
+        return False
+    return (
+        current_options.get("allow_executable_readonly") is not True
+        and proposed_options.get("allow_executable_readonly") is True
+    )
+
+
 def workflow_stage_label(stage: StrategyWorkflowStage) -> str:
     """Return a stable UI label for explicit pass registration metadata."""
     return _WORKFLOW_STAGE_LABELS[stage]
@@ -186,10 +202,7 @@ def project_draft_rows(
     validation: RecipeValidation,
 ) -> tuple[RecipeDraftRow, ...]:
     diagnostics_by_ordinal: dict[int, list[str]] = {}
-    if (
-        validation.draft_id == draft.draft_id
-        and validation.revision == draft.revision
-    ):
+    if validation.draft_id == draft.draft_id and validation.revision == draft.revision:
         for diagnostic in validation.diagnostics:
             if diagnostic.ordinal is not None:
                 diagnostics_by_ordinal.setdefault(diagnostic.ordinal, []).append(
@@ -228,15 +241,12 @@ def recipe_action_states(
     project_profile_save_available: bool = False,
 ) -> tuple[RecipeActionState, ...]:
     exact_validation = (
-        validation.draft_id == draft.draft_id
-        and validation.revision == draft.revision
+        validation.draft_id == draft.draft_id and validation.revision == draft.revision
     )
     valid = exact_validation and validation.satisfied
     stale_reason = "Refresh the workbench before editing this recipe."
     validation_reason = (
-        ""
-        if valid
-        else "Resolve recipe validation diagnostics before this action."
+        "" if valid else "Resolve recipe validation diagnostics before this action."
     )
     apply_enabled = workbench_current and engine_started and valid
     if not workbench_current:
@@ -248,20 +258,36 @@ def recipe_action_states(
     save_enabled = workbench_current and valid
     project_save_enabled = save_enabled and project_profile_save_available
     if not project_profile_save_available:
-        project_save_reason = "A lossless config-v2 serializer is not available for this project."
+        project_save_reason = (
+            "A lossless config-v2 serializer is not available for this project."
+        )
     elif not workbench_current:
         project_save_reason = stale_reason
     else:
         project_save_reason = validation_reason
     return (
-        RecipeActionState("reset", "Reset to effective pipeline", workbench_current, "" if workbench_current else stale_reason),
-        RecipeActionState("analyze", "Analyze recipe", workbench_current, "" if workbench_current else stale_reason),
+        RecipeActionState(
+            "reset",
+            "Reset to effective pipeline",
+            workbench_current,
+            "" if workbench_current else stale_reason,
+        ),
+        RecipeActionState(
+            "analyze",
+            "Analyze recipe",
+            workbench_current,
+            "" if workbench_current else stale_reason,
+        ),
         RecipeActionState("apply_once", "Apply once", apply_enabled, apply_reason),
         RecipeActionState(
             "save_function",
             "Save for this function",
             save_enabled,
-            "" if save_enabled else (stale_reason if not workbench_current else validation_reason),
+            (
+                ""
+                if save_enabled
+                else (stale_reason if not workbench_current else validation_reason)
+            ),
         ),
         RecipeActionState(
             "save_project",

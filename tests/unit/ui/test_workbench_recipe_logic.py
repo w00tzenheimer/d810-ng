@@ -102,6 +102,24 @@ def test_catalog_filter_and_sort_do_not_change_draft_execution_order() -> None:
     assert [row.ordinal for row in draft_rows] == [0, 1]
 
 
+def test_dangerous_executable_readonly_requires_confirmation_only_when_enabled():
+    assert logic.enables_dangerous_executable_readonly(
+        "constant-simplification",
+        {"memory_policy": "strict", "allow_executable_readonly": False},
+        {"memory_policy": "strict", "allow_executable_readonly": True},
+    )
+    assert not logic.enables_dangerous_executable_readonly(
+        "constant-simplification",
+        {"allow_executable_readonly": True},
+        {"allow_executable_readonly": True},
+    )
+    assert not logic.enables_dangerous_executable_readonly(
+        "jump-fixer",
+        {},
+        {"allow_executable_readonly": True},
+    )
+
+
 def test_catalog_exposes_display_stage_without_reordering_the_draft() -> None:
     catalog = (
         dataclasses.replace(
@@ -124,7 +142,9 @@ def test_catalog_exposes_display_stage_without_reordering_the_draft() -> None:
     assert [row.pass_id for row in draft_rows] == ["z-pass", "a-pass"]
 
 
-def test_recipe_strategy_explains_missing_evidence_without_raw_transform_editing() -> None:
+def test_recipe_strategy_explains_missing_evidence_without_raw_transform_editing() -> (
+    None
+):
     case = DeobfuscationCaseSnapshot(
         evidence=None,
         strategy=StrategyRecommendation(
@@ -210,12 +230,18 @@ def test_recipe_command_request_and_completion_bind_exact_draft_identity() -> No
     )
 
     assert logic.should_accept_recipe_result(_draft(), result) is True
-    assert logic.should_accept_recipe_result(
-        _draft(), dataclasses.replace(result, draft_revision=1)
-    ) is False
-    assert logic.should_accept_recipe_result(
-        _draft(), dataclasses.replace(result, function_ea=0x402000)
-    ) is False
+    assert (
+        logic.should_accept_recipe_result(
+            _draft(), dataclasses.replace(result, draft_revision=1)
+        )
+        is False
+    )
+    assert (
+        logic.should_accept_recipe_result(
+            _draft(), dataclasses.replace(result, function_ea=0x402000)
+        )
+        is False
+    )
 
 
 def test_recipe_logic_has_no_ida_qt_registry_or_persistence_imports() -> None:

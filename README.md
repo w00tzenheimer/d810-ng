@@ -53,7 +53,7 @@ D-810 operates on IDA Hex-Rays microcode at multiple maturity levels. Instructio
 | **Factor rules** | `AndBnot_FactorRule_*`, `Xor_FactorRule_*`, etc. | Algebraic factorization and rewriting. |
 | **Chain rules** | `AndChain`, `OrChain`, `XorChain`, `ArithmeticChain` | Simplifies chains of the same operation. |
 | **Z3 rules** | `Z3ConstantOptimization`, `Z3setzRuleGeneric`, `Z3SmodRuleGeneric`, etc. | SMT-based simplification when template matching fails. |
-| **Peephole** | `FoldReadonlyDataRule`, `ForwardConstantPropagationRule` | Folds reads from readonly data, constant propagation. |
+| **Constants** | **Simplify constants** (`constant-simplification`) | Resolves safe constant-memory reads, folds constant expressions, then propagates values through the function. |
 | **Hodur-specific** | `Xor_Hodur_1`, `Bnot_Hodur_1`, `Or_Hodur_1`, `Or_Hodur_2` | MBA patterns seen in Hodur (PlugX) malware. |
 
 ### Control-Flow Unflatteners
@@ -70,7 +70,15 @@ Flow optimizers restore natural control flow from flattened dispatchers. The cur
 | Rule | Description |
 |------|-------------|
 | **JumpFixer** | Resolves opaque/constant-condition jumps (``JnzRule*``, ``JbRule1``, ``JaeRule1``, ``CompareConstantRule*``, ``JmpRuleZ3Const``). |
-| **GlobalConstantInliner** | Inlines global constants used as immediates. |
+| **Simplify constants** | The public constant operation. Its private stages share one architecture-neutral constness oracle, so users do not choose among memory folding, subtree folding, and forward propagation rules. |
+
+`constant-simplification` defaults to `memory_policy: "strict"`. The opt-in
+`aggressive_no_direct_writes` policy also accepts writable data items with no
+observed direct write, but does not prove immutability. The advanced
+`allow_executable_readonly` option is a **VERY DANGEROUS** force operation that
+may treat code or unresolved bytes in executable read-only memory as constant
+data. It is disabled by default and has identical semantics on Mach-O, ELF,
+PE/COFF, and raw binaries.
 
 ### Supported Obfuscators / Patterns
 

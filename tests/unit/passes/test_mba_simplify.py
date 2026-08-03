@@ -145,11 +145,15 @@ def test_mba_simplify_empty_rule_selection_is_noop_without_capability():
     assert isinstance(adapter.run(_context()), PassResult)
 
 
-def test_mba_simplify_registry_builds_default_instruction_canary_first_pass():
+def test_mba_simplify_registry_builds_default_instruction_canary_mba_stage():
     project = ProjectConfiguration.from_file(
         _CONF_DIR / "default_instruction_only_config_v2_canary.json"
     )
-    config = pipeline_configs_from_project_config(project)[0]
+    config = next(
+        config
+        for config in pipeline_configs_from_project_config(project)
+        if config.pass_id == "mba-simplify"
+    )
 
     spec = mba_simplify_pass_registry().build_spec(config)
     adapter = spec.pass_factory()
@@ -157,10 +161,9 @@ def test_mba_simplify_registry_builds_default_instruction_canary_first_pass():
     assert spec.pass_id == "mba-simplify"
     assert isinstance(adapter, MbaSimplifyPass)
     assert adapter.rule_names == config.rules.include_order
-    assert len(adapter.rule_names) == 179
-    assert adapter.rule_options["FoldReadonlyDataRule"] == {
-        "fold_writable_constants": True
-    }
+    assert len(adapter.rule_names) == 178
+    assert "FoldReadonlyDataRule" not in adapter.rule_names
+    assert "ConstantSubtreeFoldRule" not in adapter.rule_names
     assert "z3_solver" in spec.contract.requires.capabilities
 
 

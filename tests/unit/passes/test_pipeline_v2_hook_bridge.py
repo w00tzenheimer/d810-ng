@@ -131,18 +131,19 @@ def test_default_instruction_only_bridge_derives_rules_from_pipeline_v2_only():
 
     assert activation.enabled is True
     assert activation.configured_pass_ids == (
+        "constant-simplification",
         "mba-simplify",
-        "global-constant-inliner",
         "jump-fixer",
     )
-    assert len(activation.instruction_rules) == 179
+    assert len(activation.instruction_rules) == 180
     assert activation.instruction_rules[0].name == "FoldReadonlyDataRule"
+    assert activation.instruction_rules[1].name == "ConstantSubtreeFoldRule"
     assert all(
         rule.name != "CopiedLegacyInstructionRule"
         for rule in activation.instruction_rules
     )
     assert [rule.name for rule in activation.block_rules] == [
-        "GlobalConstantInliner",
+        "ForwardConstantPropagationRule",
         "JumpFixer",
     ]
     assert all(rule.name != "CopiedLegacyBlockRule" for rule in activation.block_rules)
@@ -229,8 +230,8 @@ def test_cleanup_family_bridge_derives_explicit_cleanup_rule():
 
     assert activation.enabled is True
     assert activation.configured_pass_ids == (
+        "constant-simplification",
         "mba-simplify",
-        "forward-constant-propagation",
         SIMPLE_FLATTENING_CLEANUP_PASS_ID,
         "jump-fixer",
     )

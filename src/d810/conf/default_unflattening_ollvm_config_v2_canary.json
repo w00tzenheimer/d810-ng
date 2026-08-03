@@ -16,6 +16,13 @@
     },
     "pipeline_v2": [
       {
+        "pass": "constant-simplification",
+        "options": {
+          "memory_policy": "aggressive_no_direct_writes",
+          "allow_executable_readonly": false
+        }
+      },
+      {
         "pass": "mba-simplify",
         "scope": "expression",
         "maturity": {
@@ -36,8 +43,6 @@
         },
         "rules": {
           "include": [
-            "FoldReadonlyDataRule",
-            "ConstantSubtreeFoldRule",
             "AddXor_Rule_1",
             "AddXor_Rule_2",
             "Add_HackersDelightRule_1",
@@ -219,9 +224,6 @@
           ],
           "exclude": [],
           "options": {
-            "FoldReadonlyDataRule": {
-              "fold_writable_constants": true
-            },
             "Z3ConstantOptimization": {
               "min_nb_opcode": 4,
               "min_nb_constant": 3

@@ -49,8 +49,8 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
         source_config="default_instruction_only.json",
         runtime_config="default_instruction_only_config_v2_canary.json",
         expected_pass_ids=(
+            "constant-simplification",
             "mba-simplify",
-            "global-constant-inliner",
             "jump-fixer",
         ),
     ),
@@ -144,7 +144,7 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
             "lower_state_machine",
             "cleanup_residual_dispatcher",
             "jump-fixer",
-            "forward-constant-propagation",
+            "constant-simplification",
         ),
     ),
     ConfigV2DefaultMapping(
@@ -158,8 +158,8 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
             "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json"
         ),
         expected_pass_ids=(
+            "constant-simplification",
             "mba-simplify",
-            "forward-constant-propagation",
             "recover_dispatcher",
             "recover_state_transitions",
             "plan_semantic_regions",
@@ -171,8 +171,8 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
         source_config="example_libobfuscated_abc.json",
         runtime_config="example_libobfuscated_abc_config_v2_canary.json",
         expected_pass_ids=(
+            "constant-simplification",
             "mba-simplify",
-            "forward-constant-propagation",
             "recover_dispatcher",
             "recover_state_transitions",
             "plan_semantic_regions",
@@ -185,9 +185,9 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
         source_config="flatfold.json",
         runtime_config="flatfold_config_v2_canary.json",
         expected_pass_ids=(
+            "constant-simplification",
             "mba-simplify",
             "mba-state-preconditioner",
-            "global-constant-inliner",
             "jump-fixer",
             "recover_dispatcher",
             "recover_state_transitions",
@@ -200,8 +200,8 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
         source_config="example_hodur.json",
         runtime_config="example_hodur_config_v2_canary.json",
         expected_pass_ids=(
+            "constant-simplification",
             "mba-simplify",
-            "forward-constant-propagation",
             "recover_dispatcher",
             "recover_state_transitions",
             "plan_semantic_regions",
@@ -216,6 +216,7 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
         source_config="default_unflattening_ollvm.json",
         runtime_config="default_unflattening_ollvm_config_v2_canary.json",
         expected_pass_ids=(
+            "constant-simplification",
             "mba-simplify",
             "indirect-call-resolver",
             "mba-state-preconditioner",
@@ -261,8 +262,8 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
         source_config="example_libobfuscated_no_fixprecedessor.json",
         runtime_config="example_libobfuscated_no_fixprecedessor_config_v2_canary.json",
         expected_pass_ids=(
+            "constant-simplification",
             "mba-simplify",
-            "forward-constant-propagation",
             "simple-flattening-cleanup-unflattener",
             "jump-fixer",
         ),
@@ -280,9 +281,8 @@ CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS: tuple[ConfigV2DefaultMapping, ...] = (
         source_config="example_libobfuscated.json",
         runtime_config="example_libobfuscated_config_v2_canary.json",
         expected_pass_ids=(
+            "constant-simplification",
             "mba-simplify",
-            "global-constant-inliner",
-            "forward-constant-propagation",
             "mba-state-preconditioner",
             "recover_dispatcher",
             "recover_state_transitions",

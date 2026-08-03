@@ -42,7 +42,7 @@ def _canary(config_name: str) -> ProjectConfiguration:
     [
         (
             "default_instruction_only",
-            ["mba-simplify", "global-constant-inliner", "jump-fixer"],
+            ["constant-simplification", "mba-simplify", "jump-fixer"],
         ),
         (
             "default_indirect_resolution",
@@ -51,8 +51,8 @@ def _canary(config_name: str) -> ProjectConfiguration:
         (
             "example_libobfuscated_no_fixprecedessor",
             [
+                "constant-simplification",
                 "mba-simplify",
-                "forward-constant-propagation",
                 "simple-flattening-cleanup-unflattener",
                 "jump-fixer",
             ],
@@ -107,8 +107,8 @@ def test_module_pass_manager_exposes_default_operational_registry():
     )
 
     assert [spec.pass_id for spec in specs] == [
+        "constant-simplification",
         "mba-simplify",
-        "global-constant-inliner",
         "jump-fixer",
     ]
 

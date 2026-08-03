@@ -10,6 +10,13 @@
     },
     "pipeline_v2": [
       {
+        "pass": "constant-simplification",
+        "options": {
+          "memory_policy": "aggressive_no_direct_writes",
+          "allow_executable_readonly": false
+        }
+      },
+      {
         "pass": "mba-simplify",
         "scope": "expression",
         "maturity": {
@@ -31,7 +38,6 @@
         "rules": {
           "include": [
             "RotateHelperInlineRule",
-            "FoldReadonlyDataRule",
             "ConstantCallResultFoldRule",
             "ReplaceReadonlyAddressOfWithImmediate",
             "XorChain",
@@ -192,15 +198,6 @@
           "options": {
             "RotateHelperInlineRule": {
               "dump_intermediate_microcode": false
-            },
-            "FoldReadonlyDataRule": {
-              "default": {
-                "fold_writable_constants": true
-              },
-              "macho": {
-                "allow_executable_readonly": true,
-                "fold_writable_constants": true
-              }
             },
             "ConstantCallResultFoldRule": {
               "dump_intermediate_microcode": false
@@ -694,29 +691,6 @@
         "options": {
           "legacy_rule": "MbaStatePreconditioner",
           "max_optimize_local_rounds": 1
-        }
-      },
-      {
-        "pass": "global-constant-inliner",
-        "scope": "block",
-        "maturity": {
-          "range": {
-            "min": "ir.canonical",
-            "max": "ir.global.optimized"
-          }
-        },
-        "requires": {
-          "capabilities": [
-            "legacy_flow_rule_adapter"
-          ]
-        },
-        "migration": {
-          "source_config": "flatfold.json",
-          "source_section": "blk_rules",
-          "source_rule": "GlobalConstantInliner"
-        },
-        "options": {
-          "legacy_rule": "GlobalConstantInliner"
         }
       },
       {

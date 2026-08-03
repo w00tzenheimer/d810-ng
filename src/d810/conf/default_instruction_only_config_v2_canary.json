@@ -10,6 +10,13 @@
     },
     "pipeline_v2": [
       {
+        "pass": "constant-simplification",
+        "options": {
+          "memory_policy": "aggressive_no_direct_writes",
+          "allow_executable_readonly": false
+        }
+      },
+      {
         "pass": "mba-simplify",
         "scope": "expression",
         "maturity": {
@@ -30,7 +37,6 @@
         },
         "rules": {
           "include": [
-            "FoldReadonlyDataRule",
             "AddXor_Rule_1",
             "AddXor_Rule_2",
             "Add_HackersDelightRule_1",
@@ -212,9 +218,6 @@
           ],
           "exclude": [],
           "options": {
-            "FoldReadonlyDataRule": {
-              "fold_writable_constants": true
-            },
             "Z3ConstantOptimization": {
               "min_nb_opcode": 4,
               "min_nb_constant": 3
@@ -226,29 +229,6 @@
               "max_nb_diff_opcodes": 6
             }
           }
-        }
-      },
-      {
-        "pass": "global-constant-inliner",
-        "scope": "block",
-        "maturity": {
-          "range": {
-            "min": "ir.canonical",
-            "max": "ir.global.optimized"
-          }
-        },
-        "requires": {
-          "capabilities": [
-            "legacy_flow_rule_adapter"
-          ]
-        },
-        "migration": {
-          "source_config": "default_instruction_only.json",
-          "source_section": "blk_rules",
-          "source_rule": "GlobalConstantInliner"
-        },
-        "options": {
-          "legacy_rule": "GlobalConstantInliner"
         }
       },
       {
