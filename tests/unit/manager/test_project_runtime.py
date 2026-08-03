@@ -66,20 +66,17 @@ def test_routed_config_v2_snapshot_reports_distinct_source_and_runtime() -> None
     )
 
     assert snapshot.source.basename == "default_instruction_only.json"
-    assert (
-        snapshot.runtime.basename
-        == "default_instruction_only_config_v2_canary.json"
-    )
+    assert snapshot.runtime.basename == "default_instruction_only_config_v2_canary.json"
     assert snapshot.source.path != snapshot.runtime.path
     assert snapshot.mode is ProjectConfigMode.CONFIG_V2
     assert snapshot.routed is True
     assert snapshot.hook_mode == "config-v2"
     assert snapshot.effective_pass_ids == (
+        "constant-simplification",
         "mba-simplify",
-        "global-constant-inliner",
         "jump-fixer",
     )
-    assert len(snapshot.effective_instruction_rule_names) == 179
+    assert len(snapshot.effective_instruction_rule_names) == 180
     assert len(snapshot.effective_block_rule_names) == 2
 
 
@@ -103,7 +100,7 @@ def test_direct_canary_snapshot_is_config_v2_without_routing() -> None:
     assert snapshot.mode is ProjectConfigMode.CONFIG_V2
     assert snapshot.routed is False
     assert snapshot.rule_projection is RuleProjectionKind.RUNTIME_EXPANSION
-    assert len(snapshot.effective_instruction_rule_names) == 179
+    assert len(snapshot.effective_instruction_rule_names) == 180
     assert len(snapshot.effective_block_rule_names) == 2
 
 

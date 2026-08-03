@@ -28,10 +28,11 @@ def _runtime_project(tmp_path: Path) -> tuple[ProjectConfiguration, dict[str, ob
     document["future_top_level"] = {"retain": [1, 2, 3]}
     additional = document["additional_configuration"]
     additional["future_additional"] = {"retain": True}
-    additional["pipeline_v2"][0]["future_pass_field"] = {"retain": "yes"}
-    additional["pipeline_v2"][0]["rules"]["future_rule_field"] = {
-        "retain": "also"
-    }
+    mba = next(
+        entry for entry in additional["pipeline_v2"] if entry["pass"] == "mba-simplify"
+    )
+    mba["future_pass_field"] = {"retain": "yes"}
+    mba["rules"]["future_rule_field"] = {"retain": "also"}
     source = tmp_path / "runtime.json"
     source.write_text(json.dumps(document, indent=2), encoding="utf-8")
     return ProjectConfiguration.from_file(source), document
@@ -56,7 +57,9 @@ def test_serializer_manifest_is_explicit_immutable_and_bounded():
     assert all(not hasattr(item, "__dict__") for item in serializers)
 
 
-def test_complete_document_edit_save_preserves_unknowns_and_flat_rule_policy(tmp_path: Path):
+def test_complete_document_edit_save_preserves_unknowns_and_flat_rule_policy(
+    tmp_path: Path,
+):
     project, original = _runtime_project(tmp_path)
     destination = tmp_path / "edited.json"
     service = _service()
@@ -70,17 +73,17 @@ def test_complete_document_edit_save_preserves_unknowns_and_flat_rule_policy(tmp
     )
     draft = service.set_pass_rules(
         draft,
-        pass_index=0,
-        include=("FoldReadonlyDataRule",),
+        pass_index=1,
+        include=("AddXor_Rule_1",),
         exclude=(),
-        options={"FoldReadonlyDataRule": {"fold_writable_constants": False}},
+        options={"AddXor_Rule_1": {}},
     )
     validation = service.validate(draft)
 
     assert validation.valid is True
     assert validation.pass_ids == (
+        "constant-simplification",
         "mba-simplify",
-        "global-constant-inliner",
         "jump-fixer",
     )
     saved = service.save(draft, validation)
@@ -89,12 +92,13 @@ def test_complete_document_edit_save_preserves_unknowns_and_flat_rule_policy(tmp
     assert saved.path == destination
     assert actual["description"] == "edited config-v2"
     assert actual["future_top_level"] == original["future_top_level"]
-    assert actual["additional_configuration"]["future_additional"] == {
-        "retain": True
-    }
-    assert actual["additional_configuration"]["pipeline_v2"][0][
-        "future_pass_field"
-    ] == {"retain": "yes"}
+    assert actual["additional_configuration"]["future_additional"] == {"retain": True}
+    mba = next(
+        entry
+        for entry in actual["additional_configuration"]["pipeline_v2"]
+        if entry["pass"] == "mba-simplify"
+    )
+    assert mba["future_pass_field"] == {"retain": "yes"}
     assert actual["ins_rules"] == original["ins_rules"]
     assert actual["blk_rules"] == original["blk_rules"]
     assert actual["additional_configuration"]["pipeline_v2_mode"] == "config-v2"
@@ -156,9 +160,9 @@ def test_pass_selection_is_ordered_registered_and_can_remain_invalid_as_a_draft(
     reordered = service.reorder_pass(draft, 0, 2)
 
     assert service.pipeline_pass_ids(reordered) == (
-        "global-constant-inliner",
-        "jump-fixer",
         "mba-simplify",
+        "jump-fixer",
+        "constant-simplification",
     )
     assert service.validate(reordered).valid is True
 
@@ -211,10 +215,10 @@ def test_recipe_materialization_reuses_raw_entries_and_preserves_migration_metad
 
     assert [entry.get("pass", entry.get("pass_id")) for entry in pipeline] == [
         "jump-fixer",
-        "global-constant-inliner",
         "mba-simplify",
+        "constant-simplification",
     ]
-    mba = pipeline[-1]
+    mba = pipeline[1]
     assert "migration" in mba
     assert mba["future_pass_field"] == {"retain": "yes"}
     assert mba["rules"]["future_rule_field"] == {"retain": "also"}
@@ -239,7 +243,9 @@ def test_routing_policy_and_stale_validation_fail_closed(tmp_path: Path):
         service.save(changed, validation)
 
 
-def test_forged_unsupported_change_and_source_drift_are_validation_errors(tmp_path: Path):
+def test_forged_unsupported_change_and_source_drift_are_validation_errors(
+    tmp_path: Path,
+):
     project, _ = _runtime_project(tmp_path)
     service = _service()
     draft = service.create_draft(project, destination=tmp_path / "edited.json")
@@ -249,7 +255,9 @@ def test_forged_unsupported_change_and_source_drift_are_validation_errors(tmp_pa
 
     validation = service.validate(forged)
     assert validation.valid is False
-    assert any(item.code == "unsupported-field-change" for item in validation.diagnostics)
+    assert any(
+        item.code == "unsupported-field-change" for item in validation.diagnostics
+    )
 
     project.path.write_text("{}", encoding="utf-8")
     stale = service.validate(draft)
