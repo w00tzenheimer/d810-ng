@@ -35,9 +35,10 @@ model.
 - `ConstantSubtreeFoldRule` is a downstream expression simplifier, yet it
   appears beside the memory and propagation mechanisms as if it were an
   alternative.
-- `allow_executable_readonly` exposes a segment-layout exception to users.
-  It does not explain whether D810 is accepting code bytes, a Mach-O data item
-  stored in an executable segment, or all read-only executable memory.
+- `allow_executable_readonly` currently mixes two different concerns: normal
+  data embedded in an executable segment and intentionally treating executable
+  bytes as constant data. The first needs architecture-neutral classification;
+  the second needs an unmistakably dangerous expert override.
 
 This makes users compose the pipeline themselves and makes it possible for the
 implementations to disagree about the same read. Consolidation must remove
@@ -56,8 +57,7 @@ The user-authored configuration exposes one canonical bundle:
 }
 ```
 
-The ordinary UI label is **Simplify constants**. The only initial policy choice
-is:
+The ordinary UI label is **Simplify constants**. The ordinary policy choice is:
 
 - `strict` (default): materialize reads only when the target data item is
   backed by readable, non-writable memory or by a stronger per-read proof.
@@ -77,12 +77,52 @@ catalog show the bundle; execution diagnostics may show its stages. Existing
 fully expanded config-v2 documents remain a supported compiled form during
 migration, but newly authored configuration uses the bundle.
 
-`allow_executable_readonly` is removed from the public contract. Segment
-execute permission is not itself the deciding fact. The canonicalized target
-must be an IDA data item and the reference must be a data access. A readable,
-non-writable data item may therefore be accepted even when its containing
-segment is executable; a code item, instruction target, or unresolved item is
-rejected.
+The default decision is architecture-neutral. It does not branch on Mach-O,
+ELF, PE/COFF, raw format, operating system, conventional segment names, or a
+platform profile. Segment execute permission is not itself the deciding fact.
+The canonicalized target must be an IDA data item and the reference must be a
+data access. A readable, non-writable data item may therefore be accepted even
+when its containing segment is executable on macOS, Linux, Windows, or another
+target; a code item, instruction target, or unresolved item is rejected.
+
+### Dangerous executable-readonly override
+
+`allow_executable_readonly` remains an accepted expert option, defaults to
+`false`, and is hidden from ordinary configuration. When explicitly enabled,
+it allows a supported memory-read operand in readable, non-writable executable
+memory to bypass the data-item-kind guard. It may therefore treat bytes marked
+as code or unresolved bytes as constant data.
+
+This override is intentionally dangerous. It must:
+
+- be labeled **DANGEROUS: treat executable read-only memory as constant data**
+  in the advanced UI;
+- require an explicit confirmation when enabled interactively;
+- emit a prominent warning when loaded from headless configuration;
+- tag every affected decision with
+  `dangerous_executable_readonly_override`;
+- never be inferred from file format, operating system, segment name, or a
+  shipped platform profile;
+- bypass only the executable/item-kind guard, not writability, modeled
+  reaching writes, unsupported widths, item bounds, or failed value reads; and
+- never authorize `can_persist_const`.
+
+The option has the same semantics on Mach-O, ELF, PE/COFF, and raw binaries.
+Platform-specific configuration blocks may carry the explicit option for
+backward compatibility, but the oracle itself remains format-agnostic.
+
+Headless configuration keeps the exact option name so the force operation is
+available without UI automation:
+
+```json
+{
+  "bundle": "constant-simplification",
+  "options": {
+    "memory_policy": "strict",
+    "allow_executable_readonly": true
+  }
+}
+```
 
 ## One Oracle, Two Questions
 
@@ -118,18 +158,21 @@ The initial decision matrix is:
 | Direct write exists elsewhere, but initializer is stable at this read | yes | no |
 | Direct write without a per-read stability proof | no | no |
 | Modeled store reaches this read | no | no |
-| Code item, unresolved item, unsupported width, or unknown value | no | no |
+| Code or unresolved item in R+X memory | dangerous override only | no |
+| Unsupported width, out-of-range item, or unknown value | no | no |
 | Unknown alias risk without stronger proof | strict mode: no | no |
 
 The second row is accepted because the target is proven to be a data item, not
 because executable read-only memory has been broadly allowed.
 
-Evidence precedence is explicit. An unknown item or value abstains. A modeled
-store reaching the read vetoes it. An initializer-stable proof may then
-authorize that read despite unrelated writes. Without that proof, contradictory
-write evidence against a supposedly non-writable item abstains. Persistent
-`const` requires a non-writable data item and no write evidence anywhere in
-the canonical item range.
+Evidence precedence is explicit. An unknown value, unsupported width, or
+out-of-range access always abstains. A modeled store reaching the read vetoes
+it. An initializer-stable proof may then authorize that read despite unrelated
+writes. Without that proof, contradictory write evidence against a supposedly
+non-writable item abstains. The dangerous override may bypass only the
+code/unresolved item classification for readable, non-writable executable
+memory. Persistent `const` requires a non-writable data item and no write
+evidence anywhere in the canonical item range.
 
 ## Evidence and Backend Boundary
 
@@ -211,8 +254,8 @@ Consolidation proceeds in this order:
    to bounded shape adapters.
 4. Add bundle compilation and register the private stage implementations under
    the public `constant-simplification` bundle.
-5. Remove the legacy rule names and `allow_executable_readonly` from the
-   ordinary catalog and configuration editor.
+5. Remove the legacy rule names from the ordinary catalog, and move
+   `allow_executable_readonly` into a clearly dangerous expert-only section.
 6. Migrate shipped configurations and fixtures to the canonical optimizer.
 
 A bounded configuration importer may translate legacy user configuration:
@@ -222,8 +265,10 @@ A bounded configuration importer may translate legacy user configuration:
 - `ForwardConstantPropagationRule` enables flow propagation;
 - `fold_writable_constants=true` maps to
   `memory_policy=aggressive_no_direct_writes`; and
-- `allow_executable_readonly` is ignored with an explicit migration notice
-  because item classification now determines the answer.
+- shipped platform profiles drop `allow_executable_readonly` where the new
+  data-item classifier already accepts the target;
+- an external legacy `allow_executable_readonly=true` remains accepted and
+  maps to the dangerous override with a prominent migration warning.
 
 The importer must reject contradictory legacy combinations rather than run two
 materializers. Newly written configuration contains only the canonical
@@ -273,6 +318,8 @@ definition of constant memory.
   initializer-stable proof for the particular read.
 - Aggressive mode is visibly heuristic and never upgrades
   `can_persist_const`.
+- Dangerous executable-readonly mode bypasses only the item-kind guard, emits
+  explicit evidence, and never upgrades `can_persist_const`.
 - Configuration that would activate both a legacy materializer and the
   canonical materializer fails with an actionable migration error.
 - One stage failure is attributed to that stage; it must not be reported as
@@ -312,7 +359,14 @@ Unit and integration tests for Subproject A must cover:
 - canonical item heads, interior references, overlapping write ranges, and
   function chunks;
 - non-writable data in R-only and R+X segments;
-- code items and control-flow references in R+X segments being rejected;
+- identical fact-driven decisions for Mach-O, ELF, PE/COFF, and raw inputs;
+- code items and control-flow references in R+X segments being rejected by
+  default;
+- the dangerous override accepting supported R+X memory reads while still
+  rejecting writable memory, reaching writes, unsupported widths, invalid
+  bounds, and failed reads;
+- interactive confirmation, headless warnings, and per-decision dangerous-mode
+  evidence;
 - strict versus aggressive policy;
 - initializer-stable per-read decisions;
 - missing segments, unknown item boundaries, failed reads, and unsupported
@@ -343,9 +397,14 @@ PYTHONPATH=src lint-imports --config .importlinter
 ## Acceptance Criteria
 
 - Users enable one bundle named **Simplify constants**.
-- Ordinary configuration does not expose `allow_executable_readonly`.
-- R+X non-writable data is accepted through data-item classification, while
-  code is rejected.
+- Ordinary configuration does not expose `allow_executable_readonly`; the
+  advanced UI retains it with an explicit dangerous-operation warning.
+- R+X non-writable data is accepted through architecture-neutral data-item
+  classification on Mach-O, ELF, PE/COFF, and raw targets.
+- R+X code or unresolved bytes are rejected by default and accepted only by
+  the explicit dangerous override.
+- The dangerous override cannot accept writable memory, bypass a reaching
+  write, or authorize persistent `const`.
 - Every global-memory materialization consults one constness oracle.
 - Exactly one implementation owns memory-read-to-immediate replacement.
 - Expression folding only folds expressions.
