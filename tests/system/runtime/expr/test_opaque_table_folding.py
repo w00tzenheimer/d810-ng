@@ -437,8 +437,10 @@ class TestFoldReadonlyDataRuleWritableConstants:
 
     binary_name = _get_default_binary()
 
-    def test_is_foldable_for_const_segment(self, libobfuscated_setup):
-        """Addresses in const readonly segments should be foldable by default."""
+    def test_readonly_unknown_item_is_not_assumed_to_be_data(
+        self, libobfuscated_setup
+    ):
+        """Segment permissions alone must not turn unresolved bytes into data."""
         func_ea = get_func_ea("global_const_simple_lookup")
         if func_ea == idaapi.BADADDR:
             pytest.skip("global_const_simple_lookup not found")
@@ -462,12 +464,12 @@ class TestFoldReadonlyDataRuleWritableConstants:
         if seg:
             has_write = bool(seg.perm & idaapi.SEGPERM_WRITE)
             is_foldable = rule._is_foldable_address(addr)
-
             print(f"\n  addr=0x{addr:x}, writable={has_write}, foldable={is_foldable}")
 
-            # Const segments should be foldable
+            # This fixture operand is not a defined data item. Strict mode
+            # must reject it even though its segment is non-writable.
             if not has_write:
-                assert is_foldable, "Readonly address should be foldable"
+                assert not is_foldable
 
     def test_is_foldable_for_writable_with_fold_enabled(self, libobfuscated_setup):
         """Writable addresses with no xrefs should be foldable when flag is enabled."""
@@ -575,6 +577,37 @@ class TestFoldReadonlyDataRuleWritableConstants:
 
         rule.configure({"allow_executable_readonly": False})
         assert rule._allow_executable is False, "Should be reset to False"
+
+    def test_decision_for_maps_legacy_policy_to_shared_oracle(
+        self, libobfuscated_setup, monkeypatch
+    ):
+        """The compatibility options must feed the shared decision authority."""
+        from d810.analyses.value_flow.global_constness import (
+            GlobalConstDecision,
+            GlobalConstPolicy,
+            GlobalConstReason,
+        )
+        from d810.optimizers.microcode.instructions.peephole import (
+            fold_readonlydata as fold_module,
+        )
+
+        def decide(_ea, _size, *, policy, allow_executable_readonly):
+            reason = (
+                GlobalConstReason.AGGRESSIVE_NO_DIRECT_WRITES
+                if policy is GlobalConstPolicy.AGGRESSIVE_NO_DIRECT_WRITES
+                else GlobalConstReason.READONLY_DATA
+            )
+            return GlobalConstDecision(True, False, 0x42, reason)
+
+        monkeypatch.setattr(fold_module, "decide_hexrays_global_read", decide)
+        rule = FoldReadonlyDataRule()
+
+        strict = rule._decision_for(0x1000, 4)
+        rule.configure({"fold_writable_constants": True})
+        aggressive = rule._decision_for(0x1000, 4)
+
+        assert strict.reason is GlobalConstReason.READONLY_DATA
+        assert aggressive.reason is GlobalConstReason.AGGRESSIVE_NO_DIRECT_WRITES
 
 
 # ===================================================================

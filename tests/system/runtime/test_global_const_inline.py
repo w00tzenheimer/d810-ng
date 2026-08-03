@@ -81,9 +81,11 @@ GLOBAL_CONST_INLINE_CASES = [
             "but must not inline RVA-like values into raw MEMORY[0x...] expressions."
         ),
         project="default_instruction_only.json",
-        must_change=True,
+        # IDA already materializes SAFE_INLINE_CONST before D810 for this
+        # fixture. The regression contract is that the RVA-like load never
+        # becomes a raw MEMORY[...] address, not that D810 must force a change.
+        must_change=False,
         check_stats=True,
-        required_rules=["FoldReadonlyDataRule"],
         dll_override=BinaryOverride(
             deobfuscated_not_contains=["MEMORY[0x"],
         ),
@@ -228,6 +230,36 @@ class TestHelperFunctions:
 
         assert _looks_like_pointer(0, 4) is False
         assert _looks_like_pointer(0, 8) is False
+
+    @pytest.mark.ida_required
+    def test_inliner_uses_shared_oracle_policy(
+        self, libobfuscated_setup, monkeypatch
+    ):
+        from d810.analyses.value_flow.global_constness import (
+            GlobalConstDecision,
+            GlobalConstPolicy,
+            GlobalConstReason,
+        )
+        from d810.optimizers.microcode.flow.constant_prop import (
+            global_const_inline as gci,
+        )
+
+        def decide(_ea, _size, *, policy, allow_executable_readonly):
+            assert policy is GlobalConstPolicy.STRICT
+            assert allow_executable_readonly is False
+            return GlobalConstDecision(
+                can_inline_read=True,
+                can_persist_const=False,
+                value=0x11223344,
+                reason=GlobalConstReason.READONLY_DATA,
+            )
+
+        monkeypatch.setattr(gci, "decide_hexrays_global_read", decide)
+        monkeypatch.setattr(gci, "_looks_like_pointer", lambda _value, _size: False)
+
+        rule = gci.GlobalConstantInliner()
+
+        assert rule._get_global_constant(0x1000, 4) == 0x11223344
 
     @pytest.mark.ida_required
     def test_looks_like_pointer_handles_getseg_typeerror(
