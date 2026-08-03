@@ -89,10 +89,6 @@ def test_constant_simplification_bundle_expands_to_private_live_stages():
     "conflict",
     [
         {
-            "pass": "global-constant-inliner",
-            "options": {"legacy_rule": "GlobalConstantInliner"},
-        },
-        {
             "pass": "forward-constant-propagation",
             "options": {"legacy_rule": "ForwardConstantPropagationRule"},
         },

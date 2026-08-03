@@ -163,10 +163,7 @@ def _validate_constant_simplification_ownership(
         raise PipelineConfigError(
             "constant-simplification may appear at most once in pipeline_v2"
         )
-    conflicting_passes = {
-        "global-constant-inliner",
-        "forward-constant-propagation",
-    }
+    conflicting_passes = {"forward-constant-propagation"}
     for config in configs:
         if config.pass_id in conflicting_passes:
             raise PipelineConfigError(

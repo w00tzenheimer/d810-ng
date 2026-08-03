@@ -40,6 +40,7 @@ class GlobalConstReason(str, Enum):
     UNSUPPORTED_WIDTH = "unsupported_width"
     READ_OUT_OF_BOUNDS = "read_out_of_bounds"
     VALUE_UNAVAILABLE = "value_unavailable"
+    POINTER_LIKE_VALUE = "pointer_like_value"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,7 @@ class GlobalConstEvidence:
     reaching_write: bool
     initializer_stable_at_read: bool
     value: int | None
+    value_is_pointer_like: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +92,13 @@ def _inline(
     persist: bool = False,
     dangerous: bool = False,
 ) -> GlobalConstDecision:
+    if evidence.value_is_pointer_like:
+        return GlobalConstDecision(
+            can_inline_read=False,
+            can_persist_const=persist,
+            value=None,
+            reason=GlobalConstReason.POINTER_LIKE_VALUE,
+        )
     return GlobalConstDecision(
         can_inline_read=True,
         can_persist_const=persist,

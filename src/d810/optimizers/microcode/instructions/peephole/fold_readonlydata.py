@@ -331,11 +331,19 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             ldx  &sym , <pure-const-expr>
             ldx  $global_var , #off
             ldx  $global_var , <pure-const-expr>
+            ldx  segment , $global_var
             ldx  ds ,  add(&sym , #off)
         """
 
         if ins.opcode != ida_hexrays.m_ldx:
             return None
+
+        # Direct address operand emitted by early microcode. Treat the mop_v
+        # as the address of the memory read so the caller replaces the whole
+        # ldx. Replacing ins.r in place would turn the loaded value into a new
+        # address and leave a bogus memory access behind.
+        if ins.r.t == ida_hexrays.mop_v:
+            return ins.r.g
 
         # ------------------------------------------------------------------
         #  Variant A:   ldx  &sym , #off

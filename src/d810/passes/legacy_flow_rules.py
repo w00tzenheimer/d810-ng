@@ -19,7 +19,6 @@ from d810.passes.registry import PassRegistry
 LEGACY_FLOW_RULE_ADAPTER_CAPABILITY = "legacy_flow_rule_adapter"
 
 _SIMPLE_FLOW_RULE_PASS_IDS: Mapping[str, str] = {
-    "global-constant-inliner": "GlobalConstantInliner",
     "forward-constant-propagation": "ForwardConstantPropagationRule",
     "identity-call-resolver": "IdentityCallResolver",
     "indirect-branch-resolver": "IndirectBranchResolver",
@@ -31,7 +30,6 @@ _SIMPLE_FLOW_RULE_PASS_IDS: Mapping[str, str] = {
 
 _WORKFLOW_STAGE_BY_PASS_ID: Mapping[str, StrategyWorkflowStage] = {
     "forward-constant-propagation": StrategyWorkflowStage.FRONTEND_NORMALIZATION,
-    "global-constant-inliner": StrategyWorkflowStage.FRONTEND_NORMALIZATION,
     "identity-call-resolver": StrategyWorkflowStage.CANONICAL_ANALYSIS,
     "indirect-branch-resolver": StrategyWorkflowStage.CANONICAL_ANALYSIS,
     "indirect-call-resolver": StrategyWorkflowStage.CANONICAL_ANALYSIS,
@@ -134,8 +132,7 @@ def register_legacy_flow_rule_passes(registry: PassRegistry) -> PassRegistry:
                 options={"legacy_rule": legacy_rule},
             ),
             transforms=(legacy_rule,),
-            public=pass_id
-            not in {"global-constant-inliner", "forward-constant-propagation"},
+            public=pass_id != "forward-constant-propagation",
         )
     return registry
 

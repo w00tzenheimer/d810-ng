@@ -37,8 +37,11 @@ def _load_adapter(
     item_size: int = 8,
     value: int = 0xAABBCCDD,
     writes: set[int] | None = None,
+    imagebase: int = 0x180000000,
+    mapped_addresses: set[int] | None = None,
 ):
     writes = set() if writes is None else set(writes)
+    mapped_addresses = set() if mapped_addresses is None else set(mapped_addresses)
     kind_flag = {"data": 1, "code": 2, "unknown": 0}[item_kind]
     monkeypatch.setitem(
         sys.modules,
@@ -59,7 +62,11 @@ def _load_adapter(
             SEGPERM_READ=1,
             SEGPERM_WRITE=2,
             SEGPERM_EXEC=4,
-            getseg=lambda _ea: SimpleNamespace(perm=permissions),
+            getseg=lambda ea: (
+                SimpleNamespace(perm=permissions)
+                if item_head <= ea < item_head + item_size or ea in mapped_addresses
+                else None
+            ),
         ),
     )
     monkeypatch.setitem(
@@ -76,6 +83,7 @@ def _load_adapter(
         "idaapi",
         SimpleNamespace(
             BADADDR=(1 << 64) - 1,
+            get_imagebase=lambda: imagebase,
             get_byte=lambda _ea: value & 0xFF,
             get_word=lambda _ea: value & 0xFFFF,
             get_dword=lambda _ea: value & 0xFFFFFFFF,
@@ -159,3 +167,48 @@ def test_adapter_detects_direct_write_to_any_byte_in_item(
     assert evidence.has_direct_write is True
     assert decision.can_inline_read is False
     assert decision.reason is GlobalConstReason.DIRECT_WRITE_WITHOUT_STABLE_READ
+
+
+def test_adapter_rejects_rebased_rva_value_as_pointer_like(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dropping the rebased lookup would inline a PE RVA as integer data."""
+    imagebase = 0x180000000
+    adapter = _load_adapter(
+        monkeypatch,
+        item_kind="data",
+        permissions=1,
+        value=0x2000,
+        imagebase=imagebase,
+        mapped_addresses={imagebase + 0x2000},
+    )
+
+    evidence = adapter.capture_hexrays_global_const_evidence(0x1000, 8)
+    decision = adapter.decide_hexrays_global_read(
+        0x1000,
+        8,
+        policy=GlobalConstPolicy.STRICT,
+    )
+
+    assert evidence.value_is_pointer_like is True
+    assert decision.can_inline_read is False
+    assert decision.reason is GlobalConstReason.POINTER_LIKE_VALUE
+
+
+def test_adapter_keeps_non_pointer_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    safe_value = 0x1122334455667788
+    adapter = _load_adapter(
+        monkeypatch,
+        item_kind="data",
+        permissions=1,
+        value=safe_value,
+    )
+
+    evidence = adapter.capture_hexrays_global_const_evidence(0x1000, 8)
+    decision = adapter.decide_hexrays_global_read(0x1000, 8)
+
+    assert evidence.value_is_pointer_like is False
+    assert decision.can_inline_read is True
+    assert decision.value == safe_value

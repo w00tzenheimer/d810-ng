@@ -25,6 +25,7 @@ def _evidence(**changes: object) -> GlobalConstEvidence:
         "reaching_write": False,
         "initializer_stable_at_read": False,
         "value": 0x12345678,
+        "value_is_pointer_like": False,
     }
     values.update(changes)
     return GlobalConstEvidence(**values)
@@ -205,3 +206,32 @@ def test_non_executable_unknown_item_is_not_force_folded() -> None:
 
     assert decision.can_inline_read is False
     assert decision.reason is GlobalConstReason.UNSUPPORTED_ITEM_KIND
+
+
+def test_pointer_like_value_rejects_otherwise_safe_read() -> None:
+    """Removing pointer rejection would materialize an address as integer data."""
+    decision = decide_global_const_read(
+        _evidence(value=0x180002000, value_is_pointer_like=True),
+        GlobalConstPolicy.STRICT,
+    )
+
+    assert decision.can_inline_read is False
+    assert decision.can_persist_const is True
+    assert decision.value is None
+    assert decision.reason is GlobalConstReason.POINTER_LIKE_VALUE
+
+
+def test_pointer_filter_does_not_create_persistent_const_permission() -> None:
+    """Pointer shape affects materialization, not source mutability evidence."""
+    decision = decide_global_const_read(
+        _evidence(
+            writable=True,
+            initializer_stable_at_read=True,
+            value_is_pointer_like=True,
+        ),
+        GlobalConstPolicy.STRICT,
+    )
+
+    assert decision.can_inline_read is False
+    assert decision.can_persist_const is False
+    assert decision.reason is GlobalConstReason.POINTER_LIKE_VALUE

@@ -68,7 +68,7 @@ static const int STATE_TABLE[6][2] = {
 };
 
 /* RVA-guard constants:
- * - SAFE_INLINE_CONST should be inlined by GlobalConstantInliner.
+ * - Simplify constants should inline SAFE_INLINE_CONST.
  * - RVA_LIKE_OFFSET must NOT be inlined as a raw address-like immediate. */
 static const uint64_t SAFE_INLINE_CONST = 0x1122334455667788ULL;
 static const uint64_t RVA_LIKE_OFFSET = 0x2000ULL;
@@ -181,8 +181,8 @@ int global_const_state_table(int initial_state)
  * - an RVA-like offset that can become imagebase-relative
  *
  * Regression target:
- * - GlobalConstantInliner should inline SAFE_INLINE_CONST.
- * - GlobalConstantInliner should NOT inline RVA_LIKE_OFFSET into
+ * - Simplify constants should inline SAFE_INLINE_CONST.
+ * - Simplify constants should NOT inline RVA_LIKE_OFFSET into
  *   a raw MEMORY[0x...] expression.
  * ============================================================================ */
 EXPORT __attribute__((noinline))

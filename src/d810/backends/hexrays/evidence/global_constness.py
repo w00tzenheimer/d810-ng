@@ -16,6 +16,59 @@ from d810.analyses.value_flow.global_constness import (
 )
 
 
+_MAX_RVA_VALUE = 0x10000000
+
+
+def _safe_badaddr() -> int:
+    try:
+        return int(idaapi.BADADDR)
+    except Exception:
+        return 0xFFFFFFFFFFFFFFFF
+
+
+def _safe_segment(address: int, address_mask: int):
+    try:
+        ea = int(address)
+    except Exception:
+        return None
+    if ea < 0:
+        return None
+    if address_mask > 0:
+        ea &= address_mask
+    try:
+        return ida_segment.getseg(ea)
+    except (TypeError, OverflowError, ValueError):
+        return None
+
+
+def _value_is_pointer_like(value: int, size: int) -> bool:
+    """Classify an initializer value using the loaded IDB address space."""
+    if size < 4 or value == 0:
+        return False
+
+    badaddr = _safe_badaddr()
+    width_mask = (1 << (size * 8)) - 1
+    if (value & width_mask) == (badaddr & width_mask):
+        return True
+    if _safe_segment(value, badaddr) is not None:
+        return True
+
+    try:
+        imagebase = int(idaapi.get_imagebase())
+    except Exception:
+        imagebase = badaddr
+    if imagebase not in (0, badaddr) and value < _MAX_RVA_VALUE:
+        if _safe_segment(imagebase + value, badaddr) is not None:
+            return True
+
+    if size == 8:
+        if (value >> 40) == 0x1:
+            return True
+        if (value >> 44) in (0x5, 0x7):
+            return True
+    return False
+
+
 def _canonical_item(address: int, read_size: int) -> tuple[int, int, GlobalItemKind]:
     try:
         item_head = int(ida_bytes.get_item_head(address))
@@ -103,6 +156,7 @@ def capture_hexrays_global_const_evidence(
 
     item_head, item_end, item_kind = _canonical_item(int(address), int(size))
     readable, writable, executable = _segment_permissions(int(address))
+    value = _read_value(int(address), int(size))
     return GlobalConstEvidence(
         address=int(address),
         item_head=item_head,
@@ -115,7 +169,10 @@ def capture_hexrays_global_const_evidence(
         has_direct_write=_has_direct_write(item_head, item_end),
         reaching_write=bool(reaching_write),
         initializer_stable_at_read=bool(initializer_stable_at_read),
-        value=_read_value(int(address), int(size)),
+        value=value,
+        value_is_pointer_like=(
+            False if value is None else _value_is_pointer_like(value, int(size))
+        ),
     )
 
 

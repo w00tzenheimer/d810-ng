@@ -26,6 +26,7 @@ import pathlib
 import re
 import platform
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -436,6 +437,19 @@ class TestFoldReadonlyDataRuleWritableConstants:
     """
 
     binary_name = _get_default_binary()
+
+    def test_direct_ldx_global_address_is_resolved_as_memory_read(
+        self, libobfuscated_setup
+    ):
+        """Leaving this shape to operand recursion corrupts the ldx address."""
+        global_ea = 0x180002000
+        ins = SimpleNamespace(
+            opcode=ida_hexrays.m_ldx,
+            l=SimpleNamespace(t=ida_hexrays.mop_r),
+            r=SimpleNamespace(t=ida_hexrays.mop_v, g=global_ea),
+        )
+
+        assert FoldReadonlyDataRule._ea_from_direct_load(ins) == global_ea
 
     def test_readonly_unknown_item_is_not_assumed_to_be_data(
         self, libobfuscated_setup
