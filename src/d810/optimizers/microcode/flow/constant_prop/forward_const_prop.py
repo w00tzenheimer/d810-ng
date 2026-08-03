@@ -13,6 +13,7 @@ function-wide and therefore safe at control-flow merge points.
 """
 import weakref
 
+import idaapi
 import ida_hexrays
 
 from d810.core import CythonMode, getLogger, typing
