@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from d810.passes.cleanup_family_adapter import register_cleanup_family_adapter_passes
+from d810.passes.constant_simplification import (
+    register_constant_simplification_pass,
+)
 from d810.passes.legacy_flow_rules import register_legacy_flow_rule_passes
 from d810.passes.mba_simplify import register_mba_simplify_pass
 from d810.passes.registry import PassRegistry
@@ -14,6 +17,7 @@ CONFIG_V2_OPERATIONAL_REGISTRY_NAME = "config_v2_operational"
 def register_operational_config_v2_passes(registry: PassRegistry) -> PassRegistry:
     """Register currently executable config-v2 pass ids on ``registry``."""
     register_mba_simplify_pass(registry)
+    register_constant_simplification_pass(registry)
     register_state_machine_passes(registry)
     register_legacy_flow_rule_passes(registry)
     register_cleanup_family_adapter_passes(registry)

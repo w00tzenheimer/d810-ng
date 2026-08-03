@@ -75,9 +75,12 @@ def test_catalog_is_sorted_but_draft_keeps_effective_execution_order() -> None:
     assert next(
         entry for entry in catalog if entry.pass_id == "jump-fixer"
     ).transforms == ("JumpFixer",)
-    assert next(
-        entry for entry in catalog if entry.pass_id == "recover_dispatcher"
-    ).workflow_stage is StrategyWorkflowStage.CANONICAL_ANALYSIS
+    assert (
+        next(
+            entry for entry in catalog if entry.pass_id == "recover_dispatcher"
+        ).workflow_stage
+        is StrategyWorkflowStage.CANONICAL_ANALYSIS
+    )
     assert tuple(item.pass_id for item in draft.passes) == (
         "jump-fixer",
         "recover_dispatcher",
@@ -86,6 +89,23 @@ def test_catalog_is_sorted_but_draft_keeps_effective_execution_order() -> None:
         "jump-fixer",
         "recover_dispatcher",
     ]
+
+
+def test_catalog_exposes_one_constant_operation_but_legacy_configs_still_load():
+    registry = operational_config_v2_pass_registry()
+    service = RecipeService(registry)
+
+    pass_ids = tuple(entry.pass_id for entry in service.catalog())
+
+    assert "constant-simplification" in pass_ids
+    assert "global-constant-inliner" not in pass_ids
+    assert "forward-constant-propagation" not in pass_ids
+    assert (
+        registry.build_spec(
+            registry.config_template_for("global-constant-inliner")
+        ).pass_id
+        == "global-constant-inliner"
+    )
 
 
 def test_add_remove_enable_and_reorder_are_immutable_and_revisioned() -> None:

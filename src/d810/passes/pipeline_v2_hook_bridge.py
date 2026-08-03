@@ -16,6 +16,10 @@ from d810.passes.cleanup_family_adapter import (
     SIMPLE_FLATTENING_CLEANUP_PASS_ID,
     build_cleanup_family_adapter_pass,
 )
+from d810.passes.constant_simplification import (
+    CONSTANT_SIMPLIFICATION_PASS_ID,
+    constant_simplification_hook_rules,
+)
 from d810.passes.legacy_flow_rules import build_legacy_flow_rule_pass
 from d810.passes.mba_simplify import MBA_SIMPLIFY_PASS_ID, build_mba_simplify_pass
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
@@ -145,6 +149,43 @@ def _dedupe_rule_configs(
     return tuple(ordered)
 
 
+def _validate_constant_simplification_ownership(
+    configs: tuple[PipelineConfig, ...],
+) -> None:
+    bundles = tuple(
+        config
+        for config in configs
+        if config.pass_id == CONSTANT_SIMPLIFICATION_PASS_ID
+    )
+    if not bundles:
+        return
+    if len(bundles) != 1:
+        raise PipelineConfigError(
+            "constant-simplification may appear at most once in pipeline_v2"
+        )
+    conflicting_passes = {
+        "global-constant-inliner",
+        "forward-constant-propagation",
+    }
+    for config in configs:
+        if config.pass_id in conflicting_passes:
+            raise PipelineConfigError(
+                "constant-simplification cannot coexist with legacy constant pass "
+                f"{config.pass_id!r}"
+            )
+        if config.pass_id == MBA_SIMPLIFY_PASS_ID:
+            selected = set(config.rules.include) | set(config.rules.include_order)
+            conflict = selected & {
+                "FoldReadonlyDataRule",
+                "ConstantSubtreeFoldRule",
+            }
+            if conflict:
+                raise PipelineConfigError(
+                    "constant-simplification owns these mba-simplify rules: "
+                    f"{sorted(conflict)}"
+                )
+
+
 def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
     """Derive live Hex-Rays hook activation from explicit config-v2 projects.
 
@@ -161,6 +202,7 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
         raise PipelineConfigError(
             "pipeline_v2_mode='config-v2' requires a pipeline_v2 payload"
         )
+    _validate_constant_simplification_ownership(configs)
 
     instruction_rules: list[RuleConfiguration] = []
     block_rules: list[RuleConfiguration] = []
@@ -172,6 +214,11 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
 
     for config in configs:
         pass_id = config.pass_id
+        if pass_id == CONSTANT_SIMPLIFICATION_PASS_ID:
+            bundle = constant_simplification_hook_rules(config)
+            instruction_rules.extend(bundle.instruction_rules)
+            block_rules.extend(bundle.block_rules)
+            continue
         if pass_id == MBA_SIMPLIFY_PASS_ID:
             instruction_rules.extend(_instruction_rules_from(config))
             continue

@@ -61,6 +61,8 @@ def _canonical_json(value: object, *, trailing_newline: bool = False) -> str:
 
 
 def _display_name(pass_id: str) -> str:
+    if pass_id == "constant-simplification":
+        return "Simplify constants"
     words = str(pass_id).replace("_", " ").replace("-", " ").split()
     return " ".join(words).capitalize() or str(pass_id)
 
@@ -94,7 +96,7 @@ class RecipeService:
 
     def catalog(self) -> tuple[PassCatalogEntry, ...]:
         entries: list[PassCatalogEntry] = []
-        for pass_id in self._registry.registered_pass_ids():
+        for pass_id in self._registry.public_pass_ids():
             config = self._registry.config_template_for(pass_id)
             spec = self._registry.build_spec(config)
             entries.append(
