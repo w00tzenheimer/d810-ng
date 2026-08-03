@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import pathlib
+from collections.abc import Sequence
 
 from d810.manager.project_runtime import (
     ProjectConfigMode,
     ProjectRuntimeSnapshot,
     RuleProjectionKind,
 )
+from d810.ui.rule_tree_logic import RuleTreeContextTarget
 
 
 V2_STRUCTURED_EDIT_EXPLANATION = (
@@ -55,6 +58,101 @@ class ProjectConfigView:
     enabled_rule_names: frozenset[str]
     edit_enabled: bool
     edit_tooltip: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2FocusTarget:
+    """Conservative focus information for the structured config-v2 editor."""
+
+    pass_id: str | None
+    rule_name: str | None
+    message: str
+    unambiguous: bool
+
+
+def resolve_config_v2_focus_target(
+    target: RuleTreeContextTarget,
+    pipeline_pass_ids: Sequence[str],
+    catalog: Sequence[object],
+) -> ConfigV2FocusTarget:
+    """Resolve a displayed runtime target to one configured pipeline pass.
+
+    Catalog-owned rules and transforms are the authoritative mappings. MBA
+    instruction rules are the one deliberate special case because that pass's
+    template has no static ``owned_rules`` list; its configured rule selection
+    is still the owner of every instruction-optimizer rule.
+    """
+
+    pass_ids = tuple(str(pass_id) for pass_id in pipeline_pass_ids)
+    catalog_by_id = {
+        str(getattr(entry, "pass_id", "")): entry
+        for entry in catalog
+        if getattr(entry, "pass_id", "")
+    }
+    candidates: set[tuple[int, str]] = set()
+    for index, pass_id in enumerate(pass_ids):
+        entry = catalog_by_id.get(pass_id)
+        if entry is None:
+            continue
+        owned = {
+            str(name)
+            for name in (
+                *getattr(entry, "owned_rules", ()),
+                *getattr(entry, "transforms", ()),
+            )
+            if str(name)
+        }
+        if owned.intersection(target.rule_names):
+            candidates.add((index, pass_id))
+        if (
+            target.optimizer_type == "Instruction Optimizers"
+            and pass_id == "mba-simplify"
+        ):
+            candidates.add((index, pass_id))
+
+    rule_name = target.rule_name
+    if len(candidates) == 1:
+        _index, pass_id = next(iter(candidates))
+        subject = f" for {rule_name}" if rule_name else ""
+        return ConfigV2FocusTarget(
+            pass_id=pass_id,
+            rule_name=rule_name,
+            message=f"Editing config-v2 pass {pass_id!r}{subject}.",
+            unambiguous=True,
+        )
+    if len(candidates) > 1:
+        names = ", ".join(sorted(pass_id for _index, pass_id in candidates))
+        return ConfigV2FocusTarget(
+            pass_id=None,
+            rule_name=rule_name,
+            message=(
+                "The selected runtime rule maps to multiple configured passes "
+                f"({names}); choose the owning pass explicitly."
+            ),
+            unambiguous=False,
+        )
+    return ConfigV2FocusTarget(
+        pass_id=None,
+        rule_name=rule_name,
+        message=(
+            "No configured config-v2 pass owns the selected runtime rule; "
+            "review the pipeline explicitly."
+        ),
+        unambiguous=False,
+    )
+
+
+def config_v2_user_destination(
+    config_dir: pathlib.Path,
+    runtime_path: pathlib.Path,
+) -> pathlib.Path:
+    """Return the ordinary writable destination for config-v2 edits."""
+
+    config_dir = pathlib.Path(config_dir).expanduser()
+    runtime_path = pathlib.Path(runtime_path).expanduser()
+    if runtime_path.parent == config_dir:
+        return runtime_path
+    return config_dir / runtime_path.name
 
 
 def select_config_edit_policy(
@@ -144,6 +242,7 @@ def build_project_config_view(
 
 
 __all__ = [
+    "ConfigV2FocusTarget",
     "ConfigEditMode",
     "ConfigEditPolicy",
     "ConfigSaveStrategy",
@@ -151,5 +250,7 @@ __all__ = [
     "V2_CLONE_EXPLANATION",
     "V2_STRUCTURED_EDIT_EXPLANATION",
     "build_project_config_view",
+    "config_v2_user_destination",
+    "resolve_config_v2_focus_target",
     "select_config_edit_policy",
 ]
