@@ -91,3 +91,14 @@ def test_adapter_rejects_unknown_views_and_actions() -> None:
             pass
         else:
             raise AssertionError("unallowlisted diagnostic operation must fail")
+
+
+def test_adapter_delegates_capture_state_and_enablement() -> None:
+    state = SimpleNamespace(
+        diagnostics_capture_enabled=lambda: False,
+        enable_diagnostics_capture=lambda: True,
+    )
+    adapter = WorkbenchDiagnosticsAdapter(state)
+
+    assert adapter.capture_enabled() is False
+    assert adapter.enable_capture() is True

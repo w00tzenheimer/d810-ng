@@ -26,6 +26,12 @@ class WorkbenchDiagnosticsAdapter:
     def databases(self) -> tuple[object, ...]:
         return tuple(self._state.get_diagnostic_databases())
 
+    def capture_enabled(self) -> bool:
+        return bool(self._state.diagnostics_capture_enabled())
+
+    def enable_capture(self) -> bool:
+        return bool(self._state.enable_diagnostics_capture())
+
     def snapshots(self, path: str) -> tuple[object, ...]:
         return tuple(self._state.get_diagnostic_snapshots(path))
 

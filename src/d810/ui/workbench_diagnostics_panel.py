@@ -28,6 +28,8 @@ from d810.ui.workbench_diagnostics_logic import (
     sort_snapshots,
     select_case_baseline,
 )
+from d810.ui.diagnostics_capture_logic import diagnostics_capture_presentation
+from d810.ui.icon_assets import bundled_icon
 
 logger = getLogger("D810.ui")
 
@@ -178,6 +180,17 @@ if IDA_AVAILABLE:
             self.mode_label = QtWidgets.QLabel(
                 "Read-only browsing; cleanup requires a separate exact plan"
             )
+            self.capture_status_icon = QtWidgets.QLabel()
+            self.capture_status_icon.setFixedSize(16, 16)
+            self.capture_status_label = QtWidgets.QLabel()
+            self.enable_capture_button = QtWidgets.QPushButton()
+            self.capture_controls = QtWidgets.QWidget()
+            capture_layout = QtWidgets.QHBoxLayout(self.capture_controls)
+            capture_layout.setContentsMargins(0, 0, 0, 0)
+            capture_layout.setSpacing(4)
+            capture_layout.addWidget(self.capture_status_icon)
+            capture_layout.addWidget(self.capture_status_label, stretch=1)
+            capture_layout.addWidget(self.enable_capture_button)
 
             self.database_filter = QtWidgets.QLineEdit()
             self.database_filter.setPlaceholderText("Filter database or function EA")
@@ -319,6 +332,7 @@ if IDA_AVAILABLE:
             self.open_graph_button.clicked.connect(self._open_graph)
             self.compare_case_button.clicked.connect(self._compare_selected_case_run)
             self.refresh_button.clicked.connect(self.refresh)
+            self.enable_capture_button.clicked.connect(self._enable_capture)
             self.cleanup_action_combo.currentIndexChanged.connect(
                 self._cleanup_action_changed
             )
@@ -352,8 +366,10 @@ if IDA_AVAILABLE:
             context_layout.setSpacing(4)
             context_layout.addRow("Function:", self.context_label)
             context_layout.addRow("Inventory:", self.inventory_label)
+            context_layout.addRow("Capture:", self.capture_controls)
             context_layout.addRow("Safety:", self.mode_label)
             context_layout.addRow(self.refresh_button)
+            self._render_capture_state()
 
             database_group = QtWidgets.QGroupBox("Databases")
             database_layout = QtWidgets.QVBoxLayout(database_group)
@@ -555,6 +571,38 @@ if IDA_AVAILABLE:
             self.inventory_label.setText("Loading exact read-only inventory...")
             self.refresh_button.setEnabled(False)
             QtCore.QThreadPool.globalInstance().start(worker)
+
+        def _render_capture_state(self) -> None:
+            view = diagnostics_capture_presentation(self._adapter.capture_enabled())
+            self.capture_status_icon.setPixmap(
+                bundled_icon(view.icon_name).pixmap(QtCore.QSize(16, 16))
+            )
+            self.capture_status_icon.setToolTip(view.tooltip)
+            self.capture_status_label.setText(view.status_label)
+            self.capture_status_label.setToolTip(view.tooltip)
+            self.enable_capture_button.setVisible(view.action_label is not None)
+            self.enable_capture_button.setText(view.action_label or "")
+            self.enable_capture_button.setToolTip(view.tooltip)
+
+        def _enable_capture(self, checked: bool = False) -> None:
+            del checked
+            try:
+                self._adapter.enable_capture()
+            except Exception as exc:
+                logger.warning("Could not enable diagnostics capture: %s", exc)
+                QtWidgets.QMessageBox.warning(
+                    self.parent,
+                    "Diagnostics capture",
+                    f"Could not enable diagnostics capture: {exc}",
+                )
+                return
+            self._render_capture_state()
+            QtWidgets.QMessageBox.information(
+                self.parent,
+                "Diagnostics capture enabled",
+                "Diagnostics capture is enabled. Decompile this function again "
+                "to collect diagnostics.",
+            )
 
         def _inventory_ready(
             self,

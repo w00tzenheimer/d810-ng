@@ -195,3 +195,16 @@ def test_panel_exposes_case_timeline_canary_comparison_and_protects_baseline_cle
     assert "case_summary" in source
     assert "project_case_timeline" in load_source
     assert "filter_cleanup_candidate_paths" in cleanup_source
+
+
+def test_panel_exposes_a_persisted_diagnostics_capture_action_and_state() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    init_source = _method_source("__init__")
+    create_source = _method_source("OnCreate")
+
+    assert "diagnostics_capture_presentation" in source
+    assert "self.capture_status_icon" in init_source
+    assert "self.enable_capture_button" in init_source
+    assert "self._render_capture_state" in source
+    assert "self._enable_capture" in source
+    assert "Enable capture" not in create_source

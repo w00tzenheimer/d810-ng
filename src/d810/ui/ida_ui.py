@@ -448,6 +448,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         # These are created in OnCreate() but may be accessed before OnCreate() runs
         self._project_group = None
         self._status_indicator = None
+        self._diagnostics_capture_indicator = None
         self.curlabel = None
         self.cfg_select = None
         self.btn_new_cfg = None
@@ -586,6 +587,10 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._status_indicator.setFixedSize(20, 20)
         self._status_indicator.setToolTip("D810 is stopped")
         config_row.addWidget(self._status_indicator)
+
+        self._diagnostics_capture_indicator = QtWidgets.QLabel()
+        self._diagnostics_capture_indicator.setFixedSize(20, 20)
+        config_row.addWidget(self._diagnostics_capture_indicator)
 
         # Config selector
         self.curlabel = QtWidgets.QLabel("Config:")
@@ -798,6 +803,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
         # Status is now shown via the circle indicator in the Project group
         self._update_status(loaded=False)
+        self._update_diagnostics_capture_indicator()
 
         # =====================================================================
         # Final initialization
@@ -823,6 +829,27 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 _config_action_icon("status-stopped").pixmap(QtCore.QSize(16, 16))
             )
             self._status_indicator.setToolTip("D810 is stopped")
+
+    def _update_diagnostics_capture_indicator(self) -> None:
+        """Show capture independently from the D810 running/stopped state."""
+        if self._diagnostics_capture_indicator is None:
+            return
+        enabled = self.state.diagnostics_capture_enabled()
+        icon_name = (
+            "diagnostics-capture-enabled"
+            if enabled
+            else "diagnostics-capture-disabled"
+        )
+        tooltip = (
+            "Diagnostics capture enabled - the next decompilation will record "
+            "snapshots and structured evidence."
+            if enabled
+            else "Diagnostics capture disabled"
+        )
+        self._diagnostics_capture_indicator.setPixmap(
+            _config_action_icon(icon_name).pixmap(QtCore.QSize(16, 16))
+        )
+        self._diagnostics_capture_indicator.setToolTip(tooltip)
 
     def _on_rule_selected(self, rule) -> None:
         """Show the selected rule's detail panel."""

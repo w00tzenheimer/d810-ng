@@ -7,6 +7,7 @@ import idaapi
 
 from d810.core import getLogger, typing
 from d810.core.decompilation_session import DecompilationEvent
+from d810.core.settings import get_settings
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
 from d810.hexrays.hooks.glbopt_diagnostics import (
     apply_return_const_corruption_cleanup,
@@ -334,6 +335,10 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             else function_ea
         )
         try:
+            if get_settings().diag_snapshots:
+                idaapi.msg(
+                    "D810 diagnostics capture is on for this decompilation.\n"
+                )
             from d810.core.observability import open_observability_session
 
             # open_observability_session opens the diag session
