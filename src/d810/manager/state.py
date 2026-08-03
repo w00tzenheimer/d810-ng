@@ -22,6 +22,10 @@ from d810.core.config_v2_defaults import (
     select_config_v2_default_project,
 )
 from d810.core.deobfuscation_case import DeobfuscationCaseEvidence
+from d810.core.diagnostics_capture_preferences import (
+    diagnostics_capture_enabled,
+    enable_diagnostics_capture,
+)
 from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core.platform import resolve_arch_config
 from d810.core.project import (
@@ -32,6 +36,7 @@ from d810.core.project import (
 from d810.core.registry import SingletonMeta
 from d810.core.rule_scope import RuleScopeEvent
 from d810.core.stats import OptimizationStatistics
+from d810.core.settings import configure_settings, get_settings
 from d810.core.typing import TYPE_CHECKING
 from d810.diagnostics.workbench_models import (
     DiagnosticCleanupPlan,
@@ -121,6 +126,7 @@ class D810State(metaclass=SingletonMeta):
     def reset(self, d810_config: D810Configuration | None = None) -> None:
         self._initialized: bool = False
         self.d810_config: D810Configuration = d810_config or D810Configuration()
+        self._apply_diagnostics_capture_preference()
         self.project_manager = ProjectManager(self.d810_config)
         self.current_project_index: int = 0
         self.current_ins_rules: typing.List = []
@@ -141,6 +147,30 @@ class D810State(metaclass=SingletonMeta):
         manager_module = importlib.import_module("d810.manager")
         self.manager = manager_module.D810Manager(self.log_dir)
         self._initialized = True
+
+    def _apply_diagnostics_capture_preference(self) -> None:
+        """Reapply the persisted global capture preference after reload."""
+        configure_settings(
+            diag_snapshots=diagnostics_capture_enabled(
+                self.d810_config,
+                runtime_default=get_settings().diag_snapshots,
+            )
+        )
+
+    def diagnostics_capture_enabled(self) -> bool:
+        return bool(get_settings().diag_snapshots)
+
+    def enable_diagnostics_capture(self) -> bool:
+        enabled = enable_diagnostics_capture(self.d810_config)
+        configure_settings(diag_snapshots=enabled)
+        refresh = getattr(
+            getattr(getattr(self, "gui", None), "d810_config_form", None),
+            "_update_diagnostics_capture_indicator",
+            None,
+        )
+        if callable(refresh):
+            refresh()
+        return enabled
 
     def add_project(self, config: ProjectConfiguration):
         self.project_manager.add(config)

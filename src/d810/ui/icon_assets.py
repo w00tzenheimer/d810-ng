@@ -46,6 +46,10 @@ def _paint_fallback_icon(painter: QtGui.QPainter, name: str) -> None:
         _paint_dot(painter, "#4CAF50", "#2E7D32", 8)
     elif name == "status-stopped":
         _paint_dot(painter, "#D32F2F", "#9A0007", 8)
+    elif name == "diagnostics-capture-enabled":
+        _paint_capture(painter, "#F9A825", "#6D4C00")
+    elif name == "diagnostics-capture-disabled":
+        _paint_capture(painter, "#B0BEC5", "#455A64", disabled=True)
     elif name == "rule-enabled":
         _paint_dot(painter, "#4CAF50", None, 5)
     elif name == "rule-disabled":
@@ -71,6 +75,22 @@ def _paint_dot(
         painter.setPen(_pen(outline, 1.5))
     painter.setBrush(QtGui.QBrush(QtGui.QColor(fill)))
     painter.drawEllipse(QtCore.QPointF(12, 12), radius, radius)
+
+
+def _paint_capture(
+    painter: QtGui.QPainter,
+    fill: str,
+    outline: str,
+    *,
+    disabled: bool = False,
+) -> None:
+    painter.setPen(_pen(outline, 1.5))
+    painter.setBrush(QtGui.QBrush(QtGui.QColor(fill)))
+    painter.drawRoundedRect(4, 5, 16, 14, 2, 2)
+    painter.drawEllipse(QtCore.QRectF(6, 6, 12, 5))
+    if disabled:
+        painter.setPen(_pen(outline, 2.0))
+        painter.drawLine(5, 19, 19, 5)
 
 
 def _paint_sliders(painter: QtGui.QPainter) -> None:

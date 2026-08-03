@@ -34,3 +34,13 @@ def test_project_and_engine_groups_keep_compact_local_layouts() -> None:
     assert "project_vbox.setSpacing(4)" in source
     assert "engine_layout.setContentsMargins(4, 4, 4, 4)" in source
     assert "engine_layout.setSpacing(4)" in source
+
+
+def test_project_row_has_a_distinct_diagnostics_capture_indicator() -> None:
+    source = ast.unparse(_method("OnCreate"))
+    update_source = ast.unparse(_method("_update_diagnostics_capture_indicator"))
+
+    assert "self._diagnostics_capture_indicator" in source
+    assert "config_row.addWidget(self._diagnostics_capture_indicator)" in source
+    assert "diagnostics-capture-enabled" in update_source
+    assert "diagnostics-capture-disabled" in update_source
