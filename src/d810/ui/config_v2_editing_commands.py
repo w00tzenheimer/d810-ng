@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import pathlib
 import dataclasses
+import pathlib
 from collections.abc import Mapping, Sequence
 
 from d810.manager.config_v2_edit_models import (
