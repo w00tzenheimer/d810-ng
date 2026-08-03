@@ -24,6 +24,14 @@ from d810.analyses.value_flow.call_effect_summary import (
 from d810.analyses.value_flow.call_return_value import (
     CALL_RETURN_VALUE_FACT_TYPE,
 )
+from d810.analyses.value_flow.global_constness import (
+    GlobalConstDecision,
+    GlobalConstEvidence,
+    GlobalConstPolicy,
+    GlobalConstReason,
+    GlobalItemKind,
+    decide_global_const_read,
+)
 from d810.analyses.value_flow.effect_path import EFFECT_PATH_FACT_TYPE
 from d810.analyses.value_flow.induction_variable import (
     INDUCTION_VARIABLE_FACT_TYPE,
@@ -106,6 +114,11 @@ __all__ = [
     "FACT_TYPE_ALIAS_REGISTRY",
     "FactObservation",
     "FactTypeAlias",
+    "GlobalConstDecision",
+    "GlobalConstEvidence",
+    "GlobalConstPolicy",
+    "GlobalConstReason",
+    "GlobalItemKind",
     "ContractEvidenceToken",
     "INDUCTION_VARIABLE_FACT_TYPE",
     "LOOP_PREDICATE_VALUE_FACT_TYPE",
@@ -133,6 +146,7 @@ __all__ = [
     "contract_evidence_payload",
     "contract_evidence_tokens",
     "display_name_for",
+    "decide_global_const_read",
     "exact_source_identity",
     "industry_term_for",
     "is_value_flow_fact",
