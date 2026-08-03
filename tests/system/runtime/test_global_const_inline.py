@@ -53,7 +53,7 @@ GLOBAL_CONST_INLINE_CASES = [
         function="constant_folding_test1",
         description=(
             "Function with ROL/ROR operations using read-only lookup tables. "
-            "GlobalConstantInliner should inline the table values so that "
+            "Simplify constants should materialize the table values so that "
             "the decompiler can fold them into constants."
         ),
         project="default_instruction_only.json",
@@ -67,17 +67,17 @@ GLOBAL_CONST_INLINE_CASES = [
         function="constant_folding_test2",
         description=(
             "Function with complex bitwise expressions referencing read-only "
-            "globals.  GlobalConstantInliner should replace the memory loads."
+            "globals.  Simplify constants should replace the memory loads."
         ),
         project="default_instruction_only.json",
         must_change=True,
         check_stats=True,
-        expected_rules=["GlobalConstantInliner"],
+        expected_rules=[],
     ),
     DeobfuscationCase(
         function="global_const_rva_guard",
         description=(
-            "Regression: GlobalConstantInliner should inline normal constants "
+            "Regression: Simplify constants may inline normal constants "
             "but must not inline RVA-like values into raw MEMORY[0x...] expressions."
         ),
         project="default_instruction_only.json",
@@ -232,9 +232,7 @@ class TestHelperFunctions:
         assert _looks_like_pointer(0, 8) is False
 
     @pytest.mark.ida_required
-    def test_inliner_uses_shared_oracle_policy(
-        self, libobfuscated_setup, monkeypatch
-    ):
+    def test_inliner_uses_shared_oracle_policy(self, libobfuscated_setup, monkeypatch):
         from d810.analyses.value_flow.global_constness import (
             GlobalConstDecision,
             GlobalConstPolicy,

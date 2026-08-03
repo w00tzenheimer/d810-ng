@@ -22,6 +22,7 @@ from d810.ui.project_config_logic import (
 
 CONF_DIR = Path("src/d810/conf")
 EXPECTED_PASS_IDS = (
+    "constant-simplification",
     "mba-simplify",
     "indirect-call-resolver",
     "mba-state-preconditioner",
@@ -60,11 +61,11 @@ def test_ollvm_routing_view_and_lossless_user_duplicate(tmp_path: Path) -> None:
     assert snapshot.rule_projection is RuleProjectionKind.RUNTIME_EXPANSION
     assert snapshot.effective_pass_ids == EXPECTED_PASS_IDS
     assert len(snapshot.effective_instruction_rule_names) == 180
-    assert len(snapshot.effective_block_rule_names) == 5
+    assert len(snapshot.effective_block_rule_names) == 6
     assert view.mode_text == "Config v2 (routed)"
-    assert view.effective_passes_text.startswith("10 passes: ")
-    assert view.rules_title == "Rules (runtime expansion: 180 instruction, 5 block)"
-    assert len(view.enabled_rule_names) == 185
+    assert view.effective_passes_text.startswith("11 passes: ")
+    assert view.rules_title == "Rules (runtime expansion: 180 instruction, 6 block)"
+    assert len(view.enabled_rule_names) == 186
 
     edit_policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
     duplicate_policy = select_config_edit_policy(ConfigEditMode.DUPLICATE, snapshot)
@@ -93,4 +94,4 @@ def test_ollvm_routing_view_and_lossless_user_duplicate(tmp_path: Path) -> None:
     assert duplicate_activation.enabled is True
     assert duplicate_activation.configured_pass_ids == EXPECTED_PASS_IDS
     assert len(duplicate_activation.instruction_rules) == 180
-    assert len(duplicate_activation.block_rules) == 5
+    assert len(duplicate_activation.block_rules) == 6
