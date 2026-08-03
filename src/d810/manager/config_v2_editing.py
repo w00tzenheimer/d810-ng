@@ -479,6 +479,13 @@ class ConfigV2EditingService:
             or validation.revision != draft.revision
         ):
             raise ConfigV2EditError("stale config-v2 validation identity")
+        if draft.destination_path.resolve() == draft.source_path.resolve():
+            source_project = ProjectConfiguration(path=draft.source_path)
+            if is_bundled_project_config(source_project):
+                raise ConfigV2EditError(
+                    "bundled runtime projects cannot be overwritten; "
+                    "choose a user destination"
+                )
         current = self.validate(draft)
         if not validation.valid or current != validation:
             raise ConfigV2EditError(

@@ -133,10 +133,11 @@ class ConfigV2EditingAdapter:
         """Move an in-progress draft to a new destination and revalidate it."""
 
         destination_path = pathlib.Path(destination).expanduser().resolve()
-        self._destination = destination_path
-        return self._edited(
+        edited = self._edited(
             dataclasses.replace(draft, destination_path=destination_path)
         )
+        self._destination = destination_path
+        return edited
 
     def save(
         self,
