@@ -1818,3 +1818,6 @@ tools/equivalence/harness_x86.dSYM/
 /graphify-out/graph.json
 /graphify-out/GRAPH_REPORT.md
 /graphify-out/manifest.json
+
+# ida-qt-libs release cache (namespaced Qt6 import libraries)
+.ida-qt/
