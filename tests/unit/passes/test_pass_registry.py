@@ -209,3 +209,13 @@ def test_registry_catalog_rejects_unknown_metadata_lookup():
 
     with pytest.raises(UnknownPassIdError, match="unknown pass id"):
         registry.config_template_for("missing")
+
+
+def test_registry_separates_public_catalog_from_compatibility_ids():
+    registry = PassRegistry()
+    registry.register("public", _FakePass)
+    registry.register("compat", _FakePass, public=False)
+
+    assert registry.registered_pass_ids() == ("compat", "public")
+    assert registry.public_pass_ids() == ("public",)
+    assert registry.build_spec(PipelineConfig(pass_id="compat")).pass_id == "compat"

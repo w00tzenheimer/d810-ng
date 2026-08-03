@@ -59,6 +59,71 @@ def test_pipeline_v2_hook_activation_is_inert_for_legacy_mode():
     assert activation.block_rules == ()
 
 
+def test_constant_simplification_bundle_expands_to_private_live_stages():
+    project = ProjectConfiguration(
+        path=Path("constant-simplification.runtime-config-v2.json"),
+        additional_configuration={
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                {
+                    "pass": "constant-simplification",
+                    "options": {"memory_policy": "strict"},
+                }
+            ],
+        },
+    )
+
+    activation = pipeline_v2_hook_activation(project)
+
+    assert activation.configured_pass_ids == ("constant-simplification",)
+    assert [rule.name for rule in activation.instruction_rules] == [
+        "FoldReadonlyDataRule",
+        "ConstantSubtreeFoldRule",
+    ]
+    assert [rule.name for rule in activation.block_rules] == [
+        "ForwardConstantPropagationRule"
+    ]
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        {
+            "pass": "global-constant-inliner",
+            "options": {"legacy_rule": "GlobalConstantInliner"},
+        },
+        {
+            "pass": "forward-constant-propagation",
+            "options": {"legacy_rule": "ForwardConstantPropagationRule"},
+        },
+        {
+            "pass": "mba-simplify",
+            "rules": {
+                "include": ["FoldReadonlyDataRule"],
+                "include_order": ["FoldReadonlyDataRule"],
+            },
+        },
+    ],
+)
+def test_constant_bundle_rejects_duplicate_legacy_constant_stages(conflict):
+    project = ProjectConfiguration(
+        path=Path("constant-conflict.runtime-config-v2.json"),
+        additional_configuration={
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                {
+                    "pass": "constant-simplification",
+                    "options": {"memory_policy": "strict"},
+                },
+                conflict,
+            ],
+        },
+    )
+
+    with pytest.raises(PipelineConfigError, match="constant-simplification"):
+        pipeline_v2_hook_activation(project)
+
+
 def test_default_instruction_only_bridge_derives_rules_from_pipeline_v2_only():
     project = _config_v2_project("default_instruction_only")
 

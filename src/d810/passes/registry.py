@@ -1,4 +1,5 @@
 """Stable pass-id registry for PipelineConfig v2."""
+
 from __future__ import annotations
 
 from d810.core.typing import Callable
@@ -27,6 +28,7 @@ class PassRegistry:
         ] = {}
         self._config_templates: dict[str, PipelineConfig] = {}
         self._transforms: dict[str, tuple[str, ...]] = {}
+        self._public: set[str] = set()
 
     def _record_catalog_metadata(
         self,
@@ -34,6 +36,7 @@ class PassRegistry:
         *,
         config_template: PipelineConfig | None,
         transforms: tuple[str, ...],
+        public: bool,
     ) -> None:
         template = config_template or PipelineConfig(pass_id=pass_id)
         if template.pass_id != pass_id:
@@ -50,6 +53,8 @@ class PassRegistry:
         )
         self._config_templates[pass_id] = template
         self._transforms[pass_id] = normalized
+        if public:
+            self._public.add(pass_id)
 
     def register(
         self,
@@ -58,6 +63,7 @@ class PassRegistry:
         *,
         config_template: PipelineConfig | None = None,
         transforms: tuple[str, ...] = (),
+        public: bool = True,
     ) -> None:
         """Register ``pass_factory`` under ``pass_id``."""
         if not pass_id:
@@ -69,6 +75,7 @@ class PassRegistry:
             pass_id,
             config_template=config_template,
             transforms=transforms,
+            public=public,
         )
 
     def register_configured(
@@ -78,6 +85,7 @@ class PassRegistry:
         *,
         config_template: PipelineConfig | None = None,
         transforms: tuple[str, ...] = (),
+        public: bool = True,
     ) -> None:
         """Register a pass factory that is built from its ``PipelineConfig``."""
         if not pass_id:
@@ -89,11 +97,16 @@ class PassRegistry:
             pass_id,
             config_template=config_template,
             transforms=transforms,
+            public=public,
         )
 
     def registered_pass_ids(self) -> tuple[str, ...]:
         """Return stable registered pass IDs in deterministic catalog order."""
         return tuple(sorted(self._config_templates))
+
+    def public_pass_ids(self) -> tuple[str, ...]:
+        """Return only user-authorable pass IDs in deterministic order."""
+        return tuple(sorted(self._public))
 
     def config_template_for(self, pass_id: str) -> PipelineConfig:
         """Return the immutable canonical config template for one pass ID."""

@@ -134,6 +134,8 @@ def register_legacy_flow_rule_passes(registry: PassRegistry) -> PassRegistry:
                 options={"legacy_rule": legacy_rule},
             ),
             transforms=(legacy_rule,),
+            public=pass_id
+            not in {"global-constant-inliner", "forward-constant-propagation"},
         )
     return registry
 
