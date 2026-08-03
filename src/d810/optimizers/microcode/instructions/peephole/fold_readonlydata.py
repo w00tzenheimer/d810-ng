@@ -74,8 +74,13 @@ this becomes: `(__ROL8__(MEMORY[0xB10000007FFE03FD]...)` which is obviously wron
 from d810.core.typing import Optional
 
 import ida_hexrays
-import ida_segment
-import idaapi
+from d810.analyses.value_flow.global_constness import (
+    GlobalConstDecision,
+    GlobalConstPolicy,
+)
+from d810.backends.hexrays.evidence.global_constness import (
+    decide_hexrays_global_read,
+)
 from d810.evaluator.evaluators import evaluate_concrete
 
 # Opcodes where the right operand (shift amount) must have size == 1.
@@ -94,7 +99,10 @@ from d810.core import getLogger
 from d810.errors import AstEvaluationException
 from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.hexrays.utils.hexrays_helpers import extract_literal_from_mop
-from d810.hexrays.utils.ida_utils import is_never_written_var
+from d810.optimizers.microcode.constant_materialization import (
+    make_ldc_replacement,
+    replace_operand_with_immediate,
+)
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
@@ -185,7 +193,10 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             "Fold from writable segments with no write xrefs",
         ),
         ConfigParam(
-            "allow_executable_readonly", bool, False, "Allow folding from R+X segments"
+            "allow_executable_readonly",
+            bool,
+            False,
+            "VERY DANGEROUS: treat executable read-only memory as constant data",
         ),
     )
 
@@ -208,10 +219,8 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             getattr(ida_hexrays, "MMAT_GLBOPT1", ida_hexrays.MMAT_CALLS),
             getattr(ida_hexrays, "MMAT_GLBOPT3", ida_hexrays.MMAT_CALLS),
         ]
-        # Configuration for segment permission checking
-        # On Mach-O binaries (macOS/iOS), __const segments often have R+X
-        # permissions even though they contain read-only data. Set this to
-        # True to allow folding from segments that are R+!W (ignoring X).
+        # Expert escape hatch. Normal classification is architecture-neutral
+        # and uses IDA's item metadata rather than platform/section names.
         self._allow_executable: bool = False
         # When True, also fold constants from writable segments that have no
         # write cross-references.  This is needed for hardened OLLVM where
@@ -224,6 +233,11 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         # Allow configuration via project config:
         # "allow_executable_readonly": true
         self._allow_executable = kwargs.get("allow_executable_readonly", False)
+        if self._allow_executable:
+            peephole_logger.warning(
+                "VERY DANGEROUS constant-folding override enabled: "
+                "executable read-only memory may be treated as data"
+            )
         # "fold_writable_constants": true
         self._fold_writable_constants = kwargs.get("fold_writable_constants", False)
 
@@ -231,62 +245,23 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
     # Helper functions                                                      #
     # --------------------------------------------------------------------- #
 
-    def _segment_is_read_only(self, addr: int) -> bool:
-        """Check if segment at addr is suitable for constant folding.
-
-        By default, requires R+!W+!X (strict read-only data).
-        With allow_executable_readonly=True, allows R+!W (ignoring X bit).
-        This is useful for Mach-O binaries where __const has R+X permissions.
-        """
-        seg = ida_segment.getseg(addr)
-        if seg is None:
-            return False
-        perms = seg.perm
-        has_read = bool(perms & idaapi.SEGPERM_READ)
-        has_write = bool(perms & idaapi.SEGPERM_WRITE)
-        has_exec = bool(perms & idaapi.SEGPERM_EXEC)
-
-        # Must be readable and not writable
-        if not has_read or has_write:
-            return False
-
-        # If we allow executable segments (for Mach-O), ignore the X bit
-        if self._allow_executable:
-            return True
-
-        # Default strict check: no execute permission
-        return not has_exec
+    def _decision_for(self, addr: int, size: int) -> GlobalConstDecision:
+        """Ask the shared, architecture-neutral constness authority."""
+        policy = (
+            GlobalConstPolicy.AGGRESSIVE_NO_DIRECT_WRITES
+            if self._fold_writable_constants
+            else GlobalConstPolicy.STRICT
+        )
+        return decide_hexrays_global_read(
+            addr,
+            size,
+            policy=policy,
+            allow_executable_readonly=self._allow_executable,
+        )
 
     def _is_foldable_address(self, addr: int) -> bool:
-        """Check if the global at *addr* can safely be folded to a constant.
-
-        Returns True if either:
-        1. The address is in a read-only segment (original behaviour), OR
-        2. ``_fold_writable_constants`` is enabled **and** the address resides
-           in a writable segment that has no write cross-references (i.e. an
-           opaque constant table used by obfuscation).
-        """
-        if self._segment_is_read_only(addr):
-            return True
-        if self._fold_writable_constants:
-            return is_never_written_var(addr)
-        return False
-
-    @staticmethod
-    def _fetch_constant(addr: int, size: int) -> Optional[int]:
-        """Read *size* bytes at *addr* and return them as int."""
-
-        if size == 1:
-            val = idaapi.get_byte(addr)
-        elif size == 2:
-            val = idaapi.get_word(addr)
-        elif size == 4:
-            val = idaapi.get_dword(addr)
-        elif size == 8:
-            val = idaapi.get_qword(addr)
-        else:
-            return None
-        return None if val == idaapi.BADADDR else val
+        """Compatibility predicate; concrete rewrites use the true read width."""
+        return self._decision_for(addr, 1).can_inline_read
 
     # ------------------------------------------------------------------ #
     # Main peephole implementation                                      #
@@ -331,51 +306,15 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         # We have an effective address for a memory load.  Is it really read-only?
         if ea is None:
             return None
-        if not self._is_foldable_address(ea):
-            return None
-
         # Compute the immediate value from memory contents at the EA.
         # Use the destination size when available, otherwise try source size.
         load_size = ins.d.size if (ins.d and ins.d.size) else ins.l.size
         if not load_size:
             return None
-        value = self._fetch_constant(ea, load_size)
-        if value is None:
+        decision = self._decision_for(ea, load_size)
+        if not decision.can_inline_read or decision.value is None:
             return None
-
-        # ------------------------------------------------------------------
-        # Build the replacement instruction. For true `ldx` loads, use
-        # `ldc #imm, dst`.
-        # ------------------------------------------------------------------
-        new_ins = ida_hexrays.minsn_t(ins.ea)
-        new_ins.opcode = ida_hexrays.m_ldc
-
-        cst = ida_hexrays.mop_t()
-        # Use unsigned constant form to avoid unexpected sign-extension.
-        if load_size in (1, 2, 4, 8) and value < 0:
-            value &= (1 << (load_size * 8)) - 1
-        cst.make_number(value, load_size)
-        new_ins.l = cst
-
-        # Keep original destination when it is a legal l-value, otherwise erase.
-        new_ins.d = ida_hexrays.mop_t()
-        if ins.d and ins.d.t in {
-            ida_hexrays.mop_r,
-            ida_hexrays.mop_l,
-            ida_hexrays.mop_S,
-            ida_hexrays.mop_v,
-        }:
-            new_ins.d.assign(ins.d)
-        else:
-            new_ins.d.erase()
-        new_ins.d.size = load_size
-
-        # r operand must be empty
-        new_ins.r = ida_hexrays.mop_t()
-        new_ins.r.erase()
-        # do not set size on an empty operand
-
-        return new_ins
+        return make_ldc_replacement(ins, decision.value, load_size)
 
     # ------------------------------------------------------------------ #
     # EA reconstruction helpers                                           #
@@ -663,11 +602,12 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                 elif src and getattr(src, "t", None) == ida_hexrays.mop_v:
                     ea = src.g
 
-                if ea is not None and self._is_foldable_address(ea):
+                if ea is not None:
                     out_size = getattr(op, "size", 0) or getattr(inner, "size", 0) or 0
                     if mem_size in (1, 2, 4, 8) and out_size in (1, 2, 4, 8):
-                        val = self._fetch_constant(ea, mem_size)
-                        if val is not None:
+                        decision = self._decision_for(ea, mem_size)
+                        if decision.can_inline_read and decision.value is not None:
+                            val = decision.value
                             # Apply sign/zero extension
                             if inner.opcode == ida_hexrays.m_xds:
                                 sign_bit = 1 << (mem_size * 8 - 1)
@@ -675,7 +615,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                                     val = val - (1 << (mem_size * 8))
                             mask = (1 << (out_size * 8)) - 1
                             folded = val & mask
-                            op.make_number(folded, out_size)
+                            replace_operand_with_immediate(op, folded, out_size)
                             return True
             # Otherwise, recurse into sub-operands of the inner instruction
             res_l = self._fold_readonly_inplace(inner.l)
@@ -692,10 +632,10 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         # global address. If it's foldable, replace it with an immediate.
         if op.t == ida_hexrays.mop_v:
             ea = op.g
-            if size in (1, 2, 4, 8) and self._is_foldable_address(ea):
-                value = self._fetch_constant(ea, size)
-                if value is not None:
-                    op.make_number(value, size)
+            if size in (1, 2, 4, 8):
+                decision = self._decision_for(ea, size)
+                if decision.can_inline_read and decision.value is not None:
+                    replace_operand_with_immediate(op, decision.value, size)
                     return True
             return False
         # Stack variables (mop_S) are NOT memory reads from global addresses.

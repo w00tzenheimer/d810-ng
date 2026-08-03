@@ -14,8 +14,6 @@ function-wide and therefore safe at control-flow merge points.
 import weakref
 
 import ida_hexrays
-import ida_segment
-import idaapi
 
 from d810.core import CythonMode, getLogger, typing
 from d810.evaluator.hexrays_microcode.forward_dataflow import (
@@ -55,48 +53,6 @@ ConstMap = LatticeEnv  # backward-compat alias
 # Opcodes where the right operand (shift amount) must be size == 1.
 # Folding a constant into ins.r with a larger size triggers INTERR 50835.
 _SHIFT_OPCODES = frozenset({ida_hexrays.m_shl, ida_hexrays.m_shr, ida_hexrays.m_sar})
-
-
-# ---------------------------------------------------------------------------
-# Module-level helpers for readonly-segment ldx resolution
-# ---------------------------------------------------------------------------
-
-
-def _ro_segment_is_read_only(addr: int) -> bool:
-    """Return True if *addr* is in a readable, non-writable, non-executable segment.
-
-    Guards all IDA API calls with try/except — segment queries can fail when
-    the address is synthetic or outside any loaded segment.
-    """
-    try:
-        seg = ida_segment.getseg(addr)
-        if seg is None:
-            return False
-        perms = seg.perm
-        has_read = bool(perms & idaapi.SEGPERM_READ)
-        has_write = bool(perms & idaapi.SEGPERM_WRITE)
-        has_exec = bool(perms & idaapi.SEGPERM_EXEC)
-        return has_read and not has_write and not has_exec
-    except Exception:
-        return False
-
-
-def _ro_fetch_constant(addr: int, size: int) -> typing.Optional[int]:
-    """Read *size* bytes at *addr* and return as an integer, or None on failure."""
-    try:
-        if size == 1:
-            val = idaapi.get_byte(addr)
-        elif size == 2:
-            val = idaapi.get_word(addr)
-        elif size == 4:
-            val = idaapi.get_dword(addr)
-        elif size == 8:
-            val = idaapi.get_qword(addr)
-        else:
-            return None
-        return None if val == idaapi.BADADDR else val
-    except Exception:
-        return None
 
 
 @typing.runtime_checkable
@@ -709,23 +665,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             # Nothing more to learn from this instruction.
             return
 
-        # 2. ldx is a memory load — check if it loads from a readonly segment.
-        # If so, GEN the constant value; otherwise KILL the destination.
+        # 2. Memory resolution belongs to the preceding constant-memory stage.
+        # Any ldx still present is unresolved here, so FCP must conservatively
+        # KILL its destination rather than maintain a second constness policy.
         if ins.opcode == ida_hexrays.m_ldx:
             written_var = self._get_written_var_name(ins)
-            readonly_val = self._try_resolve_readonly_ldx(ins)
-            if readonly_val is not None and written_var:
-                value, size = readonly_val
-                env[written_var] = Const(value, size)  # GEN: readonly constant
-                if logger.debug_on:
-                    logger.debug(
-                        "[forward-cprop] readonly ldx at %#x -> %s = %r",
-                        ins.ea,
-                        written_var,
-                        env[written_var],
-                    )
-                return
-            # Writable or unresolvable: KILL
             if written_var:
                 env[written_var] = TOP
             return
@@ -877,76 +821,6 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
     # ------------------------------------------------------------------
     # Helper utilities
     # ------------------------------------------------------------------
-
-    def _try_resolve_readonly_ldx(
-        self, ins: ida_hexrays.minsn_t
-    ) -> typing.Optional[tuple[int, int]]:
-        """Try to resolve an ldx instruction as a load from a readonly segment.
-
-        Reconstructs the effective address from the ldx operands (supporting
-        the same ``ldx  &sym, #off`` and ``ldx  $global_var, #off`` patterns
-        as FoldReadonlyDataRule).  If the address falls in a read-only segment,
-        reads the constant value there and returns ``(value, size)``.
-
-        Returns None if the address cannot be determined, is not readonly, or
-        the value cannot be read.
-        """
-        if ins.opcode != ida_hexrays.m_ldx:
-            return None
-
-        try:
-            ea: typing.Optional[int] = None
-
-            # Variant A: ldx  &sym , #off  (mop_S left, mop_n right)
-            if ins.l.t == ida_hexrays.mop_S and ins.r.t == ida_hexrays.mop_n:
-                base = ins.l.s.start_ea
-                off = ins.r.nnn.value
-                ea = base + off
-
-            # Variant B: ldx  $global_var , #off  (mop_v left, mop_n right)
-            elif ins.l.t == ida_hexrays.mop_v and ins.r.t == ida_hexrays.mop_n:
-                base = ins.l.g
-                off = ins.r.nnn.value
-                ea = base + off
-
-            # Variant C: ldx  $global_var , <pure-const-expr>
-            elif ins.l.t == ida_hexrays.mop_v and ins.r.t == ida_hexrays.mop_d:
-                from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
-                    _try_eval_pure_const_mop,
-                )
-
-                off = _try_eval_pure_const_mop(ins.r)
-                if off is not None:
-                    ea = ins.l.g + off
-
-            # Variant D: ldx  &sym , <pure-const-expr>
-            elif ins.l.t == ida_hexrays.mop_S and ins.r.t == ida_hexrays.mop_d:
-                from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
-                    _try_eval_pure_const_mop,
-                )
-
-                off = _try_eval_pure_const_mop(ins.r)
-                if off is not None:
-                    ea = ins.l.s.start_ea + off
-
-            if ea is None:
-                return None
-
-            if not _ro_segment_is_read_only(ea):
-                return None
-
-            size = ins.d.size if (ins.d and ins.d.size) else ins.l.size
-            if not size:
-                return None
-
-            value = _ro_fetch_constant(ea, size)
-            if value is None:
-                return None
-
-            return (value, size)
-
-        except Exception:
-            return None
 
     def _collect_universe(self, mba: ida_hexrays.mba_t) -> set[str]:
         """Collect all variable names that are written in any block.

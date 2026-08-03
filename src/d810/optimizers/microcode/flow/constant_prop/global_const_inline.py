@@ -14,10 +14,8 @@ Algorithm (ported from the copycat project ``global_const_handler_t``):
 
 1. **Detect** -- find ``m_mov`` / ``m_ldx`` instructions with ``mop_v``
    operands referencing global addresses.
-2. **Validate** -- check the segment is read-only (``.rodata``, ``.rdata``,
-   ``__const``, or segment lacking ``SEGPERM_WRITE``).  For writable
-   segments (``.data``), verify via cross-references that no write xrefs
-   exist.
+2. **Validate** -- ask the shared, architecture-neutral global-constness
+   oracle to classify the concrete data item and all known write evidence.
 3. **Read** -- fetch the constant value from the IDB.
 4. **Filter** -- skip values that look like pointers (fall inside a known
    segment or match common ASLR ranges).
@@ -32,33 +30,21 @@ from d810.core.typing import Callable, Optional
 import ida_bytes
 import ida_hexrays
 import ida_segment
-import ida_xref
 import idaapi
 
+from d810.analyses.value_flow.global_constness import GlobalConstPolicy
+from d810.backends.hexrays.evidence.global_constness import (
+    decide_hexrays_global_read,
+)
 from d810.core import getLogger
+from d810.optimizers.microcode.constant_materialization import (
+    replace_operand_with_immediate,
+    rewrite_load_as_immediate_move,
+)
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
+from d810.optimizers.microcode.handler import ConfigParam
 
 logger = getLogger(__name__)
-
-# Common read-only section names across platforms.
-_CONST_SECTION_NAMES: frozenset[str] = frozenset(
-    {
-        "__const",
-        ".rodata",
-        ".rdata",
-        "__DATA_CONST",
-        "__cstring",
-        "__cfstring",
-    }
-)
-
-# Writable sections where we still allow inlining if no write xrefs exist.
-_DATA_SECTION_NAMES: frozenset[str] = frozenset(
-    {
-        "__data",
-        ".data",
-    }
-)
 
 # Maximum operand size (in bytes) that we are willing to inline.
 _MAX_INLINE_SIZE: int = 8
@@ -75,6 +61,20 @@ class GlobalConstantInliner(FlowOptimizationRule):
 
     CATEGORY = "Constant Folding"
     DESCRIPTION = "Inlines known constant values from read-only global addresses"
+    CONFIG_SCHEMA = FlowOptimizationRule.CONFIG_SCHEMA + (
+        ConfigParam(
+            "fold_writable_constants",
+            bool,
+            False,
+            "Fold data items with no direct write evidence",
+        ),
+        ConfigParam(
+            "allow_executable_readonly",
+            bool,
+            False,
+            "VERY DANGEROUS: treat executable read-only memory as constant data",
+        ),
+    )
 
     # This rule does *not* modify the CFG; it only rewrites operands.
     USES_DEFERRED_CFG = True
@@ -87,6 +87,19 @@ class GlobalConstantInliner(FlowOptimizationRule):
             ida_hexrays.MMAT_PREOPTIMIZED,
             ida_hexrays.MMAT_LOCOPT,
         ]
+        self._fold_writable_constants = False
+        self._allow_executable = False
+
+    def configure(self, kwargs: dict) -> None:
+        """Configure compatibility options that feed the shared oracle."""
+        super().configure(kwargs)
+        self._fold_writable_constants = kwargs.get("fold_writable_constants", False)
+        self._allow_executable = kwargs.get("allow_executable_readonly", False)
+        if self._allow_executable:
+            logger.warning(
+                "VERY DANGEROUS constant-folding override enabled: "
+                "executable read-only memory may be treated as data"
+            )
 
     # ------------------------------------------------------------------ #
     # FlowOptimizationRule interface                                      #
@@ -115,15 +128,22 @@ class GlobalConstantInliner(FlowOptimizationRule):
         """
         if ea == idaapi.BADADDR or size <= 0 or size > _MAX_INLINE_SIZE:
             return None
-        flags = ida_bytes.get_flags(ea)
-        if ida_bytes.is_code(flags):
+        policy = (
+            GlobalConstPolicy.AGGRESSIVE_NO_DIRECT_WRITES
+            if self._fold_writable_constants
+            else GlobalConstPolicy.STRICT
+        )
+        decision = decide_hexrays_global_read(
+            ea,
+            size,
+            policy=policy,
+            allow_executable_readonly=self._allow_executable,
+        )
+        if not decision.can_inline_read or decision.value is None:
             return None
-        if not _is_constant_global(ea):
+        if _looks_like_pointer(decision.value, size):
             return None
-        value = _read_constant_value(ea, size)
-        if _looks_like_pointer(value, size):
-            return None
-        return value
+        return decision.value
 
     def _replace_nested_globals(self, mop: ida_hexrays.mop_t) -> int:
         """Recursively replace mop_v globals in operand tree. Returns count of replacements."""
@@ -134,7 +154,7 @@ class GlobalConstantInliner(FlowOptimizationRule):
         if mop.t == ida_hexrays.mop_v:
             val = self._get_global_constant(mop.g, mop.size)
             if val is not None:
-                mop.make_number(val, mop.size)
+                replace_operand_with_immediate(mop, val, mop.size)
                 logger.info(
                     "Inlined nested global at 0x%X -> 0x%X (size=%d)",
                     mop.g,
@@ -181,7 +201,7 @@ class GlobalConstantInliner(FlowOptimizationRule):
             if ea != idaapi.BADADDR and size > 0:
                 value = self._get_global_constant(ea, size)
                 if value is not None:
-                    _replace_with_immediate(insn, value, size)
+                    rewrite_load_as_immediate_move(insn, value, size)
                     logger.info(
                         "Inlined global constant at 0x%X -> 0x%X (size=%d)",
                         ea,
@@ -207,36 +227,12 @@ class GlobalConstantInliner(FlowOptimizationRule):
 
 
 def _is_constant_global(ea: int) -> bool:
-    """Return ``True`` if *ea* resides in a read-only data section.
-
-    For writable data sections (``.data``, ``__data``) we additionally
-    verify that no write cross-references target the address.
-    """
-    seg = ida_segment.getseg(ea)
-    if seg is None:
-        return False
-
-    seg_name: str = ida_segment.get_segm_name(seg)
-
-    # Unconditionally constant sections.
-    if seg_name in _CONST_SECTION_NAMES:
-        return True
-
-    # Writable data sections -- conservative check via xrefs.
-    if seg_name in _DATA_SECTION_NAMES:
-        xb = ida_xref.xrefblk_t()
-        ok = xb.first_to(ea, ida_xref.XREF_ALL)
-        while ok:
-            if xb.type == ida_xref.dr_W:
-                return False
-            ok = xb.next_to()
-        return True
-
-    # Fallback: check segment permissions.
-    if (seg.perm & idaapi.SEGPERM_WRITE) == 0:
-        return True
-
-    return False
+    """Compatibility predicate backed by the shared constness oracle."""
+    return decide_hexrays_global_read(
+        ea,
+        1,
+        policy=GlobalConstPolicy.AGGRESSIVE_NO_DIRECT_WRITES,
+    ).can_inline_read
 
 
 def _read_constant_value(ea: int, size: int) -> int:
@@ -429,12 +425,5 @@ def _looks_like_pointer(value: int, size: int) -> bool:
 
 
 def _replace_with_immediate(insn: ida_hexrays.minsn_t, value: int, size: int) -> None:
-    """Rewrite *insn* as ``m_mov dst, #value``.
-
-    For ``m_ldx`` instructions the segment (``l``) and address (``r``)
-    operands are collapsed: the instruction becomes a plain ``m_mov``
-    with an immediate source.
-    """
-    insn.opcode = ida_hexrays.m_mov
-    insn.l.make_number(value, size)
-    insn.r.erase()
+    """Compatibility wrapper around the canonical materializer."""
+    rewrite_load_as_immediate_move(insn, value, size)
